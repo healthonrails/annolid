@@ -1,0 +1,75 @@
+import os
+import heapq
+import cv2
+
+import numpy as np
+
+
+def extract_frames(video_file='None',
+                   num_frames=100,
+                   out_dir='extracted_frames',
+                   show_flow=False
+                   ):
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    cap = cv2.VideoCapture(video_file)
+    fps = cap.get(5)
+    n_frames = int(cap.get(7))
+
+    subtractor = cv2.createBackgroundSubtractorMOG2()
+    keeped_frames = []
+
+    width = cap.get(3)
+    height = cap.get(4)
+    ret, old_frame = cap.read()
+    hsv = np.zeros_like(old_frame)
+    hsv[..., 1] = 255
+
+    while ret:
+        ret, frame = cap.read()
+        frame_number = int(cap.get(1))
+        mask = subtractor.apply(frame)
+        old_mask = subtractor.apply(old_frame)
+
+        out_frame = cv2.bitwise_and(frame, frame, mask=mask)
+        old_out_frame = cv2.bitwise_and(old_frame, old_frame, mask=old_mask)
+        try:
+            out_frame = cv2.cvtColor(out_frame, cv2.COLOR_BGR2GRAY)
+            old_out_frame = cv2.cvtColor(old_out_frame, cv2.COLOR_BGR2GRAY)
+
+            flow = cv2.calcOpticalFlowFarneback(
+                old_out_frame, out_frame, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+
+            if show_flow:
+                mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                hsv[..., 0] = ang*180/np.pi/2
+                hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+                rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+            q_score = int(np.abs(np.sum(flow.reshape(-1))))
+            print(
+                f"precessing frame {frame_number}, the difference between previous frame is {q_score}.")
+
+            if len(keeped_frames) <= num_frames:
+                heapq.heappush(keeped_frames, ((q_score, frame_number, frame)))
+            else:
+                heapq.heappushpop(
+                    keeped_frames, ((q_score, frame_number, frame)))
+
+            if show_flow:
+                cv2.imshow("Frame", rgb)
+        except:
+            print('skipping the current frame.')
+
+        old_frame = frame
+
+        key = cv2.waitKey(1)
+        if key == 27:
+            break
+
+    for kf in keeped_frames:
+        s, f, p = heapq.heappop(keeped_frames)
+        cv2.imwrite(f"{out_dir}{os.sep}{f}_{s}.jpg", p)
+    cap.release()
+    cv2.destoryAllWindows()
