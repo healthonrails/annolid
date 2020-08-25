@@ -18,3 +18,8 @@ pip install -e .
 python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=100
 ```
 The above command will extract 100 frames from the provided video and save them to a default folder called extracted_frames in the current annolid repo folder. 
+
+## Display optical flow while extracting frames with *--show_flow=True
+```bash
+python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=100 --show_flow=True
+```
