@@ -12,14 +12,20 @@ def parse_args():
     arg_builder.add_argument('--extract_frames', type=int, default=0,
                              help="Number of frames to be extracted"
                              )
+    arg_builder.add_argument('--show_flow', type=bool, default=False,
+                             help="Display optical flow while extracting"
+                             )
     args = vars(arg_builder.parse_args())
     return args
 
+
 def main():
     args = parse_args()
-    print("Start extracting video frames...")
+
     if args['extract_frames'] > 0:
-        extract_frames(args['video'], args['extract_frames'])
+        print("Start extracting video frames...")
+        extract_frames(args['video'], args['extract_frames'],
+                       show_flow=args['show_flow'])
 
 
 if __name__ == "__main__":
