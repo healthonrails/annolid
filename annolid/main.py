@@ -10,7 +10,8 @@ def parse_args():
                              help="path to a input video file"
                              )
     arg_builder.add_argument('--extract_frames', type=int, default=0,
-                             help="Number of frames to be extracted"
+                             help="Number of frames to be extracted. \
+                                 if -1 then save all the frames"
                              )
     arg_builder.add_argument('--show_flow', type=bool, default=False,
                              help="Display optical flow while extracting"
@@ -22,7 +23,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args['extract_frames'] > 0:
+    if args['extract_frames'] != 0:
         print("Start extracting video frames...")
         extract_frames(args['video'], args['extract_frames'],
                        show_flow=args['show_flow'])

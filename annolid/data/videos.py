@@ -16,6 +16,7 @@ def extract_frames(video_file='None',
     cap = cv2.VideoCapture(video_file)
     fps = cap.get(5)
     n_frames = int(cap.get(7))
+    current_frame_number = int(cap.get(1))
 
     subtractor = cv2.createBackgroundSubtractorMOG2()
     keeped_frames = []
@@ -23,12 +24,25 @@ def extract_frames(video_file='None',
     width = cap.get(3)
     height = cap.get(4)
     ret, old_frame = cap.read()
+
+    # save the first frame
+    out_frame_file = f"{out_dir}{os.sep}{current_frame_number:08}.jpg"
+    cv2.imwrite(out_frame_file, old_frame)
+
     hsv = np.zeros_like(old_frame)
     hsv[..., 1] = 255
 
     while ret:
-        ret, frame = cap.read()
+        
         frame_number = int(cap.get(1))
+        ret, frame = cap.read()
+
+        if num_frames == -1:
+            out_frame_file = f"{out_dir}{os.sep}{frame_number:08}.jpg"
+            cv2.imwrite(
+                out_frame_file, frame)
+            print(f'Saved the frame {current_frame_number}.')
+            continue
         mask = subtractor.apply(frame)
         old_mask = subtractor.apply(old_frame)
 
@@ -70,6 +84,6 @@ def extract_frames(video_file='None',
 
     for kf in keeped_frames:
         s, f, p = heapq.heappop(keeped_frames)
-        cv2.imwrite(f"{out_dir}{os.sep}{f}_{s}.jpg", p)
+        cv2.imwrite(f"{out_dir}{os.sep}{f:08}_{s}.jpg", p)
     cap.release()
     cv2.destoryAllWindows()
