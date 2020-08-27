@@ -59,4 +59,11 @@ python examples/instance_segmentation/labelme2coco.py --labels labels.txt input_
 
 The dataset in the output_dir is converted into COCO format for training instance segemenation models. 
 
+## Keep annotations frome the previous frame
+Click **Edit** -> **Keep Previous Annotation**
 
+![Keep previous annotation](../../docs/imgs/Annotation_keep_previous.png)
+
+## Useful keyboard shortcuts
+`D` : Next Image
+`A` : Prev Image

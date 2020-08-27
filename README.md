@@ -32,5 +32,5 @@ python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=-1
 ```
 ## Select frames uniformally 
 ```bash
-python annolid/main.py  -v /Users/chenyang/Downloads/zebrafish_video.mp4 --extract_frames=100 --algo='uniform'
+python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo='uniform'
 ```
