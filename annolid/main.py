@@ -16,6 +16,10 @@ def parse_args():
     arg_builder.add_argument('--show_flow', type=bool, default=False,
                              help="Display optical flow while extracting"
                              )
+    arg_builder.add_argument('--algo', type=str, default='flow',
+                             help="Select 100 frame uniformly or by flow \
+                                 options:flow|uniform"
+                             )
     args = vars(arg_builder.parse_args())
     return args
 
@@ -25,8 +29,11 @@ def main():
 
     if args['extract_frames'] != 0:
         print("Start extracting video frames...")
-        extract_frames(args['video'], args['extract_frames'],
-                       show_flow=args['show_flow'])
+        extract_frames(args['video'],
+                       args['extract_frames'],
+                       show_flow=args['show_flow'],
+                       algo=args['algo']
+                       )
 
 
 if __name__ == "__main__":

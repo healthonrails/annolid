@@ -1,5 +1,7 @@
 # annolid
-An annotation and instance segmenation based mutiple animal tracking package
+An annotation and instance segmenation based mutiple animal tracking package.
+
+![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
 
 ## Installation
 
@@ -27,4 +29,8 @@ python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=100 --show_flow
 ## Save all the frames as images
 ```bash
 python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=-1
+```
+## Select frames uniformally 
+```bash
+python annolid/main.py  -v /Users/chenyang/Downloads/zebrafish_video.mp4 --extract_frames=100 --algo='uniform'
 ```
