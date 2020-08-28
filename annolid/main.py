@@ -1,4 +1,5 @@
 import argparse
+from segmentation.threshold import InRange
 from data.videos import extract_frames
 
 
@@ -20,6 +21,21 @@ def parse_args():
                              help="Select 100 frame uniformly or by flow \
                                  options:flow|uniform"
                              )
+    arg_builder.add_argument('--segmentation', type=str, default=None,
+                             help="Segmentation based on support methods \
+                                 options: threshold|yolact"
+                             )
+
+    arg_builder.add_argument('--min_area', type=int, default=50,
+                             help="min area of the object \
+                                 default is 50 pixels"
+                             )
+
+    arg_builder.add_argument('--max_area', type=int, default=150,
+                             help="min area of the object \
+                                 default is 50 pixels"
+                             )
+
     args = vars(arg_builder.parse_args())
     return args
 
@@ -34,6 +50,11 @@ def main():
                        show_flow=args['show_flow'],
                        algo=args['algo']
                        )
+    if args['segmentation'] == 'threshold':
+        ir = InRange()
+        ir.run(args['video'],
+               args['min_area'],
+               args['max_area'])
 
 
 if __name__ == "__main__":

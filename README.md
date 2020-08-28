@@ -34,3 +34,11 @@ python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=-1
 ```bash
 python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo='uniform'
 ```
+
+## Threshold based object segmenation
+Added track bars for users to select HSV values to 
+segment ROIs in the provided video. 
+```bash
+python annolid/main.py -v /path/to/my_video.mp4 --segmentation="threshold"
+```
+![Threshold based segmentation](docs/imgs/threshold_based_segmentation.png)
