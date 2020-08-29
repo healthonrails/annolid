@@ -10,11 +10,11 @@ class InRange():
 
     def __init__(self):
         self.max_value = 255
-        self.max_value_h = 360
+        self.max_value_h = 239
         self.low_h = 0
         self.low_s = 68
         self.low_v = 140
-        self.high_h = self.max_value
+        self.high_h = self.max_value_h
         self.high_s = self.max_value
         self.high_v = self.max_value
         self.window_name = 'Threshold Based Segmentation'
@@ -40,7 +40,7 @@ class InRange():
 
     def trackbar_on_high_h_event(self, value):
         self.high_h = value
-        self.high_h = min(self.high_h, self.low_h + 1)
+        self.high_h = max(self.high_h, self.low_h + 1)
         cv2.setTrackbarPos(
             self.high_h_name,
             self.window_name,
@@ -58,7 +58,7 @@ class InRange():
 
     def trackbar_on_high_s_event(self, value):
         self.high_s = value
-        self.high_s = min(self.high_s, self.low_s + 1)
+        self.high_s = max(self.high_s, self.low_s + 1)
         cv2.setTrackbarPos(
             self.high_s_name,
             self.window_name,
@@ -76,7 +76,7 @@ class InRange():
 
     def trackbar_on_high_v_event(self, value):
         self.high_v = value
-        self.high_v = min(self.high_v, self.low_v + 1)
+        self.high_v = max(self.high_v, self.low_v + 1)
         cv2.setTrackbarPos(
             self.high_v_name,
             self.window_name,
@@ -163,7 +163,8 @@ class InRange():
     def run(self, 
            video_file,
            min_area=70,
-           max_area=150
+           max_area=150,
+           draw_history=False
            ):
         cap = cv2.VideoCapture(video_file)
         cv2.namedWindow(self.window_name)
@@ -229,8 +230,9 @@ class InRange():
             frame_combined = cv2.bitwise_and(
                 frame_combined, frame_combined, mask=frame_threshold)
 
-            frame_combined = self.draw_contour_history(
-                frame_combined)
+            if draw_history:
+                frame_combined = self.draw_contour_history(
+                    frame_combined)
 
             cv2.imshow(self.window_name, frame_combined)
 
