@@ -58,7 +58,7 @@ def extract_frames(video_file='None',
                     out_frame_file, frame)
                 print(f'Saved the frame {frame_number}.')
             continue
-        if algo == 'flow':
+        if algo == 'flow' and num_frames != -1:
             mask = subtractor.apply(frame)
             old_mask = subtractor.apply(old_frame)
 
