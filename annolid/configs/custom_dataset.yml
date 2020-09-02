@@ -1,0 +1,13 @@
+DATASET:
+    name: "COCO A4"
+    train_info: "/path/to/dataset/train/annotations.json"
+    train_images: "/path/to/dataset/train/annotations.json"
+    valid_info: "/path/to/dataset/val/annotations.json"
+    valid_images: "/path/to/dataset/val/annotations.json"
+    class_names: "('mouse','vole','cat','cow')"
+
+YOLACT:
+    name: "yolact_plus_resnet50_a4"
+    dataset: "coco_a4_dataset"
+    max_size: 512
+    
