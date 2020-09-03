@@ -65,7 +65,8 @@ def extract_frames(video_file='None',
             old_mask = subtractor.apply(old_frame)
 
             out_frame = cv2.bitwise_and(frame, frame, mask=mask)
-            old_out_frame = cv2.bitwise_and(old_frame, old_frame, mask=old_mask)
+            old_out_frame = cv2.bitwise_and(
+                old_frame, old_frame, mask=old_mask)
             try:
                 out_frame = cv2.cvtColor(out_frame, cv2.COLOR_BGR2GRAY)
                 old_out_frame = cv2.cvtColor(old_out_frame, cv2.COLOR_BGR2GRAY)
@@ -76,7 +77,8 @@ def extract_frames(video_file='None',
                 if show_flow:
                     mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
                     hsv[..., 0] = ang*180/np.pi/2
-                    hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+                    hsv[..., 2] = cv2.normalize(
+                        mag, None, 0, 255, cv2.NORM_MINMAX)
                     rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
                 q_score = int(np.abs(np.sum(flow.reshape(-1))))
@@ -84,7 +86,8 @@ def extract_frames(video_file='None',
                     f"precessing frame {frame_number}, the difference between previous frame is {q_score}.")
 
                 if len(keeped_frames) <= num_frames:
-                    heapq.heappush(keeped_frames, ((q_score, frame_number, frame)))
+                    heapq.heappush(
+                        keeped_frames, ((q_score, frame_number, frame)))
                 else:
                     heapq.heappushpop(
                         keeped_frames, ((q_score, frame_number, frame)))
