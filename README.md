@@ -1,5 +1,5 @@
 # annolid
-An annotation and instance segmenation based mutiple animal tracking package.
+An annotation and instance segmentation based multiple animal tracking and behavior analysis package.
 
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
 
@@ -14,7 +14,7 @@ cd annolid
 pip install -e .
 ```
 
-## Extract desired number of frames from video based on optical flow
+## Extract desired number of frames from a video based on optical flow
 
 ```bash
 python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=100
