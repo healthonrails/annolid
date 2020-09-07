@@ -107,4 +107,4 @@ def extract_frames(video_file='None',
         s, f, p = heapq.heappop(keeped_frames)
         cv2.imwrite(f"{out_dir}{os.sep}{f:08}_{s}.jpg", p)
     cap.release()
-    cv2.destoryAllWindows()
+    cv2.destroyAllWindows
