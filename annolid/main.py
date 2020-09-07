@@ -14,6 +14,10 @@ def parse_args():
                              help="Number of frames to be extracted. \
                                  if -1 then save all the frames"
                              )
+    arg_builder.add_argument('--to', type=str, default=None,
+                             help='destination directory for saving \
+                                  extracted frames '
+                             )
     arg_builder.add_argument('--show_flow', type=bool, default=False,
                              help="Display optical flow while extracting"
                              )
@@ -48,7 +52,8 @@ def main():
         extract_frames(args['video'],
                        args['extract_frames'],
                        show_flow=args['show_flow'],
-                       algo=args['algo']
+                       algo=args['algo'],
+                       out_dir=args['to']
                        )
     if args['segmentation'] == 'threshold':
         ir = InRange()

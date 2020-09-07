@@ -7,7 +7,7 @@ import numpy as np
 
 def extract_frames(video_file='None',
                    num_frames=100,
-                   out_dir='extracted_frames',
+                   out_dir=None,
                    show_flow=False,
                    algo='flow'
                    ):
@@ -18,6 +18,12 @@ def extract_frames(video_file='None',
     Or you can save all the frames by providing `num_frames` = -1. 
 
     """
+
+    if out_dir is None:
+        out_dir = os.path.splitext(video_file)[0]
+    else:
+        video_name = os.path.splitext(os.path.basename(video_file))[0]
+        out_dir = os.path.join(out_dir, video_name)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
@@ -108,3 +114,4 @@ def extract_frames(video_file='None',
         cv2.imwrite(f"{out_dir}{os.sep}{f:08}_{s}.jpg", p)
     cap.release()
     cv2.destroyAllWindows
+    print(f"Please check the extracted frames in folder: {out_dir}")

@@ -32,13 +32,25 @@ python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=-1
 ```
 ## Select frames uniformally 
 ```bash
-python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo='uniform'
+python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo=uniform
 ```
 
 ## Threshold based object segmenation
 Added track bars for users to select HSV values to 
 segment ROIs in the provided video. 
 ```bash
-python annolid/main.py -v /path/to/my_video.mp4 --segmentation="threshold"
+python annolid/main.py -v /path/to/my_video.mp4 --segmentation=threshold
 ```
 ![Threshold based segmentation](docs/imgs/threshold_based_segmentation.png)
+
+## Convert WMV format to mp4 format using ffmpeg
+```bash
+ffmpeg -i /path/to/my_video.wmv -c:a aac /path/to/my_video.mp4
+```
+
+## Save the extracted frames to a user selected output directory 
+If not selected, it will save the extracted frames to a folder named with the video name without extension. For example, if the input video path is /path/to/my_video.mp4, the extracted frames will be saved in the folder /path/to/my_video. 
+The output directory is provided, the extracted frames will be saved /path/to/dest/my_video. 
+```bash
+python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=20 --to /path/to/dest --algo=uniform
+```
