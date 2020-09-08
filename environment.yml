@@ -1,0 +1,28 @@
+# Installs dependencies for Annolid managed by Anaconda. 
+#
+name: annolid-env
+#prefix: /path/to/my/envs/annolid-env
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  - python==3.7
+  - pip
+  - cython 
+  - pytorch::torchvision
+  - pytorch::pytorch >=1.4.0
+  - cudatoolkit
+  - cudnn
+  - pytorch::cuda100
+  - matplotlib
+  - git 
+  - curl 
+  - unzip 
+  - conda-forge::bash 
+  - pip:
+    - opencv-python 
+    - pillow 
+    - pycocotools 
+    # needed on KDE/Qt envs for matplotlib
+    - PyQt5 
