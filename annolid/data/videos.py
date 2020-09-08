@@ -31,17 +31,6 @@ def extract_frames(video_file='None',
     fps = cap.get(5)
     n_frames = int(cap.get(7))
 
-    if num_frames < -1 or num_frames > n_frames:
-        print(f'The video has {n_frames} number frames in total.')
-        print('Please input a valid number of frames!')
-        return
-
-    elif num_frames > 2:
-        # always save the first frame and the last frame
-        # so to make the number of extract frames
-        # as the user provided exactly
-        num_frames -= 2
-
     current_frame_number = int(cap.get(1))
 
     subtractor = cv2.createBackgroundSubtractorMOG2()
@@ -55,6 +44,22 @@ def extract_frames(video_file='None',
     out_frame_file = f"{out_dir}{os.sep}{current_frame_number:08}.jpg"
     cv2.imwrite(out_frame_file, old_frame)
 
+    if num_frames < -1 or num_frames > n_frames:
+        print(f'The video has {n_frames} number frames in total.')
+        print('Please input a valid number of frames!')
+        return
+    elif num_frames == 1:
+        print(f'Please check your first frame here {out_dir}')
+        return 
+    elif num_frames > 2:
+        # always save the first frame and the last frame
+        # so to make the number of extract frames
+        # as the user provided exactly
+        if num_frames % 2 == 0 or n_frames % 2 == 0:
+            num_frames -= 2
+        else:
+            num_frames -= 1
+        
     hsv = np.zeros_like(old_frame)
     hsv[..., 1] = 255
 
@@ -72,7 +77,7 @@ def extract_frames(video_file='None',
             continue
         if algo == 'uniform':
             if ret:
-                if (frame_number % (n_frames // num_frames) == 0 or
+                if (frame_number % (n_frames  // num_frames) == 0 or
                         frame_number == n_frames - 1):
                     out_frame_file = f"{out_dir}{os.sep}{frame_number:08}.jpg"
                     cv2.imwrite(out_frame_file, frame)
