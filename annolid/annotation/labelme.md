@@ -109,6 +109,10 @@ The package and several dependencies should download fine; however, installation
 
 
 
+If you have more complicated problems installing `pycocotools` under Windows, see [this discussion](https://github.com/cocodataset/cocoapi/issues/169).
+
+
+
 #### 2. How to preserve annotations from the previous frame in labelme
 
 Click **Edit** -> **Keep Previous Annotation**
