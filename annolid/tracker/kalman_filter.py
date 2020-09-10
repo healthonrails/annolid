@@ -135,7 +135,6 @@ class KalmanFilter(object):
         """
         Gating distance between state distribution 
         and mesurements. 
-    
         """
 
         mean, covariance = self.project(mean, covariance)

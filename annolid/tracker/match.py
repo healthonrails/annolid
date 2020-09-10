@@ -32,21 +32,21 @@ def iou(bbox, candidates):
 
     top_left, bottom_right = bbox[:2], bbox[:2] + bbox[2:]
     candidates_top_left = candidates[:, :2]
-    candidates_bottom_right = candidates[:, 2:] + candidates[:,2:]
+    candidates_bottom_right = candidates[:, 2:] + candidates[:, 2:]
 
     tl = np.c_[np.maximum(top_left[0],
-                         candidates_top_left[:, 0]
-                         )[:, np.newaxis],
+                          candidates_top_left[:, 0]
+                          )[:, np.newaxis],
                np.maximum(top_left[1],
-                         candidates_top_left[:, 1]
-                         )[:, np.newaxis],
+                          candidates_top_left[:, 1]
+                          )[:, np.newaxis],
                ]
     br = np.c_[np.maximum(bottom_right[0],
-                         candidates_bottom_right[:, 0]
-                         )[:, np.newaxis],
+                          candidates_bottom_right[:, 0]
+                          )[:, np.newaxis],
                np.maximum(bottom_right[1],
-                         candidates_bottom_right[:, 1]
-                         )[:, np.newaxis],
+                          candidates_bottom_right[:, 1]
+                          )[:, np.newaxis],
                ]
 
     wh = np.maximum(0., bottom_right - top_left)
