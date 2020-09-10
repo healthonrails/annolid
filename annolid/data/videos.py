@@ -50,7 +50,7 @@ def extract_frames(video_file='None',
         return
     elif num_frames == 1:
         print(f'Please check your first frame here {out_dir}')
-        return 
+        return
     elif num_frames > 2:
         # always save the first frame and the last frame
         # so to make the number of extract frames
@@ -59,7 +59,7 @@ def extract_frames(video_file='None',
             num_frames -= 2
         else:
             num_frames -= 1
-        
+
     hsv = np.zeros_like(old_frame)
     hsv[..., 1] = 255
 
@@ -77,7 +77,7 @@ def extract_frames(video_file='None',
             continue
         if algo == 'uniform':
             if ret:
-                if (frame_number % (n_frames  // num_frames) == 0 or
+                if (frame_number % (n_frames // num_frames) == 0 or
                         frame_number == n_frames - 1):
                     out_frame_file = f"{out_dir}{os.sep}{frame_number:08}.jpg"
                     cv2.imwrite(out_frame_file, frame)

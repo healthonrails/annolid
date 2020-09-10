@@ -14,6 +14,7 @@ def parse_args():
                              help="Number of frames to be extracted. \
                                  if -1 then save all the frames"
                              )
+
     arg_builder.add_argument('--to', type=str, default=None,
                              help='destination directory for saving \
                                   extracted frames '
