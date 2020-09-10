@@ -43,14 +43,24 @@ class Detection(object):
         self.feature = np.asarray(feature, dtype=np.float32)
         self.flow = np.asarray(flow, dtype=np.float32)
 
+    def to_tlbr():
+        ret = self.bbox.copy()
+        ret[2:] += ret[:2]
+        return ret
+    
     def to_xyah(self):
-        box = self.bbox.copy()
-        cx = (box[2] - box[0]) / 2
-        cy = (box[3] - box[1]) / 2
-        w = (box[2] - box[0]) 
-        h = (box[3] - box[1])
-        a = w / h
-        return np.asarray([cx,cy,a, h])
+        ret = self.bbox.copy()
+        ret[:2] += ret[2:] / 2
+        ret[2] /= ret[3]
+        return ret
+        
+#         box = self.bbox.copy()
+#         cx = (box[2] - box[0]) / 2
+#         cy = (box[3] - box[1]) / 2
+#         w = (box[2] - box[0]) 
+#         h = (box[3] - box[1])
+#         a = w / h
+#         return np.asarray([cx,cy,a, h])
 
 
 
@@ -71,9 +81,9 @@ class Track(object):
     """
 
     def __init__(self,
-                 track_id,
                  mean,
                  covariance,
+                 track_id,
                  n_init,
                  max_age,
                  feature=None,
@@ -125,6 +135,17 @@ class Track(object):
         if (self.state == TrackState.TENTATIVE and
                 self.hits >= self.n_init):
             self.state = TrackState.CONFIRMED
+            
+    def to_tlwh(self):
+        ret = self.mean[:4].copy()
+        ret[2] *= ret[3]
+        ret[:2] -= ret[2:] /2
+        return ret
+    
+    def to_tlbr(self):
+        ret = self.to_tlwh()
+        ret[2:] = ret[:2] + ret[2:]
+        return ret
 
     def mark_missed(self):
         if self.state == TrackState.TENTATIVE:
@@ -185,17 +206,19 @@ class Tracker():
         active_targets = [t.track_id
                           for t in self.tracks if t.is_confirmed()]
 
-        features, targets, flows, _targets = [], [], [], []
+        #features, targets, flows, _targets = [], [], [], []
+        features = []
+        targets = []
 
         for track in self.tracks:
             if not track.is_confirmed():
                 continue
             features += track.features
-            flows += track.flows
+            #flows += track.flows
             targets += [track.track_id for _ in track.features]
-            _targets += [track.track_id for _ in track.flows]
+            #_targets += [track.track_id for _ in track.flows]
             track.features = []
-            track.flows = []
+            #track.flows = []
         self.metric.partial_fit(
             np.asarray(features),
             np.asarray(targets),
@@ -209,12 +232,13 @@ class Tracker():
                          track_indices,
                          detection_indices
                          ):
-            features = np.array([sorted(detections[i].flow.reshape(-1),
-                                        reverse=True)[:256]
-                                 + sorted(detections[i].feature,
-                                          reverse=True)[:256]
-                                 for i in detection_indices])
-            features = np.abs(features)
+            features = np.array([detections[i].feature for i in detection_indices])
+#             features = np.array([sorted(detections[i].flow.reshape(-1),
+#                                         reverse=True)[:256]
+#                                  + sorted(detections[i].feature,
+#                                           reverse=True)[:256]
+#                                  for i in detection_indices])
+#             features = np.abs(features)
             targets = np.array([tracks[i].track_id for i in track_indices])
             cost_matrix = self.metric.distance(features, targets)
             cost_matrix = match.gate_cost_matrix(
@@ -275,9 +299,10 @@ class Tracker():
     def init_track(self, detection):
         mean, covariance = self.kf.initiate(detection.to_xyah())
         self.tracks.append(
-            Track(mean, covariance,
+            Track(mean, 
+                  covariance,
                   self.next_id,
-                  self.next_id,
+                  self.n_init,
                   self.max_age,
                   detection.feature
                   )

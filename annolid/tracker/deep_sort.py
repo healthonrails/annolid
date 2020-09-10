@@ -51,13 +51,13 @@ class DeepSort(object):
         features = self._get_features(bbox_xywh, ori_img)
         bbox_tlwh = self._xywh_to_tlwh(bbox_xywh)
         detections = [Detection(bbox_tlwh[i],
-                                conf, features[i])
-                      for i, conf in enumerate(
-            confidences) if conf > self.min_confidence]
+                                score, features[i])
+                      for i, score in enumerate(
+            confidences) if score > self.min_confidence]
 
         # run on non-maximum supression
-        boxes = np.array([d.tlwh for d in detections])
-        scores = np.array([d.confidence for d in detections])
+        boxes = np.array([d.bbox for d in detections])
+        scores = np.array([d.score for d in detections])
         indices = non_max_suppression(boxes, self.nms_max_overlap, scores)
         detections = [detections[i] for i in indices]
 
@@ -68,7 +68,7 @@ class DeepSort(object):
         # output bbox identities
         outputs = []
         for track in self.tracker.tracks:
-            if not track.is_confirmed() or track.time_since_update > 1:
+            if not track.is_confirmed() or track.frames_since_update > 1:
                 continue
             box = track.to_tlwh()
             x1, y1, x2, y2 = self._tlwh_to_xyxy(box)
@@ -126,6 +126,7 @@ class DeepSort(object):
     def _get_features(self, bbox_xywh, ori_img):
         im_crops = []
         for box in bbox_xywh:
+            print(box)
             x1, y1, x2, y2 = self._xywh_to_xyxy(box)
             im = ori_img[y1:y2, x1:x2]
             im_crops.append(im)

@@ -11,7 +11,7 @@ class KalmanFilter(object):
     """
     A Kalman filter for tracking bbox. 
     Assumption: constant velocity model
-    x1, y1, x2, y2, vx1, vy1, vx2, vy2
+    x, y, a, h, vx, vy, va, vh
     """
 
     def __init__(self):
@@ -20,10 +20,6 @@ class KalmanFilter(object):
 
         # Create Kalman filter model matrices.
         # Constanct Velocity Model
-        # x1' = x1 + dt*vx1
-        # y1' = y1 + dt*vy1
-        # x2' = x2 + dt*vx2
-        # y2' = y2 + dt*yx2
         self.motion_matrix = np.eye(2 * n_dim, 2 * n_dim)
         for i in range(n_dim):
             self.motion_matrix[i, n_dim + i] = dt
@@ -34,7 +30,7 @@ class KalmanFilter(object):
 
     def initiate(self, measurement):
         """
-        measurement is a bbox (x1,y1,x2,y2)
+        measurement is a bbox
         """
         mean_position = measurement
         mean_velocity = np.zeros_like(mean_position)
@@ -117,7 +113,7 @@ class KalmanFilter(object):
         std = [
             self.std_weight_position * mean[3],
             self.std_weight_position * mean[3],
-            le-1,
+            1e-1,
             self.std_weight_position * mean[3]
         ]
         innovation_cov = np.diag(np.square(std))

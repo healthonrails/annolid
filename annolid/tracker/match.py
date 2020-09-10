@@ -26,24 +26,25 @@ CHI2INV95 = {
 def iou(bbox, candidates):
     """
     Intersection over union
-    bbox in x1,y1, x2,y2 format
+    bbox in top left x,top, left y
+    width,height format
     """
 
-    top_left, bottom_right = bbox[:2], bbox[2:]
+    top_left, bottom_right = bbox[:2], bbox[:2] + bbox[2:]
     candidates_top_left = candidates[:, :2]
-    candidates_bottom_right = candidates[:, 2:]
+    candidates_bottom_right = candidates[:, 2:] + candidates[:,2:]
 
-    tl = np.c_[np.maxium(top_left[0],
+    tl = np.c_[np.maximum(top_left[0],
                          candidates_top_left[:, 0]
                          )[:, np.newaxis],
-               np.maxium(top_left[1],
+               np.maximum(top_left[1],
                          candidates_top_left[:, 1]
                          )[:, np.newaxis],
                ]
-    br = np.c_[np.maxium(bottom_right[0],
+    br = np.c_[np.maximum(bottom_right[0],
                          candidates_bottom_right[:, 0]
                          )[:, np.newaxis],
-               np.maxium(bottom_right[1],
+               np.maximum(bottom_right[1],
                          candidates_bottom_right[:, 1]
                          )[:, np.newaxis],
                ]
@@ -75,9 +76,9 @@ def iou_cost(tracks,
         if tracks[track_idx].frames_since_update > 1:
             cost_matrix[row, :] = INF_COST
             continue
-        bbox = tracks[track_idx]
+        bbox = tracks[track_idx].to_tlwh()
         candidates = np.asarray([
-            detections[i] for i in detection_indices])
+            detections[i].bbox for i in detection_indices])
         cost_matrix[row, :] = 1. - iou(bbox, candidates)
     return cost_matrix
 
@@ -99,7 +100,7 @@ def gate_cost_matrix(kf,
 
     gating_threshold = CHI2INV95[gating_dim]
     measurements = np.asarray(
-        [detections[i] for i in detection_indices]
+        [detections[i].to_xyah() for i in detection_indices]
     )
     for row, track_idx in enumerate(track_indices):
         track = tracks[track_idx]
@@ -141,7 +142,7 @@ def min_cost_matching(distance_metric,
         detection_indices
     )
 
-    cost_matrix[cost_matrix > max_distance] = max_distance + le-5
+    cost_matrix[cost_matrix > max_distance] = max_distance + 1e-5
     row_inices, col_indices = linear_sum_assignment(cost_matrix)
 
     matches, unmatched_tracks, unmatched_detections = [], [], []
@@ -326,9 +327,9 @@ class NearestNeighborDistanceMetric():
                  ):
 
         if metric == "euclidean":
-            self.metric = Distance.euclidean
+            self.metric = Distance().euclidean
         elif metric == "cosine":
-            self.metric = Distance.nn_cosine
+            self.metric = Distance().nn_cosine
         else:
             raise ValueError(
                 "Invalid metric"
