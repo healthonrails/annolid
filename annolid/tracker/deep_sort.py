@@ -18,8 +18,8 @@ __all__ = ['DeepSort']
 class DeepSort(object):
     def __init__(self,
                  model_path,
-                 max_dist=0.2,
-                 min_confidence=0.3,
+                 max_dist=1.0,
+                 min_confidence=0.05,
                  nms_max_overlap=1.0,
                  max_iou_distance=0.7,
                  max_age=70,
@@ -33,7 +33,6 @@ class DeepSort(object):
                                    use_cuda=use_cuda)
 
         max_cosine_distance = max_dist
-        nn_budget = 100
         metric = NearestNeighborDistanceMetric(
             "cosine", max_cosine_distance, nn_budget)
         self.tracker = Tracker(
@@ -126,7 +125,6 @@ class DeepSort(object):
     def _get_features(self, bbox_xywh, ori_img):
         im_crops = []
         for box in bbox_xywh:
-            print(box)
             x1, y1, x2, y2 = self._xywh_to_xyxy(box)
             im = ori_img[y1:y2, x1:x2]
             im_crops.append(im)
