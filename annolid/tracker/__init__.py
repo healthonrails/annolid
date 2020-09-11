@@ -1,10 +1,14 @@
 from annolid.tracker.deep_sort import DeepSort
-
-
+from annolid.utils.config import get_config
+import torch
 __all__ = ['DeepSort', 'build_tracker']
 
 
-def build_tracker(cfg, use_cuda):
+def build_tracker(cfg_file="./configs/deep_sort.yaml",
+                  use_cuda=None):
+    if use_cuda is None:
+        use_cuda = torch.cuda.is_available()
+    cfg = get_config(cfg_file)
     return DeepSort(cfg.DEEPSORT.REID_CKPT,
                     max_dist=cfg.DEEPSORT.MAX_DIST,
                     min_confidence=cfg.DEEPSORT.MIN_CONFIDENCE,

@@ -1,6 +1,6 @@
 import os
 import yaml
-
+from easydict import EasyDict
 
 def get_config(config_file):
     assert(os.path.isfile(config_file))
@@ -9,7 +9,7 @@ def get_config(config_file):
             cf,
             Loader=yaml.FullLoader
         )
-    return parsed_yaml
+    return EasyDict(parsed_yaml)
 
 
 def merge_configs(config_list):
@@ -17,4 +17,4 @@ def merge_configs(config_list):
     merged_config = {}
     for cl in config_list:
         merged_config.update(cl)
-    return merged_config
+    return EasyDict(merged_config)

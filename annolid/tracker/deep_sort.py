@@ -5,7 +5,7 @@ Modified from https://github.com/ZQPei/deep_sort_pytorch
 import numpy as np
 import torch
 
-from annolid.tracker.features.feature_extractor import Extractor
+from annolid.tracker.features import Extractor
 from annolid.tracker.match import NearestNeighborDistanceMetric
 from annolid.tracker.match import non_max_suppression
 from annolid.tracker.track import Detection
@@ -18,8 +18,8 @@ __all__ = ['DeepSort']
 class DeepSort(object):
     def __init__(self,
                  model_path,
-                 max_dist=1.0,
-                 min_confidence=0.05,
+                 max_dist=0.2,
+                 min_confidence=0.3,
                  nms_max_overlap=1.0,
                  max_iou_distance=0.7,
                  max_age=70,
@@ -41,22 +41,18 @@ class DeepSort(object):
             max_age=max_age,
             n_init=n_init)
 
-    def update(self,
-               bbox_xywh,
-               confidences,
-               ori_img):
+    def update(self, bbox_xywh, confidences, ori_img):
         self.height, self.width = ori_img.shape[:2]
         # generate detections
         features = self._get_features(bbox_xywh, ori_img)
         bbox_tlwh = self._xywh_to_tlwh(bbox_xywh)
-        detections = [Detection(bbox_tlwh[i],
-                                score, features[i])
-                      for i, score in enumerate(
-            confidences) if score > self.min_confidence]
+        detections = [Detection(bbox_tlwh[i], conf, features[i])
+                      for i, conf in enumerate(
+            confidences) if conf > self.min_confidence]
 
         # run on non-maximum supression
-        boxes = np.array([d.bbox for d in detections])
-        scores = np.array([d.score for d in detections])
+        boxes = np.array([d.tlwh for d in detections])
+        scores = np.array([d.confidence for d in detections])
         indices = non_max_suppression(boxes, self.nms_max_overlap, scores)
         detections = [detections[i] for i in indices]
 
@@ -67,7 +63,7 @@ class DeepSort(object):
         # output bbox identities
         outputs = []
         for track in self.tracker.tracks:
-            if not track.is_confirmed() or track.frames_since_update > 1:
+            if not track.is_confirmed() or track.time_since_update > 1:
                 continue
             box = track.to_tlwh()
             x1, y1, x2, y2 = self._tlwh_to_xyxy(box)

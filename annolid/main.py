@@ -1,6 +1,6 @@
 import argparse
 from segmentation.threshold import InRange
-from data.videos import extract_frames
+from data.videos import extract_frames, track
 
 
 def parse_args():
@@ -18,6 +18,9 @@ def parse_args():
     arg_builder.add_argument('--to', type=str, default=None,
                              help='destination directory for saving \
                                   extracted frames '
+                             )
+    arg_builder.add_argument('--track', type=bool, default=False,
+                             help="Track objects in the video"
                              )
     arg_builder.add_argument('--show_flow', type=bool, default=False,
                              help="Display optical flow while extracting"
@@ -61,6 +64,9 @@ def main():
         ir.run(args['video'],
                args['min_area'],
                args['max_area'])
+    
+    if args['track']:
+        track(args["video"])
 
 
 if __name__ == "__main__":

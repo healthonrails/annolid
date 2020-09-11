@@ -29,139 +29,198 @@ import numpy as np
 
 class Detection(object):
     """
-    A bounding box detection in (x1,y1,x2,y2) format.
+    This class represents a bounding box detection in a single image.
+    Parameters
+    ----------
+    tlwh : array_like
+        Bounding box in format `(x, y, w, h)`.
+    confidence : float
+        Detector confidence score.
+    feature : array_like
+        A feature vector that describes the object contained in this image.
+    Attributes
+    ----------
+    tlwh : ndarray
+        Bounding box in format `(top left x, top left y, width, height)`.
+    confidence : ndarray
+        Detector confidence score.
+    feature : ndarray | NoneType
+        A feature vector that describes the object contained in this image.
     """
 
-    def __init__(self,
-                 bbox,
-                 score,
-                 feature,
-                 flow=None
-                 ):
-        self.bbox = np.asarray(bbox, dtype=np.float)
-        self.score = float(score)
+    def __init__(self, tlwh, confidence, feature):
+        self.tlwh = np.asarray(tlwh, dtype=np.float)
+        self.confidence = float(confidence)
         self.feature = np.asarray(feature, dtype=np.float32)
-        self.flow = np.asarray(flow, dtype=np.float32)
 
-    def to_tlbr():
-        ret = self.bbox.copy()
+    def to_tlbr(self):
+        """Convert bounding box to format `(min x, min y, max x, max y)`, i.e.,
+        `(top left, bottom right)`.
+        """
+        ret = self.tlwh.copy()
         ret[2:] += ret[:2]
         return ret
-    
+
     def to_xyah(self):
-        ret = self.bbox.copy()
+        """Convert bounding box to format `(center x, center y, aspect ratio,
+        height)`, where the aspect ratio is `width / height`.
+        """
+        ret = self.tlwh.copy()
         ret[:2] += ret[2:] / 2
         ret[2] /= ret[3]
         return ret
-        
-#         box = self.bbox.copy()
-#         cx = (box[2] - box[0]) / 2
-#         cy = (box[3] - box[1]) / 2
-#         w = (box[2] - box[0]) 
-#         h = (box[3] - box[1])
-#         a = w / h
-#         return np.asarray([cx,cy,a, h])
 
-
-
-class TrackState(Enum):
+class TrackState:
     """
-    A track status. 
-    For the first detection, the track is tentative. 
-
-    """
-    TENTATIVE = 1
-    CONFIRMED = 2
-    DELTED = 3
-
-
-class Track(object):
-    """
-    A track with (x1,y1,x2,y2)
+    Enumeration type for the single target track state. Newly created tracks are
+    classified as `tentative` until enough evidence has been collected. Then,
+    the track state is changed to `confirmed`. Tracks that are no longer alive
+    are classified as `deleted` to mark them for removal from the set of active
+    tracks.
     """
 
-    def __init__(self,
-                 mean,
-                 covariance,
-                 track_id,
-                 n_init,
-                 max_age,
-                 feature=None,
-                 flow=None
-                 ):
+    Tentative = 1
+    Confirmed = 2
+    Deleted = 3
 
-        self.track_id = track_id
+
+class Track:
+    """
+    A single target track with state space `(x, y, a, h)` and associated
+    velocities, where `(x, y)` is the center of the bounding box, `a` is the
+    aspect ratio and `h` is the height.
+    Parameters
+    ----------
+    mean : ndarray
+        Mean vector of the initial state distribution.
+    covariance : ndarray
+        Covariance matrix of the initial state distribution.
+    track_id : int
+        A unique track identifier.
+    n_init : int
+        Number of consecutive detections before the track is confirmed. The
+        track state is set to `Deleted` if a miss occurs within the first
+        `n_init` frames.
+    max_age : int
+        The maximum number of consecutive misses before the track state is
+        set to `Deleted`.
+    feature : Optional[ndarray]
+        Feature vector of the detection this track originates from. If not None,
+        this feature is added to the `features` cache.
+    Attributes
+    ----------
+    mean : ndarray
+        Mean vector of the initial state distribution.
+    covariance : ndarray
+        Covariance matrix of the initial state distribution.
+    track_id : int
+        A unique track identifier.
+    hits : int
+        Total number of measurement updates.
+    age : int
+        Total number of frames since first occurance.
+    time_since_update : int
+        Total number of frames since last measurement update.
+    state : TrackState
+        The current track state.
+    features : List[ndarray]
+        A cache of features. On each measurement update, the associated feature
+        vector is added to this list.
+    """
+
+    def __init__(self, mean, covariance, track_id, n_init, max_age,
+                 feature=None):
         self.mean = mean
         self.covariance = covariance
+        self.track_id = track_id
         self.hits = 1
         self.age = 1
-        self.frames_since_update = 0
+        self.time_since_update = 0
 
-        self.state = TrackState.TENTATIVE
+        self.state = TrackState.Tentative
         self.features = []
-        self.flows = []
-
         if feature is not None:
             self.features.append(feature)
 
-        if flow is not None:
-            self.flows.append(flow)
+        self._n_init = n_init
+        self._max_age = max_age
 
-        self.n_init = n_init
-        self.max_age = max_age
-
-    def predict(self, kf):
-        self.mean, self.covariance = kf.predict(
-            self.mean,
-            self.covariance
-        )
-        self.age += 1
-        self.frames_since_update += 1
-
-    def update(self,
-               kf,
-               detection):
-        self.mean, self.covariance = kf.update(
-            self.mean,
-            self.covariance,
-            detection
-        )
-        self.features.append(detection.feature)
-        self.flows.append(detection.flow)
-
-        self.hits += 1
-        self.frames_since_update = 0
-
-        if (self.state == TrackState.TENTATIVE and
-                self.hits >= self.n_init):
-            self.state = TrackState.CONFIRMED
-            
     def to_tlwh(self):
+        """Get current position in bounding box format `(top left x, top left y,
+        width, height)`.
+        Returns
+        -------
+        ndarray
+            The bounding box.
+        """
         ret = self.mean[:4].copy()
         ret[2] *= ret[3]
-        ret[:2] -= ret[2:] /2
+        ret[:2] -= ret[2:] / 2
         return ret
-    
+
     def to_tlbr(self):
+        """Get current position in bounding box format `(min x, miny, max x,
+        max y)`.
+        Returns
+        -------
+        ndarray
+            The bounding box.
+        """
         ret = self.to_tlwh()
         ret[2:] = ret[:2] + ret[2:]
         return ret
 
-    def mark_missed(self):
-        if self.state == TrackState.TENTATIVE:
-            self.state = TrackState.DELTED
-        elif self.frames_since_update > self.max_age:
-            self.state = TrackState.DELTED
+    def predict(self, kf):
+        """Propagate the state distribution to the current time step using a
+        Kalman filter prediction step.
+        Parameters
+        ----------
+        kf : kalman_filter.KalmanFilter
+            The Kalman filter.
+        """
+        self.mean, self.covariance = kf.predict(self.mean, self.covariance)
+        self.age += 1
+        self.time_since_update += 1
 
-    def is_confirmed(self):
-        return self.state == TrackState.TENTATIVE
+    def update(self, kf, detection):
+        """Perform Kalman filter measurement update step and update the feature
+        cache.
+        Parameters
+        ----------
+        kf : kalman_filter.KalmanFilter
+            The Kalman filter.
+        detection : Detection
+            The associated detection.
+        """
+        self.mean, self.covariance = kf.update(
+            self.mean, self.covariance, detection.to_xyah())
+        self.features.append(detection.feature)
+
+        self.hits += 1
+        self.time_since_update = 0
+        if self.state == TrackState.Tentative and self.hits >= self._n_init:
+            self.state = TrackState.Confirmed
+
+    def mark_missed(self):
+        """Mark this track as missed (no association at the current time step).
+        """
+        if self.state == TrackState.Tentative:
+            self.state = TrackState.Deleted
+        elif self.time_since_update > self._max_age:
+            self.state = TrackState.Deleted
 
     def is_tentative(self):
-        return self.state == TrackState.CONFIRMED
+        """Returns True if this track is tentative (unconfirmed).
+        """
+        return self.state == TrackState.Tentative
+
+    def is_confirmed(self):
+        """Returns True if this track is confirmed."""
+        return self.state == TrackState.Confirmed
 
     def is_deleted(self):
-        return self.state == TrackState.DELTED
-
+        """Returns True if this track is dead and should be deleted."""
+        return self.state == TrackState.Deleted
 
 class Tracker():
     """
@@ -172,7 +231,7 @@ class Tracker():
                  metric,
                  max_iou_distance=0.7,
                  max_age=100,
-                 n_init=1
+                 n_init=3
                  ):
         self.metric = metric
         self.max_iou_distance = max_iou_distance
@@ -272,12 +331,12 @@ class Tracker():
 
         iou_track_candidates = unconfirmed_tracks + [
             k for k in unmatched_tracks_a if
-            self.tracks[k].frames_since_update == 1
+            self.tracks[k].time_since_update == 1
         ]
 
         unmatched_tracks_a = [
             k for k in unmatched_tracks_a if
-            self.tracks[k].frames_since_update != 1
+            self.tracks[k].time_since_update != 1
         ]
 
         matches_b, unmatched_tracks_b, unmatched_detections = \

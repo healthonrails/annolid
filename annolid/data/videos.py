@@ -132,3 +132,49 @@ def extract_frames(video_file='None',
     cap.release()
     cv2.destroyAllWindows
     print(f"Please check the extracted frames in folder: {out_dir}")
+
+
+def track(video_file=None):
+    # avoid users to not install pytorch 
+    # if they only wanted to use it for 
+    # extract frames
+    # maybe there is a better way to do this
+    from annolid.tracker import build_tracker
+    from annolid.detector import build_detector
+    from annolid.utils.draw import draw_boxes
+    if not (os.path.isfile(video_file)):
+        print("Please provide a valid video file")
+
+    detector = build_detector()
+    class_names = detector.class_names
+
+    cap = cv2.VideoCapture(video_file)
+
+    ret, prev_frame = cap.read()
+    deep_sort = build_tracker()
+
+    while ret:
+        ret, frame = cap.read()
+        im = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        bbox_xywh, cls_conf, cls_ids = detector(im)
+        bbox_xywh[:, 3:] *= 1.2
+        mask = cls_ids == 0
+        cls_conf = cls_conf[mask]
+
+        outputs = deep_sort.update(bbox_xywh, cls_conf, im)
+
+        if len(outputs) > 0:
+            bbox_xyxy = outputs[:, :4]
+            identities = outputs[:, -1]
+            frame = draw_boxes(frame, bbox_xyxy, identities)
+
+        cv2.imshow("Frame", frame)
+
+        key = cv2.waitKey(1)
+        if key == 27:
+            break
+
+        prev_frame = frame
+
+    cv2.destroyAllWindows()
+    cap.release()

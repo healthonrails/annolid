@@ -1,6 +1,7 @@
 """
 Reference:
 https://github.com/nwojke/deep_sort/tree/master/deep_sort
+https://github.com/ZQPei/deep_sort_pytorch
 """
 from __future__ import absolute_import
 import numpy as np
@@ -32,7 +33,7 @@ def iou(bbox, candidates):
 
     top_left, bottom_right = bbox[:2], bbox[:2] + bbox[2:]
     candidates_top_left = candidates[:, :2]
-    candidates_bottom_right = candidates[:, 2:] + candidates[:, 2:]
+    candidates_bottom_right = candidates[:, :2] + candidates[:, 2:]
 
     tl = np.c_[np.maximum(top_left[0],
                           candidates_top_left[:, 0]
@@ -49,8 +50,10 @@ def iou(bbox, candidates):
                           )[:, np.newaxis],
                ]
 
-    wh = np.maximum(0., bottom_right - top_left)
+    wh = np.maximum(0., br - tl)
+
     area_intersection = wh.prod(axis=1)
+
     area_bbox = bbox[2:].prod()
     area_candidates = candidates[:, 2:].prod(axis=1)
     return area_intersection / (area_bbox + area_candidates - area_intersection)
@@ -73,12 +76,12 @@ def iou_cost(tracks,
     ))
 
     for row, track_idx in enumerate(track_indices):
-        if tracks[track_idx].frames_since_update > 1:
+        if tracks[track_idx].time_since_update > 1:
             cost_matrix[row, :] = INF_COST
             continue
         bbox = tracks[track_idx].to_tlwh()
         candidates = np.asarray([
-            detections[i].bbox for i in detection_indices])
+            detections[i].tlwh for i in detection_indices])
         cost_matrix[row, :] = 1. - iou(bbox, candidates)
     return cost_matrix
 
@@ -189,7 +192,7 @@ def matching_cascade(distance_metric,
 
         track_indices_l = [
             k for k in track_indices
-            if tracks[k].frames_since_update == 1 + level
+            if tracks[k].time_since_update == 1 + level
         ]
 
         if len(track_indices_l) == 0:
@@ -282,40 +285,37 @@ def non_max_suppression(boxes,
     return pick
 
 
-class Distance():
+def _pair_wise(a, b):
+    a, b = np.asarray(a), np.asarray(b)
+    if len(a) == 0 or len(b) == 0:
+        return np.zeros((len(a), len(b)))
+    a2 = np.square(a).sum(axis=1)
+    b2 = np.square(b).sum(axis=1)
+    r2 = -2 * np.dot(a, b.T) + a2[:, None] + b2[None, :]
+    r2 = np.clip(r2, 0., float(np.inf))
+    return r2
 
-    def __init__(self):
-        pass
+def _cosine(a, b, normalized=False):
+    if not normalized:
+        a = np.asarray(a) / np.linalg.norm(a,
+                                            axis=1,
+                                            keepdims=True)
+        b = np.asarray(b) / np.linalg.norm(b,
+                                            axis=1,
+                                            keepdims=True)
+    return 1. - np.dot(a, b.T)
 
-    def pair_wise(self, x, y):
-        a, b = np.asarray(x), np.asarray(y)
-        if len(a) == 0 or len(b) == 0:
-            return np.zeros((len(a), len(b)))
-        a2 = np.square(a).sum(axis=1)
-        b2 = np.square(b).sum(axis=1)
-        r2 = -2 * np.dot(a, b.T) + a2[:, None] + b2[None, :]
-        r2 = np.clip(r2, 0., float(np.inf))
-        return r2
+def _nn_euclidean(x, y):
+    distances = _pair_wise(x, y)
+    return np.maximum(0.0,
+                        distances.min(axis=0))
 
-    def cosine(self, x, y, normalized=False):
-        if not normalized:
-            a = np.asarray(x)
-            a = np.linalg.norm(a, axis=1, keepdims=True)
-            b = np.asarray(y)
-            b = np.linalg.norm(b, axis=1, keepdims=True)
-        return 1. - np.dot(a, b.T)
-
-    def euclidean(self, x, y):
-        distances = self.pair_wise(x, y)
-        return np.maximum(0.0,
-                          distances.min(axis=0))
-
-    def nn_cosine(self, x, y):
-        """
-        nn: nearest neighbor
-        """
-        distances = self.cosine(x, y)
-        return distances.min(axis=0)
+def _nn_cosine(x, y):
+    """
+    nn: nearest neighbor
+    """
+    distances = _cosine(x, y)
+    return distances.min(axis=0)
 
 
 class NearestNeighborDistanceMetric():
@@ -327,9 +327,9 @@ class NearestNeighborDistanceMetric():
                  ):
 
         if metric == "euclidean":
-            self.metric = Distance().euclidean
+            self.metric = _nn_euclidean
         elif metric == "cosine":
-            self.metric = Distance().nn_cosine
+            self.metric = _nn_cosine
         else:
             raise ValueError(
                 "Invalid metric"

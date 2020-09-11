@@ -1,6 +1,6 @@
 import setuptools
 
-with open("README.md","r") as fh:
+with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
@@ -18,7 +18,8 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    install_requires=['numpy','opencv-python','opencv-contrib-python'],
+    install_requires=['numpy', 'scipy', 'easydict',
+                      'opencv-python', 'opencv-contrib-python'],
     python_requires='>=3.6',
 
 
