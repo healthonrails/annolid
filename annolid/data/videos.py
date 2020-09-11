@@ -135,8 +135,8 @@ def extract_frames(video_file='None',
 
 
 def track(video_file=None):
-    # avoid users to not install pytorch 
-    # if they only wanted to use it for 
+    # avoid installing pytorch
+    # if the use only wanted to use it for
     # extract frames
     # maybe there is a better way to do this
     from annolid.tracker import build_tracker

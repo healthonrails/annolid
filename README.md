@@ -54,3 +54,9 @@ The output directory is provided, the extracted frames will be saved /path/to/de
 ```bash
 python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=20 --to /path/to/dest --algo=uniform
 ```
+
+## How to track multiple objects in the video? 
+Currently, it just works for person class with pretrained YOLOV3 weights
+```bash
+python annolid/main.py -v /path/to/my_video.mp4 --track=True
+```
