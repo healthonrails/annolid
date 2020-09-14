@@ -52,11 +52,12 @@ ffmpeg -i /path/to/my_video.wmv -c:a aac /path/to/my_video.mp4
 If not selected, it will save the extracted frames to a folder named with the video name without extension. For example, if the input video path is /path/to/my_video.mp4, the extracted frames will be saved in the folder /path/to/my_video. 
 The output directory is provided, the extracted frames will be saved /path/to/dest/my_video. 
 ```bash
-python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=20 --to /path/to/dest --algo=uniform
+cd annolid
+python main.py -v /path/to/my_video.mp4 --extract_frames=20 --to /path/to/dest --algo=uniform
 ```
 
 ## How to track multiple objects in the video? 
-Currently, it just works for person class with pretrained YOLOV3 weights
+Currently, it just works for person class with pretrained YOLOV3 weights.
 ```bash
 python annolid/main.py -v /path/to/my_video.mp4 --track=True
 ```

@@ -3,10 +3,8 @@ import torch
 from annolid.utils.config import get_config
 __all__ = ['build_detector']
 
-
-def build_detector(cfg_file="./configs/yolov3.yaml",
-                   use_cuda=None
-                   ):
+def build_detector(cfg_file="./configs/yolov3_tiny.yaml",
+                   use_cuda=None):
     if use_cuda is None:
         use_cuda = torch.cuda.is_available()
     cfg = get_config(cfg_file)
