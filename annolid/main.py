@@ -19,8 +19,13 @@ def parse_args():
                              help='destination directory for saving \
                                   extracted frames '
                              )
-    arg_builder.add_argument('--track', type=bool, default=False,
-                             help="Track objects in the video"
+    arg_builder.add_argument('--track', type=str, default=None,
+                             help="Track objects in the video \
+                                 with detector YOLOV5|YOLOV3"
+                             )
+    arg_builder.add_argument('--weights', type=str, default=None,
+                             help="path to the trained  weights  \
+                                 e.g. ./detector/yolov5/weights/latest.pt"
                              )
     arg_builder.add_argument('--show_flow', type=bool, default=False,
                              help="Display optical flow while extracting"
@@ -64,9 +69,12 @@ def main():
         ir.run(args['video'],
                args['min_area'],
                args['max_area'])
-    
-    if args['track']:
-        track(args["video"])
+
+    if args['track'] is not None:
+        track(args["video"],
+             args['track'],
+             args['weights']
+             )
 
 
 if __name__ == "__main__":
