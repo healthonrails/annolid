@@ -62,7 +62,16 @@ Currently, it just works for person class with pretrained YOLOV3 or YOLOV5 weigh
 python annolid/main.py -v /path/to/my_video.mp4 --track=YOLOV5
 ```
 
-## How to convert coco annonation formation to YOLOV5 format? 
+## How to convert coco annonation format to YOLOV5 format? 
+The dataset is structured as follows. 
+my_yolo_dataset
+├── images
+│   ├── train
+│   └── val
+└── labels
+    ├── train
+    └── val
+data.yaml
 ```
 python main.py --coco2yolo=/path/to/my_coco_dataset/annotations.json --to my_yolo_dataset --dataset_type=val
 ```

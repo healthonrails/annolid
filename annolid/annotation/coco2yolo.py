@@ -62,7 +62,7 @@ def create_dataset(json_file='annotation.json',
         if not c['id'] == 0:
             categories.append(c['name'])
 
-    data_yaml = Path(f"{results_dir}/data.ymal")
+    data_yaml = Path(f"{results_dir}/data.yaml")
     names = list(set(categories))
     # dataset folder is in same dir as the yolov5 folder
     with open(data_yaml, 'w') as dy:
