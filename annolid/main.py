@@ -1,5 +1,6 @@
 import argparse
 from segmentation.threshold import InRange
+from annotation import coco2yolo
 from data.videos import extract_frames, track
 
 
@@ -8,6 +9,7 @@ def parse_args():
         description="Multiple Animal Tracking"
     )
     arg_builder.add_argument("-v", "--video", type=str,
+                             default=None,
                              help="path to a input video file"
                              )
     arg_builder.add_argument('--extract_frames', type=int, default=0,
@@ -49,6 +51,14 @@ def parse_args():
                                  default is 50 pixels"
                              )
 
+    arg_builder.add_argument('--coco2yolo', type=str, default=None,
+                             help="coco annotation file path e.g. ./annotaitons.json"
+                             )
+
+    arg_builder.add_argument('--dataset_type', type=str, default='train',
+                             help="create a train or val dataset"
+                             )
+
     args = vars(arg_builder.parse_args())
     return args
 
@@ -72,9 +82,16 @@ def main():
 
     if args['track'] is not None:
         track(args["video"],
-             args['track'],
-             args['weights']
-             )
+              args['track'],
+              args['weights']
+              )
+    if args["coco2yolo"] is not None:
+        names = coco2yolo.create_dataset(args['coco2yolo'],
+                                         results_dir=args['to'],
+                                         dataset_type=args['dataset_type']
+                                         )
+        print(names)
+        print("Done.")
 
 
 if __name__ == "__main__":

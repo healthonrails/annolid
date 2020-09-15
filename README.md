@@ -57,7 +57,12 @@ python main.py -v /path/to/my_video.mp4 --extract_frames=20 --to /path/to/dest -
 ```
 
 ## How to track multiple objects in the video? 
-Currently, it just works for person class with pretrained YOLOV3 weights.
+Currently, it just works for person class with pretrained YOLOV3 or YOLOV5 weights.
 ```bash
-python annolid/main.py -v /path/to/my_video.mp4 --track=True
+python annolid/main.py -v /path/to/my_video.mp4 --track=YOLOV5
+```
+
+## How to convert coco annonation formation to YOLOV5 format? 
+```
+python main.py --coco2yolo=/path/to/my_coco_dataset/annotations.json --to my_yolo_dataset --dataset_type=val
 ```
