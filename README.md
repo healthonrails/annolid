@@ -77,3 +77,23 @@ data.yaml
 ```
 python main.py --coco2yolo=/path/to/my_coco_dataset/annotations.json --to my_yolo_dataset --dataset_type=val
 ```
+## How to train a custom YOLOV5 model? 
+```bash
+cd annolid/detector
+git https://github.com/healthonrails/yolov5.git
+cp -r my_yolo_dataset annolid/detector
+cd yolov5
+python train.py --img 640 --batch=8 --epochs 30 --data ../my_dataset_yolo/data.yaml --cfg ./models/yolov5x.yaml --weights yolov5x.pt --name yolov5x_my_model --cache
+```
+
+## How to track objects in a video with the trained model? 
+
+```bash
+cd annold
+python main.py -v /path/to/my_video.mp4 --track=YOLOV5 --weights=detector/yolov5/runs/exp5_yolov5x_my_model/weights/best.pt
+```
+
+
+
+
+
