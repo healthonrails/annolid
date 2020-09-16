@@ -80,9 +80,11 @@ python main.py --coco2yolo=/path/to/my_coco_dataset/annotations.json --to my_yol
 ## How to train a custom YOLOV5 model? 
 ```bash
 cd annolid/detector
-git https://github.com/healthonrails/yolov5.git
+git clone https://github.com/healthonrails/yolov5.git
 cp -r my_yolo_dataset annolid/detector
 cd yolov5
+# change nc (number of classes) in the models/yolo5x.ym, default is 80
+
 python train.py --img 640 --batch=8 --epochs 30 --data ../my_dataset_yolo/data.yaml --cfg ./models/yolov5x.yaml --weights yolov5x.pt --name yolov5x_my_model --cache
 ```
 
