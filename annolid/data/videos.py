@@ -6,6 +6,8 @@ import argparse
 import numpy as np
 from collections import deque
 
+sys.path.append("detector/yolov5/")
+
 def extract_frames(video_file='None',
                    num_frames=100,
                    out_dir=None,
@@ -139,15 +141,16 @@ def track(video_file=None,
          name="YOLOV5",
          weights=None
          ):
-    # avoid installing pytorch
-    # if the user only wants to use it for
-    # extract frames
-    # maybe there is a better way to do this
+    points = [deque(maxlen=30) for _ in range(1000)]
+   
     if name=="YOLOV5":
+         # avoid installing pytorch
+        # if the user only wants to use it for
+        # extract frames
+        # maybe there is a better way to do this
         import torch
         from annolid.detector.yolov5.detect import detect
         from annolid.utils.config import get_config
-        sys.path.append("detector/yolov5/")
         cfg = get_config("./configs/yolov5s.yaml")
         from annolid.detector.yolov5.utils.general import strip_optimizer
     
@@ -170,7 +173,6 @@ def track(video_file=None,
         from annolid.utils.draw import draw_boxes
         if not (os.path.isfile(video_file)):
             print("Please provide a valid video file")
-        points = [deque(maxlen=30) for _ in range(1000)]
         detector = build_detector()
         class_names = detector.class_names
 
