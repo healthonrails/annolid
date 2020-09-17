@@ -4,7 +4,7 @@ import heapq
 import cv2
 import argparse
 import numpy as np
-sys.path.append("detector/yolov5/")
+from collections import deque
 
 def extract_frames(video_file='None',
                    num_frames=100,
@@ -147,6 +147,7 @@ def track(video_file=None,
         import torch
         from annolid.detector.yolov5.detect import detect
         from annolid.utils.config import get_config
+        sys.path.append("detector/yolov5/")
         cfg = get_config("./configs/yolov5s.yaml")
         from annolid.detector.yolov5.utils.general import strip_optimizer
     
@@ -169,6 +170,7 @@ def track(video_file=None,
         from annolid.utils.draw import draw_boxes
         if not (os.path.isfile(video_file)):
             print("Please provide a valid video file")
+        points = [deque(maxlen=30) for _ in range(1000)]
         detector = build_detector()
         class_names = detector.class_names
 
@@ -193,7 +195,12 @@ def track(video_file=None,
             if len(outputs) > 0:
                 bbox_xyxy = outputs[:, :4]
                 identities = outputs[:, -1]
-                frame = draw_boxes(frame, bbox_xyxy, identities)
+                frame = draw_boxes(frame, 
+                bbox_xyxy, 
+                identities,
+                draw_track=True,
+                points=points
+                )
 
             cv2.imshow("Frame", frame)
 
