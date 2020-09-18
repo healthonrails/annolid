@@ -7,7 +7,7 @@ An annotation and instance segmentation based multiple animal tracking and behav
 
 * Clone the code repo and change into the directory
 ```bash
-git clone https://github.com/healthonrails/annolid.git
+git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid 
 
 # install the package
