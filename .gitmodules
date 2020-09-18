@@ -1,0 +1,3 @@
+[submodule "annolid/yolov5"]
+	path = annolid/yolov5
+	url = https://github.com/healthonrails/yolov5.git

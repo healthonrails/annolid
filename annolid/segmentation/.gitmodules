@@ -1,0 +1,3 @@
+[submodule "yolact"]
+	path = yolact
+	url = https://github.com/healthonrails/yolact.git
