@@ -1,3 +1,17 @@
-[submodule "annolid/yolov5"]
-	path = annolid/yolov5
+[submodule "annolid/detector/yolov5"]
+	path = annolid/detector/yolov5
 	url = https://github.com/healthonrails/yolov5.git
+
+[submodule "annolid/segmentation/yolact"]
+	path = annolid/segmentation/yolact
+	url = https://github.com/healthonrails/yolact.git
+
+
+[submodule "annolid/segmentation/yolact"]
+	path = annolid/segmentation/yolact
+	url = https://github.com/healthonrails/yolact.git
+
+[submodule "annolid/segmentation/SCOPS"]
+	path = annolid/segmentation/SCOPS
+	url = https://github.com/healthonrails/SCOPS.git
+
