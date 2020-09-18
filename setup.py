@@ -19,7 +19,10 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     install_requires=['numpy', 'scipy', 'easydict',
-                      'opencv-python', 'opencv-contrib-python'],
+                      'opencv-python', 
+                      'opencv-contrib-python',
+                      'PyYAML'
+                      ],
     python_requires='>=3.6',
 
 
