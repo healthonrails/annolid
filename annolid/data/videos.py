@@ -4,15 +4,18 @@ import heapq
 import cv2
 import argparse
 import numpy as np
+import random
 from collections import deque
 
 sys.path.append("detector/yolov5/")
+
 
 def extract_frames(video_file='None',
                    num_frames=100,
                    out_dir=None,
                    show_flow=False,
-                   algo='flow'
+                   algo='flow',
+                   keep_first_frame=False
                    ):
     """
     Extract frames from the given video file. 
@@ -43,9 +46,10 @@ def extract_frames(video_file='None',
     height = cap.get(4)
     ret, old_frame = cap.read()
 
-    # save the first frame
-    out_frame_file = f"{out_dir}{os.sep}{current_frame_number:08}.jpg"
-    cv2.imwrite(out_frame_file, old_frame)
+    if keep_first_frame:
+        # save the first frame
+        out_frame_file = f"{out_dir}{os.sep}{current_frame_number:08}.jpg"
+        cv2.imwrite(out_frame_file, old_frame)
 
     if num_frames < -1 or num_frames > n_frames:
         print(f'The video has {n_frames} number frames in total.')
@@ -55,16 +59,17 @@ def extract_frames(video_file='None',
         print(f'Please check your first frame here {out_dir}')
         return
     elif num_frames > 2:
-        # always save the first frame and the last frame
+        # if save the first frame and the last frame
         # so to make the number of extract frames
         # as the user provided exactly
-        if num_frames % 2 == 0 or n_frames % 2 == 0:
-            num_frames -= 2
-        else:
+        if keep_first_frame:
             num_frames -= 1
 
     hsv = np.zeros_like(old_frame)
     hsv[..., 1] = 255
+
+    # keeped frame index
+    ki = 0
 
     while ret:
 
@@ -80,11 +85,17 @@ def extract_frames(video_file='None',
             continue
         if algo == 'uniform':
             if ret:
-                if (frame_number % (n_frames // num_frames) == 0 or
-                        frame_number == n_frames - 1):
-                    out_frame_file = f"{out_dir}{os.sep}{frame_number:08}.jpg"
-                    cv2.imwrite(out_frame_file, frame)
-                    print(f'Saved the frame {frame_number}.')
+                if len(keeped_frames) < num_frames:
+                    keeped_frames.append((ki,
+                                          frame_number,
+                                          frame))
+                else:
+                    j = random.randrange(ki + 1)
+                    if j < num_frames:
+                        keeped_frames[j] = ((j,
+                                             frame_number,
+                                             frame))
+                ki += 1
             continue
         if algo == 'flow' and num_frames != -1:
             mask = subtractor.apply(frame)
@@ -111,7 +122,7 @@ def extract_frames(video_file='None',
                 print(
                     f"precessing frame {frame_number}, the difference between previous frame is {q_score}.")
 
-                if len(keeped_frames) <= num_frames:
+                if len(keeped_frames) < num_frames:
                     heapq.heappush(
                         keeped_frames, ((q_score, frame_number, frame)))
                 else:
@@ -130,20 +141,21 @@ def extract_frames(video_file='None',
             break
 
     for kf in keeped_frames:
-        s, f, p = heapq.heappop(keeped_frames)
+        s, f, p = kf
         cv2.imwrite(f"{out_dir}{os.sep}{f:08}_{s}.jpg", p)
+
     cap.release()
-    cv2.destroyAllWindows
+    cv2.destroyAllWindows()
     print(f"Please check the extracted frames in folder: {out_dir}")
 
 
 def track(video_file=None,
-         name="YOLOV5",
-         weights=None
-         ):
+          name="YOLOV5",
+          weights=None
+          ):
     points = [deque(maxlen=30) for _ in range(1000)]
-   
-    if name=="YOLOV5":
+
+    if name == "YOLOV5":
          # avoid installing pytorch
         # if the user only wants to use it for
         # extract frames
@@ -153,7 +165,7 @@ def track(video_file=None,
         from annolid.utils.config import get_config
         cfg = get_config("./configs/yolov5s.yaml")
         from annolid.detector.yolov5.utils.general import strip_optimizer
-    
+
         opt = cfg
         if weights is not None:
             opt.weights = weights
@@ -162,10 +174,10 @@ def track(video_file=None,
         with torch.no_grad():
             if opt.update:  # update all models (to fix SourceChangeWarning)
                 for opt.weights in ['yolov5s.pt', 'yolov5m.pt', 'yolov5l.pt', 'yolov5x.pt']:
-                    detect(opt,points=points)
+                    detect(opt, points=points)
                     strip_optimizer(opt.weights)
             else:
-                detect(opt,points=points)
+                detect(opt, points=points)
                 strip_optimizer(opt.weights)
     else:
         from annolid.tracker import build_tracker
@@ -197,12 +209,12 @@ def track(video_file=None,
             if len(outputs) > 0:
                 bbox_xyxy = outputs[:, :4]
                 identities = outputs[:, -1]
-                frame = draw_boxes(frame, 
-                bbox_xyxy, 
-                identities,
-                draw_track=True,
-                points=points
-                )
+                frame = draw_boxes(frame,
+                                   bbox_xyxy,
+                                   identities,
+                                   draw_track=True,
+                                   points=points
+                                   )
 
             cv2.imshow("Frame", frame)
 
