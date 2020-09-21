@@ -34,7 +34,7 @@ def parse_args():
                              )
     arg_builder.add_argument('--algo', type=str, default='flow',
                              help="Select 100 frame uniformly or by flow \
-                                 options:flow|uniform"
+                                 options:flow|random"
                              )
     arg_builder.add_argument('--segmentation', type=str, default=None,
                              help="Segmentation based on support methods \

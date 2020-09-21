@@ -23,7 +23,8 @@ def xywh2cxcywh(box, img_size):
 
 def create_dataset(json_file='annotation.json',
                    results_dir='yolov5_dataset',
-                   dataset_type='train'
+                   dataset_type='train',
+                   class_id=None
                    ):
     categories = []
     images_path = Path(f"{results_dir}/images/{dataset_type}")
@@ -54,8 +55,12 @@ def create_dataset(json_file='annotation.json',
             for ann in data['annotations']:
                 if ann["image_id"] == img_id:
                     box = xywh2cxcywh(ann["bbox"], (img_width, img_height))
-                    atf.write("%s %s %s %s %s\n" % (ann["category_id"], box[0],
-                                                    box[1], box[2], box[3]))
+                    if class_id is not None:
+                        atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"], box[0],
+                                                        box[1], box[2], box[3]))
+                    else:
+                        atf.write("%s %s %s %s %s\n" % (ann["category_id"], box[0],
+                                                        box[1], box[2], box[3]))
 
     for c in data["categories"]:
         # exclude backgroud with id 0
