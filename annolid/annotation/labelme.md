@@ -92,7 +92,7 @@ where input_dir might be *my_video* and output_dir might be *my_video_coco*.
 
 NOTE:  If you encounter problems running `labelme2coco.py` on Windows or installing its dependencies, see Appendix 1 below for a solution.  
 
-:warning: **Labelme's labelme2coco.py script fails silently if the --labels file does not exist** as discussed in the [issue #4].(https://github.com/healthonrails/annolid/issues/4)
+:warning: **Labelme's labelme2coco.py script fails silently if the --labels file does not exist** as discussed in the [issue #4](https://github.com/healthonrails/annolid/issues/4).
 
 ## Appendices
 

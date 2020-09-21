@@ -30,9 +30,9 @@ python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=100 --show_flow
 ```bash
 python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=-1
 ```
-## Select frames uniformally 
+## Select frames randomly by reservoir sampling
 ```bash
-python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo=uniform
+python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo=random
 ```
 
 ## Threshold based object segmenation
