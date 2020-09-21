@@ -6,8 +6,10 @@ There are many free and open source image and video annotation tools that can be
 The overall workflow is to first take a video file and extract a number of frames from it as JPEG files, using [Annolid's extraction tool](https://github.com/healthonrails/annolid) or another tool or service.  Once you have a directory (folder) full of JPEGs, follow the instructions on this page to (1) label each frame using Labelme, producing a .json metadata file for each frame, and (2) convert a set of these labels into COCO format for use in training the Annolid network.  
 
 ## Installation
+The first option is from the pre-build binaries [release section](https://github.com/wkentaro/labelme/releases).
 
-Navigate to your projects directory, or wherever you intend to install labelme.
+Or if you want to develop and modify the source code, please
+navigate to your projects directory, or wherever you intend to install labelme.
 
 ```bash
 git clone https://github.com/wkentaro/labelme.git
@@ -86,12 +88,11 @@ After labeling is complete, this tool will take all of the JPEG frames, .json me
 cd labelme
 python examples/instance_segmentation/labelme2coco.py --labels labels.txt input_dir output_dir
 ```
-
 where input_dir might be *my_video* and output_dir might be *my_video_coco*.  
 
 NOTE:  If you encounter problems running `labelme2coco.py` on Windows or installing its dependencies, see Appendix 1 below for a solution.  
 
-
+:warning: **Labelme's labelme2coco.py script fails silently if the --labels file does not exist** as discussed in the [issue #4].(https://github.com/healthonrails/annolid/issues/4)
 
 ## Appendices
 
