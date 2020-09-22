@@ -95,7 +95,8 @@ python main.py -v /path/to/my_video.mp4 --track=YOLOV5 --weights=detector/yolov5
 ```
 
 ## How to convert labelme labeled dataset to COCO format? 
-
+:warning: You might need to reinstall annolid because it requires `labelme`
+and `pycocotools` now.
 ```bash
 cd annold
 python main.py --labelme2coco=/path/to/my_labeled_images --to /path/to/my_dataset_coco --labels=/path/to/my_labels.txt --vis=True

@@ -1,6 +1,6 @@
 import argparse
 from segmentation.threshold import InRange
-from annotation import coco2yolo, labelme2coco
+from annotation import coco2yolo
 from data.videos import extract_frames, track
 
 
@@ -104,6 +104,7 @@ def main():
         print("Done.")
 
     if args['labelme2coco'] is not None:
+        from annotation import labelme2coco
         labelme2coco.convert(
             args['labelme2coco'],
             output_annotated_dir=args['to'],
