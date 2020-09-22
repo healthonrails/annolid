@@ -27,6 +27,7 @@ def convert(input_annotated_dir,
             output_annotated_dir,
             labels_file='labels.txt',
             vis=False,
+            save_mask=True,
             ):
 
     assert os.path.isfile(
@@ -41,6 +42,12 @@ def convert(input_annotated_dir,
         vis_dir = osp.join(output_annotated_dir, "Visualization")
         if not osp.exists(vis_dir):
             os.makedirs(vis_dir)
+
+    if save_mask and vis:
+        mask_dir = osp.join(output_annotated_dir, "Masks")
+        if not osp.exists(mask_dir):
+            os.makedirs(mask_dir)
+
     print("Creating dataset:", output_annotated_dir)
 
     now = datetime.datetime.now()
@@ -109,6 +116,12 @@ def convert(input_annotated_dir,
 
         # for area
         masks = {}
+
+        if save_mask and vis:
+            lbl, _ = labelme.utils.shapes_to_label(
+                img.shape, label_file.shapes, class_name_to_id)
+            out_mask_file = osp.join(mask_dir, base + '_mask.png')
+            labelme.utils.lblsave(out_mask_file, lbl)
         # for segmentation
         segmentations = collections.defaultdict(list)
         for shape in label_file.shapes:

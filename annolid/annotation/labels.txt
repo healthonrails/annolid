@@ -16,3 +16,5 @@ base_of_tail
 grooming
 rearing
 object_investigation
+object
+centroid

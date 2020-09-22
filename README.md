@@ -106,11 +106,14 @@ The dataset is structured as follows.
 my_coco_dataset
 ├── JPEGImages
 └── Visualization
+└── Masks
 └── annotations.json
 ```
 
 ![Visualization](docs/imgs/00002895_7.jpg)
 
+An example mask file
 
+![Masks](docs/imgs/00002895_7_mask.png)
 
 
