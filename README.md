@@ -84,7 +84,7 @@ cp -r my_yolo_dataset annolid/detector
 cd yolov5
 # change nc (number of classes) in the models/yolo5x.yaml, default is 80
 
-python train.py --img 640 --batch=8 --epochs 30 --data ../my_dataset_yolo/data.yaml --cfg ./models/yolov5x.yaml --weights yolov5x.pt --name yolov5x_my_model --cache
+python train.py --img 640 --batch 8 --epochs 30 --data ../my_dataset_yolo/data.yaml --cfg ./models/yolov5x.yaml --weights yolov5x.pt --name yolov5x_my_model --cache
 ```
 
 ## How to track objects in a video with the trained model? 
@@ -94,6 +94,22 @@ cd annold
 python main.py -v /path/to/my_video.mp4 --track=YOLOV5 --weights=detector/yolov5/runs/exp5_yolov5x_my_model/weights/best.pt
 ```
 
+## How to convert labelme labeled dataset to COCO format? 
+
+```bash
+cd annold
+python main.py --labelme2coco=/path/to/my_labeled_images --to /path/to/my_dataset_coco --labels=/path/to/my_labels.txt --vis=True
+```
+If vis is true, it will create an additional visualization folder. 
+The dataset is structured as follows. 
+```
+my_coco_dataset
+├── JPEGImages
+└── Visualization
+└── annotations.json
+```
+
+![Visualization](docs/imgs/00002895_7.jpg)
 
 
 

@@ -21,7 +21,9 @@ setuptools.setup(
     install_requires=['numpy', 'scipy', 'easydict',
                       'opencv-python', 
                       'opencv-contrib-python',
-                      'PyYAML'
+                      'PyYAML',
+                      'labelme',
+                      'pycocotools',
                       ],
     python_requires='>=3.6',
 

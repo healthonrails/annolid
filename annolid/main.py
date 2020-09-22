@@ -1,6 +1,6 @@
 import argparse
 from segmentation.threshold import InRange
-from annotation import coco2yolo
+from annotation import coco2yolo, labelme2coco
 from data.videos import extract_frames, track
 
 
@@ -59,6 +59,16 @@ def parse_args():
                              help="create a train or val dataset"
                              )
 
+    arg_builder.add_argument('--labelme2coco', type=str, default=None,
+                             help="input dir for labelme annotation e.g. ./extract_frames"
+                             )
+    arg_builder.add_argument('--labels', type=str, default='labels.txt',
+                             help="text file with all the class names "
+                             )
+    arg_builder.add_argument('--vis', type=bool, default=False,
+                             help="Visualize the labeled images"
+                             )
+
     args = vars(arg_builder.parse_args())
     return args
 
@@ -92,6 +102,14 @@ def main():
                                          )
         print(names)
         print("Done.")
+
+    if args['labelme2coco'] is not None:
+        labelme2coco.convert(
+            args['labelme2coco'],
+            output_annotated_dir=args['to'],
+            labels_file=args['labels'],
+            vis=args['vis']
+        )
 
 
 if __name__ == "__main__":
