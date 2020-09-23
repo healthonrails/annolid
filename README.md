@@ -117,4 +117,16 @@ An example mask file
 
 ![Masks](docs/imgs/00002895_7_mask.png)
 
-
+## How to train a YOLACT model with a custom dataset? 
+Please create a dataset yaml file by using the 
+annolid/segementation/yolact/configs/mouse_a4_dataset.yaml as 
+an example. 
+```
+cd annolild/segmentation/yolact
+python train.py --config=configs/my_custom_dataset.yaml  --batch_size=8
+```
+## How to evaluate a video based on a trained model?
+```
+cd annolid/segmentation/yolact
+python eval.py --trained_model=weights/yolact_plus_resnet50_xxx_xxx_xxx_interrupt.pth --score_threshold=0.2 --top_k=4 --video_multiframe=1 --video=my_video.avi --mot --config=configs/my_custom_dataset.yaml
+```
