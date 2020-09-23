@@ -128,5 +128,7 @@ python train.py --config=configs/my_custom_dataset.yaml  --batch_size=8
 ## How to evaluate a video based on a trained model?
 ```
 cd annolid/segmentation/yolact
-python eval.py --trained_model=weights/yolact_plus_resnet50_xxx_xxx_xxx_interrupt.pth --score_threshold=0.2 --top_k=4 --video_multiframe=1 --video=my_video.avi --mot --config=configs/my_custom_dataset.yaml
+python eval.py --trained_model=weights/yolact_plus_resnet50_xxx_xxx_xxx_interrupt.pth --score_threshold=0.2 --top_k=4 --video_multiframe=1 --video=my_video.avi:my_result_video.mp4 --mot --config=configs/my_custom_dataset.yaml
 ```
+Note: the output tracking CSV file and video will be saved to 
+the folder annolid/segmentation/results. 
