@@ -13,7 +13,7 @@ import sys
 import uuid
 import imgviz
 import numpy as np
-
+from pathlib import Path
 import labelme
 
 try:
@@ -27,7 +27,7 @@ def convert(input_annotated_dir,
             output_annotated_dir,
             labels_file='labels.txt',
             vis=False,
-            save_mask=True,
+            save_mask=True
             ):
 
     assert os.path.isfile(
@@ -199,3 +199,32 @@ def convert(input_annotated_dir,
 
     with open(out_ann_file, "w") as f:
         json.dump(data, f)
+
+    # create a data.yaml config file
+    categories = []
+    for c in data["categories"]:
+        # exclude backgroud with id 0
+        if not c['id'] == -1:
+            categories.append(c['name'])
+
+    data_yaml = Path(f"{output_annotated_dir}/data.yaml")
+    names = list(set(categories))
+    input_annotated_dir_name = os.path.basename(input_annotated_dir)
+    output_annotated_dir_name = os.path.basename(output_annotated_dir)
+    # dataset folder is in same dir as the yolov5 folder
+    with open(data_yaml, 'w') as dy:
+        dy.write(f"DATASET:\n")
+        dy.write(f"    name: '{input_annotated_dir_name}'\n")
+        dy.write(
+            f"    train_info: '../{output_annotated_dir_name}/train/annotations.json'\n")
+        dy.write(f"    train_images: '../{output_annotated_dir_name}/train'\n")
+        dy.write(
+            f"    valid_info: '../{output_annotated_dir_name}/valid/annotations.json'\n")
+        dy.write(f"    valid_images: '../{output_annotated_dir_name}/valid'\n")
+        dy.write(f"    class_names: {names}\n")
+
+        dy.write(f"YOLACT:\n")
+        dy.write(f"    name: '{input_annotated_dir_name}'\n")
+        dy.write(f"    dataset: 'dataset_{input_annotated_dir_name}_coco'\n")
+        dy.write(f"    max_size: 512\n")
+    print('Done.')

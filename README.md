@@ -109,6 +109,7 @@ my_coco_dataset
 └── Visualization
 └── Masks
 └── annotations.json
+└── data.yaml
 ```
 
 ![Visualization](docs/imgs/00002895_7.jpg)
