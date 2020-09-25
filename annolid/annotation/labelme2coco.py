@@ -204,11 +204,11 @@ def convert(input_annotated_dir,
     categories = []
     for c in data["categories"]:
         # exclude backgroud with id 0
-        if not c['id'] == -1:
+        if not c['id'] == 0:
             categories.append(c['name'])
 
     data_yaml = Path(f"{output_annotated_dir}/data.yaml")
-    names = list(set(categories))
+    names = list(categories)
     input_annotated_dir_name = os.path.basename(input_annotated_dir)
     output_annotated_dir_name = os.path.basename(output_annotated_dir)
     # dataset folder is in same dir as the yolov5 folder
