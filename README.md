@@ -133,3 +133,9 @@ python eval.py --trained_model=weights/yolact_plus_resnet50_xxx_xxx_xxx_interrup
 ```
 Note: the output tracking CSV file and video will be saved to 
 the folder annolid/segmentation/results. 
+
+## Convert the tracking results csv file to Glitter2 csv format
+The result csv file named as tracking_results_nix.csv in the folder as provided in --to option. 
+```
+python annolid/main.py -v /path/to/my_video.mkv --tracks2glitter /path/to/tracking_results.csv --to /path/to/results_dir/
+```

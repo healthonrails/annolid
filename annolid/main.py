@@ -1,7 +1,9 @@
+import os
 import argparse
 from segmentation.threshold import InRange
 from annotation import coco2yolo
 from data.videos import extract_frames, track
+from postprocessing.glitter import tracks2nix
 
 
 def parse_args():
@@ -68,6 +70,9 @@ def parse_args():
     arg_builder.add_argument('--vis', type=bool, default=False,
                              help="Visualize the labeled images"
                              )
+    arg_builder.add_argument('--tracks2glitter', type=str, default=None,
+                             help="tracking results csv file."
+                             )
 
     args = vars(arg_builder.parse_args())
     return args
@@ -111,6 +116,22 @@ def main():
             labels_file=args['labels'],
             vis=args['vis']
         )
+
+    if args['tracks2glitter'] is not None:
+        assert(os.path.isfile(
+            args['tracks2glitter'])), \
+            "Please provide the correct tracking results csv file"
+
+        if args['to'] is not None:
+            dest_file = os.path.join(args['to'],
+                                     os.path.basename(args['tracks2glitter']).replace('.csv', '_nix.csv'))
+        else:
+            dest_file = args['tracks2glitter'].replace('.csv', '_nix.csv')
+
+        tracks2nix(args['video'],
+                   args['tracks2glitter'],
+                   dest_file
+                   )
 
 
 if __name__ == "__main__":
