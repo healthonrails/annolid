@@ -90,6 +90,10 @@ def convert(input_annotated_dir,
     out_ann_file = osp.join(output_annotated_dir,
                             "annotations.json")
     label_files = glob.glob(osp.join(input_annotated_dir, "*.json"))
+
+    _angles = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165,
+               180, 195, 210, 225, 240, 255, 270, 285, 300, 315, 330, 345, 360]
+
     for image_id, filename in enumerate(label_files):
         print("Generating dataset from:", filename)
 
@@ -128,7 +132,17 @@ def convert(input_annotated_dir,
             points = shape["points"]
             label = shape["label"]
             group_id = shape.get("group_id")
+
             shape_type = shape.get("shape_type", "polygon")
+
+            if shape_type == 'point':
+                cx, cy = points[0]
+                radius = 10.0 + np.random.choice(np.arange(0, 1, 0.1))
+                xs = cx + (radius * np.cos(_angles))
+                ys = cy + (radius * np.sin(_angles))
+                points = [list(p) for p in zip(xs, ys)]
+                shape_type = "polygon"
+
             mask = labelme.utils.shape_to_mask(
                 img.shape[:2], points, shape_type
             )
@@ -216,11 +230,13 @@ def convert(input_annotated_dir,
         dy.write(f"DATASET:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")
         dy.write(
-            f"    train_info: '../{output_annotated_dir_name}/train/annotations.json'\n")
-        dy.write(f"    train_images: '../{output_annotated_dir_name}/train'\n")
+            f"    train_info: '../../datasets/{output_annotated_dir_name}/train/annotations.json'\n")
         dy.write(
-            f"    valid_info: '../{output_annotated_dir_name}/valid/annotations.json'\n")
-        dy.write(f"    valid_images: '../{output_annotated_dir_name}/valid'\n")
+            f"    train_images: '../../datasets/{output_annotated_dir_name}/train'\n")
+        dy.write(
+            f"    valid_info: '../../datasets/{output_annotated_dir_name}/valid/annotations.json'\n")
+        dy.write(
+            f"    valid_images: '../../datasets/{output_annotated_dir_name}/valid'\n")
         dy.write(f"    class_names: {names}\n")
 
         dy.write(f"YOLACT:\n")
