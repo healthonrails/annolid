@@ -3,6 +3,8 @@ An annotation and instance segmentation based multiple animal tracking and behav
 
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
 
+![Mouse behavior analysis with instance segmentation based deep learning networks](http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8 "Mouse behavior analysis with instance segmentation based deep learning networks")
+
 ## Installation
 
 * Clone the code repo and change into the directory
