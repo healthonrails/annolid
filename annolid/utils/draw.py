@@ -33,9 +33,14 @@ def draw_boxes(img,
         y2 += offset[1]
 
         # box text and bar
-        id = int(identities[i]) if identities is not None else 0
-        color = compute_color_for_labels(id)
-        label = '{}{:d}'.format("", id)
+        try:
+            id = int(identities[i]) if identities is not None else 0
+            color = compute_color_for_labels(id)
+            label = '{}{:d}'.format("", id)
+        except:
+            color = compute_color_for_labels(hash(identities[i]) % 100)
+            label = f'{identities[i]}'
+
         t_size = cv2.getTextSize(label,
                                  cv2.FONT_HERSHEY_PLAIN,
                                  2, 2)[0]
