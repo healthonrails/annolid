@@ -1,5 +1,10 @@
 import cv2
 import pandas as pd
+import math
+from annolid.utils import draw
+from collections import deque
+
+points = [deque(maxlen=30) for _ in range(1000)]
 
 
 def tracks2nix(vidoe_file=None,
@@ -38,8 +43,9 @@ def tracks2nix(vidoe_file=None,
         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     ]
 
-    for isn in df['instance_name'].unique():
-        if 'object' in isn.lower():
+    for isn in df['instance_name'].dropna().unique():
+
+        if isn != 'nan' and 'object' in isn:
             zone_dict[f"zone:{isn}:property"] = [
                 'type',
                 'center',
@@ -54,6 +60,10 @@ def tracks2nix(vidoe_file=None,
 
     timestamps = {}
 
+    num_grooming = 0
+    num_rearing = 0
+    num_object_investigation = 0
+
     while ret:
         ret, frame = cap.read()
 
@@ -66,6 +76,7 @@ def tracks2nix(vidoe_file=None,
         timestamps.setdefault(frame_timestamp, {})
         timestamps[frame_timestamp].setdefault('event:Grooming', 0)
         timestamps[frame_timestamp].setdefault('event:Rearing', 0)
+        timestamps[frame_timestamp].setdefault('event:Object_investigation', 0)
         timestamps[frame_timestamp].setdefault('pos:animal_center:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_center:y', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_nose:x', -1)
@@ -74,31 +85,64 @@ def tracks2nix(vidoe_file=None,
         timestamps[frame_timestamp].setdefault('pos:animal_:y', -1)
         for bf in bbox_info:
             _frame_num, x1, y1, x2, y2, _class, score = bf
-            if _frame_num == frame_number:
+            if not math.isnan(x1) and _frame_num == frame_number:
                 cx = int((x1 + x2) / 2)
                 cy = int((y1 + y2) / 2)
+                color = draw.compute_color_for_labels(
+                    hash(_class) % 100)
+
                 if _class == 'nose':
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_nose:y'] = cy
-                elif _class == 'center':
+                elif _class == 'centroid':
                     timestamps[frame_timestamp]['pos:animal_center:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_center:y'] = cy
                 elif _class == 'grooming':
                     timestamps[frame_timestamp]['event:Grooming'] = 1
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_:y'] = cy
+                    num_grooming += 1
                 elif _class == 'rearing':
                     timestamps[frame_timestamp]['event:Rearing'] = 1
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_:y'] = cy
-                elif 'object' in _class.lower():
+                    num_rearing += 1
+                elif _class == 'object_investigation':
+                    timestamps[frame_timestamp]['event:Object_investigation'] = 1
+                    timestamps[frame_timestamp]['pos:animal_:x'] = cx
+                    timestamps[frame_timestamp]['pos:animal_:y'] = cy
+                    num_object_investigation += 1
+                elif 'object' in _class.lower() and _class != 'object_investigation':
                     zone_dict[f'zone:{_class}:value'] = [
                         'circle',
                         [cx, cy],
                         min(int((x2-x1)/2), int(y2-y1))
                     ]
 
-        cv2.putText(frame, f"{frame_timestamp}",
+                if _class in ['grooming', 'rearing', 'object_investigation']:
+                    bbox = [[x1, y1, x2, y2]]
+                    if _class == 'grooming':
+                        label = f"{_class}: {num_grooming} times"
+                    elif _class == 'rearing':
+                        label = f"{_class}: {num_rearing} times"
+                    elif _class == "object_investigation":
+                        label = f"{_class}: {num_object_investigation} times"
+                    draw.draw_boxes(
+                        frame,
+                        bbox,
+                        identities=[label],
+                        draw_track=False,
+                        points=points
+                    )
+                elif _class == 'mouse':
+                    pass
+                else:
+                    cv2.circle(frame, (cx, cy),
+                               10,
+                               color,
+                               -1)
+
+        cv2.putText(frame, f"Timestamp: {frame_timestamp}",
                     (25, 25), cv2.FONT_HERSHEY_SIMPLEX,
                     0.65, (255, 255, 255), 2)
         cv2.imshow("Frame", frame)
