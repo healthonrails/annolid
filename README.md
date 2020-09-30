@@ -104,12 +104,16 @@ python main.py --labelme2coco=/path/to/my_labeled_images --to /path/to/my_datase
 If vis is true, it will create an additional visualization folder. 
 The dataset is structured as follows. 
 ```
-my_coco_dataset
-├── JPEGImages
-└── Visualization
-└── Masks
-└── annotations.json
-└── data.yaml
+../../datasets/mydataset_coco/
+├── data.yaml
+├── train
+│   ├── annotations.json
+│   └── JPEGImages
+│       ├── 00000444.jpg
+└── valid
+    ├── annotations.json
+    └── JPEGImages
+        ├── 00000443.jpg
 ```
 
 ![Visualization](docs/imgs/00002895_7.jpg)
