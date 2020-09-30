@@ -15,7 +15,6 @@ import imgviz
 import numpy as np
 from pathlib import Path
 import labelme
-import math
 
 try:
     import pycocotools.mask

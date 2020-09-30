@@ -1,3 +1,4 @@
+import os
 import cv2
 import pandas as pd
 import math
@@ -5,7 +6,6 @@ from annolid.utils import draw
 from collections import deque
 
 points = [deque(maxlen=30) for _ in range(1000)]
-
 
 def tracks2nix(vidoe_file=None,
                tracking_results='tracking.csv',
@@ -28,6 +28,7 @@ def tracks2nix(vidoe_file=None,
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    target_fps = int(cap.get(cv2.CAP_PROP_FPS))
 
     metadata_dict = {}
     metadata_dict['filename'] = vidoe_file
@@ -63,6 +64,13 @@ def tracks2nix(vidoe_file=None,
     num_grooming = 0
     num_rearing = 0
     num_object_investigation = 0
+
+    out_video_file = f"{os.path.splitext(vidoe_file)[0]}_tracked.mp4"
+    
+    video_writer = cv2.VideoWriter(out_video_file,
+                          cv2.VideoWriter_fourcc(*"mp4v"),
+                          target_fps,
+                          (width, height))
 
     while ret:
         ret, frame = cap.read()
@@ -146,6 +154,7 @@ def tracks2nix(vidoe_file=None,
                     (25, 25), cv2.FONT_HERSHEY_SIMPLEX,
                     0.65, (255, 255, 255), 2)
         cv2.imshow("Frame", frame)
+        video_writer.write(frame)
 
         key = cv2.waitKey(1)
         if key == 27:
