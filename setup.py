@@ -23,6 +23,8 @@ setuptools.setup(
                       'opencv-contrib-python',
                       'PyYAML',
                       'labelme',
+                      'decord',
+                      'pandas',
                       'pycocotools',
                       ],
     python_requires='>=3.6',
