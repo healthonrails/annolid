@@ -8,7 +8,6 @@ import random
 from pathlib import Path
 import decord as de
 from collections import deque
-import matplotlib.pyplot as plt
 
 sys.path.append("detector/yolov5/")
 

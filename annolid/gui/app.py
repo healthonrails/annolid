@@ -41,13 +41,16 @@ class AnnolidWindow(MainWindow):
         self.menus = utils.struct(
             recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
             coco=self.menu(self.tr("&COCO")),
-            frames=self.menu(self.tr("&Extract Frames"))
+            frames=self.menu(self.tr("&Extract Frames")),
 
         )
+
         _action_tools = list(self.actions.tool)
         _action_tools.append(coco)
         _action_tools.append(frames)
         self.actions.tool = tuple(_action_tools)
+        self.tools.clear()
+        utils.addActions(self.tools,self.actions.tool)
         utils.addActions(self.menus.coco, (coco,))
         utils.addActions(self.menus.frames, (frames,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
