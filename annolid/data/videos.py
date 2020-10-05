@@ -5,9 +5,35 @@ import cv2
 import argparse
 import numpy as np
 import random
+from pathlib import Path
+import decord as de
 from collections import deque
+import matplotlib.pyplot as plt
 
 sys.path.append("detector/yolov5/")
+
+
+def key_frames(video_file=None,
+               out_dir=None,
+               ctx=de.cpu(0)
+               ):
+    vr = de.VideoReader(video_file)
+    key_idxs = vr.get_key_indices()
+
+    if out_dir is None:
+        video_name = Path(video_file).name
+        out_dir = Path(video_file).parent / video_name
+        out_dir = out_dir.with_suffix('')
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(
+        parents=True,
+        exist_ok=True)
+    for ki in key_idxs:
+        frame = vr[ki].asnumpy()
+        out_frame_file = out_dir / f"{ki:08}.jpg"
+        cv2.imwrite(str(out_frame_file), frame)
+    print(f"Please check your frames located at {out_dir}")
 
 
 def extract_frames(video_file='None',
@@ -32,6 +58,10 @@ def extract_frames(video_file='None',
         out_dir = os.path.join(out_dir, video_name)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
+
+    if algo == 'keyframes':
+        key_frames(video_file, out_dir)
+        return
 
     cap = cv2.VideoCapture(video_file)
     fps = cap.get(5)

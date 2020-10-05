@@ -37,6 +37,12 @@ python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=-1
 python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo=random
 ```
 
+## Extract all the key frames from a video used by the compression methods
+:warning: This method may not work for some videos with certain compression methods. 
+```bash
+python main.py -v /path/to/my_video.mp4 --algo=keyframes --extract_frames=-1
+```
+
 ## Threshold based object segmenation
 Added track bars for users to select HSV values to 
 segment ROIs in the provided video. 
