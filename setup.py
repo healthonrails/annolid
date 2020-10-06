@@ -19,7 +19,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     install_requires=['numpy', 'scipy', 'easydict',
-                      'opencv-python', 
+                      'opencv-python',
                       'opencv-contrib-python',
                       'PyYAML',
                       'labelme',
@@ -28,6 +28,10 @@ setuptools.setup(
                       'pycocotools',
                       ],
     python_requires='>=3.6',
+
+    entry_points={
+        'console_scripts': ['annolid = annolid.gui.app:main'],
+    },
 
 
 )
