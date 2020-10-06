@@ -1,0 +1,1 @@
+from annolid.gui.widgets.extract_frame_dialog import ExtractFrameDialog
