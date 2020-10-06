@@ -117,6 +117,8 @@ class AnnolidWindow(MainWindow):
             input_anno_dir = coco_dlg.annotation_dir
             labels_file = coco_dlg.label_list_text
             output_dir = coco_dlg.out_dir
+        else:
+            return
 
         if input_anno_dir is None:
             QtWidgets.QMessageBox.about(self,

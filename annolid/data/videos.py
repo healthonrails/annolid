@@ -31,6 +31,7 @@ def key_frames(video_file=None,
     for ki in key_idxs:
         frame = vr[ki].asnumpy()
         out_frame_file = out_dir / f"{ki:08}.jpg"
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         cv2.imwrite(str(out_frame_file), frame)
     print(f"Please check your frames located at {out_dir}")
 
