@@ -1,1 +1,2 @@
 from annolid.gui.widgets.extract_frame_dialog import ExtractFrameDialog
+from annolid.gui.widgets.covert_coco_dialog import ConvertCOODialog

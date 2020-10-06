@@ -3,6 +3,7 @@ from pathlib import Path
 import functools
 from qtpy import QtCore
 from qtpy import QtWidgets
+from qtpy import QtGui
 from labelme.app import MainWindow
 from labelme.utils import newIcon
 from labelme.utils import newAction
@@ -11,7 +12,7 @@ from labelme.config import get_config
 from annolid.annotation import labelme2coco
 from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
-
+from annolid.gui.widgets import ConvertCOODialog
 __appname__ = 'Annolid'
 __version__ = "1.0.0"
 
@@ -30,12 +31,15 @@ class AnnolidWindow(MainWindow):
         action = functools.partial(newAction, self)
 
         coco = action(
-            self.tr("&Convert to COCO format"),
+            self.tr("&COCO format"),
             self.coco,
             'Ctrl+C+O',
             "coco",
             self.tr("Convert to COCO format"),
         )
+
+        coco.setIcon(QtGui.QIcon(str(
+            self.here / "icons/coco.png")))
 
         frames = action(
             self.tr("&Extract frames"),
@@ -44,6 +48,9 @@ class AnnolidWindow(MainWindow):
             "Extract frames",
             self.tr("Extract frames frome a video"),
         )
+
+        frames.setIcon(QtGui.QIcon(str(
+            self.here / "icons/extract_frames.png")))
 
         self.menus = utils.struct(
             recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
@@ -99,30 +106,46 @@ class AnnolidWindow(MainWindow):
         self.importDirImages(out_frames_dir)
 
     def coco(self):
-        if self.filename is None:
+        """
+        Convert Labelme annotations to COCO format.
+        """
+        output_dir = None
+        labels_file = None
+        input_anno_dir = None
+        coco_dlg = ConvertCOODialog()
+        if coco_dlg.exec_():
+            input_anno_dir = coco_dlg.annotation_dir
+            labels_file = coco_dlg.label_list_text
+            output_dir = coco_dlg.out_dir
+
+        if input_anno_dir is None:
             QtWidgets.QMessageBox.about(self,
                                         "No input file or directory",
                                         f"Please check and open the  \
                                         files or directories.")
             return
 
-        if self.output_dir is None:
-            self.output_dir = Path(self.filename).parent
+        if output_dir is None:
+            self.output_dir = Path(input_anno_dir).parent / \
+                (Path(input_anno_dir).name + '_coco_dataset')
 
-        labels_file = str(self.here.parent / 'annotation' /
-                          'labels_custom.txt')
-        out_anno_dir = self.output_dir.parent / \
-            (self.output_dir.name + '_coco_dataset')
+        else:
+            self.output_dir = output_dir
+
+        if labels_file is None:
+            labels_file = str(self.here.parent / 'annotation' /
+                              'labels_custom.txt')
+
         labelme2coco.convert(
-            str(self.output_dir),
-            output_annotated_dir=str(out_anno_dir),
+            str(input_anno_dir),
+            output_annotated_dir=str(self.output_dir),
             labels_file=labels_file
         )
         self.statusBar().showMessage(self.tr("%s ...") % "converting")
         QtWidgets.QMessageBox.about(self,
                                     "Finished",
                                     f"Done! Results are in folder: \
-                                         {str(out_anno_dir)}")
+                                         {str(self.output_dir)}")
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
 
 

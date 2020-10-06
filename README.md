@@ -16,6 +16,16 @@ cd annolid
 pip install -e .
 ```
 
+## Launch annolid user interface based on labelme
+```
+source activate your_env_name
+annolid
+```
+![Annolid UI based on labelme](docs/imgs/annolid_ui.png)
+If you want to learn more about labelme, please check the following links. 
+
+[Read more about annotations](annotation/labelme.md)
+
 ## Extract desired number of frames from a video based on optical flow
 
 ```bash
