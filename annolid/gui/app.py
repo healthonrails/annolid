@@ -1,9 +1,12 @@
 import sys
+import time
 from pathlib import Path
 import functools
 from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy import QtGui
+import requests
+import subprocess
 from labelme.app import MainWindow
 from labelme.utils import newIcon
 from labelme.utils import newAction
@@ -13,8 +16,46 @@ from annolid.annotation import labelme2coco
 from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
+from qtpy.QtWebEngineWidgets import QWebEngineView
+import webbrowser
 __appname__ = 'Annolid'
 __version__ = "1.0.0"
+
+
+def start_tensorboard(log_dir=None,
+                      tensorboard_url='http://localhost:6006'):
+
+    process = None
+    if log_dir is None:
+        here = Path(__file__).parent
+        log_dir = here.parent.resolve() / "runs" / "logs"
+    try:
+        r = requests.get(tensorboard_url)
+    except requests.exceptions.ConnectionError:
+        process = subprocess.Popen(
+            ['tensorboard', f'--logdir={str(log_dir)}'])
+        time.sleep(8)
+    return process
+
+
+class VisualizationWindow(QtWidgets.QDialog):
+
+    def __init__(self):
+        super(VisualizationWindow, self).__init__()
+        self.setWindowTitle("Visualization Tensorboard")
+        self.process = start_tensorboard()
+        self.browser = QWebEngineView()
+        self.browser.setUrl(QtCore.QUrl(self.tensorboar_url))
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.addWidget(self.browser)
+        self.setLayout(vbox)
+        self.show()
+
+    def closeEvent(self, event):
+        if self.process is not None:
+            time.sleep(3)
+            self.process.kill()
+        event.accept()
 
 
 class AnnolidWindow(MainWindow):
@@ -52,21 +93,35 @@ class AnnolidWindow(MainWindow):
         frames.setIcon(QtGui.QIcon(str(
             self.here / "icons/extract_frames.png")))
 
+        visualization = action(
+            self.tr("&Visualization"),
+            self.visualization,
+            'Ctrl+Shift+V',
+            "Visualization",
+            self.tr("Visualization results"),
+        )
+
+        visualization.setIcon(QtGui.QIcon(str(
+            self.here / "icons/visualization.png")))
+
         self.menus = utils.struct(
             recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
             coco=self.menu(self.tr("&COCO")),
             frames=self.menu(self.tr("&Extract Frames")),
+            visualization=self.menu(self.tr("&Visualization")),
 
         )
 
         _action_tools = list(self.actions.tool)
         _action_tools.append(coco)
         _action_tools.append(frames)
+        _action_tools.append(visualization)
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
         utils.addActions(self.menus.coco, (coco,))
         utils.addActions(self.menus.frames, (frames,))
+        utils.addActions(self.menus.visualization, (visualization,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -150,6 +205,15 @@ class AnnolidWindow(MainWindow):
                                          {str(self.output_dir)}")
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
 
+    def visualization(self):
+        try:
+            url = 'http://localhost:6006/'
+            process = start_tensorboard(tensorboard_url=url)
+            webbrowser.open(url)
+        except Exception:
+            vdlg = VisualizationWindow()
+            if vdlg.exec_():
+                pass
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
