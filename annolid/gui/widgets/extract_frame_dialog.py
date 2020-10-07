@@ -90,7 +90,7 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.slider.setMaximum(1000)
         self.slider.setValue(10)
         self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.slider.setTickInterval(5)
+        self.slider.setTickInterval(1)
         self.slider.valueChanged.connect(self.onSliderChange)
 
     def onRadioButtonChecked(self):
