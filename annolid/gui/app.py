@@ -1,5 +1,6 @@
 import sys
 import time
+import torch
 from pathlib import Path
 import functools
 from qtpy import QtCore
@@ -16,6 +17,7 @@ from annolid.annotation import labelme2coco
 from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
+from annolid.gui.widgets import TrainModelDialog
 from qtpy.QtWebEngineWidgets import QWebEngineView
 import webbrowser
 __appname__ = 'Annolid'
@@ -90,6 +92,16 @@ class AnnolidWindow(MainWindow):
             self.tr("Extract frames frome a video"),
         )
 
+        models = action(
+            self.tr("&Train models"),
+            self.models,
+            "Ctrl+Shift+T",
+            "Train models",
+            self.tr("Train neural networks")
+        )
+        models.setIcon(QtGui.QIcon(str(
+            self.here / "icons/models.png")))
+
         frames.setIcon(QtGui.QIcon(str(
             self.here / "icons/extract_frames.png")))
 
@@ -106,21 +118,23 @@ class AnnolidWindow(MainWindow):
 
         self.menus = utils.struct(
             recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
-            coco=self.menu(self.tr("&COCO")),
             frames=self.menu(self.tr("&Extract Frames")),
+            coco=self.menu(self.tr("&COCO")),
+            models=self.menu(self.tr("&Train models")),
             visualization=self.menu(self.tr("&Visualization")),
-
         )
 
         _action_tools = list(self.actions.tool)
-        _action_tools.append(coco)
         _action_tools.append(frames)
+        _action_tools.append(coco)
+        _action_tools.append(models)
         _action_tools.append(visualization)
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
-        utils.addActions(self.menus.coco, (coco,))
         utils.addActions(self.menus.frames, (frames,))
+        utils.addActions(self.menus.coco, (coco,))
+        utils.addActions(self.menus.models, (models,))
         utils.addActions(self.menus.visualization, (visualization,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
@@ -128,7 +142,6 @@ class AnnolidWindow(MainWindow):
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
 
     def frames(self):
-
         dlg = ExtractFrameDialog()
         video_file = None
         out_dir = None
@@ -159,6 +172,42 @@ class AnnolidWindow(MainWindow):
         self.statusBar().showMessage(
             self.tr(f"Finshed extracting frames."))
         self.importDirImages(out_frames_dir)
+
+    def models(self):
+
+        dlg = TrainModelDialog()
+        config_file = None
+        out_dir = None
+
+        if dlg.exec_():
+            config_file = dlg.config_file
+            batch_size = dlg.batch_size
+            algo = dlg.algo
+            out_dir = dlg.out_dir
+
+        if config_file is None:
+            return
+
+        # start training models
+        if not torch.cuda.is_available():
+            QtWidgets.QMessageBox.about(self,
+                                        "Not GPU available",
+                                        "At least one GPU  is required to train models.")
+            return
+
+        if out_dir is None:
+            out_runs_dir = Path(config_file).resolve().parent / 'runs'
+        else:
+            out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
+
+        out_runs_dir.mkdir(exist_ok=True, parents=True)
+
+        QtWidgets.QMessageBox.about(self,
+                                    "Started",
+                                    f"Results are in folder: \
+                                         {str(out_runs_dir)}")
+        self.statusBar().showMessage(
+            self.tr(f"Training..."))
 
     def coco(self):
         """
@@ -214,6 +263,7 @@ class AnnolidWindow(MainWindow):
             vdlg = VisualizationWindow()
             if vdlg.exec_():
                 pass
+
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
