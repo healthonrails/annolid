@@ -26,11 +26,15 @@ setuptools.setup(
                       'decord',
                       'pandas',
                       'pycocotools',
+                      'tensorboard',
                       ],
     python_requires='>=3.6',
 
     entry_points={
-        'console_scripts': ['annolid = annolid.gui.app:main'],
+        'console_scripts': [
+            'annolid = annolid.gui.app:main',
+            'annolid-train = annolid.segmentation.yolact.train:train',
+            ],
     },
 
 
