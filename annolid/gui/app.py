@@ -195,8 +195,15 @@ class AnnolidWindow(MainWindow):
                                         "At least one GPU  is required to train models.")
             return
 
+        subprocess.Popen(['annolid-train',
+                          f'--config={config_file}',
+                          f'--batch_size={batch_size}'])
+
+        process = start_tensorboard()
+
         if out_dir is None:
-            out_runs_dir = Path(config_file).resolve().parent / 'runs'
+            out_runs_dir = Path(__file__).parent.parent / \
+                'segmentation' / 'yolact' / 'runs'
         else:
             out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
 
