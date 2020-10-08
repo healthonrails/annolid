@@ -27,6 +27,7 @@ setuptools.setup(
                       'pandas',
                       'pycocotools',
                       'tensorboard',
+                      'PyQtWebEngine',
                       ],
     python_requires='>=3.6',
 
