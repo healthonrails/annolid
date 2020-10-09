@@ -131,7 +131,6 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(visualization)
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
-        self.tools.setOrientation(QtCore.Qt.Horizontal)
         utils.addActions(self.tools, self.actions.tool)
         utils.addActions(self.menus.frames, (frames,))
         utils.addActions(self.menus.coco, (coco,))
