@@ -24,6 +24,8 @@ setuptools.setup(
                       'PyYAML',
                       'labelme',
                       'decord',
+                      'torch',
+                      'torchvision',
                       'pandas',
                       'pycocotools',
                       'tensorboard',
