@@ -1,0 +1,4 @@
+recursive-include docs *
+include environment.yml
+recursive-include annolid/configs *.yaml
+recursive-include annolid/annotation *
