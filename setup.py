@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="annolid",
-    version="1.0.0",
+    version="1.0.1",
     author="Chen Yang",
     author_email="healthonrails@gmail.com",
     description="An Annotation and instance segmenation based mutiple animal tracking package",
