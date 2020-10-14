@@ -18,10 +18,11 @@ from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
 from annolid.gui.widgets import TrainModelDialog
+from annolid.gui.widgets import TrackDialog
 from qtpy.QtWebEngineWidgets import QWebEngineView
 import webbrowser
 __appname__ = 'Annolid'
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 def start_tensorboard(log_dir=None,
@@ -105,6 +106,18 @@ class AnnolidWindow(MainWindow):
         frames.setIcon(QtGui.QIcon(str(
             self.here / "icons/extract_frames.png")))
 
+        tracks = action(
+            self.tr("&Track Animals"),
+            self.tracks,
+            "Ctrl+Shift+O",
+            "Track Animals",
+            self.tr("Track animals and Objects")
+        )
+
+        tracks.setIcon(QtGui.QIcon(str(
+            self.here / 'icons/track.png'
+        )))
+
         visualization = action(
             self.tr("&Visualization"),
             self.visualization,
@@ -122,13 +135,15 @@ class AnnolidWindow(MainWindow):
             coco=self.menu(self.tr("&COCO")),
             models=self.menu(self.tr("&Train models")),
             visualization=self.menu(self.tr("&Visualization")),
+            tracks=self.menu(self.tr("&Track Animals"))
         )
 
         _action_tools = list(self.actions.tool)
-        _action_tools.insert(0,frames)
+        _action_tools.insert(0, frames)
         _action_tools.append(coco)
         _action_tools.append(models)
         _action_tools.append(visualization)
+        _action_tools.append(tracks)
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
@@ -136,6 +151,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.coco, (coco,))
         utils.addActions(self.menus.models, (models,))
         utils.addActions(self.menus.visualization, (visualization,))
+        utils.addActions(self.menus.tracks, (tracks,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -173,6 +189,70 @@ class AnnolidWindow(MainWindow):
             self.tr(f"Finshed extracting frames."))
         self.importDirImages(out_frames_dir)
 
+    def tracks(self):
+        dlg = TrackDialog()
+        config_file = None
+        out_dir = None
+        score_threshold = 0.15
+        algo = "YOLACT"
+        video_file = None
+        model_path = None
+        top_k = 100
+        video_multiframe = 1
+        display_mask = False
+        out_video_file = None
+
+        if dlg.exec_():
+            config_file = dlg.config_file
+            score_threshold = 0.15
+            algo = dlg.algo
+            out_dir = dlg.out_dir
+            video_file = dlg.video_file
+            model_path = dlg.trained_model
+
+        if video_file is None:
+            return
+
+        out_video_file = str(Path(video_file).name)
+        out_video_file = f"tracked_{out_video_file}"
+
+        if config_file is None:
+            return
+        if not torch.cuda.is_available():
+            QtWidgets.QMessageBox.about(self,
+                                        "Not GPU available",
+                                        "At least one GPU  is required to train models.")
+            return
+
+        p_track = subprocess.Popen(['annolid-track',
+                                    f'--trained_model={model_path}',
+                                    f'--config={config_file}',
+                                    f'--score_threshold={score_threshold}',
+                                    f'--top_k={top_k}',
+                                    f'--video_multiframe={video_multiframe}',
+                                    f'--video={video_file}:{out_video_file}',
+                                    f'--mot',
+                                    f'--display_mask={display_mask}'
+                                    ],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   text=True
+                                   )
+
+        if out_dir is None:
+            out_runs_dir = Path(__file__).parent.parent / 'runs'
+        else:
+            out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
+
+        out_runs_dir.mkdir(exist_ok=True, parents=True)
+
+        QtWidgets.QMessageBox.about(self,
+                                    "Started",
+                                    f"Results are in folder: \
+                                         {str(out_runs_dir)}")
+        self.statusBar().showMessage(
+            self.tr(f"Tracking..."))
+
     def models(self):
 
         dlg = TrainModelDialog()
@@ -202,8 +282,7 @@ class AnnolidWindow(MainWindow):
         process = start_tensorboard()
 
         if out_dir is None:
-            out_runs_dir = Path(__file__).parent.parent / \
-                'segmentation' / 'yolact' / 'runs'
+            out_runs_dir = Path(__file__).parent.parent / 'runs'
         else:
             out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
 
