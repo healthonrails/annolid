@@ -21,6 +21,7 @@ class VideoFrameDataset(IterableDataset):
         self.video_file = video_file
         self.root_dir = root_dir
         self.transform = transform
+        self.cap = cv2.VideoCapture(self.video_file)
 
     def fps(self, cap):
         return round(cap.get(cv2.CAP_PROP_FPS))
@@ -29,7 +30,7 @@ class VideoFrameDataset(IterableDataset):
         return round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
     def frame_height(self, cap):
-        return round(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        return round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     def save(self,
              out_path,
@@ -49,7 +50,7 @@ class VideoFrameDataset(IterableDataset):
             return frames, transform(torch.stack(frames, 0))
 
     def __iter__(self):
-        cap = cv2.VideoCapture(self.video_file)
+        cap = self.cap
         ret, old_frame = cap.read()
 
         num_frames = (int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
@@ -67,4 +68,4 @@ class VideoFrameDataset(IterableDataset):
 
     def __exit__(self, exc_type, exc_value, traceback):
         cv2.destroyAllWindows()
-        cap.release()
+        self.cap.release()

@@ -163,7 +163,7 @@ class AnnolidWindow(MainWindow):
         if out_dir is None:
             out_frames_dir = str(Path(video_file).resolve().with_suffix(''))
         else:
-            out_frames_dir = str(Path(out_dir) / Paht(video_file).name)
+            out_frames_dir = str(Path(out_dir) / Path(video_file).name)
 
         QtWidgets.QMessageBox.about(self,
                                     "Finished",
