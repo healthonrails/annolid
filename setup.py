@@ -37,6 +37,7 @@ setuptools.setup(
         'console_scripts': [
             'annolid = annolid.gui.app:main',
             'annolid-train = annolid.segmentation.yolact.train:train',
+            'annolid-track = annolid.segmentation.yolact.eval:main',
             ],
     },
 
