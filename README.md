@@ -21,9 +21,12 @@ pip install -e .
 ```
 
 ## Launch annolid user interface based on labelme
-```
+```bash
 source activate your_env_name
 annolid
+#or you can provide a label.txt file as follows.
+annolid --labels=/path/to/labels_custom.txt 
+
 ```
 ![Annolid UI based on labelme](docs/imgs/annolid_ui.png)
 

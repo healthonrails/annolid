@@ -68,7 +68,7 @@ class AnnolidWindow(MainWindow):
                  config=None
                  ):
 
-        self.config=config
+        self.config = config
         super(AnnolidWindow, self).__init__(config=self.config)
 
         self.flag_dock.setVisible(True)
