@@ -1,6 +1,8 @@
 import sys
 import time
 import torch
+import codecs
+import argparse
 from pathlib import Path
 import functools
 from qtpy import QtCore
@@ -65,7 +67,9 @@ class AnnolidWindow(MainWindow):
     def __init__(self,
                  config=None
                  ):
-        super(AnnolidWindow, self).__init__()
+
+        self.config=config
+        super(AnnolidWindow, self).__init__(config=self.config)
 
         self.flag_dock.setVisible(True)
         self.label_dock.setVisible(True)
@@ -352,10 +356,53 @@ class AnnolidWindow(MainWindow):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--version", "-V",
+        action="store_true",
+        help="show version"
+    )
+
+    parser.add_argument(
+        '--labels',
+        default=argparse.SUPPRESS,
+        help="comma separated list of labels or file containing labels"
+    )
+
+    default_config_file = str(Path.home() / '.labelmerc')
+    parser.add_argument(
+        '--config',
+        dest="config",
+        default=default_config_file,
+        help=f"config file or yaml format string default {default_config_file}"
+    )
+
+    args = parser.parse_args()
+
+    if hasattr(args, "labels"):
+        if Path(args.labels).is_file():
+            with codecs.open(args.labels,
+                             'r', encoding='utf-8'
+                             ) as f:
+                args.labels = [line.strip()
+                               for line in f if line.strip()
+                               ]
+        else:
+            args.labels = [
+                line for line in args.labels.split(',')
+                if line
+            ]
+
+    config_from_args = args.__dict__
+    config_from_args.pop("version")
+    config_file_or_yaml = config_from_args.pop("config")
+
+    config = get_config(config_file_or_yaml, config_from_args)
+
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(__appname__)
     app.setWindowIcon(newIcon("icon"))
-    win = AnnolidWindow()
+    win = AnnolidWindow(config=config)
 
     win.show()
     win.raise_()
