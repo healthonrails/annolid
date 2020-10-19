@@ -315,7 +315,7 @@ def convert(input_annotated_dir,
         dy.write(
             f"""    train_info: '{data_yaml.parent /"train"/"annotations.json"}'\n""")
         dy.write(
-            f"""    train_images: {data_yaml.parent /"train"} '\n""")
+            f"""    train_images: '{data_yaml.parent /"train"}'\n""")
         dy.write(
             f"""    valid_info: '{data_yaml.parent /"valid"/"annotations.json"}'\n""")
         dy.write(
