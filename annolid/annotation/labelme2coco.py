@@ -313,13 +313,13 @@ def convert(input_annotated_dir,
         dy.write(f"DATASET:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")
         dy.write(
-            f"    train_info: '../../datasets/{output_annotated_dir_name}/train/annotations.json'\n")
+            f"""    train_info: '{data_yaml.parent /"train"/"annotations.json"}'\n""")
         dy.write(
-            f"    train_images: '../../datasets/{output_annotated_dir_name}/train'\n")
+            f"""    train_images: {data_yaml.parent /"train"} '\n""")
         dy.write(
-            f"    valid_info: '../../datasets/{output_annotated_dir_name}/valid/annotations.json'\n")
+            f"""    valid_info: '{data_yaml.parent /"valid"/"annotations.json"}'\n""")
         dy.write(
-            f"    valid_images: '../../datasets/{output_annotated_dir_name}/valid'\n")
+            f"""    valid_images: '{data_yaml.parent /"valid"}'\n""")
         dy.write(f"    class_names: {names}\n")
 
         dy.write(f"YOLACT:\n")
