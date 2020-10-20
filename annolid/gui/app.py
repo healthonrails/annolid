@@ -244,19 +244,18 @@ class AnnolidWindow(MainWindow):
                                         "At least one GPU  is required to train models.")
             return
 
-        p_track = subprocess.Popen(['annolid-track',
+        print(video_file)
+
+        subprocess.Popen(['annolid-track',
                                     f'--trained_model={model_path}',
                                     f'--config={config_file}',
                                     f'--score_threshold={score_threshold}',
                                     f'--top_k={top_k}',
                                     f'--video_multiframe={video_multiframe}',
-                                    f'--video={video_file}:{out_video_file}',
+                                    f'--video={video_file}|{out_video_file}',
                                     f'--mot',
                                     f'--display_mask={display_mask}'
-                                    ],
-                                   stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE,
-                                   text=True
+                                    ]
                                    )
 
         if out_dir is None:
