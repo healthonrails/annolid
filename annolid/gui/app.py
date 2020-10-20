@@ -20,8 +20,10 @@ from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
 from annolid.gui.widgets import TrainModelDialog
+from annolid.gui.widgets import Glitter2Dialog
 from annolid.gui.widgets import TrackDialog
 from qtpy.QtWebEngineWidgets import QWebEngineView
+from annolid.postprocessing.glitter import tracks2nix
 import webbrowser
 __appname__ = 'Annolid'
 __version__ = "1.0.1"
@@ -122,6 +124,17 @@ class AnnolidWindow(MainWindow):
             self.here / 'icons/track.png'
         )))
 
+        glitter2 = action(
+            self.tr("&Glitter2"),
+            self.glitter2,
+            "Ctrl+Shift+G",
+            self.tr("Convert to Glitter2 nix format")
+        )
+
+        glitter2.setIcon(QtGui.QIcon(str(
+            self.here / 'icons/glitter2_logo.png'
+        )))
+
         visualization = action(
             self.tr("&Visualization"),
             self.visualization,
@@ -139,7 +152,8 @@ class AnnolidWindow(MainWindow):
             coco=self.menu(self.tr("&COCO")),
             models=self.menu(self.tr("&Train models")),
             visualization=self.menu(self.tr("&Visualization")),
-            tracks=self.menu(self.tr("&Track Animals"))
+            tracks=self.menu(self.tr("&Track Animals")),
+            glitter2=self.menu(self.tr("&Glitter2")),
         )
 
         _action_tools = list(self.actions.tool)
@@ -148,6 +162,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(models)
         _action_tools.append(visualization)
         _action_tools.append(tracks)
+        _action_tools.append(glitter2)
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
@@ -156,6 +171,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.models, (models,))
         utils.addActions(self.menus.visualization, (visualization,))
         utils.addActions(self.menus.tracks, (tracks,))
+        utils.addActions(self.menus.glitter2, (glitter2,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -353,6 +369,36 @@ class AnnolidWindow(MainWindow):
             vdlg = VisualizationWindow()
             if vdlg.exec_():
                 pass
+
+    def glitter2(self):
+
+        video_file = None
+        tracking_results = None
+        out_nix_csv_file = None
+
+        g_dialog = Glitter2Dialog()
+        if g_dialog.exec_():
+            video_file = g_dialog.video_file
+            tracking_results = g_dialog.tracking_results
+            out_nix_csv_file = g_dialog.out_nix_csv_file
+        else:
+            return
+
+        if video_file is None or tracking_results is None:
+            QtWidgets.QMessageBox.about(self,
+                                        "No input video or tracking results",
+                                        f"Please check and open the  \
+                                        files.")
+            return
+
+        if out_nix_csv_file is None:
+            out_nix_csv_file = tracking_results.replace('.csv', '_nix.csv')
+
+        tracks2nix(
+            video_file,
+            tracking_results,
+            out_nix_csv_file
+        )
 
 
 def main():
