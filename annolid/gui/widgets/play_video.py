@@ -7,7 +7,7 @@ from qtpy.QtWidgets import QWidget, QPushButton, QGroupBox
 from qtpy.QtWidgets import QApplication
 from qtpy.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout
 from qtpy.QtGui import QPixmap
-from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot
+from qtpy.QtCore import QThread, Signal, Slot
 
 
 class VideoPlayerThread(QThread):
@@ -16,7 +16,7 @@ class VideoPlayerThread(QThread):
 
     """
 
-    pixmap_updated_signal = pyqtSignal(np.ndarray)
+    pixmap_updated_signal = Signal(np.ndarray)
 
     def __init__(self,
                  video_url=None):
@@ -95,7 +95,7 @@ class VideoPlayerWindow(QWidget):
             QtGui.QImage.Format_RGB888)
         return QPixmap.fromImage(img_qt)
 
-    @pyqtSlot(np.ndarray)
+    @Slot(np.ndarray)
     def update_image(self, rgb_img):
         """update the image_label with a new rgb image"""
         qt_img = self.rgb_to_qt(rgb_img)
@@ -119,6 +119,6 @@ class VideoPlayerWindow(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    vp = VideoPlayerWindow("/Users/chenyang/Downloads/novelctrl.mkv")
+    vp = VideoPlayerWindow("my_video.mkv")
     vp.show()
     sys.exit(app.exec_())
