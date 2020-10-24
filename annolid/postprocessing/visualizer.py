@@ -1,7 +1,12 @@
+import torch
 import decord
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from annolid.features import Embedding
+# Temp fix of the no attribute 'get_filesytem' error
+import tensorflow as tf
+import tensorboard as tb
+tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
 
 
 def tensorboard_writer(logdir=None):
@@ -18,11 +23,15 @@ def frame_embeddings(frame):
     return embed_vector
 
 
-def main(video_url='/Users/chenyang/Downloads/novelctrl.mkv'):
+def main(video_url=None):
     decord.bridge.set_bridge('torch')
+    if torch.cuda.is_available():
+        ctx = decord.gpu(0)
+    else:
+        ctx = decord.cpu(0)
     vr = decord.VideoReader(
         video_url,
-        ctx=decord.cpu(0)
+        ctx=ctx
     )
 
     writer = tensorboard_writer()
