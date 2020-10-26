@@ -110,12 +110,14 @@ def main():
 
     if args['labelme2coco'] is not None:
         from annotation import labelme2coco
-        labelme2coco.convert(
+        label_gen = labelme2coco.convert(
             args['labelme2coco'],
             output_annotated_dir=args['to'],
             labels_file=args['labels'],
             vis=args['vis']
         )
+        for image_id, content in label_gen:
+            print(f'Converting image id #{image_id},{content}')
 
     if args['tracks2glitter'] is not None:
         assert(os.path.isfile(

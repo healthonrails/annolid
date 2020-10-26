@@ -4,9 +4,9 @@ from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from annolid.features import Embedding
 # Temp fix of the no attribute 'get_filesytem' error
-import tensorflow as tf
-import tensorboard as tb
-tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
+#import tensorflow as tf
+#import tensorboard as tb
+#tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
 
 
 def tensorboard_writer(logdir=None):

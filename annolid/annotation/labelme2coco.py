@@ -136,7 +136,7 @@ def convert(input_annotated_dir,
                180, 195, 210, 225, 240, 255, 270, 285, 300, 315, 330, 345, 360]
 
     for image_id, filename in enumerate(label_files):
-        print("Generating dataset from:", filename)
+        yield image_id, filename
 
         label_file = labelme.LabelFile(filename=filename)
 

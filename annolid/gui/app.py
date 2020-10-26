@@ -24,6 +24,7 @@ from annolid.gui.widgets import Glitter2Dialog
 from annolid.gui.widgets import TrackDialog
 from qtpy.QtWebEngineWidgets import QWebEngineView
 from annolid.postprocessing.glitter import tracks2nix
+from annolid.gui.widgets import ProgressingWindow
 import webbrowser
 __appname__ = 'Annolid'
 __version__ = "1.0.1"
@@ -345,16 +346,20 @@ class AnnolidWindow(MainWindow):
             labels_file = str(self.here.parent / 'annotation' /
                               'labels_custom.txt')
 
-        labelme2coco.convert(
+        label_gen = labelme2coco.convert(
             str(input_anno_dir),
             output_annotated_dir=str(self.output_dir),
             labels_file=labels_file
         )
+        pw = ProgressingWindow(label_gen)
+        if pw.exec_():
+            pw.runner_thread.terminate()
+
         self.statusBar().showMessage(self.tr("%s ...") % "converting")
         QtWidgets.QMessageBox.about(self,
                                     "Finished",
                                     f"Done! Results are in folder: \
-                                         {str(self.output_dir)}")
+                                            {str(self.output_dir)}")
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
 
     def visualization(self):
