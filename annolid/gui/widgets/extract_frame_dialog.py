@@ -19,10 +19,14 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.buttonbox.accepted.connect(self.accept)
         self.buttonbox.rejected.connect(self.reject)
 
-        self.label1 = QtWidgets.QLabel(f"Please select number of frames")
+        self.label1 = QtWidgets.QLabel(
+            f"Please type or select number of frames default={self.num_frames}")
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
+        self.framesLineEdit = QtWidgets.QLineEdit(self)
+        self.framesLineEdit.setText(str(self.num_frames))
         self.inputFileButton = QtWidgets.QPushButton('Open', self)
         self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
+        self.framesLineEdit.textChanged.connect(self.onSliderChange)
 
         hboxLayOut = QtWidgets.QHBoxLayout()
 
@@ -44,6 +48,7 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.groupBox)
         vbox.addWidget(self.label1)
+        vbox.addWidget(self.framesLineEdit)
         vbox.addWidget(self.slider)
         vbox.addWidget(self.groupBoxFiles)
         vbox.addWidget(self.groupBoxOutDir)
@@ -108,7 +113,8 @@ class ExtractFrameDialog(QtWidgets.QDialog):
                 if self.label1.isHidden():
                     self.label1.setVisible(True)
 
-    def onSliderChange(self):
-        self.num_frames = self.slider.value()
+    def onSliderChange(self, position):
+        self.num_frames = int(position) if position else 0
+        self.framesLineEdit.setText(str(position))
         self.label1.setText(
             f"You selected {str(self.num_frames)} frames")
