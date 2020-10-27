@@ -114,7 +114,8 @@ class ExtractFrameDialog(QtWidgets.QDialog):
                     self.label1.setVisible(True)
 
     def onSliderChange(self, position):
-        self.num_frames = int(position) if position else 0
+        self.num_frames = int(position) if position and str(
+            position).isdigit() else 0
         self.framesLineEdit.setText(str(position))
         self.label1.setText(
             f"You selected {str(self.num_frames)} frames")
