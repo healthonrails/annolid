@@ -1,2 +1,5 @@
-pyyaml
-easydict
+pyyaml==5.3
+easydict==1.9
+--find-links https://download.pytorch.org/whl/torch_stable.html
+torch==1.4.0+cpu
+torchvision==0.5.0
