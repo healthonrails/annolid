@@ -1,10 +1,8 @@
-import decord
 import torch
-import cv2
-import matplotlib.pyplot as plt
 import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+from torchvision.transforms import functional as F
 
 
 def get_maskrcnn_model(
@@ -14,9 +12,9 @@ def get_maskrcnn_model(
     """ Get the pretrained mask rcnn model for finetuning or unmodified
 
     Args:
-        num_classes ([int], optional): [number of class for custom dataset]. Defaults to None.
+        num_classes ([int], optional): number of class for custom dataset. Defaults to None.
         num_hidden_layer (int, optional): number of hidden units. Defaults to 256.
-        finetuning (bool, optional): [finetuning for the custom dataset]. Defaults to True.
+        finetuning (bool, optional): finetuning for the custom dataset. Defaults to True.
 
     Returns:
         [model]: [mask rcnn model]
@@ -46,38 +44,26 @@ def get_maskrcnn_model(
     return model
 
 
-def predict_coco(img, device):
+def predict_coco(img, device=None):
     """predict with the default pretained mask rcnn model pretrained on COCO
 
     Args:
-        img ([torch.Tensor]): [channel, width, height]
-        device ([torch.device]): [cuda or cpu]
+        img ([torch.Tensor]): channel, width, height
+        device ([torch.device]): cuda or cpu
 
     Returns:
-        [dict]: [prediction with bbox, masks, and labels]
+        [dict]: prediction with bbox, masks, and labels
     """
+    if device is None:
+        device = torch.device(
+            'cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    if not isinstance(img, torch.Tensor):
+        img = F.to_tensor(img)
     coco_model = get_maskrcnn_model(finetuning=False)
     coco_model.to(device)
     coco_model.eval()
+
     with torch.no_grad():
         prediction = coco_model([img.to(device)])
         return prediction
-
-
-if __name__ == "__main__":
-    video_url = 'my_video.mkv'
-    vr = decord.VideoReader(video_url)
-    decord.bridge.set_bridge('torch')
-    device = torch.device(
-        'cuda') if torch.cuda.is_available() else torch.device('cpu')
-    for frame in vr:
-        frame = frame.permute(2, 0, 1)
-        frame = frame / 255.0
-        prediction = predict_coco(frame, device)
-        print(prediction)
-        predict_img = prediction[0]['masks'][0, 0].mul(255).cpu().numpy()
-        cv2.imshow("predicted mask", predict_img)
-        cv2.waitKey(0)
-
-        break
-    cv2.destroyAllWindows()
