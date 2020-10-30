@@ -10,6 +10,7 @@ import torch
 import torchvision
 import torch.utils.data
 from torch import nn
+from annolid.utils.config import get_config
 import torchvision.models.detection
 import torchvision.models.detection.mask_rcnn
 from annolid.segmentation.maskrcnn.group_by_aspect_ratio import (
@@ -51,6 +52,12 @@ def get_dataset(name,
         image_set=image_set,
         transforms=transform
     )
+    config_file = os.path.join(data_path, 'data.yaml')
+
+    if os.path.isfile(config_file):
+        custom_config = get_config(config_file)
+        num_classes = len(custom_config.DATASET.class_names) + 1
+
     return dataset, num_classes
 
 
