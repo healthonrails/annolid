@@ -297,6 +297,7 @@ if __name__ == "__main__":
     )
     parser.add_argument('--output-dir',
                         default='.',
+                        dest='output_dir',
                         help="folder to save",
                         )
     parser.add_argument(
@@ -325,6 +326,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrained",
         dest="pretrained",
+        default=True,
         help="Use pre-trained models",
         action="store_true",
     )
