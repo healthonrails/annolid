@@ -178,6 +178,12 @@ class AnnolidWindow(MainWindow):
         self.setWindowTitle(__appname__)
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
 
+    def popLabelListMenu(self, point):
+        try:
+            self.menus.labelList.exec_(self.labelList.mapToGlobal(point))
+        except AttributeError:
+            return
+
     def frames(self):
         dlg = ExtractFrameDialog()
         video_file = None
