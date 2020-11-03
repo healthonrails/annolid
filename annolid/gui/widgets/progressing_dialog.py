@@ -41,7 +41,7 @@ class ProgressingWindow(qtw.QDialog):
         self.progress_bar = qtw.QProgressBar(self)
 
         self.results = qtw.QTableWidget(0, 2)
-        self.results.setHorizontalHeaderLabels(['id', 'content'])
+        self.results.setHorizontalHeaderLabels(['percentage', 'content'])
         self.results.horizontalHeader().setSectionResizeMode(qtw.QHeaderView.Stretch)
         self.results.setSizePolicy(qtw.QSizePolicy.Expanding,
                                    qtw.QSizePolicy.Expanding
@@ -72,11 +72,11 @@ class ProgressingWindow(qtw.QDialog):
 
         self.running_submitted.emit('started')
 
-    def add_job_to_table(self, job_id, percent):
+    def add_job_to_table(self, percent, content):
         row = self.results.rowCount()
         self.results.insertRow(row)
         self.results.setItem(row, 0,
-                             qtw.QTableWidgetItem(str(job_id))
+                             qtw.QTableWidgetItem(f"{str(percent)}%")
                              )
         self.results.setItem(row, 1,
-                             qtw.QTableWidgetItem(str(percent)))
+                             qtw.QTableWidgetItem(str(content)))

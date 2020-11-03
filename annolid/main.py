@@ -117,7 +117,8 @@ def main():
             vis=args['vis']
         )
         for image_id, content in label_gen:
-            print(f'Converting image id #{image_id},{content}')
+            print(
+                f'Converting {content} as {image_id % 100:.2f} % of the labeled images.')
 
     if args['tracks2glitter'] is not None:
         assert(os.path.isfile(

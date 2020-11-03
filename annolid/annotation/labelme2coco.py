@@ -131,12 +131,13 @@ def convert(input_annotated_dir,
     valid_out_ann_file = osp.join(output_annotated_dir, 'valid',
                                   "annotations.json")
     label_files = glob.glob(osp.join(input_annotated_dir, "*.json"))
+    num_label_files = len(label_files)
 
     _angles = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165,
                180, 195, 210, 225, 240, 255, 270, 285, 300, 315, 330, 345, 360]
 
     for image_id, filename in enumerate(label_files):
-        yield image_id, filename
+        yield ((image_id + 1) / num_label_files) * 100, filename
 
         label_file = labelme.LabelFile(filename=filename)
 
