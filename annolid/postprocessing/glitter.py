@@ -10,8 +10,20 @@ points = [deque(maxlen=30) for _ in range(1000)]
 
 def tracks2nix(vidoe_file=None,
                tracking_results='tracking.csv',
-               out_nix_csv_file='my_glitter_format.csv'
+               out_nix_csv_file='my_glitter_format.csv',
+               zone_info=None
                ):
+    """
+    Args:
+        vidoe_file (str): video file path. Defaults to None.
+        tracking_results (str, optional): the tracking results csv file froma a model.
+         Defaults to 'tracking.csv'.
+        out_nix_csv_file (str, optional): [description]. Defaults to 'my_glitter_format.csv'.
+        zone_info ([type], optional): a comma seperated string e.g. 
+           "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0". Defaults to None.
+
+    Create a nix format csv file and annotated video
+    """
 
     df = pd.read_csv(tracking_results)
     df = df.drop(columns=['Unnamed: 0'])
@@ -36,29 +48,33 @@ def tracks2nix(vidoe_file=None,
     metadata_dict['pixels_per_meter'] = 0
     metadata_dict['video_width'] = f"{width}"
     metadata_dict['video_height'] = f"{height}"
+    metadata_dict['saw_all_timestamps'] = 'TRUE'
 
-    zone_background_dict = {}
     zone_dict = {}
-    zone_background_dict['zone:background:property'] = ['type', 'points']
 
-    zone_background_dict['zone:background:value'] = [
-        'polygon',
-        "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0"
-    ]
+    if zone_info is not None:
+        zone_background_dict = {}
 
-    for isn in df['instance_name'].dropna().unique():
+        zone_background_dict['zone:background:property'] = ['type', 'points']
 
-        if isn != 'nan' and 'object' in isn:
-            zone_dict[f"zone:{isn}:property"] = [
-                'type',
-                'center',
-                'radius'
-            ]
-            zone_dict[f'zone:{isn}:value'] = [
-                'circle',
-                "-1, -1",
-                -1
-            ]
+        zone_background_dict['zone:background:value'] = [
+            'polygon',
+            zone_info
+        ]
+
+        for isn in df['instance_name'].dropna().unique():
+
+            if isn != 'nan' and 'object' in isn:
+                zone_dict[f"zone:{isn}:property"] = [
+                    'type',
+                    'center',
+                    'radius'
+                ]
+                zone_dict[f'zone:{isn}:value'] = [
+                    'circle',
+                    "0, 0",
+                    0
+                ]
 
     timestamps = {}
 
@@ -79,7 +95,7 @@ def tracks2nix(vidoe_file=None,
         if not ret:
             break
         # timestamp in seconds
-        frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) // 1000
+        frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
         frame_number = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
         bbox_info = get_bbox(frame_number)
 
@@ -172,13 +188,16 @@ def tracks2nix(vidoe_file=None,
     df_meta = pd.DataFrame.from_dict(metadata_dict,
                                      orient='index'
                                      )
-    df_zone_background = pd.DataFrame.from_dict(
-        zone_background_dict
-    )
 
-    df_zone = pd.DataFrame.from_dict(
-        zone_dict
-    )
+    if zone_info is not None:
+        df_zone_background = pd.DataFrame.from_dict(
+            zone_background_dict
+        )
+
+    if zone_dict:
+        df_zone = pd.DataFrame.from_dict(
+            zone_dict
+        )
 
     df_res.reset_index(inplace=True)
     df_meta.reset_index(inplace=True)
@@ -186,7 +205,10 @@ def tracks2nix(vidoe_file=None,
     df_res.insert(0, "metadata", df_meta['metadata'])
     df_res.insert(1, "value", df_meta['value'])
 
-    df_res = pd.concat([df_res, df_zone_background], axis=1)
-    df_res = pd.concat([df_res, df_zone], axis=1)
+    if zone_info is not None:
+        df_res = pd.concat([df_res, df_zone_background], axis=1)
+
+    if zone_dict:
+        df_res = pd.concat([df_res, df_zone], axis=1)
 
     df_res.to_csv(out_nix_csv_file, index=False)
