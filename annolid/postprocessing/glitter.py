@@ -7,6 +7,7 @@ from collections import deque
 
 points = [deque(maxlen=30) for _ in range(1000)]
 
+
 def tracks2nix(vidoe_file=None,
                tracking_results='tracking.csv',
                out_nix_csv_file='my_glitter_format.csv'
@@ -32,8 +33,9 @@ def tracks2nix(vidoe_file=None,
 
     metadata_dict = {}
     metadata_dict['filename'] = vidoe_file
-    metadata_dict['pixels_per_meter'] = 1
-    metadata_dict['video_size'] = f"{width}x{height}"
+    metadata_dict['pixels_per_meter'] = 0
+    metadata_dict['video_width'] = f"{width}"
+    metadata_dict['video_height'] = f"{height}"
 
     zone_background_dict = {}
     zone_dict = {}
@@ -41,7 +43,7 @@ def tracks2nix(vidoe_file=None,
 
     zone_background_dict['zone:background:value'] = [
         'polygon',
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0"
     ]
 
     for isn in df['instance_name'].dropna().unique():
@@ -51,11 +53,10 @@ def tracks2nix(vidoe_file=None,
                 'type',
                 'center',
                 'radius'
-
             ]
             zone_dict[f'zone:{isn}:value'] = [
                 'circle',
-                [-1, -1],
+                "-1, -1",
                 -1
             ]
 
@@ -66,18 +67,19 @@ def tracks2nix(vidoe_file=None,
     num_object_investigation = 0
 
     out_video_file = f"{os.path.splitext(vidoe_file)[0]}_tracked.mp4"
-    
+
     video_writer = cv2.VideoWriter(out_video_file,
-                          cv2.VideoWriter_fourcc(*"mp4v"),
-                          target_fps,
-                          (width, height))
+                                   cv2.VideoWriter_fourcc(*"mp4v"),
+                                   target_fps,
+                                   (width, height))
 
     while ret:
         ret, frame = cap.read()
 
         if not ret:
             break
-        frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC)
+        # timestamp in seconds
+        frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) // 1000
         frame_number = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
         bbox_info = get_bbox(frame_number)
 
@@ -165,7 +167,7 @@ def tracks2nix(vidoe_file=None,
 
     df_res = pd.DataFrame.from_dict(timestamps,
                                     orient='index')
-    df_res.index.rename('timestamp', inplace=True)
+    df_res.index.rename('timestamps', inplace=True)
 
     df_meta = pd.DataFrame.from_dict(metadata_dict,
                                      orient='index'
