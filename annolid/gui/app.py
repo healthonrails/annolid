@@ -92,6 +92,18 @@ class AnnolidWindow(MainWindow):
         coco.setIcon(QtGui.QIcon(str(
             self.here / "icons/coco.png")))
 
+        save_labeles = action(
+            self.tr("&Save labels"),
+            self.save_labels,
+            'Ctrl+Shift+L',
+            'Save Labels',
+            self.tr("Save labels to txt file")
+        )
+
+        save_labeles.setIcon(QtGui.QIcon(
+            str(self.here/"icons/label_list.png")
+        ))
+
         frames = action(
             self.tr("&Extract frames"),
             self.frames,
@@ -155,6 +167,7 @@ class AnnolidWindow(MainWindow):
             visualization=self.menu(self.tr("&Visualization")),
             tracks=self.menu(self.tr("&Track Animals")),
             glitter2=self.menu(self.tr("&Glitter2")),
+            save_labels=self.menu(self.tr("&Save Labels")),
         )
 
         _action_tools = list(self.actions.tool)
@@ -164,6 +177,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(visualization)
         _action_tools.append(tracks)
         _action_tools.append(glitter2)
+        _action_tools.append(save_labeles)
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
@@ -173,6 +187,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.visualization, (visualization,))
         utils.addActions(self.menus.tracks, (tracks,))
         utils.addActions(self.menus.glitter2, (glitter2,))
+        utils.addActions(self.menus.save_labels, (save_labeles,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -182,6 +197,28 @@ class AnnolidWindow(MainWindow):
         try:
             self.menus.labelList.exec_(self.labelList.mapToGlobal(point))
         except AttributeError:
+            return
+
+    def save_labels(self):
+        """Save the labels in to a select text file.
+        """
+        file_name, extension = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save labels file",
+            str(self.here.parent / 'annotation'),
+            filter='*.txt'
+        )
+
+        if Path(file_name).is_file() or Path(file_name).parent.is_dir():
+            labels_text_list = ['__ignore__', '_background_']
+            for l in self.labelList:
+                label_name = l.text().split()[0]
+                labels_text_list.append(label_name)
+
+            with open(file_name, 'w') as lt:
+                for ltl in labels_text_list:
+                    lt.writelines(ltl+'\n')
+        else:
             return
 
     def frames(self):
