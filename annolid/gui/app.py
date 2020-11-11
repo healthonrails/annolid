@@ -67,6 +67,9 @@ class VisualizationWindow(QtWidgets.QDialog):
 
 
 class AnnolidWindow(MainWindow):
+    """Annolid Main Window based on Labelme.
+    """
+
     def __init__(self,
                  config=None
                  ):
@@ -200,7 +203,7 @@ class AnnolidWindow(MainWindow):
             return
 
     def save_labels(self):
-        """Save the labels in to a select text file.
+        """Save the labels into a selected text file.
         """
         file_name, extension = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -222,6 +225,8 @@ class AnnolidWindow(MainWindow):
             return
 
     def frames(self):
+        """Extract frames based on the selected algos. 
+        """
         dlg = ExtractFrameDialog()
         video_file = None
         out_dir = None
