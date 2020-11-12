@@ -12,7 +12,8 @@ def save_labels(filename,
                 height,
                 width,
                 imageData=None,
-                otherData=None
+                otherData=None,
+                save_image_to_json=False
                 ):
     lf = label_file.LabelFile()
 
@@ -32,7 +33,7 @@ def save_labels(filename,
     shapes = [format_shape(item) for item in label_list]
     flags = {}
 
-    if imageData is None:
+    if imageData is None and save_image_to_json:
         imageData = label_file.LabelFile.load_image_file(
             imagePath)
 

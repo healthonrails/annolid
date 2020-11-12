@@ -170,7 +170,7 @@ The result csv file named as tracking_results_nix.csv in the folder as provided 
 python annolid/main.py -v /path/to/my_video.mkv --tracks2glitter /path/to/tracking_results.csv --to /path/to/results_dir/
 ```
 
-## Convert the keypoint annotations to lableme format
+## Convert the keypoint annotations to labelme format
 e.g. [DeepLabCut Mouse dataset](https://github.com/DeepLabCut/Primer-MotionCapture/tree/master/mouse_m7s3)
 
 ```bash
