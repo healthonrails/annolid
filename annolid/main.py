@@ -64,6 +64,13 @@ def parse_args():
     arg_builder.add_argument('--labelme2coco', type=str, default=None,
                              help="input dir for labelme annotation e.g. ./extract_frames"
                              )
+    arg_builder.add_argument('--keypoints2labelme', type=str, default=None,
+                             help="input dir for keypoitns image dir e.g. ./mouse_m8s4"
+                             )
+    arg_builder.add_argument('--keypoints', type=str, default=None,
+                             help="keypoints annotation file e.g. ./CollectedData_xxx.h5  "
+                             )
+
     arg_builder.add_argument('--labels', type=str, default='labels.txt',
                              help="text file with all the class names "
                              )
@@ -135,6 +142,14 @@ def main():
                    args['tracks2glitter'],
                    dest_file
                    )
+
+    if (args['keypoints2labelme'] is not None) and \
+            (args['keypoints'] is not None):
+        from annolid.annotation import keypoints
+        keypoints.to_labelme(
+            args['keypoints2labelme'],
+            args['keypoints']
+        )
 
 
 if __name__ == "__main__":

@@ -169,3 +169,12 @@ The result csv file named as tracking_results_nix.csv in the folder as provided 
 ```
 python annolid/main.py -v /path/to/my_video.mkv --tracks2glitter /path/to/tracking_results.csv --to /path/to/results_dir/
 ```
+
+## Convert the keypoint annotations to lableme format
+e.g. [DeepLabCut Mouse dataset](https://github.com/DeepLabCut/Primer-MotionCapture/tree/master/mouse_m7s3)
+
+```bash
+python annolid/main.py --keypoints2labelme /path/to/mouse_m7s3/  --keypoints /path/to/mouse_m7s3/CollectedData_xxxx.h5 
+
+```
+![Example](docs/imgs/mouse_keypoints.png)
