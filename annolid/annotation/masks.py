@@ -6,7 +6,6 @@ def mask_to_polygons(mask):
     """
     convert predicted mask to polygons
     """
-    mask = np.array(mask, dtype=bool)
     # for cv2 versions that do not support incontiguous array
     mask = np.ascontiguousarray(mask)
     mask = mask.astype(np.uint8)
