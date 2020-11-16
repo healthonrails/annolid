@@ -6,7 +6,16 @@ from annolid.annotation.keypoints import save_labels
 from annolid.annotation.masks import mask_to_polygons
 from labelme import label_file
 from labelme.shape import Shape
-from pycocotools import mask as coco_mask
+import yaml
+from pathlib import Path
+here = Path(__file__).parent
+
+
+def get_coco_labels(
+        config_file=str(here.parent.parent/'configs/coco_labels.yaml')):
+    with open(config_file, 'r') as cfg:
+        coco_labels = yaml.load(cfg, Loader=yaml.FullLoader)
+    return coco_labels.split()
 
 
 def predict_mask_to_labelme(img_path=None):
@@ -21,12 +30,15 @@ def predict_mask_to_labelme(img_path=None):
     labels = labels.numpy()
     label_list = []
 
+    coco_labels = get_coco_labels()
+
     for i, i_mask in enumerate((preds[0]['masks'])):
         i_mask = i_mask[0].mul(255).cpu().numpy()
         polys, has_holes = mask_to_polygons(i_mask)
         polys = polys[0]
 
-        shape = Shape(label=str(labels[i]), shape_type='polygon', flags={})
+        shape = Shape(label=coco_labels[labels[i]],
+                      shape_type='polygon', flags={})
         for x, y in zip(polys[0::2], polys[1::2]):
             shape.addPoint((x, y))
         label_list.append(shape)
