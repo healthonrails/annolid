@@ -2,9 +2,10 @@ import os
 import cv2
 import pandas as pd
 import math
+import ast
 from annolid.utils import draw
 from collections import deque
-
+import pycocotools.mask as mask_util
 points = [deque(maxlen=30) for _ in range(1000)]
 
 
@@ -26,7 +27,10 @@ def tracks2nix(vidoe_file=None,
     """
 
     df = pd.read_csv(tracking_results)
-    df = df.drop(columns=['Unnamed: 0'])
+    try:
+        df = df.drop(columns=['Unnamed: 0'])
+    except KeyError:
+        return
 
     def get_bbox(frame_number):
         _df = df[df.frame_number == frame_number]
@@ -110,7 +114,14 @@ def tracks2nix(vidoe_file=None,
         timestamps[frame_timestamp].setdefault('pos:animal_:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_:y', -1)
         for bf in bbox_info:
-            _frame_num, x1, y1, x2, y2, _class, score = bf
+            if len(bf) >= 8:
+                _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
+                _mask = ast.literal_eval(_mask)
+                _mask = mask_util.decode(_mask)[:, :]
+                frame = draw.draw_binary_masks(frame, [_mask], [_class])
+            else:
+                _frame_num, x1, y1, x2, y2, _class, score = bf
+
             if not math.isnan(x1) and _frame_num == frame_number:
                 cx = int((x1 + x2) / 2)
                 cy = int((y1 + y2) / 2)
