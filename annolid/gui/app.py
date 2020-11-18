@@ -214,8 +214,10 @@ class AnnolidWindow(MainWindow):
 
         if Path(file_name).is_file() or Path(file_name).parent.is_dir():
             labels_text_list = ['__ignore__', '_background_']
-            for l in self.labelList:
-                label_name = l.text().split()[0]
+            for i in range(self.uniqLabelList.count()):
+                # get all the label names from the unique list
+                label_name = self.uniqLabelList.item(
+                    i).data(QtCore.Qt.UserRole)
                 labels_text_list.append(label_name)
 
             with open(file_name, 'w') as lt:
