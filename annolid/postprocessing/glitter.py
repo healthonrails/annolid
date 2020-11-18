@@ -12,7 +12,8 @@ points = [deque(maxlen=30) for _ in range(1000)]
 def tracks2nix(vidoe_file=None,
                tracking_results='tracking.csv',
                out_nix_csv_file='my_glitter_format.csv',
-               zone_info=None
+               zone_info=None,
+               overlay_mask=True
                ):
     """
     Args:
@@ -85,6 +86,8 @@ def tracks2nix(vidoe_file=None,
     num_grooming = 0
     num_rearing = 0
     num_object_investigation = 0
+    num_left_interact = 0
+    num_right_interact = 0
 
     out_video_file = f"{os.path.splitext(vidoe_file)[0]}_tracked.mp4"
 
@@ -107,8 +110,14 @@ def tracks2nix(vidoe_file=None,
         timestamps[frame_timestamp].setdefault('event:Grooming', 0)
         timestamps[frame_timestamp].setdefault('event:Rearing', 0)
         timestamps[frame_timestamp].setdefault('event:Object_investigation', 0)
+        timestamps[frame_timestamp].setdefault('event:RightInteract', 0)
+        timestamps[frame_timestamp].setdefault('event:LeftInteract', 0)
         timestamps[frame_timestamp].setdefault('pos:animal_center:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_center:y', -1)
+
+        timestamps[frame_timestamp].setdefault('pos:interact_center:x', -1)
+        timestamps[frame_timestamp].setdefault('pos:interact_center:y', -1)
+
         timestamps[frame_timestamp].setdefault('pos:animal_nose:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_nose:y', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_:x', -1)
@@ -116,9 +125,10 @@ def tracks2nix(vidoe_file=None,
         for bf in bbox_info:
             if len(bf) >= 8:
                 _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
-                _mask = ast.literal_eval(_mask)
-                _mask = mask_util.decode(_mask)[:, :]
-                frame = draw.draw_binary_masks(frame, [_mask], [_class])
+                if not pd.isnull(_mask) and overlay_mask:
+                    _mask = ast.literal_eval(_mask)
+                    _mask = mask_util.decode(_mask)[:, :]
+                    frame = draw.draw_binary_masks(frame, [_mask], [_class])
             else:
                 _frame_num, x1, y1, x2, y2, _class, score = bf
 
@@ -128,10 +138,10 @@ def tracks2nix(vidoe_file=None,
                 color = draw.compute_color_for_labels(
                     hash(_class) % 100)
 
-                if _class == 'nose':
+                if _class == 'nose' or 'nose' in _class.lower():
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_nose:y'] = cy
-                elif _class == 'centroid':
+                elif _class == 'centroid' or _class == 'Mouse':
                     timestamps[frame_timestamp]['pos:animal_center:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_center:y'] = cy
                 elif _class == 'grooming':
@@ -149,6 +159,24 @@ def tracks2nix(vidoe_file=None,
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_:y'] = cy
                     num_object_investigation += 1
+                elif _class == 'LeftInteract':
+
+                    timestamps[frame_timestamp]['pos:interact_center:x'] = cx
+                    timestamps[frame_timestamp]['pos:interact_center:y'] = cy
+
+                    if cx > width / 2:
+                        timestamps[frame_timestamp]['event:RightInteract'] = 1
+                        num_right_interact += 1
+                        _class = "RightInteract"
+                    else:
+                        timestamps[frame_timestamp]['event:LeftInteract'] = 1
+                        num_left_interact += 1
+                elif _class == 'RightInteract':
+                    timestamps[frame_timestamp]['event:RightInteract'] = 1
+                    timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
+                    timestamps[frame_timestamp]['pos:interact_center_:y'] = cy
+                    num_right_interact += 1
+
                 elif 'object' in _class.lower() and _class != 'object_investigation':
                     zone_dict[f'zone:{_class}:value'] = [
                         'circle',
@@ -156,7 +184,9 @@ def tracks2nix(vidoe_file=None,
                         min(int((x2-x1)/2), int(y2-y1))
                     ]
 
-                if _class in ['grooming', 'rearing', 'object_investigation']:
+                if _class in ['grooming', 'rearing',
+                              'object_investigation',
+                              'LeftInteract', 'RightInteract']:
                     bbox = [[x1, y1, x2, y2]]
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -164,6 +194,11 @@ def tracks2nix(vidoe_file=None,
                         label = f"{_class}: {num_rearing} times"
                     elif _class == "object_investigation":
                         label = f"{_class}: {num_object_investigation} times"
+                    elif _class == "LeftInteract":
+                        label = f"{_class}: {num_left_interact} times"
+                    elif _class == "RightInteract":
+                        label = f"{_class}: {num_right_interact} times"
+
                     draw.draw_boxes(
                         frame,
                         bbox,
