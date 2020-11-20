@@ -9,16 +9,26 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.setWindowTitle("Convert to COCO format datasets ")
         self.annotation_dir = None
         self.out_dir = None
+        self.slider()
         self.label_list_text = None
+
+        self.num_train_frames = 10
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
         self.buttonbox.accepted.connect(self.accept)
         self.buttonbox.rejected.connect(self.reject)
+
+        self.label1 = QtWidgets.QLabel(
+            f"Please type or select number of frames for training default={self.num_train_frames}")
+
+        self.trainFramesLineEdit = QtWidgets.QLineEdit(self)
+        self.trainFramesLineEdit.setText(str(self.num_train_frames))
+        self.trainFramesLineEdit.textChanged.connect(self.onSliderChange)
+
         hboxLayOut = QtWidgets.QHBoxLayout()
         vbox = QtWidgets.QVBoxLayout()
 
-        
         self.groupBoxFiles = QtWidgets.QGroupBox(
             f"Please select annotaton directory")
         self.annoFileLineEdit = QtWidgets.QLineEdit(self)
@@ -56,6 +66,9 @@ class ConvertCOODialog(QtWidgets.QDialog):
 
         vbox.addWidget(self.groupBoxFiles)
         vbox.addWidget(self.groupBoxLabelFiles)
+        vbox.addWidget(self.label1)
+        vbox.addWidget(self.trainFramesLineEdit)
+        vbox.addWidget(self.slider)
         vbox.addWidget(self.groupBoxOutDir)
         vbox.addWidget(self.buttonbox)
 
@@ -84,3 +97,21 @@ class ConvertCOODialog(QtWidgets.QDialog):
                                                                          "Select Directory")
         if self.annotation_dir is not None:
             self.annoFileLineEdit.setText(self.annotation_dir)
+
+    def slider(self):
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setMinimum(1)
+        self.slider.setMaximum(1000)
+        self.slider.setValue(10)
+        self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider.setTickInterval(1)
+        self.slider.valueChanged.connect(self.onSliderChange)
+
+    def onSliderChange(self, position):
+        self.num_train_frames = int(position) if position and str(
+            position).isdigit() else 0
+
+        self.trainFramesLineEdit.setText(str(position))
+        self.label1.setText(
+            f"You selected {str(self.num_train_frames)} frames for training"
+        )

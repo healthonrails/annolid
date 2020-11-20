@@ -370,11 +370,13 @@ class AnnolidWindow(MainWindow):
         output_dir = None
         labels_file = None
         input_anno_dir = None
+        num_train_frames = 0.7
         coco_dlg = ConvertCOODialog()
         if coco_dlg.exec_():
             input_anno_dir = coco_dlg.annotation_dir
             labels_file = coco_dlg.label_list_text
             output_dir = coco_dlg.out_dir
+            num_train_frames = coco_dlg.num_train_frames
         else:
             return
 
@@ -399,7 +401,8 @@ class AnnolidWindow(MainWindow):
         label_gen = labelme2coco.convert(
             str(input_anno_dir),
             output_annotated_dir=str(self.output_dir),
-            labels_file=labels_file
+            labels_file=labels_file,
+            train_valid_split=num_train_frames
         )
         pw = ProgressingWindow(label_gen)
         if pw.exec_():
