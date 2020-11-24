@@ -41,6 +41,7 @@ def convert(input_annotated_dir,
 
     assert os.path.exists(input_annotated_dir), "Please check the input dir."
     class_instance_counter = {}
+    train_class_instance_counter = {}
 
     if not osp.exists(output_annotated_dir):
         os.makedirs(output_annotated_dir)
@@ -123,6 +124,7 @@ def convert(input_annotated_dir,
 
             if class_name != '_background_':
                 class_instance_counter[class_name] = 0
+                train_class_instance_counter[class_name] = 0
             class_name_to_id[class_name] = class_id
             train_data["categories"].append(
                 dict(supercategory=None, id=class_id, name=class_name,)
@@ -137,6 +139,10 @@ def convert(input_annotated_dir,
                                   "annotations.json")
     label_files = glob.glob(osp.join(input_annotated_dir, "*.json"))
     num_label_files = len(label_files)
+
+    training_percentage = 0.7
+    if train_valid_split > 1 and train_valid_split <= num_label_files:
+        training_percentage = train_valid_split / num_label_files
 
     if train_valid_split > num_label_files:
         # if the provided number is not valid
@@ -172,6 +178,33 @@ def convert(input_annotated_dir,
             group_id = shape.get("group_id")
 
             shape_type = shape.get("shape_type", "polygon")
+
+            if train_valid_split > 1:
+                if training_examples_sofar < train_valid_split:
+                    if train_class_instance_counter[label] == 0:
+                        is_train = 1
+                    elif train_class_instance_counter[label] <= (
+                            train_valid_split / len(train_class_instance_counter)) + 1:
+                        is_train = 1
+                    # make sure very instances in the class is covered
+                    # before random sampling
+                    elif 0 not in train_class_instance_counter.values():
+                        is_train = 1
+                    else:
+                        is_train = np.random.choice(
+                            [0, 1], p=[1-training_percentage, training_percentage]
+                        )
+
+            elif train_valid_split < 1:
+                is_train = np.random.choice(
+                    [0, 1], p=[1-train_valid_split, train_valid_split])
+            elif train_valid_split == 1:
+                is_train = 1
+
+            class_instance_counter[label] += 1
+
+            if is_train == 1:
+                train_class_instance_counter[label] += 1
 
             if shape_type == 'point':
                 cx, cy = points[0]
@@ -210,21 +243,6 @@ def convert(input_annotated_dir,
             if cls_name not in class_name_to_id:
                 continue
             cls_id = class_name_to_id[cls_name]
-
-            if (training_examples_sofar < train_valid_split and train_valid_split > 1):
-                if class_instance_counter[cls_name] <= (
-                        train_valid_split / len(class_instance_counter)) + 1:
-                    is_train = 1
-                else:
-                    is_train = np.random.choice(
-                        [0, 1], p=[0.3, 0.7])
-            elif train_valid_split < 1:
-                is_train = np.random.choice(
-                    [0, 1], p=[1-train_valid_split, train_valid_split])
-            elif train_valid_split == 1:
-                is_train = 1
-
-            class_instance_counter[cls_name] += 1
 
             mask = np.asfortranarray(mask.astype(np.uint8))
             mask = pycocotools.mask.encode(mask)
@@ -357,4 +375,5 @@ def convert(input_annotated_dir,
         dy.write(f"    dataset: 'dataset_{input_annotated_dir_name}_coco'\n")
         dy.write(f"    max_size: 512\n")
     print('Done.')
-    print(class_instance_counter)
+    print("All: ", class_instance_counter)
+    print("Training set: ", train_class_instance_counter)
