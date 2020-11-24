@@ -65,6 +65,7 @@ def convert(input_annotated_dir,
         _create_dirs(valid_mask_dir)
 
     print("Creating dataset:", output_annotated_dir)
+    training_examples_sofar = 0
 
     now = datetime.datetime.now()
 
@@ -137,15 +138,7 @@ def convert(input_annotated_dir,
     label_files = glob.glob(osp.join(input_annotated_dir, "*.json"))
     num_label_files = len(label_files)
 
-    train_label_files = None
-
-    if train_valid_split > 1 and train_valid_split <= num_label_files:
-        train_label_files = np.random.choice(
-            range(num_label_files),
-            size=train_valid_split,
-            replace=False
-        )
-    else:
+    if train_valid_split > num_label_files:
         # if the provided number is not valid
         # e.g. with too many frames
         # each image has the 0.7 probaility
@@ -169,12 +162,6 @@ def convert(input_annotated_dir,
         img = labelme.utils.img_data_to_arr(label_file.imageData)
 
         is_train = 0
-        if train_label_files is not None:
-            if image_id in train_label_files:
-                is_train = 1
-        else:
-            is_train = np.random.choice(
-                [0, 1], p=[1-train_valid_split, train_valid_split])
         # for area
         masks = {}
         # for segmentation
@@ -224,9 +211,17 @@ def convert(input_annotated_dir,
                 continue
             cls_id = class_name_to_id[cls_name]
 
-            if class_instance_counter[cls_name] == 0 or \
-                    class_instance_counter[cls_name] <= (
-                    train_valid_split / len(class_instance_counter)):
+            if (training_examples_sofar < train_valid_split and train_valid_split > 1):
+                if class_instance_counter[cls_name] <= (
+                        train_valid_split / len(class_instance_counter)) + 1:
+                    is_train = 1
+                else:
+                    is_train = np.random.choice(
+                        [0, 1], p=[0.3, 0.7])
+            elif train_valid_split < 1:
+                is_train = np.random.choice(
+                    [0, 1], p=[1-train_valid_split, train_valid_split])
+            elif train_valid_split == 1:
                 is_train = 1
 
             class_instance_counter[cls_name] += 1
@@ -262,6 +257,7 @@ def convert(input_annotated_dir,
                 )
 
         if is_train == 1:
+            training_examples_sofar += 1
             imgviz.io.imsave(train_out_img_file, img)
         else:
             imgviz.io.imsave(valid_out_img_file, img)
