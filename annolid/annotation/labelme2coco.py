@@ -40,6 +40,7 @@ def convert(input_annotated_dir,
         labels_file), "Please provide the correct label file."
 
     assert os.path.exists(input_annotated_dir), "Please check the input dir."
+    class_instance_counter = {}
 
     if not osp.exists(output_annotated_dir):
         os.makedirs(output_annotated_dir)
@@ -118,6 +119,9 @@ def convert(input_annotated_dir,
             if class_id == -1:
                 assert class_name == "__ignore__"
                 continue
+
+            if class_name != '_background_':
+                class_instance_counter[class_name] = 0
             class_name_to_id[class_name] = class_id
             train_data["categories"].append(
                 dict(supercategory=None, id=class_id, name=class_name,)
@@ -143,8 +147,8 @@ def convert(input_annotated_dir,
         )
     else:
         # if the provided number is not valid
-        # e.g. with too many frames 
-        # each image has the 0.7 probaility 
+        # e.g. with too many frames
+        # each image has the 0.7 probaility
         # to be assigned for training
         train_valid_split = 0.7
 
@@ -171,46 +175,8 @@ def convert(input_annotated_dir,
         else:
             is_train = np.random.choice(
                 [0, 1], p=[1-train_valid_split, train_valid_split])
-        if is_train == 1:
-            imgviz.io.imsave(train_out_img_file, img)
-        else:
-            imgviz.io.imsave(valid_out_img_file, img)
-
-        if is_train == 1:
-            train_data["images"].append(
-                dict(
-                    license=0,
-                    url=None,
-                    file_name=osp.relpath(train_out_img_file,
-                                          osp.dirname(train_out_ann_file)),
-                    height=img.shape[0],
-                    width=img.shape[1],
-                    date_captured=None,
-                    id=image_id,))
-        else:
-            valid_data["images"].append(
-                dict(
-                    license=0,
-                    url=None,
-                    file_name=osp.relpath(valid_out_img_file,
-                                          osp.dirname(valid_out_ann_file)),
-                    height=img.shape[0],
-                    width=img.shape[1],
-                    date_captured=None,
-                    id=image_id,))
         # for area
         masks = {}
-
-        if save_mask and vis:
-            lbl, _ = labelme.utils.shapes_to_label(
-                img.shape, label_file.shapes, class_name_to_id)
-            if is_train == 1:
-                out_mask_file = osp.join(
-                    train_mask_dir, base + '_mask.png')
-            else:
-                out_mask_file = osp.join(
-                    valid_mask_dir, base + '_mask.png')
-            labelme.utils.lblsave(out_mask_file, lbl)
         # for segmentation
         segmentations = collections.defaultdict(list)
         for shape in label_file.shapes:
@@ -258,6 +224,13 @@ def convert(input_annotated_dir,
                 continue
             cls_id = class_name_to_id[cls_name]
 
+            if class_instance_counter[cls_name] == 0 or \
+                    class_instance_counter[cls_name] <= (
+                    train_valid_split / len(class_instance_counter)):
+                is_train = 1
+
+            class_instance_counter[cls_name] += 1
+
             mask = np.asfortranarray(mask.astype(np.uint8))
             mask = pycocotools.mask.encode(mask)
             area = float(pycocotools.mask.area(mask))
@@ -287,6 +260,45 @@ def convert(input_annotated_dir,
                         iscrowd=0,
                     )
                 )
+
+        if is_train == 1:
+            imgviz.io.imsave(train_out_img_file, img)
+        else:
+            imgviz.io.imsave(valid_out_img_file, img)
+
+        if is_train == 1:
+            train_data["images"].append(
+                dict(
+                    license=0,
+                    url=None,
+                    file_name=osp.relpath(train_out_img_file,
+                                          osp.dirname(train_out_ann_file)),
+                    height=img.shape[0],
+                    width=img.shape[1],
+                    date_captured=None,
+                    id=image_id,))
+        else:
+            valid_data["images"].append(
+                dict(
+                    license=0,
+                    url=None,
+                    file_name=osp.relpath(valid_out_img_file,
+                                          osp.dirname(valid_out_ann_file)),
+                    height=img.shape[0],
+                    width=img.shape[1],
+                    date_captured=None,
+                    id=image_id,))
+
+        if save_mask and vis:
+            lbl, _ = labelme.utils.shapes_to_label(
+                img.shape, label_file.shapes, class_name_to_id)
+            if is_train == 1:
+                out_mask_file = osp.join(
+                    train_mask_dir, base + '_mask.png')
+            else:
+                out_mask_file = osp.join(
+                    valid_mask_dir, base + '_mask.png')
+            labelme.utils.lblsave(out_mask_file, lbl)
 
         if vis:
             labels, captions, masks = zip(
@@ -349,3 +361,4 @@ def convert(input_annotated_dir,
         dy.write(f"    dataset: 'dataset_{input_annotated_dir_name}_coco'\n")
         dy.write(f"    max_size: 512\n")
     print('Done.')
+    print(class_instance_counter)
