@@ -1,5 +1,4 @@
 import imageio
-import glob
 import json
 from pathlib import Path
 import pandas as pd
@@ -42,6 +41,7 @@ class Augmentation(LabelStats):
         self.anno_dir = anno_dir
         super(Augmentation, self).__init__(anno_dir)
         self.df = self.to_table()
+        self.df.reset_index(drop=True, inplace=True)
         self.augment_list = []
 
     def augment(self):
@@ -83,23 +83,24 @@ class Augmentation(LabelStats):
                     polygon = Polygon(points, [label])
                     psoi = ia.PolygonsOnImage(
                         [polygon], shape=image_polys.shape)
-                    _, psoi_aug = aug(image=image_polys, polygons=psoi)
-                    aug_points = psoi_aug.polygons[0].exterior
-                    polys.append(polygon)
-                    label_file['shapes'][i]['points'] = aug_points.tolist()
+                    instance_counts_median = self.df['counts'].median()
+                    instance_counts = (
+                        self.df[self.df['instance_name'] == label]['counts'].values[0])
+                    for j in range(int(instance_counts_median - instance_counts)):
+                        aug_img, psoi_aug = aug(
+                            image=image_polys, polygons=psoi)
+                        aug_img_path = aug_dir / \
+                            (img_path.stem + f'_{j}_aug.jpg')
+                        aug_json_path = aug_img_path.with_suffix('.json')
+                        aug_points = psoi_aug.polygons[0].exterior
+                        imageio.imsave(aug_img_path, aug_img, '.jpg')
+                        label_file["imageData"] = None
+                        label_file['imagePath'] = aug_img_path.name
+                        with open(aug_json_path, "w") as f:
+                            json.dump(label_file, f,
+                                      ensure_ascii=False, indent=2)
+
+                        label_file['shapes'][i]['points'] = aug_points.tolist()
 
                     self.augment_list.append(lf)
-
-            if is_aug:
-                posi = ia.PolygonsOnImage(polys, shape=image_polys.shape)
-                img_aug, psoi_aug = aug(image=image_polys, polygons=posi)
-                aug_img_path = aug_dir / (img_path.stem + '_aug.jpg')
-                aug_json_path = aug_img_path.with_suffix('.json')
-                imageio.imsave(aug_img_path, img_aug, '.jpg')
-                label_file["imageData"] = None
-                label_file['imagePath'] = aug_img_path.name
-                with open(aug_json_path, "w") as f:
-                    json.dump(label_file, f, ensure_ascii=False, indent=2)
-                ia.imshow(psoi_aug.draw_on_image(
-                    img_aug, alpha_face=0.3, size_points=7))
         return set(self.augment_list)
