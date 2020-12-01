@@ -14,7 +14,7 @@ sys.path.append("detector/yolov5/")
 
 def key_frames(video_file=None,
                out_dir=None,
-               ctx=de.cpu(0)
+               ctx=None
                ):
     vr = de.VideoReader(video_file)
     key_idxs = vr.get_key_indices()

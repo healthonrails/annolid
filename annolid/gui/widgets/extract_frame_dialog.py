@@ -106,12 +106,18 @@ class ExtractFrameDialog(QtWidgets.QDialog):
                 self.slider.setDisabled(True)
                 self.slider.hide()
                 self.label1.setVisible(False)
+
+                self.framesLineEdit.hide()
+                self.framesLineEdit.setVisible(False)
             else:
                 self.slider.setEnabled(True)
                 if self.slider.isHidden():
                     self.slider.setVisible(True)
                 if self.label1.isHidden():
                     self.label1.setVisible(True)
+                if self.framesLineEdit.isHidden():
+                    self.framesLineEdit.setVisible(True)
+
 
     def onSliderChange(self, position):
         self.num_frames = int(position) if position and str(
