@@ -8,14 +8,41 @@ import random
 from pathlib import Path
 import decord as de
 from collections import deque
+from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
 sys.path.append("detector/yolov5/")
 
 
+def extract_subclip(video_file,
+                    start_time,
+                    end_time):
+    video_dir = Path(video_file).parent
+    out_video_name = Path(video_file).stem + \
+        f"_{str(start_time)}_{str(end_time)}.mp4"
+    out_video_path = video_dir / out_video_name
+
+    ffmpeg_extract_subclip(
+        video_file,
+        start_time,
+        end_time,
+        targetname=str(out_video_path))
+
+    return str(out_video_path)
+
+
 def key_frames(video_file=None,
                out_dir=None,
-               ctx=None
+               ctx=None,
+               sub_clip=False,
+               start_seconds=None,
+               end_seconds=None,
                ):
+
+    if sub_clip and start_seconds is not None and end_seconds is not None:
+        video_file = extract_subclip(video_file,
+                                     start_seconds,
+                                     end_seconds)
+
     vr = de.VideoReader(video_file)
     key_idxs = vr.get_key_indices()
 
@@ -33,7 +60,9 @@ def key_frames(video_file=None,
         out_frame_file = out_dir / f"{ki:08}.jpg"
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         cv2.imwrite(str(out_frame_file), frame)
+        print(f"Saved {str(out_frame_file)}")
     print(f"Please check your frames located at {out_dir}")
+    return out_dir
 
 
 def extract_frames(video_file='None',
@@ -41,7 +70,10 @@ def extract_frames(video_file='None',
                    out_dir=None,
                    show_flow=False,
                    algo='flow',
-                   keep_first_frame=False
+                   keep_first_frame=False,
+                   sub_clip=False,
+                   start_seconds=None,
+                   end_seconds=None
                    ):
     """
     Extract frames from the given video file. 
@@ -50,6 +82,11 @@ def extract_frames(video_file='None',
     Or you can save all the frames by providing `num_frames` = -1. 
 
     """
+
+    if sub_clip and start_seconds is not None and end_seconds is not None:
+        video_file = extract_subclip(video_file,
+                                     start_seconds,
+                                     end_seconds)
 
     if out_dir is None:
         out_dir = os.path.splitext(video_file)[0]
@@ -60,8 +97,11 @@ def extract_frames(video_file='None',
         os.makedirs(out_dir)
 
     if algo == 'keyframes':
-        key_frames(video_file, out_dir)
-        return
+        out_dir = key_frames(video_file, out_dir,
+                             sub_clip=sub_clip,
+                             start_seconds=start_seconds,
+                             end_seconds=end_seconds)
+        return out_dir
 
     cap = cv2.VideoCapture(video_file)
     fps = cap.get(5)
@@ -126,6 +166,7 @@ def extract_frames(video_file='None',
                                              frame_number,
                                              frame))
                 ki += 1
+                print(f'Processed {ki} frames.')
             continue
         if algo == 'flow' and num_frames != -1:
             mask = subtractor.apply(frame)
@@ -177,6 +218,7 @@ def extract_frames(video_file='None',
     cap.release()
     cv2.destroyAllWindows()
     print(f"Please check the extracted frames in folder: {out_dir}")
+    return out_dir
 
 
 def track(video_file=None,

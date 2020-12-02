@@ -31,6 +31,7 @@ setuptools.setup(
                       'pycocotools>=2.0.2',
                       'tensorboard>=2.3.0',
                       'PyQtWebEngine>=5.15.1',
+                      'moviepy>=1.0.3',
                       ],
     python_requires='>=3.6',
 

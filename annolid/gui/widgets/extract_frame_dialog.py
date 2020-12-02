@@ -13,6 +13,9 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.algo = 'random'
         self.video_file = None
         self.out_dir = None
+        self.start_sconds = None
+        self.end_seconds = None
+        self.sub_clip = False
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -35,6 +38,26 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         hboxLayOut.addWidget(self.inputFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
 
+        self.groupBoxSubClip = QtWidgets.QGroupBox(
+            "Please type the start seconds and end seconds for the video clip (Optional)")
+        self.startSecondsLabel = QtWidgets.QLabel(self)
+        self.startSecondsLabel.setText("Start seconds:")
+        self.startSecondsLineEdit = QtWidgets.QLineEdit(self)
+        self.startSecondsLineEdit.textChanged.connect(
+            self.onCutClipStartTimeChanged)
+        self.endSecondsLabel = QtWidgets.QLabel(self)
+        self.endSecondsLabel.setText("End seconds:")
+        self.endSecondsLineEdit = QtWidgets.QLineEdit(self)
+        self.endSecondsLineEdit.textChanged.connect(
+            self.onCutClipEndTimeChanged)
+
+        hboxLayOutSubClip = QtWidgets.QHBoxLayout()
+        hboxLayOutSubClip.addWidget(self.startSecondsLabel)
+        hboxLayOutSubClip.addWidget(self.startSecondsLineEdit)
+        hboxLayOutSubClip.addWidget(self.endSecondsLabel)
+        hboxLayOutSubClip.addWidget(self.endSecondsLineEdit)
+        self.groupBoxSubClip.setLayout(hboxLayOutSubClip)
+
         self.groupBoxOutDir = QtWidgets.QGroupBox(
             "Please choose output directory (Optional)")
         self.outFileDirEdit = QtWidgets.QLineEdit(self)
@@ -51,6 +74,7 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         vbox.addWidget(self.framesLineEdit)
         vbox.addWidget(self.slider)
         vbox.addWidget(self.groupBoxFiles)
+        vbox.addWidget(self.groupBoxSubClip)
         vbox.addWidget(self.groupBoxOutDir)
         vbox.addWidget(self.buttonbox)
 
@@ -118,10 +142,30 @@ class ExtractFrameDialog(QtWidgets.QDialog):
                 if self.framesLineEdit.isHidden():
                     self.framesLineEdit.setVisible(True)
 
-
     def onSliderChange(self, position):
         self.num_frames = int(position) if position and str(
             position).isdigit() else 0
         self.framesLineEdit.setText(str(position))
         self.label1.setText(
             f"You selected {str(self.num_frames)} frames")
+
+    def onCutClipStartTimeChanged(self):
+        self.start_sconds = self.startSecondsLineEdit.text()
+        if not self.start_sconds.isdigit():
+            QtWidgets.QMessageBox.about(self,
+                                        "invalid start seconds",
+                                        "Please enter a vaild int number for start seconds")
+
+        if self.start_sconds.isdigit():
+            self.start_sconds = int(self.start_sconds)
+
+    def onCutClipEndTimeChanged(self):
+        self.end_seconds = self.endSecondsLineEdit.text()
+
+        if not self.end_seconds.isdigit():
+            QtWidgets.QMessageBox.about(self,
+                                        "invalid end seconds",
+                                        "Please enter a vaild int number for end seconds")
+
+        if self.end_seconds.isdigit():
+            self.end_seconds = int(self.end_seconds)
