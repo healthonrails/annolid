@@ -19,6 +19,11 @@ cd annolid
 # install the package
 pip install -e .
 ```
+Note: if you got this error: 
+```
+ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
+```
+, please try to install [ffmpeg](https://ffmpeg.org/) and then install decord from source as described [here](https://github.com/dmlc/decord).
 
 ## Launch annolid user interface based on labelme
 ```bash
