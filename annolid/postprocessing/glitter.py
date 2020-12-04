@@ -132,37 +132,45 @@ def tracks2nix(vidoe_file=None,
             else:
                 _frame_num, x1, y1, x2, y2, _class, score = bf
 
+            # In glitter, the y-axis is such that the bottom is zero and the top is height.
+            # i.e. origin is bottom left
+            glitter_y1 = height - y1
+            glitter_y2 = height - y2
+
+            if 'right' in _class.lower() and 'interact' in _class.lower():
+                _class = 'RightInteract'
+
             if not math.isnan(x1) and _frame_num == frame_number:
                 cx = int((x1 + x2) / 2)
+                cy_glitter = int((glitter_y1 + glitter_y2) / 2)
                 cy = int((y1 + y2) / 2)
                 color = draw.compute_color_for_labels(
                     hash(_class) % 100)
-
                 if _class == 'nose' or 'nose' in _class.lower():
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx
-                    timestamps[frame_timestamp]['pos:animal_nose:y'] = cy
+                    timestamps[frame_timestamp]['pos:animal_nose:y'] = cy_glitter
                 elif _class == 'centroid' or _class == 'Mouse':
                     timestamps[frame_timestamp]['pos:animal_center:x'] = cx
-                    timestamps[frame_timestamp]['pos:animal_center:y'] = cy
+                    timestamps[frame_timestamp]['pos:animal_center:y'] = cy_glitter
                 elif _class == 'grooming':
                     timestamps[frame_timestamp]['event:Grooming'] = 1
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
-                    timestamps[frame_timestamp]['pos:animal_:y'] = cy
+                    timestamps[frame_timestamp]['pos:animal_:y'] = cy_glitter
                     num_grooming += 1
                 elif _class == 'rearing':
                     timestamps[frame_timestamp]['event:Rearing'] = 1
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
-                    timestamps[frame_timestamp]['pos:animal_:y'] = cy
+                    timestamps[frame_timestamp]['pos:animal_:y'] = cy_glitter
                     num_rearing += 1
                 elif _class == 'object_investigation':
                     timestamps[frame_timestamp]['event:Object_investigation'] = 1
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
-                    timestamps[frame_timestamp]['pos:animal_:y'] = cy
+                    timestamps[frame_timestamp]['pos:animal_:y'] = cy_glitter
                     num_object_investigation += 1
                 elif _class == 'LeftInteract':
 
                     timestamps[frame_timestamp]['pos:interact_center:x'] = cx
-                    timestamps[frame_timestamp]['pos:interact_center:y'] = cy
+                    timestamps[frame_timestamp]['pos:interact_center:y'] = cy_glitter
 
                     if cx > width / 2:
                         timestamps[frame_timestamp]['event:RightInteract'] = 1
@@ -174,14 +182,14 @@ def tracks2nix(vidoe_file=None,
                 elif _class == 'RightInteract':
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
-                    timestamps[frame_timestamp]['pos:interact_center_:y'] = cy
+                    timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
                     num_right_interact += 1
 
                 elif 'object' in _class.lower() and _class != 'object_investigation':
                     zone_dict[f'zone:{_class}:value'] = [
                         'circle',
-                        [cx, cy],
-                        min(int((x2-x1)/2), int(y2-y1))
+                        [cx, cy_glitter],
+                        min(int((x2-x1)/2), int(glitter_y2-glitter_y1))
                     ]
 
                 if _class in ['grooming', 'rearing',
