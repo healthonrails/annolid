@@ -3,6 +3,10 @@ import cv2
 import pandas as pd
 import math
 import ast
+import json
+import functools
+import operator
+from pathlib import Path
 from annolid.utils import draw
 from collections import deque
 import pycocotools.mask as mask_util
@@ -12,8 +16,9 @@ points = [deque(maxlen=30) for _ in range(1000)]
 def tracks2nix(vidoe_file=None,
                tracking_results='tracking.csv',
                out_nix_csv_file='my_glitter_format.csv',
-               zone_info=None,
-               overlay_mask=True
+               zone_info='zone_info.json',
+               overlay_mask=True,
+               score_threshold=0.86
                ):
     """
     Args:
@@ -26,6 +31,11 @@ def tracks2nix(vidoe_file=None,
 
     Create a nix format csv file and annotated video
     """
+
+    if zone_info == 'zone_info.json':
+        zone_info = Path(__file__).parent / zone_info
+    elif '.json' in zone_info:
+        zone_info = Path(zone_info)
 
     df = pd.read_csv(tracking_results)
     try:
@@ -57,7 +67,7 @@ def tracks2nix(vidoe_file=None,
 
     zone_dict = {}
 
-    if zone_info is not None:
+    if zone_info is not None and zone_info.suffix != '.json':
         zone_background_dict = {}
 
         zone_background_dict['zone:background:property'] = ['type', 'points']
@@ -80,6 +90,10 @@ def tracks2nix(vidoe_file=None,
                     "0, 0",
                     0
                 ]
+    elif zone_info.exists():
+        zone_file = json.loads(
+            zone_info.read_bytes())
+        zones = zone_file['shapes']
 
     timestamps = {}
 
@@ -122,6 +136,26 @@ def tracks2nix(vidoe_file=None,
         timestamps[frame_timestamp].setdefault('pos:animal_nose:y', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_:y', -1)
+
+        right_zone_box = None
+        left_zone_box = None
+
+        if zones:
+            for zs in zones:
+                zone_box = zs['points']
+                zone_label = zs['label']
+                zone_box = functools.reduce(operator.iconcat, zone_box, [])
+                if zone_label == 'right_zone':
+                    right_zone_box = zone_box
+                elif zone_label == 'left_zone':
+                    left_zone_box = zone_box
+                draw.draw_boxes(
+                    frame,
+                    [zone_box],
+                    identities=[zone_label],
+                    draw_track=False,
+                )
+
         for bf in bbox_info:
             if len(bf) >= 8:
                 _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
@@ -139,6 +173,10 @@ def tracks2nix(vidoe_file=None,
 
             if 'right' in _class.lower() and 'interact' in _class.lower():
                 _class = 'RightInteract'
+
+            is_draw = True
+            if _class == "RightInteract" and x1 < right_zone_box[0]:
+                is_draw = False
 
             if not math.isnan(x1) and _frame_num == frame_number:
                 cx = int((x1 + x2) / 2)
@@ -179,7 +217,7 @@ def tracks2nix(vidoe_file=None,
                     else:
                         timestamps[frame_timestamp]['event:LeftInteract'] = 1
                         num_left_interact += 1
-                elif _class == 'RightInteract':
+                elif is_draw and _class == 'RightInteract' and score >= score_threshold:
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
@@ -192,9 +230,9 @@ def tracks2nix(vidoe_file=None,
                         min(int((x2-x1)/2), int(glitter_y2-glitter_y1))
                     ]
 
-                if _class in ['grooming', 'rearing',
-                              'object_investigation',
-                              'LeftInteract', 'RightInteract']:
+                if is_draw and _class in ['grooming', 'rearing',
+                                          'object_investigation',
+                                          'LeftInteract', 'RightInteract'] and score >= score_threshold:
                     bbox = [[x1, y1, x2, y2]]
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -243,7 +281,7 @@ def tracks2nix(vidoe_file=None,
                                      orient='index'
                                      )
 
-    if zone_info is not None:
+    if zone_info is not None and zone_info.suffix != '.json':
         df_zone_background = pd.DataFrame.from_dict(
             zone_background_dict
         )
@@ -259,7 +297,7 @@ def tracks2nix(vidoe_file=None,
     df_res.insert(0, "metadata", df_meta['metadata'])
     df_res.insert(1, "value", df_meta['value'])
 
-    if zone_info is not None:
+    if zone_info is not None and zone_info.suffix != '.json':
         df_res = pd.concat([df_res, df_zone_background], axis=1)
 
     if zone_dict:
