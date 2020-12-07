@@ -10,6 +10,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.video_file = None
         self.tracking_results = None
         self.out_nix_csv_file = None
+        self.zone_info_json = None
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -40,9 +41,24 @@ class Glitter2Dialog(QtWidgets.QDialog):
         hboxLayOut.addWidget(self.inputFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
 
+        self.groupBoxZoneFiles = QtWidgets.QGroupBox(
+            "Please select a zone info json format file (Optional)"
+        )
+        self.inputZoneInfoLineEdit = QtWidgets.QLineEdit(self)
+        self.inputZoneInfoButton = QtWidgets.QPushButton('Open', self)
+
+        self.inputZoneInfoButton.clicked.connect(
+            self.onInputZoneInfoButtonClicked
+        )
+        hboxZoneInfoLayout = QtWidgets.QHBoxLayout()
+        hboxZoneInfoLayout.addWidget(self.inputZoneInfoLineEdit)
+        hboxZoneInfoLayout.addWidget(self.inputZoneInfoButton)
+        self.groupBoxZoneFiles.setLayout(hboxZoneInfoLayout)
+
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.groupBoxVideoFiles)
         vbox.addWidget(self.groupBoxFiles)
+        vbox.addWidget(self.groupBoxZoneFiles)
         vbox.addWidget(self.buttonbox)
 
         self.setLayout(vbox)
@@ -69,3 +85,25 @@ class Glitter2Dialog(QtWidgets.QDialog):
         )
         if self.tracking_results is not None:
             self.inputFileLineEdit.setText(self.tracking_results)
+
+    def onInputFileButtonClicked(self):
+        self.tracking_results, filter = QtWidgets.QFileDialog.getOpenFileName(
+            parent=self,
+            caption="Open tracking results CSV file",
+            directory=str(Path()),
+            filter='*'
+
+        )
+        if self.tracking_results is not None:
+            self.inputFileLineEdit.setText(self.tracking_results)
+
+    def onInputZoneInfoButtonClicked(self):
+        self.zone_info_json, filter = QtWidgets.QFileDialog.getOpenFileName(
+            parent=self,
+            caption="Open zone info json file",
+            directory=str(Path()),
+            filter='*'
+
+        )
+        if self.zone_info_json is not None:
+            self.inputZoneInfoLineEdit.setText(self.zone_info_json)
