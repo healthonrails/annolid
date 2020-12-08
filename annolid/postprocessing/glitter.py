@@ -213,7 +213,8 @@ def tracks2nix(vidoe_file=None,
                 _class = 'LeftInteract'
 
             is_draw = True
-            if _class == "RightInteract" and x1 < right_zone_box[0]:
+            if _class == "RightInteract" and (right_zone_box is not None
+                                              and x1 < right_zone_box[0]):
                 is_draw = False
 
             if not math.isnan(x1) and _frame_num == frame_number:
@@ -299,7 +300,7 @@ def tracks2nix(vidoe_file=None,
                                color,
                                -1)
 
-                if left_interact > 0 and _class == 'left_vole':
+                if left_interact > 0 and 'left' in _class.lower():
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -312,7 +313,7 @@ def tracks2nix(vidoe_file=None,
                         draw_track=False,
                         points=points
                     )
-                if right_interact > 0 and _class == 'right_vole':
+                if right_interact > 0 and 'right' in _class:
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
