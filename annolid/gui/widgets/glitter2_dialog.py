@@ -11,6 +11,8 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.tracking_results = None
         self.out_nix_csv_file = None
         self.zone_info_json = None
+        self.slider()
+        self.score_threshold = 0.15
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -41,6 +43,9 @@ class Glitter2Dialog(QtWidgets.QDialog):
         hboxLayOut.addWidget(self.inputFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
 
+        self.label1 = QtWidgets.QLabel(
+            f"Please select class score threshold (Optional default=0.15)")
+
         self.groupBoxZoneFiles = QtWidgets.QGroupBox(
             "Please select a zone info json format file (Optional)"
         )
@@ -58,6 +63,8 @@ class Glitter2Dialog(QtWidgets.QDialog):
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.groupBoxVideoFiles)
         vbox.addWidget(self.groupBoxFiles)
+        vbox.addWidget(self.label1)
+        vbox.addWidget(self.slider)
         vbox.addWidget(self.groupBoxZoneFiles)
         vbox.addWidget(self.buttonbox)
 
@@ -107,3 +114,17 @@ class Glitter2Dialog(QtWidgets.QDialog):
         )
         if self.zone_info_json is not None:
             self.inputZoneInfoLineEdit.setText(self.zone_info_json)
+
+    def slider(self):
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setMinimum(0)
+        self.slider.setMaximum(100)
+        self.slider.setValue(15)
+        self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider.setTickInterval(1)
+        self.slider.valueChanged.connect(self.onSliderChange)
+
+    def onSliderChange(self):
+        self.score_threshold = self.slider.value() / 100
+        self.label1.setText(
+            f"You selected {str(self.score_threshold)} as score threshold")

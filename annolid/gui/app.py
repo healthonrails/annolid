@@ -440,6 +440,7 @@ class AnnolidWindow(MainWindow):
         tracking_results = None
         out_nix_csv_file = None
         zone_info_json = None
+        score_threshold = None
 
         g_dialog = Glitter2Dialog()
         if g_dialog.exec_():
@@ -447,6 +448,7 @@ class AnnolidWindow(MainWindow):
             tracking_results = g_dialog.tracking_results
             out_nix_csv_file = g_dialog.out_nix_csv_file
             zone_info_json = g_dialog.zone_info_json
+            score_threshold = g_dialog.score_threshold
         else:
             return
 
@@ -464,7 +466,8 @@ class AnnolidWindow(MainWindow):
             video_file,
             tracking_results,
             out_nix_csv_file,
-            zone_info=zone_info_json
+            zone_info=zone_info_json,
+            score_threshold=score_threshold
         )
 
 

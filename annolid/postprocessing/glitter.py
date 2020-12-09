@@ -1,6 +1,7 @@
 import os
 import cv2
 import pandas as pd
+import numpy as np
 import math
 import ast
 import json
@@ -18,7 +19,7 @@ def tracks2nix(vidoe_file=None,
                out_nix_csv_file='my_glitter_format.csv',
                zone_info='zone_info.json',
                overlay_mask=True,
-               score_threshold=0.5
+               score_threshold=0.6
                ):
     """
     Args:
@@ -31,6 +32,8 @@ def tracks2nix(vidoe_file=None,
 
     Create a nix format csv file and annotated video
     """
+
+    print(f"Class or Instance score threshold is: {score_threshold}.")
 
     if zone_info and '.json' in zone_info:
         zone_info = Path(zone_info)
@@ -305,7 +308,7 @@ def tracks2nix(vidoe_file=None,
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
-                    label = f"{_class}_interact: {num_left_interact} times"
+                    label = f"interact:{num_left_interact} times"
                     draw.draw_boxes(
                         frame,
                         bbox,
@@ -318,7 +321,7 @@ def tracks2nix(vidoe_file=None,
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
-                    label = f"{_class}_interact: {num_right_interact} times"
+                    label = f"interact:{num_right_interact} times"
                     draw.draw_boxes(
                         frame,
                         bbox,
