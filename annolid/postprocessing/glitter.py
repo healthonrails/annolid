@@ -201,7 +201,9 @@ def tracks2nix(vidoe_file=None,
                 if not pd.isnull(_mask) and overlay_mask:
                     _mask = ast.literal_eval(_mask)
                     _mask = mask_util.decode(_mask)[:, :]
-                    frame = draw.draw_binary_masks(frame, [_mask], [_class])
+                    if score >= score_threshold and 'interact' not in _class.lower():
+                        frame = draw.draw_binary_masks(
+                            frame, [_mask], [_class])
             else:
                 _frame_num, x1, y1, x2, y2, _class, score = bf
 
@@ -219,6 +221,9 @@ def tracks2nix(vidoe_file=None,
             if _class == "RightInteract" and (right_zone_box is not None
                                               and x1 < right_zone_box[0]):
                 is_draw = False
+
+            # draw bbox if model predict with interact and their mask overlaps
+            is_draw = is_draw and (left_interact > 0 or right_interact > 0)
 
             if not math.isnan(x1) and _frame_num == frame_number:
                 cx = int((x1 + x2) / 2)
