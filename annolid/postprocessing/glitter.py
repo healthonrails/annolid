@@ -222,7 +222,7 @@ def tracks2nix(vidoe_file=None,
                                               and x1 < right_zone_box[0]):
                 is_draw = False
 
-            # draw bbox if model predict with interact and their mask overlaps
+            # draw bbox if model predicted with interact and their masks overlaps
             is_draw = is_draw and (left_interact > 0 or right_interact > 0)
 
             if not math.isnan(x1) and _frame_num == frame_number:
@@ -234,7 +234,8 @@ def tracks2nix(vidoe_file=None,
                 if _class == 'nose' or 'nose' in _class.lower():
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_nose:y'] = cy_glitter
-                elif _class == 'centroid' or _class == 'Mouse':
+                elif _class == 'centroid' or _class.lower().endswith('mouse') \
+                        or _class.lower().endswith('vole'):
                     timestamps[frame_timestamp]['pos:animal_center:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_center:y'] = cy_glitter
                 elif _class == 'grooming':
