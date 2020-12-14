@@ -233,6 +233,16 @@ def convert(input_annotated_dir,
                 x1, x2 = sorted([x1, x2])
                 y1, y2 = sorted([y1, y2])
                 points = np.asarray([x1, y1, x2, y1, x2, y2, x1, y2])
+            elif shape_type == "circle":
+                (x1, y1), (x2, y2) = points
+                radius = ((x1-x2)**2 + (y1-y2)**2)**(1/2) + \
+                    np.random.choice(np.arange(0, 1, 0.1))
+                xs = x1 + (radius * np.cos(_angles))
+                ys = y1 + (radius * np.sin(_angles))
+                points = np.asarray([list(p) for p in zip(xs, ys)])
+                points = np.asarray(points).flatten().tolist()
+                shape_type = "polygon"
+                segmentations[instance].append(points)
             else:
                 points = np.asarray(points).flatten().tolist()
                 segmentations[instance].append(points)
