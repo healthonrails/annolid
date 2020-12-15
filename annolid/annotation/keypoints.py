@@ -62,7 +62,8 @@ def to_labelme(img_folder,
     """
     df = pd.read_hdf(os.path.join(img_folder, anno_file))
     scorer = df.columns.get_level_values(0)[0]
-    bodyparts = df.columns.get_level_values(1)
+    individuals = df.columns.get_level_values(1)
+    bodyparts = df.columns.get_level_values(2)
 
     for ind, imname in enumerate(df.index):
         img_path = os.path.join(img_folder, imname)
@@ -71,13 +72,14 @@ def to_labelme(img_folder,
         image_height = ny
         image_width = nx
         label_list = []
-        for b in set(bodyparts):
-            s = Shape(label=b, shape_type='point', flags={})
-            x = df.iloc[ind][scorer][b]['x']
-            y = df.iloc[ind][scorer][b]['y']
-            if np.isfinite(x) and np.isfinite(y):
-                s.addPoint((x, y))
-                label_list.append(s)
+        for idv in set(individuals):
+            for b in set(bodyparts):
+                s = Shape(label=f"{idv}_{b}", shape_type='point', flags={})
+                x = df.iloc[ind][scorer][idv][b]['x']
+                y = df.iloc[ind][scorer][idv][b]['y']
+                if np.isfinite(x) and np.isfinite(y):
+                    s.addPoint((x, y))
+                    label_list.append(s)
         save_labels(img_path.replace('.png', '.json'),
                     img_path, label_list, image_height,
                     image_width)
