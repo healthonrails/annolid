@@ -70,6 +70,9 @@ def parse_args():
     arg_builder.add_argument('--keypoints', type=str, default=None,
                              help="keypoints annotation file e.g. ./CollectedData_xxx.h5  "
                              )
+    arg_builder.add_argument('--multiple_animals', type=bool, default=True,
+                             help="dataset contains labeled multiple animals"
+                             )
 
     arg_builder.add_argument('--labels', type=str, default='labels.txt',
                              help="text file with all the class names "
@@ -148,7 +151,8 @@ def main():
         from annolid.annotation import keypoints
         keypoints.to_labelme(
             args['keypoints2labelme'],
-            args['keypoints']
+            args['keypoints'],
+            args['multiple_animals']
         )
 
 
