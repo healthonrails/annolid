@@ -233,6 +233,7 @@ def convert(input_annotated_dir,
                 x1, x2 = sorted([x1, x2])
                 y1, y2 = sorted([y1, y2])
                 points = np.asarray([x1, y1, x2, y1, x2, y2, x1, y2])
+                segmentations[instance].append(points.flatten().tolist())
             elif shape_type == "circle":
                 (x1, y1), (x2, y2) = points
                 radius = int(((x1-x2)**2 + (y1-y2)**2)**(1/2)) +  \
