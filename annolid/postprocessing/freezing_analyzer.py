@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import ast
 import pycocotools.mask as mask_util
+from annolid.utils import draw
 
 
 class FreezingAnalyzer():
@@ -38,6 +39,12 @@ class FreezingAnalyzer():
             else:
                 break
 
+    def mask_iou(self, row):
+        x = ast.literal_eval(row.segmentation_x)
+        y = ast.literal_eval(row.segmentation_y)
+        _iou = mask_util.iou([x], [y], [False, False]).flatten()[0]
+        return _iou
+
     def run(self):
         video = cv2.VideoCapture(self.video_file)
         width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -47,24 +54,39 @@ class FreezingAnalyzer():
         ret, frame1 = video.read()
         frame_number = int(video.get(cv2.CAP_PROP_POS_FRAMES))
         prvs = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
+        prvs = cv2.blur(prvs, (5, 5))
         prvs_instances = self.instances(frame_number)
         hsv = np.zeros_like(frame1)
         hsv[..., 1] = 255
-        while(1):
+
+        while video.isOpened():
             ret, frame2 = video.read()
             frame_number = int(video.get(cv2.CAP_PROP_POS_FRAMES))
             current_instances = self.instances(frame_number)
             df_prvs_cur = pd.merge(
                 prvs_instances, current_instances, how='inner', on='instance_name')
-            seg_x = df_prvs_cur.segmentation_x.apply(ast.literal_eval)
-            seg_y = df_prvs_cur.segmentation_y.apply(ast.literal_eval)
+
+            df_prvs_cur['mask_iou'] = df_prvs_cur.apply(self.mask_iou, axis=1)
+
             next = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+            next = cv2.blur(next, (5, 5))
             flow = self.motion(prvs, next)
             mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             hsv[..., 0] = ang*180/np.pi/2
             hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
             bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-            cv2.imshow('frame2', bgr)
+            for index, _row in df_prvs_cur.iterrows():
+                if _row.mask_iou >= 0.9:
+                    _mask = ast.literal_eval(_row.segmentation_y)
+                    _mask = mask_util.decode(_mask)[:, :]
+                    bgr = draw.draw_binary_masks(
+                        bgr,
+                        [_mask],
+                        [_row.instance_name]
+                    )
+
+            dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
+            cv2.imshow('frame2', dst)
             k = cv2.waitKey(30) & 0xff
             if k == 27:
                 break
@@ -73,10 +95,3 @@ class FreezingAnalyzer():
 
         video.release()
         cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    fa = FreezingAnalyzer(
-        '/Users/chenyang/Downloads/HighF-07_7000_7030.mp4',
-        '/Users/chenyang/Downloads/con_01_pointrend_tracking_results_with_segmenation.csv')
-    fa.run()
