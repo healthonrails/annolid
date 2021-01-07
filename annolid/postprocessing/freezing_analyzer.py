@@ -68,15 +68,16 @@ class FreezingAnalyzer():
 
             df_prvs_cur['mask_iou'] = df_prvs_cur.apply(self.mask_iou, axis=1)
 
-            next = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
-            next = cv2.blur(next, (5, 5))
-            flow = self.motion(prvs, next)
-            mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            hsv[..., 0] = ang*180/np.pi/2
-            hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
-            bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-            for index, _row in df_prvs_cur.iterrows():
-                if _row.mask_iou >= 0.9:
+            if ret:
+                next = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+                next = cv2.blur(next, (5, 5))
+                flow = self.motion(prvs, next)
+                mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                hsv[..., 0] = ang*180/np.pi/2
+                hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+                bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                for index, _row in df_prvs_cur.iterrows():
+
                     _mask = ast.literal_eval(_row.segmentation_y)
                     _mask = mask_util.decode(_mask)[:, :]
                     bgr = draw.draw_binary_masks(
@@ -85,13 +86,21 @@ class FreezingAnalyzer():
                         [_row.instance_name]
                     )
 
-            dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
-            cv2.imshow('frame2', dst)
-            k = cv2.waitKey(30) & 0xff
-            if k == 27:
-                break
-            prvs = next
-            prvs_instances = current_instances
+                    if _row.mask_iou >= 0.9:
+                        draw.draw_boxes(
+                            bgr,
+                            [[_row.x1_y, _row.y1_y, _row.x2_y, _row.y2_y]],
+                            identities=[f"iou:{_row.mask_iou:.2f}"],
+                            draw_track=False
+                        )
+
+                dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
+                cv2.imshow('frame2', dst)
+                k = cv2.waitKey(30) & 0xff
+                if k == 27:
+                    break
+                prvs = next
+                prvs_instances = current_instances
 
         video.release()
         cv2.destroyAllWindows()
