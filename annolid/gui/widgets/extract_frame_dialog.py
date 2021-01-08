@@ -23,7 +23,7 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.buttonbox.rejected.connect(self.reject)
 
         self.label1 = QtWidgets.QLabel(
-            f"Please type or select number of frames default={self.num_frames}")
+            f"Please type or select number of frames default={self.num_frames} or use -1 for all frames")
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
         self.framesLineEdit = QtWidgets.QLineEdit(self)
         self.framesLineEdit.setText(str(self.num_frames))
@@ -115,7 +115,7 @@ class ExtractFrameDialog(QtWidgets.QDialog):
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider.setMinimum(1)
+        self.slider.setMinimum(-1)
         self.slider.setMaximum(1000)
         self.slider.setValue(10)
         self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
@@ -144,10 +144,15 @@ class ExtractFrameDialog(QtWidgets.QDialog):
 
     def onSliderChange(self, position):
         self.num_frames = int(position) if position and str(
-            position).isdigit() else 0
+            position).isdigit() else -1
         self.framesLineEdit.setText(str(position))
-        self.label1.setText(
-            f"You selected {str(self.num_frames)} frames")
+        if self.num_frames == -1:
+            self.label1.setText(
+                f"You have selected to extract all the frames."
+            )
+        else:
+            self.label1.setText(
+                f"You have selected {str(self.num_frames)} frames.")
 
     def onCutClipStartTimeChanged(self):
         self.start_sconds = self.startSecondsLineEdit.text()

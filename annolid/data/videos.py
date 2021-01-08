@@ -153,7 +153,7 @@ def extract_frames(video_file='None',
                     out_frame_file, frame)
                 print(f'Saved the frame {frame_number}.')
             continue
-        if algo == 'random':
+        if algo == 'random' and num_frames != -1:
             if ret:
                 if len(keeped_frames) < num_frames:
                     keeped_frames.append((ki,
