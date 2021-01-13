@@ -66,7 +66,11 @@ class FreezingAnalyzer():
             df_prvs_cur = pd.merge(
                 prvs_instances, current_instances, how='inner', on='instance_name')
 
-            df_prvs_cur['mask_iou'] = df_prvs_cur.apply(self.mask_iou, axis=1)
+            try:
+                df_prvs_cur['mask_iou'] = df_prvs_cur.apply(
+                    self.mask_iou, axis=1)
+            except ValueError as ve:
+                raise ve
 
             if ret:
                 next = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
@@ -80,17 +84,18 @@ class FreezingAnalyzer():
 
                     _mask = ast.literal_eval(_row.segmentation_y)
                     _mask = mask_util.decode(_mask)[:, :]
+                    mask_motion = np.sum(_mask * mag)
                     bgr = draw.draw_binary_masks(
                         bgr,
                         [_mask],
                         [_row.instance_name]
                     )
 
-                    if _row.mask_iou >= 0.9:
+                    if _row.mask_iou >= 0.99 and mask_motion < 2000:
                         draw.draw_boxes(
                             bgr,
                             [[_row.x1_y, _row.y1_y, _row.x2_y, _row.y2_y]],
-                            identities=[f"iou:{_row.mask_iou:.2f}"],
+                            identities=[f"{mask_motion:.2f}"],
                             draw_track=False
                         )
 
