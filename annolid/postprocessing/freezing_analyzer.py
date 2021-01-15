@@ -39,6 +39,9 @@ class FreezingAnalyzer():
             else:
                 break
 
+    def instance_names(self):
+        return (self.tracking_results.instance_name).unique()
+
     def mask_iou(self, row):
         x = ast.literal_eval(row.segmentation_x)
         y = ast.literal_eval(row.segmentation_y)
@@ -58,6 +61,8 @@ class FreezingAnalyzer():
         prvs_instances = self.instances(frame_number)
         hsv = np.zeros_like(frame1)
         hsv[..., 1] = 255
+
+        instance_status = dict((i, 0,) for i in (self.instance_names()))
 
         while video.isOpened():
             ret, frame2 = video.read()
@@ -91,13 +96,17 @@ class FreezingAnalyzer():
                         [_row.instance_name]
                     )
 
-                    if _row.mask_iou >= 0.99 and mask_motion < 2000:
-                        draw.draw_boxes(
-                            bgr,
-                            [[_row.x1_y, _row.y1_y, _row.x2_y, _row.y2_y]],
-                            identities=[f"{mask_motion:.2f}"],
-                            draw_track=False
-                        )
+                    if _row.mask_iou >= 0.90 and mask_motion < 2000:
+                        instance_status[_row.instance_name] += 1
+                        if instance_status[_row.instance_name] >= 5:
+                            draw.draw_boxes(
+                                bgr,
+                                [[_row.x1_y, _row.y1_y, _row.x2_y, _row.y2_y]],
+                                identities=[f"Motion: {mask_motion:.2f}"],
+                                draw_track=False
+                            )
+                    else:
+                        instance_status[_row.instance_name] -= 3
 
                 dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
                 cv2.imshow('frame2', dst)
