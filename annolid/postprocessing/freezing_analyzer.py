@@ -98,6 +98,7 @@ class FreezingAnalyzer():
 
                     if _row.mask_iou >= 0.90 and mask_motion < 2000:
                         instance_status[_row.instance_name] += 1
+
                         if instance_status[_row.instance_name] >= 5:
                             draw.draw_boxes(
                                 bgr,
@@ -109,6 +110,7 @@ class FreezingAnalyzer():
                         instance_status[_row.instance_name] -= 3
 
                 dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
+                dst = draw.draw_flow(dst, flow)
                 cv2.imshow('frame2', dst)
                 k = cv2.waitKey(30) & 0xff
                 if k == 27:
