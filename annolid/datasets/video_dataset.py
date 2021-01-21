@@ -69,3 +69,15 @@ class VideoFrameDataset(IterableDataset):
     def __exit__(self, exc_type, exc_value, traceback):
         cv2.destroyAllWindows()
         self.cap.release()
+
+
+def moving_fixed_frame_generator(video_file):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    video_dataset = VideoFrameDataset(video_file)
+    loader = DataLoader(video_dataset, batch_size=1)
+    for moving, fixed in loader:
+        # Generate the moving images and convert them to tensors.
+        moving_image, input_fixed = moving.unsqueeze(0), fixed.unsqueeze(0)
+        input_moving = moving_image.to(device).float()
+        input_fixed = input_fixed.to(device).float()
+        yield input_moving, input_fixed
