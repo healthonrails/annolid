@@ -1,3 +1,4 @@
+import os
 import cv2
 import pandas as pd
 import numpy as np
@@ -8,8 +9,16 @@ from annolid.utils import draw
 
 class FreezingAnalyzer():
 
-    def __init__(self, video_file, tracking_results):
+    def __init__(self,
+                 video_file,
+                 tracking_results,
+                 iou_threshold=0.9,
+                 motion_threshold=2000
+
+                 ):
         self.video_file = video_file
+        self.iou_threshold = iou_threshold
+        self.motion_threshold = motion_threshold
         if tracking_results:
             self.tracking_results = pd.read_csv(tracking_results)
             try:
@@ -39,6 +48,18 @@ class FreezingAnalyzer():
             else:
                 break
 
+    def get_video_writer(self,
+                         video_file,
+                         target_fps,
+                         width,
+                         height):
+        video_name = f"{os.path.splitext(video_file)[0]}_freezing.mp4"
+        video_writer = cv2.VideoWriter(video_name,
+                                       cv2.VideoWriter_fourcc(*"mp4v"),
+                                       target_fps,
+                                       (width, height))
+        return video_writer
+
     def instance_names(self):
         return (self.tracking_results.instance_name).unique()
 
@@ -61,6 +82,11 @@ class FreezingAnalyzer():
         prvs_instances = self.instances(frame_number)
         hsv = np.zeros_like(frame1)
         hsv[..., 1] = 255
+
+        video_writer = self.get_video_writer(self.video_file,
+                                             frames_per_second,
+                                             width,
+                                             height)
 
         instance_status = dict((i, 0,) for i in (self.instance_names()))
 
@@ -96,7 +122,7 @@ class FreezingAnalyzer():
                         [_row.instance_name]
                     )
 
-                    if _row.mask_iou >= 0.90 and mask_motion < 2000:
+                    if _row.mask_iou >= self.iou_threshold and mask_motion < self.motion_threshold:
                         instance_status[_row.instance_name] += 1
 
                         if instance_status[_row.instance_name] >= 5:
@@ -112,6 +138,7 @@ class FreezingAnalyzer():
                 dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
                 dst = draw.draw_flow(dst, flow)
                 cv2.imshow('frame2', dst)
+                video_writer.write(dst)
                 k = cv2.waitKey(30) & 0xff
                 if k == 27:
                     break
