@@ -13,8 +13,7 @@ class FreezingAnalyzer():
                  video_file,
                  tracking_results,
                  iou_threshold=0.9,
-                 motion_threshold=2000
-
+                 motion_threshold=0.12
                  ):
         self.video_file = video_file
         self.iou_threshold = iou_threshold
@@ -52,8 +51,10 @@ class FreezingAnalyzer():
                          video_file,
                          target_fps,
                          width,
-                         height):
-        video_name = f"{os.path.splitext(video_file)[0]}_freezing.mp4"
+                         height,
+                         video_suffix="results"
+                         ):
+        video_name = f"{os.path.splitext(video_file)[0]}_{video_suffix}.mp4"
         video_writer = cv2.VideoWriter(video_name,
                                        cv2.VideoWriter_fourcc(*"mp4v"),
                                        target_fps,
@@ -115,12 +116,20 @@ class FreezingAnalyzer():
 
                     _mask = ast.literal_eval(_row.segmentation_y)
                     _mask = mask_util.decode(_mask)[:, :]
-                    mask_motion = np.sum(_mask * mag)
+                    mask_motion = np.sum(_mask * mag) / np.sum(_mask)
                     bgr = draw.draw_binary_masks(
                         bgr,
                         [_mask],
                         [_row.instance_name]
                     )
+
+                    if _row.instance_name == 'Mouse':
+                        draw.draw_boxes(
+                            bgr,
+                            [[_row.x1_y, _row.y1_y, _row.x2_y, _row.y2_y]],
+                            identities=[f"Motion: {mask_motion:.2f}"],
+                            draw_track=False
+                        )
 
                     if _row.mask_iou >= self.iou_threshold and mask_motion < self.motion_threshold:
                         instance_status[_row.instance_name] += 1

@@ -96,7 +96,7 @@ def draw_boxes(img,
 def draw_flow(img,
               flow,
               step=16,
-              quiver=(255, 100, 0)
+              quiver=(0, 100, 0)
               ):
     """
     Modified from here 
@@ -110,7 +110,7 @@ def draw_flow(img,
     lines = np.vstack([x, y, x + fx, y + fy]).T.reshape(-1, 2, 2)
     lines = np.int32(lines + 0.5)
     vis = img
-    cv2.polylines(vis, lines, 0, quiver)
+    cv2.polylines(vis, lines, 0, quiver,3)
     for (x1, y1), (_x2, _y2) in lines:
         cv2.circle(vis, (x1, y1), 1, (0, 255, 0), -1)
     return vis
