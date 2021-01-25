@@ -13,11 +13,13 @@ class FreezingAnalyzer():
                  video_file,
                  tracking_results,
                  iou_threshold=0.9,
-                 motion_threshold=0.12
+                 motion_threshold=0.12,
+                 target_instance='Mouse'
                  ):
         self.video_file = video_file
         self.iou_threshold = iou_threshold
         self.motion_threshold = motion_threshold
+        self.target_instance = target_instance
         if tracking_results:
             self.tracking_results = pd.read_csv(tracking_results)
             try:
@@ -25,6 +27,8 @@ class FreezingAnalyzer():
                     columns=['Unnamed: 0'])
             except KeyError:
                 pass
+
+        self.motion_values = []
 
     def instances(self, frame_number):
         df = self.tracking_results
@@ -102,7 +106,7 @@ class FreezingAnalyzer():
                 df_prvs_cur['mask_iou'] = df_prvs_cur.apply(
                     self.mask_iou, axis=1)
             except ValueError as ve:
-                raise ve
+                df_prvs_cur['mask_iou'] = 0.0
 
             if ret:
                 next = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
@@ -114,16 +118,23 @@ class FreezingAnalyzer():
                 bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
                 for index, _row in df_prvs_cur.iterrows():
 
-                    _mask = ast.literal_eval(_row.segmentation_y)
-                    _mask = mask_util.decode(_mask)[:, :]
-                    mask_motion = np.sum(_mask * mag) / np.sum(_mask)
-                    bgr = draw.draw_binary_masks(
-                        bgr,
-                        [_mask],
-                        [_row.instance_name]
-                    )
+                    if _row.segmentation_y:
+                        _mask = ast.literal_eval(_row.segmentation_y)
+                        _mask = mask_util.decode(_mask)[:, :]
+                        mask_motion = np.sum(_mask * mag) / np.sum(_mask)
+                        self.motion_values.append(
+                            (_row.frame_number_x, _row.instance_name, mask_motion))
+                        bgr = draw.draw_binary_masks(
+                            bgr,
+                            [_mask],
+                            [_row.instance_name]
+                        )
+                    else:
+                        self.motion_values.append(
+                            (_row.frame_number_x, _row.instance_name, 0.0))
+                        print("No mask")
 
-                    if _row.instance_name == 'Mouse':
+                    if _row.instance_name == self.target_instance:
                         draw.draw_boxes(
                             bgr,
                             [[_row.x1_y, _row.y1_y, _row.x2_y, _row.y2_y]],
@@ -153,6 +164,11 @@ class FreezingAnalyzer():
                     break
                 prvs = next
                 prvs_instances = current_instances
+            else:
+                break
 
         video.release()
+        video_writer.release()
         cv2.destroyAllWindows()
+
+        return self.motion_values
