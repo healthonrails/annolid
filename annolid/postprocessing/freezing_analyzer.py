@@ -20,6 +20,7 @@ class FreezingAnalyzer():
         self.iou_threshold = iou_threshold
         self.motion_threshold = motion_threshold
         self.target_instance = target_instance
+        self.tracking_results_name = tracking_results
         if tracking_results:
             self.tracking_results = pd.read_csv(tracking_results)
             try:
@@ -123,7 +124,12 @@ class FreezingAnalyzer():
                         _mask = mask_util.decode(_mask)[:, :]
                         mask_motion = np.sum(_mask * mag) / np.sum(_mask)
                         self.motion_values.append(
-                            (_row.frame_number_x, _row.instance_name, mask_motion))
+                            (_row.frame_number_x,
+                             _row.instance_name,
+                             mask_motion,
+                             _row.mask_iou,
+                             int(instance_status[_row.instance_name] > 0)
+                             ))
                         bgr = draw.draw_binary_masks(
                             bgr,
                             [_mask],
@@ -131,7 +137,12 @@ class FreezingAnalyzer():
                         )
                     else:
                         self.motion_values.append(
-                            (_row.frame_number_x, _row.instance_name, 0.0))
+                            (_row.frame_number_x,
+                             _row.instance_name,
+                             0.0,
+                             _row.mask_iou,
+                             int(instance_status[_row.instance_name] > 0)
+                             ))
                         print("No mask")
 
                     if _row.instance_name == self.target_instance:
@@ -171,4 +182,17 @@ class FreezingAnalyzer():
         video_writer.release()
         cv2.destroyAllWindows()
 
-        return self.motion_values
+        df_motion = pd.DataFrame(self.motion_values)
+        df_motion.columns = ["frame_number",
+                             'instance_name',
+                             'motion_index',
+                             'mask_iou',
+                             'freezing'
+                             ]
+        df_res = pd.merge(self.tracking_results, df_motion, how='left', on=[
+                          'frame_number', 'instance_name'])
+        tracking_results_motion = self.tracking_results_name.replace(
+            ".csv", '_motion.csv')
+        df_res.to_csv(tracking_results_motion, index=False)
+
+        return df_res
