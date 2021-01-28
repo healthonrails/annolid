@@ -11,19 +11,22 @@ from pathlib import Path
 from annolid.utils import draw
 from collections import deque
 import pycocotools.mask as mask_util
+from annolid.postprocessing.freezing_analyzer import FreezingAnalyzer
+
 points = [deque(maxlen=30) for _ in range(1000)]
 
 
-def tracks2nix(vidoe_file=None,
+def tracks2nix(video_file=None,
                tracking_results='tracking.csv',
                out_nix_csv_file='my_glitter_format.csv',
                zone_info='zone_info.json',
                overlay_mask=True,
-               score_threshold=0.6
+               score_threshold=0.6,
+               motion_threshold=0
                ):
     """
     Args:
-        vidoe_file (str): video file path. Defaults to None.
+        video_file (str): video file path. Defaults to None.
         tracking_results (str, optional): the tracking results csv file froma a model.
          Defaults to 'tracking.csv'.
         out_nix_csv_file (str, optional): [description]. Defaults to 'my_glitter_format.csv'.
@@ -40,6 +43,11 @@ def tracks2nix(vidoe_file=None,
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
 
+    df_motion = None
+    if motion_threshold > 0:
+        fa = FreezingAnalyzer(video_file, tracking_results)
+        df_motion = fa.run()
+
     df = pd.read_csv(tracking_results)
     try:
         df = df.drop(columns=['Unnamed: 0'])
@@ -53,6 +61,14 @@ def tracks2nix(vidoe_file=None,
         except:
             res = []
         return res
+
+    def is_freezing(frame_number, instance_name):
+        if df_motion is not None:
+            freezing = df_motion[(df_motion.frame_number == frame_number) & (
+                df_motion.instance_name == instance_name)].freezing.values[0]
+            return freezing > 0
+        else:
+            return False
 
     def left_right_interact(fn):
         _df_top = df[df.frame_number == fn]
@@ -83,7 +99,7 @@ def tracks2nix(vidoe_file=None,
 
         return left_interact, right_interact
 
-    cap = cv2.VideoCapture(vidoe_file)
+    cap = cv2.VideoCapture(video_file)
     ret, frame = cap.read()
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -91,7 +107,7 @@ def tracks2nix(vidoe_file=None,
     target_fps = int(cap.get(cv2.CAP_PROP_FPS))
 
     metadata_dict = {}
-    metadata_dict['filename'] = vidoe_file
+    metadata_dict['filename'] = video_file
     metadata_dict['pixels_per_meter'] = 0
     metadata_dict['video_width'] = f"{width}"
     metadata_dict['video_height'] = f"{height}"
@@ -137,7 +153,7 @@ def tracks2nix(vidoe_file=None,
     num_left_interact = 0
     num_right_interact = 0
 
-    out_video_file = f"{os.path.splitext(vidoe_file)[0]}_tracked.mp4"
+    out_video_file = f"{os.path.splitext(video_file)[0]}_tracked.mp4"
 
     video_writer = cv2.VideoWriter(out_video_file,
                                    cv2.VideoWriter_fourcc(*"mp4v"),
@@ -165,6 +181,8 @@ def tracks2nix(vidoe_file=None,
         timestamps[frame_timestamp].setdefault('event:Object_investigation', 0)
         timestamps[frame_timestamp].setdefault('event:RightInteract', 0)
         timestamps[frame_timestamp].setdefault('event:LeftInteract', 0)
+        timestamps[frame_timestamp].setdefault('event:Freezing', 0)
+
         timestamps[frame_timestamp].setdefault('pos:animal_center:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_center:y', -1)
 
@@ -196,12 +214,12 @@ def tracks2nix(vidoe_file=None,
                 )
 
         for bf in bbox_info:
-            if len(bf) >= 8:
+            if len(bf) == 8:
                 _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
                 if not pd.isnull(_mask) and overlay_mask:
                     _mask = ast.literal_eval(_mask)
                     _mask = mask_util.decode(_mask)[:, :]
-                    if score >= score_threshold and 'interact' not in _class.lower():
+                    if score >= score_threshold:
                         frame = draw.draw_binary_masks(
                             frame, [_mask], [_class])
             else:
@@ -231,6 +249,7 @@ def tracks2nix(vidoe_file=None,
                 cy = int((y1 + y2) / 2)
                 color = draw.compute_color_for_labels(
                     hash(_class) % 100)
+
                 if _class == 'nose' or 'nose' in _class.lower():
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_nose:y'] = cy_glitter
@@ -332,6 +351,17 @@ def tracks2nix(vidoe_file=None,
                         frame,
                         bbox,
                         identities=[label],
+                        draw_track=False,
+                        points=points
+                    )
+
+                freezing = is_freezing(_frame_num, _class)
+                if freezing:
+                    timestamps[frame_timestamp]['event:Freezing'] = 1
+                    draw.draw_boxes(
+                        frame,
+                        bbox,
+                        identities=['freezing'],
                         draw_track=False,
                         points=points
                     )

@@ -6,6 +6,8 @@ import ast
 import pycocotools.mask as mask_util
 from annolid.utils import draw
 
+np.seterr(divide='ignore', invalid='ignore')
+
 
 class FreezingAnalyzer():
 
