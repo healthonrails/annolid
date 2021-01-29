@@ -12,7 +12,9 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.out_nix_csv_file = None
         self.zone_info_json = None
         self.slider()
+        self.motion_slider()
         self.score_threshold = 0.15
+        self.motion_threshold = 0
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -46,6 +48,9 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.label1 = QtWidgets.QLabel(
             f"Please select class score threshold (Optional default=0.15)")
 
+        self.label2 = QtWidgets.QLabel(
+            f"Please select motion threshold (Optional default=0)")
+
         self.groupBoxZoneFiles = QtWidgets.QGroupBox(
             "Please select a zone info json format file (Optional)"
         )
@@ -65,6 +70,8 @@ class Glitter2Dialog(QtWidgets.QDialog):
         vbox.addWidget(self.groupBoxFiles)
         vbox.addWidget(self.label1)
         vbox.addWidget(self.slider)
+        vbox.addWidget(self.label2)
+        vbox.addWidget(self.motion_slider)
         vbox.addWidget(self.groupBoxZoneFiles)
         vbox.addWidget(self.buttonbox)
 
@@ -124,7 +131,21 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.slider.setTickInterval(1)
         self.slider.valueChanged.connect(self.onSliderChange)
 
+    def motion_slider(self):
+        self.motion_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.motion_slider.setMinimum(0)
+        self.motion_slider.setValue(0)
+        self.motion_slider.setMaximum(100)
+        self.motion_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.motion_slider.setTickInterval(1)
+        self.motion_slider.valueChanged.connect(self.onMotionSliderChange)
+
     def onSliderChange(self):
         self.score_threshold = self.slider.value() / 100
         self.label1.setText(
             f"You selected {str(self.score_threshold)} as score threshold")
+
+    def onMotionSliderChange(self):
+        self.motion_threshold = self.motion_slider.value() / 100
+        self.label2.setText(
+            f"You selected {str(self.motion_threshold)} as motion threshold")
