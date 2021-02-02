@@ -45,7 +45,9 @@ def tracks2nix(video_file=None,
 
     df_motion = None
     if motion_threshold > 0:
-        fa = FreezingAnalyzer(video_file, tracking_results)
+        fa = FreezingAnalyzer(video_file,
+                              tracking_results,
+                              motion_threshold=motion_threshold)
         df_motion = fa.run()
 
     df = pd.read_csv(tracking_results)
