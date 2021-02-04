@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from torch.distributions.normal import Normal
 
 
@@ -185,11 +186,10 @@ class FramePredNet(nn.Module):
 
     def __init__(self, vol_size, enc_nf, dec_nf, full_size=True):
         """
-        Instiatiate 2018 model
-            :param vol_size: volume size of the atlas
-            :param enc_nf: the number of features maps for encoding stages
-            :param dec_nf: the number of features maps for decoding stages
-            :param full_size: boolean value full amount of decoding layers
+        :param vol_size: volume size of the atlas
+        :param enc_nf: the number of features maps for encoding stages
+        :param dec_nf: the number of features maps for decoding stages
+        :param full_size: boolean value full amount of decoding layers
         """
         super(FramePredNet, self).__init__()
 
