@@ -3,8 +3,10 @@ import cv2
 import pandas as pd
 import numpy as np
 import ast
+import torch
 import pycocotools.mask as mask_util
 from annolid.utils import draw
+from annolid.motion import deformation
 
 np.seterr(divide='ignore', invalid='ignore')
 
@@ -23,6 +25,7 @@ class FreezingAnalyzer():
         self.motion_threshold = motion_threshold
         self.target_instance = target_instance
         self.tracking_results_name = tracking_results
+        self.motion_model = None
         if tracking_results:
             self.tracking_results = pd.read_csv(tracking_results)
             try:
@@ -38,10 +41,22 @@ class FreezingAnalyzer():
         _df = df[df.frame_number == frame_number]
         return _df
 
-    def motion(self, prev, cur):
-        flow = cv2.calcOpticalFlowFarneback(
-            prev, cur, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        return flow
+    def motion(self, prev, cur, deep=False):
+        if self.motion_model is not None and deep:
+            device = torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu")
+            moving_image = torch.from_numpy(prev).unsqueeze(0).unsqueeze(0)
+            input_fixed = torch.from_numpy(cur).unsqueeze(0).unsqueeze(0)
+            input_moving = moving_image.to(device).float()
+            input_fixed = input_fixed.to(device).float()
+            warp, flow = self.motion_model(input_moving, input_fixed)
+            flow = flow.detach().cpu().squeeze().permute(1, 2, 0).numpy()
+            flow = np.rint(flow)
+            return flow
+        else:
+            flow = cv2.calcOpticalFlowFarneback(
+                prev, cur, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+            return flow
 
     def is_freezing(self, frame_number, instance_name):
         return True
@@ -77,7 +92,7 @@ class FreezingAnalyzer():
         _iou = mask_util.iou([x], [y], [False, False]).flatten()[0]
         return _iou
 
-    def run(self):
+    def run(self, deep=False):
         video = cv2.VideoCapture(self.video_file)
         width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -90,6 +105,7 @@ class FreezingAnalyzer():
         prvs_instances = self.instances(frame_number)
         hsv = np.zeros_like(frame1)
         hsv[..., 1] = 255
+        self.motion_model = deformation.build_model(vol_shape=prvs.shape)
 
         video_writer = self.get_video_writer(self.video_file,
                                              frames_per_second,
@@ -101,7 +117,7 @@ class FreezingAnalyzer():
         while video.isOpened():
             ret, frame2 = video.read()
             frame_number = int(video.get(cv2.CAP_PROP_POS_FRAMES))
-            current_instances = self.instances(frame_number)
+            current_instances = self.instances(frame_number-1)
             df_prvs_cur = pd.merge(
                 prvs_instances, current_instances, how='inner', on='instance_name')
 
@@ -114,7 +130,7 @@ class FreezingAnalyzer():
             if ret:
                 next = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
                 next = cv2.blur(next, (5, 5))
-                flow = self.motion(prvs, next)
+                flow = self.motion(prvs, next, deep)
                 mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
                 hsv[..., 0] = ang*180/np.pi/2
                 hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
@@ -168,14 +184,16 @@ class FreezingAnalyzer():
                     else:
                         instance_status[_row.instance_name] -= 3
 
-                dst = cv2.addWeighted(frame2, 1, bgr, 1, 0)
-                dst = draw.draw_flow(dst, flow)
+                dst = cv2.addWeighted(frame1, 1, bgr, 1, 0)
+                if not deep:
+                    dst = draw.draw_flow(dst, flow)
                 cv2.imshow('frame2', dst)
                 video_writer.write(dst)
                 k = cv2.waitKey(30) & 0xff
                 if k == 27:
                     break
                 prvs = next
+                frame1 = frame2
                 prvs_instances = current_instances
             else:
                 break
