@@ -22,7 +22,9 @@ def tracks2nix(video_file=None,
                zone_info='zone_info.json',
                overlay_mask=True,
                score_threshold=0.6,
-               motion_threshold=0
+               motion_threshold=0,
+               deep=False,
+               pretrained_model=None
                ):
     """
     Args:
@@ -48,7 +50,8 @@ def tracks2nix(video_file=None,
         fa = FreezingAnalyzer(video_file,
                               tracking_results,
                               motion_threshold=motion_threshold)
-        df_motion = fa.run()
+        df_motion = fa.run(deep=deep,
+                           pretrained_model=pretrained_model)
 
     df = pd.read_csv(tracking_results)
     try:

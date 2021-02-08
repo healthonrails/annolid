@@ -92,7 +92,9 @@ class FreezingAnalyzer():
         _iou = mask_util.iou([x], [y], [False, False]).flatten()[0]
         return _iou
 
-    def run(self, deep=False):
+    def run(self,
+            deep=False,
+            pretrained_model=None):
         video = cv2.VideoCapture(self.video_file)
         width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -105,7 +107,11 @@ class FreezingAnalyzer():
         prvs_instances = self.instances(frame_number)
         hsv = np.zeros_like(frame1)
         hsv[..., 1] = 255
-        self.motion_model = deformation.build_model(vol_shape=prvs.shape)
+        self.motion_model = deformation.build_model(
+            vol_shape=prvs.shape,
+            pretrained_model=pretrained_model
+
+        )
 
         video_writer = self.get_video_writer(self.video_file,
                                              frames_per_second,
