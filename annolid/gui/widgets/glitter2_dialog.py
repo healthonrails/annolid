@@ -15,6 +15,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.motion_slider()
         self.score_threshold = 0.15
         self.motion_threshold = 0
+        self.pretrained_model = None
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -54,16 +55,33 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.groupBoxZoneFiles = QtWidgets.QGroupBox(
             "Please select a zone info json format file (Optional)"
         )
+
         self.inputZoneInfoLineEdit = QtWidgets.QLineEdit(self)
         self.inputZoneInfoButton = QtWidgets.QPushButton('Open', self)
 
         self.inputZoneInfoButton.clicked.connect(
             self.onInputZoneInfoButtonClicked
         )
+
         hboxZoneInfoLayout = QtWidgets.QHBoxLayout()
         hboxZoneInfoLayout.addWidget(self.inputZoneInfoLineEdit)
         hboxZoneInfoLayout.addWidget(self.inputZoneInfoButton)
         self.groupBoxZoneFiles.setLayout(hboxZoneInfoLayout)
+
+        self.groupBoxPretrainedModelFiles = QtWidgets.QGroupBox(
+            "Please select a pretrained model file (Optional)"
+        )
+        self.pretrainedModelLineEdit = QtWidgets.QLineEdit(self)
+        self.pretrainedModelButton = QtWidgets.QPushButton('Open', self)
+
+        self.pretrainedModelButton.clicked.connect(
+            self.onPrtrainedModelButtonClicked
+        )
+
+        hboxPretrainedModelLayout = QtWidgets.QHBoxLayout()
+        hboxPretrainedModelLayout.addWidget(self.pretrainedModelLineEdit)
+        hboxPretrainedModelLayout.addWidget(self.pretrainedModelButton)
+        self.groupBoxPretrainedModelFiles.setLayout(hboxPretrainedModelLayout)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.groupBoxVideoFiles)
@@ -73,6 +91,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
         vbox.addWidget(self.label2)
         vbox.addWidget(self.motion_slider)
         vbox.addWidget(self.groupBoxZoneFiles)
+        vbox.addWidget(self.groupBoxPretrainedModelFiles)
         vbox.addWidget(self.buttonbox)
 
         self.setLayout(vbox)
@@ -121,6 +140,16 @@ class Glitter2Dialog(QtWidgets.QDialog):
         )
         if self.zone_info_json is not None:
             self.inputZoneInfoLineEdit.setText(self.zone_info_json)
+
+    def onPrtrainedModelButtonClicked(self):
+        self.pretrained_model, filter = QtWidgets.QFileDialog.getOpenFileName(
+            parent=self,
+            caption="Open pretrained motion model file",
+            directory=str(Path()),
+            filter="*"
+        )
+        if self.pretrained_model is not None:
+            self.pretrainedModelLineEdit.setText(self.pretrained_model)
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)

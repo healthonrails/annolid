@@ -50,6 +50,8 @@ def tracks2nix(video_file=None,
         fa = FreezingAnalyzer(video_file,
                               tracking_results,
                               motion_threshold=motion_threshold)
+        if pretrained_model is not None and Path(pretrained_model).exists():
+            deep = True
         df_motion = fa.run(deep=deep,
                            pretrained_model=pretrained_model)
 
