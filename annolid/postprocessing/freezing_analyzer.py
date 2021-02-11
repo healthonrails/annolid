@@ -12,6 +12,8 @@ np.seterr(divide='ignore', invalid='ignore')
 
 
 class FreezingAnalyzer():
+    """Estimation of motion by optical flow and mask IOU across frames.
+    """
 
     def __init__(self,
                  video_file,
@@ -57,9 +59,6 @@ class FreezingAnalyzer():
             flow = cv2.calcOpticalFlowFarneback(
                 prev, cur, None, 0.5, 3, 15, 3, 5, 1.2, 0)
             return flow
-
-    def is_freezing(self, frame_number, instance_name):
-        return True
 
     def _frame_from_video(self, video):
         while video.isOpened():
