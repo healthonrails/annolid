@@ -385,6 +385,7 @@ def tracks2nix(video_file=None,
 
     cv2.destroyAllWindows()
     cap.release()
+    video_writer.release()
 
     df_res = pd.DataFrame.from_dict(timestamps,
                                     orient='index')
