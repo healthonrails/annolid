@@ -212,6 +212,10 @@ class AnnolidWindow(MainWindow):
             filter='*.txt'
         )
 
+        # return if user cancels the operation
+        if len(file_name) < 1:
+            return
+
         if Path(file_name).is_file() or Path(file_name).parent.is_dir():
             labels_text_list = ['__ignore__', '_background_']
             for i in range(self.uniqLabelList.count()):
@@ -223,8 +227,6 @@ class AnnolidWindow(MainWindow):
             with open(file_name, 'w') as lt:
                 for ltl in labels_text_list:
                     lt.writelines(ltl+'\n')
-        else:
-            return
 
     def frames(self):
         """Extract frames based on the selected algos. 
