@@ -5,12 +5,95 @@ import cv2
 import argparse
 import numpy as np
 import random
+import subprocess
 from pathlib import Path
 import decord as de
 from collections import deque
-from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
 sys.path.append("detector/yolov5/")
+
+
+def test_cmd(cmd):
+    """Test the cmd.
+    Modifed from moviepy 
+    """
+    try:
+        popen_params = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "stdin": subprocess.DEVNULL
+        }
+        # to remove unwanted window on windows
+        # when created the child process
+        if os.name == "nt":
+            popen_params["creationflags"] = 0x08000000
+
+        proc = subprocess.Popen(cmd, **popen_params)
+        proc.communicate()
+    except Exception as err:
+        return False, err
+    else:
+        return True, None
+
+
+def get_ffmpeg_path():
+    """Test and find the correct ffmpeg binary file.
+    Modifed from moviepy.
+    """
+    ffmpeg_binary = os.getenv('FFMPEG_BINARY', 'ffmpeg-imageio')
+    if ffmpeg_binary == 'ffmpeg-imageio':
+        from imageio.plugins.ffmpeg import get_exe
+        ffmpeg_binary = get_exe()
+    elif ffmpeg_binary == 'auto-detect':
+        if test_cmd(['ffmpeg'])[0]:
+            ffmpeg_binary = 'ffmpeg'
+        elif test_cmd(['ffmpeg.exe'])[0]:
+            ffmpeg_binary = 'ffmpeg.exe'
+        else:
+            ffmpeg_binary = 'unset'
+    else:
+        success, err = test_cmd([ffmpeg_binary])
+        if not success:
+            raise IOError(
+                str(err) +
+                " - The path specified for the ffmpeg binary might be wrong")
+    return ffmpeg_binary
+
+
+def ffmpeg_extract_subclip(filename, t1, t2, targetname=None):
+    """ 
+     Makes a new video file playing video file ``filename`` between
+        the times ``t1`` and ``t2``.
+    Modifed from moviepy ffmpeg_tools
+    """
+    name, ext = os.path.splitext(filename)
+    if not targetname:
+        T1, T2 = [int(1000*t) for t in [t1, t2]]
+        targetname = "%sSUB%d_%d.%s" % (name, T1, T2, ext)
+
+    ffmpeg_binary = get_ffmpeg_path()
+    cmd = [ffmpeg_binary, "-y",
+           "-ss", "%0.2f" % t1,
+           "-i", filename,
+           "-t", "%0.2f" % (t2-t1),
+           "-map", "0", "-vcodec", "copy",
+           "-acodec", "copy", "-strict", "-2", targetname]
+
+    popen_params = {"stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.PIPE,
+                    "stdin": subprocess.DEVNULL}
+
+    if os.name == "nt":
+        popen_params["creationflags"] = 0x08000000
+
+    proc = subprocess.Popen(cmd, **popen_params)
+
+    out, err = proc.communicate()
+    proc.stderr.close()
+
+    if proc.returncode:
+        raise IOError(err.decode('utf8'))
+    del proc
 
 
 def extract_subclip(video_file,
