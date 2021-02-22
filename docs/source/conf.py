@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 # -- Project information -----------------------------------------------------
 
 project = 'annolid'
-copyright = '2020, Chen Yang'
+copyright = '2021, Chen Yang'
 author = 'Chen Yang'
 
 # The full version, including alpha/beta/rc tags
