@@ -15,7 +15,7 @@ sys.path.append("detector/yolov5/")
 
 def test_cmd(cmd):
     """Test the cmd.
-    Modifed from moviepy 
+    Modified from moviepy 
     """
     try:
         popen_params = {
@@ -38,7 +38,7 @@ def test_cmd(cmd):
 
 def get_ffmpeg_path():
     """Test and find the correct ffmpeg binary file.
-    Modifed from moviepy.
+    Modified from moviepy.
     """
     ffmpeg_binary = os.getenv('FFMPEG_BINARY', 'ffmpeg-imageio')
     if ffmpeg_binary == 'ffmpeg-imageio':
@@ -64,7 +64,7 @@ def ffmpeg_extract_subclip(filename, t1, t2, targetname=None):
     """ 
      Makes a new video file playing video file ``filename`` between
         the times ``t1`` and ``t2``.
-    Modifed from moviepy ffmpeg_tools
+    Modified from moviepy ffmpeg_tools
     """
     name, ext = os.path.splitext(filename)
     if not targetname:
