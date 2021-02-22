@@ -35,8 +35,6 @@ jobs:
       run: |
         pytest
     - uses: ammaraskar/sphinx-action@master
-      run: |
-        pip install recommonmark
       with:
         docs-folder: "docs/"
     # Publish built docs to gh-pages branch.
