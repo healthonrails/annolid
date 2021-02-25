@@ -14,4 +14,4 @@ Indices and tables
 * :ref:`search`
 
 .. include:: ../../README.md
-
+.. include:: ./install.md
