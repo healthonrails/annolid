@@ -345,6 +345,24 @@ year =         {2020}</p>
 </div></blockquote>
 <div class="section" id="id41">
 <h2>}<a class="headerlink" href="#id41" title="Permalink to this headline">¶</a></h2>
+<p>## Install Detectron2</p>
+<p>### Requirements
+- Windows, Linux or macOS with Python ≥ 3.6
+- PyTorch ≥ 1.5 and [torchvision](<a class="reference external" href="https://github.com/pytorch/vision/">https://github.com/pytorch/vision/</a>) that matches the PyTorch installation.</p>
+<blockquote>
+<div><p>Install them together at [pytorch.org](<a class="reference external" href="https://pytorch.org">https://pytorch.org</a>) to make sure of this</p>
+</div></blockquote>
+<p>### install dependencies:
+<a href="#id42"><span class="problematic" id="id43">``</span></a>`
+pip install pyyaml==5.1 ‘pycocotools&gt;=2.0.1’
+pip install torch==1.7.0+cu101 torchvision==0.8.1+cu101 -f <a class="reference external" href="https://download.pytorch.org/whl/torch_stable.html">https://download.pytorch.org/whl/torch_stable.html</a></p>
+<p><code class="docutils literal notranslate"><span class="pre">`</span>
+<span class="pre">###</span> <span class="pre">install</span> <span class="pre">detectron2:</span> <span class="pre">(Colab</span> <span class="pre">has</span> <span class="pre">CUDA</span> <span class="pre">10.1</span> <span class="pre">+</span> <span class="pre">torch</span> <span class="pre">1.7)</span>
+<span class="pre">#</span> <span class="pre">See</span> <span class="pre">https://detectron2.readthedocs.io/tutorials/install.html</span> <span class="pre">for</span> <span class="pre">instructions</span>
+<span class="pre">`</span></code>
+assert torch.__version__.startswith(“1.7”)
+pip install detectron2 -f <a class="reference external" href="https://dl.fbaipublicfiles.com/detectron2/wheels/cu101/torch1.7/index.html">https://dl.fbaipublicfiles.com/detectron2/wheels/cu101/torch1.7/index.html</a>
+<a href="#id44"><span class="problematic" id="id45">``</span></a><a href="#id46"><span class="problematic" id="id47">`</span></a></p>
 </div>
 </div>
 
