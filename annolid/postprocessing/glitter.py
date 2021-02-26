@@ -213,12 +213,15 @@ def tracks2nix(video_file=None,
                     right_zone_box = zone_box
                 elif zone_label == 'left_zone':
                     left_zone_box = zone_box
-                draw.draw_boxes(
-                    frame,
-                    [zone_box],
-                    identities=[zone_label],
-                    draw_track=False,
-                )
+                # draw masks labeled as zones
+                # encode and merge polygons with format [[x1,y1,x2,y2,x3,y3....]]
+                rles = mask_util.frPyObjects([zone_box], height, width)
+                rle = mask_util.merge(rles)
+
+                # convert the polygons to mask
+                m = mask_util.decode(rle)
+                frame = draw.draw_binary_masks(
+                    frame, [m], [zone_label])
 
         for bf in bbox_info:
             if len(bf) == 8:
@@ -237,9 +240,9 @@ def tracks2nix(video_file=None,
             glitter_y1 = height - y1
             glitter_y2 = height - y2
 
-            if 'right' in _class.lower() and 'interact' in _class.lower():
+            if 'right' in str(_class).lower() and 'interact' in _class.lower():
                 _class = 'RightInteract'
-            elif 'left' in _class.lower() and 'interact' in _class.lower():
+            elif 'left' in str(_class).lower() and 'interact' in _class.lower():
                 _class = 'LeftInteract'
 
             is_draw = True
