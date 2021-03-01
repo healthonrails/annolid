@@ -38,7 +38,8 @@
 
     
     <link rel="index" title="Index" href="genindex.html" />
-    <link rel="search" title="Search" href="search.html" /> 
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Annolid User Guide" href="guide.html" /> 
 </head>
 
 <body class="wy-body-for-nav">
@@ -83,15 +84,12 @@
               
             
             
-              <!-- Local TOC -->
-              <div class="local-toc"><ul>
-<li><a class="reference internal" href="#">Welcome to annolid’s documentation!</a></li>
-<li><a class="reference internal" href="#indices-and-tables">Indices and tables</a><ul>
-<li><a class="reference internal" href="#id41">}</a></li>
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Detectron2</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html#see-https-detectron2-readthedocs-io-tutorials-install-html-for-instructions">See https://detectron2.readthedocs.io/tutorials/install.html for instructions</a></li>
 </ul>
-</li>
-</ul>
-</div>
+
             
           
         </div>
@@ -159,6 +157,22 @@
             
   <div class="section" id="welcome-to-annolid-s-documentation">
 <h1>Welcome to annolid’s documentation!<a class="headerlink" href="#welcome-to-annolid-s-documentation" title="Permalink to this headline">¶</a></h1>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="guide.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="guide.html#video-guide">Video guide</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Detectron2</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="install.html#requirements">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="install.html#install-dependencies">install dependencies:</a></li>
+<li class="toctree-l2"><a class="reference internal" href="install.html#install-detectron2-colab-has-cuda-10-1-torch-1-7">install detectron2: (Colab has CUDA 10.1 + torch 1.7)</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="install.html#see-https-detectron2-readthedocs-io-tutorials-install-html-for-instructions">See https://detectron2.readthedocs.io/tutorials/install.html for instructions</a></li>
+</ul>
+</div>
 </div>
 <div class="section" id="indices-and-tables">
 <h1>Indices and tables<a class="headerlink" href="#indices-and-tables" title="Permalink to this headline">¶</a></h1>
@@ -167,203 +181,6 @@
 <li><p><a class="reference internal" href="py-modindex.html"><span class="std std-ref">Module Index</span></a></p></li>
 <li><p><a class="reference internal" href="search.html"><span class="std std-ref">Search Page</span></a></p></li>
 </ul>
-<p># annolid</p>
-<p>[![Annolid Build](<a class="reference external" href="https://github.com/healthonrails/annolid/workflows/Annolid%20CI/badge.svg)](https://github.com/healthonrails/annolid/actions">https://github.com/healthonrails/annolid/workflows/Annolid%20CI/badge.svg)](https://github.com/healthonrails/annolid/actions</a>)
-[![Annolid Release](<a class="reference external" href="https://github.com/healthonrails/annolid/workflows/Upload%20Python%20Package/badge.svg)](https://github.com/healthonrails/annolid/actions">https://github.com/healthonrails/annolid/workflows/Upload%20Python%20Package/badge.svg)](https://github.com/healthonrails/annolid/actions</a>)
-[![DOI](<a class="reference external" href="https://zenodo.org/badge/290017987.svg)](https://zenodo.org/badge/latestdoi/290017987">https://zenodo.org/badge/290017987.svg)](https://zenodo.org/badge/latestdoi/290017987</a>)</p>
-<p>An annotation and instance segmentation based multiple animal tracking and behavior analysis package.</p>
-<p>![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)</p>
-<p>Instance segmentations             |  Behavior prediction
-:————————-:<a href="#id1"><span class="problematic" id="id2">|</span></a>:————————-:
-![](docs/imgs/example_segmentation.png) | ![](docs/imgs/example_vis.png)</p>
-<p>[![Mouse behavior analysis with instance segmentation based deep learning networks](<a class="reference external" href="http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8">http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8</a> “Mouse behavior analysis with instance segmentation based deep learning networks”)</p>
-<p>## Installation</p>
-<ul class="simple">
-<li><p>Clone the code repo and change into the directory</p></li>
-</ul>
-<p><a href="#id3"><span class="problematic" id="id4">``</span></a><a href="#id5"><span class="problematic" id="id6">`</span></a>bash
-git clone –recurse-submodules <a class="reference external" href="https://github.com/healthonrails/annolid.git">https://github.com/healthonrails/annolid.git</a>
-cd annolid</p>
-<p># install the package
-pip install -e .
-<code class="docutils literal notranslate"><span class="pre">`</span>
-<span class="pre">Note:</span> <span class="pre">if</span> <span class="pre">you</span> <span class="pre">got</span> <span class="pre">this</span> <span class="pre">error:</span>
-<span class="pre">`</span></code>
-ERROR: Could not find a version that satisfies the requirement decord&gt;=0.4.0
-<a href="#id7"><span class="problematic" id="id8">``</span></a>`
-, please try to install [ffmpeg](<a class="reference external" href="https://ffmpeg.org/">https://ffmpeg.org/</a>) and then install decord from source as described [here](<a class="reference external" href="https://github.com/dmlc/decord">https://github.com/dmlc/decord</a>).</p>
-<p>## Launch annolid user interface based on labelme
-<a href="#id9"><span class="problematic" id="id10">``</span></a><a href="#id11"><span class="problematic" id="id12">`</span></a>bash
-source activate your_env_name
-annolid
-#or you can provide a label.txt file as follows.
-annolid –labels=/path/to/labels_custom.txt</p>
-<p><a href="#id13"><span class="problematic" id="id14">``</span></a>`
-![Annolid UI based on labelme](docs/imgs/annolid_ui.png)</p>
-<p>If you want to learn more about labelme, please check the following link.</p>
-<p>[Read more about annotations](annolid/annotation/labelme.md)</p>
-<p>## Extract desired number of frames from a video based on optical flow</p>
-<p><code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--extract_frames=100</span>
-<span class="pre">`</span></code>
-The above command will extract 100 frames from the provided video and save them to a default folder called extracted_frames in the current annolid repo folder.</p>
-<p>Or you can use the GUI as follows.</p>
-<p>![Extract frames](docs/imgs/extract_frames_dialog.png)</p>
-<p>## Display optical flow while extracting frames with <strong>–show_flow=True</strong>
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--extract_frames=100</span> <span class="pre">--show_flow=True</span>
-<span class="pre">`</span></code></p>
-<p>## Save all the frames as images
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span>&#160; <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--extract_frames=-1</span>
-<span class="pre">`</span></code>
-## Select frames randomly by reservoir sampling
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span>&#160; <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--extract_frames=100</span> <span class="pre">--algo=random</span>
-<span class="pre">`</span></code></p>
-<p>## Extract all the key frames from a video used by the compression methods
-:warning: This method may not work for some videos with certain compression methods.
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--algo=keyframes</span> <span class="pre">--extract_frames=-1</span>
-<span class="pre">`</span></code></p>
-<p>## Threshold based object segmenation
-Added track bars for users to select HSV values to
-segment ROIs in the provided video.
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--segmentation=threshold</span>
-<span class="pre">`</span></code>
-![Threshold based segmentation](docs/imgs/threshold_based_segmentation.png)</p>
-<p>## Convert WMV format to mp4 format using ffmpeg
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">ffmpeg</span> <span class="pre">-i</span> <span class="pre">/path/to/my_video.wmv</span> <span class="pre">-c:a</span> <span class="pre">aac</span> <span class="pre">/path/to/my_video.mp4</span>
-<span class="pre">`</span></code></p>
-<p>## Save the extracted frames to a user selected output directory
-If not selected, it will save the extracted frames to a folder named with the video name without extension. For example, if the input video path is /path/to/my_video.mp4, the extracted frames will be saved in the folder /path/to/my_video.
-The output directory is provided, the extracted frames will be saved /path/to/dest/my_video.
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">cd</span> <span class="pre">annolid</span>
-<span class="pre">python</span> <span class="pre">main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--extract_frames=20</span> <span class="pre">--to</span> <span class="pre">/path/to/dest</span> <span class="pre">--algo=uniform</span>
-<span class="pre">`</span></code></p>
-<p>## How to track multiple objects in the video?
-Currently, it just works for person class with pretrained YOLOV3 or YOLOV5 weights.
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--track=YOLOV5</span>
-<span class="pre">`</span></code></p>
-<p>## How to convert coco annonation format to YOLOV5 format?
-The dataset is structured as follows.
-<a href="#id15"><span class="problematic" id="id16">``</span></a>`
-my_yolo_dataset
-├── images
-│   ├── train
-│   └── val
-└── labels</p>
-<blockquote>
-<div><p>├── train
-└── val</p>
-</div></blockquote>
-<p>data.yaml
-<code class="docutils literal notranslate"><span class="pre">`</span>
-<span class="pre">`</span></code>
-python main.py –coco2yolo=/path/to/my_coco_dataset/annotations.json –to my_yolo_dataset –dataset_type=val
-<a href="#id17"><span class="problematic" id="id18">``</span></a>`
-## How to train a custom YOLOV5 model?
-<a href="#id19"><span class="problematic" id="id20">``</span></a><a href="#id21"><span class="problematic" id="id22">`</span></a>bash
-cd annolid/detector
-cp -r my_yolo_dataset annolid/detector
-cd yolov5
-# change nc (number of classes) in the models/yolo5x.yaml, default is 80</p>
-<p>python train.py –img 640 –batch 8 –epochs 30 –data ../my_dataset_yolo/data.yaml –cfg ./models/yolov5x.yaml –weights yolov5x.pt –name yolov5x_my_model –cache
-<a href="#id23"><span class="problematic" id="id24">``</span></a><a href="#id25"><span class="problematic" id="id26">`</span></a></p>
-<p>## How to track objects in a video with the trained model?</p>
-<p><code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">cd</span> <span class="pre">annold</span>
-<span class="pre">python</span> <span class="pre">main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mp4</span> <span class="pre">--track=YOLOV5</span> <span class="pre">--weights=detector/yolov5/runs/exp5_yolov5x_my_model/weights/best.pt</span>
-<span class="pre">`</span></code></p>
-<p>## How to convert labelme labeled dataset to COCO format?
-:warning: You might need to reinstall annolid because it requires <cite>labelme</cite>
-and <cite>pycocotools</cite> now.
-<code class="docutils literal notranslate"><span class="pre">`bash</span>
-<span class="pre">cd</span> <span class="pre">annold</span>
-<span class="pre">python</span> <span class="pre">main.py</span> <span class="pre">--labelme2coco=/path/to/my_labeled_images</span> <span class="pre">--to</span> <span class="pre">/path/to/my_dataset_coco</span> <span class="pre">--labels=/path/to/my_labels.txt</span> <span class="pre">--vis=True</span>
-<span class="pre">`</span></code>
-If vis is true, it will create an additional visualization folder.
-The dataset is structured as follows.
-<a href="#id27"><span class="problematic" id="id28">``</span></a>`
-../../datasets/mydataset_coco/
-├── data.yaml
-├── train
-│   ├── annotations.json
-│   └── JPEGImages
-│       ├── 00000444.jpg
-└── valid</p>
-<blockquote>
-<div><p>├── annotations.json
-└── JPEGImages</p>
-<blockquote>
-<div><p>├── 00000443.jpg</p>
-</div></blockquote>
-</div></blockquote>
-<p><a href="#id29"><span class="problematic" id="id30">``</span></a><a href="#id31"><span class="problematic" id="id32">`</span></a></p>
-<p>![Visualization](docs/imgs/00002895_7.jpg)</p>
-<p>An example mask file</p>
-<p>![Masks](docs/imgs/00002895_7_mask.png)</p>
-<p>## How to train a YOLACT model with a custom dataset?
-Please create a dataset yaml file by using the
-annolid/segementation/yolact/configs/mouse_a4_dataset.yaml as
-an example.
-<code class="docutils literal notranslate"><span class="pre">`</span>
-<span class="pre">cd</span> <span class="pre">annolild/segmentation/yolact</span>
-<span class="pre">python</span> <span class="pre">train.py</span> <span class="pre">--config=configs/my_custom_dataset.yaml</span>&#160; <span class="pre">--batch_size=8</span>
-<span class="pre">`</span></code>
-## How to evaluate a video based on a trained model?
-<code class="docutils literal notranslate"><span class="pre">`</span>
-<span class="pre">cd</span> <span class="pre">annolid/segmentation/yolact</span>
-<span class="pre">python</span> <span class="pre">eval.py</span> <span class="pre">--trained_model=weights/yolact_plus_resnet50_xxx_xxx_xxx_interrupt.pth</span> <span class="pre">--score_threshold=0.2</span> <span class="pre">--top_k=4</span> <span class="pre">--video_multiframe=1</span> <span class="pre">--video=my_video.avi:my_result_video.mp4</span> <span class="pre">--mot</span> <span class="pre">--config=configs/my_custom_dataset.yaml</span>
-<span class="pre">`</span></code>
-Note: the output tracking CSV file and video will be saved to
-the folder annolid/segmentation/results.</p>
-<p>## Convert the tracking results csv file to Glitter2 csv format
-The result csv file named as tracking_results_nix.csv in the folder as provided in –to option.
-<code class="docutils literal notranslate"><span class="pre">`</span>
-<span class="pre">python</span> <span class="pre">annolid/main.py</span> <span class="pre">-v</span> <span class="pre">/path/to/my_video.mkv</span> <span class="pre">--tracks2glitter</span> <span class="pre">/path/to/tracking_results.csv</span> <span class="pre">--to</span> <span class="pre">/path/to/results_dir/</span>
-<span class="pre">`</span></code></p>
-<p>## Convert the keypoint annotations to labelme format
-e.g. [DeepLabCut Mouse dataset](<a class="reference external" href="https://github.com/DeepLabCut/Primer-MotionCapture/tree/master/mouse_m7s3">https://github.com/DeepLabCut/Primer-MotionCapture/tree/master/mouse_m7s3</a>)</p>
-<p><a href="#id33"><span class="problematic" id="id34">``</span></a><a href="#id35"><span class="problematic" id="id36">`</span></a>bash
-python annolid/main.py –keypoints2labelme /path/to/mouse_m7s3/  –keypoints /path/to/mouse_m7s3/CollectedData_xxxx.h5</p>
-<p><a href="#id37"><span class="problematic" id="id38">``</span></a>`
-![Example](docs/imgs/mouse_keypoints.png)</p>
-<p># Citing Annolid
-If you use Annolid in your research, please use the following BibTeX entry.
-<a href="#id39"><span class="problematic" id="id40">``</span></a>`
-&#64;misc{yang2020Annolid,</p>
-<blockquote>
-<div><p>author =       {Chen Yang and Thomas Cleland},
-title =        {Annolid},
-howpublished = {url{<a class="reference external" href="https://github.com/healthonrails/annolid">https://github.com/healthonrails/annolid</a>}},
-year =         {2020}</p>
-</div></blockquote>
-<div class="section" id="id41">
-<h2>}<a class="headerlink" href="#id41" title="Permalink to this headline">¶</a></h2>
-<p>## Install Detectron2</p>
-<p>### Requirements
-- Windows, Linux or macOS with Python ≥ 3.6
-- PyTorch ≥ 1.5 and [torchvision](<a class="reference external" href="https://github.com/pytorch/vision/">https://github.com/pytorch/vision/</a>) that matches the PyTorch installation.</p>
-<blockquote>
-<div><p>Install them together at [pytorch.org](<a class="reference external" href="https://pytorch.org">https://pytorch.org</a>) to make sure of this</p>
-</div></blockquote>
-<p>### install dependencies:
-<a href="#id42"><span class="problematic" id="id43">``</span></a>`
-pip install pyyaml==5.1 ‘pycocotools&gt;=2.0.1’
-pip install torch==1.7.0+cu101 torchvision==0.8.1+cu101 -f <a class="reference external" href="https://download.pytorch.org/whl/torch_stable.html">https://download.pytorch.org/whl/torch_stable.html</a></p>
-<p><code class="docutils literal notranslate"><span class="pre">`</span>
-<span class="pre">###</span> <span class="pre">install</span> <span class="pre">detectron2:</span> <span class="pre">(Colab</span> <span class="pre">has</span> <span class="pre">CUDA</span> <span class="pre">10.1</span> <span class="pre">+</span> <span class="pre">torch</span> <span class="pre">1.7)</span>
-<span class="pre">#</span> <span class="pre">See</span> <span class="pre">https://detectron2.readthedocs.io/tutorials/install.html</span> <span class="pre">for</span> <span class="pre">instructions</span>
-<span class="pre">`</span></code>
-assert torch.__version__.startswith(“1.7”)
-pip install detectron2 -f <a class="reference external" href="https://dl.fbaipublicfiles.com/detectron2/wheels/cu101/torch1.7/index.html">https://dl.fbaipublicfiles.com/detectron2/wheels/cu101/torch1.7/index.html</a>
-<a href="#id44"><span class="problematic" id="id45">``</span></a><a href="#id46"><span class="problematic" id="id47">`</span></a></p>
-</div>
 </div>
 
 
@@ -371,6 +188,9 @@ pip install detectron2 -f <a class="reference external" href="https://dl.fbaipub
            
           </div>
           <footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+        <a href="guide.html" class="btn btn-neutral float-right" title="Annolid User Guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
 
   <hr/>
 
