@@ -229,8 +229,9 @@ def build_model(
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if vol_shape is None:
+        # pretrained model with input volume shape
         vol_shape = (672, 1280)
-    if pretrained_model is None:
+    if pretrained_model is None and vol_shape == (672, 1280):
         pretrained_model = str(Path(__file__).parent /
                                'weights' / 'deformation_latest.pt')
     if nb_enc_features is None:
@@ -239,7 +240,7 @@ def build_model(
         nb_dec_features = [32, 32, 32, 32, 32, 16]
     fpnet = FramePredNet(vol_shape, nb_enc_features, nb_dec_features)
     fpnet.to(device)
-    if os.path.exists(pretrained_model):
+    if pretrained_model is not None and os.path.exists(pretrained_model):
         fpnet.load_state_dict(torch.load(
             pretrained_model, map_location=device))
         return fpnet
