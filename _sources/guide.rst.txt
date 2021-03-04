@@ -36,3 +36,12 @@ This video shows self-supervised optical flow estimation in Annolid.
 .. raw:: html
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/EpQ9JPZgcYE" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Extract frames
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+This video shows how to extract frames for labeling.
+
+.. raw:: html
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/fx0ryaXpdEc" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
