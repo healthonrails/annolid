@@ -41,7 +41,16 @@ This video shows self-supervised optical flow estimation in Annolid.
 Extract frames
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-This video shows how to extract frames for labeling.
+In this video, we'll show you how to extract frames frome a video.
+
+First, start the `Annolid` GUI. Click Extract frames in the toolbar list.
+When the dialog opens, click the and select the video file. 
+You can choose the start and end seconds if you want extract frames in the given time interval. 
+Use random algorithm and select the desired number of frames.
+The waiting time depends on the video length, and the algorimth that were selected. It might take a while to finish. 
+When the process is done, it will load all the images into canvas for labeling. 
+You can check the extract frames by clicking the files in the file list. 
 
 .. raw:: html
+
     <iframe width="560" height="315" src="https://www.youtube.com/embed/fx0ryaXpdEc" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
