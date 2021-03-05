@@ -54,3 +54,13 @@ You can check the extract frames by clicking the files in the file list.
 .. raw:: html
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/fx0ryaXpdEc" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Label Zones 
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this video, we'll show you how to label zones and non-moving objects in a video frame.
+
+.. raw:: html
+
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/zX8cUImRI_s" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
