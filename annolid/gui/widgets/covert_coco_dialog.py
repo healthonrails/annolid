@@ -12,7 +12,7 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.slider()
         self.label_list_text = None
 
-        self.num_train_frames = 10
+        self.num_train_frames = 100
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -102,7 +102,7 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider.setMinimum(1)
         self.slider.setMaximum(1000)
-        self.slider.setValue(10)
+        self.slider.setValue(100)
         self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
         self.slider.setTickInterval(1)
         self.slider.valueChanged.connect(self.onSliderChange)
