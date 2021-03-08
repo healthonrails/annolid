@@ -7,7 +7,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   
-  <title>Install Detectron2 &mdash; annolid v1.0.1 documentation</title>
+  <title>Install Annolid &mdash; annolid v1.0.1 documentation</title>
   
 
   
@@ -86,8 +86,15 @@
             
               <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Install Detectron2</a><ul>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Install Annolid</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#requirements">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#anaconda">Anaconda</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#annolid">Annolid</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="#launch-annolid-user-interface-based-on-labelme">Launch annolid user interface based on labelme</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#install-detectron2">Install Detectron2</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#id1">Requirements</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#install-dependencies">install dependencies:</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#install-detectron2-colab-has-cuda-10-1-torch-1-7">install detectron2: (Colab has CUDA 10.1 + torch 1.7)</a></li>
 </ul>
@@ -141,7 +148,7 @@
     
       <li><a href="index.html" class="icon icon-home"></a> &raquo;</li>
         
-      <li>Install Detectron2</li>
+      <li>Install Annolid</li>
     
     
       <li class="wy-breadcrumbs-aside">
@@ -160,10 +167,60 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
             
-  <div class="section" id="install-detectron2">
-<h1>Install Detectron2<a class="headerlink" href="#install-detectron2" title="Permalink to this headline">¶</a></h1>
+  <div class="section" id="install-annolid">
+<h1>Install Annolid<a class="headerlink" href="#install-annolid" title="Permalink to this headline">¶</a></h1>
 <div class="section" id="requirements">
 <h2>Requirements<a class="headerlink" href="#requirements" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li><p>Ubuntu / macOS / Windows</p></li>
+<li><p>Python &gt;= 3.6</p></li>
+<li><p>[PyQt4 / PyQt5]</p></li>
+</ul>
+</div>
+<div class="section" id="anaconda">
+<h2>Anaconda<a class="headerlink" href="#anaconda" title="Permalink to this headline">¶</a></h2>
+<p>You need install <a class="reference external" href="https://www.continuum.io/downloads">Anaconda</a>, then run below:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># python3</span>
+<span class="n">conda</span> <span class="n">create</span> <span class="o">--</span><span class="n">name</span><span class="o">=</span><span class="n">annolid</span> <span class="n">python</span><span class="o">=</span><span class="mf">3.7</span>
+<span class="n">source</span> <span class="n">activate</span> <span class="n">annolid</span>
+<span class="c1"># conda install -c conda-forge pyside2</span>
+<span class="c1"># conda install pyqt</span>
+<span class="c1"># pip install pyqt5  # pyqt5 can be installed via pip on python3</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="annolid">
+<h2>Annolid<a class="headerlink" href="#annolid" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li><p>Clone the code repo and change into the directory</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+<span class="nb">cd</span> annolid 
+
+<span class="c1"># install the package</span>
+pip install -e .
+</pre></div>
+</div>
+<p>Note: if you got this error:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ERROR</span><span class="p">:</span> <span class="n">Could</span> <span class="ow">not</span> <span class="n">find</span> <span class="n">a</span> <span class="n">version</span> <span class="n">that</span> <span class="n">satisfies</span> <span class="n">the</span> <span class="n">requirement</span> <span class="n">decord</span><span class="o">&gt;=</span><span class="mf">0.4</span><span class="o">.</span><span class="mi">0</span>
+</pre></div>
+</div>
+<p>, please try to install <a class="reference external" href="https://ffmpeg.org/">ffmpeg</a> and then install decord from source as described <a class="reference external" href="https://github.com/dmlc/decord">here</a>.</p>
+</div>
+</div>
+<div class="section" id="launch-annolid-user-interface-based-on-labelme">
+<h1>Launch annolid user interface based on labelme<a class="headerlink" href="#launch-annolid-user-interface-based-on-labelme" title="Permalink to this headline">¶</a></h1>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">source</span> activate your_env_name
+annolid
+<span class="c1">#or you can provide a label.txt file as follows.</span>
+annolid --labels<span class="o">=</span>/path/to/labels_custom.txt 
+</pre></div>
+</div>
+</div>
+<div class="section" id="install-detectron2">
+<h1>Install Detectron2<a class="headerlink" href="#install-detectron2" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="id1">
+<h2>Requirements<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h2>
 <ul class="simple">
 <li><p>Windows, Linux or macOS with Python ≥ 3.6</p></li>
 <li><p>PyTorch ≥ 1.5 and <a class="reference external" href="https://github.com/pytorch/vision/">torchvision</a> that matches the PyTorch installation.
