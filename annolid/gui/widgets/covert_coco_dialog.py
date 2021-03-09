@@ -43,7 +43,7 @@ class ConvertCOODialog(QtWidgets.QDialog):
         hboxLabelLayOut = QtWidgets.QVBoxLayout()
 
         self.groupBoxLabelFiles = QtWidgets.QGroupBox(
-            "Please choose a label tet file")
+            "Please choose a label text file")
         self.inputLabelFileLineEdit = QtWidgets.QLineEdit(self)
         self.inputLabelFileButton = QtWidgets.QPushButton(
             'Open Labels File', self)

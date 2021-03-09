@@ -74,3 +74,13 @@ In this video, we'll show you how to save labels for your dataset.
 .. raw:: html
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/pb8X4bqLRZ0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Create your COCO format dataset
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this video, we'll show you how to create your dataset in COCO format.
+
+.. raw:: html
+
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/_oNGc_44eZ8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
