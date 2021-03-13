@@ -107,7 +107,6 @@ def tracks2nix(video_file=None,
         return left_interact, right_interact
 
     cap = cv2.VideoCapture(video_file)
-    ret, frame = cap.read()
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -167,14 +166,16 @@ def tracks2nix(video_file=None,
                                    target_fps,
                                    (width, height))
 
-    while ret:
+    while cap.isOpened():
+        # timestamp in seconds
+        frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+        frame_number = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+
         ret, frame = cap.read()
 
         if not ret:
             break
-        # timestamp in seconds
-        frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
-        frame_number = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+
         bbox_info = get_bbox(frame_number)
 
         # calculate left or rgiht interact in the frame
