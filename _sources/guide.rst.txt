@@ -84,3 +84,13 @@ In this video, we'll show you how to create your dataset in COCO format.
 .. raw:: html
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/_oNGc_44eZ8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Convert instance segmentation results to Glitter2 format
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this video, we'll show you how to convert instance segmentation results to Glitter2 format.
+
+.. raw:: html
+
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/jN3K9BwslLs" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
