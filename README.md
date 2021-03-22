@@ -206,3 +206,5 @@ If you use Annolid in your research, please use the following BibTeX entry.
   year =         {2020}
 }
 ```
+[For more information:](https://healthonrails.github.io/annolid/) https://healthonrails.github.io/annolid/
+.
