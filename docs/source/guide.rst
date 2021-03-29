@@ -93,4 +93,4 @@ In this video, we'll show you how to convert instance segmentation results to Gl
 
 .. raw:: html
 
-    <iframe width="560" height="315" src="https://www.youtube.com/embed/jN3K9BwslLs" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/QW8dhAVNsk0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
