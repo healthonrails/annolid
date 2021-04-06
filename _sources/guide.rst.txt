@@ -104,3 +104,13 @@ In this video, we'll show you how to install and run Detectron2 in Google Colab.
 .. raw:: html
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/iQRVR7GPBH0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Upload and visualize your dataset in Detectron2 Colab
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this video, we'll show you how to upload and visualize your dataset in Detectron2 Colab.
+
+.. raw:: html
+
+    <iframe width="560" height="315" src="https://www.youtube.com/embed/7zYNRfY0yy4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
