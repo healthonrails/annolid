@@ -224,6 +224,8 @@ def tracks2nix(video_file=None,
                 frame = draw.draw_binary_masks(
                     frame, [m], [zone_label])
 
+        parts_locations = {}
+
         for bf in bbox_info:
             if len(bf) == 8:
                 _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
@@ -260,6 +262,7 @@ def tracks2nix(video_file=None,
                 cy = int((y1 + y2) / 2)
                 color = draw.compute_color_for_labels(
                     hash(_class) % 100)
+                parts_locations[_class] = (cx, cy, color)
 
                 if _class == 'nose' or 'nose' in _class.lower():
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx
@@ -376,6 +379,30 @@ def tracks2nix(video_file=None,
                         draw_track=False,
                         points=points
                     )
+
+        if 'nose' in parts_locations and 'right_ear' in parts_locations and 'left_ear' in parts_locations:
+            nose_point = parts_locations['nose'][0:2]
+            nose_color = parts_locations['nose'][-1]
+            right_ear_point = parts_locations['right_ear'][0:2]
+            right_ear_color = parts_locations['right_ear'][-1]
+            left_ear_point = parts_locations['left_ear'][0:2]
+            left_ear_color = parts_locations['left_ear'][-1]
+            cv2.line(frame, nose_point, right_ear_point, nose_color, 3)
+            cv2.line(frame, nose_point, left_ear_point, left_ear_color, 3)
+            cv2.line(frame, right_ear_point,
+                     left_ear_point, right_ear_color, 3)
+        if 'tail_base' in parts_locations and 'right_ear' in parts_locations and 'left_ear' in parts_locations:
+            tail_base_point = parts_locations['tail_base'][0:2]
+            tail_base_color = parts_locations['tail_base'][-1]
+            right_ear_point = parts_locations['right_ear'][0:2]
+            right_ear_color = parts_locations['right_ear'][-1]
+            left_ear_point = parts_locations['left_ear'][0:2]
+            left_ear_color = parts_locations['left_ear'][-1]
+            cv2.line(frame, tail_base_point,
+                     right_ear_point, tail_base_color, 3)
+            cv2.line(frame, tail_base_point, left_ear_point, left_ear_color, 3)
+            cv2.line(frame, right_ear_point,
+                     left_ear_point, right_ear_color, 3)
 
         cv2.putText(frame, f"Timestamp: {frame_timestamp}",
                     (25, 25), cv2.FONT_HERSHEY_SIMPLEX,
