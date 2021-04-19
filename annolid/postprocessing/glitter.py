@@ -380,29 +380,8 @@ def tracks2nix(video_file=None,
                         points=points
                     )
 
-        if 'nose' in parts_locations and 'right_ear' in parts_locations and 'left_ear' in parts_locations:
-            nose_point = parts_locations['nose'][0:2]
-            nose_color = parts_locations['nose'][-1]
-            right_ear_point = parts_locations['right_ear'][0:2]
-            right_ear_color = parts_locations['right_ear'][-1]
-            left_ear_point = parts_locations['left_ear'][0:2]
-            left_ear_color = parts_locations['left_ear'][-1]
-            cv2.line(frame, nose_point, right_ear_point, nose_color, 3)
-            cv2.line(frame, nose_point, left_ear_point, left_ear_color, 3)
-            cv2.line(frame, right_ear_point,
-                     left_ear_point, right_ear_color, 3)
-        if 'tail_base' in parts_locations and 'right_ear' in parts_locations and 'left_ear' in parts_locations:
-            tail_base_point = parts_locations['tail_base'][0:2]
-            tail_base_color = parts_locations['tail_base'][-1]
-            right_ear_point = parts_locations['right_ear'][0:2]
-            right_ear_color = parts_locations['right_ear'][-1]
-            left_ear_point = parts_locations['left_ear'][0:2]
-            left_ear_color = parts_locations['left_ear'][-1]
-            cv2.line(frame, tail_base_point,
-                     right_ear_point, tail_base_color, 3)
-            cv2.line(frame, tail_base_point, left_ear_point, left_ear_color, 3)
-            cv2.line(frame, right_ear_point,
-                     left_ear_point, right_ear_color, 3)
+        # draw the lines between predefined keypoints
+        draw.draw_keypoint_connections(frame, parts_locations)
 
         cv2.putText(frame, f"Timestamp: {frame_timestamp}",
                     (25, 25), cv2.FONT_HERSHEY_SIMPLEX,

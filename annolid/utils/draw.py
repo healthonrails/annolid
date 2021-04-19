@@ -110,7 +110,30 @@ def draw_flow(img,
     lines = np.vstack([x, y, x + fx, y + fy]).T.reshape(-1, 2, 2)
     lines = np.int32(lines + 0.5)
     vis = img
-    cv2.polylines(vis, lines, 0, quiver,3)
+    cv2.polylines(vis, lines, 0, quiver, 3)
     for (x1, y1), (_x2, _y2) in lines:
         cv2.circle(vis, (x1, y1), 1, (0, 255, 0), -1)
     return vis
+
+
+def draw_keypoint_connections(frame, keypoints):
+    """draw the lines between defined keypoints
+    """
+
+    # rules for drawing a line for a pair of keypoints.
+    KEYPOINT_CONNECTION_RULES = [
+        # head
+        ("left_ear", "right_ear", (102, 204, 255)),
+        ("nose", "left_ear", (102, 0, 204)),
+        ("right_ear", "nose", (51, 102, 255)),
+        # body
+        ("left_ear", "tail_base", (255, 128, 0)),
+        ("tail_base", "right_ear", (153, 255, 204)),
+    ]
+
+    for kp0, kp1, color in KEYPOINT_CONNECTION_RULES:
+        if kp0 in keypoints and kp1 in keypoints:
+            kp0_point = keypoints[kp0][0:2]
+            kp0_color = keypoints[kp0][-1]
+            kp1_point = keypoints[kp1][0:2]
+            cv2.line(frame, kp0_point, kp1_point, kp0_color, 3)
