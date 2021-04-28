@@ -1,0 +1,9 @@
+HEAD:
+    nose: "left_ear"
+    left_ear: "right_ear"
+    right_ear: "nose"
+BODY:
+    tail_base: "left_ear"
+    right_ear: "tail_base"
+    nose: "tail_base"
+    

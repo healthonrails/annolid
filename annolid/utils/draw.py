@@ -116,22 +116,26 @@ def draw_flow(img,
     return vis
 
 
-def draw_keypoint_connections(frame, keypoints):
+def draw_keypoint_connections(frame,
+                              keypoints,
+                              keypoint_connection_rules=None):
     """draw the lines between defined keypoints
     """
 
-    # rules for drawing a line for a pair of keypoints.
-    KEYPOINT_CONNECTION_RULES = [
-        # head
-        ("left_ear", "right_ear", (102, 204, 255)),
-        ("nose", "left_ear", (102, 0, 204)),
-        ("right_ear", "nose", (51, 102, 255)),
-        # body
-        ("left_ear", "tail_base", (255, 128, 0)),
-        ("tail_base", "right_ear", (153, 255, 204)),
-    ]
+    if keypoint_connection_rules is None:
+        # # rules for drawing a line for a pair of keypoints.
+        # keypoint_connection_rules = [
+        #     # head
+        #     ("left_ear", "right_ear", (102, 204, 255)),
+        #     ("nose", "left_ear", (102, 0, 204)),
+        #     ("right_ear", "nose", (51, 102, 255)),
+        #     # body
+        #     ("left_ear", "tail_base", (255, 128, 0)),
+        #     ("tail_base", "right_ear", (153, 255, 204)),
+        # ]
+        return frame
 
-    for kp0, kp1, color in KEYPOINT_CONNECTION_RULES:
+    for kp0, kp1, color in keypoint_connection_rules:
         if kp0 in keypoints and kp1 in keypoints:
             kp0_point = keypoints[kp0][0:2]
             kp0_color = keypoints[kp0][-1]

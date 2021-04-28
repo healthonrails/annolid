@@ -12,6 +12,7 @@ from annolid.utils import draw
 from collections import deque
 import pycocotools.mask as mask_util
 from annolid.postprocessing.freezing_analyzer import FreezingAnalyzer
+from annolid.utils.config import get_config
 
 points = [deque(maxlen=30) for _ in range(1000)]
 
@@ -44,6 +45,20 @@ def tracks2nix(video_file=None,
         zone_info = Path(zone_info)
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
+
+    keypoint_cfg_file = Path(__file__).parent.parent / \
+        'configs' / 'keypoints.yaml'
+
+    keypoints_connection_rules = []
+    if keypoint_cfg_file.exists():
+        key_points_rules = get_config(
+            str(keypoint_cfg_file)
+        )
+        # color is a placehold for future customization
+        for k, v in key_points_rules['HEAD'].items():
+            keypoints_connection_rules.append((k, v, (255, 255, 0)))
+        for k, v in key_points_rules['BODY'].items():
+            keypoints_connection_rules.append((k, v, (255, 0, 255)))
 
     df_motion = None
     if motion_threshold > 0:
@@ -381,7 +396,10 @@ def tracks2nix(video_file=None,
                     )
 
         # draw the lines between predefined keypoints
-        draw.draw_keypoint_connections(frame, parts_locations)
+        draw.draw_keypoint_connections(frame,
+                                       parts_locations,
+                                       keypoints_connection_rules
+                                       )
 
         cv2.putText(frame, f"Timestamp: {frame_timestamp}",
                     (25, 25), cv2.FONT_HERSHEY_SIMPLEX,
