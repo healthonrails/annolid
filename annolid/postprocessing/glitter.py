@@ -17,6 +17,32 @@ from annolid.utils.config import get_config
 points = [deque(maxlen=30) for _ in range(1000)]
 
 
+def get_keypoint_connection_rules(keypoint_cfg_file=None):
+    """Keypoint connection rules defined in the config file. 
+
+    Args:
+        keypoint_cfg_file (str, optional): a yaml config file. Defaults to None.
+
+    Returns:
+        [(tuples),]: [(body_part_1,body_part2,(225,255,0))]
+    """
+    if keypoint_cfg_file is None:
+        keypoint_cfg_file = Path(__file__).parent.parent / \
+            'configs' / 'keypoints.yaml'
+
+    keypoints_connection_rules = []
+    if keypoint_cfg_file.exists():
+        key_points_rules = get_config(
+            str(keypoint_cfg_file)
+        )
+        # color is a placehold for future customization
+        for k, v in key_points_rules['HEAD'].items():
+            keypoints_connection_rules.append((k, v, (255, 255, 0)))
+        for k, v in key_points_rules['BODY'].items():
+            keypoints_connection_rules.append((k, v, (255, 0, 255)))
+    return keypoints_connection_rules
+
+
 def tracks2nix(video_file=None,
                tracking_results='tracking.csv',
                out_nix_csv_file='my_glitter_format.csv',
@@ -46,19 +72,7 @@ def tracks2nix(video_file=None,
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
 
-    keypoint_cfg_file = Path(__file__).parent.parent / \
-        'configs' / 'keypoints.yaml'
-
-    keypoints_connection_rules = []
-    if keypoint_cfg_file.exists():
-        key_points_rules = get_config(
-            str(keypoint_cfg_file)
-        )
-        # color is a placehold for future customization
-        for k, v in key_points_rules['HEAD'].items():
-            keypoints_connection_rules.append((k, v, (255, 255, 0)))
-        for k, v in key_points_rules['BODY'].items():
-            keypoints_connection_rules.append((k, v, (255, 0, 255)))
+    keypoints_connection_rules = get_keypoint_connection_rules()
 
     df_motion = None
     if motion_threshold > 0:
