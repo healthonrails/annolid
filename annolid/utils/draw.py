@@ -118,7 +118,8 @@ def draw_flow(img,
 
 def draw_keypoint_connections(frame,
                               keypoints,
-                              keypoint_connection_rules=None):
+                              keypoint_connection_rules=None,
+                              max_dist=250):
     """draw the lines between defined keypoints
     """
 
@@ -140,4 +141,8 @@ def draw_keypoint_connections(frame,
             kp0_point = keypoints[kp0][0:2]
             kp0_color = keypoints[kp0][-1]
             kp1_point = keypoints[kp1][0:2]
-            cv2.line(frame, kp0_point, kp1_point, kp0_color, 3)
+            dist = np.linalg.norm(np.array(kp0_point)-np.array(kp1_point))
+            if dist < max_dist:
+                cv2.line(frame, kp0_point, kp1_point, kp0_color, 3)
+            else:
+                print(f"Dist between two points is {dist}")
