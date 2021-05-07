@@ -106,6 +106,32 @@ def tracks2nix(video_file=None,
         else:
             return False
 
+    def keypoint_in_body_mask(
+            frame_number,
+            keypoint_name,
+            body_mask="mouse"):
+        _df_k_b = df[df.frame_number == frame_number]
+        try:
+            body_seg = _df_k_b[_df_k_b.instance_name ==
+                               body_mask]['segmentation'].values[0]
+            body_seg = ast.literal_eval(body_seg)
+        except IndexError:
+            return False
+
+        try:
+            keypoint_seg = _df_k_b[_df_k_b.instance_name ==
+                                   keypoint_name]['segmentation'].values[0]
+            keypoint_seg = ast.literal_eval(keypoint_seg)
+        except IndexError:
+            return False
+
+        if keypoint_seg and body_seg:
+            overlap = mask_util.iou([body_seg], [keypoint_seg], [
+                False, False]).flatten()[0]
+            return overlap > 0
+        else:
+            return False
+
     def left_right_interact(fn):
         _df_top = df[df.frame_number == fn]
         right_interact = None
@@ -291,7 +317,9 @@ def tracks2nix(video_file=None,
                 cy = int((y1 + y2) / 2)
                 color = draw.compute_color_for_labels(
                     hash(_class) % 100)
-                parts_locations[_class] = (cx, cy, color)
+
+                if keypoint_in_body_mask(_frame_num, _class):
+                    parts_locations[_class] = (cx, cy, color)
 
                 if _class == 'nose' or 'nose' in _class.lower():
                     timestamps[frame_timestamp]['pos:animal_nose:x'] = cx

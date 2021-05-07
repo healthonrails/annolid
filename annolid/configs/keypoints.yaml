@@ -3,7 +3,7 @@ HEAD:
     left_ear: "right_ear"
     right_ear: "nose"
 BODY:
-    tail_base: "left_ear"
-    right_ear: "tail_base"
-    nose: "tail_base"
-    
+    tail_base: "left_hip"
+    right_hip: "tail_base"
+    neck: "right_hip"
+    left_hip: neck
