@@ -1,9 +1,10 @@
 HEAD:
-    nose: "left_ear"
-    left_ear: "right_ear"
-    right_ear: "nose"
+    #keypoint: keypoint, R,G,B for line color
+    nose: "left_ear,102, 204, 255"
+    left_ear: "right_ear, 102, 0, 204"
+    right_ear: "nose, 51, 102, 255"
 BODY:
-    tail_base: "left_hip"
-    right_hip: "tail_base"
-    neck: "right_hip"
-    left_hip: neck
+    tail_base: "left_hip,255, 128, 0"
+    right_hip: "tail_base,153, 255, 204"
+    neck: "right_hip,255, 195, 77"
+    left_hip: "neck,153, 255, 204"

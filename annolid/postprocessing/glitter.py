@@ -12,35 +12,9 @@ from annolid.utils import draw
 from collections import deque
 import pycocotools.mask as mask_util
 from annolid.postprocessing.freezing_analyzer import FreezingAnalyzer
-from annolid.utils.config import get_config
+
 
 points = [deque(maxlen=30) for _ in range(1000)]
-
-
-def get_keypoint_connection_rules(keypoint_cfg_file=None):
-    """Keypoint connection rules defined in the config file. 
-
-    Args:
-        keypoint_cfg_file (str, optional): a yaml config file. Defaults to None.
-
-    Returns:
-        [(tuples),]: [(body_part_1,body_part2,(225,255,0))]
-    """
-    if keypoint_cfg_file is None:
-        keypoint_cfg_file = Path(__file__).parent.parent / \
-            'configs' / 'keypoints.yaml'
-
-    keypoints_connection_rules = []
-    if keypoint_cfg_file.exists():
-        key_points_rules = get_config(
-            str(keypoint_cfg_file)
-        )
-        # color is a placehold for future customization
-        for k, v in key_points_rules['HEAD'].items():
-            keypoints_connection_rules.append((k, v, (255, 255, 0)))
-        for k, v in key_points_rules['BODY'].items():
-            keypoints_connection_rules.append((k, v, (255, 0, 255)))
-    return keypoints_connection_rules
 
 
 def tracks2nix(video_file=None,
@@ -72,7 +46,7 @@ def tracks2nix(video_file=None,
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
 
-    keypoints_connection_rules = get_keypoint_connection_rules()
+    keypoints_connection_rules = draw.get_keypoint_connection_rules()
 
     df_motion = None
     if motion_threshold > 0:
@@ -315,8 +289,8 @@ def tracks2nix(video_file=None,
                 cx = int((x1 + x2) / 2)
                 cy_glitter = int((glitter_y1 + glitter_y2) / 2)
                 cy = int((y1 + y2) / 2)
-                color = draw.compute_color_for_labels(
-                    hash(_class) % 100)
+                _, color = draw.get_label_color(
+                    _class)
 
                 if keypoint_in_body_mask(_frame_num, _class):
                     parts_locations[_class] = (cx, cy, color)
@@ -394,8 +368,9 @@ def tracks2nix(video_file=None,
                 elif _class == 'mouse':
                     pass
                 else:
+                    # draw box center as keypoints
                     cv2.circle(frame, (cx, cy),
-                               8,
+                               6,
                                color,
                                -1)
 

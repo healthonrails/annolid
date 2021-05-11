@@ -5,34 +5,79 @@ https://github.com/ZQPei/deep_sort_pytorch/blob/master/utils/draw.py
 """
 import numpy as np
 import cv2
+from pathlib import Path
+from annolid.utils.config import get_config
 
-palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
+
+def get_keypoint_connection_rules(keypoint_cfg_file=None):
+    """Keypoint connection rules defined in the config file. 
+
+    Args:
+        keypoint_cfg_file (str, optional): a yaml config file. Defaults to None.
+
+    Returns:
+        [(tuples),]: [(body_part_1,body_part2,(225,255,0))]
+    """
+    if keypoint_cfg_file is None:
+        keypoint_cfg_file = Path(__file__).parent.parent / \
+            'configs' / 'keypoints.yaml'
+
+    keypoints_connection_rules = []
+    if keypoint_cfg_file.exists():
+        key_points_rules = get_config(
+            str(keypoint_cfg_file)
+        )
+        # color is a placehold for future customization
+        for k, v in key_points_rules['HEAD'].items():
+            v, r, g, b = v.split(',')
+            color = (int(r), int(g), int(b))
+            keypoints_connection_rules.append((k, v, color))
+        for k, v in key_points_rules['BODY'].items():
+            v, r, g, b = v.split(',')
+            color = (int(r), int(g), int(b))
+            keypoints_connection_rules.append((k, v, color))
+    return keypoints_connection_rules
+
+
+def _keypoint_color():
+    keypoint_connection_rules = get_keypoint_connection_rules()
+    keypoint_colors = {}
+    for kcr in keypoint_connection_rules:
+        keypoint_colors[kcr[0]] = kcr[-1]
+    return keypoint_colors
+
+
+KEYPOINT_COLORS = _keypoint_color()
 
 
 def compute_color_for_labels(label):
     """
     Simple function that adds fixed color depending on the class
     """
+    palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
     color = [int((p * (label ** 2 - label + 1)) % 255)
              for p in palette]
     return tuple(color)
 
 
 def get_label_color(label_id):
-
-    try:
-        _id = int(label_id) if label_id is not None else 0
-        color = compute_color_for_labels(_id)
-        label = '{}{:d}'.format("", _id)
-    except:
-        color = compute_color_for_labels(hash(label_id) % 100)
-        label = f'{label_id}'
-    return label, color
+    if label_id in KEYPOINT_COLORS:
+        return label_id, KEYPOINT_COLORS[label_id]
+    else:
+        try:
+            _id = int(label_id) if label_id is not None else 0
+            color = compute_color_for_labels(_id)
+            label = '{}{:d}'.format("", _id)
+        except:
+            color = compute_color_for_labels(hash(label_id) % 100)
+            label = f'{label_id}'
+        return label, color
 
 
 def draw_binary_masks(img,
                       masks,
-                      identities=None):
+                      identities=None
+                      ):
 
     img_alpha = np.zeros(img.shape, img.dtype)
     for i, _mask in enumerate(masks):
@@ -139,10 +184,10 @@ def draw_keypoint_connections(frame,
     for kp0, kp1, color in keypoint_connection_rules:
         if kp0 in keypoints and kp1 in keypoints:
             kp0_point = keypoints[kp0][0:2]
-            kp0_color = keypoints[kp0][-1]
+            #kp0_color = keypoints[kp0][-1]
             kp1_point = keypoints[kp1][0:2]
             dist = np.linalg.norm(np.array(kp0_point)-np.array(kp1_point))
             if dist < max_dist:
-                cv2.line(frame, kp0_point, kp1_point, kp0_color, 3)
+                cv2.line(frame, kp0_point, kp1_point, color, 3)
             else:
                 print(f"Dist between two points is {dist}")
