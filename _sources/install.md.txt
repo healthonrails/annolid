@@ -38,8 +38,12 @@ annolid
 annolid --labels=/path/to/labels_custom.txt 
 
 ```
+## Running Detectron2 in Google Colab
+[Annolid of Detectron2 in Colab](https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb)
 
-## Install Detectron2
+
+## Note: Installing Detectron2 is required only if you want to run it on your local machine 
+## Install Detectron2 
 
 ### Requirements
 - Windows, Linux or macOS with Python ≥ 3.7
