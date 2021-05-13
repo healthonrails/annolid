@@ -88,20 +88,18 @@
 <li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Install Annolid</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#requirements">Requirements</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#anaconda">Anaconda</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#annolid">Annolid</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#set-up-anaconda-virtual-environment">Set up Anaconda virtual environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#id1">Install Annolid</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#launch-annolid">Launch Annolid</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="#launch-annolid-user-interface-based-on-labelme">Launch annolid user interface based on labelme</a></li>
-<li class="toctree-l1"><a class="reference internal" href="#running-detectron2-in-google-colab">Running Detectron2 in Google Colab</a></li>
-<li class="toctree-l1"><a class="reference internal" href="#note-installing-detectron2-is-required-only-if-you-want-to-run-it-on-your-local-machine">Note: Installing Detectron2 is required only if you want to run it on your local machine</a></li>
-<li class="toctree-l1"><a class="reference internal" href="#install-detectron2">Install Detectron2</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#id1">Requirements</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#install-dependencies">install dependencies:</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#install-detectron2-colab-has-cuda-10-1-torch-1-8">install detectron2: (Colab has CUDA 10.1 + torch 1.8)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#install-detectron2-locally">Install Detectron2 locally</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#id2">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#install-detectron2-dependencies">Install Detectron2 dependencies:</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#install-detectron2">Install Detectron2:</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="#see-https-detectron2-readthedocs-io-tutorials-install-html-for-instructions">See https://detectron2.readthedocs.io/tutorials/install.html for instructions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#install-detectron2-on-google-colab">Install Detectron2 on Google Colab</a></li>
 </ul>
 
             
@@ -179,82 +177,90 @@
 <li><p>[PyQt4 / PyQt5]</p></li>
 </ul>
 </div>
-<div class="section" id="anaconda">
-<h2>Anaconda<a class="headerlink" href="#anaconda" title="Permalink to this headline">¶</a></h2>
-<p>You need install <a class="reference external" href="https://www.continuum.io/downloads">Anaconda</a>, then run below:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># python3</span>
+<div class="section" id="set-up-anaconda-virtual-environment">
+<h2>Set up Anaconda virtual environment<a class="headerlink" href="#set-up-anaconda-virtual-environment" title="Permalink to this headline">¶</a></h2>
+<p>To run Annolid, we suggest using the Anaconda package/environment manager for Python (free for personal use).  Download and install the <a class="reference external" href="https://www.anaconda.com/products/individual">Anaconda</a> environment first.  Then do the following, using the bash shell in Linux or the conda command line (= Anaconda Prompt) in Windows:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># For MacOS or Linux</span>
 <span class="n">conda</span> <span class="n">create</span> <span class="o">--</span><span class="n">name</span><span class="o">=</span><span class="n">annolid</span> <span class="n">python</span><span class="o">=</span><span class="mf">3.7</span>
 <span class="n">source</span> <span class="n">activate</span> <span class="n">annolid</span>
 <span class="c1"># conda install -c conda-forge pyside2</span>
 <span class="c1"># conda install pyqt</span>
 <span class="c1"># pip install pyqt5  # pyqt5 can be installed via pip on python3</span>
+<span class="c1"># conda install git</span>
 </pre></div>
 </div>
+<p>Commented-out lines are optional; use them if necessary.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># For Windows</span>
+<span class="n">conda</span> <span class="n">create</span> <span class="o">--</span><span class="n">name</span><span class="o">=</span><span class="n">annolid</span> <span class="n">python</span><span class="o">=</span><span class="mf">3.7</span>
+<span class="n">conda</span> <span class="n">activate</span> <span class="n">annolid</span>
+<span class="n">conda</span> <span class="n">install</span> <span class="o">-</span><span class="n">c</span> <span class="n">conda</span><span class="o">-</span><span class="n">forge</span> <span class="n">pyside2</span>
+<span class="n">conda</span> <span class="n">install</span> <span class="n">git</span>
+</pre></div>
 </div>
-<div class="section" id="annolid">
-<h2>Annolid<a class="headerlink" href="#annolid" title="Permalink to this headline">¶</a></h2>
-<ul class="simple">
-<li><p>Clone the code repo and change into the directory</p></li>
-</ul>
+<p>This creates a virtual environment called “annolid” into which you will install Annolid and all of its dependencies, along with whatever other Python tools you may need.  Python 3.7 is recommended, as it is the version being used for Annolid development.</p>
+</div>
+<div class="section" id="id1">
+<h2>Install Annolid<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h2>
+<p>Clone the code repo from Github, change into the new directory, and install</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 <span class="nb">cd</span> annolid 
 
-<span class="c1"># install the package</span>
+<span class="c1"># install the package (be sure to include the space and the period after the -e)</span>
 pip install -e .
 </pre></div>
 </div>
-<p>Note: if you got this error:</p>
+<p>Note: if you get the following error, please try to install <a class="reference external" href="https://ffmpeg.org/">ffmpeg</a> and then install decord from source as described <a class="reference external" href="https://github.com/dmlc/decord">here</a>.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ERROR</span><span class="p">:</span> <span class="n">Could</span> <span class="ow">not</span> <span class="n">find</span> <span class="n">a</span> <span class="n">version</span> <span class="n">that</span> <span class="n">satisfies</span> <span class="n">the</span> <span class="n">requirement</span> <span class="n">decord</span><span class="o">&gt;=</span><span class="mf">0.4</span><span class="o">.</span><span class="mi">0</span>
 </pre></div>
 </div>
-<p>, please try to install <a class="reference external" href="https://ffmpeg.org/">ffmpeg</a> and then install decord from source as described <a class="reference external" href="https://github.com/dmlc/decord">here</a>.</p>
 </div>
-</div>
-<div class="section" id="launch-annolid-user-interface-based-on-labelme">
-<h1>Launch annolid user interface based on labelme<a class="headerlink" href="#launch-annolid-user-interface-based-on-labelme" title="Permalink to this headline">¶</a></h1>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">source</span> activate your_env_name
+<div class="section" id="launch-annolid">
+<h2>Launch Annolid<a class="headerlink" href="#launch-annolid" title="Permalink to this headline">¶</a></h2>
+<p>Typing “annolid” will bring up the Annolid GUI, which is based on the excellent <a class="reference external" href="https://github.com/wkentaro/labelme">LabelMe</a> package.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># be sure to activate the annolid virtual environment every time you restart Anaconda; the conda shell prompt should read &quot;(annolid)&quot;</span>
+<span class="nb">source</span> activate annolid   <span class="c1"># on Linux/MacOS</span>
+conda activate annolid    <span class="c1"># on Windows</span>
+<span class="c1"># then start Annolid (a GUI window will appear)</span>
 annolid
-<span class="c1">#or you can provide a label.txt file as follows.</span>
+
+<span class="c1"># Optionally, you can use a predefined label.txt file as follows.</span>
 annolid --labels<span class="o">=</span>/path/to/labels_custom.txt 
 </pre></div>
 </div>
 </div>
-<div class="section" id="running-detectron2-in-google-colab">
-<h1>Running Detectron2 in Google Colab<a class="headerlink" href="#running-detectron2-in-google-colab" title="Permalink to this headline">¶</a></h1>
-<p><a class="reference external" href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb">Annolid of Detectron2 in Colab</a></p>
 </div>
-<div class="section" id="note-installing-detectron2-is-required-only-if-you-want-to-run-it-on-your-local-machine">
-<h1>Note: Installing Detectron2 is required only if you want to run it on your local machine<a class="headerlink" href="#note-installing-detectron2-is-required-only-if-you-want-to-run-it-on-your-local-machine" title="Permalink to this headline">¶</a></h1>
-</div>
-<div class="section" id="install-detectron2">
-<h1>Install Detectron2<a class="headerlink" href="#install-detectron2" title="Permalink to this headline">¶</a></h1>
-<div class="section" id="id1">
-<h2>Requirements<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="install-detectron2-locally">
+<h1>Install Detectron2 locally<a class="headerlink" href="#install-detectron2-locally" title="Permalink to this headline">¶</a></h1>
+<p><strong>Note</strong>: if you intend to process your tagged videos using Google Colab (which you should do unless you are using a workstation with a higher-end GPU), then <strong>you do not need to install Detectron2 on your local machine</strong>, and you can ignore the following steps.</p>
+<div class="section" id="id2">
+<h2>Requirements<a class="headerlink" href="#id2" title="Permalink to this headline">¶</a></h2>
 <ul class="simple">
 <li><p>Windows, Linux or macOS with Python ≥ 3.7</p></li>
 <li><p>PyTorch ≥ 1.5 and <a class="reference external" href="https://github.com/pytorch/vision/">torchvision</a> that matches the PyTorch installation.
-Install them together at <a class="reference external" href="https://pytorch.org">pytorch.org</a> to make sure of this</p></li>
+Install them together at <a class="reference external" href="https://pytorch.org">pytorch.org</a> to make sure of this.<br />Presently, the combination of torch 1.8 and torchvision 0.9.1 works well, along with pyyaml 5.3, as shown below.<br />For purposes of using Annolid, it is OK to downgrade pyyaml from its current version to 5.3.</p></li>
 </ul>
 </div>
-<div class="section" id="install-dependencies">
-<h2>install dependencies:<a class="headerlink" href="#install-dependencies" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="install-detectron2-dependencies">
+<h2>Install Detectron2 dependencies:<a class="headerlink" href="#install-detectron2-dependencies" title="Permalink to this headline">¶</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pip</span> <span class="n">install</span> <span class="n">pyyaml</span><span class="o">==</span><span class="mf">5.3</span> 
 <span class="n">pip</span> <span class="n">install</span> <span class="n">pycocotools</span><span class="o">&gt;=</span><span class="mf">2.0</span><span class="o">.</span><span class="mi">1</span>
 <span class="n">pip</span> <span class="n">install</span> <span class="n">torch</span><span class="o">==</span><span class="mf">1.8</span><span class="o">.</span><span class="mi">1</span><span class="o">+</span><span class="n">cu101</span> <span class="n">torchvision</span><span class="o">==</span><span class="mf">0.9</span><span class="o">.</span><span class="mi">1</span><span class="o">+</span><span class="n">cu101</span> <span class="o">-</span><span class="n">f</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">download</span><span class="o">.</span><span class="n">pytorch</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">whl</span><span class="o">/</span><span class="n">torch_stable</span><span class="o">.</span><span class="n">html</span>
 </pre></div>
 </div>
 </div>
-<div class="section" id="install-detectron2-colab-has-cuda-10-1-torch-1-8">
-<h2>install detectron2: (Colab has CUDA 10.1 + torch 1.8)<a class="headerlink" href="#install-detectron2-colab-has-cuda-10-1-torch-1-8" title="Permalink to this headline">¶</a></h2>
-</div>
-</div>
-<div class="section" id="see-https-detectron2-readthedocs-io-tutorials-install-html-for-instructions">
-<h1>See https://detectron2.readthedocs.io/tutorials/install.html for instructions<a class="headerlink" href="#see-https-detectron2-readthedocs-io-tutorials-install-html-for-instructions" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="install-detectron2">
+<h2>Install Detectron2:<a class="headerlink" href="#install-detectron2" title="Permalink to this headline">¶</a></h2>
+<p>See <a class="reference external" href="https://detectron2.readthedocs.io/tutorials/install.html">https://detectron2.readthedocs.io/tutorials/install.html</a> for further information.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">torch</span>
-<span class="k">assert</span> <span class="n">torch</span><span class="o">.</span><span class="n">__version__</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;1.8&quot;</span><span class="p">)</span>
+<span class="k">assert</span> <span class="n">torch</span><span class="o">.</span><span class="n">__version__</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;1.8&quot;</span><span class="p">)</span>    
 <span class="n">pip</span> <span class="n">install</span> <span class="n">detectron2</span> <span class="o">-</span><span class="n">f</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">dl</span><span class="o">.</span><span class="n">fbaipublicfiles</span><span class="o">.</span><span class="n">com</span><span class="o">/</span><span class="n">detectron2</span><span class="o">/</span><span class="n">wheels</span><span class="o">/</span><span class="n">cu101</span><span class="o">/</span><span class="n">torch1</span><span class="o">.</span><span class="mi">8</span><span class="o">/</span><span class="n">index</span><span class="o">.</span><span class="n">html</span>
 </pre></div>
 </div>
+</div>
+</div>
+<div class="section" id="install-detectron2-on-google-colab">
+<h1>Install Detectron2 on Google Colab<a class="headerlink" href="#install-detectron2-on-google-colab" title="Permalink to this headline">¶</a></h1>
+<p>Instructions will be posted here presently.  (Colab uses CUDA 10.1 + torch 1.8).</p>
 </div>
 
 
