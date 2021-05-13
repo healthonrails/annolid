@@ -83,3 +83,4 @@ pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu101
 
 ## Install Detectron2 on Google Colab
 Instructions will be posted here presently.  (Colab uses CUDA 10.1 + torch 1.8).  
+<a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
