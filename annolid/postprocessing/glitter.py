@@ -46,7 +46,7 @@ def tracks2nix(video_file=None,
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
 
-    keypoints_connection_rules = draw.get_keypoint_connection_rules()
+    keypoints_connection_rules, animal_name = draw.get_keypoint_connection_rules()
 
     df_motion = None
     if motion_threshold > 0:
@@ -83,11 +83,15 @@ def tracks2nix(video_file=None,
     def keypoint_in_body_mask(
             frame_number,
             keypoint_name,
-            body_mask="mouse"):
+            animal_name=None):
+
+        if animal_name is None:
+            animal_name = 'mouse'
+
         _df_k_b = df[df.frame_number == frame_number]
         try:
             body_seg = _df_k_b[_df_k_b.instance_name ==
-                               body_mask]['segmentation'].values[0]
+                               animal_name]['segmentation'].values[0]
             body_seg = ast.literal_eval(body_seg)
         except IndexError:
             return False
@@ -292,7 +296,7 @@ def tracks2nix(video_file=None,
                 _, color = draw.get_label_color(
                     _class)
 
-                if keypoint_in_body_mask(_frame_num, _class):
+                if keypoint_in_body_mask(_frame_num, _class, animal_name):
                     parts_locations[_class] = (cx, cy, color)
 
                 if _class == 'nose' or 'nose' in _class.lower():
