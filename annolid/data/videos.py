@@ -76,7 +76,7 @@ def ffmpeg_extract_subclip(filename, t1, t2, targetname=None):
            "-ss", "%0.2f" % t1,
            "-i", filename,
            "-t", "%0.2f" % (t2-t1),
-           "-map", "0", "-vcodec", "copy",
+            "-vcodec", "copy",
            "-acodec", "copy", "-strict", "-2", targetname]
 
     popen_params = {"stdout": subprocess.DEVNULL,
