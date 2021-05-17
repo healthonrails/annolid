@@ -1,5 +1,7 @@
 import cv2
+import ast
 import numpy as np
+import pycocotools.mask as mask_util
 
 
 def mask_to_polygons(mask):
@@ -29,3 +31,15 @@ def mask_to_polygons(mask):
     res = [x + 0.5 for x in res if len(x) >= 6]
 
     return res, has_holes
+
+
+def mask_perimeter(mask):
+    """calculate perimeter for a given binary mask
+    """
+    mask = ast.literal_eval(mask)
+    rle = [mask]
+    mask = mask_util.decode(rle)
+    contours, hierarchy = cv2.findContours(mask, 1, 2)
+    cnt = contours[0]
+    perimeter = cv2.arcLength(cnt, True)
+    return perimeter
