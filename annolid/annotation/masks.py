@@ -36,10 +36,25 @@ def mask_to_polygons(mask):
 def mask_perimeter(mask):
     """calculate perimeter for a given binary mask
     """
-    mask = ast.literal_eval(mask)
-    rle = [mask]
-    mask = mask_util.decode(rle)
-    contours, hierarchy = cv2.findContours(mask, 1, 2)
+    try:
+        mask = mask_util.decode(mask)
+    except TypeError:
+        mask = ast.literal_eval(mask)
+        rle = [mask]
+        mask = mask_util.decode(rle)
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP,
+                                           cv2.CHAIN_APPROX_SIMPLE)
     cnt = contours[0]
     perimeter = cv2.arcLength(cnt, True)
     return perimeter
+
+
+def mask_area(mask):
+    """Calulate the area of a RLE mask.
+    """
+    try:
+        area = mask_util.area(mask)
+    except TypeError:
+        mask = ast.literal_eval(mask)
+        area = mask_util.area(mask)
+    return area
