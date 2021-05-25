@@ -58,3 +58,20 @@ def mask_area(mask):
         mask = ast.literal_eval(mask)
         area = mask_util.area(mask)
     return area
+
+
+def mask_iou(this_mask, other_mask):
+    """
+    Calculate intersection over union between two RLE masks.
+    """
+    try:
+        _iou = mask_util.iou([this_mask],
+                             [other_mask],
+                             [False, False])
+    except Exception:
+        this_mask = ast.literal_eval(this_mask)
+        other_mask = ast.literal_eval(other_mask)
+        _iou = mask_util.iou([this_mask],
+                             [other_mask],
+                             [False, False])
+    return _iou.flatten()[0]
