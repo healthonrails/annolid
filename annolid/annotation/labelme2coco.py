@@ -296,8 +296,10 @@ def convert(input_annotated_dir,
                 dict(
                     license=0,
                     url=None,
-                    file_name=osp.relpath(train_out_img_file.replace("\\",'/'),
-                                          osp.dirname(train_out_ann_file)),
+                    # handle windows backward slash issue 
+                    file_name=osp.relpath(train_out_img_file,
+                                          osp.dirname(train_out_ann_file)
+                                          ).replace("\\", '/'),
                     height=img.shape[0],
                     width=img.shape[1],
                     date_captured=None,
@@ -307,8 +309,9 @@ def convert(input_annotated_dir,
                 dict(
                     license=0,
                     url=None,
-                    file_name=osp.relpath(valid_out_img_file.replace("\\",'/'),
-                                          osp.dirname(valid_out_ann_file)),
+                    file_name=osp.relpath(valid_out_img_file,
+                                          osp.dirname(valid_out_ann_file)
+                                          ).replace("\\", '/'),
                     height=img.shape[0],
                     width=img.shape[1],
                     date_captured=None,
