@@ -17,7 +17,7 @@ Video guide
 
 Following is a video for instance segmentation based pose estimation.
 
-Please see the :ref:`install-annolid` section for instructions on how to download and install Annolid.
+Please see the `Install Annolid <https://healthonrails.github.io/annolid/install.html>`_ section for instructions on how to download and install Annolid.
 
 Pose estimation
 ~~~~~~~~~~~~~~~~~~~~
@@ -28,6 +28,9 @@ This video shows pose estimation results based on instance segmentation methods.
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/op3A4_LuVj8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
+
 Optical flow estimation
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -37,6 +40,8 @@ This video shows self-supervised optical flow estimation in Annolid.
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/EpQ9JPZgcYE" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Extract frames
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -55,6 +60,8 @@ You can check the extract frames by clicking the files in the file list.
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/fx0ryaXpdEc" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Label Zones 
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -65,6 +72,8 @@ In this video, we'll show you how to label zones and non-moving objects in a vid
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/zX8cUImRI_s" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Save labels
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -75,6 +84,8 @@ In this video, we'll show you how to save labels for your dataset.
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/pb8X4bqLRZ0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Create your COCO format dataset
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -85,6 +96,8 @@ In this video, we'll show you how to create your dataset in COCO format.
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/_oNGc_44eZ8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Convert instance segmentation results to Glitter2 format
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -95,6 +108,8 @@ In this video, we'll show you how to convert instance segmentation results to Gl
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/QW8dhAVNsk0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Install and run Detectron2 in Google Colab
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -105,6 +120,8 @@ In this video, we'll show you how to install and run Detectron2 in Google Colab.
 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/iQRVR7GPBH0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
+|
+|
 
 Upload and visualize your dataset in Detectron2 Colab
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -116,6 +133,8 @@ In this video, we'll show you how to upload and visualize your dataset in Detect
     <iframe width="560" height="315" src="https://www.youtube.com/embed/7zYNRfY0yy4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
 
+|
+|
 
 Train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -127,6 +146,8 @@ In this video, we'll show you how to train and fine-tune a COCO-pretrained Mask 
     <iframe width="560" height="315" src="https://www.youtube.com/embed/n7VDmh3LFRk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
 
+|
+|
 
 Inference on a test video in Detectron2 Colab
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -138,6 +159,8 @@ In this video, we'll show you how to perform instance segmentation on a test vid
     <iframe width="560" height="315" src="https://www.youtube.com/embed/eiF5TpZ796E" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
 
+|
+|
 
 Save and download the tracking results from Detectron2 Colab
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
