@@ -264,6 +264,7 @@ def tracks2nix(video_file=None,
                 _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
                 if not pd.isnull(_mask) and overlay_mask:
                     _mask = ast.literal_eval(_mask)
+                    mask_area = mask_util.area(_mask)
                     _mask = mask_util.decode(_mask)[:, :]
                     if score >= score_threshold:
                         frame = draw.draw_binary_masks(
@@ -377,13 +378,17 @@ def tracks2nix(video_file=None,
                                6,
                                color,
                                -1)
+                    if mask_area > 0:
+                        cv2.putText(frame, f"-{_class}",
+                                    (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.65, color, 2)
 
                 if left_interact > 0 and 'left' in _class.lower():
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
-                    label = f"interact:{num_left_interact} times"
+                    label = f"left interact:{num_left_interact} times"
                     draw.draw_boxes(
                         frame,
                         bbox,
@@ -396,7 +401,7 @@ def tracks2nix(video_file=None,
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
-                    label = f"interact:{num_right_interact} times"
+                    label = f"right interact:{num_right_interact} times"
                     draw.draw_boxes(
                         frame,
                         bbox,
