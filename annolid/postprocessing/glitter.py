@@ -379,7 +379,7 @@ def tracks2nix(video_file=None,
                                color,
                                -1)
                     if mask_area > 0:
-                        cv2.putText(frame, f"-{_class}",
+                        cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
                                     (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.65, color, 2)
 
