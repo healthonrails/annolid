@@ -8,6 +8,8 @@ Annolid is an instance segmentation based tracking and behavioral analysis packa
 
 It supports instance segmentation based tracking, and behavioral analysis.
 
+.. |Annolid Workflow| image:: ../imgs/annolid_workflow.png
+Figure 1. Annolid workflow.
 
 The tracking result CSV files can be imported
 into Glitter2 for correction or analysis.
