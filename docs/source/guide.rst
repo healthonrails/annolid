@@ -9,10 +9,10 @@ Annolid is an instance segmentation based tracking and behavioral analysis packa
 It supports instance segmentation based tracking, and behavioral analysis.
 
 
-.. image:: https://raw.githubusercontent.com/healthonrails/annolid/master/docs/imgs/Annolid_workflow.svg
+.. image:: https://raw.githubusercontent.com/healthonrails/annolid/master/docs/imgs/annolid_workflow.png
 
 
-Figure 1. Annolid workflow.
+Figure 1. Overview of Annolid workflow.
 
 The tracking result CSV files can be imported
 into Glitter2 for correction or analysis.
