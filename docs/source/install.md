@@ -84,3 +84,12 @@ pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu101
 ## Install Detectron2 on Google Colab
 Instructions will be posted here presently.  (Colab uses CUDA 10.1 + torch 1.8).  
 <a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
+
+## Optional: Install older version of Pytorch for YOLACT
+Note: YOLACT models are less accurate comparing to Mask-RCNN in Detectron2. However, it is faster in terms of inference. 
+```
+# DCNv2 will not work if Pytorch is greater than 1.4.0
+!pip install torchvision==0.5.0
+!pip install torch==1.4.0
+```
+For more information, please check https://github.com/healthonrails/annolid/blob/master/docs/tutorials/Train_networks_tutorial_v1.0.1.ipynb and https://github.com/healthonrails/yolac. 
