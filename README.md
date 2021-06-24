@@ -5,8 +5,13 @@
 [![DOI](https://zenodo.org/badge/290017987.svg)](https://zenodo.org/badge/latestdoi/290017987)
 
 
-An annotation and instance segmentation based multiple animal tracking and behavior analysis package.
+An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.
 
+## Overview of Annolid workflow
+
+![Overview of Annolid workflow](docs/imgs/annolid_workflow.png)
+
+## Examples
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
 
 Instance segmentations             |  Behavior prediction
