@@ -249,13 +249,17 @@ def tracks2nix(video_file=None,
                     left_zone_box = zone_box
                 # draw masks labeled as zones
                 # encode and merge polygons with format [[x1,y1,x2,y2,x3,y3....]]
-                rles = mask_util.frPyObjects([zone_box], height, width)
-                rle = mask_util.merge(rles)
+                try:
+                    rles = mask_util.frPyObjects([zone_box], height, width)
+                    rle = mask_util.merge(rles)
 
-                # convert the polygons to mask
-                m = mask_util.decode(rle)
-                frame = draw.draw_binary_masks(
-                    frame, [m], [zone_label])
+                    # convert the polygons to mask
+                    m = mask_util.decode(rle)
+                    frame = draw.draw_binary_masks(
+                        frame, [m], [zone_label])
+                except:
+                    # skip non polygon zones 
+                    continue
 
         parts_locations = {}
 
@@ -378,7 +382,7 @@ def tracks2nix(video_file=None,
                                6,
                                color,
                                -1)
-                    if mask_area > 0:
+                    if mask_area > 500:
                         cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
                                     (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.65, color, 2)
