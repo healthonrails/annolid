@@ -35,6 +35,11 @@ def tracks2nix(video_file=None,
         out_nix_csv_file (str, optional): [description]. Defaults to 'my_glitter_format.csv'.
         zone_info ([type], optional): a comma seperated string e.g.
            "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0". Defaults to None.
+        overlay_mask (bool): Overal mask or not. Defaults to True. 
+        score_threshold (float): the class score threshold between 0.0 to 1.0 to display the segmentation. 
+        motion_threshold (float): threshold for motion between frames. defaults 0. 
+        deep (bool): use deep learning based motion model. defaults to False.
+        pretrained_model (str): path to the trained motion model. defaults to None.  
 
     Create a nix format csv file and annotated video
     """
@@ -258,7 +263,7 @@ def tracks2nix(video_file=None,
                     frame = draw.draw_binary_masks(
                         frame, [m], [zone_label])
                 except:
-                    # skip non polygon zones 
+                    # skip non polygon zones
                     continue
 
         parts_locations = {}
@@ -445,6 +450,7 @@ def tracks2nix(video_file=None,
     cap.release()
     video_writer.release()
 
+    # save a NIX format CSV file for Glitter2
     df_res = pd.DataFrame.from_dict(timestamps,
                                     orient='index')
     df_res.index.rename('timestamps', inplace=True)
