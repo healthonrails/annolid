@@ -16,6 +16,7 @@ def mask_to_polygons(mask):
     res = cv2.findContours(mask,
                            cv2.RETR_CCOMP,
                            cv2.CHAIN_APPROX_SIMPLE)
+
     hierarchy = res[-1]
     # mask is empty
     if hierarchy is None:
@@ -24,8 +25,11 @@ def mask_to_polygons(mask):
     has_holes = (hierarchy.reshape(-1, 4)[:, 3] >= 0).sum() > 0
 
     res = res[-2]
+    hull = []
+    for i in range(len(res)):
+        hull.append(cv2.convexHull(res[i], False))
 
-    res = [x.flatten() for x in res]
+    res = [x.flatten() for x in hull]
     # convert OpenCV int coordinates [0, H -1 or W-1] to
     # real value coordinate space.
     res = [x + 0.5 for x in res if len(x) >= 6]
