@@ -4,7 +4,8 @@ import numpy as np
 import pycocotools.mask as mask_util
 
 
-def mask_to_polygons(mask):
+def mask_to_polygons(mask,
+                     use_convex_hull=False):
     """
     convert predicted mask to polygons
     """
@@ -25,11 +26,13 @@ def mask_to_polygons(mask):
     has_holes = (hierarchy.reshape(-1, 4)[:, 3] >= 0).sum() > 0
 
     res = res[-2]
-    hull = []
-    for i in range(len(res)):
-        hull.append(cv2.convexHull(res[i], False))
-
-    res = [x.flatten() for x in hull]
+    if use_convex_hull:
+        hull = []
+        for i in range(len(res)):
+            hull.append(cv2.convexHull(res[i], False))
+            res = [x.flatten() for x in hull]
+    else:
+        res = [x.flatten() for x in res]
     # convert OpenCV int coordinates [0, H -1 or W-1] to
     # real value coordinate space.
     res = [x + 0.5 for x in res if len(x) >= 6]
