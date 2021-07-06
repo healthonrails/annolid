@@ -40,6 +40,7 @@ def convert(input_annotated_dir,
         labels_file), "Please provide the correct label file."
 
     assert os.path.exists(input_annotated_dir), "Please check the input dir."
+
     class_instance_counter = {}
     train_class_instance_counter = {}
 
@@ -201,10 +202,16 @@ def convert(input_annotated_dir,
             elif train_valid_split == 1:
                 is_train = 1
 
-            class_instance_counter[label] += 1
+            try:
+                class_instance_counter[label] += 1
+            except KeyError:
+                class_instance_counter[label] = 1
 
             if is_train == 1:
-                train_class_instance_counter[label] += 1
+                try:
+                    train_class_instance_counter[label] += 1
+                except KeyError:
+                    train_class_instance_counter[label] = 1
 
             if shape_type == 'point':
                 cx, cy = points[0]
@@ -296,7 +303,7 @@ def convert(input_annotated_dir,
                 dict(
                     license=0,
                     url=None,
-                    # handle windows backward slash issue 
+                    # handle windows backward slash issue
                     file_name=osp.relpath(train_out_img_file,
                                           osp.dirname(train_out_ann_file)
                                           ).replace("\\", '/'),
