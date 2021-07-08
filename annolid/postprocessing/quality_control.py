@@ -30,7 +30,10 @@ class TracksResults():
         else:
             self.cap = None
 
-    def to_labelme_json(self, output_dir: str) -> str:
+    def to_labelme_json(self,
+                        output_dir: str,
+                        keypoint_area_threshold: int = 265
+                        ) -> str:
 
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -51,18 +54,32 @@ class TracksResults():
                 _, _frame_number, x1, y1, x2, y2, instance_name, score, segmetnation = row
                 _mask = ast.literal_eval(segmetnation)
                 mask_area = mask_util.area(_mask)
-                _mask = mask_util.decode(_mask)[:, :]
-                polys, has_holes = mask_to_polygons(_mask)
-                polys = polys[0]
+                if mask_area >= keypoint_area_threshold:
+                    _mask = mask_util.decode(_mask)[:, :]
+                    polys, has_holes = mask_to_polygons(_mask)
+                    try:
+                        polys = polys[0]
 
-                shape = Shape(label=instance_name,
-                              shape_type='polygon',
-                              flags={}
-                              )
-                all_points = np.array(list(zip(polys[0::2], polys[1::2])))
-                for x, y in all_points:
-                    shape.addPoint((x, y))
-                label_list.append(shape)
+                        shape = Shape(label=instance_name,
+                                      shape_type='polygon',
+                                      flags={}
+                                      )
+                        all_points = np.array(
+                            list(zip(polys[0::2], polys[1::2])))
+                        for x, y in all_points:
+                            shape.addPoint((x, y))
+                        label_list.append(shape)
+                    except IndexError:
+                        continue
+                else:
+                    shape = Shape(label=instance_name,
+                                  shape_type='point',
+                                  flags={}
+                                  )
+                    cx = round((x1 + x2) / 2, 2)
+                    cy = round((y1 + y2) / 2, 2)
+                    shape.addPoint((cx, cy))
+                    label_list.append(shape)
                 save_labels(img_path.replace(".png", ".json"),
                             img_path,
                             label_list,
@@ -72,6 +89,7 @@ class TracksResults():
                             save_image_to_json=False
 
                             )
+
         self.clean_up()
         return output_dir
 
