@@ -22,8 +22,8 @@ def tracks2nix(video_file=None,
                out_nix_csv_file='my_glitter_format.csv',
                zone_info='zone_info.json',
                overlay_mask=True,
-               score_threshold=0.6,
-               motion_threshold=0,
+               score_threshold=None,
+               motion_threshold=None,
                deep=False,
                pretrained_model=None
                ):
@@ -51,7 +51,9 @@ def tracks2nix(video_file=None,
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
 
-    keypoints_connection_rules, animal_name = draw.get_keypoint_connection_rules()
+    keypoints_connection_rules, animal_names, behaviors = draw.get_keypoint_connection_rules()
+
+    body_parts = [bp for bp in keypoints_connection_rules[0]]
 
     df_motion = None
     if motion_threshold > 0:
@@ -272,10 +274,10 @@ def tracks2nix(video_file=None,
             if len(bf) == 8:
                 _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
                 if not pd.isnull(_mask) and overlay_mask:
-                    _mask = ast.literal_eval(_mask)
-                    mask_area = mask_util.area(_mask)
-                    _mask = mask_util.decode(_mask)[:, :]
-                    if score >= score_threshold:
+                    if score >= score_threshold and _class in animal_names:
+                        _mask = ast.literal_eval(_mask)
+                        mask_area = mask_util.area(_mask)
+                        _mask = mask_util.decode(_mask)[:, :]
                         frame = draw.draw_binary_masks(
                             frame, [_mask], [_class])
             else:
@@ -297,7 +299,7 @@ def tracks2nix(video_file=None,
                 is_draw = False
 
             # draw bbox if model predicted with interact and their masks overlaps
-            is_draw = is_draw and (left_interact > 0 or right_interact > 0)
+            is_draw = is_draw  # and (left_interact > 0 or right_interact > 0)
 
             if not math.isnan(x1) and _frame_num == frame_number:
                 cx = int((x1 + x2) / 2)
@@ -306,7 +308,8 @@ def tracks2nix(video_file=None,
                 _, color = draw.get_label_color(
                     _class)
 
-                if keypoint_in_body_mask(_frame_num, _class, animal_name):
+                # the first animal
+                if keypoint_in_body_mask(_frame_num, _class, animal_names[0]):
                     parts_locations[_class] = (cx, cy, color)
 
                 if _class == 'nose' or 'nose' in _class.lower():
@@ -321,7 +324,7 @@ def tracks2nix(video_file=None,
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_:y'] = cy_glitter
                     num_grooming += 1
-                elif _class == 'rearing':
+                elif 'rearing' in _class:
                     timestamps[frame_timestamp]['event:Rearing'] = 1
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_:y'] = cy_glitter
@@ -357,9 +360,12 @@ def tracks2nix(video_file=None,
                     ]
                 bbox = [[x1, y1, x2, y2]]
 
-                if is_draw and _class in ['grooming', 'rearing',
-                                          'object_investigation',
-                                          'LeftInteract', 'RightInteract'] and score >= score_threshold:
+                # only draw behavior with bbox not body parts
+                if (is_draw and _class in behaviors and
+                        score >= score_threshold
+                        and _class not in body_parts
+                        and _class not in animal_names
+                        ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -371,6 +377,10 @@ def tracks2nix(video_file=None,
                         label = f"{_class}: {num_left_interact} times"
                     elif _class == "RightInteract":
                         label = f"{_class}: {num_right_interact} times"
+                    elif "rearing" in _class:
+                        label = 'rearing'
+                    else:
+                        label = f"{_class}:{round(score * 100,2)}%"
 
                     draw.draw_boxes(
                         frame,
@@ -381,13 +391,13 @@ def tracks2nix(video_file=None,
                     )
                 elif _class == 'mouse':
                     pass
-                else:
+                elif score >= score_threshold:
                     # draw box center as keypoints
                     cv2.circle(frame, (cx, cy),
                                6,
                                color,
                                -1)
-                    if mask_area > 500:
+                    if _class in animal_names:
                         cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
                                     (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.65, color, 2)

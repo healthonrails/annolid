@@ -10,4 +10,32 @@ BODY:
     left_hip: "neck,153, 255, 204"
 
 NAME:
+    resident
     mouse
+    intruder
+    vole
+
+EVENTS:
+    huddling
+    grooming 
+    rearing
+    sniffing
+    investigation
+    LeftInteract
+    RightInteract
+    nose_to_nose
+    fighting
+    flank_sniffing
+    chasing
+    anogenital_sniffing
+    walking
+    attack
+    pounce
+    chase
+    running
+    running_away
+    exploring
+    immobility
+    autogrooming
+    nose_to_nose_sniffing
+    intruder_rearing
