@@ -76,7 +76,7 @@ def ffmpeg_extract_subclip(filename, t1, t2, targetname=None):
            "-ss", "%0.2f" % t1,
            "-i", filename,
            "-t", "%0.2f" % (t2-t1),
-            "-vcodec", "copy",
+           "-vcodec", "copy",
            "-acodec", "copy", "-strict", "-2", targetname]
 
     popen_params = {"stdout": subprocess.DEVNULL,
@@ -129,18 +129,19 @@ def key_frames(video_file=None,
     vr = de.VideoReader(video_file)
     key_idxs = vr.get_key_indices()
 
+    video_name = Path(video_file).stem
+    video_name = video_name.replace(' ', '_')
     if out_dir is None:
-        video_name = Path(video_file).name
         out_dir = Path(video_file).parent / video_name
         out_dir = out_dir.with_suffix('')
-
     out_dir = Path(out_dir)
     out_dir.mkdir(
         parents=True,
         exist_ok=True)
     for ki in key_idxs:
         frame = vr[ki].asnumpy()
-        out_frame_file = out_dir / f"{ki:08}.jpg"
+        out_frame_file = out_dir / \
+            f"{(video_name).replace(' ','_')}_{ki:08}.jpg"
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         cv2.imwrite(str(out_frame_file), frame)
         print(f"Saved {str(out_frame_file)}")
@@ -171,13 +172,14 @@ def extract_frames(video_file='None',
                                      start_seconds,
                                      end_seconds)
 
+    video_name = os.path.splitext(os.path.basename(video_file))[0]
+    video_name = video_name.replace(' ', '_')
     if out_dir is None:
         out_dir = os.path.splitext(video_file)[0]
     else:
-        video_name = os.path.splitext(os.path.basename(video_file))[0]
         out_dir = os.path.join(out_dir, video_name)
     if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
+        os.makedirs(out_dir, exist_ok=True)
 
     if algo == 'keyframes':
         out_dir = key_frames(video_file, out_dir,
@@ -201,7 +203,7 @@ def extract_frames(video_file='None',
 
     if keep_first_frame:
         # save the first frame
-        out_frame_file = f"{out_dir}{os.sep}{current_frame_number:08}.jpg"
+        out_frame_file = f"{out_dir}{os.sep}{video_name}_{current_frame_number:08}.jpg"
         cv2.imwrite(out_frame_file, old_frame)
 
     if num_frames < -1 or num_frames > n_frames:
@@ -230,7 +232,7 @@ def extract_frames(video_file='None',
         ret, frame = cap.read()
 
         if num_frames == -1:
-            out_frame_file = f"{out_dir}{os.sep}{frame_number:08}.jpg"
+            out_frame_file = f"{out_dir}{os.sep}{video_name}_{frame_number:08}.jpg"
             if ret:
                 cv2.imwrite(
                     out_frame_file, frame)
@@ -296,7 +298,7 @@ def extract_frames(video_file='None',
 
     for kf in keeped_frames:
         s, f, p = kf
-        cv2.imwrite(f"{out_dir}{os.sep}{f:08}_{s}.jpg", p)
+        cv2.imwrite(f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.jpg", p)
 
     cap.release()
     cv2.destroyAllWindows()
