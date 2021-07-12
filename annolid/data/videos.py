@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 import decord as de
 from collections import deque
+from annolid.segmentation.maskrcnn import inference
 
 sys.path.append("detector/yolov5/")
 
@@ -157,7 +158,8 @@ def extract_frames(video_file='None',
                    keep_first_frame=False,
                    sub_clip=False,
                    start_seconds=None,
-                   end_seconds=None
+                   end_seconds=None,
+                   prediction=True
                    ):
     """
     Extract frames from the given video file. 
@@ -298,7 +300,16 @@ def extract_frames(video_file='None',
 
     for kf in keeped_frames:
         s, f, p = kf
-        cv2.imwrite(f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.jpg", p)
+        out_img = f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.jpg"
+        cv2.imwrite(out_img, p)
+        # default mask rcnn prediction if select less than 5 frames
+        if prediction and num_frames <= 5:
+            try:
+                inference.predict_mask_to_labelme(out_img, 0.7)
+            except:
+                print("Please install pytorch and torchvision as follows.")
+                print("pip install torch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0")
+                pass
 
     cap.release()
     cv2.destroyAllWindows()
