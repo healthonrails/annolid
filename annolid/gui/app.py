@@ -21,9 +21,11 @@ from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
 from annolid.gui.widgets import TrainModelDialog
 from annolid.gui.widgets import Glitter2Dialog
+from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import TrackDialog
 from qtpy.QtWebEngineWidgets import QWebEngineView
 from annolid.postprocessing.glitter import tracks2nix
+from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
 import webbrowser
 __appname__ = 'Annolid'
@@ -151,6 +153,17 @@ class AnnolidWindow(MainWindow):
             self.here / 'icons/glitter2_logo.png'
         )))
 
+        quality_control = action(
+            self.tr("&Quality Control"),
+            self.quality_control,
+            "Ctrl+Shift+G",
+            self.tr("Convert to tracking results to labelme format")
+        )
+
+        quality_control.setIcon(QtGui.QIcon(str(
+            self.here / 'icons/quality_control.png'
+        )))
+
         visualization = action(
             self.tr("&Visualization"),
             self.visualization,
@@ -171,6 +184,7 @@ class AnnolidWindow(MainWindow):
             tracks=self.menu(self.tr("&Track Animals")),
             glitter2=self.menu(self.tr("&Glitter2")),
             save_labels=self.menu(self.tr("&Save Labels")),
+            quality_control=self.menu(self.tr("&Quality Control"))
         )
 
         _action_tools = list(self.actions.tool)
@@ -181,6 +195,8 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(tracks)
         _action_tools.append(glitter2)
         _action_tools.append(save_labeles)
+        _action_tools.append(quality_control)
+
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
@@ -191,6 +207,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.tracks, (tracks,))
         utils.addActions(self.menus.glitter2, (glitter2,))
         utils.addActions(self.menus.save_labels, (save_labeles,))
+        utils.addActions(self.menus.quality_control, (quality_control,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -435,6 +452,29 @@ class AnnolidWindow(MainWindow):
             vdlg = VisualizationWindow()
             if vdlg.exec_():
                 pass
+
+    def quality_control(self):
+        video_file = None
+        tracking_results = None
+        qc_dialog = QualityControlDialog()
+
+        if qc_dialog.exec_():
+            video_file = qc_dialog.video_file
+            tracking_results = qc_dialog.tracking_results
+        else:
+            return
+
+        if video_file is None or tracking_results is None:
+            QtWidgets.QMessageBox.about(self,
+                                        "No input video or tracking results",
+                                        f"Please check and open the  \
+                                        files.")
+            return
+        out_dir = f"{str(Path(video_file).with_suffix(''))}_tracking_results_labelme"
+        out_dir = Path(out_dir)
+        out_dir.mkdir(exist_ok=True, parents=True)
+        trs = TracksResults(video_file, tracking_results)
+        trs.to_labelme_json(str(out_dir))
 
     def glitter2(self):
 
