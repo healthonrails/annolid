@@ -241,6 +241,7 @@ def tracks2nix(video_file=None,
         timestamps[frame_timestamp].setdefault('pos:animal_nose:y', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_:x', -1)
         timestamps[frame_timestamp].setdefault('pos:animal_:y', -1)
+        timestamps[frame_timestamp].setdefault('frame_number', frame_number)
 
         right_zone_box = None
         left_zone_box = None
@@ -269,6 +270,8 @@ def tracks2nix(video_file=None,
                     continue
 
         parts_locations = {}
+
+        timestamps[frame_timestamp]['frame_number'] = frame_number
 
         for bf in bbox_info:
             if len(bf) == 8:
