@@ -150,6 +150,14 @@ def key_frames(video_file=None,
     return out_dir
 
 
+def video_loader(video_file=None):
+    if not Path(video_file).exists:
+        return
+    with open(video_file, 'rb') as f:
+        vr = de.VideoReader(f, ctx=de.cpu(0))
+    return vr
+
+
 def extract_frames(video_file='None',
                    num_frames=100,
                    out_dir=None,

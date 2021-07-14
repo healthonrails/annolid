@@ -1,5 +1,6 @@
 import sys
 import time
+from PyQt5.QtCore import Qt
 import torch
 import codecs
 import argparse
@@ -8,6 +9,8 @@ import functools
 from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy import QtGui
+from labelme import QT5
+import PIL
 import requests
 import subprocess
 from labelme.app import MainWindow
@@ -83,8 +86,25 @@ class AnnolidWindow(MainWindow):
         self.label_dock.setVisible(True)
         self.shape_dock.setVisible(True)
         self.file_dock.setVisible(True)
+        self.video_slider = QtWidgets.QSlider(Qt.Horizontal)
+        self.video_slider.setVisible(False)
+        self.statusBar().addWidget(self.video_slider)
+
         self.here = Path(__file__).resolve().parent
         action = functools.partial(newAction, self)
+
+        open_video = action(
+            self.tr("&Open Video"),
+            self.openVideo,
+            None,
+            "Open Video",
+            self.tr("Open video")
+        )
+        open_video.setIcon(QtGui.QIcon(
+            str(
+                self.here / "icons/open_video.png"
+            )
+        ))
 
         coco = action(
             self.tr("&COCO format"),
@@ -178,6 +198,7 @@ class AnnolidWindow(MainWindow):
         self.menus = utils.struct(
             recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
             frames=self.menu(self.tr("&Extract Frames")),
+            open_video=self.menu(self.tr("&Open Video")),
             coco=self.menu(self.tr("&COCO")),
             models=self.menu(self.tr("&Train models")),
             visualization=self.menu(self.tr("&Visualization")),
@@ -189,6 +210,7 @@ class AnnolidWindow(MainWindow):
 
         _action_tools = list(self.actions.tool)
         _action_tools.insert(0, frames)
+        _action_tools.insert(1, open_video)
         _action_tools.append(coco)
         _action_tools.append(models)
         _action_tools.append(visualization)
@@ -201,6 +223,7 @@ class AnnolidWindow(MainWindow):
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
         utils.addActions(self.menus.frames, (frames,))
+        utils.addActions(self.menus.open_video, (open_video,))
         utils.addActions(self.menus.coco, (coco,))
         utils.addActions(self.menus.models, (models,))
         utils.addActions(self.menus.visualization, (visualization,))
@@ -246,7 +269,7 @@ class AnnolidWindow(MainWindow):
                     lt.writelines(ltl+'\n')
 
     def frames(self):
-        """Extract frames based on the selected algos. 
+        """Extract frames based on the selected algos.
         """
         dlg = ExtractFrameDialog()
         video_file = None
@@ -390,6 +413,59 @@ class AnnolidWindow(MainWindow):
                                          {str(out_runs_dir)}")
         self.statusBar().showMessage(
             self.tr(f"Training..."))
+
+    def openVideo(self, _value=False):
+        video_path = Path(self.filename).parent if self.filename else "."
+        formats = ["*.*"]
+        filters = self.tr(f"Video files {formats[0]}")
+        video_filename = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr(f"{__appname__} - Choose Video"),
+            video_path,
+            filters,
+        )
+        if QT5:
+            video_filename, _ = video_filename
+        video_filename = str(video_filename)
+        if video_filename:
+            self.vr = videos.video_loader(video_filename)
+            self.num_frames = len(self.vr)
+            # load first frame by default
+            first_frame = 0
+            self.loadFrame(first_frame)
+
+            self.video_slider.setMinimum(0)
+            self.video_slider.setMaximum(self.num_frames-1)
+            self.video_slider.setValue(first_frame)
+            self.video_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+            self.video_slider.setTickInterval(1)
+            self.video_slider.valueChanged.connect(self.loadFrame)
+            self.video_slider.setVisible(True)
+
+    def loadFrame(self, frame_number):
+        print("Loadling frame number:", frame_number)
+        frame = self.vr[frame_number].asnumpy()
+        self.resetState()
+        self.canvas.setEnabled(True)
+        img_pil = PIL.Image.fromarray(frame)
+        self.imageData = utils.img_pil_to_data(img_pil)
+        image = QtGui.QImage.fromData(self.imageData)
+        self.image = image
+        self.filename = "test_0.png"
+        if self._config["keep_prev"]:
+            prev_shapes = self.canvas.shapes
+        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        flags = {k: False for k in self._config["flags"] or []}
+        self.loadFlags(flags)
+        if self._config["keep_prev"] and self.noShapes():
+            self.loadShapes(prev_shapes, replace=False)
+            self.setDirty()
+        else:
+            self.setClean()
+        self.paintCanvas()
+        self.addRecentFile(self.filename)
+        self.toggleActions(True)
+        return True
 
     def coco(self):
         """
