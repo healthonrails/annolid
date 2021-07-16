@@ -24,6 +24,7 @@ from labelme.utils import newIcon
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
+from labelme.label_file import LabelFile
 from labelme import utils
 from labelme.config import get_config
 from annolid.annotation import labelme2coco
@@ -320,15 +321,55 @@ class AnnolidWindow(MainWindow):
         ]
 
         extensions.append('.json')
+        self.only_json_files = True
 
         images = []
         for root, dirs, files in os.walk(folderPath):
             for file in files:
                 if file.lower().endswith(tuple(extensions)):
                     relativePath = osp.join(root, file)
+                    if self.only_json_files and not file.lower().endswith('.json'):
+                        self.only_json_files = False
                     images.append(relativePath)
         images.sort(key=lambda x: x.lower())
         return images
+
+    def _addItem(self, filename, label_file):
+        item = QtWidgets.QListWidgetItem(filename)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
+            label_file
+        ):
+            item.setCheckState(Qt.Checked)
+        else:
+            item.setCheckState(Qt.Unchecked)
+        self.fileListWidget.addItem(item)
+
+    def _getLabelFile(self, filename):
+        label_file = osp.splitext(filename)[0] + ".json"
+        if self.output_dir:
+            label_file_without_path = osp.basename(label_file)
+            label_file = osp.join(self.output_dir, label_file_without_path)
+        return label_file
+
+    def importDirImages(self, dirpath, pattern=None, load=True):
+        self.actions.openNextImg.setEnabled(True)
+        self.actions.openPrevImg.setEnabled(True)
+
+        if not self.mayContinue() or not dirpath:
+            return
+
+        self.lastOpenDir = dirpath
+        self.filename = None
+        self.fileListWidget.clear()
+        for filename in self.scanAllImages(dirpath):
+            if pattern and pattern not in filename:
+                continue
+            label_file = self._getLabelFile(filename)
+
+            if not filename.endswith('.json') or self.only_json_files:
+                self._addItem(filename, label_file)
+        self.openNextImg(load=load)
 
     def _get_rgb_by_label(self, label):
         if self._config["shape_color"] == "auto":
@@ -427,6 +468,18 @@ class AnnolidWindow(MainWindow):
             item = QtWidgets.QListWidgetItem()
             item.setData(Qt.UserRole, shape.label)
             self.uniqLabelList.addItem(item)
+
+    def _saveFile(self, filename):
+        if filename and self.saveLabels(filename):
+            image_filename = filename.replace('.json', '.png')
+            img = utils.img_data_to_arr(self.imageData)
+            imgviz.io.imsave(image_filename, img)
+            self.addRecentFile(image_filename)
+            self.imageList.append(image_filename)
+            self.addRecentFile(filename)
+            label_file = self._getLabelFile(image_filename)
+            self._addItem(image_filename, label_file)
+            self.setClean
 
     def popLabelListMenu(self, point):
         try:
@@ -613,7 +666,7 @@ class AnnolidWindow(MainWindow):
         video_filename = QtWidgets.QFileDialog.getOpenFileName(
             self,
             self.tr(f"{__appname__} - Choose Video"),
-            video_path,
+            str(video_path),
             filters,
         )
         if QT5:
