@@ -7,6 +7,7 @@ from PyQt5.QtGui import QImage
 from collections import deque
 import torch
 import codecs
+import imgviz
 import argparse
 from pathlib import Path
 import functools
@@ -22,6 +23,7 @@ from labelme.app import MainWindow
 from labelme.utils import newIcon
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
+from labelme.widgets import LabelListWidgetItem
 from labelme import utils
 from labelme.config import get_config
 from annolid.annotation import labelme2coco
@@ -40,6 +42,9 @@ import webbrowser
 import atexit
 __appname__ = 'Annolid'
 __version__ = "1.0.1"
+
+
+LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -324,6 +329,104 @@ class AnnolidWindow(MainWindow):
                     images.append(relativePath)
         images.sort(key=lambda x: x.lower())
         return images
+
+    def _get_rgb_by_label(self, label):
+        if self._config["shape_color"] == "auto":
+            item = self.uniqLabelList.findItemsByLabel(label)[0]
+            label_id = self.uniqLabelList.indexFromItem(item).row() + 1
+            label_id += self._config["shift_auto_shape_color"]
+            return LABEL_COLORMAP[label_id % len(LABEL_COLORMAP)]
+        elif (
+            self._config["shape_color"] == "manual"
+            and self._config["label_colors"]
+            and label in self._config["label_colors"]
+        ):
+            return self._config["label_colors"][label]
+        elif self._config["default_shape_color"]:
+            return self._config["default_shape_color"]
+
+    def _update_shape_color(self, shape):
+
+        if not self.uniqLabelList.findItemsByLabel(shape.label):
+            item = self.uniqLabelList.createItemFromLabel(shape.label)
+            self.uniqLabelList.addItem(item)
+            rgb = self._get_rgb_by_label(shape.label)
+            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
+        r, g, b = self._get_rgb_by_label(shape.label)
+        shape.line_color = QtGui.QColor(r, g, b)
+        shape.vertex_fill_color = QtGui.QColor(r, g, b)
+        shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
+        shape.fill_color = QtGui.QColor(r, g, b, 128)
+        shape.select_line_color = QtGui.QColor(255, 255, 255)
+        shape.select_fill_color = QtGui.QColor(r, g, b, 155)
+        return r, g, b
+
+    def addLabel(self, shape):
+        if shape.group_id is None:
+            text = shape.label
+        else:
+            text = "{} ({})".format(shape.label, shape.group_id)
+        label_list_item = LabelListWidgetItem(text, shape)
+        self.labelList.addItem(label_list_item)
+        if not self.uniqLabelList.findItemsByLabel(shape.label):
+            item = self.uniqLabelList.createItemFromLabel(shape.label)
+            self.uniqLabelList.addItem(item)
+            rgb = self._get_rgb_by_label(shape.label)
+            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
+        self.labelDialog.addLabelHistory(shape.label)
+        for action in self.actions.onShapesPresent:
+            action.setEnabled(True)
+
+        r, g, b = self._update_shape_color(shape)
+        label_list_item.setText(
+            '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                text, r, g, b
+            )
+        )
+
+    def editLabel(self, item=None):
+        if item and not isinstance(item, LabelListWidgetItem):
+            raise TypeError("item must be LabelListWidgetItem type")
+
+        if not self.canvas.editing():
+            return
+        if not item:
+            item = self.currentItem()
+        if item is None:
+            return
+        shape = item.shape()
+        if shape is None:
+            return
+        text, flags, group_id = self.labelDialog.popUp(
+            text=shape.label, flags=shape.flags, group_id=shape.group_id,
+        )
+        if text is None:
+            return
+        if not self.validateLabel(text):
+            self.errorMessage(
+                self.tr("Invalid label"),
+                self.tr("Invalid label '{}' with validation type '{}'").format(
+                    text, self._config["validate_label"]
+                ),
+            )
+            return
+        shape.label = text
+        shape.flags = flags
+        shape.group_id = group_id
+
+        r, g, b = self._update_shape_color(shape)
+
+        if shape.group_id is None:
+            item.setText(
+                '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                    shape.label, r, g, b))
+        else:
+            item.setText("{} ({})".format(shape.label, shape.group_id))
+        self.setDirty()
+        if not self.uniqLabelList.findItemsByLabel(shape.label):
+            item = QtWidgets.QListWidgetItem()
+            item.setData(Qt.UserRole, shape.label)
+            self.uniqLabelList.addItem(item)
 
     def popLabelListMenu(self, point):
         try:
