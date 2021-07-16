@@ -1,6 +1,8 @@
 import sys
 import time
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QImage
+from collections import deque
 import torch
 import codecs
 import argparse
@@ -11,11 +13,13 @@ from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import QT5
 import PIL
+from PIL import ImageQt
 import requests
 import subprocess
 from labelme.app import MainWindow
 from labelme.utils import newIcon
 from labelme.utils import newAction
+from labelme.widgets import BrightnessContrastDialog
 from labelme import utils
 from labelme.config import get_config
 from annolid.annotation import labelme2coco
@@ -31,8 +35,72 @@ from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
 import webbrowser
+import atexit
 __appname__ = 'Annolid'
 __version__ = "1.0.1"
+
+
+class LoadFrameThread(QtCore.QObject):
+    """Thread for loading video frames. 
+    """
+    res_frame = QtCore.Signal(QImage)
+    process = QtCore.Signal()
+
+    frame_queue = []
+    request_waiting_time = 1
+    reload_times = None
+    video_loader = None
+
+    def __init__(self, *args, **kwargs):
+        super(LoadFrameThread, self).__init__(*args, **kwargs)
+        self.working_lock = QtCore.QMutex()
+        self.current_load_times = deque(maxlen=10)
+
+        self.process.connect(self.load)
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.load)
+        self.timer.start(30)
+        self.previous_process_time = None
+
+    def load(self):
+        self.previous_process_time = time.time()
+        if not self.frame_queue:
+            return
+
+        self.working_lock.lock()
+        if not self.frame_queue:
+            return
+
+        frame_number = self.frame_queue[-1]
+        self.frame_queue = []
+
+        try:
+            t_start = time.time()
+            frame = self.video_loader[frame_number].asnumpy()
+            self.current_load_times.append(time.time() - t_start)
+            average_load_time = sum(self.current_load_times) / \
+                len(self.current_load_times)
+            self.request_waiting_time = average_load_time
+        except Exception:
+            frame = None
+
+        self.working_lock.unlock()
+        if frame is not None:
+            img_pil = PIL.Image.fromarray(frame)
+            imageData = utils.img_pil_to_data(img_pil)
+            image = QtGui.QImage.fromData(imageData)
+            self.res_frame.emit(image)
+
+    def request(self, frame_number):
+        self.frame_queue.append(frame_number)
+        if self.previous_process_time is None:
+            self.previous_process_time = time.time()
+
+        t_last = time.time() - self.previous_process_time
+
+        if t_last > self.request_waiting_time:
+            self.previous_process_time = time.time()
+            self.process.emit()
 
 
 def start_tensorboard(log_dir=None,
@@ -86,10 +154,6 @@ class AnnolidWindow(MainWindow):
         self.label_dock.setVisible(True)
         self.shape_dock.setVisible(True)
         self.file_dock.setVisible(True)
-        self.video_slider = QtWidgets.QSlider(Qt.Horizontal)
-        self.video_slider.setVisible(False)
-        self.statusBar().addWidget(self.video_slider)
-
         self.here = Path(__file__).resolve().parent
         action = functools.partial(newAction, self)
 
@@ -235,6 +299,12 @@ class AnnolidWindow(MainWindow):
         self.statusBar().show()
         self.setWindowTitle(__appname__)
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
+        self.video_results_folder = None
+
+        self.frame_worker = QtCore.QThread()
+        self.frame_loader = LoadFrameThread()
+        self.destroyed.connect(self.clean_up)
+        atexit.register(self.clean_up)
 
     def popLabelListMenu(self, point):
         try:
@@ -428,33 +498,32 @@ class AnnolidWindow(MainWindow):
             video_filename, _ = video_filename
         video_filename = str(video_filename)
         if video_filename:
-            self.vr = videos.video_loader(video_filename)
-            self.num_frames = len(self.vr)
-            # load first frame by default
-            first_frame = 0
-            self.loadFrame(first_frame)
-
+            self.video_results_folder = Path(video_filename).with_suffix('')
+            self.video_results_folder.mkdir(
+                exist_ok=True,
+                parents=True
+            )
+            self.video_loader = videos.video_loader(video_filename)
+            self.num_frames = len(self.video_loader)
+            self.loadFrame(0)
+            self.video_slider = QtWidgets.QSlider(Qt.Horizontal)
+            self.statusBar().addWidget(self.video_slider)
             self.video_slider.setMinimum(0)
             self.video_slider.setMaximum(self.num_frames-1)
-            self.video_slider.setValue(first_frame)
-            self.video_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+            self.video_slider.setValue(0)
             self.video_slider.setTickInterval(1)
             self.video_slider.valueChanged.connect(self.loadFrame)
             self.video_slider.setVisible(True)
 
-    def loadFrame(self, frame_number):
-        print("Loadling frame number:", frame_number)
-        frame = self.vr[frame_number].asnumpy()
+    def image_to_canvas(self, qimage, filename):
         self.resetState()
         self.canvas.setEnabled(True)
-        img_pil = PIL.Image.fromarray(frame)
-        self.imageData = utils.img_pil_to_data(img_pil)
-        image = QtGui.QImage.fromData(self.imageData)
-        self.image = image
-        self.filename = "test_0.png"
+        self.imagePath = str(filename.parent)
+        self.filename = str(filename)
+        self.image = qimage
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
-        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
         flags = {k: False for k in self._config["flags"] or []}
         self.loadFlags(flags)
         if self._config["keep_prev"] and self.noShapes():
@@ -462,9 +531,66 @@ class AnnolidWindow(MainWindow):
             self.setDirty()
         else:
             self.setClean()
+        # set zoom values
+        is_initial_load = not self.zoom_values
+        if self.filename in self.zoom_values:
+            self.zoomMode = self.zoom_values[self.filename][0]
+            self.setZoom(self.zoom_values[self.filename][1])
+        elif is_initial_load or not self._config["keep_prev_scale"]:
+            self.adjustScale(initial=True)
+        # set scroll values
+        for orientation in self.scroll_values:
+            if self.filename in self.scroll_values[orientation]:
+                self.setScroll(
+                    orientation, self.scroll_values[orientation][self.filename]
+                )
+        # set brightness constrast values
+        dialog = BrightnessContrastDialog(
+            ImageQt.fromqimage(self.image),
+            self.onNewBrightnessContrast,
+            parent=self,
+        )
+        brightness, contrast = self.brightnessContrast_values.get(
+            self.filename, (None, None)
+        )
+        if self._config["keep_prev_brightness"] and self.recentFiles:
+            brightness, _ = self.brightnessContrast_values.get(
+                self.recentFiles[0], (None, None)
+            )
+        if self._config["keep_prev_contrast"] and self.recentFiles:
+            _, contrast = self.brightnessContrast_values.get(
+                self.recentFiles[0], (None, None)
+            )
+        if brightness is not None:
+            dialog.slider_brightness.setValue(brightness)
+        if contrast is not None:
+            dialog.slider_contrast.setValue(contrast)
+        self.brightnessContrast_values[self.filename] = (brightness, contrast)
+        if brightness is not None or contrast is not None:
+            dialog.onNewValue(None)
         self.paintCanvas()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
+        return True
+
+    def clean_up(self):
+        self.frame_worker.quit()
+        self.frame_worker.wait()
+
+    def loadFrame(self, frame_number):
+        print("Loadling frame number:", frame_number)
+        filename = self.video_results_folder / f"{frame_number:09}.png"
+        self.frame_loader.video_loader = self.video_loader
+        self.frame_loader.request(frame_number)
+
+        self.frame_loader.moveToThread(self.frame_worker)
+
+        self.frame_worker.start()
+
+        self.frame_loader.res_frame.connect(
+            lambda qimage: self.image_to_canvas(qimage, filename)
+        )
+
         return True
 
     def coco(self):
