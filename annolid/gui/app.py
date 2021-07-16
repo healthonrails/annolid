@@ -1,4 +1,6 @@
 import sys
+import os
+import os.path as osp
 import time
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage
@@ -59,7 +61,7 @@ class LoadFrameThread(QtCore.QObject):
         self.process.connect(self.load)
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.load)
-        self.timer.start(30)
+        self.timer.start(20)
         self.previous_process_time = None
 
     def load(self):
@@ -76,7 +78,7 @@ class LoadFrameThread(QtCore.QObject):
 
         try:
             t_start = time.time()
-            frame = self.video_loader[frame_number].asnumpy()
+            frame = self.video_loader.load_frame(frame_number)
             self.current_load_times.append(time.time() - t_start)
             average_load_time = sum(self.current_load_times) / \
                 len(self.current_load_times)
@@ -306,6 +308,23 @@ class AnnolidWindow(MainWindow):
         self.destroyed.connect(self.clean_up)
         atexit.register(self.clean_up)
 
+    def scanAllImages(self, folderPath):
+        extensions = [
+            ".%s" % fmt.data().decode().lower()
+            for fmt in QtGui.QImageReader.supportedImageFormats()
+        ]
+
+        extensions.append('.json')
+
+        images = []
+        for root, dirs, files in os.walk(folderPath):
+            for file in files:
+                if file.lower().endswith(tuple(extensions)):
+                    relativePath = osp.join(root, file)
+                    images.append(relativePath)
+        images.sort(key=lambda x: x.lower())
+        return images
+
     def popLabelListMenu(self, point):
         try:
             self.menus.labelList.exec_(self.labelList.mapToGlobal(point))
@@ -503,8 +522,8 @@ class AnnolidWindow(MainWindow):
                 exist_ok=True,
                 parents=True
             )
-            self.video_loader = videos.video_loader(video_filename)
-            self.num_frames = len(self.video_loader)
+            self.video_loader = videos.CV2Video(video_filename)
+            self.num_frames = self.video_loader.total_frames()
             self.loadFrame(0)
             self.video_slider = QtWidgets.QSlider(Qt.Horizontal)
             self.statusBar().addWidget(self.video_slider)
@@ -521,6 +540,8 @@ class AnnolidWindow(MainWindow):
         self.imagePath = str(filename.parent)
         self.filename = str(filename)
         self.image = qimage
+        imageData = ImageQt.fromqimage(qimage)
+        self.imageData = utils.img_pil_to_data(imageData)
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
@@ -546,7 +567,7 @@ class AnnolidWindow(MainWindow):
                 )
         # set brightness constrast values
         dialog = BrightnessContrastDialog(
-            ImageQt.fromqimage(self.image),
+            imageData,
             self.onNewBrightnessContrast,
             parent=self,
         )
@@ -579,7 +600,8 @@ class AnnolidWindow(MainWindow):
 
     def loadFrame(self, frame_number):
         print("Loadling frame number:", frame_number)
-        filename = self.video_results_folder / f"{frame_number:09}.png"
+        filename = self.video_results_folder / \
+            f"{str(self.video_results_folder.name)}_{frame_number:09}.png"
         self.frame_loader.video_loader = self.video_loader
         self.frame_loader.request(frame_number)
 

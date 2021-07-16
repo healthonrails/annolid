@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 import decord as de
 from collections import deque
+import multiprocessing
 from annolid.segmentation.maskrcnn import inference
 
 sys.path.append("detector/yolov5/")
@@ -156,6 +157,30 @@ def video_loader(video_file=None):
     with open(video_file, 'rb') as f:
         vr = de.VideoReader(f, ctx=de.cpu(0))
     return vr
+
+
+class CV2Video():
+    def __init__(self, video_file) -> None:
+        if not Path(video_file).exists:
+            return
+        self.cap = cv2.VideoCapture(video_file)
+
+    def load_frame(self, frame_number):
+        if not hasattr(self, "_lock"):
+            self._lock = multiprocessing.RLock()
+        with self._lock:
+            if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != frame_number:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, frame = self.cap.read()
+        if not ret or frame is None:
+            raise KeyError(f"Cannot load frame number: {frame_number}")
+
+        # convert bgr to rgb
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return frame
+
+    def total_frames(self):
+        return int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
 
 def extract_frames(video_file='None',
