@@ -343,7 +343,8 @@ class AnnolidWindow(MainWindow):
             item.setCheckState(Qt.Checked)
         else:
             item.setCheckState(Qt.Unchecked)
-        self.fileListWidget.addItem(item)
+        if not self.fileListWidget.findItems(filename, Qt.MatchExactly):
+            self.fileListWidget.addItem(item)
 
     def _getLabelFile(self, filename):
         label_file = osp.splitext(filename)[0] + ".json"
@@ -472,14 +473,15 @@ class AnnolidWindow(MainWindow):
     def _saveFile(self, filename):
         if filename and self.saveLabels(filename):
             image_filename = filename.replace('.json', '.png')
-            img = utils.img_data_to_arr(self.imageData)
-            imgviz.io.imsave(image_filename, img)
-            self.addRecentFile(image_filename)
+            # do not save
+            if not Path(image_filename).exists:
+                img = utils.img_data_to_arr(self.imageData)
+                imgviz.io.imsave(image_filename, img)
             self.imageList.append(image_filename)
             self.addRecentFile(filename)
             label_file = self._getLabelFile(image_filename)
             self._addItem(image_filename, label_file)
-            self.setClean
+            self.setClean()
 
     def popLabelListMenu(self, point):
         try:
