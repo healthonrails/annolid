@@ -5,10 +5,13 @@ import time
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage
 from collections import deque
+from imgviz import label
+from numpy.lib.shape_base import expand_dims
 import torch
 import codecs
 import imgviz
 import argparse
+import itertools
 from pathlib import Path
 import functools
 from qtpy import QtCore
@@ -856,7 +859,18 @@ class AnnolidWindow(MainWindow):
         out_dir = Path(out_dir)
         out_dir.mkdir(exist_ok=True, parents=True)
         trs = TracksResults(video_file, tracking_results)
-        trs.to_labelme_json(str(out_dir))
+        label_json_gen = trs.to_labelme_json(str(out_dir))
+        try:
+            if label_json_gen is not None:
+                pwj = ProgressingWindow(label_json_gen)
+                if pwj.exec_():
+                    if pwj.runner_thread.isRunning():
+                        pwj.runner_thread.quit()
+                    pwj.runner_thread.terminate()
+        except Exception:
+            return
+        finally:
+            self.importDirImages(out_dir)
 
     def glitter2(self):
 

@@ -37,6 +37,7 @@ class TracksResults():
 
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
@@ -51,7 +52,11 @@ class TracksResults():
             PIL.Image.fromarray(frame).save(img_path)
             df_cur = self.df[self.df.frame_number == frame_number]
             for row in tuple(df_cur.values):
-                _, _frame_number, x1, y1, x2, y2, instance_name, score, segmetnation = row
+                try:
+                    _, _frame_number, x1, y1, x2, y2, instance_name, score, segmetnation = row
+                except ValueError:
+                    return
+
                 _mask = ast.literal_eval(segmetnation)
                 mask_area = mask_util.area(_mask)
                 if mask_area >= keypoint_area_threshold:
@@ -89,9 +94,10 @@ class TracksResults():
                             save_image_to_json=False
 
                             )
+                yield (frame_number / num_frames) * 100, img_path
 
         self.clean_up()
-        return output_dir
+        # return output_dir
 
     def get_labels(self):
         return list(self.df.instance_name.unique())
