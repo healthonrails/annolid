@@ -57,44 +57,49 @@ class TracksResults():
                 except ValueError:
                     return
 
-                _mask = ast.literal_eval(segmetnation)
-                mask_area = mask_util.area(_mask)
-                if mask_area >= keypoint_area_threshold:
-                    _mask = mask_util.decode(_mask)[:, :]
-                    polys, has_holes = mask_to_polygons(_mask)
-                    try:
-                        polys = polys[0]
+                try:
+                    if segmetnation and segmetnation != 'nan':
+                        _mask = ast.literal_eval(segmetnation)
+                        mask_area = mask_util.area(_mask)
+                        if mask_area >= keypoint_area_threshold:
+                            _mask = mask_util.decode(_mask)[:, :]
+                            polys, has_holes = mask_to_polygons(_mask)
+                            try:
+                                polys = polys[0]
 
-                        shape = Shape(label=instance_name,
-                                      shape_type='polygon',
-                                      flags={}
-                                      )
-                        all_points = np.array(
-                            list(zip(polys[0::2], polys[1::2])))
-                        for x, y in all_points:
-                            shape.addPoint((x, y))
-                        label_list.append(shape)
-                    except IndexError:
-                        continue
-                else:
-                    shape = Shape(label=instance_name,
-                                  shape_type='point',
-                                  flags={}
-                                  )
-                    cx = round((x1 + x2) / 2, 2)
-                    cy = round((y1 + y2) / 2, 2)
-                    shape.addPoint((cx, cy))
-                    label_list.append(shape)
-                save_labels(img_path.replace(".png", ".json"),
-                            img_path,
-                            label_list,
-                            height,
-                            width,
-                            imageData=None,
-                            save_image_to_json=False
+                                shape = Shape(label=instance_name,
+                                              shape_type='polygon',
+                                              flags={}
+                                              )
+                                all_points = np.array(
+                                    list(zip(polys[0::2], polys[1::2])))
+                                for x, y in all_points:
+                                    shape.addPoint((x, y))
+                                label_list.append(shape)
+                            except IndexError:
+                                continue
+                        else:
+                            shape = Shape(label=instance_name,
+                                          shape_type='point',
+                                          flags={}
+                                          )
+                            cx = round((x1 + x2) / 2, 2)
+                            cy = round((y1 + y2) / 2, 2)
+                            shape.addPoint((cx, cy))
+                            label_list.append(shape)
+                    save_labels(img_path.replace(".png", ".json"),
+                                img_path,
+                                label_list,
+                                height,
+                                width,
+                                imageData=None,
+                                save_image_to_json=False
 
-                            )
-                yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
+                                )
+                    yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
+                except ValueError:
+                    yield 0, 'No predictions'
+                    continue
 
         self.clean_up()
 
