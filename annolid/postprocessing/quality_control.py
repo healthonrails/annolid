@@ -94,10 +94,9 @@ class TracksResults():
                             save_image_to_json=False
 
                             )
-                yield (frame_number / num_frames) * 100, img_path
+                yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
 
         self.clean_up()
-        # return output_dir
 
     def get_labels(self):
         return list(self.df.instance_name.unique())

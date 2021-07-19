@@ -6,12 +6,10 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage
 from collections import deque
 from imgviz import label
-from numpy.lib.shape_base import expand_dims
 import torch
 import codecs
 import imgviz
 import argparse
-import itertools
 from pathlib import Path
 import functools
 from qtpy import QtCore
