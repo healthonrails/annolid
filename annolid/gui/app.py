@@ -1,3 +1,4 @@
+from json import load
 import sys
 import os
 import os.path as osp
@@ -754,8 +755,9 @@ class AnnolidWindow(MainWindow):
         return True
 
     def clean_up(self):
-        self.frame_worker.quit()
-        self.frame_worker.wait()
+        if self.frame_worker is not None:
+            self.frame_worker.quit()
+            self.frame_worker.wait()
 
     def loadFrame(self, frame_number):
         print("Loadling frame number:", frame_number)
@@ -862,13 +864,16 @@ class AnnolidWindow(MainWindow):
             if label_json_gen is not None:
                 pwj = ProgressingWindow(label_json_gen)
                 if pwj.exec_():
-                    if pwj.runner_thread.isRunning():
-                        pwj.runner_thread.quit()
+                    trs._is_running = False
+                    pwj.running_submitted.emit('stopped')
                     pwj.runner_thread.terminate()
+                    pwj.runner_thread.quit()
+                    pwj.runner_thread.wait()
+
         except Exception:
-            return
+            pass
         finally:
-            self.importDirImages(out_dir)
+            self.importDirImages(str(out_dir))
 
     def glitter2(self):
 

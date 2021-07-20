@@ -29,6 +29,7 @@ class TracksResults():
             self.cap = cv2.VideoCapture(self.video_file)
         else:
             self.cap = None
+        self._is_running = True
 
     def to_labelme_json(self,
                         output_dir: str,
@@ -48,58 +49,64 @@ class TracksResults():
             img_path = f"{output_dir}/{Path(self.video_file).stem}_{frame_number:09}.png"
 
             ret, frame = self.cap.read()
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            PIL.Image.fromarray(frame).save(img_path)
-            df_cur = self.df[self.df.frame_number == frame_number]
-            for row in tuple(df_cur.values):
-                try:
-                    _, _frame_number, x1, y1, x2, y2, instance_name, score, segmetnation = row
-                except ValueError:
-                    return
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                PIL.Image.fromarray(frame).save(img_path)
+                df_cur = self.df[self.df.frame_number == frame_number]
+                for row in tuple(df_cur.values):
+                    try:
+                        _, _frame_number, x1, y1, x2, y2, instance_name, score, segmetnation = row
+                    except ValueError:
+                        yield 0, "Please check your tracking results with segmentation in the last column"
+                        return
 
-                try:
-                    if segmetnation and segmetnation != 'nan':
-                        _mask = ast.literal_eval(segmetnation)
-                        mask_area = mask_util.area(_mask)
-                        if mask_area >= keypoint_area_threshold:
-                            _mask = mask_util.decode(_mask)[:, :]
-                            polys, has_holes = mask_to_polygons(_mask)
-                            try:
-                                polys = polys[0]
+                    try:
+                        if segmetnation and segmetnation != 'nan':
+                            _mask = ast.literal_eval(segmetnation)
+                            mask_area = mask_util.area(_mask)
+                            if mask_area >= keypoint_area_threshold:
+                                _mask = mask_util.decode(_mask)[:, :]
+                                polys, has_holes = mask_to_polygons(_mask)
+                                try:
+                                    polys = polys[0]
 
+                                    shape = Shape(label=instance_name,
+                                                  shape_type='polygon',
+                                                  flags={}
+                                                  )
+                                    all_points = np.array(
+                                        list(zip(polys[0::2], polys[1::2])))
+                                    for x, y in all_points:
+                                        shape.addPoint((x, y))
+                                    label_list.append(shape)
+                                except IndexError:
+                                    continue
+                            else:
                                 shape = Shape(label=instance_name,
-                                              shape_type='polygon',
+                                              shape_type='point',
                                               flags={}
                                               )
-                                all_points = np.array(
-                                    list(zip(polys[0::2], polys[1::2])))
-                                for x, y in all_points:
-                                    shape.addPoint((x, y))
+                                cx = round((x1 + x2) / 2, 2)
+                                cy = round((y1 + y2) / 2, 2)
+                                shape.addPoint((cx, cy))
                                 label_list.append(shape)
-                            except IndexError:
-                                continue
-                        else:
-                            shape = Shape(label=instance_name,
-                                          shape_type='point',
-                                          flags={}
-                                          )
-                            cx = round((x1 + x2) / 2, 2)
-                            cy = round((y1 + y2) / 2, 2)
-                            shape.addPoint((cx, cy))
-                            label_list.append(shape)
-                    save_labels(img_path.replace(".png", ".json"),
-                                img_path,
-                                label_list,
-                                height,
-                                width,
-                                imageData=None,
-                                save_image_to_json=False
+                        save_labels(img_path.replace(".png", ".json"),
+                                    img_path,
+                                    label_list,
+                                    height,
+                                    width,
+                                    imageData=None,
+                                    save_image_to_json=False
 
-                                )
-                    yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
-                except ValueError:
-                    yield 0, 'No predictions'
-                    continue
+                                    )
+                        yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
+                    except ValueError:
+                        yield 0, 'No predictions'
+                        continue
+            elif not self._is_running:
+                break
+            else:
+                break
 
         self.clean_up()
 
