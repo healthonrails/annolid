@@ -25,7 +25,7 @@ setuptools.setup(
                       'opencv-python==4.1.2.30',
                       'opencv-contrib-python==4.1.2.30',
                       'opencv-python-headless==4.1.2.30',
-                      'PyYAML==5.3',
+                      'PyYAML>=5.3',
                       'labelme>=4.5.6',
                       'decord>=0.4.0',
                       'torch>=1.4.0',
@@ -34,6 +34,7 @@ setuptools.setup(
                       'pycocotools>=2.0.2',
                       'tensorboard>=2.3.0',
                       'PyQtWebEngine>=5.15.1',
+                      "dataclasses>=0.6; python_version < '3.7'",
                       ],
     python_requires='>=3.6',
 
