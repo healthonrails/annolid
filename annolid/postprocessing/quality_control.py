@@ -6,11 +6,72 @@ from labelme import label_file
 from labelme.shape import Shape
 from pathlib import Path
 import cv2
+import decord as de
 import pycocotools.mask as mask_util
 import ast
 import PIL.Image
 import numpy as np
 from labelme.utils.image import img_pil_to_data
+
+
+def pred_dict_to_labelme(pred_row,
+                         keypoint_area_threshold=256,
+                         score_threshold=0.5
+                         ):
+    """[summary]
+
+    Args:
+        pred_row ([list[dict]]): [List of predict dicts]
+        keypoint_area_threshold (int, optional): 
+        [area less than the threshold will be treated as keypoints ]. 
+        Defaults to 256.
+
+    Returns:
+        [type]: [description]
+    """
+    label_list = []
+    try:
+        _frame_number = pred_row['frame_number']
+        x1 = pred_row['x1']
+        y1 = pred_row['y1']
+        x2 = pred_row['x2']
+        y2 = pred_row['y2']
+        instance_name = pred_row['instance_name']
+        score = pred_row['class_score']
+        segmentation = pred_row["segmentation"]
+    except ValueError:
+        return
+
+    if segmentation and segmentation != 'nan' and score >= score_threshold:
+        _mask = ast.literal_eval(segmentation)
+        mask_area = mask_util.area(_mask)
+        if mask_area >= keypoint_area_threshold:
+            _mask = mask_util.decode(_mask)[:, :]
+            polys, has_holes = mask_to_polygons(_mask)
+            try:
+                polys = polys[0]
+
+                shape = Shape(label=instance_name,
+                              shape_type='polygon',
+                              flags={}
+                              )
+                all_points = np.array(
+                    list(zip(polys[0::2], polys[1::2])))
+                for x, y in all_points:
+                    shape.addPoint((x, y))
+                label_list.append(shape)
+            except IndexError:
+                pass
+        else:
+            shape = Shape(label=instance_name,
+                          shape_type='point',
+                          flags={}
+                          )
+            cx = round((x1 + x2) / 2, 2)
+            cy = round((y1 + y2) / 2, 2)
+            shape.addPoint((cx, cy))
+            label_list.append(shape)
+    return label_list
 
 
 class TracksResults():
@@ -33,7 +94,8 @@ class TracksResults():
 
     def to_labelme_json(self,
                         output_dir: str,
-                        keypoint_area_threshold: int = 265
+                        keypoint_area_threshold: int = 265,
+                        key_frames=False
                         ) -> str:
 
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -42,71 +104,81 @@ class TracksResults():
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
-        while self.cap.isOpened():
-            label_list = []
-
-            frame_number = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-            img_path = f"{output_dir}/{Path(self.video_file).stem}_{frame_number:09}.png"
-
-            ret, frame = self.cap.read()
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if key_frames is not None and key_frames:
+            with open(self.video_file, 'rb') as f:
+                self.vr = de.VideoReader(f)
+            de.bridge.set_bridge('native')
+            self.key_frame_inices = self.vr.get_key_indices()
+            for kf in self.key_frame_inices:
+                frame = self.vr[kf]
+                frame = frame.asnumpy()
+                frame_label_list = []
+                img_path = f"{output_dir}/{Path(self.video_file).stem}_{kf:09}.png"
                 PIL.Image.fromarray(frame).save(img_path)
-                df_cur = self.df[self.df.frame_number == frame_number]
-                for row in tuple(df_cur.values):
+                df_cur = self.df[self.df.frame_number == kf]
+                for row in df_cur.to_dict(orient='records'):
                     try:
-                        _, _frame_number, x1, y1, x2, y2, instance_name, score, segmetnation = row
-                    except ValueError:
-                        yield 0, "Please check your tracking results with segmentation in the last column"
-                        return
-
-                    try:
-                        if segmetnation and segmetnation != 'nan':
-                            _mask = ast.literal_eval(segmetnation)
-                            mask_area = mask_util.area(_mask)
-                            if mask_area >= keypoint_area_threshold:
-                                _mask = mask_util.decode(_mask)[:, :]
-                                polys, has_holes = mask_to_polygons(_mask)
-                                try:
-                                    polys = polys[0]
-
-                                    shape = Shape(label=instance_name,
-                                                  shape_type='polygon',
-                                                  flags={}
-                                                  )
-                                    all_points = np.array(
-                                        list(zip(polys[0::2], polys[1::2])))
-                                    for x, y in all_points:
-                                        shape.addPoint((x, y))
-                                    label_list.append(shape)
-                                except IndexError:
-                                    continue
-                            else:
-                                shape = Shape(label=instance_name,
-                                              shape_type='point',
-                                              flags={}
-                                              )
-                                cx = round((x1 + x2) / 2, 2)
-                                cy = round((y1 + y2) / 2, 2)
-                                shape.addPoint((cx, cy))
-                                label_list.append(shape)
+                        label_list = pred_dict_to_labelme(
+                            row,
+                            keypoint_area_threshold
+                        )
+                        # each row is a dict of the single instance prediction
+                        frame_label_list += label_list
                         save_labels(img_path.replace(".png", ".json"),
                                     img_path,
-                                    label_list,
+                                    frame_label_list,
                                     height,
                                     width,
                                     imageData=None,
                                     save_image_to_json=False
 
                                     )
-                        yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
+                        yield (kf / num_frames) * 100 + 1, Path(img_path).stem + '.json'
                     except ValueError:
                         yield 0, 'No predictions'
                         continue
-            elif not self._is_running:
-                break
-            else:
-                break
+
+        else:
+
+            while self.cap.isOpened():
+
+                frame_number = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+
+                frame_label_list = []
+                img_path = f"{output_dir}/{Path(self.video_file).stem}_{frame_number:09}.png"
+
+                ret, frame = self.cap.read()
+                if ret:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    PIL.Image.fromarray(frame).save(img_path)
+                    df_cur = self.df[self.df.frame_number == frame_number]
+
+                    for row in df_cur.to_dict(orient='records'):
+
+                        try:
+                            label_list = pred_dict_to_labelme(
+                                row,
+                                keypoint_area_threshold
+                            )
+                            # each row is a dict of the single instance prediction
+                            frame_label_list += label_list
+                            save_labels(img_path.replace(".png", ".json"),
+                                        img_path,
+                                        frame_label_list,
+                                        height,
+                                        width,
+                                        imageData=None,
+                                        save_image_to_json=False
+
+                                        )
+                            yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
+                        except ValueError:
+                            yield 0, 'No predictions'
+                            continue
+                elif not self._is_running:
+                    break
+                else:
+                    break
 
         self.clean_up()
 

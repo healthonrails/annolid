@@ -663,64 +663,6 @@ class AnnolidWindow(MainWindow):
         self.statusBar().showMessage(
             self.tr(f"Training..."))
 
-    def setSeekbarSelection(self, a: int, b: int):
-        self.seekbar.setSelection(a, b)
-
-    def reset(self):
-        """Reset viewer by removing all video data."""
-        self.video_loader = None
-        self.frame_number = None
-        self.canvas.clear()
-        self.seekbar.setMaximum(0)
-        self.seekbar.setEnabled(False)
-
-    def _select_on_possible_frame_movement(self, before_frame_idx: int):
-        if before_frame_idx != self.frame_number:
-            # If there's no select, start seekbar selection at frame before action
-            start, end = self.seekbar.getSelection()
-            if start == end:
-                self.seekbar.startSelection(before_frame_idx)
-            # Set endpoint to frame after action
-            self.seekbar.endSelection(self.frame_number, update=True)
-
-    def keyPressEvent(self, event: QtGui.QKeyEvent):
-        """
-        Custom event handler, allows navigation and selection within view.
-        """
-        frame_t0 = self.frame_number
-
-        if event.key() == Qt.Key.Key_Shift:
-            self._shift_key_down = True
-
-        elif event.key() == Qt.Key.Key_Home:
-            self.frame_number = 0
-
-        elif event.key() == Qt.Key.Key_End and self.video_loader:
-            self.frame_number = self.num_frames - 1
-
-        elif event.key() == Qt.Key.Key_Escape:
-            pass
-
-        elif event.key() == Qt.Key.Key_K:
-            self.frame_number = self.seekbar.getEndContiguousMark(
-                self.frame_number
-            )
-        elif event.key() == Qt.Key.Key_J:
-            self.frame_number = self.seekbar.getStartContiguousMark(
-                self.frame_number
-            )
-        elif event.key() == Qt.Key.Key_QuoteLeft:
-            pass
-        elif event.key() < 128 and chr(event.key()).isnumeric():
-            # decrement by 1 since instances are 0-indexed
-            idx = int(chr(event.key())) - 1
-        else:
-            event.ignore()  # Kicks the event up to parent
-
-        # If user is holding down shift and action resulted in moving to another frame
-        if self._shift_key_down:
-            self._select_on_possible_frame_movement(frame_t0)
-
     def openVideo(self, _value=False):
         video_path = Path(self.filename).parent if self.filename else "."
         formats = ["*.*"]
@@ -743,22 +685,7 @@ class AnnolidWindow(MainWindow):
             self.video_loader = videos.CV2Video(video_filename)
             self.num_frames = self.video_loader.total_frames()
             self.loadFrame(0)
-
             self.seekbar = VideoSlider()
-            self.seekbar.keyPress.connect(self.keyPressEvent)
-            self.seekbar.keyRelease.connect(self.keyReleaseEvent)
-            self.seekbar.setEnabled(False)
-
-            #self.video_slider = QtWidgets.QSlider(Qt.Horizontal)
-            # self.statusBar().addWidget(self.video_slider)
-
-            # self.video_slider.setMinimum(0)
-            # self.video_slider.setMaximum(self.num_frames-1)
-            # self.video_slider.setValue(0)
-            # self.video_slider.setTickInterval(1)
-            # self.video_slider.valueChanged.connect(self.loadFrame)
-            # self.video_slider.setVisible(True)
-            self._shift_key_down = False
             self.seekbar.valueChanged.connect(self.loadFrame)
             self.seekbar.setMinimum(0)
             self.seekbar.setMaximum(self.num_frames-1)
