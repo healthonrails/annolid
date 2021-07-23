@@ -74,7 +74,7 @@ def tracks2nix(video_file=None,
     def get_bbox(frame_number):
         _df = df[df.frame_number == frame_number]
         try:
-            res = tuple(_df.values)
+            res = _df.to_dict(orient='records')
         except:
             res = []
         return res
@@ -274,17 +274,30 @@ def tracks2nix(video_file=None,
         timestamps[frame_timestamp]['frame_number'] = frame_number
 
         for bf in bbox_info:
-            if len(bf) == 8:
-                _frame_num, x1, y1, x2, y2, _class, score, _mask = bf
-                if not pd.isnull(_mask) and overlay_mask:
-                    if score >= score_threshold and _class in animal_names:
-                        _mask = ast.literal_eval(_mask)
-                        mask_area = mask_util.area(_mask)
-                        _mask = mask_util.decode(_mask)[:, :]
-                        frame = draw.draw_binary_masks(
-                            frame, [_mask], [_class])
-            else:
-                _frame_num, x1, y1, x2, y2, _class, score = bf
+            _frame_num = bf['frame_number'],
+            x1 = bf['x1'],
+            y1 = bf['y1'],
+            x2 = bf['x2'],
+            y2 = bf['y2'],
+            _class = bf['instance_name'],
+            score = bf['class_score'],
+            _mask = bf['segmentation']
+            if isinstance(_frame_num, tuple):
+                _frame_num = _frame_num[0]
+                x1 = x1[0]
+                y1 = y1[0]
+                x2 = x2[0]
+                y2 = y2[0]
+                _class = _class[0]
+                score = score[0]
+
+            if not pd.isnull(_mask) and overlay_mask:
+                if score >= score_threshold and _class in animal_names:
+                    _mask = ast.literal_eval(_mask)
+                    mask_area = mask_util.area(_mask)
+                    _mask = mask_util.decode(_mask)[:, :]
+                    frame = draw.draw_binary_masks(
+                        frame, [_mask], [_class])
 
             # In glitter, the y-axis is such that the bottom is zero and the top is height.
             # i.e. origin is bottom left
@@ -368,7 +381,7 @@ def tracks2nix(video_file=None,
                         score >= score_threshold
                         and _class not in body_parts
                         and _class not in animal_names
-                        ):
+                    ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
