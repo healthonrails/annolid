@@ -2,6 +2,7 @@ import sys
 import os
 import os.path as osp
 import time
+import pandas as pd
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage
 from collections import deque
@@ -43,6 +44,8 @@ from annolid.gui.widgets import ProgressingWindow
 import webbrowser
 import atexit
 from annolid.gui.widgets.video_slider import VideoSlider
+from annolid.postprocessing.quality_control import pred_dict_to_labelme
+from annolid.annotation.keypoints import save_labels
 __appname__ = 'Annolid'
 __version__ = "1.0.1"
 
@@ -166,6 +169,7 @@ class AnnolidWindow(MainWindow):
         self.file_dock.setVisible(True)
         self.here = Path(__file__).resolve().parent
         action = functools.partial(newAction, self)
+        self._df = None
 
         open_video = action(
             self.tr("&Open Video"),
@@ -675,8 +679,33 @@ class AnnolidWindow(MainWindow):
         )
         if QT5:
             video_filename, _ = video_filename
+
         video_filename = str(video_filename)
+
         if video_filename:
+            cur_video_folder = Path(video_filename).parent
+            _tracking_results = cur_video_folder.glob('*.csv')
+            _tracking_results = list(_tracking_results)
+            if len(_tracking_results) >= 1:
+                # go over all the tracking csv files
+                # use the first matched file with video name
+                # and segmentation
+                _video_name = str(Path(video_filename).stem)
+
+                for tr in _tracking_results:
+                    if ('tracking' in str(tr) and
+                            _video_name in str(tr)
+                            ):
+                        _tracking_csv_file = str(tr)
+                        self._df = pd.read_csv(_tracking_csv_file)
+                        break
+
+                if self._df is not None:
+                    try:
+                        self._df = self._df.drop(columns=['Unnamed: 0'])
+                    except KeyError:
+                        pass
+
             self.video_results_folder = Path(video_filename).with_suffix('')
             self.video_results_folder.mkdir(
                 exist_ok=True,
@@ -693,13 +722,15 @@ class AnnolidWindow(MainWindow):
             self.seekbar.resizeEvent()
             self.statusBar().addWidget(self.seekbar, stretch=1)
 
-    def image_to_canvas(self, qimage, filename):
+    def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
         self.canvas.setEnabled(True)
         self.imagePath = str(filename.parent)
         self.filename = str(filename)
         self.image = qimage
         imageData = ImageQt.fromqimage(qimage)
+        if not Path(filename).exists:
+            imageData.save(filename)
         self.imageData = utils.img_pil_to_data(imageData)
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
@@ -751,12 +782,44 @@ class AnnolidWindow(MainWindow):
         self.paintCanvas()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
+        self.loadPredictShapes(frame_number, filename)
         return True
 
     def clean_up(self):
         if self.frame_worker is not None:
             self.frame_worker.quit()
             self.frame_worker.wait()
+
+    def loadShapes(self, shapes, replace=True):
+        self._noSelectionSlot = True
+        for shape in shapes:
+            self.addLabel(shape)
+        self.labelList.clearSelection()
+        self._noSelectionSlot = False
+        self.canvas.loadShapes(shapes, replace=replace)
+
+    def loadPredictShapes(self, frame_number, filename):
+        if self._df is not None:
+            df_cur = self._df[self._df.frame_number == frame_number]
+            frame_label_list = []
+            for row in df_cur.to_dict(orient='records'):
+                pred_label_list = pred_dict_to_labelme(row)
+                frame_label_list += pred_label_list
+            label_json_file = str(filename).replace(".png", ".json")
+            save_labels(label_json_file,
+                        str(filename),
+                        frame_label_list,
+                        self.video_loader.height,
+                        self.video_loader.width,
+                        imageData=self.imageData,
+                        save_image_to_json=False
+                        )
+            try:
+                self.labelFile = LabelFile(label_json_file)
+                if self.labelFile:
+                    self.loadLabels(self.labelFile.shapes)
+            except Exception:
+                pass
 
     def loadFrame(self, frame_number):
         print("Loadling frame number:", frame_number)
@@ -771,7 +834,7 @@ class AnnolidWindow(MainWindow):
         self.frame_worker.start()
 
         self.frame_loader.res_frame.connect(
-            lambda qimage: self.image_to_canvas(qimage, filename)
+            lambda qimage: self.image_to_canvas(qimage, filename, frame_number)
         )
 
         return True

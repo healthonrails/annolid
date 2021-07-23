@@ -164,6 +164,8 @@ class CV2Video():
         if not Path(video_file).exists:
             return
         self.cap = cv2.VideoCapture(video_file)
+        self.width = None
+        self.height = None
 
     def load_frame(self, frame_number):
         if not hasattr(self, "_lock"):
@@ -172,6 +174,10 @@ class CV2Video():
             if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != frame_number:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             ret, frame = self.cap.read()
+            if self.width is None:
+                self.width = frame.shape[1]
+            if self.height is None:
+                self.height = frame.shape[0]
         if not ret or frame is None:
             raise KeyError(f"Cannot load frame number: {frame_number}")
 
