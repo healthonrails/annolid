@@ -170,6 +170,8 @@ class AnnolidWindow(MainWindow):
         self.here = Path(__file__).resolve().parent
         action = functools.partial(newAction, self)
         self._df = None
+        self.label_stats = {}
+        self.shape_hash_ids = {}
 
         open_video = action(
             self.tr("&Open Video"),
@@ -414,13 +416,29 @@ class AnnolidWindow(MainWindow):
             text = shape.label
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
+        shape_points_hash = hash(
+            str(sorted(shape.points, key=lambda point: point.x())))
+        self.shape_hash_ids[shape_points_hash] = self.shape_hash_ids.get(
+            shape_points_hash, 0) + 1
+        if self.shape_hash_ids[shape_points_hash] <= 1:
+            self.label_stats[text] = self.label_stats.get(text, 0) + 1
         label_list_item = LabelListWidgetItem(text, shape)
         self.labelList.addItem(label_list_item)
-        if not self.uniqLabelList.findItemsByLabel(shape.label):
-            item = self.uniqLabelList.createItemFromLabel(shape.label)
+        items = self.uniqLabelList.findItemsByLabel(shape.label)
+        if not items:
+            item = self.uniqLabelList.createItemFromLabel(
+                shape.label
+            )
             self.uniqLabelList.addItem(item)
             rgb = self._get_rgb_by_label(shape.label)
-            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
+            self.uniqLabelList.setItemLabel(
+                item, f"{shape.label} [{self.label_stats.get(text,0)} instance]", rgb)
+        else:
+            for item in items:
+                rgb = self._get_rgb_by_label(shape.label)
+                self.uniqLabelList.setItemLabel(
+                    item, f"{shape.label} [{self.label_stats.get(text,0)} instances]", rgb)
+
         self.labelDialog.addLabelHistory(shape.label)
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
@@ -695,7 +713,7 @@ class AnnolidWindow(MainWindow):
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
                             _video_name in str(tr)
-                            ):
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
