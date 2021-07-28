@@ -172,6 +172,8 @@ class AnnolidWindow(MainWindow):
         self._df = None
         self.label_stats = {}
         self.shape_hash_ids = {}
+        self.changed_json_stats = {}
+        self._pred_res_folder_suffix = '_tracking_results_labelme'
 
         open_video = action(
             self.tr("&Open Video"),
@@ -494,12 +496,28 @@ class AnnolidWindow(MainWindow):
             item.setData(Qt.UserRole, shape.label)
             self.uniqLabelList.addItem(item)
 
+    def _saveImageFile(self, filename):
+        image_filename = filename.replace('.json', '.png')
+        if not Path(image_filename).exists():
+            img = utils.img_data_to_arr(self.imageData)
+            imgviz.io.imsave(image_filename, img)
+        return image_filename
+
     def _saveFile(self, filename):
-        if filename and self.saveLabels(filename):
-            image_filename = filename.replace('.json', '.png')
-            if not Path(image_filename).exists():
-                img = utils.img_data_to_arr(self.imageData)
-                imgviz.io.imsave(image_filename, img)
+        json_saved = self.saveLabels(filename)
+        if filename and json_saved:
+            self.changed_json_stats[filename] = self.changed_json_stats.get(
+                filename, 0) + 1
+            if (self.changed_json_stats[filename] >= 1
+                    and self._pred_res_folder_suffix in filename):
+                changed_folder = Path(str(Path(filename).parent) + '_edited')
+                if not changed_folder.exists():
+                    changed_folder.mkdir(exist_ok=True, parents=True)
+                changed_filename = changed_folder / Path(filename).name
+                _ = self.saveLabels(str(changed_filename))
+                _ = self._saveImageFile(
+                    str(changed_filename).replace('.json', '.png'))
+            image_filename = self._saveImageFile(filename)
             self.imageList.append(image_filename)
             self.addRecentFile(filename)
             label_file = self._getLabelFile(filename)
@@ -711,8 +729,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                        ):
+                                _video_name in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -804,8 +822,11 @@ class AnnolidWindow(MainWindow):
 
     def clean_up(self):
         if self.frame_worker is not None:
-            self.frame_worker.quit()
-            self.frame_worker.wait()
+            try:
+                self.frame_worker.quit()
+                self.frame_worker.wait()
+            except RuntimeError:
+                pass
 
     def loadShapes(self, shapes, replace=True):
         self._noSelectionSlot = True
@@ -935,7 +956,7 @@ class AnnolidWindow(MainWindow):
                                         f"Please check and open the  \
                                         files.")
             return
-        out_dir = f"{str(Path(video_file).with_suffix(''))}_tracking_results_labelme"
+        out_dir = f"{str(Path(video_file).with_suffix(''))}{self._pred_res_folder_suffix}"
         out_dir = Path(out_dir)
         out_dir.mkdir(exist_ok=True, parents=True)
         trs = TracksResults(video_file, tracking_results)
