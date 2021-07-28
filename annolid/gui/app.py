@@ -497,13 +497,12 @@ class AnnolidWindow(MainWindow):
     def _saveFile(self, filename):
         if filename and self.saveLabels(filename):
             image_filename = filename.replace('.json', '.png')
-            # do not save
-            if not Path(image_filename).exists:
+            if not Path(image_filename).exists():
                 img = utils.img_data_to_arr(self.imageData)
                 imgviz.io.imsave(image_filename, img)
             self.imageList.append(image_filename)
             self.addRecentFile(filename)
-            label_file = self._getLabelFile(image_filename)
+            label_file = self._getLabelFile(filename)
             self._addItem(image_filename, label_file)
             self.setClean()
 
