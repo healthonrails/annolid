@@ -274,6 +274,16 @@ class AnnolidWindow(MainWindow):
             self.tr("Visualization results"),
         )
 
+        colab = action(
+            self.tr("&Open in Colab"),
+            self.train_on_colab,
+            icon="Colab",
+            tip=self.tr("Open in Colab"),
+        )
+
+        colab.setIcon(QtGui.QIcon(str(
+            self.here / "icons/colab.png")))
+
         visualization.setIcon(QtGui.QIcon(str(
             self.here / "icons/visualization.png")))
 
@@ -287,7 +297,9 @@ class AnnolidWindow(MainWindow):
             tracks=self.menu(self.tr("&Track Animals")),
             glitter2=self.menu(self.tr("&Glitter2")),
             save_labels=self.menu(self.tr("&Save Labels")),
-            quality_control=self.menu(self.tr("&Quality Control"))
+            quality_control=self.menu(self.tr("&Quality Control")),
+            colab=self.menu(self.tr("&Open in Colab")),
+
         )
 
         _action_tools = list(self.actions.tool)
@@ -300,6 +312,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(glitter2)
         _action_tools.append(save_labeles)
         _action_tools.append(quality_control)
+        _action_tools.append(colab)
 
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
@@ -313,6 +326,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.glitter2, (glitter2,))
         utils.addActions(self.menus.save_labels, (save_labeles,))
         utils.addActions(self.menus.quality_control, (quality_control,))
+        utils.addActions(self.menus.colab, (colab,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -729,8 +743,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                                _video_name in str(tr)
-                            ):
+                            _video_name in str(tr)
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -938,6 +952,10 @@ class AnnolidWindow(MainWindow):
             vdlg = VisualizationWindow()
             if vdlg.exec_():
                 pass
+
+    def train_on_colab(self):
+        url = "https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb"
+        webbrowser.open(url)
 
     def quality_control(self):
         video_file = None
