@@ -69,7 +69,11 @@ def get_label_color(label_id):
             color = compute_color_for_labels(_id)
             label = '{}{:d}'.format("", _id)
         except:
-            color = compute_color_for_labels(hash(label_id) % 100)
+            if ':' in label_id:
+                _label_id = label_id.split(":")[0]
+            else:
+                _label_id = label_id
+            color = compute_color_for_labels(hash(_label_id) % 100)
             label = f'{label_id}'
         return label, color
 

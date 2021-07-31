@@ -292,7 +292,8 @@ def tracks2nix(video_file=None,
                 score = score[0]
 
             if not pd.isnull(_mask) and overlay_mask:
-                if score >= score_threshold and _class in animal_names:
+                if score >= score_threshold and (_class in animal_names
+                                                 or _class.lower() in animal_names):
                     _mask = ast.literal_eval(_mask)
                     mask_area = mask_util.area(_mask)
                     _mask = mask_util.decode(_mask)[:, :]
@@ -378,9 +379,9 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                        score >= score_threshold
-                        and _class not in body_parts
-                        and _class not in animal_names
+                    score >= score_threshold
+                    and _class not in body_parts
+                    and _class not in animal_names
                     ):
 
                     if _class == 'grooming':
@@ -405,15 +406,15 @@ def tracks2nix(video_file=None,
                         draw_track=False,
                         points=points
                     )
-                elif _class == 'mouse':
-                    pass
                 elif score >= score_threshold:
                     # draw box center as keypoints
-                    cv2.circle(frame, (cx, cy),
-                               6,
-                               color,
-                               -1)
-                    if _class in animal_names:
+                    # do not draw point center for zones
+                    if 'zone' not in _class.lower():
+                        cv2.circle(frame, (cx, cy),
+                                   6,
+                                   color,
+                                   -1)
+                    if _class in animal_names and 'zone' not in _class.lower():
                         cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
                                     (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.65, color, 2)
