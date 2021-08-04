@@ -151,6 +151,7 @@ def tracks2nix(video_file=None,
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     target_fps = int(cap.get(cv2.CAP_PROP_FPS))
+    num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     metadata_dict = {}
     metadata_dict['filename'] = video_file
@@ -206,6 +207,8 @@ def tracks2nix(video_file=None,
                                    target_fps,
                                    (width, height))
 
+    # try mutlple times if opencv cannot read a frame
+    num_attempts = 0
     while cap.isOpened():
         # timestamp in seconds
         frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
@@ -214,7 +217,13 @@ def tracks2nix(video_file=None,
         ret, frame = cap.read()
 
         if not ret:
-            break
+            num_attempts += 1
+            if num_attempts > 200 or frame_number + 1 == num_frames:
+                break
+            else:
+                print(
+                    f'cannot read this frame: {frame_number} tried {num_attempts} times.')
+                continue
 
         bbox_info = get_bbox(frame_number)
 
@@ -379,10 +388,10 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                    score >= score_threshold
-                    and _class not in body_parts
-                    and _class not in animal_names
-                    ):
+                        score >= score_threshold
+                        and _class not in body_parts
+                        and _class not in animal_names
+                        ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"

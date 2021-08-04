@@ -9,6 +9,7 @@ BODY:
     right_hip: "tail_base,153, 255, 204"
     neck: "right_hip,255, 195, 77"
     left_hip: "neck,153, 255, 204"
+    frog_m_1: "frog_f_1, 128, 229, 255"
 
 NAME:
     resident
@@ -21,6 +22,10 @@ NAME:
     RightTeaBall
     RightTeaball
     Mouse
+    frog_m_1
+    frog_f_1
+    frog_m_2
+    frog_f_2
 
 EVENTS:
     huddling
