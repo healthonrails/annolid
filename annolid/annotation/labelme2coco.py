@@ -182,6 +182,8 @@ def convert(input_annotated_dir,
 
             if train_valid_split > 1:
                 if training_examples_sofar < train_valid_split:
+                    train_class_instance_counter[label] = train_class_instance_counter.get(
+                        label, 0)
                     if train_class_instance_counter[label] == 0:
                         is_train = 1
                     elif train_class_instance_counter[label] <= (

@@ -512,7 +512,10 @@ class AnnolidWindow(MainWindow):
 
     def _saveImageFile(self, filename):
         image_filename = filename.replace('.json', '.png')
-        if not Path(image_filename).exists():
+        imgage_jpg_file = filename.replace('.json', '.jpg')
+        # save png if there is no png or jpg image in the folder
+        if (not Path(image_filename).exists()
+                and not Path(imgage_jpg_file).exists()):
             img = utils.img_data_to_arr(self.imageData)
             imgviz.io.imsave(image_filename, img)
         return image_filename
@@ -743,7 +746,7 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
+                        _video_name in str(tr)
                         ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
