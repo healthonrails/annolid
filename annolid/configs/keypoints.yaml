@@ -5,7 +5,7 @@ HEAD:
     right_ear: "nose, 51, 102, 255"
 BODY:
     tail_base: "left_hip,255, 128, 0"
-    TailBase: "left_hip,255, 128, 0"
+    Tailbase: "left_hip,255, 128, 0"
     right_hip: "tail_base,153, 255, 204"
     neck: "right_hip,255, 195, 77"
     left_hip: "neck,153, 255, 204"
@@ -18,8 +18,7 @@ NAME:
     vole
     P6_Huddle
     P6_Lone
-    LeftTeaBall
-    RightTeaBall
+    LeftTeaball
     RightTeaball
     Mouse
     frog_m_1
