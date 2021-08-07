@@ -719,6 +719,25 @@ class AnnolidWindow(MainWindow):
         self.statusBar().showMessage(
             self.tr(f"Training..."))
 
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() == Qt.Key_Right:
+            next_pos = self.seekbar.value()+1
+            self.seekbar.setValue(next_pos)
+            self.seekbar.valueChanged.emit(next_pos)
+        elif event.key() == Qt.Key_Left:
+            prev_pos = self.seekbar.value()-1
+            self.seekbar.setValue(prev_pos)
+            self.seekbar.valueChanged.emit(prev_pos)
+        elif event.key() == Qt.Key_0:
+            self.seekbar.setValue(0)
+        elif event.key() == Qt.Key_Space:
+            self.seekbar.setValue(self.seekbar._val_max)
+        else:
+            event.ignore()
+
+    def keyReleaseEvent(self, event: QtGui.QKeyEvent):
+        return super().keyReleaseEvent(event)
+
     def openVideo(self, _value=False):
         video_path = Path(self.filename).parent if self.filename else "."
         formats = ["*.*"]
@@ -746,8 +765,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
                         ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
@@ -768,6 +787,7 @@ class AnnolidWindow(MainWindow):
             self.num_frames = self.video_loader.total_frames()
             self.loadFrame(0)
             self.seekbar = VideoSlider()
+            self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.valueChanged.connect(self.loadFrame)
             self.seekbar.setMinimum(0)
             self.seekbar.setMaximum(self.num_frames-1)
@@ -887,7 +907,7 @@ class AnnolidWindow(MainWindow):
 
         self.frame_loader.moveToThread(self.frame_worker)
 
-        self.frame_worker.start()
+        self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
 
         self.frame_loader.res_frame.connect(
             lambda qimage: self.image_to_canvas(qimage, filename, frame_number)

@@ -60,7 +60,7 @@ class ProgressingWindow(qtw.QDialog):
         self.running_submitted.connect(self.runner.run)
 
         self.runner.moveToThread(self.runner_thread)
-        self.runner_thread.start()
+        self.runner_thread.start(priority=qtc.QThread.IdlePriority)
 
         self.setLayout(layout)
 
