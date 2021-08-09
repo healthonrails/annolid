@@ -2,7 +2,6 @@ import os
 import sys
 import heapq
 import cv2
-import argparse
 import numpy as np
 import random
 import subprocess
@@ -13,6 +12,22 @@ import multiprocessing
 from annolid.segmentation.maskrcnn import inference
 
 sys.path.append("detector/yolov5/")
+
+
+def frame_from_video(video, num_frames):
+    attempt = 0
+    for i in range(num_frames):
+        success, frame = video.read()
+        if success:
+            yield frame
+        else:
+            attempt += 1
+            if attempt >= 2000:
+                break
+            else:
+                video.set(cv2.CAP_PROP_POS_FRAMES, i+1)
+                print('Cannot read this frame:', i)
+                continue
 
 
 def test_cmd(cmd):

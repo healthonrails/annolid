@@ -9,6 +9,7 @@ import functools
 import operator
 from pathlib import Path
 from annolid.utils import draw
+from annolid.data.videos import frame_from_video
 from collections import deque
 import pycocotools.mask as mask_util
 from annolid.postprocessing.freezing_analyzer import FreezingAnalyzer
@@ -117,29 +118,33 @@ def tracks2nix(video_file=None,
         else:
             return False
 
-    def left_right_interact(fn):
+    def left_right_interact(fn,
+                            subject_instance='subject_vole',
+                            left_instance='left_vole',
+                            right_instance='right_vole'
+                            ):
         _df_top = df[df.frame_number == fn]
         right_interact = None
         left_interact = None
         try:
-            subject_vole_seg = _df_top[_df_top.instance_name ==
-                                       'subject_vole']['segmentation'].values[0]
-            subject_vole_seg = ast.literal_eval(subject_vole_seg)
+            subject_instance_seg = _df_top[_df_top.instance_name ==
+                                           subject_instance]['segmentation'].values[0]
+            subject_instance_seg = ast.literal_eval(subject_instance_seg)
         except IndexError:
             return 0.0, 0.0
         try:
-            left_vole_seg = _df_top[_df_top.instance_name ==
-                                    'left_vole']['segmentation'].values[0]
-            left_vole_seg = ast.literal_eval(left_vole_seg)
-            left_interact = mask_util.iou([left_vole_seg], [subject_vole_seg], [
+            left_instance_seg = _df_top[_df_top.instance_name ==
+                                        left_instance]['segmentation'].values[0]
+            left_instance_seg = ast.literal_eval(left_instance_seg)
+            left_interact = mask_util.iou([left_instance_seg], [subject_instance_seg], [
                 False, False]).flatten()[0]
         except IndexError:
             left_interact = 0.0
         try:
-            right_vole_seg = _df_top[_df_top.instance_name ==
-                                     'right_vole']['segmentation'].values[0]
-            right_vole_seg = ast.literal_eval(right_vole_seg)
-            right_interact = mask_util.iou([right_vole_seg], [subject_vole_seg], [
+            right_instance_seg = _df_top[_df_top.instance_name ==
+                                         right_instance]['segmentation'].values[0]
+            right_instance_seg = ast.literal_eval(right_instance_seg)
+            right_interact = mask_util.iou([right_instance_seg], [subject_instance_seg], [
                 False, False]).flatten()[0]
         except IndexError:
             right_interact = 0.0
@@ -208,29 +213,18 @@ def tracks2nix(video_file=None,
                                    (width, height))
 
     # try mutlple times if opencv cannot read a frame
-    num_attempts = 0
-    for frame_number in range(num_frames):
+    for frame_number, frame in enumerate(frame_from_video(cap, num_frames)):
         # timestamp in seconds
         frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
-        ret, frame = cap.read()
-
-        if not ret:
-            num_attempts += 1
-            if num_attempts > 2000 or frame_number + 1 == num_frames:
-                break
-            else:
-                print(
-                    f'cannot read this frame: {frame_number} tried {num_attempts} times.')
-
-                print('Set to index: ', frame_number+1)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number+1)
-                continue
 
         bbox_info = get_bbox(frame_number)
 
         # calculate left or rgiht interact in the frame
         left_interact, right_interact = left_right_interact(
-            frame_number
+            frame_number,
+            'Mouse',
+            'LeftTeaball',
+            'RightTeaball'
         )
 
         timestamps.setdefault(frame_timestamp, {})
@@ -261,10 +255,11 @@ def tracks2nix(video_file=None,
                 zone_box = zs['points']
                 zone_label = zs['label']
                 zone_box = functools.reduce(operator.iconcat, zone_box, [])
-                if zone_label == 'right_zone':
+                if 'right' in zone_label.lower():
                     right_zone_box = zone_box
-                elif zone_label == 'left_zone':
+                elif 'left' in zone_label.lower():
                     left_zone_box = zone_box
+
                 # draw masks labeled as zones
                 # encode and merge polygons with format [[x1,y1,x2,y2,x3,y3....]]
                 try:
@@ -389,10 +384,10 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                            score >= score_threshold
-                            and _class not in body_parts
-                            and _class not in animal_names
-                        ):
+                    score >= score_threshold
+                    and _class not in body_parts
+                    and _class not in animal_names
+                    ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
