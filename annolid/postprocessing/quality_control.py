@@ -92,13 +92,27 @@ class TracksResults():
             self.cap = None
         self._is_running = True
 
+    def video_width(self):
+        if self.cap is not None:
+            video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        else:
+            video_width = None
+        return video_width
+
     def to_labelme_json(self,
                         output_dir: str,
                         keypoint_area_threshold: int = 265,
                         key_frames=False
                         ) -> str:
 
-        width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        width = self.video_width()
+        # Fix the left right based on the middle of
+        # lenght of the video width
+        if self.df is not None:
+            self.df['instance_name'] = self.df.apply(
+                lambda row: self.switch_left_right(row,
+                                                   width),
+                axis=1)
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if not os.path.exists(output_dir):
@@ -189,6 +203,16 @@ class TracksResults():
         img_pil = PIL.Image.fromarray(img_arr)
         _img_data = img_pil_to_data(img_pil)
         return _img_data
+
+    @classmethod
+    def switch_left_right(self, row, width=800):
+        instance_name = row['instance_name']
+        x1 = row['x1']
+        if 'Left' in instance_name and x1 >= width / 2:
+            return instance_name.replace('Left', 'Right')
+        elif 'Right' in instance_name and x1 < width / 2:
+            return instance_name.replace('Right', 'Left')
+        return instance_name
 
     def clean_up(self):
         self.cap.release()

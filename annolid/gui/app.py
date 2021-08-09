@@ -527,7 +527,12 @@ class AnnolidWindow(MainWindow):
                 filename, 0) + 1
             if (self.changed_json_stats[filename] >= 1
                     and self._pred_res_folder_suffix in filename):
-                changed_folder = Path(str(Path(filename).parent) + '_edited')
+
+                changed_folder = str(Path(filename).parent)
+                if '_edited' not in changed_folder:
+                    changed_folder = Path(changed_folder + '_edited')
+                else:
+                    changed_folder = Path(changed_folder)
                 if not changed_folder.exists():
                     changed_folder.mkdir(exist_ok=True, parents=True)
                 changed_filename = changed_folder / Path(filename).name

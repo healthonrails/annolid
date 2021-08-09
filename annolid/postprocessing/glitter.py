@@ -13,7 +13,7 @@ from annolid.data.videos import frame_from_video
 from collections import deque
 import pycocotools.mask as mask_util
 from annolid.postprocessing.freezing_analyzer import FreezingAnalyzer
-
+from annolid.postprocessing.quality_control import TracksResults
 
 points = [deque(maxlen=30) for _ in range(1000)]
 
@@ -157,6 +157,16 @@ def tracks2nix(video_file=None,
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     target_fps = int(cap.get(cv2.CAP_PROP_FPS))
     num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # fix left right swtich by checking the middle
+    # point of the video frame width
+    df['instance_name'] = df.apply(lambda row:
+                                   TracksResults.switch_left_right(
+                                       row,
+                                       width
+                                   ),
+                                   axis=1
+                                   )
 
     metadata_dict = {}
     metadata_dict['filename'] = video_file
@@ -384,9 +394,9 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                    score >= score_threshold
-                    and _class not in body_parts
-                    and _class not in animal_names
+                        score >= score_threshold
+                        and _class not in body_parts
+                        and _class not in animal_names
                     ):
 
                     if _class == 'grooming':
