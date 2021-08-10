@@ -366,7 +366,7 @@ def tracks2nix(video_file=None,
                     timestamps[frame_timestamp]['pos:animal_:x'] = cx
                     timestamps[frame_timestamp]['pos:animal_:y'] = cy_glitter
                     num_object_investigation += 1
-                elif _class == 'LeftInteract':
+                elif _class == 'LeftInteract' and left_interact > 0:
 
                     timestamps[frame_timestamp]['pos:interact_center:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center:y'] = cy_glitter
@@ -378,7 +378,9 @@ def tracks2nix(video_file=None,
                     else:
                         timestamps[frame_timestamp]['event:LeftInteract'] = 1
                         num_left_interact += 1
-                elif is_draw and _class == 'RightInteract' and score >= score_threshold:
+                elif (is_draw and _class == 'RightInteract'
+                      and score >= score_threshold
+                      and right_interact > 0):
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
                     timestamps[frame_timestamp]['pos:interact_center_:y'] = cy_glitter
@@ -397,7 +399,7 @@ def tracks2nix(video_file=None,
                         score >= score_threshold
                         and _class not in body_parts
                         and _class not in animal_names
-                    ):
+                        ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -414,13 +416,18 @@ def tracks2nix(video_file=None,
                     else:
                         label = f"{_class}:{round(score * 100,2)}%"
 
-                    draw.draw_boxes(
-                        frame,
-                        bbox,
-                        identities=[label],
-                        draw_track=False,
-                        points=points
-                    )
+                    if _class == 'RightInteract' and right_interact <= 0:
+                        pass
+                    elif _class == 'LeftInteract' and left_interact <= 0:
+                        pass
+                    else:
+                        draw.draw_boxes(
+                            frame,
+                            bbox,
+                            identities=[label],
+                            draw_track=False,
+                            points=points
+                        )
                 elif score >= score_threshold:
                     # draw box center as keypoints
                     # do not draw point center for zones
@@ -434,7 +441,10 @@ def tracks2nix(video_file=None,
                                     (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.65, color, 2)
 
-                if left_interact > 0 and 'left' in _class.lower():
+                if (left_interact > 0
+                        and 'left' in _class.lower()
+                        and 'interact' in _class.lower()
+                    ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -447,7 +457,10 @@ def tracks2nix(video_file=None,
                         draw_track=False,
                         points=points
                     )
-                if right_interact > 0 and 'right' in _class:
+                if (right_interact > 0
+                            and 'right' in _class.lower() and
+                            'interact' in _class.lower()
+                        ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
