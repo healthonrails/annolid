@@ -207,10 +207,13 @@ class TracksResults():
     @classmethod
     def switch_left_right(self, row, width=800):
         instance_name = row['instance_name']
-        x1 = row['x1']
-        if 'Left' in instance_name and x1 >= width / 2:
+        if 'cx' in row:
+            x_val = row['cx']
+        else:
+            x_val = row['x1']
+        if 'Left' in instance_name and x_val >= width / 2:
             return instance_name.replace('Left', 'Right')
-        elif 'Right' in instance_name and x1 < width / 2:
+        elif 'Right' in instance_name and x_val < width / 2:
             return instance_name.replace('Right', 'Left')
         return instance_name
 
