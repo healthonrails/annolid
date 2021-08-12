@@ -43,7 +43,10 @@ def pred_dict_to_labelme(pred_row,
         return
 
     if segmentation and segmentation != 'nan' and score >= score_threshold:
-        _mask = ast.literal_eval(segmentation)
+        try:
+            _mask = ast.literal_eval(segmentation)
+        except ValueError:
+            _mask = segmentation
         mask_area = mask_util.area(_mask)
         if mask_area >= keypoint_area_threshold:
             _mask = mask_util.decode(_mask)[:, :]
