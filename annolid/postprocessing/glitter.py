@@ -399,7 +399,7 @@ def tracks2nix(video_file=None,
                         score >= score_threshold
                         and _class not in body_parts
                         and _class not in animal_names
-                        ):
+                    ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -431,20 +431,23 @@ def tracks2nix(video_file=None,
                 elif score >= score_threshold:
                     # draw box center as keypoints
                     # do not draw point center for zones
-                    if 'zone' not in _class.lower():
-                        cv2.circle(frame, (cx, cy),
-                                   6,
-                                   color,
-                                   -1)
-                    if _class in animal_names and 'zone' not in _class.lower():
-                        cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
-                                    (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.65, color, 2)
+                    is_keypoint_in_mask = keypoint_in_body_mask(
+                        _frame_num, _class, 'Mouse')
+                    if is_keypoint_in_mask:
+                        if 'zone' not in _class.lower():
+                            cv2.circle(frame, (cx, cy),
+                                       6,
+                                       color,
+                                       -1)
+                        if _class in animal_names and 'zone' not in _class.lower():
+                            cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
+                                        (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.65, color, 2)
 
                 if (left_interact > 0
-                        and 'left' in _class.lower()
-                        and 'interact' in _class.lower()
-                    ):
+                            and 'left' in _class.lower()
+                            and 'interact' in _class.lower()
+                        ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -458,9 +461,9 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                            and 'right' in _class.lower() and
-                            'interact' in _class.lower()
-                        ):
+                    and 'right' in _class.lower() and
+                    'interact' in _class.lower()
+                    ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx

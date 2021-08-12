@@ -332,6 +332,7 @@ class AnnolidWindow(MainWindow):
         self.setWindowTitle(__appname__)
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
         self.video_results_folder = None
+        self.seekbar = None
 
         self.frame_worker = QtCore.QThread()
         self.frame_loader = LoadFrameThread()
@@ -725,20 +726,21 @@ class AnnolidWindow(MainWindow):
             self.tr(f"Training..."))
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
-        if event.key() == Qt.Key_Right:
-            next_pos = self.seekbar.value()+1
-            self.seekbar.setValue(next_pos)
-            self.seekbar.valueChanged.emit(next_pos)
-        elif event.key() == Qt.Key_Left:
-            prev_pos = self.seekbar.value()-1
-            self.seekbar.setValue(prev_pos)
-            self.seekbar.valueChanged.emit(prev_pos)
-        elif event.key() == Qt.Key_0:
-            self.seekbar.setValue(0)
-        elif event.key() == Qt.Key_Space:
-            self.seekbar.setValue(self.seekbar._val_max)
-        else:
-            event.ignore()
+        if self.seekbar is not None:
+            if event.key() == Qt.Key_Right:
+                next_pos = self.seekbar.value()+1
+                self.seekbar.setValue(next_pos)
+                self.seekbar.valueChanged.emit(next_pos)
+            elif event.key() == Qt.Key_Left:
+                prev_pos = self.seekbar.value()-1
+                self.seekbar.setValue(prev_pos)
+                self.seekbar.valueChanged.emit(prev_pos)
+            elif event.key() == Qt.Key_0:
+                self.seekbar.setValue(0)
+            elif event.key() == Qt.Key_Space:
+                self.seekbar.setValue(self.seekbar._val_max)
+            else:
+                event.ignore()
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)
