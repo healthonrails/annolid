@@ -1,5 +1,6 @@
 import glob
 import cv2
+from labelme.utils.image import img_b64_to_arr
 import numpy as np
 import torch
 from pathlib import Path
@@ -14,13 +15,17 @@ from detectron2.data import get_detection_dataset_dicts
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 import pycocotools.mask as mask_util
 from annolid.annotation.keypoints import save_labels
+from annolid.postprocessing.quality_control import TracksResults
 
 
 class Segmentor():
     def __init__(self,
                  dataset_dir=None,
-                 model_pth_path=None) -> None:
+                 model_pth_path=None,
+                 score_threshold=0.3
+                 ) -> None:
         self.dataset_dir = dataset_dir
+        self.score_threshold = score_threshold
 
         dataset_name = Path(self.dataset_dir).stem
 
@@ -43,9 +48,8 @@ class Segmentor():
             "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
         ))
         self.cfg.MODEL.WEIGHTS = model_pth_path
-        self.cfg.OUTPUT_DIR = ''
         self.cfg.DATASETS.TRAIN = (f"{dataset_name}_train",)
-        self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.15
+        self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
         self.cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
 
@@ -56,7 +60,7 @@ class Segmentor():
                    image_path,
                    height,
                    width):
-        results = self._process_instances(instances)
+        results = self._process_instances(instances, width=width)
         frame_label_list = []
         for res in results:
             label_list = pred_dict_to_labelme(res)
@@ -95,7 +99,8 @@ class Segmentor():
 
     def _process_instances(self,
                            instances,
-                           frame_number=0
+                           frame_number=0,
+                           width=None
                            ):
         results = []
         out_dict = {}
@@ -124,10 +129,16 @@ class Segmentor():
             out_dict['y1'] = box[1]
             out_dict['x2'] = box[2]
             out_dict['y2'] = box[3]
+            out_dict['cx'] = (out_dict['x1'] + out_dict['x2']) / 2
+            out_dict['cy'] = (out_dict['y1'] + out_dict['y2']) / 2
             out_dict['instance_name'] = self.class_names[classes[k]]
             out_dict['class_score'] = scores[k]
             out_dict['segmentation'] = rles[k]
-            results.append(out_dict)
+
+            if scores[k] >= self.score_threshold:
+                out_dict['instance_name'] = TracksResults.switch_left_right(
+                    out_dict, width=width)
+                results.append(out_dict)
             out_dict = {}
         return results
 
@@ -139,10 +150,3 @@ class Segmentor():
             imgs = glob.glob(str(Path(image_folder) / '*.png'))
         for img_path in imgs:
             self.on_image(img_path, display=False)
-
-
-if __name__ == '__main__':
-    segmentor = Segmentor(
-        "/path/to/mycustom_dataset_coco_dataset",
-        "/path/to/trained/model_final_3.pth")
-    segmentor.on_image_folder("/path/to/img_folder")
