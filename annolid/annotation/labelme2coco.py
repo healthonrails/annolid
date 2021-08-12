@@ -216,12 +216,16 @@ def convert(input_annotated_dir,
                     train_class_instance_counter[label] = 1
 
             if shape_type == 'point':
-                cx, cy = points[0]
-                radius = 10.0 + np.random.choice(np.arange(0, 1, 0.1))
-                xs = cx + (radius * np.cos(_angles))
-                ys = cy + (radius * np.sin(_angles))
-                points = np.asarray([list(p) for p in zip(xs, ys)])
-                shape_type = "polygon"
+                try:
+                    cx, cy = points[0]
+                    radius = 10.0 + np.random.choice(np.arange(0, 1, 0.1))
+                    xs = cx + (radius * np.cos(_angles))
+                    ys = cy + (radius * np.sin(_angles))
+                    points = np.asarray([list(p) for p in zip(xs, ys)])
+                    shape_type = "polygon"
+                except IndexError:
+                    continue
+                    print(f"{filename} has a invalid point {points}.")
 
             mask = labelme.utils.shape_to_mask(
                 img.shape[:2], points, shape_type

@@ -54,6 +54,10 @@ def tracks2nix(video_file=None,
 
     keypoints_connection_rules, animal_names, behaviors = draw.get_keypoint_connection_rules()
 
+    _animal_object_list = animal_names.split()
+    subject_animal_name = _animal_object_list[0]
+    left_interact_object = _animal_object_list[1]
+    right_interact_object = _animal_object_list[2]
     body_parts = [bp for bp in keypoints_connection_rules[0]]
 
     df_motion = None
@@ -94,7 +98,7 @@ def tracks2nix(video_file=None,
             animal_name=None):
 
         if animal_name is None:
-            animal_name = 'mouse'
+            animal_name = subject_animal_name
 
         _df_k_b = df[df.frame_number == frame_number]
         try:
@@ -232,9 +236,9 @@ def tracks2nix(video_file=None,
         # calculate left or rgiht interact in the frame
         left_interact, right_interact = left_right_interact(
             frame_number,
-            'Mouse',
-            'LeftTeaball',
-            'RightTeaball'
+            subject_animal_name,
+            left_interact_object,
+            right_interact_object
         )
 
         timestamps.setdefault(frame_timestamp, {})
@@ -341,7 +345,7 @@ def tracks2nix(video_file=None,
                     _class)
 
                 # the first animal
-                if keypoint_in_body_mask(_frame_num, _class, animal_names[0]):
+                if keypoint_in_body_mask(_frame_num, _class, subject_animal_name):
                     parts_locations[_class] = (cx, cy, color)
 
                 if _class == 'nose' or 'nose' in _class.lower():
@@ -396,9 +400,9 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                        score >= score_threshold
-                        and _class not in body_parts
-                        and _class not in animal_names
+                    score >= score_threshold
+                    and _class not in body_parts
+                    and _class not in animal_names
                     ):
 
                     if _class == 'grooming':
@@ -432,8 +436,11 @@ def tracks2nix(video_file=None,
                     # draw box center as keypoints
                     # do not draw point center for zones
                     is_keypoint_in_mask = keypoint_in_body_mask(
-                        _frame_num, _class, 'Mouse')
-                    if is_keypoint_in_mask:
+                        _frame_num, _class, subject_animal_name)
+                    if (is_keypoint_in_mask
+                        or any(map(str.isdigit, _class))
+                        or _class in _animal_object_list
+                        ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
                                        6,
@@ -445,8 +452,8 @@ def tracks2nix(video_file=None,
                                         0.65, color, 2)
 
                 if (left_interact > 0
-                            and 'left' in _class.lower()
-                            and 'interact' in _class.lower()
+                        and 'left' in _class.lower()
+                        and 'interact' in _class.lower()
                         ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
@@ -461,8 +468,8 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                    and 'right' in _class.lower() and
-                    'interact' in _class.lower()
+                        and 'right' in _class.lower() and
+                        'interact' in _class.lower()
                     ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1

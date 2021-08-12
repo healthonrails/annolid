@@ -10,17 +10,20 @@ BODY:
     neck: "right_hip,255, 195, 77"
     left_hip: "neck,153, 255, 204"
     frog_m_1: "frog_f_1, 128, 229, 255"
-
+    
 NAME:
+    #by default we assume the first item is the subject animal name
+    # the second row for left interact object name
+    # the thrid row for the right interact object name
+    Mouse
+    LeftTeaball
+    RightTeaball
     resident
     mouse
     intruder
     vole
     P6_Huddle
     P6_Lone
-    LeftTeaball
-    RightTeaball
-    Mouse
     frog_m_1
     frog_f_1
     frog_m_2
