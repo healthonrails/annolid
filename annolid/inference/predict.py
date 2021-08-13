@@ -1,8 +1,11 @@
 import glob
+from operator import sub
+from re import I
 import cv2
-from labelme.utils.image import img_b64_to_arr
 import numpy as np
 import torch
+import pandas as pd
+import queue
 from pathlib import Path
 from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
@@ -16,18 +19,29 @@ from annolid.postprocessing.quality_control import pred_dict_to_labelme
 import pycocotools.mask as mask_util
 from annolid.annotation.keypoints import save_labels
 from annolid.postprocessing.quality_control import TracksResults
+from annolid.annotation.masks import mask_iou
 
 
 class Segmentor():
     def __init__(self,
                  dataset_dir=None,
                  model_pth_path=None,
-                 score_threshold=0.3
+                 score_threshold=0.15
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold
 
         dataset_name = Path(self.dataset_dir).stem
+        self.subject_queue = queue.PriorityQueue(3)
+        self.left_object_queue = queue.PriorityQueue(3)
+        self.right_object_queue = queue.PriorityQueue(3)
+        self.right_interact_queue = queue.PriorityQueue(3)
+        self.left_interact_queue = queue.PriorityQueue(3)
+        self.subject_instance_name = 'Mouse'
+        self.left_object_name = 'LeftTeaball'
+        self.right_object_name = 'RightTeaball'
+        self.left_interact_name = 'LeftInteract'
+        self.right_interact_name = 'RightInteract'
 
         register_coco_instances(f"{dataset_name}_train", {
         }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
@@ -61,6 +75,9 @@ class Segmentor():
                    height,
                    width):
         results = self._process_instances(instances, width=width)
+        df_res = pd.DataFrame(results)
+        df_res = df_res.groupby(['instance_name'], sort=False).head(1)
+        results = df_res.to_dict(orient='records')
         frame_label_list = []
         for res in results:
             label_list = pred_dict_to_labelme(res)
@@ -96,6 +113,58 @@ class Segmentor():
             )
             cv2.imshow("Frame", output.get_image()[:, :, ::-1])
             cv2.waitKey(0)
+
+    def _save_pred_history(self,
+                           out_dict,
+                           instance_name,
+                           instance_queue
+                           ):
+
+        if out_dict['instance_name'] == instance_name:
+            if instance_queue.full():
+                instance_high_score = instance_queue.get()
+                instance_queue.get()
+                instance_queue.put(instance_high_score)
+            else:
+                instance_queue.put(
+                    (1-out_dict['class_score'], out_dict))
+
+    def _overlap_with_subject_instance(self, out_dict):
+        if self.subject_queue.qsize() == 0:
+            return True
+        subject_instance_best_score = self.subject_queue.get()
+        _iou = mask_iou(
+            subject_instance_best_score[1]['segmentation'],
+            out_dict['segmentation']
+        )
+        self.subject_queue.put(subject_instance_best_score)
+        if _iou <= 0:
+            return False
+        return True
+
+    def _overlap_with_left_object(self,
+                                  out_dict):
+        if self.left_object_queue.qsize() == 0:
+            return True
+        left_object_best_score = self.left_object_queue.get()
+        _iou = mask_iou(
+            left_object_best_score[1]['segmentation'],
+            out_dict['segmentation']
+        )
+        self.left_object_queue.put(left_object_best_score)
+        return _iou > 0
+
+    def _overlap_with_right_object(self,
+                                   out_dict):
+        if self.right_object_queue.qsize() == 0:
+            return True
+        right_object_best_score = self.right_object_queue.get()
+        _iou = mask_iou(
+            right_object_best_score[1]['segmentation'],
+            out_dict['segmentation']
+        )
+        self.right_object_queue.put(right_object_best_score)
+        return _iou > 0
 
     def _process_instances(self,
                            instances,
@@ -138,6 +207,46 @@ class Segmentor():
             if scores[k] >= self.score_threshold:
                 out_dict['instance_name'] = TracksResults.switch_left_right(
                     out_dict, width=width)
+
+                if out_dict['instance_name'] == self.subject_instance_name:
+                    self._save_pred_history(out_dict,
+                                            self.subject_instance_name,
+                                            self.subject_queue)
+
+                elif out_dict['instance_name'] == self.left_object_name:
+                    self._save_pred_history(out_dict,
+                                            self.left_object_name,
+                                            self.left_object_queue)
+                elif out_dict['instance_name'] == self.right_object_name:
+                    self._save_pred_history(out_dict,
+                                            self.right_object_name,
+                                            self.right_object_queue)
+                elif out_dict['instance_name'] == self.left_interact_name:
+                    self._save_pred_history(out_dict,
+                                            self.left_interact_name,
+                                            self.left_interact_queue)
+                    # check overlap with subject animal
+                    if not self._overlap_with_subject_instance(out_dict):
+                        out_dict = {}
+                        continue
+                    # check overlap with left object
+
+                    if not self._overlap_with_left_object(out_dict):
+                        out_dict = {}
+                        continue
+
+                elif out_dict['instance_name'] == self.right_interact_name:
+                    self._save_pred_history(out_dict,
+                                            self.right_interact_name,
+                                            self.left_interact_queue)
+                    if not self._overlap_with_subject_instance(out_dict):
+                        out_dict = {}
+                        continue
+
+                    if not self._overlap_with_right_object(out_dict):
+                        out_dict = {}
+                        continue
+
                 results.append(out_dict)
             out_dict = {}
         return results
