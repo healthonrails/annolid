@@ -2,6 +2,7 @@ import cv2
 import ast
 import numpy as np
 import pycocotools.mask as mask_util
+from simplification.cutil import simplify_coords_vwp
 
 
 def mask_to_polygons(mask,
@@ -26,6 +27,10 @@ def mask_to_polygons(mask,
     has_holes = (hierarchy.reshape(-1, 4)[:, 3] >= 0).sum() > 0
 
     res = res[-2]
+    res_simp = simplify_coords_vwp(res[0].squeeze(), 30.0)
+    res_simp = np.array(res_simp)
+    res = [np.expand_dims(res_simp, axis=1)]
+
     if use_convex_hull:
         hull = []
         for i in range(len(res)):
@@ -33,8 +38,9 @@ def mask_to_polygons(mask,
             res = [x.flatten() for x in hull]
     else:
         res = [x.flatten() for x in res]
+
     # convert OpenCV int coordinates [0, H -1 or W-1] to
-    # real value coordinate space.
+    # real value coordinate spaces
     res = [x + 0.5 for x in res if len(x) >= 6]
 
     return res, has_holes

@@ -34,6 +34,7 @@ setuptools.setup(
                       'pycocotools>=2.0.2',
                       'tensorboard>=2.3.0',
                       'PyQtWebEngine>=5.15.1',
+                      'simplification>=0.5.12',
                       "dataclasses>=0.6; python_version < '3.7'",
                       ],
     python_requires='>=3.6',
