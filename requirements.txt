@@ -8,3 +8,4 @@ decord>=0.4.0
 opencv-python>=4.1.2.30
 opencv-contrib-python>=4.1.2.30
 pycocotools>=2.0.2
+simplification>=0.5.12
