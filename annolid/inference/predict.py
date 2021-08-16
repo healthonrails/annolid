@@ -83,7 +83,7 @@ class Segmentor():
         img_ext = Path(image_path).suffix
         json_path = image_path.replace(img_ext, ".json")
         save_labels(json_path,
-                    image_path,
+                    str(Path(image_path).name),
                     frame_label_list,
                     height,
                     width,
@@ -164,6 +164,32 @@ class Segmentor():
         self.right_object_queue.put(right_object_best_score)
         return _iou > 0
 
+    def subject_overlap_with_right_object(self):
+        if self.right_object_queue.qsize() == 0:
+            return True
+        right_object_best_score = self.right_object_queue.get()
+        subject_best_score = self.subject_queue.get()
+        _iou = mask_iou(
+            right_object_best_score[1]['segmentation'],
+            subject_best_score[1]['segmentation']
+        )
+        self.right_object_queue.put(right_object_best_score)
+        self.subject_queue.put(subject_best_score)
+        return _iou > 0
+
+    def subject_overlap_with_left_object(self):
+        if self.left_object_queue.qsize() == 0:
+            return True
+        left_object_best_score = self.left_object_queue.get()
+        subject_best_score = self.subject_queue.get()
+        _iou = mask_iou(
+            left_object_best_score[1]['segmentation'],
+            subject_best_score[1]['segmentation']
+        )
+        self.left_object_queue.put(left_object_best_score)
+        self.subject_queue.put(subject_best_score)
+        return _iou > 0
+
     def _process_instances(self,
                            instances,
                            frame_number=0,
@@ -233,6 +259,10 @@ class Segmentor():
                         out_dict = {}
                         continue
 
+                    # if not self.subject_overlap_with_left_object():
+                    #     out_dict = {}
+                    #     continue
+
                 elif out_dict['instance_name'] == self.right_interact_name:
                     self._save_pred_history(out_dict,
                                             self.right_interact_name,
@@ -244,6 +274,10 @@ class Segmentor():
                     if not self._overlap_with_right_object(out_dict):
                         out_dict = {}
                         continue
+
+                    # if not self.subject_overlap_with_right_object():
+                    #     out_dict = {}
+                    #     continue
 
                 results.append(out_dict)
             out_dict = {}
