@@ -70,19 +70,38 @@ annolid --labels=/path/to/labels_custom.txt
 ```
 pip install pyyaml==5.3 
 pip install pycocotools>=2.0.1
-pip install torch==1.8.1+cu101 torchvision==0.9.1+cu101 -f https://download.pytorch.org/whl/torch_stable.html
+pip install torch==1.9.0+cu102 torchvision==0.10.0+cu102 -f https://download.pytorch.org/whl/torch_stable.html
 
 ```
 ### Install Detectron2: 
 See [https://detectron2.readthedocs.io/tutorials/install.html](https://detectron2.readthedocs.io/tutorials/install.html) for further information.  
 ``` 
 import torch
-assert torch.__version__.startswith("1.8")    
-pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu101/torch1.8/index.html
+assert torch.__version__.startswith("1.9")    
+pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.9/index.html
+
+### Install Detectron2 on Windows 10
+
+`git clone https://github.com/facebookresearch/detectron2.git`
+`cd detectron2`
+`pip install -e .`
+
 ```
+Note. If you encounter an error  on windows with message says: 
+
+`
+in _run_ninja_build
+raise RuntimeError(message)
+RuntimeError: Error compiling objects for extension
+`
+Please go to the link https://support.microsoft.com/en-us/topic/the-latest-supported-visual-c-downloads-2647da03-1eea-4433-9aff-95f26a218cc0
+and  download `x64: vc_redist.x64.exe`. 
+Please click and install it. 
+After restart, you can cd to detectron2 folder and run the following command. 
+`pip install -e .`. 
 
 ## Install Detectron2 on Google Colab
-Instructions will be posted here presently.  (Colab uses CUDA 10.1 + torch 1.8).  
+Instructions will be posted here presently.  (Colab uses CUDA 10.2 + torch 1.9.0).  
 <a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 ## Optional: Install older version of Pytorch for YOLACT
