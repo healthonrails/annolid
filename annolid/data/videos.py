@@ -158,7 +158,7 @@ def key_frames(video_file=None,
     for ki in key_idxs:
         frame = vr[ki].asnumpy()
         out_frame_file = out_dir / \
-            f"{(video_name).replace(' ','_')}_{ki:08}.jpg"
+            f"{(video_name).replace(' ','_')}_{ki:08}.png"
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         cv2.imwrite(str(out_frame_file), frame)
         print(f"Saved {str(out_frame_file)}")
@@ -259,7 +259,7 @@ def extract_frames(video_file='None',
 
     if keep_first_frame:
         # save the first frame
-        out_frame_file = f"{out_dir}{os.sep}{video_name}_{current_frame_number:08}.jpg"
+        out_frame_file = f"{out_dir}{os.sep}{video_name}_{current_frame_number:08}.png"
         cv2.imwrite(out_frame_file, old_frame)
 
     if num_frames < -1 or num_frames > n_frames:
@@ -288,7 +288,7 @@ def extract_frames(video_file='None',
         ret, frame = cap.read()
 
         if num_frames == -1:
-            out_frame_file = f"{out_dir}{os.sep}{video_name}_{frame_number:08}.jpg"
+            out_frame_file = f"{out_dir}{os.sep}{video_name}_{frame_number:08}.png"
             if ret:
                 cv2.imwrite(
                     out_frame_file, frame)
@@ -354,7 +354,7 @@ def extract_frames(video_file='None',
 
     for kf in keeped_frames:
         s, f, p = kf
-        out_img = f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.jpg"
+        out_img = f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.png"
         cv2.imwrite(out_img, p)
         # default mask rcnn prediction if select less than 5 frames
         if prediction and num_frames <= 5:

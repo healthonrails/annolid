@@ -18,6 +18,7 @@ import pycocotools.mask as mask_util
 from annolid.annotation.keypoints import save_labels
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.annotation.masks import mask_iou
+from annolid.data.videos import key_frames
 
 
 class Segmentor():
@@ -291,3 +292,10 @@ class Segmentor():
             imgs = glob.glob(str(Path(image_folder) / '*.png'))
         for img_path in imgs:
             self.on_image(img_path, display=False)
+
+    def on_video(self, video_path):
+        if not Path(video_path).exists():
+            return
+        out_img_dir = key_frames(video_path)
+        self.on_image_folder(out_img_dir)
+        return out_img_dir

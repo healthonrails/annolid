@@ -11,12 +11,13 @@ class TrackDialog(QtWidgets.QDialog):
         self.slider()
         self.top_k_slider()
         self.score_threshold = 0.15
-        self.algo = 'YOLACT'
+        self.algo = 'Detectron2'
         self.config_file = None
         self.out_dir = None
         self.video_file = None
         self.top_k = 100
         self.trained_model = None
+        self.raidoButtons()
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -74,6 +75,7 @@ class TrackDialog(QtWidgets.QDialog):
         )
 
         vbox = QtWidgets.QVBoxLayout()
+        vbox.addWidget(self.groupBox)
         vbox.addWidget(self.groupBoxVideoFiles)
         vbox.addWidget(self.groupBoxModelFiles)
         vbox.addWidget(self.label1)
@@ -86,6 +88,19 @@ class TrackDialog(QtWidgets.QDialog):
 
         self.setLayout(vbox)
         self.show()
+
+    def raidoButtons(self):
+        self.groupBox = QtWidgets.QGroupBox("Please choose a model type")
+        hboxLayOut = QtWidgets.QHBoxLayout()
+        self.radio_btn1 = QtWidgets.QRadioButton("Detectron2")
+        self.radio_btn1.setChecked(True)
+        self.radio_btn1.toggled.connect(self.onRadioButtonChecked)
+        hboxLayOut.addWidget(self.radio_btn1)
+        self.radio_btn2 = QtWidgets.QRadioButton("YOLACT")
+        self.radio_btn2.toggled.connect(self.onRadioButtonChecked)
+        self.radio_btn2.setEnabled(True)
+        hboxLayOut.addWidget(self.radio_btn2)
+        self.groupBox.setLayout(hboxLayOut)
 
     def onInputModelFileButtonClicked(self):
         self.trained_model, fiter = QtWidgets.QFileDialog.getOpenFileName(
@@ -125,22 +140,10 @@ class TrackDialog(QtWidgets.QDialog):
         if self.out_dir is not None:
             self.outFileDirEdit.setText(self.out_dir)
 
-    def raidoButtons(self):
-        self.groupBox = QtWidgets.QGroupBox("Please choose a model")
-        hboxLayOut = QtWidgets.QHBoxLayout()
-        self.radio_btn1 = QtWidgets.QRadioButton("YOLACT")
-        self.radio_btn1.setChecked(True)
-        self.radio_btn1.toggled.connect(self.onRadioButtonChecked)
-        hboxLayOut.addWidget(self.radio_btn1)
-        self.radio_btn2 = QtWidgets.QRadioButton("YOLOv5")
-        self.radio_btn2.toggled.connect(self.onRadioButtonChecked)
-        self.radio_btn2.setEnabled(False)
-        hboxLayOut.addWidget(self.radio_btn2)
-        self.radio_btn3 = QtWidgets.QRadioButton("MaskRCNN")
-        self.radio_btn3.toggled.connect(self.onRadioButtonChecked)
-        self.radio_btn3.setEnabled(False)
-        hboxLayOut.addWidget(self.radio_btn3)
-        self.groupBox.setLayout(hboxLayOut)
+    def onRadioButtonChecked(self):
+        radio_btn = self.sender()
+        if radio_btn.isChecked():
+            self.algo = radio_btn.text()
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -165,11 +168,6 @@ class TrackDialog(QtWidgets.QDialog):
         self.label2.setText(
             f"You selected top {str(self.top_k)} segmentations"
         )
-
-    def onRadioButtonChecked(self):
-        radio_btn = self.sender()
-        if radio_btn.isChecked():
-            self.algo = radio_btn.text()
 
     def onSliderChange(self):
         self.score_threshold = self.slider.value() / 100
