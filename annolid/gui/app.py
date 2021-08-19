@@ -1,3 +1,4 @@
+from json import load
 import sys
 import os
 import os.path as osp
@@ -62,18 +63,18 @@ class LoadFrameThread(QtCore.QObject):
     frame_queue = []
     request_waiting_time = 1
     reload_times = None
+    previous_process_time = 0
     video_loader = None
 
     def __init__(self, *args, **kwargs):
         super(LoadFrameThread, self).__init__(*args, **kwargs)
         self.working_lock = QtCore.QMutex()
-        self.current_load_times = deque(maxlen=10)
+        self.current_load_times = deque(maxlen=5)
 
         self.process.connect(self.load)
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.load)
         self.timer.start(20)
-        self.previous_process_time = None
 
     def load(self):
         self.previous_process_time = time.time()
@@ -106,8 +107,6 @@ class LoadFrameThread(QtCore.QObject):
 
     def request(self, frame_number):
         self.frame_queue.append(frame_number)
-        if self.previous_process_time is None:
-            self.previous_process_time = time.time()
 
         t_last = time.time() - self.previous_process_time
 
@@ -174,6 +173,7 @@ class AnnolidWindow(MainWindow):
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
         self._pred_res_folder_suffix = '_tracking_results_labelme'
+        self.frame_number = 0
 
         open_video = action(
             self.tr("&Open Video"),
@@ -334,8 +334,8 @@ class AnnolidWindow(MainWindow):
         self.video_results_folder = None
         self.seekbar = None
 
-        self.frame_worker = QtCore.QThread()
-        self.frame_loader = LoadFrameThread()
+        self.frame_worker = None  # QtCore.QThread()
+        self.frame_loader = None  # LoadFrameThread()
         self.destroyed.connect(self.clean_up)
         atexit.register(self.clean_up)
 
@@ -771,6 +771,12 @@ class AnnolidWindow(MainWindow):
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)
 
+    def set_frame_number(self, frame_number):
+        self.frame_number = frame_number
+        self.filename = self.video_results_folder / \
+            f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
+        self.frame_loader.request(frame_number)
+
     def openVideo(self, _value=False):
         video_path = Path(self.filename).parent if self.filename else "."
         formats = ["*.*"]
@@ -798,9 +804,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
-                        ):
+                                _video_name in str(tr)
+                                and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -818,10 +824,28 @@ class AnnolidWindow(MainWindow):
             )
             self.video_loader = videos.CV2Video(video_filename)
             self.num_frames = self.video_loader.total_frames()
-            self.loadFrame(0)
             self.seekbar = VideoSlider()
             self.seekbar.keyPress.connect(self.keyPressEvent)
-            self.seekbar.valueChanged.connect(self.loadFrame)
+            self.seekbar.keyRelease.connect(self.keyReleaseEvent)
+
+            self.loadFirstFrame()
+
+            self.seekbar.valueChanged.connect(lambda f: self.set_frame_number(
+                self.seekbar.value()
+            ))
+
+            self.frame_worker = QtCore.QThread()
+            self.frame_loader = LoadFrameThread()
+            self.frame_loader.video_loader = self.video_loader
+
+            self.frame_loader.moveToThread(self.frame_worker)
+
+            self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
+            self.frame_loader.res_frame.connect(
+                lambda qimage: self.image_to_canvas(
+                    qimage, self.filename, self.frame_number)
+            )
+
             self.seekbar.setMinimum(0)
             self.seekbar.setMaximum(self.num_frames-1)
             self.seekbar.setEnabled(True)
@@ -930,20 +954,16 @@ class AnnolidWindow(MainWindow):
             except Exception:
                 pass
 
-    def loadFrame(self, frame_number):
-        print("Loadling frame number:", frame_number)
-        self.frame_number = frame_number
-        filename = self.video_results_folder / \
+    def loadFirstFrame(self):
+        self.frame_number = 0
+        self.filename = self.video_results_folder / \
             f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
+        self.frame_loader = LoadFrameThread()
         self.frame_loader.video_loader = self.video_loader
         self.frame_loader.request(self.frame_number)
-
-        self.frame_loader.moveToThread(self.frame_worker)
-
-        self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
-
         self.frame_loader.res_frame.connect(
-            lambda qimage: self.image_to_canvas(qimage, filename, frame_number)
+            lambda qimage: self.image_to_canvas(
+                qimage, self.filename, self.frame_number)
         )
 
         return True

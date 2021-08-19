@@ -181,18 +181,35 @@ class CV2Video():
         self.cap = cv2.VideoCapture(video_file)
         self.width = None
         self.height = None
+        self.first_frame = None
 
-    def load_frame(self, frame_number):
+    @property
+    def __lock(self):
         if not hasattr(self, "_lock"):
             self._lock = multiprocessing.RLock()
-        with self._lock:
+        return self._lock
+
+    def get_first_frame(self):
+        if self.first_frame is None:
+            self.first_frame = self.load_frame(0)
+        return self.first_frame
+
+    def get_width(self):
+        if self.width is None:
+            self.width = self.first_frame.shape[1]
+        return self.width
+
+    def get_height(self):
+        if self.height is None:
+            self.height = self.first_frame.shape[0]
+        return self.height
+
+    def load_frame(self, frame_number):
+        with self.__lock:
             if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != frame_number:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             ret, frame = self.cap.read()
-            if self.width is None:
-                self.width = frame.shape[1]
-            if self.height is None:
-                self.height = frame.shape[0]
+
         if not ret or frame is None:
             raise KeyError(f"Cannot load frame number: {frame_number}")
 

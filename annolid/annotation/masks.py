@@ -27,9 +27,12 @@ def mask_to_polygons(mask,
     has_holes = (hierarchy.reshape(-1, 4)[:, 3] >= 0).sum() > 0
 
     res = res[-2]
-    res_simp = simplify_coords_vwp(res[0].squeeze(), 30.0)
-    res_simp = np.array(res_simp)
-    res = [np.expand_dims(res_simp, axis=1)]
+    try:
+        res_simp = simplify_coords_vwp(res[0].squeeze(), 30.0)
+        res_simp = np.array(res_simp)
+        res = [np.expand_dims(res_simp, axis=1)]
+    except ValueError:
+        print('Failed to simplify the points.')
 
     if use_convex_hull:
         hull = []
