@@ -174,6 +174,7 @@ class AnnolidWindow(MainWindow):
         self.changed_json_stats = {}
         self._pred_res_folder_suffix = '_tracking_results_labelme'
         self.frame_number = 0
+        self.video_loader = None
 
         open_video = action(
             self.tr("&Open Video"),
@@ -334,8 +335,8 @@ class AnnolidWindow(MainWindow):
         self.video_results_folder = None
         self.seekbar = None
 
-        self.frame_worker = None  # QtCore.QThread()
-        self.frame_loader = None  # LoadFrameThread()
+        self.frame_worker = QtCore.QThread()
+        self.frame_loader = LoadFrameThread()
         self.destroyed.connect(self.clean_up)
         atexit.register(self.clean_up)
 
@@ -814,9 +815,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                                _video_name in str(tr)
-                                and '_nix' not in str(tr)
-                            ):
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -838,14 +839,15 @@ class AnnolidWindow(MainWindow):
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
 
-            self.loadFirstFrame()
+            self.actions.openNextImg.setEnabled(True)
+            self.openNextImg(load=True)
+
+            self.actions.openPrevImg.setEnabled(True)
 
             self.seekbar.valueChanged.connect(lambda f: self.set_frame_number(
                 self.seekbar.value()
             ))
 
-            self.frame_worker = QtCore.QThread()
-            self.frame_loader = LoadFrameThread()
             self.frame_loader.video_loader = self.video_loader
 
             self.frame_loader.moveToThread(self.frame_worker)
@@ -964,19 +966,67 @@ class AnnolidWindow(MainWindow):
             except Exception:
                 pass
 
-    def loadFirstFrame(self):
-        self.frame_number = 0
-        self.filename = self.video_results_folder / \
-            f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
-        self.frame_loader = LoadFrameThread()
-        self.frame_loader.video_loader = self.video_loader
-        self.frame_loader.request(self.frame_number)
-        self.frame_loader.res_frame.connect(
-            lambda qimage: self.image_to_canvas(
-                qimage, self.filename, self.frame_number)
-        )
+    def openNextImg(self, _value=False, load=True):
+        keep_prev = self._config["keep_prev"]
+        if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            self._config["keep_prev"] = True
 
-        return True
+        if not self.mayContinue():
+            return
+
+        if self.video_loader is not None:
+            if self.frame_number < self.num_frames:
+                self.frame_number += 1
+            else:
+                self.frame_number = self.num_frames
+            self.set_frame_number(self.frame_number)
+
+        elif len(self.imageList) <= 0:
+            return
+        else:
+            filename = None
+            if self.filename is None:
+                filename = self.imageList[0]
+            else:
+                currIndex = self.imageList.index(self.filename)
+                if currIndex + 1 < len(self.imageList):
+                    filename = self.imageList[currIndex + 1]
+                else:
+                    filename = self.imageList[-1]
+            self.filename = filename
+
+            if self.filename and load:
+                self.loadFile(self.filename)
+
+        self._config["keep_prev"] = keep_prev
+
+    def openPrevImg(self, _value=False):
+        keep_prev = self._config["keep_prev"]
+        if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+            self._config["keep_prev"] = True
+
+        if not self.mayContinue():
+            return
+
+        if self.video_loader is not None:
+            if self.frame_number > 1:
+                self.frame_number -= 1
+            else:
+                self.frame_number = 0
+            self.set_frame_number(self.frame_number)
+
+        elif len(self.imageList) <= 0:
+            return
+        else:
+            if self.filename is None:
+                return
+            currIndex = self.imageList.index(self.filename)
+            if currIndex - 1 >= 0:
+                filename = self.imageList[currIndex - 1]
+                if filename:
+                    self.loadFile(filename)
+
+        self._config["keep_prev"] = keep_prev
 
     def coco(self):
         """
