@@ -144,6 +144,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
     keyRelease = QtCore.Signal(QKeyEvent)
     valueChanged = QtCore.Signal(int)
     selectionChanged = QtCore.Signal(int, int)
+    heightUpdated = QtCore.Signal()
 
     def __init__(
         self,
