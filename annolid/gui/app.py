@@ -1,4 +1,3 @@
-from json import load
 import sys
 import os
 import os.path as osp
@@ -29,6 +28,7 @@ from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
 from labelme.label_file import LabelFile
 from labelme import utils
+from labelme.widgets import ToolBar
 from labelme.config import get_config
 from annolid.annotation import labelme2coco
 from annolid.data import videos
@@ -338,6 +338,16 @@ class AnnolidWindow(MainWindow):
         self.frame_loader = None  # LoadFrameThread()
         self.destroyed.connect(self.clean_up)
         atexit.register(self.clean_up)
+
+    def toolbar(self, title, actions=None):
+        toolbar = ToolBar(title)
+        toolbar.setObjectName("%sToolBar" % title)
+        # toolbar.setOrientation(Qt.Vertical)
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        if actions:
+            utils.addActions(toolbar, actions)
+        self.addToolBar(Qt.TopToolBarArea, toolbar)
+        return toolbar
 
     def scanAllImages(self, folderPath):
         extensions = [
