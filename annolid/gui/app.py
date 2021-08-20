@@ -684,8 +684,12 @@ class AnnolidWindow(MainWindow):
                 dataset_dir,
                 model_path,
                 score_threshold)
-
-            segmentor.on_video(video_file)
+            out_result_dir = segmentor.on_video(video_file)
+            QtWidgets.QMessageBox.about(self,
+                                        "Finished",
+                                        f"Done! Results are in folder: \
+                                         {out_result_dir}")
+            self.importDirImages(out_result_dir)
 
         if algo == 'YOLACT':
             if not torch.cuda.is_available():
@@ -815,9 +819,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break

@@ -25,7 +25,8 @@ class Segmentor():
     def __init__(self,
                  dataset_dir=None,
                  model_pth_path=None,
-                 score_threshold=0.15
+                 score_threshold=0.15,
+                 overlap_threshold=0.5
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold
@@ -65,6 +66,10 @@ class Segmentor():
         self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
         self.cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
+        self.cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = overlap_threshold
+
+        # NMS threshold used on RPN proposals
+        self.cfg.MODEL.RPN.NMS_THRESH = overlap_threshold
 
         self.predictor = DefaultPredictor(self.cfg)
 
@@ -298,4 +303,5 @@ class Segmentor():
             return
         out_img_dir = key_frames(video_path)
         self.on_image_folder(out_img_dir)
+        print(f"Done. Please check you results in folder: {out_img_dir}")
         return out_img_dir
