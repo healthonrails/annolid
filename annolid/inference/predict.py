@@ -19,6 +19,7 @@ from annolid.annotation.keypoints import save_labels
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.annotation.masks import mask_iou
 from annolid.data.videos import key_frames
+from torchvision.ops import nms
 
 
 class Segmentor():
@@ -26,10 +27,11 @@ class Segmentor():
                  dataset_dir=None,
                  model_pth_path=None,
                  score_threshold=0.15,
-                 overlap_threshold=0.5
+                 overlap_threshold=0.7
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold
+        self.overlap_threshold = overlap_threshold
 
         dataset_name = Path(self.dataset_dir).stem
         self.subject_queue = queue.PriorityQueue(3)
@@ -66,10 +68,10 @@ class Segmentor():
         self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
         self.cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
-        self.cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = overlap_threshold
+        self.cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = self.overlap_threshold
 
         # NMS threshold used on RPN proposals
-        self.cfg.MODEL.RPN.NMS_THRESH = overlap_threshold
+        self.cfg.MODEL.RPN.NMS_THRESH = self.overlap_threshold
 
         self.predictor = DefaultPredictor(self.cfg)
 
@@ -204,23 +206,38 @@ class Segmentor():
         results = []
         out_dict = {}
         num_instance = len(instances)
-        boxes = instances.pred_boxes.tensor.numpy()
+        boxes = instances.pred_boxes.tensor
+        scores = instances.scores
+        classes = instances.pred_classes
+        # apply nms for all the class
+        _keep = nms(boxes, scores, self.overlap_threshold)
+        boxes = boxes[_keep]
+        scores = scores[_keep]
+        classes = classes[_keep]
+
+        boxes = boxes.numpy()
         boxes = boxes.tolist()
-        scores = instances.scores.tolist()
-        classes = instances.pred_classes.tolist()
+        scores = scores.tolist()
+        classes = classes.tolist()
 
         has_mask = instances.has("pred_masks")
 
         if has_mask:
+            pred_masks = instances.pred_masks
+            pred_masks = pred_masks[_keep]
             rles = [
                 mask_util.encode(
                     np.array(mask[:, :, None], order="F", dtype="uint8"))[0]
-                for mask in instances.pred_masks
+                for mask in pred_masks
             ]
             for rle in rles:
                 rle["counts"] = rle["counts"].decode("utf-8")
 
         assert len(rles) == len(boxes)
+
+        if num_instance != len(rles):
+            num_instance = len(rles)
+            print(f"{num_instance} filtered instances ")
         for k in range(num_instance):
             box = boxes[k]
             out_dict['frame_number'] = frame_number
