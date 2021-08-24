@@ -25,7 +25,7 @@ class TrackDialog(QtWidgets.QDialog):
         self.buttonbox.rejected.connect(self.reject)
 
         self.groupBoxModelFiles = QtWidgets.QGroupBox(
-            "Please select a trained model file")
+            "Please select a trained pth model file")
         self.inputModelFileLineEdit = QtWidgets.QLineEdit(self)
         self.inputModelFileButton = QtWidgets.QPushButton('Open', self)
         self.inputModelFileButton.clicked.connect(
