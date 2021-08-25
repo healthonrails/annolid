@@ -2,6 +2,7 @@ import sys
 import os
 import os.path as osp
 import time
+from PyQt5.QtWidgets import QSpinBox, QWidget
 import pandas as pd
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage
@@ -45,6 +46,7 @@ from annolid.gui.widgets import ProgressingWindow
 import webbrowser
 import atexit
 from annolid.gui.widgets.video_slider import VideoSlider
+from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
 __appname__ = 'Annolid'
@@ -175,6 +177,8 @@ class AnnolidWindow(MainWindow):
         self._pred_res_folder_suffix = '_tracking_results_labelme'
         self.frame_number = 0
         self.video_loader = None
+        self.step_size = 1
+        self.stepSizeWidget = StepSizeWidget()
 
         open_video = action(
             self.tr("&Open Video"),
@@ -188,6 +192,22 @@ class AnnolidWindow(MainWindow):
                 self.here / "icons/open_video.png"
             )
         ))
+
+        step_size = QtWidgets.QWidgetAction(self)
+        step_size.setIcon(QtGui.QIcon(
+            str(
+                self.here / "icons/fast_forward.png"
+            )
+        ))
+
+        step_size.setDefaultWidget(self.stepSizeWidget)
+
+        self.stepSizeWidget.setWhatsThis(
+            self.tr(
+                "Step for the next or prev image. e.g. 30"
+            )
+        )
+        self.stepSizeWidget.setEnabled(False)
 
         coco = action(
             self.tr("&COCO format"),
@@ -306,6 +326,7 @@ class AnnolidWindow(MainWindow):
         _action_tools = list(self.actions.tool)
         _action_tools.insert(0, frames)
         _action_tools.insert(1, open_video)
+        _action_tools.insert(2, step_size)
         _action_tools.append(coco)
         _action_tools.append(models)
         _action_tools.append(visualization)
@@ -338,7 +359,11 @@ class AnnolidWindow(MainWindow):
         self.frame_worker = QtCore.QThread()
         self.frame_loader = LoadFrameThread()
         self.destroyed.connect(self.clean_up)
+        self.stepSizeWidget.valueChanged.connect(self.update_step_size)
         atexit.register(self.clean_up)
+
+    def update_step_size(self, value):
+        self.step_size = value
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)
@@ -806,6 +831,7 @@ class AnnolidWindow(MainWindow):
             video_filename, _ = video_filename
 
         video_filename = str(video_filename)
+        self.stepSizeWidget.setEnabled(True)
 
         if video_filename:
             cur_video_folder = Path(video_filename).parent
@@ -819,9 +845,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
-                            ):
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -980,7 +1006,10 @@ class AnnolidWindow(MainWindow):
 
         if self.video_loader is not None:
             if self.frame_number < self.num_frames:
-                self.frame_number += 1
+                if self.step_size + self.frame_number <= self.num_frames:
+                    self.frame_number += self.step_size
+                else:
+                    self.frame_number += 1
             else:
                 self.frame_number = self.num_frames
             self.set_frame_number(self.frame_number)
@@ -1014,7 +1043,10 @@ class AnnolidWindow(MainWindow):
 
         if self.video_loader is not None:
             if self.frame_number > 1:
-                self.frame_number -= 1
+                if self.frame_number - self.step_size >= 1:
+                    self.frame_number -= self.step_size
+                else:
+                    self.frame_number -= 1
             else:
                 self.frame_number = 0
             self.set_frame_number(self.frame_number)
