@@ -2,12 +2,8 @@ import sys
 import os
 import os.path as osp
 import time
-from PyQt5.QtWidgets import QSpinBox, QWidget
 import pandas as pd
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QImage
 from collections import deque
-from imgviz import label
 import torch
 import codecs
 import imgviz
@@ -15,6 +11,7 @@ import argparse
 from pathlib import Path
 import functools
 from qtpy import QtCore
+from qtpy.QtCore import Qt
 from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import QT5
@@ -59,7 +56,7 @@ LABEL_COLORMAP = imgviz.label_colormap(value=200)
 class LoadFrameThread(QtCore.QObject):
     """Thread for loading video frames. 
     """
-    res_frame = QtCore.Signal(QImage)
+    res_frame = QtCore.Signal(QtGui.QImage)
     process = QtCore.Signal()
 
     frame_queue = []
