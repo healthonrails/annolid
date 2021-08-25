@@ -10,7 +10,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.raidoButtons()
         self.slider()
         self.batch_size = 8
-        self.algo = 'YOLACT'
+        self.algo = 'MaskRCNN'
         self.config_file = None
         self.out_dir = None
 
@@ -45,6 +45,11 @@ class TrainModelDialog(QtWidgets.QDialog):
         vbox.addWidget(self.groupBox)
         vbox.addWidget(self.label1)
         vbox.addWidget(self.slider)
+
+        if self.algo == 'MaskRCNN':
+            self.label1.hide()
+            self.slider.hide()
+
         vbox.addWidget(self.groupBoxFiles)
         vbox.addWidget(self.groupBoxOutDir)
         vbox.addWidget(self.buttonbox)
@@ -72,15 +77,15 @@ class TrainModelDialog(QtWidgets.QDialog):
     def raidoButtons(self):
         self.groupBox = QtWidgets.QGroupBox("Please choose a model")
         hboxLayOut = QtWidgets.QHBoxLayout()
-        self.radio_btn1 = QtWidgets.QRadioButton("YOLACT")
+        self.radio_btn1 = QtWidgets.QRadioButton("MaskRCNN")
         self.radio_btn1.setChecked(True)
         self.radio_btn1.toggled.connect(self.onRadioButtonChecked)
         hboxLayOut.addWidget(self.radio_btn1)
-        self.radio_btn2 = QtWidgets.QRadioButton("YOLOv5")
+        self.radio_btn2 = QtWidgets.QRadioButton("YOLACT")
         self.radio_btn2.toggled.connect(self.onRadioButtonChecked)
-        self.radio_btn2.setEnabled(False)
+        self.radio_btn2.setEnabled(True)
         hboxLayOut.addWidget(self.radio_btn2)
-        self.radio_btn3 = QtWidgets.QRadioButton("MaskRCNN")
+        self.radio_btn3 = QtWidgets.QRadioButton("YOLOv5")
         self.radio_btn3.toggled.connect(self.onRadioButtonChecked)
         self.radio_btn3.setEnabled(False)
         hboxLayOut.addWidget(self.radio_btn3)
@@ -99,6 +104,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         radio_btn = self.sender()
         if radio_btn.isChecked():
             self.algo = radio_btn.text()
+
+        if self.algo == 'YOLACT':
+            self.label1.show()
+            self.slider.show()
+        elif self.algo == 'MaskRCNN':
+            self.label1.hide()
+            self.slider.hide()
 
     def onSliderChange(self):
         self.batch_size = self.slider.value()

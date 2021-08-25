@@ -761,32 +761,44 @@ class AnnolidWindow(MainWindow):
         if config_file is None:
             return
 
-        # start training models
-        if not torch.cuda.is_available():
+        if algo == 'YOLACT':
+            # start training models
+            if not torch.cuda.is_available():
+                QtWidgets.QMessageBox.about(self,
+                                            "Not GPU available",
+                                            "At least one GPU  is required to train models.")
+                return
+
+            subprocess.Popen(['annolid-train',
+                              f'--config={config_file}',
+                              f'--batch_size={batch_size}'])
+
+            if out_dir is None:
+                out_runs_dir = Path(__file__).parent.parent / 'runs'
+            else:
+                out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
+
+            out_runs_dir.mkdir(exist_ok=True, parents=True)
+            process = start_tensorboard(log_dir=out_runs_dir)
             QtWidgets.QMessageBox.about(self,
-                                        "Not GPU available",
-                                        "At least one GPU  is required to train models.")
-            return
-
-        subprocess.Popen(['annolid-train',
-                          f'--config={config_file}',
-                          f'--batch_size={batch_size}'])
-
-        process = start_tensorboard()
-
-        if out_dir is None:
-            out_runs_dir = Path(__file__).parent.parent / 'runs'
-        else:
-            out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
-
-        out_runs_dir.mkdir(exist_ok=True, parents=True)
-
-        QtWidgets.QMessageBox.about(self,
-                                    "Started",
-                                    f"Results are in folder: \
+                                        "Started",
+                                        f"Results are in folder: \
                                          {str(out_runs_dir)}")
-        self.statusBar().showMessage(
-            self.tr(f"Training..."))
+
+        elif algo == 'MaskRCNN':
+            from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
+            dataset_dir = str(Path(config_file).parent)
+            segmentor = Segmentor(dataset_dir, out_dir)
+            out_runs_dir = segmentor.out_put_dir
+            process = start_tensorboard(log_dir=out_runs_dir)
+            QtWidgets.QMessageBox.about(self,
+                                        "Started",
+                                        f"Results are in folder: \
+                                         {str(out_runs_dir)}")
+            self.statusBar().showMessage(
+                self.tr(f"Training..."))
+
+            segmentor.train()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
