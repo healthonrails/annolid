@@ -20,6 +20,7 @@ from annolid.postprocessing.quality_control import TracksResults
 from annolid.annotation.masks import mask_iou
 from annolid.data.videos import key_frames
 from torchvision.ops import nms
+from annolid.data import videos
 
 
 class Segmentor():
@@ -44,6 +45,7 @@ class Segmentor():
         self.right_object_name = 'RightTeaball'
         self.left_interact_name = 'LeftInteract'
         self.right_interact_name = 'RightInteract'
+        self.tracking_results = []
 
         register_coco_instances(f"{dataset_name}_train", {
         }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
@@ -318,7 +320,46 @@ class Segmentor():
     def on_video(self, video_path):
         if not Path(video_path).exists():
             return
+        self.cap = cv2.VideoCapture(video_path)
+        num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
         out_img_dir = key_frames(video_path)
         self.on_image_folder(out_img_dir)
+
+        if num_frames <= 1000 or torch.cuda.is_available():
+            frame_number = 0
+            for frame in videos.frame_from_video(self.cap, num_frames):
+                outputs = self.predictor(frame)
+                out_dict = {}
+                instances = outputs["instances"].to("cpu")
+                num_instance = len(instances)
+                if num_instance == 0:
+                    out_dict['frame_number'] = frame_number
+                    out_dict['x1'] = None
+                    out_dict['y1'] = None
+                    out_dict['x2'] = None
+                    out_dict['y2'] = None
+                    out_dict['instance_name'] = None
+                    out_dict['class_score'] = None
+                    out_dict['segmentation'] = None
+                    self.tracking_results.append(out_dict)
+                    out_dict = {}
+                else:
+                    _res = self._process_instances(
+                        instances, frame_number, width)
+                    self.tracking_results += _res
+                frame_number += 1
+                if frame_number % 100 == 0:
+                    print("Processing frame number: ", frame_number)
+
+            df = pd.DataFrame(self.tracking_results)
+            df_top = df.groupby(
+                ['frame_number', 'instance_name'], sort=False).head(1)
+            tracking_results_dir = Path(self.dataset_dir).parent
+            tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
+            tracking_results_csv += f"_{str(Path(video_path).stem)}"
+            tracking_results_csv += "_mask_rcnn_tracking_results_with_segmenation.csv"
+            df_top.to_csv(str(tracking_results_dir / tracking_results_csv))
         print(f"Done. Please check you results in folder: {out_img_dir}")
         return out_img_dir
