@@ -27,6 +27,10 @@ conda install git
 ```
 This creates a virtual environment called "annolid" into which you will install Annolid and all of its dependencies, along with whatever other Python tools you may need.  Python 3.7 is recommended, as it is the version being used for Annolid development.    
 
+### Install ffmpeg
+
+`conda install -c conda-forge ffmpeg`
+
 ### Install Annolid
 Clone the code repo from Github, change into the new directory, and install
 ```bash
@@ -41,6 +45,11 @@ Note: if you get the following error, please try to install [ffmpeg](https://ffm
 ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
 ```
 
+### If you encounter errors On Windows for pycocotools, please download and install Visual studio 2019 from the link below. 
+https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&rel=16
+
+Then please run the following command in your terminal. 
+`pip install "git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&subdirectory=PythonAPI"`
 
 ### Launch Annolid 
 Typing "annolid" will bring up the Annolid GUI, which is based on the excellent [LabelMe](https://github.com/wkentaro/labelme) package.  

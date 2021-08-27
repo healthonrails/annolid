@@ -89,7 +89,9 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Install Annolid</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#requirements">Requirements</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#set-up-anaconda-virtual-environment">Set up Anaconda virtual environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#install-ffmpeg">Install ffmpeg</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#id1">Install Annolid</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#if-you-encounter-errors-on-windows-for-pycocotools-please-download-and-install-visual-studio-2019-from-the-link-below">If you encounter errors On Windows for pycocotools, please download and install Visual studio 2019 from the link below.</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#launch-annolid">Launch Annolid</a></li>
 </ul>
 </li>
@@ -200,6 +202,10 @@
 </div>
 <p>This creates a virtual environment called “annolid” into which you will install Annolid and all of its dependencies, along with whatever other Python tools you may need.  Python 3.7 is recommended, as it is the version being used for Annolid development.</p>
 </div>
+<div class="section" id="install-ffmpeg">
+<h2>Install ffmpeg<a class="headerlink" href="#install-ffmpeg" title="Permalink to this headline">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">conda</span> <span class="pre">install</span> <span class="pre">-c</span> <span class="pre">conda-forge</span> <span class="pre">ffmpeg</span></code></p>
+</div>
 <div class="section" id="id1">
 <h2>Install Annolid<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h2>
 <p>Clone the code repo from Github, change into the new directory, and install</p>
@@ -214,6 +220,12 @@ pip install -e .
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ERROR</span><span class="p">:</span> <span class="n">Could</span> <span class="ow">not</span> <span class="n">find</span> <span class="n">a</span> <span class="n">version</span> <span class="n">that</span> <span class="n">satisfies</span> <span class="n">the</span> <span class="n">requirement</span> <span class="n">decord</span><span class="o">&gt;=</span><span class="mf">0.4</span><span class="o">.</span><span class="mi">0</span>
 </pre></div>
 </div>
+</div>
+<div class="section" id="if-you-encounter-errors-on-windows-for-pycocotools-please-download-and-install-visual-studio-2019-from-the-link-below">
+<h2>If you encounter errors On Windows for pycocotools, please download and install Visual studio 2019 from the link below.<a class="headerlink" href="#if-you-encounter-errors-on-windows-for-pycocotools-please-download-and-install-visual-studio-2019-from-the-link-below" title="Permalink to this headline">¶</a></h2>
+<p>https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&amp;rel=16</p>
+<p>Then please run the following command in your terminal.
+<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&amp;subdirectory=PythonAPI&quot;</span></code></p>
 </div>
 <div class="section" id="launch-annolid">
 <h2>Launch Annolid<a class="headerlink" href="#launch-annolid" title="Permalink to this headline">¶</a></h2>
