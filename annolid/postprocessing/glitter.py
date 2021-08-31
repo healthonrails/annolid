@@ -52,7 +52,8 @@ def tracks2nix(video_file=None,
     elif zone_info == 'zone_info.json':
         zone_info = Path(__file__).parent / zone_info
 
-    keypoints_connection_rules, animal_names, behaviors = draw.get_keypoint_connection_rules()
+    _class_meta_data = draw.get_keypoint_connection_rules()
+    keypoints_connection_rules, animal_names, behaviors, zones_names = _class_meta_data
 
     _animal_object_list = animal_names.split()
     subject_animal_name = _animal_object_list[0]
@@ -400,9 +401,9 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                    score >= score_threshold
-                    and _class not in body_parts
-                    and _class not in animal_names
+                        score >= score_threshold
+                        and _class not in body_parts
+                        and _class not in animal_names
                     ):
 
                     if _class == 'grooming':
@@ -438,8 +439,8 @@ def tracks2nix(video_file=None,
                     is_keypoint_in_mask = keypoint_in_body_mask(
                         _frame_num, _class, subject_animal_name)
                     if (is_keypoint_in_mask
-                        or any(map(str.isdigit, _class))
-                        or _class in _animal_object_list
+                            or any(map(str.isdigit, _class))
+                            or _class in _animal_object_list
                         ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
@@ -452,8 +453,8 @@ def tracks2nix(video_file=None,
                                         0.65, color, 2)
 
                 if (left_interact > 0
-                        and 'left' in _class.lower()
-                        and 'interact' in _class.lower()
+                            and 'left' in _class.lower()
+                            and 'interact' in _class.lower()
                         ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
@@ -468,8 +469,8 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                        and 'right' in _class.lower() and
-                        'interact' in _class.lower()
+                    and 'right' in _class.lower() and
+                    'interact' in _class.lower()
                     ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
@@ -495,6 +496,22 @@ def tracks2nix(video_file=None,
                         points=points
                     )
 
+                if _class in behaviors:
+                    cv2.rectangle(frame, (5, 35),
+                                  (5 + 140, 35 + 35), (0, 0, 0), -1)
+                    cv2.putText(frame, f"{_class}",
+                                (15, 55), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.65, (255, 255, 255), 2)
+
+                if _class in zones_names:
+                    draw.draw_boxes(
+                        frame,
+                        bbox,
+                        identities=[_class],
+                        draw_track=False,
+                        points=points
+                    )
+
         # draw the lines between predefined keypoints
         draw.draw_keypoint_connections(frame,
                                        parts_locations,
@@ -504,6 +521,7 @@ def tracks2nix(video_file=None,
         cv2.putText(frame, f"Timestamp: {frame_timestamp}",
                     (25, 25), cv2.FONT_HERSHEY_SIMPLEX,
                     0.65, (255, 255, 255), 2)
+
         cv2.imshow("Frame", frame)
         video_writer.write(frame)
 

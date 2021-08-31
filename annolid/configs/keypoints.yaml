@@ -54,5 +54,7 @@ EVENTS:
     autogrooming
     nose_to_nose_sniffing
     intruder_rearing
+
+ZONES:
     LeftZone
     RightZone

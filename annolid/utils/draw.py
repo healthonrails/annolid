@@ -36,11 +36,14 @@ def get_keypoint_connection_rules(keypoint_cfg_file=None):
             v, r, g, b = v.split(',')
             color = (int(r), int(g), int(b))
             keypoints_connection_rules.append((k, v, color))
-    return keypoints_connection_rules, key_points_rules['NAME'], key_points_rules['EVENTS']
+    return (keypoints_connection_rules,
+            key_points_rules['NAME'],
+            key_points_rules['EVENTS'],
+            key_points_rules['ZONES'])
 
 
 def _keypoint_color():
-    keypoint_connection_rules, _, _ = get_keypoint_connection_rules()
+    keypoint_connection_rules, _, _, _ = get_keypoint_connection_rules()
     keypoint_colors = {}
     for kcr in keypoint_connection_rules:
         keypoint_colors[kcr[0]] = kcr[-1]
