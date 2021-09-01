@@ -854,9 +854,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1004,6 +1004,9 @@ class AnnolidWindow(MainWindow):
                     self.loadLabels(self.labelFile.shapes)
             except Exception:
                 pass
+
+            if not Path(filename).exists():
+                os.remove(label_json_file)
 
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
