@@ -2,7 +2,6 @@ import sys
 import os
 import os.path as osp
 import time
-from PyQt5.QtCore import pyqtSignal
 import pandas as pd
 from collections import deque
 import torch
@@ -11,7 +10,7 @@ import imgviz
 import argparse
 from pathlib import Path
 import functools
-from qtpy import PYQT5, QtCore
+from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtWidgets
 from qtpy import QtGui
