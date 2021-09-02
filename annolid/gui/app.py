@@ -2,6 +2,7 @@ import sys
 import os
 import os.path as osp
 import time
+from PyQt5.QtCore import pyqtSignal
 import pandas as pd
 from collections import deque
 import torch
@@ -10,7 +11,7 @@ import imgviz
 import argparse
 from pathlib import Path
 import functools
-from qtpy import QtCore
+from qtpy import PYQT5, QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtWidgets
 from qtpy import QtGui
@@ -51,6 +52,20 @@ __version__ = "1.0.1"
 
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
+
+
+class FlexibleWorker(QtCore.QObject):
+    start = QtCore.Signal()
+
+    def __init__(self, function, *args, **kwargs):
+        super(FlexibleWorker, self).__init__()
+
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        self.function(*self.args, **self.kwargs)
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -355,6 +370,8 @@ class AnnolidWindow(MainWindow):
 
         self.frame_worker = QtCore.QThread()
         self.frame_loader = LoadFrameThread()
+        self.seg_pred_thread = QtCore.QThread()
+        self.seg_train_thread = QtCore.QThread()
         self.destroyed.connect(self.clean_up)
         self.stepSizeWidget.valueChanged.connect(self.update_step_size)
         atexit.register(self.clean_up)
@@ -706,11 +723,23 @@ class AnnolidWindow(MainWindow):
                 dataset_dir,
                 model_path,
                 score_threshold)
-            out_result_dir = segmentor.on_video(video_file)
+
+            try:
+                self.seg_pred_thread.start()
+                self.pred_worker = FlexibleWorker(
+                    function=segmentor.on_video, video_path=video_file)
+                self.pred_worker.moveToThread(self.seg_pred_thread)
+                self.pred_worker.start.connect(self.pred_worker.run)
+                self.pred_worker.start.emit()
+                out_result_dir = Path(video_file).with_suffix('')
+            except AttributeError:
+                out_result_dir = segmentor.on_video(video_file)
             QtWidgets.QMessageBox.about(self,
-                                        "Finished",
-                                        f"Done! Results are in folder: \
-                                         {out_result_dir}")
+                                        "Running",
+                                        f"Results will be saved to folder: \
+                                         {out_result_dir} \
+                                        Please do not close Annolid GUI"
+                                        )
             self.importDirImages(out_result_dir)
 
         if algo == 'YOLACT':
@@ -743,20 +772,22 @@ class AnnolidWindow(MainWindow):
                                         "Started",
                                         f"Results are in folder: \
                                             {str(out_runs_dir)}")
-            self.statusBar().showMessage(
-                self.tr(f"Tracking..."))
+        self.statusBar().showMessage(
+            self.tr(f"Tracking..."))
 
     def models(self):
 
         dlg = TrainModelDialog()
         config_file = None
         out_dir = None
+        max_iterations = 2000
 
         if dlg.exec_():
             config_file = dlg.config_file
             batch_size = dlg.batch_size
             algo = dlg.algo
             out_dir = dlg.out_dir
+            max_iterations = dlg.max_iterations
 
         if config_file is None:
             return
@@ -788,17 +819,28 @@ class AnnolidWindow(MainWindow):
         elif algo == 'MaskRCNN':
             from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
             dataset_dir = str(Path(config_file).parent)
-            segmentor = Segmentor(dataset_dir, out_dir)
+            segmentor = Segmentor(dataset_dir, out_dir,
+                                  max_iterations=max_iterations)
             out_runs_dir = segmentor.out_put_dir
             process = start_tensorboard(log_dir=out_runs_dir)
+            try:
+                self.seg_train_thread.start()
+                train_worker = FlexibleWorker(function=segmentor.train)
+                train_worker.moveToThread(self.seg_train_thread)
+                train_worker.start.connect(train_worker.run)
+                train_worker.start.emit()
+            except Exception:
+                segmentor.train()
+
             QtWidgets.QMessageBox.about(self,
-                                        "Started",
-                                        f"Results are in folder: \
-                                         {str(out_runs_dir)}")
+                                        "Started.",
+                                        f"Training in background... \
+                                        Results will be saved to folder: \
+                                         {str(out_runs_dir)} \
+                                         Please do not close Annolid GUI."
+                                        )
             self.statusBar().showMessage(
                 self.tr(f"Training..."))
-
-            segmentor.train()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
@@ -856,7 +898,7 @@ class AnnolidWindow(MainWindow):
                     if ('tracking' in str(tr) and
                             _video_name in str(tr)
                             and '_nix' not in str(tr)
-                            ):
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -972,7 +1014,20 @@ class AnnolidWindow(MainWindow):
                 self.frame_worker.quit()
                 self.frame_worker.wait()
             except RuntimeError:
-                pass
+                print("Thank you!")
+        if self.seg_train_thread is not None:
+            try:
+                self.seg_train_thread.quit()
+                self.seg_train_thread.wait()
+            except RuntimeError:
+                print("See you next time!")
+
+        if self.seg_pred_thread is not None:
+            try:
+                self.seg_pred_thread.quit()
+                self.seg_pred_thread.wait()
+            except RuntimeError:
+                print("Bye!")
 
     def loadShapes(self, shapes, replace=True):
         self._noSelectionSlot = True

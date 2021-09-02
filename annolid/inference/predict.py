@@ -28,7 +28,7 @@ class Segmentor():
                  dataset_dir=None,
                  model_pth_path=None,
                  score_threshold=0.15,
-                 overlap_threshold=0.7
+                 overlap_threshold=0.95
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold

@@ -73,6 +73,8 @@ class TrackDialog(QtWidgets.QDialog):
         self.label2 = QtWidgets.QLabel(
             "Please select tok k segmentations"
         )
+        self.top_k_slider.hide()
+        self.label2.hide()
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.groupBox)
@@ -144,6 +146,12 @@ class TrackDialog(QtWidgets.QDialog):
         radio_btn = self.sender()
         if radio_btn.isChecked():
             self.algo = radio_btn.text()
+        if self.algo == 'Detectron2':
+            self.label2.hide()
+            self.top_k_slider.hide()
+        else:
+            self.label2.show()
+            self.top_k_slider.show()
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
