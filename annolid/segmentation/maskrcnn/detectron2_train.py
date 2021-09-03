@@ -8,6 +8,8 @@ from detectron2 import model_zoo
 from detectron2.data.datasets import register_coco_instances
 from detectron2.data.datasets import builtin_meta
 from detectron2.data import get_detection_dataset_dicts
+from detectron2.evaluation import COCOEvaluator, inference_on_dataset
+from detectron2.data import build_detection_test_loader
 
 
 class Segmentor():
@@ -29,16 +31,17 @@ class Segmentor():
         self.score_threshold = score_threshold
         self.overlap_threshold = overlap_threshold
 
-        dataset_name = Path(self.dataset_dir).stem
+        self.dataset_name = Path(self.dataset_dir).stem
 
-        register_coco_instances(f"{dataset_name}_train", {
+        register_coco_instances(f"{self.dataset_name}_train", {
         }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
-        register_coco_instances(f"{dataset_name}_valid", {
+        register_coco_instances(f"{self.dataset_name}_valid", {
         }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
 
-        dataset_dicts = get_detection_dataset_dicts([f"{dataset_name}_train"])
+        dataset_dicts = get_detection_dataset_dicts(
+            [f"{self.dataset_name}_train"])
 
-        _dataset_metadata = MetadataCatalog.get(f"{dataset_name}_train")
+        _dataset_metadata = MetadataCatalog.get(f"{self.dataset_name}_train")
         _dataset_metadata.thing_colors = [cc['color']
                                           for cc in builtin_meta.COCO_CATEGORIES]
         num_classes = len(_dataset_metadata.thing_classes)
@@ -49,7 +52,7 @@ class Segmentor():
         self.cfg.merge_from_file(model_zoo.get_config_file(
             "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
         ))
-        self.cfg.DATASETS.TRAIN = (f"{dataset_name}_train",)
+        self.cfg.DATASETS.TRAIN = (f"{self.dataset_name}_train",)
         self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
         self.cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
@@ -81,9 +84,19 @@ class Segmentor():
 
     def train(self):
         self.trainer.train()
+        self.evalulate()
 
+    def evalulate(self):
+        evaluator = COCOEvaluator(
+            f"{self.dataset_name}_valid",
+            self.cfg,
+            False,
+            output_dir=self.cfg.OUTPUT_DIR)
 
-if __name__ == '__main__':
-    segmentor = Segmentor(
-        "/Users/chenyang/Downloads/teaball_dataset_coco_dataset/")
-    segmentor.train()
+        val_loader = build_detection_test_loader(self.cfg,
+                                                 f"{self.dataset_name}_valid")
+        val_res = inference_on_dataset(self.trainer.model,
+                                       val_loader,
+                                       evaluator)
+        print(val_res)
+        return val_res
