@@ -51,6 +51,10 @@ https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Comm
 Then please run the following command in your terminal. 
 `pip install "git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&subdirectory=PythonAPI"`
 
+### To fix error,  "Failed to load platform plugin "xcb" while launching qt5 app on Linux
+
+`sudo apt install --reinstall libxcb-xinerama0`
+
 ### Launch Annolid 
 Typing "annolid" will bring up the Annolid GUI, which is based on the excellent [LabelMe](https://github.com/wkentaro/labelme) package.  
 ```bash

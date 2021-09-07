@@ -92,6 +92,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#install-ffmpeg">Install ffmpeg</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#id1">Install Annolid</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#if-you-encounter-errors-on-windows-for-pycocotools-please-download-and-install-visual-studio-2019-from-the-link-below">If you encounter errors On Windows for pycocotools, please download and install Visual studio 2019 from the link below.</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#to-fix-error-failed-to-load-platform-plugin-xcb-while-launching-qt5-app-on-linux">To fix error,  “Failed to load platform plugin “xcb” while launching qt5 app on Linux</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#launch-annolid">Launch Annolid</a></li>
 </ul>
 </li>
@@ -226,6 +227,10 @@ pip install -e .
 <p>https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&amp;rel=16</p>
 <p>Then please run the following command in your terminal.
 <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&amp;subdirectory=PythonAPI&quot;</span></code></p>
+</div>
+<div class="section" id="to-fix-error-failed-to-load-platform-plugin-xcb-while-launching-qt5-app-on-linux">
+<h2>To fix error,  “Failed to load platform plugin “xcb” while launching qt5 app on Linux<a class="headerlink" href="#to-fix-error-failed-to-load-platform-plugin-xcb-while-launching-qt5-app-on-linux" title="Permalink to this headline">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">--reinstall</span> <span class="pre">libxcb-xinerama0</span></code></p>
 </div>
 <div class="section" id="launch-annolid">
 <h2>Launch Annolid<a class="headerlink" href="#launch-annolid" title="Permalink to this headline">¶</a></h2>
