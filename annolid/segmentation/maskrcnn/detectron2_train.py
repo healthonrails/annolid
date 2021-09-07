@@ -33,10 +33,13 @@ class Segmentor():
 
         self.dataset_name = Path(self.dataset_dir).stem
 
-        register_coco_instances(f"{self.dataset_name}_train", {
-        }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
-        register_coco_instances(f"{self.dataset_name}_valid", {
-        }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
+        try:
+            register_coco_instances(f"{self.dataset_name}_train", {
+            }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
+            register_coco_instances(f"{self.dataset_name}_valid", {
+            }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
+        except AssertionError as e:
+            print(e)
 
         dataset_dicts = get_detection_dataset_dicts(
             [f"{self.dataset_name}_train"])

@@ -47,11 +47,13 @@ class Segmentor():
         self.right_interact_name = 'RightInteract'
         self.tracking_results = []
 
-        register_coco_instances(f"{dataset_name}_train", {
-        }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
-        register_coco_instances(f"{dataset_name}_valid", {
-        }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
-
+        try:
+            register_coco_instances(f"{dataset_name}_train", {
+            }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
+            register_coco_instances(f"{dataset_name}_valid", {
+            }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
+        except AssertionError as e:
+            print(e)
         dataset_dicts = get_detection_dataset_dicts([f"{dataset_name}_train"])
 
         _dataset_metadata = MetadataCatalog.get(f"{dataset_name}_train")
