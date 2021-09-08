@@ -7,7 +7,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   
-  <title>Search &mdash; annolid v1.0.1 documentation</title>
+  <title>Track animals and Auto labeling &mdash; annolid v1.0.1 documentation</title>
   
 
   
@@ -23,7 +23,6 @@
   
 
   
-    
   <!--[if lt IE 9]>
     <script src="_static/js/html5shiv.min.js"></script>
   <![endif]-->
@@ -38,10 +37,9 @@
     <script type="text/javascript" src="_static/js/theme.js"></script>
 
     
-    <script type="text/javascript" src="_static/searchtools.js"></script>
-    <script type="text/javascript" src="_static/language_data.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
-    <link rel="search" title="Search" href="#" /> 
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="Install Annolid" href="install.html" /> 
 </head>
 
 <body class="wy-body-for-nav">
@@ -68,7 +66,7 @@
 
           
 <div role="search">
-  <form id="rtd-search-form" class="wy-form" action="#" method="get">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
     <input type="text" name="q" placeholder="Search docs" />
     <input type="hidden" name="check_keywords" value="yes" />
     <input type="hidden" name="area" value="default" />
@@ -86,13 +84,13 @@
               
             
             
-              <ul>
+              <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
 <li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-locally">Install Detectron2 locally</a></li>
 <li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-on-google-colab">Install Detectron2 on Google Colab</a></li>
 <li class="toctree-l1"><a class="reference internal" href="install.html#optional-install-older-version-of-pytorch-for-yolact">Optional: Install older version of Pytorch for YOLACT</a></li>
-<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Track animals and Auto labeling</a></li>
 </ul>
 
             
@@ -141,10 +139,14 @@
     
       <li><a href="index.html" class="icon icon-home"></a> &raquo;</li>
         
-      <li>Search</li>
+      <li>Track animals and Auto labeling</li>
     
     
       <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="_sources/track_animals.md.txt" rel="nofollow"> View page source</a>
+          
         
       </li>
     
@@ -156,23 +158,29 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
             
-  <noscript>
-  <div id="fallback" class="admonition warning">
-    <p class="last">
-      Please activate JavaScript to enable the search functionality.
-    </p>
-  </div>
-  </noscript>
+  <div class="section" id="track-animals-and-auto-labeling">
+<h1>Track animals and Auto labeling<a class="headerlink" href="#track-animals-and-auto-labeling" title="Permalink to this headline">¶</a></h1>
+<p>Click <code class="docutils literal notranslate"><span class="pre">Track</span> <span class="pre">Animals</span></code> button on the toolbar, fill the info in the opened dialog as follows.</p>
+<p><img alt="Track Animals and objects" src="_images/track_animals.png" /></p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">Detectron2</span></code> as the default model type</p>
+<p>Choose the video file path and provide the trained model file with .pth format</p>
+<p>Select a class threshold between 0 and 1</p>
+<p>Provide the data.yaml file path in the COCO dataset folder</p>
+<p>The output result folder is optional.</p>
+<p>Note. You need to <a class="reference external" href="https://healthonrails.github.io/annolid/install.html#install-detectron2-locally">install <code class="docutils literal notranslate"><span class="pre">Detectron2</span></code></a> on your local device. If your workstation does not have a GPU card, it will only extract the key frames from the provided video and will save predicted results as json format in the same png image folder.
+Here is an example of predicted polygon annotions.</p>
+<p><img alt="_images/predicted_polygons.png" src="_images/predicted_polygons.png" />
+The GPU workstation will run inference for all the frames in the provided video and will save the predicted results into a CSV file.</p>
+</div>
 
-  
-  <div id="search-results">
-  
-  </div>
 
            </div>
            
           </div>
           <footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+        <a href="install.html" class="btn btn-neutral float-left" title="Install Annolid" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+    </div>
 
   <hr/>
 
@@ -209,14 +217,7 @@
   
   
     
-  
-  <script type="text/javascript">
-    jQuery(function() { Search.loadIndex("searchindex.js"); });
-  </script>
-  
-  <script type="text/javascript" id="searchindexloader"></script>
    
-
 
 </body>
 </html>
