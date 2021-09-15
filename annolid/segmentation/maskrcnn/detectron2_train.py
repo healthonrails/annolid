@@ -19,8 +19,10 @@ class Segmentor():
                  score_threshold=0.15,
                  overlap_threshold=0.7,
                  max_iterations=3000,
+                 batch_size=8,
                  ) -> None:
         self.dataset_dir = dataset_dir
+        self.batch_size = batch_size
 
         if out_put_dir is None:
             self.out_put_dir = str(
@@ -71,7 +73,7 @@ class Segmentor():
         self.cfg.DATALOADER.REPEAT_THRESHOLD = 0.3
         self.cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
             "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")  # Let training initialize from model zoo
-        self.cfg.SOLVER.IMS_PER_BATCH = 8  # @param
+        self.cfg.SOLVER.IMS_PER_BATCH = self.batch_size  # @param
         self.cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
         print(f"{max_iterations} seems good enough for 100 label frames")
         # @param    # 3000 iterations seems good enough for 100 frames dataset; you will need to train longer for a practical dataset

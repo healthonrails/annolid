@@ -20,7 +20,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.buttonbox.accepted.connect(self.accept)
         self.buttonbox.rejected.connect(self.reject)
 
-        self.label1 = QtWidgets.QLabel(f"Please select batch size")
+        self.label1 = QtWidgets.QLabel(f"Please select batch size default=8")
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
         self.inputFileButton = QtWidgets.QPushButton('Open', self)
         self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
@@ -54,8 +54,8 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         if self.algo == 'MaskRCNN':
             self.max_iter_slider()
-            self.label1.hide()
-            self.slider.hide()
+            # self.label1.hide()
+            # self.slider.hide()
             vbox.addWidget(self.label2)
             vbox.addWidget(self.max_iter_slider)
 
@@ -68,17 +68,17 @@ class TrainModelDialog(QtWidgets.QDialog):
     def max_iter_slider(self):
         self.max_iter_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.max_iter_slider.setMinimum(100)
-        self.max_iter_slider.setMaximum(10000)
+        self.max_iter_slider.setMaximum(20000)
         self.max_iter_slider.setValue(2000)
         self.max_iter_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.max_iter_slider.setTickInterval(1000)
-        self.max_iter_slider.setSingleStep(1)
+        self.max_iter_slider.setTickInterval(100)
+        self.max_iter_slider.setSingleStep(100)
         self.max_iter_slider.valueChanged.connect(self.onMaxIterSliderChange)
 
     def onSliderChange(self):
-        self.score_threshold = self.slider.value() / 100
+        self.batch_size = self.slider.value()
         self.label1.setText(
-            f"You selected {str(self.score_threshold)} as score threshold")
+            f"You selected {str(self.batch_size)} as batch size")
 
     def onInputFileButtonClicked(self):
         self.config_file, filter = QtWidgets.QFileDialog.getOpenFileName(
@@ -134,8 +134,8 @@ class TrainModelDialog(QtWidgets.QDialog):
             self.label2.hide()
             self.max_iter_slider.hide()
         elif self.algo == 'MaskRCNN':
-            self.label1.hide()
-            self.slider.hide()
+            # self.label1.hide()
+            # self.slider.hide()
             self.label2.show()
             self.max_iter_slider.show()
 

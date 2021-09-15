@@ -780,6 +780,7 @@ class AnnolidWindow(MainWindow):
         config_file = None
         out_dir = None
         max_iterations = 2000
+        batch_size = 8
 
         if dlg.exec_():
             config_file = dlg.config_file
@@ -819,7 +820,9 @@ class AnnolidWindow(MainWindow):
             from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
             dataset_dir = str(Path(config_file).parent)
             segmentor = Segmentor(dataset_dir, out_dir,
-                                  max_iterations=max_iterations)
+                                  max_iterations=max_iterations,
+                                  batch_size=batch_size
+                                  )
             out_runs_dir = segmentor.out_put_dir
             process = start_tensorboard(log_dir=out_runs_dir)
             try:
