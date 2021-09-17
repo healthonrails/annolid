@@ -110,7 +110,9 @@ class Segmentor():
         preds = self.predictor(image)
         instances = preds["instances"].to('cpu')
 
-        self.to_labelme(instances, image_path, height, width)
+        # save json format for at least one predicted instance
+        if len(instances) >= 1:
+            self.to_labelme(instances, image_path, height, width)
 
         if display:
             viz = Visualizer(image[:, :, ::-1],
