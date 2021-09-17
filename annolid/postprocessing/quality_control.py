@@ -214,9 +214,9 @@ class TracksResults():
             x_val = row['cx']
         else:
             x_val = row['x1']
-        if 'Left' in instance_name and x_val >= width / 2:
+        if 'Left' in str(instance_name) and x_val >= width / 2:
             return instance_name.replace('Left', 'Right')
-        elif 'Right' in instance_name and x_val < width / 2:
+        elif 'Right' in str(instance_name) and x_val < width / 2:
             return instance_name.replace('Right', 'Left')
         return instance_name
 
