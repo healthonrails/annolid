@@ -14,6 +14,7 @@ from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtWidgets
 from qtpy import QtGui
+from labelme import PY2
 from labelme import QT5
 import PIL
 from PIL import ImageQt
@@ -24,6 +25,7 @@ from labelme.utils import newIcon
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
+from labelme.label_file import LabelFileError
 from labelme.label_file import LabelFile
 from labelme import utils
 from labelme.widgets import ToolBar
@@ -569,6 +571,61 @@ class AnnolidWindow(MainWindow):
             img = utils.img_data_to_arr(self.imageData)
             imgviz.io.imsave(image_filename, img)
         return image_filename
+
+    def saveLabels(self, filename):
+        lf = LabelFile()
+
+        def format_shape(s):
+            data = s.other_data.copy()
+            data.update(
+                dict(
+                    label=s.label.encode("utf-8") if PY2 else s.label,
+                    points=[(p.x(), p.y()) for p in s.points],
+                    group_id=s.group_id,
+                    shape_type=s.shape_type,
+                    flags=s.flags,
+                )
+            )
+            return data
+
+        shapes = [format_shape(item.shape()) for item in self.labelList]
+        flags = {}
+        for i in range(self.flag_widget.count()):
+            item = self.flag_widget.item(i)
+            key = item.text()
+            flag = item.checkState() == Qt.Checked
+            flags[key] = flag
+        try:
+            imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
+            imageData = self.imageData if self._config["store_data"] else None
+            if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
+                os.makedirs(osp.dirname(filename))
+            lf.save(
+                filename=filename,
+                shapes=shapes,
+                imagePath=Path(imagePath).name,
+                imageData=imageData,
+                imageHeight=self.image.height(),
+                imageWidth=self.image.width(),
+                otherData=self.otherData,
+                flags=flags,
+            )
+            self.labelFile = lf
+            items = self.fileListWidget.findItems(
+                self.imagePath, Qt.MatchExactly
+            )
+            if len(items) > 0:
+                if len(items) != 1:
+                    raise RuntimeError("There are duplicate files.")
+                items[0].setCheckState(Qt.Checked)
+            # disable allows next and previous image to proceed
+            # self.filename = filename
+            return True
+        except LabelFileError as e:
+            self.errorMessage(
+                self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
+            )
+            return False
 
     def _saveFile(self, filename):
         json_saved = self.saveLabels(filename)
