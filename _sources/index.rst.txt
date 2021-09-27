@@ -7,6 +7,7 @@ Welcome to annolid's documentation!
    guide.rst
    install.rst
    track_animals.md
+   keypoints_definitions.md
 
 Indices and tables
 ==================
