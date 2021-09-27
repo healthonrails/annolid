@@ -14,6 +14,7 @@ from collections import deque
 import pycocotools.mask as mask_util
 from annolid.postprocessing.freezing_analyzer import FreezingAnalyzer
 from annolid.postprocessing.quality_control import TracksResults
+from annolid.utils.files import open_or_start_file
 
 points = [deque(maxlen=30) for _ in range(1000)]
 
@@ -46,6 +47,11 @@ def tracks2nix(video_file=None,
     """
 
     print(f"Class or Instance score threshold is: {score_threshold}.")
+
+    print(f"Please update the definitions of keypoints, instances, and events")
+    keypoint_cfg_file = Path(__file__).parent.parent / \
+        'configs' / 'keypoints.yaml'
+    open_or_start_file(keypoint_cfg_file)
 
     if zone_info and '.json' in zone_info:
         zone_info = Path(zone_info)
@@ -404,7 +410,7 @@ def tracks2nix(video_file=None,
                         score >= score_threshold
                         and _class not in body_parts
                         and _class not in animal_names
-                    ):
+                        ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -441,7 +447,7 @@ def tracks2nix(video_file=None,
                     if (is_keypoint_in_mask
                             or any(map(str.isdigit, _class))
                             or _class in _animal_object_list
-                        ):
+                            ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
                                        6,
@@ -453,9 +459,9 @@ def tracks2nix(video_file=None,
                                         0.65, color, 2)
 
                 if (left_interact > 0
-                            and 'left' in _class.lower()
-                            and 'interact' in _class.lower()
-                        ):
+                        and 'left' in _class.lower()
+                        and 'interact' in _class.lower()
+                    ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -469,9 +475,9 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                    and 'right' in _class.lower() and
-                    'interact' in _class.lower()
-                    ):
+                            and 'right' in _class.lower() and
+                            'interact' in _class.lower()
+                        ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
