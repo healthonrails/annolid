@@ -111,5 +111,5 @@ class Segmentor():
         out_val_res_file = str(
             Path(self.cfg.OUTPUT_DIR) / "evalulation_results.txt")
         with open(out_val_res_file, "w") as text_file:
-            text_file.write(val_res)
+            text_file.write(str(val_res))
         return val_res
