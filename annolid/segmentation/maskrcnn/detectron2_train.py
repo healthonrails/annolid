@@ -89,7 +89,11 @@ class Segmentor():
 
     def train(self):
         self.trainer.train()
-        self.evalulate()
+        try:
+            self.evalulate()
+        except AssertionError as ae:
+            # skip evaluation in case the valid dataset is empty
+            print(ae)
 
     def evalulate(self):
         evaluator = COCOEvaluator(
@@ -104,4 +108,8 @@ class Segmentor():
                                        val_loader,
                                        evaluator)
         print(val_res)
+        out_val_res_file = str(
+            Path(self.cfg.OUTPUT_DIR) / "evalulation_results.txt")
+        with open(out_val_res_file, "w") as text_file:
+            text_file.write(val_res)
         return val_res
