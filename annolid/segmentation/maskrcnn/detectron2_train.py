@@ -1,5 +1,6 @@
 import os
 import torch
+import logging
 from pathlib import Path
 from detectron2.engine import DefaultTrainer
 from detectron2.config import get_cfg
@@ -24,6 +25,8 @@ class Segmentor():
         self.dataset_dir = dataset_dir
         self.batch_size = batch_size
 
+        self.logger = logging.getLogger(__name__)
+
         if out_put_dir is None:
             self.out_put_dir = str(
                 Path(self.dataset_dir).parent / 'Annolid_training_outputs')
@@ -41,7 +44,7 @@ class Segmentor():
             register_coco_instances(f"{self.dataset_name}_valid", {
             }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
         except AssertionError as e:
-            print(e)
+            self.logger.info(e)
 
         dataset_dicts = get_detection_dataset_dicts(
             [f"{self.dataset_name}_train"])
@@ -93,7 +96,7 @@ class Segmentor():
             self.evalulate()
         except AssertionError as ae:
             # skip evaluation in case the valid dataset is empty
-            print(ae)
+            self.logger.info(ae)
 
     def evalulate(self):
         evaluator = COCOEvaluator(
@@ -107,7 +110,7 @@ class Segmentor():
         val_res = inference_on_dataset(self.trainer.model,
                                        val_loader,
                                        evaluator)
-        print(val_res)
+        self.logger.info(val_res)
         out_val_res_file = str(
             Path(self.cfg.OUTPUT_DIR) / "evalulation_results.txt")
         with open(out_val_res_file, "w") as text_file:
