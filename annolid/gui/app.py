@@ -380,6 +380,29 @@ class AnnolidWindow(MainWindow):
     def update_step_size(self, value):
         self.step_size = value
 
+    def closeFile(self, _value=False):
+        if not self.mayContinue():
+            return
+        self.resetState()
+        self.setClean()
+        self.toggleActions(False)
+        self.canvas.setEnabled(False)
+        self.actions.saveAs.setEnabled(False)
+        self.uniqLabelList.clear()
+        if self.video_loader is not None:
+            self.video_loader = None
+            self.num_frames = None
+            self.statusBar().removeWidget(self.seekbar)
+            self.seekbar = None
+            self._df = None
+            self.label_stats = {}
+            self.shape_hash_ids = {}
+            self.changed_json_stats = {}
+            self._pred_res_folder_suffix = '_tracking_results_labelme'
+            self.frame_number = 0
+            self.step_size = 1
+            self.video_results_folder = None
+
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)
         toolbar.setObjectName("%sToolBar" % title)
@@ -955,8 +978,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
                         ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
@@ -979,6 +1002,9 @@ class AnnolidWindow(MainWindow):
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
 
+            # load the first frame
+            self.set_frame_number(self.frame_number)
+
             self.actions.openNextImg.setEnabled(True)
             self.openNextImg(load=True)
 
@@ -993,6 +1019,7 @@ class AnnolidWindow(MainWindow):
             self.frame_loader.moveToThread(self.frame_worker)
 
             self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
+
             self.frame_loader.res_frame.connect(
                 lambda qimage: self.image_to_canvas(
                     qimage, self.filename, self.frame_number)
@@ -1007,6 +1034,8 @@ class AnnolidWindow(MainWindow):
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
         self.canvas.setEnabled(True)
+        if isinstance(filename, str):
+            filename = Path(filename)
         self.imagePath = str(filename.parent)
         self.filename = str(filename)
         self.image = qimage
