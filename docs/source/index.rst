@@ -9,6 +9,7 @@ Welcome to annolid's documentation!
    extract_frames.md
    track_animals.md
    keypoints_definitions.md
+   faqs.md
 
 Indices and tables
 ==================
