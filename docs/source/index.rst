@@ -6,6 +6,7 @@ Welcome to annolid's documentation!
    
    guide.rst
    install.rst
+   extract_frames.md
    track_animals.md
    keypoints_definitions.md
 
