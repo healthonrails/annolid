@@ -115,7 +115,7 @@ After restart, you can cd to detectron2 folder and run the following command.
 
 ## Install Detectron2 on Google Colab
 Instructions will be posted here presently.  (Colab uses CUDA 10.2 + torch 1.9.0).  
-<a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_of_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
+<a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 ## Optional: Install older version of Pytorch for YOLACT
 Note: YOLACT models are less accurate comparing to Mask-RCNN in Detectron2. However, it is faster in terms of inference. 
