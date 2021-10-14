@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Extract desired number of frames from a video based on optical flow &mdash; annolid v1.0.1 documentation</title><link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+  <!--[if lt IE 9]>
+    <script src="_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  <script id="documentation_options" data-url_root="./" src="_static/documentation_options.js"></script>
+        <script src="_static/jquery.js"></script>
+        <script src="_static/underscore.js"></script>
+        <script src="_static/doctools.js"></script>
+        <script src="_static/language_data.js"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Track animals and Auto labeling" href="track_animals.html" />
+    <link rel="prev" title="Install Annolid" href="install.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+            <a href="index.html" class="icon icon-home"> annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-locally">Install Detectron2 locally</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-on-google-colab">Install Detectron2 on Google Colab</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html#optional-install-older-version-of-pytorch-for-yolact">Optional: Install older version of Pytorch for YOLACT</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Extract desired number of frames from a video based on optical flow</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#display-optical-flow-while-extracting-frames-with-show-flow-true">Display optical flow while extracting frames with <strong>–show_flow=True</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="#save-all-the-frames-as-images">Save all the frames as images</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#select-frames-randomly-by-reservoir-sampling">Select frames randomly by reservoir sampling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#extract-all-the-key-frames-from-a-video-used-by-the-compression-methods">Extract all the key frames from a video used by the compression methods</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home"></a> &raquo;</li>
+      <li>Extract desired number of frames from a video based on optical flow</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/extract_frames.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <div class="section" id="extract-desired-number-of-frames-from-a-video-based-on-optical-flow">
+<h1>Extract desired number of frames from a video based on optical flow<a class="headerlink" href="#extract-desired-number-of-frames-from-a-video-based-on-optical-flow" title="Permalink to this headline">¶</a></h1>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python annolid/main.py -v /path/to/my_video.mp4 --extract_frames<span class="o">=</span><span class="m">100</span>
+</pre></div>
+</div>
+<p>The above command will extract 100 frames from the provided video and save them to a default folder called extracted_frames in the current annolid repo folder.</p>
+<p>Or you can use the GUI as follows.</p>
+<p><img alt="Extract frames" src="docs/imgs/extract_frames_dialog.png" /></p>
+</div>
+<div class="section" id="display-optical-flow-while-extracting-frames-with-show-flow-true">
+<h1>Display optical flow while extracting frames with <strong>–show_flow=True</strong><a class="headerlink" href="#display-optical-flow-while-extracting-frames-with-show-flow-true" title="Permalink to this headline">¶</a></h1>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python annolid/main.py -v /path/to/my_video.mp4 --extract_frames<span class="o">=</span><span class="m">100</span> --show_flow<span class="o">=</span>True
+</pre></div>
+</div>
+</div>
+<div class="section" id="save-all-the-frames-as-images">
+<h1>Save all the frames as images<a class="headerlink" href="#save-all-the-frames-as-images" title="Permalink to this headline">¶</a></h1>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames<span class="o">=</span>-1
+</pre></div>
+</div>
+</div>
+<div class="section" id="select-frames-randomly-by-reservoir-sampling">
+<h1>Select frames randomly by reservoir sampling<a class="headerlink" href="#select-frames-randomly-by-reservoir-sampling" title="Permalink to this headline">¶</a></h1>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames<span class="o">=</span><span class="m">100</span> --algo<span class="o">=</span>random
+</pre></div>
+</div>
+</div>
+<div class="section" id="extract-all-the-key-frames-from-a-video-used-by-the-compression-methods">
+<h1>Extract all the key frames from a video used by the compression methods<a class="headerlink" href="#extract-all-the-key-frames-from-a-video-used-by-the-compression-methods" title="Permalink to this headline">¶</a></h1>
+<p>:warning: This method may not work for some videos with certain compression methods.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python main.py -v /path/to/my_video.mp4 --algo<span class="o">=</span>keyframes --extract_frames<span class="o">=</span>-1
+</pre></div>
+</div>
+</div>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="install.html" class="btn btn-neutral float-left" title="Install Annolid" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="track_animals.html" class="btn btn-neutral float-right" title="Track animals and Auto labeling" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
