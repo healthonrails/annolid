@@ -16,6 +16,11 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 * Training and inference (local or Colab)
 * Post-processing and analysis
 
+## Annolid video tutorials
+
+[![Annolid Youtube playlist](https://i9.ytimg.com/vi/pb8X4bqLRZ0/mq2.jpg?sqp=CKzjp4sG&rs=AOn4CLDiKkwHnt7dBr1GBVrNZJQXd0wbJw)](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc "Annolid Youtube playlist")
+
+
 ## Examples
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
 
