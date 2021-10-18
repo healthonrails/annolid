@@ -60,6 +60,20 @@ If you want to learn more about labelme, please check the following link.
 
 [Read more about annotations](annolid/annotation/labelme.md)
 
+## How to label animals and behaviors? 
+### Polygons & keypoints(e.g. Vole_1, nose, tail_base, rearing…...)
+
+* To train models for tracking animals and assigning IDs, please 
+label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_femal_01).
+
+* For instances without needing to assign IDs across different frames, please 
+label instances with a generic name or ID (e.g vole, mouse, or frog). 
+
+* For encoding behaviors, please name the ploygon with the behavior name (e.g. rearing, object_investigation, or grooming)
+
+* For body parts, please use keypoint with names like nose, tail_base, or left_ear.
+
+
 # Citing Annolid
 If you use Annolid in your research, please use the following BibTeX entry.
 ```
