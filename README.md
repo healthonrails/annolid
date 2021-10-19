@@ -66,12 +66,19 @@ If you want to learn more about labelme, please check the following link.
 * To train models for tracking animals and assigning IDs, please 
 label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_femal_01).
 
-* For instances without needing to assign IDs across different frames, please 
-label instances with a generic name or ID (e.g vole, mouse, or frog). 
+* For instances without needing to assign IDs across different frames or videos, please label instances with a generic name or ID (e.g vole, mouse, or frog). 
 
 * For encoding behaviors, please name the ploygon with the behavior name (e.g. rearing, object_investigation, or grooming)
 
 * For body parts, please use keypoint with names like nose, tail_base, or left_ear.
+
+## How many frames do you need to label? 
+
+* 20 to 100 frames per video
+![Auto-labeling](docs/imgs/AP_across_labeled_frames.png)
+
+* For autolabeling, you can label 20 frames and train a model. Then you can use the trained model to predict on the video and add the corrected predictions to the training set to train a better model. Repeat the process until the model is matching human performance. 
+  ![Auto-labeling](docs/imgs/human_in_the_loop.png)
 
 
 # Citing Annolid
