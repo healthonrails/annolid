@@ -20,6 +20,10 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 
 [![Annolid Youtube playlist](https://i9.ytimg.com/vi/pb8X4bqLRZ0/mq2.jpg?sqp=CKzjp4sG&rs=AOn4CLDiKkwHnt7dBr1GBVrNZJQXd0wbJw)](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc "Annolid Youtube playlist")
 
+## User Guide
+
+A basic user guide with installation instructions and recent documentation can be found at [](https://healthonrails.github.io/annolid/) https://healthonrails.github.io/annolid/.
+
 
 ## Examples
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
