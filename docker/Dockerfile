@@ -1,7 +1,8 @@
 # Modified from: 
 # 1. https://github.com/facebookresearch/detectron2/blob/main/docker/Dockerfile
 # 2. https://github.com/wkentaro/labelme/blob/main/docker/Dockerfile
-FROM nvidia/cuda:11.1.1-cudnn8-devel
+# Use 18.04 to avoid opencv incompatibility issues
+FROM nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04
 LABEL maintainer "Chen Yang <healthonrails@gmail.com>"
 
 ENV DEBIAN_FRONTEND=noninteractive
