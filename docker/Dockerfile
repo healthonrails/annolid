@@ -55,12 +55,12 @@ ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 
 RUN pip install --user -e detectron2_repo
 
-RUN git clone https://github.com/healthonrails/annolid annolid
+RUN git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 RUN pip install --user -e annolid
 
 # Set a fixed model cache directory.
 ENV FVCORE_CACHE="/tmp"
-WORKDIR /home/annoliduser/detectron2_repo
+WORKDIR /home/annoliduser/annolid
 
 ENV LANG en-US
 
