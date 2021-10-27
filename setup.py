@@ -30,7 +30,7 @@ setuptools.setup(
                       'imageio>=2.8.0',
                       'imageio-ffmpeg>=0.4.2',
                       'PyQtWebEngine>=5.15.1',
-                      'simplification>=0.5.12',
+                      'simplification>=0.5.7',
                       "dataclasses>=0.6; python_version < '3.7'",
                       ],
     python_requires='>=3.6',
