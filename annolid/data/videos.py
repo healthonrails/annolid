@@ -251,6 +251,10 @@ def extract_frames(video_file='None',
         out_dir = os.path.splitext(video_file)[0]
     else:
         out_dir = os.path.join(out_dir, video_name)
+
+    # add extracting methods to folder name
+    out_dir = f"{out_dir}_{algo}"
+
     if not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
