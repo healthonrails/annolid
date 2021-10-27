@@ -1,12 +1,6 @@
 #!/usr/bin/env python
 
 import setuptools
-from pathlib import Path
-
-here = Path(__file__).parent
-
-with open(here / "README.md", "r") as fh:
-    long_description = fh.read()
 
 setuptools.setup(
     name="annolid",
@@ -14,8 +8,6 @@ setuptools.setup(
     author="Chen Yang",
     author_email="healthonrails@gmail.com",
     description="An Annotation and instance segmenation based mutiple animal tracking package",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
     url="https://github.com/healthonrails/annolid",
     packages=setuptools.find_packages(),
     classifiers=[
