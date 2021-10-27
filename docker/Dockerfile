@@ -29,7 +29,7 @@ RUN ln -sv /usr/bin/python3 /usr/bin/python
 
 # create a non-root user
 ARG USER_ID=1000
-RUN useradd -m --no-log-init --system  --uid ${USER_ID} appuser -g sudo
+RUN useradd -m --no-log-init --system  --uid ${USER_ID} annoliduser -g sudo
 RUN echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 USER annoliduser
 WORKDIR /home/annoliduser
@@ -38,8 +38,6 @@ ENV PATH="/home/annoliduser/.local/bin:${PATH}"
 RUN wget https://bootstrap.pypa.io/get-pip.py && \
 	python3 get-pip.py --user && \
 	rm get-pip.py
-
-RUN python3 -m pip install -v git+https://github.com/healthonrails/annolid.git
 
 # install dependencies
 RUN pip install --user tensorboard cmake 
@@ -56,6 +54,9 @@ ARG TORCH_CUDA_ARCH_LIST="Kepler;Kepler+Tesla;Maxwell;Maxwell+Tegra;Pascal;Volta
 ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 
 RUN pip install --user -e detectron2_repo
+
+RUN git clone https://github.com/healthonrails/annolid annolid
+RUN pip install --user -e annolid
 
 # Set a fixed model cache directory.
 ENV FVCORE_CACHE="/tmp"
