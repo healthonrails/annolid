@@ -263,7 +263,7 @@ def extract_frames(video_file='None',
                              sub_clip=sub_clip,
                              start_seconds=start_seconds,
                              end_seconds=end_seconds)
-        return out_dir
+        yield 100, f"Done. Frames loated at {out_dir}."
 
     cap = cv2.VideoCapture(video_file)
     fps = cap.get(5)
@@ -308,6 +308,8 @@ def extract_frames(video_file='None',
         frame_number = int(cap.get(1))
         ret, frame = cap.read()
 
+        progress_percent = ((frame_number + 1) / n_frames) * 100
+
         if num_frames == -1:
             out_frame_file = f"{out_dir}{os.sep}{video_name}_{frame_number:08}.png"
             if ret:
@@ -328,7 +330,7 @@ def extract_frames(video_file='None',
                                              frame_number,
                                              frame))
                 ki += 1
-                print(f'Processed {ki} frames.')
+                yield progress_percent, f'Processed {ki} frames.'
             continue
         if algo == 'flow' and num_frames != -1:
             mask = subtractor.apply(frame)
@@ -352,8 +354,7 @@ def extract_frames(video_file='None',
                     rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
                 q_score = int(np.abs(np.sum(flow.reshape(-1))))
-                print(
-                    f"precessing frame {frame_number}, the difference between previous frame is {q_score}.")
+                progress_msg = f"precessing frame {frame_number},the diff to prev frame is {q_score}."
 
                 if len(keeped_frames) < num_frames:
                     heapq.heappush(
@@ -364,11 +365,11 @@ def extract_frames(video_file='None',
 
                 if show_flow:
                     cv2.imshow("Frame", rgb)
+                yield progress_percent, progress_msg
             except:
                 print('skipping the current frame.')
 
             old_frame = frame
-
         key = cv2.waitKey(1)
         if key == 27:
             break
@@ -388,8 +389,7 @@ def extract_frames(video_file='None',
 
     cap.release()
     cv2.destroyAllWindows()
-    print(f"Please check the extracted frames in folder: {out_dir}")
-    return out_dir
+    yield 100, f"Done. Frames located at {out_dir}"
 
 
 def track(video_file=None,

@@ -727,7 +727,7 @@ class AnnolidWindow(MainWindow):
 
         if video_file is None:
             return
-        out_frames_dir = videos.extract_frames(
+        out_frames_gen = videos.extract_frames(
             video_file,
             num_frames=num_frames,
             algo=algo,
@@ -736,12 +736,18 @@ class AnnolidWindow(MainWindow):
             start_seconds=start_seconds,
             end_seconds=end_seconds
         )
-        if out_frames_dir is None:
-            if out_dir is None:
-                out_frames_dir = str(
-                    Path(video_file).resolve().with_suffix(''))
-            else:
-                out_frames_dir = str(Path(out_dir) / Path(video_file).name)
+
+        pw = ProgressingWindow(out_frames_gen)
+        if pw.exec_():
+            pw.runner_thread.terminate()
+
+        if out_dir is None:
+            out_frames_dir = str(
+                Path(video_file).resolve().with_suffix(''))
+        else:
+            out_frames_dir = str(Path(out_dir) / Path(video_file).name)
+
+        out_frames_dir = f"{out_frames_dir}_{algo}"
 
         QtWidgets.QMessageBox.about(self,
                                     "Finished",
