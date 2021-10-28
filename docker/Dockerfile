@@ -1,4 +1,4 @@
-# Modified from: 
+# Modified from:
 # 1. https://github.com/facebookresearch/detectron2/blob/main/docker/Dockerfile
 # 2. https://github.com/wkentaro/labelme/blob/main/docker/Dockerfile
 # Use 18.04 to avoid opencv incompatibility issues
@@ -40,7 +40,7 @@ RUN wget https://bootstrap.pypa.io/get-pip.py && \
 	rm get-pip.py
 
 # install dependencies
-RUN pip install --user tensorboard cmake 
+RUN pip install --user tensorboard cmake
 RUN pip install --user torch==1.9 torchvision==0.10 -f https://download.pytorch.org/whl/cu111/torch_stable.html
 
 RUN pip install --user 'git+https://github.com/facebookresearch/fvcore'
@@ -56,6 +56,7 @@ ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 RUN pip install --user -e detectron2_repo
 
 RUN git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+# RUN git clone --recurse-submodules -b docker_bug --single-branch https://github.com/jeremyforest/annolid.git
 RUN pip install --user -e annolid
 
 # Set a fixed model cache directory.

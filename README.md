@@ -34,17 +34,17 @@ Instance segmentations             |  Behavior prediction
 
 [![Mouse behavior analysis with instance segmentation based deep learning networks](http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8 "Mouse behavior analysis with instance segmentation based deep learning networks")
 
-## Installation
+## Local Installation
 
 * Clone the code repo and change into the directory
 ```bash
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
-cd annolid 
+cd annolid
 
 # install the package
 pip install -e .
 ```
-Note: if you got this error: 
+Note: if you got this error:
 ```
 ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
 ```
@@ -55,33 +55,41 @@ ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
 source activate your_env_name
 annolid
 #or you can provide a label.txt file as follows.
-annolid --labels=/path/to/labels_custom.txt 
+annolid --labels=/path/to/labels_custom.txt
 
 ```
 ![Annolid UI based on labelme](docs/imgs/annolid_ui.png)
 
-If you want to learn more about labelme, please check the following link. 
+If you want to learn more about labelme, please check the following link.
 
 [Read more about annotations](annolid/annotation/labelme.md)
 
-## How to label animals and behaviors? 
+## Docker Installation
+You can use a self-contained docker install to run annolid using:
+```bash
+cd annolid/docker
+docker build -t annolid .
+QT_GRAPHICSSYSTEM="native" docker run -it -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix annolid
+```
+
+## How to label animals and behaviors?
 ### Polygons & keypoints(e.g. Vole_1, nose, tail_base, rearing…...)
 
-* To train models for tracking animals and assigning IDs, please 
+* To train models for tracking animals and assigning IDs, please
 label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_femal_01).
 
-* For instances without needing to assign IDs across different frames or videos, please label instances with a generic name or ID (e.g vole, mouse, or frog). 
+* For instances without needing to assign IDs across different frames or videos, please label instances with a generic name or ID (e.g vole, mouse, or frog).
 
 * For encoding behaviors, please name the ploygon with the behavior name (e.g. rearing, object_investigation, or grooming)
 
 * For body parts, please use keypoint with names like nose, tail_base, or left_ear.
 
-## How many frames do you need to label? 
+## How many frames do you need to label?
 
 * 20 to 100 frames per video
 ![Auto-labeling](docs/imgs/AP_across_labeled_frames.png)
 
-* For autolabeling, you can label 20 frames and train a model. Then you can use the trained model to predict on the video and add the corrected predictions to the training set to train a better model. Repeat the process until the model is matching human performance. 
+* For autolabeling, you can label 20 frames and train a model. Then you can use the trained model to predict on the video and add the corrected predictions to the training set to train a better model. Repeat the process until the model is matching human performance.
   ![Auto-labeling](docs/imgs/human_in_the_loop.png)
 
 
