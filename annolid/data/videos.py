@@ -263,10 +263,9 @@ def extract_frames(video_file='None',
                              sub_clip=sub_clip,
                              start_seconds=start_seconds,
                              end_seconds=end_seconds)
-        yield 100, f"Done. Frames loated at {out_dir}."
+        yield 100, f"Done. Frames located at {out_dir}."
 
     cap = cv2.VideoCapture(video_file)
-    fps = cap.get(5)
     n_frames = int(cap.get(7))
 
     current_frame_number = int(cap.get(1))
@@ -274,8 +273,6 @@ def extract_frames(video_file='None',
     subtractor = cv2.createBackgroundSubtractorMOG2()
     keeped_frames = []
 
-    width = cap.get(3)
-    height = cap.get(4)
     ret, old_frame = cap.read()
 
     if keep_first_frame:
