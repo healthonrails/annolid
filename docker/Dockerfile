@@ -55,8 +55,8 @@ ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 
 RUN pip install --user -e detectron2_repo
 
-# RUN git clone --recurse-submodules https://github.com/healthonrails/annolid.git
-RUN git clone --recurse-submodules -b <docker_bug> --single-branch git@github.com:jeremyforest/annolid.git
+RUN git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+# RUN git clone --recurse-submodules -b docker_bug --single-branch https://github.com/jeremyforest/annolid.git
 RUN pip install --user -e annolid
 
 # Set a fixed model cache directory.
