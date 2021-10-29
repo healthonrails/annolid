@@ -747,6 +747,8 @@ class AnnolidWindow(MainWindow):
         else:
             out_frames_dir = str(Path(out_dir) / Path(video_file).name)
 
+        if start_seconds is not None and end_seconds is not None:
+            out_frames_dir = f"{out_frames_dir}_{start_seconds}_{end_seconds}"
         out_frames_dir = f"{out_frames_dir}_{algo}"
 
         QtWidgets.QMessageBox.about(self,
