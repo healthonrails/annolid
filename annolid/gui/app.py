@@ -190,6 +190,7 @@ class AnnolidWindow(MainWindow):
         self._pred_res_folder_suffix = '_tracking_results_labelme'
         self.frame_number = 0
         self.video_loader = None
+        self.video_file = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
 
@@ -392,6 +393,7 @@ class AnnolidWindow(MainWindow):
         if self.video_loader is not None:
             self.video_loader = None
             self.num_frames = None
+            self.video_file = None
             self.statusBar().removeWidget(self.seekbar)
             self.seekbar = None
             self._df = None
@@ -711,7 +713,7 @@ class AnnolidWindow(MainWindow):
     def frames(self):
         """Extract frames based on the selected algos.
         """
-        dlg = ExtractFrameDialog()
+        dlg = ExtractFrameDialog(self.video_file)
         video_file = None
         out_dir = None
 
@@ -1004,6 +1006,7 @@ class AnnolidWindow(MainWindow):
                 exist_ok=True,
                 parents=True
             )
+            self.video_file = video_filename
             self.video_loader = videos.CV2Video(video_filename)
             self.num_frames = self.video_loader.total_frames()
             self.seekbar = VideoSlider()

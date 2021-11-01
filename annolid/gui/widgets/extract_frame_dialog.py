@@ -4,14 +4,14 @@ from qtpy import QtWidgets
 
 
 class ExtractFrameDialog(QtWidgets.QDialog):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, video_file=None, *args, **kwargs):
         super(ExtractFrameDialog, self).__init__(*args, **kwargs)
         self.setWindowTitle("Extract Frames from a video")
         self.raidoButtons()
         self.slider()
         self.num_frames = 100
         self.algo = 'random'
-        self.video_file = None
+        self.video_file = video_file
         self.out_dir = None
         self.start_sconds = None
         self.end_seconds = None
@@ -25,6 +25,8 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.label1 = QtWidgets.QLabel(
             f"Please type or select number of frames default={self.num_frames} or use -1 for all frames")
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
+        if self.video_file is not None:
+            self.inputFileLineEdit.setText(self.video_file)
         self.framesLineEdit = QtWidgets.QLineEdit(self)
         self.framesLineEdit.setText(str(self.num_frames))
         self.inputFileButton = QtWidgets.QPushButton('Open', self)
