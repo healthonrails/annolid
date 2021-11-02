@@ -602,6 +602,8 @@ class AnnolidWindow(MainWindow):
 
         def format_shape(s):
             data = s.other_data.copy()
+            if len(s.points) <= 1:
+                s.shape_type = 'point'
             data.update(
                 dict(
                     label=s.label.encode("utf-8") if PY2 else s.label,
