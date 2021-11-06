@@ -390,6 +390,8 @@ class AnnolidWindow(MainWindow):
         self.canvas.setEnabled(False)
         self.actions.saveAs.setEnabled(False)
         self.uniqLabelList.clear()
+        # clear the file list
+        self.fileListWidget.clear()
         if self.video_loader is not None:
             self.video_loader = None
             self.num_frames = None
