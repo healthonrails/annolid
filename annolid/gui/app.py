@@ -191,6 +191,7 @@ class AnnolidWindow(MainWindow):
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
+        self.annotation_dir = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
 
@@ -396,6 +397,7 @@ class AnnolidWindow(MainWindow):
             self.video_loader = None
             self.num_frames = None
             self.video_file = None
+            self.annotation_dir = None
             self.statusBar().removeWidget(self.seekbar)
             self.seekbar = None
             self._df = None
@@ -464,6 +466,7 @@ class AnnolidWindow(MainWindow):
             return
 
         self.lastOpenDir = dirpath
+        self.annotation_dir = dirpath
         self.filename = None
         self.fileListWidget.clear()
         for filename in self.scanAllImages(dirpath):
@@ -757,6 +760,8 @@ class AnnolidWindow(MainWindow):
             out_frames_dir = f"{out_frames_dir}_{start_seconds}_{end_seconds}"
         out_frames_dir = f"{out_frames_dir}_{algo}"
 
+        self.annotation_dir = out_frames_dir
+
         QtWidgets.QMessageBox.about(self,
                                     "Finished",
                                     f"Done! Results are in folder: \
@@ -1010,6 +1015,7 @@ class AnnolidWindow(MainWindow):
                 exist_ok=True,
                 parents=True
             )
+            self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
             self.video_loader = videos.CV2Video(video_filename)
             self.num_frames = self.video_loader.total_frames()
@@ -1238,11 +1244,11 @@ class AnnolidWindow(MainWindow):
         """
         Convert Labelme annotations to COCO format.
         """
+        coco_dlg = ConvertCOODialog(annotation_dir=self.annotation_dir)
         output_dir = None
         labels_file = None
         input_anno_dir = None
         num_train_frames = 0.7
-        coco_dlg = ConvertCOODialog()
         if coco_dlg.exec_():
             input_anno_dir = coco_dlg.annotation_dir
             labels_file = coco_dlg.label_list_text

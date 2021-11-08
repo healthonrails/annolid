@@ -4,10 +4,10 @@ from qtpy import QtWidgets
 
 
 class ConvertCOODialog(QtWidgets.QDialog):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, annotation_dir=None, *args, **kwargs):
         super(ConvertCOODialog, self).__init__(*args, **kwargs)
         self.setWindowTitle("Convert to COCO format datasets ")
-        self.annotation_dir = None
+        self.annotation_dir = annotation_dir
         self.out_dir = None
         self.slider()
         self.label_list_text = None
@@ -32,6 +32,10 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.groupBoxFiles = QtWidgets.QGroupBox(
             f"Please select annotaton directory")
         self.annoFileLineEdit = QtWidgets.QLineEdit(self)
+
+        if self.annotation_dir is not None:
+            self.annoFileLineEdit.setText(str(self.annotation_dir))
+
         self.annoFileButton = QtWidgets.QPushButton(
             'Open Annotations Directory', self)
         self.annoFileButton.clicked.connect(
