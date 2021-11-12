@@ -219,8 +219,8 @@ def convert(input_annotated_dir,
                 try:
                     cx, cy = points[0]
                     radius = 10.0 + np.random.choice(np.arange(0, 1, 0.1))
-                    xs = cx + (radius * np.cos(_angles))
-                    ys = cy + (radius * np.sin(_angles))
+                    xs = cx + (radius * np.cos(np.array(_angles) * np.pi/180))
+                    ys = cy + (radius * np.sin(np.array(_angles) * np.pi/180))
                     points = np.asarray([list(p) for p in zip(xs, ys)])
                     shape_type = "polygon"
                 except IndexError:
@@ -250,8 +250,8 @@ def convert(input_annotated_dir,
             elif shape_type == "circle":
                 (x1, y1), (x2, y2) = points
                 radius = int(((x1-x2)**2 + (y1-y2)**2)**(1/2))
-                xs = x1 + (radius * np.cos(_angles))
-                ys = y1 + (radius * np.sin(_angles))
+                xs = x1 + (radius * np.cos(np.array(_angles) * np.pi/180))
+                ys = y1 + (radius * np.sin(np.array(_angles) * np.pi/180))
                 points = np.asarray([list(p) for p in zip(xs, ys)])
                 points = np.asarray(points).flatten().tolist()
                 shape_type = "polygon"
