@@ -96,6 +96,7 @@ label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_fema
 
 Please make sure that [Docker](https://www.docker.com/) is installed on your system. 
 ```
+# on Linux
 cd annolid/docker
 docker build . 
 xhost +local:docker 

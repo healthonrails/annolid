@@ -24,11 +24,10 @@ dependencies:
   - scipy=1.5.2
   - easydict=1.9
   - pip:
-    - opencv-python 
-    - pillow 
-    - pycocotools 
+    - pillow>=8.3.1 
+    - pycocotools>=2.0.2 
     # needed on KDE/Qt envs for matplotlib
-    - PyQt5
+    - PyQt5>=5.15.1
     - labelme>=4.5.6
     - opencv-python==4.1.2.30
     - opencv-contrib-python==4.1.2.30
