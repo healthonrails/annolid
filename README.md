@@ -116,3 +116,8 @@ If you use Annolid in your research, please use the following BibTeX entry.
 ```
 [For more information:](https://healthonrails.github.io/annolid/) https://healthonrails.github.io/annolid/
 .
+
+# SfN 2021 poster
+[Annolid: an instance segmentation-based multiple-animal tracking 
+and behavior analysis package
+](https://youtu.be/tVIE6vG9Gao)
