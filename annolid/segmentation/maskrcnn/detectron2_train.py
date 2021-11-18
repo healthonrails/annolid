@@ -21,11 +21,14 @@ class Segmentor():
                  overlap_threshold=0.7,
                  max_iterations=3000,
                  batch_size=8,
+                 model_config=None
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.batch_size = batch_size
 
         self.logger = logging.getLogger(__name__)
+        if model_config is None:
+            model_config = "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
 
         if out_put_dir is None:
             self.out_put_dir = str(
@@ -57,9 +60,7 @@ class Segmentor():
 
         self.cfg = get_cfg()
         # load model config and pretrained model
-        self.cfg.merge_from_file(model_zoo.get_config_file(
-            "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
-        ))
+        self.cfg.merge_from_file(model_zoo.get_config_file(model_config))
         self.cfg.DATASETS.TRAIN = (f"{self.dataset_name}_train",)
         self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
         self.cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -75,11 +76,12 @@ class Segmentor():
         self.cfg.DATALOADER.SAMPLER_TRAIN = "RepeatFactorTrainingSampler"
         self.cfg.DATALOADER.REPEAT_THRESHOLD = 0.3
         self.cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
-            "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")  # Let training initialize from model zoo
+            model_config)  # Let training initialize from model zoo
         self.cfg.SOLVER.IMS_PER_BATCH = self.batch_size  # @param
         self.cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
         print(f"{max_iterations} seems good enough for 100 label frames")
-        # @param    # 3000 iterations seems good enough for 100 frames dataset; you will need to train longer for a practical dataset
+        # @param    # 3000 iterations seems good enough for 100 frames dataset;
+        #  you will need to train longer for a practical dataset
         self.cfg.SOLVER.MAX_ITER = max_iterations
         self.cfg.SOLVER.CHECKPOINT_PERIOD = 1000  # @param
         # @param   # faster, and good enough for this toy dataset (default: 512)

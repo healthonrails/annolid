@@ -28,11 +28,15 @@ class Segmentor():
                  dataset_dir=None,
                  model_pth_path=None,
                  score_threshold=0.15,
-                 overlap_threshold=0.95
+                 overlap_threshold=0.95,
+                 model_config=None
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold
         self.overlap_threshold = overlap_threshold
+
+        if model_config is None:
+            model_config = "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
 
         dataset_name = Path(self.dataset_dir).stem
         self.subject_queue = queue.PriorityQueue(3)
@@ -65,7 +69,7 @@ class Segmentor():
         self.cfg = get_cfg()
         # load model config and pretrained model
         self.cfg.merge_from_file(model_zoo.get_config_file(
-            "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
+            model_config
         ))
         self.cfg.MODEL.WEIGHTS = model_pth_path
         self.cfg.DATASETS.TRAIN = (f"{dataset_name}_train",)
