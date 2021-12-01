@@ -20,9 +20,9 @@ dependencies:
   - curl 
   - unzip 
   - conda-forge::bash
-  - numpy=1.18.2
-  - scipy=1.5.2
-  - easydict=1.9
+  - numpy>=1.18.2
+  - scipy>=1.5.2
+  - easydict>=1.9
   - pip:
     - pillow>=8.3.1 
     - pycocotools>=2.0.2 

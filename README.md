@@ -64,13 +64,6 @@ If you want to learn more about labelme, please check the following link.
 
 [Read more about annotations](annolid/annotation/labelme.md)
 
-## Docker Installation
-You can use a self-contained docker install to run annolid using:
-```bash
-cd annolid/docker
-docker build -t annolid .
-QT_GRAPHICSSYSTEM="native" docker run -it -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix annolid
-```
 
 ## How to label animals and behaviors?
 ### Polygons & keypoints(e.g. Vole_1, nose, tail_base, rearing…...)
