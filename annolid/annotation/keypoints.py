@@ -28,7 +28,7 @@ def save_labels(filename,
         save_image_to_json (bool, optional): Defaults to False.
 
     Returns:
-        [type]: [description]
+        None: save the file to local device
     """
     lf = label_file.LabelFile()
 
