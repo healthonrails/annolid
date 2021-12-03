@@ -15,6 +15,21 @@ def save_labels(filename,
                 otherData=None,
                 save_image_to_json=False
                 ):
+    """Save the a list of labeled shapes to a json file
+
+    Args:
+        filename (str): json file name
+        imagePath (str): image file path
+        label_list ([Shape]): a list with labeled shapes
+        height (int): image height
+        width (width): image height
+        imageData (optional):  Defaults to None.
+        otherData (optional):  Defaults to None.
+        save_image_to_json (bool, optional): Defaults to False.
+
+    Returns:
+        [type]: [description]
+    """
     lf = label_file.LabelFile()
 
     def format_shape(s):
