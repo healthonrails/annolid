@@ -1303,7 +1303,7 @@ class AnnolidWindow(MainWindow):
                 pass
 
     def train_on_colab(self):
-        url = "https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb"
+        url = "https://colab.research.google.com/github/healthonrails/annolid/blob/main/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb"
         webbrowser.open(url)
 
     def quality_control(self):
