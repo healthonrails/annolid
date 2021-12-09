@@ -771,6 +771,11 @@ class AnnolidWindow(MainWindow):
         self.importDirImages(out_frames_dir)
 
     def tracks(self):
+        """
+        Track animals using the train models for a video
+        The tracking results CSV file will be saved on the disk.
+        """
+
         dlg = TrackDialog()
         config_file = None
         out_dir = None
@@ -874,6 +879,9 @@ class AnnolidWindow(MainWindow):
             self.tr(f"Tracking..."))
 
     def models(self):
+        """
+        Train a model with the provided dataset and selected params
+        """
 
         dlg = TrainModelDialog()
         config_file = None
@@ -970,6 +978,11 @@ class AnnolidWindow(MainWindow):
         self.frame_loader.request(frame_number)
 
     def openVideo(self, _value=False):
+        """open a video for annotaiton frame by frame
+
+        Args:
+            _value (bool, optional):  Defaults to False.
+        """
         video_path = Path(self.filename).parent if self.filename else "."
         formats = ["*.*"]
         filters = self.tr(f"Video files {formats[0]}")
@@ -1344,6 +1357,11 @@ class AnnolidWindow(MainWindow):
             self.importDirImages(str(out_dir))
 
     def glitter2(self):
+        """
+        overlay the predicted masks and bboxes on the inference video
+        and convert the nix format for editing with glitter2 package
+        https://github.com/matham/glitter2
+        """
 
         video_file = None
         tracking_results = None
