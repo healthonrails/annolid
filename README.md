@@ -24,7 +24,6 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 
 A basic user guide with installation instructions and recent documentation can be found at [](https://healthonrails.github.io/annolid/) https://healthonrails.github.io/annolid/.
 
-
 ## Examples
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
 
@@ -49,6 +48,11 @@ Note: if you got this error:
 ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
 ```
 , please try to install [ffmpeg](https://ffmpeg.org/) or you can install it in conda `conda install -c conda-forge ffmpeg`.
+
+FYI: it is helpful to compress videos to reduce diskspace using ffmpeg. 
+```bash
+ffmpeg -i my_video.mp4 -vcodec libx264 my_video_compressed.mp4
+```
 
 ## Launch annolid user interface based on labelme
 ```bash
