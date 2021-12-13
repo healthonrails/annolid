@@ -125,3 +125,7 @@ If you use Annolid in your research, please use the following BibTeX entry.
 [Annolid: an instance segmentation-based multiple-animal tracking 
 and behavior analysis package
 ](https://youtu.be/tVIE6vG9Gao)
+
+
+# Pretrained models 
+The pretrained models will be shared to the [Google Drive folder](https://drive.google.com/drive/u/1/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF). 
