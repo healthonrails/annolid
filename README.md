@@ -129,3 +129,7 @@ and behavior analysis package
 
 # Pretrained models 
 The pretrained models will be shared to the [Google Drive folder](https://drive.google.com/drive/u/1/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF). 
+
+# Feature requests and bug reports
+
+To request a new feature or report bugs, please use the link https://github.com/healthonrails/annolid/issues here. 
