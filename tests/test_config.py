@@ -9,6 +9,9 @@ class TestConfigs(unittest.TestCase):
             "./annolid/configs/deep_sort.yaml")
         self.custom_dataset_config = get_config(
             "./annolid/configs/custom_dataset.yaml")
+        self.keypoints_config = get_config(
+            "./annolid/configs/keypoints.yaml"
+        )
 
     def test_load_dataset_config(self):
 
@@ -27,6 +30,13 @@ class TestConfigs(unittest.TestCase):
                                       self.custom_dataset_config])
         self.assertIn("DEEPSORT", final_config) and \
             self.assertIn("DATASET", final_config)
+
+    def test_load_keypoints_config(self):
+        self.assertIsNotNone(self.keypoints_config) and \
+            self.assertIn("HEAD", self.keypoints_config) and \
+            self.assertIn("EVENTS", self.keypoints_config) and \
+            self.assertIn("NAME", self.keypoints_config) and \
+            self.assertIn("ZONES", self.keypoints_config)
 
 
 if __name__ == "__main__":
