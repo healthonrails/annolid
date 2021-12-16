@@ -184,7 +184,9 @@ def tracks2nix(video_file=None,
 
     # add an instance name to animal names list if not in it
     for instance_name in instance_names:
-        if instance_name not in animal_names:
+        if (instance_name not in animal_names and
+            instance_name not in behaviors
+            ):
             animal_names.append(instance_name)
 
     metadata_dict = {}
@@ -418,7 +420,7 @@ def tracks2nix(video_file=None,
                         score >= score_threshold
                         and _class not in body_parts
                         and _class not in animal_names
-                        ):
+                    ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -455,7 +457,7 @@ def tracks2nix(video_file=None,
                     if (is_keypoint_in_mask
                             or any(map(str.isdigit, _class))
                             or _class in _animal_object_list
-                            ):
+                        ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
                                        6,
@@ -467,9 +469,9 @@ def tracks2nix(video_file=None,
                                         0.65, color, 2)
 
                 if (left_interact > 0
-                        and 'left' in _class.lower()
-                        and 'interact' in _class.lower()
-                    ):
+                            and 'left' in _class.lower()
+                            and 'interact' in _class.lower()
+                        ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -483,9 +485,9 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                            and 'right' in _class.lower() and
-                            'interact' in _class.lower()
-                        ):
+                    and 'right' in _class.lower() and
+                    'interact' in _class.lower()
+                    ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
