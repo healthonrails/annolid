@@ -179,6 +179,14 @@ def tracks2nix(video_file=None,
                                    axis=1
                                    )
 
+    # find the unique list of all instance names
+    instance_names = df['instance_name'].unique()
+
+    # add an instance name to animal names list if not in it
+    for instance_name in instance_names:
+        if instance_name not in animal_names:
+            animal_names.append(instance_name)
+
     metadata_dict = {}
     metadata_dict['filename'] = video_file
     metadata_dict['pixels_per_meter'] = 0
