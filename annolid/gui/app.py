@@ -1202,6 +1202,8 @@ class AnnolidWindow(MainWindow):
             else:
                 self.frame_number = self.num_frames
             self.set_frame_number(self.frame_number)
+            # update the seekbar value
+            self.seekbar.setValue(self.frame_number)
 
         elif len(self.imageList) <= 0:
             return
@@ -1239,6 +1241,8 @@ class AnnolidWindow(MainWindow):
             else:
                 self.frame_number = 0
             self.set_frame_number(self.frame_number)
+            # update the seekbar value
+            self.seekbar.setValue(self.frame_number)
 
         elif len(self.imageList) <= 0:
             return
