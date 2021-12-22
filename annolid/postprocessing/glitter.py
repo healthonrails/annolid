@@ -27,7 +27,9 @@ def tracks2nix(video_file=None,
                score_threshold=None,
                motion_threshold=None,
                deep=False,
-               pretrained_model=None
+               pretrained_model=None,
+               subject_names=None,
+               behavior_names=None
                ):
     """
     Args:
@@ -60,8 +62,11 @@ def tracks2nix(video_file=None,
 
     _class_meta_data = draw.get_keypoint_connection_rules()
     keypoints_connection_rules, animal_names, behaviors, zones_names = _class_meta_data
+    animal_names = f"{animal_names} {' '.join(subject_names.split(','))}"
+    behaviors = f"{behaviors} {' '.join(behavior_names.split(','))}"
 
     _animal_object_list = animal_names.split()
+
     subject_animal_name = _animal_object_list[0]
     left_interact_object = _animal_object_list[1]
     right_interact_object = _animal_object_list[2]
@@ -185,7 +190,7 @@ def tracks2nix(video_file=None,
     # add an instance name to animal names list if not in it
     for instance_name in instance_names:
         if (instance_name not in animal_names and
-            instance_name not in behaviors
+                instance_name not in behaviors
             ):
             animal_names.append(instance_name)
 
@@ -417,9 +422,9 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                        score >= score_threshold
-                        and _class not in body_parts
-                        and _class not in animal_names
+                    score >= score_threshold
+                    and _class not in body_parts
+                    and _class not in animal_names
                     ):
 
                     if _class == 'grooming':
@@ -455,8 +460,8 @@ def tracks2nix(video_file=None,
                     is_keypoint_in_mask = keypoint_in_body_mask(
                         _frame_num, _class, subject_animal_name)
                     if (is_keypoint_in_mask
-                            or any(map(str.isdigit, _class))
-                            or _class in _animal_object_list
+                        or any(map(str.isdigit, _class))
+                        or _class in _animal_object_list
                         ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
@@ -469,8 +474,8 @@ def tracks2nix(video_file=None,
                                         0.65, color, 2)
 
                 if (left_interact > 0
-                            and 'left' in _class.lower()
-                            and 'interact' in _class.lower()
+                        and 'left' in _class.lower()
+                        and 'interact' in _class.lower()
                         ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
@@ -485,8 +490,8 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                    and 'right' in _class.lower() and
-                    'interact' in _class.lower()
+                        and 'right' in _class.lower() and
+                        'interact' in _class.lower()
                     ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1

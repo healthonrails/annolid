@@ -16,6 +16,8 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.score_threshold = 0.15
         self.motion_threshold = 0
         self.pretrained_model = None
+        self.subject_names = None
+        self.behaviors = None
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -68,6 +70,28 @@ class Glitter2Dialog(QtWidgets.QDialog):
         hboxZoneInfoLayout.addWidget(self.inputZoneInfoButton)
         self.groupBoxZoneFiles.setLayout(hboxZoneInfoLayout)
 
+        self.groupSubjectNames = QtWidgets.QGroupBox(
+            "a comma seperated list of subject names (Optional) "
+        )
+        self.subjectNamesLineEdit = QtWidgets.QLineEdit(self)
+        self.subjectNamesLineEdit.setPlaceholderText("mouse_01,mouse_02,...")
+        self.subjectNamesLineEdit.editingFinished.connect(
+            self.onSubjectLineEditingFinished)
+        hboxSubjectNamesLayout = QtWidgets.QHBoxLayout()
+        hboxSubjectNamesLayout.addWidget(self.subjectNamesLineEdit)
+        self.groupSubjectNames.setLayout(hboxSubjectNamesLayout)
+
+        self.groupBehaviorNames = QtWidgets.QGroupBox(
+            "a comma seperated list of behavior names (Optional) "
+        )
+        self.behaviorNamesLineEdit = QtWidgets.QLineEdit(self)
+        self.behaviorNamesLineEdit.setPlaceholderText('grooming,rearing,...')
+        self.behaviorNamesLineEdit.editingFinished.connect(
+            self.onBehaviorNamesFinishedEditing)
+        hboxBehaviorNamesLayout = QtWidgets.QHBoxLayout()
+        hboxBehaviorNamesLayout.addWidget(self.behaviorNamesLineEdit)
+        self.groupBehaviorNames.setLayout(hboxBehaviorNamesLayout)
+
         self.groupBoxPretrainedModelFiles = QtWidgets.QGroupBox(
             "Please select a pretrained model file (Optional)"
         )
@@ -88,6 +112,8 @@ class Glitter2Dialog(QtWidgets.QDialog):
         vbox.addWidget(self.groupBoxFiles)
         vbox.addWidget(self.label1)
         vbox.addWidget(self.slider)
+        vbox.addWidget(self.groupSubjectNames)
+        vbox.addWidget(self.groupBehaviorNames)
         vbox.addWidget(self.label2)
         vbox.addWidget(self.motion_slider)
         vbox.addWidget(self.groupBoxZoneFiles)
@@ -140,6 +166,12 @@ class Glitter2Dialog(QtWidgets.QDialog):
         )
         if self.zone_info_json is not None:
             self.inputZoneInfoLineEdit.setText(self.zone_info_json)
+
+    def onSubjectLineEditingFinished(self):
+        self.subject_names = self.subjectNamesLineEdit.text()
+
+    def onBehaviorNamesFinishedEditing(self):
+        self.behaviors = self.behaviorNamesLineEdit.text()
 
     def onPrtrainedModelButtonClicked(self):
         self.pretrained_model, filter = QtWidgets.QFileDialog.getOpenFileName(

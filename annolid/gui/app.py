@@ -1374,6 +1374,8 @@ class AnnolidWindow(MainWindow):
         score_threshold = None
         motion_threshold = None
         pretrained_model = None
+        subject_names = None
+        behaviors = None
 
         g_dialog = Glitter2Dialog()
         if g_dialog.exec_():
@@ -1384,6 +1386,8 @@ class AnnolidWindow(MainWindow):
             score_threshold = g_dialog.score_threshold
             motion_threshold = g_dialog.motion_threshold
             pretrained_model = g_dialog.pretrained_model
+            subject_names = g_dialog.subject_names
+            behavior_names = g_dialog.behaviors
         else:
             return
 
@@ -1404,7 +1408,9 @@ class AnnolidWindow(MainWindow):
             zone_info=zone_info_json,
             score_threshold=score_threshold,
             motion_threshold=motion_threshold,
-            pretrained_model=pretrained_model
+            pretrained_model=pretrained_model,
+            subject_names=subject_names,
+            behavior_names=behavior_names
         )
 
 
