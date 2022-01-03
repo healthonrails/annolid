@@ -1,7 +1,6 @@
 import os
 import cv2
 import pandas as pd
-import numpy as np
 import math
 import ast
 import json
@@ -43,7 +42,9 @@ def tracks2nix(video_file=None,
         score_threshold (float): the class score threshold between 0.0 to 1.0 to display the segmentation. 
         motion_threshold (float): threshold for motion between frames. defaults 0. 
         deep (bool): use deep learning based motion model. defaults to False.
-        pretrained_model (str): path to the trained motion model. defaults to None.  
+        pretrained_model (str): path to the trained motion model. defaults to None.
+        subject_name (str): a list of comma seperated subject names like vole_01,vole_02,...
+        behavior_names (str): a list of comma seperated behavior names like rearing,walking,... 
 
     Create a nix format csv file and annotated video
     """
@@ -67,6 +68,7 @@ def tracks2nix(video_file=None,
 
     _animal_object_list = animal_names.split()
 
+    # here we assume and use the first subject from the config file
     subject_animal_name = _animal_object_list[0]
     left_interact_object = _animal_object_list[1]
     right_interact_object = _animal_object_list[2]
@@ -86,7 +88,7 @@ def tracks2nix(video_file=None,
     try:
         df = df.drop(columns=['Unnamed: 0'])
     except KeyError:
-        return
+        print("data frame does not have a column named Unnmaed: 0")
 
     def get_bbox(frame_number):
         _df = df[df.frame_number == frame_number]
