@@ -63,8 +63,11 @@ def tracks2nix(video_file=None,
 
     _class_meta_data = draw.get_keypoint_connection_rules()
     keypoints_connection_rules, animal_names, behaviors, zones_names = _class_meta_data
-    animal_names = f"{animal_names} {' '.join(subject_names.split(','))}"
-    behaviors = f"{behaviors} {' '.join(behavior_names.split(','))}"
+
+    if subject_names is not None:
+        animal_names = f"{animal_names} {' '.join(subject_names.split(','))}"
+    if behavior_names is not None:
+        behaviors = f"{behaviors} {' '.join(behavior_names.split(','))}"
 
     _animal_object_list = animal_names.split()
 
