@@ -197,7 +197,7 @@ def tracks2nix(video_file=None,
         if (instance_name not in animal_names and
                 instance_name not in behaviors
             ):
-            animal_names.append(instance_name)
+            animal_names += ' ' + instance_name
 
     metadata_dict = {}
     metadata_dict['filename'] = video_file
