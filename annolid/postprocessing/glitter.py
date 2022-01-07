@@ -189,15 +189,15 @@ def tracks2nix(video_file=None,
                                    axis=1
                                    )
 
-    # find the unique list of all instance names
-    instance_names = df['instance_name'].unique()
+    # find the unique list of all instance names and remove nan
+    instance_names = df['instance_name'].dropna().unique()
 
     # add an instance name to animal names list if not in it
     for instance_name in instance_names:
         if (instance_name not in animal_names and
                 instance_name not in behaviors
             ):
-            animal_names.append(instance_name)
+            animal_names += ' ' + instance_name
 
     metadata_dict = {}
     metadata_dict['filename'] = video_file
