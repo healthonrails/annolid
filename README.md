@@ -39,24 +39,27 @@ Instance segmentations             |  Behavior prediction
 ```bash
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
+```
 
-# install the package
+* Install the package with pip
+```bash
 pip install -e .
 ```
-Note: if you got this error:
-```
-ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
-```
-, please try to install [ffmpeg](https://ffmpeg.org/) or you can install it in conda `conda install -c conda-forge ffmpeg`.
-
-FYI: it is helpful to compress videos to reduce diskspace using ffmpeg. 
+or with conda (recommended as this will install everything in a virtual environment)
 ```bash
-ffmpeg -i my_video.mp4 -vcodec libx264 my_video_compressed.mp4
+conda env create -f environment.yml
 ```
+
+
+Note: if you got this error:
+`ERROR: Could not find a version that satisfies the requirement decord>=0.4.0`
+try to install [ffmpeg](https://ffmpeg.org/) or you can install it in conda with `conda install -c conda-forge ffmpeg`.
+
+FYI: it is helpful to compress videos to reduce diskspace using ffmpeg using `ffmpeg -i my_video.mp4 -vcodec libx264 my_video_compressed.mp4`
 
 ## Launch annolid user interface based on labelme
 ```bash
-source activate your_env_name
+source activate annolid-env
 annolid
 #or you can provide a label.txt file as follows.
 annolid --labels=/path/to/labels_custom.txt
@@ -96,14 +99,14 @@ label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_fema
 * To track multiple animals, label each animal as a separate instance.
 * To generalize across animals or videos, label multiple animals as examples of the same instance.  
 
-# Docker 
+# Docker
 
-Please make sure that [Docker](https://www.docker.com/) is installed on your system. 
+Please make sure that [Docker](https://www.docker.com/) is installed on your system.
 ```
 # on Linux
 cd annolid/docker
-docker build . 
-xhost +local:docker 
+docker build .
+xhost +local:docker
 docker run -it -v /tmp/.X11-unix:/tmp/.X11-unix/ -e DISPLAY=$DISPLAY  <Image ID>
 
 ```
@@ -122,14 +125,14 @@ If you use Annolid in your research, please use the following BibTeX entry.
 .
 
 # SfN 2021 poster
-[Annolid: an instance segmentation-based multiple-animal tracking 
+[Annolid: an instance segmentation-based multiple-animal tracking
 and behavior analysis package
 ](https://youtu.be/tVIE6vG9Gao)
 
 
-# Pretrained models 
-The pretrained models will be shared to the [Google Drive folder](https://drive.google.com/drive/u/1/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF). 
+# Pretrained models
+The pretrained models will be shared to the [Google Drive folder](https://drive.google.com/drive/u/1/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF).
 
 # Feature requests and bug reports
 
-To request a new feature or report bugs, please use the link https://github.com/healthonrails/annolid/issues here. 
+To request a new feature or report bugs, please use the link https://github.com/healthonrails/annolid/issues here.
