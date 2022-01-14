@@ -129,9 +129,12 @@ If you use Annolid in your research, please use the following BibTeX entry.
 and behavior analysis package
 ](https://youtu.be/tVIE6vG9Gao)
 
+# Datasets
+**New** An example dataset annotated by Annolid and converted to COCO format dataset is now available from
+this Google Drive link https://drive.google.com/file/d/1fUXCLnoJ5SwXg54mj0NBKGzidsV8ALVR/view?usp=sharing.
 
 # Pretrained models
-The pretrained models will be shared to the [Google Drive folder](https://drive.google.com/drive/u/1/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF).
+The pretrained models will be shared to the [Google Drive folder](https://drive.google.com/drive/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF?usp=sharing).
 
 # Feature requests and bug reports
 
