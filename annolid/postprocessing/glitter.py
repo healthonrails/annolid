@@ -194,9 +194,10 @@ def tracks2nix(video_file=None,
 
     # add an instance name to animal names list if not in it
     for instance_name in instance_names:
-        if (instance_name not in animal_names and
-                instance_name not in behaviors
-            ):
+        if (instance_name not in animal_names and (
+                    instance_name not in behaviors
+                    or instance_name not in zones_names)
+                ):
             animal_names += ' ' + instance_name
 
     metadata_dict = {}
@@ -338,13 +339,14 @@ def tracks2nix(video_file=None,
                 score = score[0]
 
             if not pd.isnull(_mask) and overlay_mask:
-                if score >= score_threshold and (_class in animal_names
-                                                 or _class.lower() in animal_names):
-                    _mask = ast.literal_eval(_mask)
-                    mask_area = mask_util.area(_mask)
-                    _mask = mask_util.decode(_mask)[:, :]
-                    frame = draw.draw_binary_masks(
-                        frame, [_mask], [_class])
+                if _class not in zones_names:
+                    if score >= score_threshold and (_class in animal_names
+                                                     or _class.lower() in animal_names):
+                        _mask = ast.literal_eval(_mask)
+                        mask_area = mask_util.area(_mask)
+                        _mask = mask_util.decode(_mask)[:, :]
+                        frame = draw.draw_binary_masks(
+                            frame, [_mask], [_class])
 
             # In glitter, the y-axis is such that the bottom is zero and the top is height.
             # i.e. origin is bottom left
@@ -427,10 +429,10 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                    score >= score_threshold
-                    and _class not in body_parts
-                    and _class not in animal_names
-                    ):
+                        score >= score_threshold
+                        and _class not in body_parts
+                        and _class not in animal_names
+                        ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -465,9 +467,9 @@ def tracks2nix(video_file=None,
                     is_keypoint_in_mask = keypoint_in_body_mask(
                         _frame_num, _class, subject_animal_name)
                     if (is_keypoint_in_mask
-                        or any(map(str.isdigit, _class))
-                        or _class in _animal_object_list
-                        ):
+                            or any(map(str.isdigit, _class))
+                            or _class in _animal_object_list
+                            ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
                                        6,
@@ -481,7 +483,7 @@ def tracks2nix(video_file=None,
                 if (left_interact > 0
                         and 'left' in _class.lower()
                         and 'interact' in _class.lower()
-                        ):
+                    ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -495,9 +497,9 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                        and 'right' in _class.lower() and
-                        'interact' in _class.lower()
-                    ):
+                            and 'right' in _class.lower() and
+                            'interact' in _class.lower()
+                        ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
