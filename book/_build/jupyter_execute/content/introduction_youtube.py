@@ -5,6 +5,7 @@
 
 
 from ipywidgets import widgets
+from IPython import display
 from IPython.display import YouTubeVideo
 
 
@@ -16,7 +17,3 @@ display(video)
 
 
 # In[ ]:
-
-
-
-
