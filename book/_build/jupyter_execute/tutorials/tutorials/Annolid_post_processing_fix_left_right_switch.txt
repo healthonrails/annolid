@@ -1,0 +1,108 @@
+import pandas as pd
+import numpy as np
+import cv2
+from pycocotools import mask as mask_util
+import ast
+import plotly.express as px
+import plotly.graph_objects as go
+import warnings
+from google.colab import files
+from pathlib import  Path
+warnings.filterwarnings('ignore')
+%matplotlib inline
+
+TRACKING_CSV_FILE = "/content/tracking_results_with_segmenation.csv"
+df = pd.read_csv(TRACKING_CSV_FILE)
+
+df.head()
+
+height, width = ast.literal_eval(df.iloc[0].segmentation)['size']
+
+cx = (df.x1 + df.x2)/2
+cy = (df.y1 + df.y2)/2
+df['cx'] = cx
+df['cy'] = cy
+
+def switch_left_right(row,width=800):
+    instance_name = row['instance_name']
+    if 'cx' in row:
+        x_val = row['cx']
+    else:
+        x_val = row['x1']
+    if 'Left' in instance_name and x_val >= width / 2:
+        return instance_name.replace('Left','Right')
+    elif 'Right' in instance_name and x_val < width / 2:
+        return instance_name.replace('Right','Left')
+    return instance_name 
+
+df['instance_name'] = df.apply(lambda row: switch_left_right(row,width),axis=1)
+
+df.tail()
+
+df_leftzone = df[df.instance_name == 'LeftZone'].mode().iloc[0]
+df_rightzone = df[df.instance_name == 'RightZone'].mode().iloc[0]
+#Fill missing LeftZone
+instance_name = 'LeftZone'
+fill_value = df_leftzone
+for frame_number in df.frame_number:
+    instance_names = df[df.frame_number == frame_number].instance_name.to_list()
+    if instance_name not in instance_names:
+        fill_value.frame_number = frame_number
+        df = df.append(fill_value, ignore_index=True)
+
+#Fill missing RightZone
+instance_name = 'RightZone'
+fill_value = df_rightzone
+for frame_number in df.frame_number:
+    instance_names = df[df.frame_number == frame_number].instance_name.to_list()
+    if instance_name not in instance_names:
+        fill_value.frame_number = frame_number
+        df = df.append(fill_value, ignore_index=True)
+
+#disable false positive warning
+pd.options.mode.chained_assignment = None
+moving_window=5
+all_instance_names = set(df.instance_name.unique())
+count = 0
+excluded_instances = set(['Nose','Center','Tailbase','LeftInteract','RightInteract'])
+# do not fill body parts
+all_instance_names = all_instance_names - excluded_instances
+print("Fill the instane with name in the list: ", all_instance_names)
+missing_predictions = []
+max_frame_number = df.frame_number.max()
+for frame_number in df.frame_number:
+    pred_instance = set(
+        df[df.frame_number==frame_number].instance_name.unique()
+        )
+    missing_instance = all_instance_names - pred_instance
+    for instance_name in missing_instance:
+        frame_range_end=frame_number + moving_window
+        if frame_range_end > max_frame_number:
+            df_instance = df[(df.frame_number.between(max_frame_number-moving_window,
+                                                      max_frame_number)) &
+                             (df.instance_name == instance_name)
+                            ]
+           
+        else:
+            
+            df_instance = df[
+                            (df.frame_number.between(frame_number,
+                                                      frame_range_end))
+                            & (df.instance_name == instance_name)
+                            ]
+        if df_instance.shape[0] >= 1:
+            fill_value = df_instance.iloc[0]
+        else:
+            #(f"No instances {instance_name} in this window")
+            # move to the next frame
+            continue
+        fill_value.frame_number = frame_number
+        missing_predictions.append(fill_value)
+        count += 1
+        if count % 1000 == 0:
+            print(f'Filling {count} missing {instance_name}')
+df = df.append(missing_predictions, ignore_index=True)
+
+tracking_results_csv = f"{Path(TRACKING_CSV_FILE).stem}_fixed_left_right_switches.csv"
+df.to_csv(tracking_results_csv)
+files.download(tracking_results_csv)

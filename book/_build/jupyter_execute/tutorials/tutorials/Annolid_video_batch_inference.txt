@@ -1,0 +1,69 @@
+# install dependencies: 
+!pip install pyyaml==5.3
+import torch, torchvision
+print(torch.__version__, torch.cuda.is_available())
+!gcc --version
+# opencv is pre-installed on colab
+
+!pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.9/index.html
+
+!git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+
+%cd annolid
+
+!pip install -e .
+
+import numpy as np
+import cv2
+import glob
+import requests
+import pandas as pd
+from pathlib import Path
+from annolid.annotation.keypoints import save_labels
+from annolid.postprocessing.quality_control import pred_dict_to_labelme
+from annolid.data.videos import frame_from_video
+from annolid.inference.predict import Segmentor
+
+from google.colab import files
+
+uploaded = files.upload()
+
+for fn in uploaded.keys():
+  print('User uploaded file "{name}" with length {length} bytes'.format(
+      name=fn, length=len(uploaded[fn])))
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+!unzip /content/my_coco_dataset.zip -d /content
+
+DATASET_DIR = "/content/my_coco_dataset"
+MODEL_PATH =  "/content/model_final.pth"
+VIDEOS_FOLDER = '/content/my_videos'
+
+predictor = Segmentor(DATASET_DIR,MODEL_PATH)
+
+video_files = glob.glob(VIDEOS_FOLDER + '/*.*')
+
+for video_file in video_files:
+  cap = cv2.VideoCapture(video_file)
+  if cap.isOpened():
+    cap.release()
+    print("Working on video, ", video_file)
+    predictor.on_video(video_file)
+  else:
+    print("Cannot open this file", video_file)
+    cap.release()
+
+from google.colab import files
+tracking_csv_files = glob.glob(str(Path(DATASET_DIR).parent) + '/*mask*tracking*.csv')
+for tcf in tracking_csv_files:
+    files.download(tcf)
+
+import shutil
+
+for tcf in tracking_csv_files:
+    shutil.copy(tcf, '/content/drive/MyDrive/')
+
+drive.flush_and_unmount()
+print('All changes made in this colab session should now be visible in Drive.')

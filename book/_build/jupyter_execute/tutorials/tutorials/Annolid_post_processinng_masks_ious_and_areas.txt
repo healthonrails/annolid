@@ -1,0 +1,183 @@
+import pandas as pd
+import numpy as np
+import cv2
+from pycocotools import mask as mask_util
+import ast
+import plotly.express as px
+import plotly.graph_objects as go
+import warnings
+warnings.filterwarnings('ignore')
+%matplotlib inline
+
+TRACKING_CSV_FILE = "tracking_results_with_segmenation.csv" 
+
+df = pd.read_csv(TRACKING_CSV_FILE)
+
+df.head()
+
+# remove predictions with class score less than or equal to 0.5
+df = df[df.class_score > 0.5]
+
+video_height, video_width = ast.literal_eval(df.iloc[0].segmentation)['size']
+
+cx = (df.x1 + df.x2)/2
+cy = (df.y1 + df.y2)/2
+df['cx'] = cx
+df['cy'] = cy
+
+def mask_perimeter(mask):
+    """calculate perimeter for a given binary mask
+    """
+    try:
+        mask = mask_util.decode(mask)
+    except TypeError:
+        mask = ast.literal_eval(mask)
+        rle = [mask]
+        mask = mask_util.decode(rle)
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP,
+                           cv2.CHAIN_APPROX_SIMPLE)
+    cnt = contours[0]
+    perimeter = cv2.arcLength(cnt, True)
+    return perimeter
+
+df['mask_perimeter'] = df.segmentation.apply(mask_perimeter)
+
+def mask_iou(this_mask, other_mask):
+    """
+    Calculate intersection over union between two masks.
+    """
+    try:
+        _iou = mask_util.iou([this_mask],[other_mask],[False,False])
+    except Exception:
+        this_mask = ast.literal_eval(this_mask)
+        other_mask = ast.literal_eval(other_mask)
+        _iou = mask_util.iou([this_mask],[other_mask],[False,False])
+    return _iou.flatten()[0]
+
+def mask_area(mask):
+    """Calulate the area of a RLE mask.
+    """
+    try:
+        area = mask_util.area(mask)
+    except TypeError:
+        mask = ast.literal_eval(mask)
+        area = mask_util.area(mask)
+    return area
+
+df['mask_area'] = df.segmentation.apply(mask_area)
+
+#mask_perimeter_threshold=df[df.instance_name=='P6_Lone'].mask_perimeter.mean()
+
+#mask_perimeter_threshold
+
+# remove P6_Lone instances with perimeter of 1 /2 size of average P6_Lone mask perimeter
+#df = df[~(df.mask_perimeter <= (mask_perimeter_threshold /2))]
+
+# remove P6_Huddle instances with mask perimeter less than 1.1 times of the avarge perimeter of P6_Lone
+#df = df[~((df.mask_perimeter <= 1.1 * mask_perimeter_threshold) & (df.instance_name == 'P6_Huddle'))]
+
+# remove P6_Lone instances with mask perimeter greater than 1.3 the average perimeter of the P6_Lone
+#df = df[~((df.instance_name == 'P6_Lone') & (df.mask_perimeter > 1.3 * mask_perimeter_threshold))]
+
+def iou_values(row):
+    frame_number = row.frame_number
+    df_cur = df[df["frame_number"]==frame_number].sort_values(by=['Unnamed: 0'])
+    masks = df_cur['segmentation'].values
+    masks = [ast.literal_eval(mask) for mask in masks]
+    ious = mask_util.iou(masks, masks, [False]*len(masks))
+    ious[np.diag_indices_from(ious)] = 0
+    return ious
+
+df['iou_values'] = df.apply(lambda row: iou_values(row),axis=1)
+
+df['overlap_indxs'] = df.iou_values.apply(lambda iou: np.argwhere(np.tril(iou)>0))
+
+df['ious'] = df.iou_values.apply(lambda iou_arr: np.sum(np.nonzero(np.tril(iou_arr))))
+
+df_no_overlap =df[df.ious <= 0]
+
+df_no_overlap['is_removed'] = False
+
+df_overlap = df[df.ious > 0]
+
+def merge_overlapped_masks(row):
+    frame_number = row.frame_number
+    df_cur_ = df_overlap[df_overlap.frame_number == frame_number]
+    df_cur_.reset_index(inplace=True)
+    overlapped_pairs = df_cur_.iou_values.apply(lambda mx: np.nonzero(np.tril(mx)))
+    unique_overlapped_masks = []
+    for pair in overlapped_pairs:
+        om = tuple(set(list(pair[0]) + list(pair[1])))
+        unique_overlapped_masks.append(om)
+    oms = set(unique_overlapped_masks)
+    if len(oms) > 0:
+        mask_idxs = list(oms)[0]
+        df_cur_ = df_cur_.iloc[list(mask_idxs)]
+        masks = df_cur_['segmentation'].values
+        masks = [ast.literal_eval(mask) for mask in masks]
+        merged_mask = mask_util.merge(masks)
+        if 'P6_Huddle' in df_cur_.instance_name.unique():
+            merged_idx = df_cur_[df_cur_.instance_name=='P6_Huddle']['Unnamed: 0'].values[0]
+            df_overlap.loc[merged_idx, 'segmentation'] = str(merged_mask)
+            remove_idx = set(df_cur_['Unnamed: 0'].to_list()) - set([merged_idx])
+            if row['Unnamed: 0'] in remove_idx:
+                return True
+        else:
+            merged_idx = df_cur_[df_cur_.instance_name=='P6_Lone']['Unnamed: 0'].values[0]
+            df_overlap.loc[merged_idx, 'segmentation'] = str(merged_mask)
+            df_overlap.loc[merged_idx, 'instance_name'] = 'P6_Huddle'
+            remove_idx = set(df_cur_['Unnamed: 0'].to_list()) - set([merged_idx])
+            if row['Unnamed: 0'] in remove_idx:
+                return True
+    return False
+
+
+df_overlap['is_removed'] = df_overlap.apply(lambda row: merge_overlapped_masks(row),axis=1)
+
+
+frames = [df_no_overlap, df_overlap]
+df_final = pd.concat(frames)
+
+df_final = df_final.drop(df_final[df_final.is_removed==True].index)
+df_final.dropna(inplace=True)
+
+print(f"Removed {len(df)-len(df_final)} overlapping predictions")
+
+df_final.to_csv(TRACKING_CSV_FILE.replace('.csv','_remove_overlapped.csv'))
+
+fig = px.scatter(df_final, 
+                 x="cx",
+                 y="cy", 
+                 range_x=[0,video_width],
+                 range_y=[0,video_height],
+                 color="instance_name",
+                 hover_data=['frame_number','cx','cy'])
+fig.show()
+
+fig2 = px.violin(df_final, 
+                 x='instance_name',
+                 y="mask_area",
+                 box=True,
+                 color="instance_name",
+                 points="outliers",
+                 hover_data=['frame_number','cx','cy','mask_perimeter']
+               )
+fig2.show()
+
+FPS = 30
+
+df_final['time_in_seconds'] = df_final.frame_number / FPS
+
+df_final_sec = df_final.groupby(['instance_name'])['frame_number'].count() / FPS 
+
+df_final_sec.plot.bar(ylabel='Time in seconds')
+
+fig3 = px.violin(df_final, 
+                 x='instance_name',
+                 y="time_in_seconds",
+                 box=True,
+                 color="instance_name",
+                 points="outliers",
+                 hover_data=['frame_number','cx','cy','mask_perimeter']
+               )
+fig3.show()
