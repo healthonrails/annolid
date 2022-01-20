@@ -6,13 +6,14 @@
 # In[ ]:
 
 
-#This is modified from https://voxel51.com/docs/fiftyone/tutorials/evaluate_detections.html
+# This is modified from https://voxel51.com/docs/fiftyone/tutorials/evaluate_detections.html
 #!pip install fiftyone
 
 
 # In[ ]:
 
-
+from fiftyone import ViewField as F
+from IPython import get_ipython
 import torch
 import cv2
 import torchvision
@@ -53,7 +54,7 @@ labels_path = "/path/to/my_coco_dataset/valid/annotations.json"
 
 
 segmentor = Segmentor("/path/to/my_coco_dataset",
-        "/path/to/model_final.pth")
+                      "/path/to/model_final.pth")
 
 
 # In[ ]:
@@ -165,10 +166,9 @@ session.view = predictions_view
 # In[ ]:
 
 
-from fiftyone import ViewField as F
-
 # Only contains detections with confidence >= 0.15
-high_conf_view = predictions_view.filter_labels("mask_rcnn", F("confidence") > 0.15)
+high_conf_view = predictions_view.filter_labels(
+    "mask_rcnn", F("confidence") > 0.15)
 
 
 # In[ ]:
@@ -231,9 +231,9 @@ session.freeze()  # screenshot the active App for sharing
 # Tag all highly confident false positives as "possibly-missing"
 (
     high_conf_view
-        .filter_labels("mask_rcnn", F("eval") == "fp")
-        .select_fields("mask_rcnn")
-        .tag_labels("possibly-missing")
+    .filter_labels("mask_rcnn", F("eval") == "fp")
+    .select_fields("mask_rcnn")
+    .tag_labels("possibly-missing")
 )
 
 
@@ -243,8 +243,8 @@ session.freeze()  # screenshot the active App for sharing
 # Export all labels with the `possibly-missing` tag in CVAT format
 (
     dataset
-        .select_labels(tags=["possibly-missing"])
-        .export("~/Downloads/possoible-missing-dataset", fo.types.COCODetectionDataset)
+    .select_labels(tags=["possibly-missing"])
+    .export("~/Downloads/possoible-missing-dataset", fo.types.COCODetectionDataset)
 )
 
 
@@ -298,9 +298,9 @@ small_boxes_results = small_boxes_eval_view.evaluate_detections(
 # In[ ]:
 
 
-
 # Get the 10 most common small object classes
-small_counts = small_boxes_eval_view.count_values("ground_truth.detections.label")
+small_counts = small_boxes_eval_view.count_values(
+    "ground_truth.detections.label")
 classes_top10_small = sorted(small_counts, key=counts.get, reverse=True)[:10]
 
 # Print a classification report for the top-10 small object classes
@@ -308,7 +308,3 @@ small_boxes_results.print_report(classes=classes_top10_small)
 
 
 # In[ ]:
-
-
-
-
