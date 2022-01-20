@@ -1,0 +1,1168 @@
+
+<!DOCTYPE html>
+
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>“PointRend in Detectron2” Tutorial &#8212; Annolid Documentation</title>
+    
+  <link href="../../_static/css/theme.css" rel="stylesheet">
+  <link href="../../_static/css/index.ff1ffe594081f20da1ef19478df9384b.css" rel="stylesheet">
+
+    
+  <link rel="stylesheet"
+    href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+  <link rel="preload" as="font" type="font/woff2" crossorigin
+    href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin
+    href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+
+    
+      
+
+    
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-book-theme.css?digest=c3fdc42140077d1ad13ad2f1588a4309" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/mystnb.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-thebe.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/panels-main.c949a650a448cc0ae9fd3441c0e17fb0.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/panels-variables.06eb56fa6e07937060861dad626602ad.css" />
+    
+  <link rel="preload" as="script" href="../../_static/js/index.be7d3bbb2ef33a8344ce.js">
+
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/jquery.js"></script>
+    <script src="../../_static/underscore.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/togglebutton.js"></script>
+    <script src="../../_static/clipboard.min.js"></script>
+    <script src="../../_static/copybutton.js"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown, .tag_hide_input div.cell_input, .tag_hide-input div.cell_input, .tag_hide_output div.cell_output, .tag_hide-output div.cell_output, .tag_hide_cell.cell, .tag_hide-cell.cell';</script>
+    <script src="../../_static/sphinx-book-theme.d59cb220de22ca1c485ebbdc042f0030.js"></script>
+    <script async="async" src="https://unpkg.com/thebe@0.5.1/lib/index.js"></script>
+    <script>
+        const thebe_selector = ".thebe"
+        const thebe_selector_input = "pre"
+        const thebe_selector_output = ".output"
+    </script>
+    <script async="async" src="../../_static/sphinx-thebe.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="None">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+    <div class="container-xl">
+      <div class="row">
+          
+<div class="col-12 col-md-3 bd-sidebar site-navigation show" id="site-navigation">
+    
+        <div class="navbar-brand-box">
+    <a class="navbar-brand text-wrap" href="../../index.html">
+      
+        <!-- `logo` is deprecated in Sphinx 4.0, so remove this when we stop supporting 3 -->
+        
+      
+      
+      <img src="../../_static/cpl_logo.png" class="logo" alt="logo">
+      
+      
+      <h1 class="site-logo" id="site-title">Annolid Documentation</h1>
+      
+    </a>
+</div><form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search this book..." aria-label="Search this book..." autocomplete="off" >
+</form><nav class="bd-links" id="bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item active">
+        <ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/README.html">
+   Annolid Documentation
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Getting Started
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/introduction.html">
+   Introduction
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/high_level_overview.html">
+   High level overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/how_to_install.html">
+   How to install
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/docker_container.html">
+   Docker
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/gui_or_cli.html">
+   GUI or CLI ?
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/labelling_images.html">
+   How to label images
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/tips_and_tricks.html">
+   Tips and tricks
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Annolid Zoo
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/annolid_zoo.html">
+   Annolid ModelZoo
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Community
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/contributing.html">
+   New contributor guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/get_in_touch.html">
+   Get in touch
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/licence.html">
+   Licence
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/cite_annolid.html">
+   Cite Annolid
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../content/work_based_on_annolid.html">
+   Work based on annolid
+  </a>
+ </li>
+</ul>
+
+    </div>
+</nav> <!-- To handle the deprecated key -->
+
+<div class="navbar_extra_footer">
+  Powered by <a href="https://jupyterbook.org">Jupyter Book</a>
+</div>
+
+</div>
+
+
+          
+
+
+          
+<main class="col py-md-3 pl-md-4 bd-content overflow-auto" role="main">
+    
+    <div class="topbar container-xl fixed-top">
+    <div class="topbar-contents row">
+        <div class="col-12 col-md-3 bd-topbar-whitespace site-navigation show"></div>
+        <div class="col pl-md-4 topbar-main">
+            
+            <button id="navbar-toggler" class="navbar-toggler ml-0" type="button" data-toggle="collapse"
+                data-toggle="tooltip" data-placement="bottom" data-target=".site-navigation" aria-controls="navbar-menu"
+                aria-expanded="true" aria-label="Toggle navigation" aria-controls="site-navigation"
+                title="Toggle navigation" data-toggle="tooltip" data-placement="left">
+                <i class="fas fa-bars"></i>
+                <i class="fas fa-arrow-left"></i>
+                <i class="fas fa-arrow-up"></i>
+            </button>
+            
+            
+<div class="dropdown-buttons-trigger">
+    <button id="dropdown-buttons-trigger" class="btn btn-secondary topbarbtn" aria-label="Download this page"><i
+            class="fas fa-download"></i></button>
+
+    <div class="dropdown-buttons">
+        <!-- ipynb file if we had a myst markdown file -->
+        
+        <!-- Download raw file -->
+        <a class="dropdown-buttons" href="../../_sources/tutorials/tutorials/PointRend_in_Detectron2_Tutorial.ipynb"><button type="button"
+                class="btn btn-secondary topbarbtn" title="Download source file" data-toggle="tooltip"
+                data-placement="left">.ipynb</button></a>
+        <!-- Download PDF via print -->
+        <button type="button" id="download-print" class="btn btn-secondary topbarbtn" title="Print to PDF"
+                onclick="printPdf(this)" data-toggle="tooltip" data-placement="left">.pdf</button>
+    </div>
+</div>
+
+            <!-- Source interaction buttons -->
+
+<div class="dropdown-buttons-trigger">
+    <button id="dropdown-buttons-trigger" class="btn btn-secondary topbarbtn"
+        aria-label="Connect with source repository"><i class="fab fa-github"></i></button>
+    <div class="dropdown-buttons sourcebuttons">
+        <a class="repository-button"
+            href="https://github.com/jeremyforest/annolid/"><button type="button" class="btn btn-secondary topbarbtn"
+                data-toggle="tooltip" data-placement="left" title="Source repository"><i
+                    class="fab fa-github"></i>repository</button></a>
+        <a class="issues-button"
+            href="https://github.com/jeremyforest/annolid//issues/new?title=Issue%20on%20page%20%2Ftutorials/tutorials/PointRend_in_Detectron2_Tutorial.html&body=Your%20issue%20content%20here."><button
+                type="button" class="btn btn-secondary topbarbtn" data-toggle="tooltip" data-placement="left"
+                title="Open an issue"><i class="fas fa-lightbulb"></i>open issue</button></a>
+        
+    </div>
+</div>
+
+            <!-- Full screen (wrap in <a> to have style consistency -->
+
+<a class="full-screen-button"><button type="button" class="btn btn-secondary topbarbtn" data-toggle="tooltip"
+        data-placement="bottom" onclick="toggleFullScreen()" aria-label="Fullscreen mode"
+        title="Fullscreen mode"><i
+            class="fas fa-expand"></i></button></a>
+
+            <!-- Launch buttons -->
+
+<div class="dropdown-buttons-trigger">
+    <button id="dropdown-buttons-trigger" class="btn btn-secondary topbarbtn"
+        aria-label="Launch interactive content"><i class="fas fa-rocket"></i></button>
+    <div class="dropdown-buttons">
+        
+        <a class="binder-button" href="https://mybinder.org/v2/gh/jeremyforest/annolid/master?urlpath=tree/book/tutorials/tutorials/PointRend_in_Detectron2_Tutorial.ipynb"><button type="button"
+                class="btn btn-secondary topbarbtn" title="Launch Binder" data-toggle="tooltip"
+                data-placement="left"><img class="binder-button-logo"
+                    src="../../_static/images/logo_binder.svg"
+                    alt="Interact on binder">Binder</button></a>
+        
+        
+        
+        
+    </div>
+</div>
+
+        </div>
+
+        <!-- Table of contents -->
+        <div class="d-none d-md-block col-md-2 bd-toc show noprint">
+            
+            <div class="tocsection onthispage pt-5 pb-3">
+                <i class="fas fa-list"></i> Contents
+            </div>
+            <nav id="bd-toc-nav" aria-label="Page">
+                <ul class="visible nav section-nav flex-column">
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#">
+   “PointRend in Detectron2” Tutorial
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#install-detectron2">
+   Install detectron2
+  </a>
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#upload-a-labeled-coco-format-dataset-as-follows">
+     Upload a labeled COCO format dataset as follows
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-a-pre-trained-pointrend-model">
+   Run a pre-trained PointRend model
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#train">
+   Train
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#visualize-pointrend-point-sampling-process">
+   Visualize PointRend point sampling process
+  </a>
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#point-sampling-during-training">
+     Point sampling during training
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#point-sampling-during-inference">
+     Point sampling during inference
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+
+            </nav>
+        </div>
+    </div>
+</div>
+    <div id="main-content" class="row">
+        <div class="col-12 col-md-9 pl-md-3 pr-md-0">
+            <!-- Table of contents that is only displayed when printing the page -->
+            <div id="jb-print-docs-body" class="onlyprint">
+                <h1>“PointRend in Detectron2” Tutorial</h1>
+                <!-- Table of contents -->
+                <div id="print-main-content">
+                    <div id="jb-print-toc">
+                        
+                        <div>
+                            <h2> Contents </h2>
+                        </div>
+                        <nav aria-label="Page">
+                            <ul class="visible nav section-nav flex-column">
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#">
+   “PointRend in Detectron2” Tutorial
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#install-detectron2">
+   Install detectron2
+  </a>
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#upload-a-labeled-coco-format-dataset-as-follows">
+     Upload a labeled COCO format dataset as follows
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-a-pre-trained-pointrend-model">
+   Run a pre-trained PointRend model
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#train">
+   Train
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#visualize-pointrend-point-sampling-process">
+   Visualize PointRend point sampling process
+  </a>
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#point-sampling-during-training">
+     Point sampling during training
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#point-sampling-during-inference">
+     Point sampling during inference
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+
+                        </nav>
+                    </div>
+                </div>
+            </div>
+            
+              <div>
+                
+  <p><a href="https://colab.research.google.com/github/healthonrails/annolid/blob/main/docs/tutorials/PointRend_in_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a></p>
+<div class="tex2jax_ignore mathjax_ignore section" id="pointrend-in-detectron2-tutorial">
+<h1>“<a class="reference external" href="https://arxiv.org/abs/1912.08193">PointRend</a> in Detectron2” Tutorial<a class="headerlink" href="#pointrend-in-detectron2-tutorial" title="Permalink to this headline">¶</a></h1>
+<img src="https://dl.fbaipublicfiles.com/detectron2/Detectron2-Logo-Horz.png" width="500">
+<p>Welcome to the <a class="reference external" href="https://github.com/facebookresearch/detectron2/tree/master/projects/PointRend">PointRend project</a> in detectron2! In this tutorial, we will go through some basics usage of PointRend, including the following:</p>
+<ul class="simple">
+<li><p>Run inference on images or videos, with an existing PointRend model</p></li>
+<li><p>Look into PointRend internal representation.</p></li>
+</ul>
+<p>You can make a copy of this tutorial or use “File -&gt; Open in playground mode” to play with it yourself.</p>
+</div>
+<div class="tex2jax_ignore mathjax_ignore section" id="install-detectron2">
+<h1>Install detectron2<a class="headerlink" href="#install-detectron2" title="Permalink to this headline">¶</a></h1>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span># install dependencies: 
+!pip install pyyaml==5.1
+import torch, torchvision
+print(torch.__version__, torch.cuda.is_available())
+!gcc --version
+# opencv is pre-installed on colab
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span># install detectron2: (Colab has CUDA 10.1 + torch 1.8)
+# See https://detectron2.readthedocs.io/tutorials/install.html for instructions
+import torch
+assert torch.__version__.startswith(&quot;1.8&quot;)   # need to manually install torch 1.8 if Colab changes its default version
+!pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu101/torch1.8/index.html
+# exit(0)  # After installation, you need to &quot;restart runtime&quot; in Colab. This line can also restart runtime
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span># clone the repo in order to access pre-defined configs
+!git clone --branch v0.3 https://github.com/facebookresearch/detectron2.git detectron2_repo
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># You may need to restart your runtime prior to this, to let your installation take effect</span>
+<span class="c1"># Some basic setup:</span>
+<span class="c1"># Setup detectron2 logger</span>
+<span class="kn">import</span> <span class="nn">detectron2</span>
+<span class="kn">from</span> <span class="nn">detectron2.utils.logger</span> <span class="kn">import</span> <span class="n">setup_logger</span>
+<span class="n">setup_logger</span><span class="p">()</span>
+
+<span class="c1"># import some common libraries</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+<span class="kn">import</span> <span class="nn">cv2</span>
+<span class="kn">import</span> <span class="nn">torch</span>
+<span class="kn">from</span> <span class="nn">google.colab.patches</span> <span class="kn">import</span> <span class="n">cv2_imshow</span>
+
+<span class="c1"># import some common detectron2 utilities</span>
+<span class="kn">from</span> <span class="nn">detectron2</span> <span class="kn">import</span> <span class="n">model_zoo</span>
+<span class="kn">from</span> <span class="nn">detectron2.engine</span> <span class="kn">import</span> <span class="n">DefaultPredictor</span>
+<span class="kn">from</span> <span class="nn">detectron2.config</span> <span class="kn">import</span> <span class="n">get_cfg</span>
+<span class="kn">from</span> <span class="nn">detectron2.utils.visualizer</span> <span class="kn">import</span> <span class="n">Visualizer</span><span class="p">,</span> <span class="n">ColorMode</span>
+<span class="kn">from</span> <span class="nn">detectron2.data</span> <span class="kn">import</span> <span class="n">MetadataCatalog</span>
+<span class="n">coco_metadata</span> <span class="o">=</span> <span class="n">MetadataCatalog</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;coco_2017_val&quot;</span><span class="p">)</span>
+
+<span class="c1"># import PointRend project</span>
+<span class="kn">from</span> <span class="nn">detectron2.projects</span> <span class="kn">import</span> <span class="n">point_rend</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="upload-a-labeled-coco-format-dataset-as-follows">
+<h2>Upload a labeled COCO format dataset as follows<a class="headerlink" href="#upload-a-labeled-coco-format-dataset-as-follows" title="Permalink to this headline">¶</a></h2>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">google.colab</span> <span class="kn">import</span> <span class="n">files</span>
+<span class="n">uploaded</span> <span class="o">=</span> <span class="n">files</span><span class="o">.</span><span class="n">upload</span><span class="p">()</span>
+<span class="n">dataset</span> <span class="o">=</span>  <span class="nb">list</span><span class="p">(</span><span class="n">uploaded</span><span class="o">.</span><span class="n">keys</span><span class="p">())[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1">#&quot;/content/dataset.zip&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># please uncomment and change the dataset location in case your dataset is</span>
+<span class="c1"># already upload to colab</span>
+<span class="c1">#dataset = &quot;/content/novelctrlk6_8_coco_dataset&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>!unzip $dataset -d /content/
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="tex2jax_ignore mathjax_ignore section" id="run-a-pre-trained-pointrend-model">
+<h1>Run a pre-trained PointRend model<a class="headerlink" href="#run-a-pre-trained-pointrend-model" title="Permalink to this headline">¶</a></h1>
+<p>We first download an image from the COCO dataset:</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+<span class="n">im</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">imread</span><span class="p">(</span><span class="s2">&quot;/content/novelctrlk6_8_coco_dataset/train/JPEGImages/00001980_61.jpg&quot;</span><span class="p">)</span>
+<span class="n">cv2_imshow</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Then, we create a detectron2 config and a detectron2 <code class="docutils literal notranslate"><span class="pre">DefaultPredictor</span></code> to run inference on this image. First, we make a prediction using a standard Mask R-CNN model.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">get_cfg</span><span class="p">()</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">merge_from_file</span><span class="p">(</span><span class="n">model_zoo</span><span class="o">.</span><span class="n">get_config_file</span><span class="p">(</span><span class="s2">&quot;COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml&quot;</span><span class="p">))</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">ROI_HEADS</span><span class="o">.</span><span class="n">SCORE_THRESH_TEST</span> <span class="o">=</span> <span class="mf">0.5</span>  <span class="c1"># set threshold for this model</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">WEIGHTS</span> <span class="o">=</span> <span class="n">model_zoo</span><span class="o">.</span><span class="n">get_checkpoint_url</span><span class="p">(</span><span class="s2">&quot;COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml&quot;</span><span class="p">)</span>
+<span class="n">mask_rcnn_predictor</span> <span class="o">=</span> <span class="n">DefaultPredictor</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+<span class="n">mask_rcnn_outputs</span> <span class="o">=</span> <span class="n">mask_rcnn_predictor</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Now, we load a PointRend model and show its prediction.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">get_cfg</span><span class="p">()</span>
+<span class="c1"># Add PointRend-specific config</span>
+<span class="n">point_rend</span><span class="o">.</span><span class="n">add_pointrend_config</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+<span class="c1"># Load a config from file</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">merge_from_file</span><span class="p">(</span><span class="s2">&quot;detectron2_repo/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml&quot;</span><span class="p">)</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">ROI_HEADS</span><span class="o">.</span><span class="n">SCORE_THRESH_TEST</span> <span class="o">=</span> <span class="mf">0.15</span>  <span class="c1"># set threshold for this model</span>
+<span class="c1"># Use a model from PointRend model zoo: https://github.com/facebookresearch/detectron2/tree/master/projects/PointRend#pretrained-models</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">WEIGHTS</span> <span class="o">=</span> <span class="s2">&quot;detectron2://PointRend/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco/164955410/model_final_3c3198.pkl&quot;</span>
+<span class="n">predictor</span> <span class="o">=</span> <span class="n">DefaultPredictor</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+<span class="n">outputs</span> <span class="o">=</span> <span class="n">predictor</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Show and compare two predictions: </span>
+<span class="n">v</span> <span class="o">=</span> <span class="n">Visualizer</span><span class="p">(</span><span class="n">im</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">coco_metadata</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">1.2</span><span class="p">,</span> <span class="n">instance_mode</span><span class="o">=</span><span class="n">ColorMode</span><span class="o">.</span><span class="n">IMAGE_BW</span><span class="p">)</span>
+<span class="n">mask_rcnn_result</span> <span class="o">=</span> <span class="n">v</span><span class="o">.</span><span class="n">draw_instance_predictions</span><span class="p">(</span><span class="n">mask_rcnn_outputs</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">get_image</span><span class="p">()</span>
+<span class="n">v</span> <span class="o">=</span> <span class="n">Visualizer</span><span class="p">(</span><span class="n">im</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">coco_metadata</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">1.2</span><span class="p">,</span> <span class="n">instance_mode</span><span class="o">=</span><span class="n">ColorMode</span><span class="o">.</span><span class="n">IMAGE_BW</span><span class="p">)</span>
+<span class="n">point_rend_result</span> <span class="o">=</span> <span class="n">v</span><span class="o">.</span><span class="n">draw_instance_predictions</span><span class="p">(</span><span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">get_image</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Mask R-CNN with PointRend (top)     vs.     Default Mask R-CNN (bottom)&quot;</span><span class="p">)</span>
+<span class="n">cv2_imshow</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">((</span><span class="n">point_rend_result</span><span class="p">,</span> <span class="n">mask_rcnn_result</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">DATASET_NAME</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">dataset</span><span class="p">)</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;_&#39;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span> 
+<span class="n">DATASET_DIR</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">dataset</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;.zip&#39;</span><span class="p">,</span><span class="s1">&#39;&#39;</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># if your dataset is in COCO format, this cell can be replaced by the following three lines:</span>
+<span class="kn">from</span> <span class="nn">detectron2.data.datasets</span> <span class="kn">import</span> <span class="n">register_coco_instances</span>
+<span class="n">register_coco_instances</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_train&quot;</span><span class="p">,</span> <span class="p">{},</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_DIR</span><span class="si">}</span><span class="s2">/train/annotations.json&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_DIR</span><span class="si">}</span><span class="s2">/train/&quot;</span><span class="p">)</span>
+<span class="n">register_coco_instances</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_valid&quot;</span><span class="p">,</span> <span class="p">{},</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_DIR</span><span class="si">}</span><span class="s2">/valid/annotations.json&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_DIR</span><span class="si">}</span><span class="s2">/valid/&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.data</span> <span class="kn">import</span> <span class="n">get_detection_dataset_dicts</span>
+<span class="n">dataset_dicts</span> <span class="o">=</span> <span class="n">get_detection_dataset_dicts</span><span class="p">([</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_train&quot;</span><span class="p">])</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">_dataset_metadata</span> <span class="o">=</span> <span class="n">MetadataCatalog</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_train&quot;</span><span class="p">)</span>
+<span class="n">_dataset_metadata</span>
+<span class="n">_dataset_metadata</span><span class="o">.</span><span class="n">thing_classes</span>
+<span class="n">_dataset_metadata</span><span class="o">.</span><span class="n">thing_dataset_id_to_contiguous_id</span>
+<span class="n">_dataset_metadata</span><span class="o">.</span><span class="n">thing_colors</span> <span class="o">=</span> <span class="n">coco_metadata</span><span class="o">.</span><span class="n">thing_colors</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">NUM_CLASSES</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">_dataset_metadata</span><span class="o">.</span><span class="n">thing_classes</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">NUM_CLASSES</span><span class="si">}</span><span class="s2"> Number of classes in the dataset&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">random</span>
+<span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">random</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="n">dataset_dicts</span><span class="p">,</span> <span class="mi">3</span><span class="p">):</span>
+    <span class="n">img</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">imread</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="s2">&quot;file_name&quot;</span><span class="p">])</span>
+    <span class="n">visualizer</span> <span class="o">=</span> <span class="n">Visualizer</span><span class="p">(</span><span class="n">img</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">metadata</span><span class="o">=</span><span class="n">_dataset_metadata</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="n">visualizer</span><span class="o">.</span><span class="n">draw_dataset_dict</span><span class="p">(</span><span class="n">d</span><span class="p">)</span>
+    <span class="n">cv2_imshow</span><span class="p">(</span><span class="n">out</span><span class="o">.</span><span class="n">get_image</span><span class="p">()[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="tex2jax_ignore mathjax_ignore section" id="train">
+<h1>Train<a class="headerlink" href="#train" title="Permalink to this headline">¶</a></h1>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>!nvidia-smi
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">from</span> <span class="nn">detectron2.engine</span> <span class="kn">import</span> <span class="n">DefaultTrainer</span>
+
+<span class="n">cfg</span> <span class="o">=</span> <span class="n">get_cfg</span><span class="p">()</span>
+<span class="n">point_rend</span><span class="o">.</span><span class="n">add_pointrend_config</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">merge_from_file</span><span class="p">(</span><span class="s2">&quot;detectron2_repo/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml&quot;</span><span class="p">)</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">DATASETS</span><span class="o">.</span><span class="n">TRAIN</span> <span class="o">=</span> <span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_train&quot;</span><span class="p">,)</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">DATASETS</span><span class="o">.</span><span class="n">TEST</span> <span class="o">=</span> <span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_valid&quot;</span><span class="p">)</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">DATALOADER</span><span class="o">.</span><span class="n">NUM_WORKERS</span> <span class="o">=</span> <span class="mi">2</span> <span class="c1">#@param</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">DATALOADER</span><span class="o">.</span><span class="n">SAMPLER_TRAIN</span> <span class="o">=</span> <span class="s2">&quot;RepeatFactorTrainingSampler&quot;</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">DATALOADER</span><span class="o">.</span><span class="n">REPEAT_THRESHOLD</span> <span class="o">=</span> <span class="mf">0.3</span>
+<span class="c1">#cfg.MODEL.WEIGHTS = &quot;detectron2://PointRend/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco/164955410/model_final_3c3198.pkl&quot;</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">SOLVER</span><span class="o">.</span><span class="n">IMS_PER_BATCH</span> <span class="o">=</span>  <span class="mi">4</span><span class="c1">#@param</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">SOLVER</span><span class="o">.</span><span class="n">BASE_LR</span> <span class="o">=</span> <span class="mf">0.0025</span> <span class="c1">#@param # pick a good LR</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">SOLVER</span><span class="o">.</span><span class="n">MAX_ITER</span> <span class="o">=</span> <span class="mi">2000</span> <span class="c1">#@param    # 300 iterations seems good enough for this toy dataset; you will need to train longer for a practical dataset</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">ROI_HEADS</span><span class="o">.</span><span class="n">BATCH_SIZE_PER_IMAGE</span> <span class="o">=</span> <span class="mi">128</span> <span class="c1">#@param   # faster, and good enough for this toy dataset (default: 512)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">ROI_HEADS</span><span class="o">.</span><span class="n">NUM_CLASSES</span> <span class="o">=</span> <span class="n">NUM_CLASSES</span>  <span class="c1">#  (see https://detectron2.readthedocs.io/tutorials/datasets.html#update-the-config-for-new-datasets)</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">POINT_HEAD</span><span class="o">.</span><span class="n">NUM_CLASSES</span> <span class="o">=</span> <span class="n">NUM_CLASSES</span> 
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">cfg</span><span class="o">.</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">DefaultTrainer</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span> 
+<span class="n">trainer</span><span class="o">.</span><span class="n">resume_or_load</span><span class="p">(</span><span class="n">resume</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Look at training curves in tensorboard:</span>
+<span class="o">%</span><span class="n">load_ext</span> <span class="n">tensorboard</span>
+<span class="o">%</span><span class="n">tensorboard</span> <span class="o">--</span><span class="n">logdir</span> <span class="n">output</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">trainer</span><span class="o">.</span><span class="n">train</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Inference should use the config with parameters that are used in training</span>
+<span class="c1"># cfg now already contains everything we&#39;ve set previously. We changed it a little bit for inference:</span>
+<span class="c1">#cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR, &quot;model_final.pth&quot;)  # path to the model we just trained</span>
+<span class="c1">#cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.15   # set a custom testing threshold</span>
+<span class="n">predictor</span> <span class="o">=</span> <span class="n">DefaultPredictor</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.utils.visualizer</span> <span class="kn">import</span> <span class="n">ColorMode</span>
+<span class="n">dataset_dicts</span> <span class="o">=</span> <span class="n">get_detection_dataset_dicts</span><span class="p">([</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_valid&quot;</span><span class="p">])</span>
+<span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">dataset_dicts</span><span class="p">:</span>    
+    <span class="n">im</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">imread</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="s2">&quot;file_name&quot;</span><span class="p">])</span>
+    <span class="n">outputs</span> <span class="o">=</span> <span class="n">predictor</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>  <span class="c1"># format is documented at https://detectron2.readthedocs.io/tutorials/models.html#model-output-format</span>
+    <span class="n">v</span> <span class="o">=</span> <span class="n">Visualizer</span><span class="p">(</span><span class="n">im</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span>
+                   <span class="n">metadata</span><span class="o">=</span><span class="n">_dataset_metadata</span><span class="p">,</span> 
+                   <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> 
+                   <span class="n">instance_mode</span><span class="o">=</span><span class="n">ColorMode</span><span class="o">.</span><span class="n">SEGMENTATION</span>   <span class="c1"># remove the colors of unsegmented pixels. This option is only available for segmentation models</span>
+    <span class="p">)</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="n">v</span><span class="o">.</span><span class="n">draw_instance_predictions</span><span class="p">(</span><span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">))</span>
+    <span class="n">cv2_imshow</span><span class="p">(</span><span class="n">out</span><span class="o">.</span><span class="n">get_image</span><span class="p">()[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.evaluation</span> <span class="kn">import</span> <span class="n">COCOEvaluator</span><span class="p">,</span> <span class="n">inference_on_dataset</span>
+<span class="kn">from</span> <span class="nn">detectron2.data</span> <span class="kn">import</span> <span class="n">build_detection_test_loader</span>
+<span class="n">evaluator</span> <span class="o">=</span> <span class="n">COCOEvaluator</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_valid&quot;</span><span class="p">,</span> <span class="n">cfg</span><span class="p">,</span> <span class="kc">False</span><span class="p">,</span> <span class="n">output_dir</span><span class="o">=</span><span class="s2">&quot;/content/eval_output/&quot;</span><span class="p">)</span>
+<span class="n">val_loader</span> <span class="o">=</span> <span class="n">build_detection_test_loader</span><span class="p">(</span><span class="n">cfg</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">DATASET_NAME</span><span class="si">}</span><span class="s2">_valid&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inference_on_dataset</span><span class="p">(</span><span class="n">trainer</span><span class="o">.</span><span class="n">model</span><span class="p">,</span> <span class="n">val_loader</span><span class="p">,</span> <span class="n">evaluator</span><span class="p">))</span>
+<span class="c1"># another equivalent way to evaluate the model is to use `trainer.test`</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">VIDEO_INPUT</span><span class="o">=</span><span class="s2">&quot;/content/novelobjectK6Fcontrol.mkv&quot;</span> <span class="c1">#@param {type: &quot;string&quot;}</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">cv2</span>
+<span class="n">video</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">VideoCapture</span><span class="p">(</span><span class="n">VIDEO_INPUT</span><span class="p">)</span>
+<span class="n">width</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">video</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">cv2</span><span class="o">.</span><span class="n">CAP_PROP_FRAME_WIDTH</span><span class="p">))</span>
+<span class="n">height</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">video</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">cv2</span><span class="o">.</span><span class="n">CAP_PROP_FRAME_HEIGHT</span><span class="p">))</span>
+<span class="n">frames_per_second</span> <span class="o">=</span> <span class="n">video</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">cv2</span><span class="o">.</span><span class="n">CAP_PROP_FPS</span><span class="p">)</span>
+<span class="n">num_frames</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">video</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">cv2</span><span class="o">.</span><span class="n">CAP_PROP_FRAME_COUNT</span><span class="p">))</span>
+<span class="n">basename</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">VIDEO_INPUT</span><span class="p">)</span>
+<span class="n">OUTPUT_DIR</span> <span class="o">=</span> <span class="s2">&quot;/content/eval_output&quot;</span>
+<span class="kn">import</span> <span class="nn">os</span> 
+<span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span><span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">output_fname</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="n">basename</span><span class="p">)</span>
+<span class="n">output_fname</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">splitext</span><span class="p">(</span><span class="n">output_fname</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="s2">&quot;_mask_tracked.mp4&quot;</span>
+<span class="n">output_file</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">VideoWriter</span><span class="p">(</span>
+                <span class="n">filename</span><span class="o">=</span><span class="n">output_fname</span><span class="p">,</span>
+                <span class="c1"># some installation of opencv may not support x264 (due to its license),</span>
+                <span class="c1"># you can try other format (e.g. MPEG)</span>
+                <span class="n">fourcc</span><span class="o">=</span><span class="n">cv2</span><span class="o">.</span><span class="n">VideoWriter_fourcc</span><span class="p">(</span><span class="o">*</span><span class="s2">&quot;mp4v&quot;</span><span class="p">),</span>
+                <span class="n">fps</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">frames_per_second</span><span class="p">),</span>
+                <span class="n">frameSize</span><span class="o">=</span><span class="p">(</span><span class="n">width</span><span class="p">,</span> <span class="n">height</span><span class="p">),</span>
+                <span class="n">isColor</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">_frame_from_video</span><span class="p">(</span><span class="n">video</span><span class="p">):</span>
+  <span class="k">while</span> <span class="n">video</span><span class="o">.</span><span class="n">isOpened</span><span class="p">():</span>
+      <span class="n">success</span><span class="p">,</span> <span class="n">frame</span> <span class="o">=</span> <span class="n">video</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+      <span class="k">if</span> <span class="n">success</span><span class="p">:</span>
+          <span class="k">yield</span> <span class="n">frame</span>
+      <span class="k">else</span><span class="p">:</span>
+          <span class="k">break</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">pandas</span> <span class="k">as</span> <span class="nn">pd</span>
+<span class="kn">import</span> <span class="nn">pycocotools.mask</span> <span class="k">as</span> <span class="nn">mask_util</span>
+<span class="n">class_names</span> <span class="o">=</span> <span class="n">_dataset_metadata</span><span class="o">.</span><span class="n">thing_classes</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">class_names</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">frame_number</span> <span class="o">=</span> <span class="mi">0</span>
+<span class="n">tracking_results</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">VIS</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="n">_frame_from_video</span><span class="p">(</span><span class="n">video</span><span class="p">):</span> 
+    <span class="n">im</span> <span class="o">=</span> <span class="n">frame</span>
+    <span class="n">outputs</span> <span class="o">=</span> <span class="n">predictor</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>
+    <span class="n">out_dict</span> <span class="o">=</span> <span class="p">{}</span>  
+    <span class="n">instances</span> <span class="o">=</span> <span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span>
+    <span class="n">num_instance</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">instances</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">num_instance</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;frame_number&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">frame_number</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;x1&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;y1&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;x2&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;y2&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;instance_name&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;class_score&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;segmentation&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">tracking_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">out_dict</span><span class="p">)</span>
+        <span class="n">out_dict</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">boxes</span> <span class="o">=</span> <span class="n">instances</span><span class="o">.</span><span class="n">pred_boxes</span><span class="o">.</span><span class="n">tensor</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+        <span class="n">boxes</span> <span class="o">=</span> <span class="n">boxes</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+        <span class="n">scores</span> <span class="o">=</span> <span class="n">instances</span><span class="o">.</span><span class="n">scores</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+        <span class="n">classes</span> <span class="o">=</span> <span class="n">instances</span><span class="o">.</span><span class="n">pred_classes</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+
+        <span class="n">has_mask</span> <span class="o">=</span> <span class="n">instances</span><span class="o">.</span><span class="n">has</span><span class="p">(</span><span class="s2">&quot;pred_masks&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">has_mask</span><span class="p">:</span>
+            <span class="n">rles</span> <span class="o">=</span><span class="p">[</span>
+                   <span class="n">mask_util</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">mask</span><span class="p">[:,:,</span><span class="kc">None</span><span class="p">],</span> <span class="n">order</span><span class="o">=</span><span class="s2">&quot;F&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="s2">&quot;uint8&quot;</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span>
+                   <span class="k">for</span> <span class="n">mask</span> <span class="ow">in</span> <span class="n">instances</span><span class="o">.</span><span class="n">pred_masks</span>
+            <span class="p">]</span>
+            <span class="k">for</span> <span class="n">rle</span> <span class="ow">in</span> <span class="n">rles</span><span class="p">:</span>
+              <span class="n">rle</span><span class="p">[</span><span class="s2">&quot;counts&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">rle</span><span class="p">[</span><span class="s2">&quot;counts&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+
+        <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">rles</span><span class="p">)</span> <span class="o">==</span> <span class="nb">len</span><span class="p">(</span><span class="n">boxes</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_instance</span><span class="p">):</span>
+            <span class="n">box</span> <span class="o">=</span> <span class="n">boxes</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;frame_number&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">frame_number</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;x1&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">box</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;y1&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">box</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;x2&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">box</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;y2&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">box</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;instance_name&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">class_names</span><span class="p">[</span><span class="n">classes</span><span class="p">[</span><span class="n">k</span><span class="p">]]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;class_score&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">scores</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+            <span class="n">out_dict</span><span class="p">[</span><span class="s1">&#39;segmentation&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">rles</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+            <span class="k">if</span> <span class="n">frame_number</span> <span class="o">%</span> <span class="mi">1000</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+              <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Frame number </span><span class="si">{</span><span class="n">frame_number</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">out_dict</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="n">tracking_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">out_dict</span><span class="p">)</span>
+            <span class="n">out_dict</span> <span class="o">=</span> <span class="p">{}</span>
+        
+    <span class="c1"># format is documented at https://detectron2.readthedocs.io/tutorials/models.html#model-output-format</span>
+    <span class="k">if</span> <span class="n">VIS</span><span class="p">:</span>
+        <span class="n">v</span> <span class="o">=</span> <span class="n">Visualizer</span><span class="p">(</span><span class="n">im</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span>
+                    <span class="n">metadata</span><span class="o">=</span><span class="n">_dataset_metadata</span><span class="p">,</span> 
+                    <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> 
+                    <span class="n">instance_mode</span><span class="o">=</span><span class="n">ColorMode</span><span class="o">.</span><span class="n">IMAGE_BW</span>   <span class="c1"># remove the colors of unsegmented pixels. This option is only available for segmentation models</span>
+         <span class="p">)</span>
+        <span class="n">out</span> <span class="o">=</span> <span class="n">v</span><span class="o">.</span><span class="n">draw_instance_predictions</span><span class="p">(</span><span class="n">outputs</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">))</span>
+        <span class="n">out_image</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">get_image</span><span class="p">()[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="n">output_file</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">out_image</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">frame_number</span> <span class="o">%</span> <span class="mi">1000</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">cv2_imshow</span><span class="p">(</span><span class="n">out_image</span><span class="p">)</span>
+    <span class="n">frame_number</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Processing frame number </span><span class="si">{</span><span class="n">frame_number</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">video</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
+<span class="n">output_file</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">tracking_results</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">df</span><span class="o">.</span><span class="n">head</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">df</span><span class="o">.</span><span class="n">tail</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">df_top</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">groupby</span><span class="p">([</span><span class="s1">&#39;frame_number&#39;</span><span class="p">,</span><span class="s1">&#39;instance_name&#39;</span><span class="p">],</span><span class="n">sort</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">head</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">df_top</span><span class="o">.</span><span class="n">head</span><span class="p">()</span>
+<span class="n">tracking_results_csv</span> <span class="o">=</span> <span class="s2">&quot;/content/con_01_pointrend_tracking_results_with_segmenation.csv&quot;</span> <span class="c1">#@param</span>
+<span class="n">df_top</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="n">tracking_results_csv</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="tex2jax_ignore mathjax_ignore section" id="visualize-pointrend-point-sampling-process">
+<h1>Visualize PointRend point sampling process<a class="headerlink" href="#visualize-pointrend-point-sampling-process" title="Permalink to this headline">¶</a></h1>
+<p>In this section we show how PointRend’s point sampling process works. To do this, we need to access intermediate representations of the predictor <code class="docutils literal notranslate"><span class="pre">model.forward(...)</span></code> function. Thus, we run forward step manually copying the code step by step.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># First we define a simple function to help us plot the intermediate representations.</span>
+<span class="kn">import</span> <span class="nn">matplotlib.pyplot</span> <span class="k">as</span> <span class="nn">plt</span>
+
+<span class="k">def</span> <span class="nf">plot_mask</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">point_coords</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">point_marker_size</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
+  <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">  Simple plotting tool to show intermediate mask predictions and points </span>
+<span class="sd">  where PointRend is applied.</span>
+<span class="sd">  </span>
+<span class="sd">  Args:</span>
+<span class="sd">    mask (Tensor): mask prediction of shape HxW</span>
+<span class="sd">    title (str): title for the plot</span>
+<span class="sd">    point_coords ((Tensor, Tensor)): x and y point coordinates</span>
+<span class="sd">    figsize (int): size of the figure to plot</span>
+<span class="sd">    point_marker_size (int): marker size for points</span>
+<span class="sd">  &#39;&#39;&#39;</span>
+
+  <span class="n">H</span><span class="p">,</span> <span class="n">W</span> <span class="o">=</span> <span class="n">mask</span><span class="o">.</span><span class="n">shape</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="n">figsize</span><span class="p">,</span> <span class="n">figsize</span><span class="p">))</span>
+  <span class="k">if</span> <span class="n">title</span><span class="p">:</span>
+    <span class="n">title</span> <span class="o">+=</span> <span class="s2">&quot;, &quot;</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">{}</span><span class="s2">resolution </span><span class="si">{}</span><span class="s2">x</span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">title</span><span class="p">,</span> <span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">),</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="n">H</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="n">W</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">xticks</span><span class="p">([],</span> <span class="p">[])</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">yticks</span><span class="p">([],</span> <span class="p">[])</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">imshow</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">interpolation</span><span class="o">=</span><span class="s2">&quot;nearest&quot;</span><span class="p">,</span> <span class="n">cmap</span><span class="o">=</span><span class="n">plt</span><span class="o">.</span><span class="n">get_cmap</span><span class="p">(</span><span class="s1">&#39;gray&#39;</span><span class="p">))</span>
+  <span class="k">if</span> <span class="n">point_coords</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">plt</span><span class="o">.</span><span class="n">scatter</span><span class="p">(</span><span class="n">x</span><span class="o">=</span><span class="n">point_coords</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">y</span><span class="o">=</span><span class="n">point_coords</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">color</span><span class="o">=</span><span class="s2">&quot;red&quot;</span><span class="p">,</span> <span class="n">s</span><span class="o">=</span><span class="n">point_marker_size</span><span class="p">,</span> <span class="n">clip_on</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> 
+  <span class="n">plt</span><span class="o">.</span><span class="n">xlim</span><span class="p">(</span><span class="o">-</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">W</span> <span class="o">-</span> <span class="mf">0.5</span><span class="p">)</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">ylim</span><span class="p">(</span><span class="n">H</span> <span class="o">-</span> <span class="mf">0.5</span><span class="p">,</span> <span class="o">-</span> <span class="mf">0.5</span><span class="p">)</span>
+  <span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">predictor</span></code> and <code class="docutils literal notranslate"><span class="pre">im</span></code> loaded in the previous section we run backbone, bounding box prediction, and coarse mask segmenation head. We visualize mask prediction for the foreground plane on the image.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.data</span> <span class="kn">import</span> <span class="n">transforms</span> <span class="k">as</span> <span class="n">T</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">predictor</span><span class="o">.</span><span class="n">model</span>
+<span class="c1"># In this image we detect several objects but show only the first one.</span>
+<span class="n">instance_idx</span> <span class="o">=</span> <span class="mi">0</span>
+<span class="c1"># Mask predictions are class-specific, &quot;plane&quot; class has id 4.</span>
+<span class="n">category_idx</span> <span class="o">=</span> <span class="mi">4</span>
+
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+  <span class="c1"># Prepare input image.</span>
+  <span class="n">height</span><span class="p">,</span> <span class="n">width</span> <span class="o">=</span> <span class="n">im</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="mi">2</span><span class="p">]</span>
+  <span class="n">im_transformed</span> <span class="o">=</span> <span class="n">T</span><span class="o">.</span><span class="n">ResizeShortestEdge</span><span class="p">(</span><span class="mi">800</span><span class="p">,</span> <span class="mi">1333</span><span class="p">)</span><span class="o">.</span><span class="n">get_transform</span><span class="p">(</span><span class="n">im</span><span class="p">)</span><span class="o">.</span><span class="n">apply_image</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>
+  <span class="n">batched_inputs</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;image&quot;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">as_tensor</span><span class="p">(</span><span class="n">im_transformed</span><span class="p">)</span><span class="o">.</span><span class="n">permute</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)}]</span>
+
+  <span class="c1"># Get bounding box predictions first to simplify the code.</span>
+  <span class="n">detected_instances</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">inference</span><span class="p">(</span><span class="n">batched_inputs</span><span class="p">)]</span>
+  <span class="p">[</span><span class="n">r</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="s2">&quot;pred_masks&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">detected_instances</span><span class="p">]</span>  <span class="c1"># remove existing mask predictions</span>
+  <span class="n">pred_boxes</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span><span class="o">.</span><span class="n">pred_boxes</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">detected_instances</span><span class="p">]</span> 
+
+  <span class="c1"># Run backbone.</span>
+  <span class="n">images</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">preprocess_image</span><span class="p">(</span><span class="n">batched_inputs</span><span class="p">)</span>
+  <span class="n">features</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">backbone</span><span class="p">(</span><span class="n">images</span><span class="o">.</span><span class="n">tensor</span><span class="p">)</span>
+  
+  <span class="c1"># Given the bounding boxes, run coarse mask prediction head.</span>
+  <span class="n">mask_coarse_logits</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">roi_heads</span><span class="o">.</span><span class="n">_forward_mask_coarse</span><span class="p">(</span><span class="n">features</span><span class="p">,</span> <span class="n">pred_boxes</span><span class="p">)</span>
+
+  <span class="n">plot_mask</span><span class="p">(</span>
+      <span class="n">mask_coarse_logits</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">,</span> <span class="n">category_idx</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">),</span>
+      <span class="n">title</span><span class="o">=</span><span class="s2">&quot;Coarse prediction&quot;</span>
+  <span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Prepare features maps to use later</span>
+<span class="n">mask_features_list</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="n">features</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">roi_heads</span><span class="o">.</span><span class="n">mask_point_in_features</span>
+<span class="p">]</span>
+<span class="n">features_scales</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="n">model</span><span class="o">.</span><span class="n">roi_heads</span><span class="o">.</span><span class="n">_feature_scales</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> 
+  <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">roi_heads</span><span class="o">.</span><span class="n">mask_point_in_features</span>
+<span class="p">]</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="point-sampling-during-training">
+<h2>Point sampling during training<a class="headerlink" href="#point-sampling-during-training" title="Permalink to this headline">¶</a></h2>
+<p>During training we select points where coarse prediction is uncertain to train PointRend head. See section 3.1 in the PointRend <a class="reference external" href="https://arxiv.org/abs/1912.08193">paper</a> for more details.</p>
+<p>To visualize different sampling strategy change <code class="docutils literal notranslate"><span class="pre">oversample_ratio</span></code> and <code class="docutils literal notranslate"><span class="pre">importance_sample_ratio</span></code> parameters below.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.projects.point_rend.roi_heads</span> <span class="kn">import</span> <span class="n">calculate_uncertainty</span>
+<span class="kn">from</span> <span class="nn">detectron2.projects.point_rend.point_features</span> <span class="kn">import</span> <span class="n">get_uncertain_point_coords_with_randomness</span>
+
+<span class="c1"># Change number of points to select</span>
+<span class="n">num_points</span> <span class="o">=</span> <span class="mi">14</span> <span class="o">*</span> <span class="mi">14</span>
+<span class="c1"># Change randomness parameters </span>
+<span class="n">oversample_ratio</span> <span class="o">=</span> <span class="mi">3</span>  <span class="c1"># `k` in the paper</span>
+<span class="n">importance_sample_ratio</span> <span class="o">=</span> <span class="mf">0.75</span>  <span class="c1"># `\beta` in the paper</span>
+
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+  <span class="c1"># We take predicted classes, whereas during real training ground truth classes are used.</span>
+  <span class="n">pred_classes</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">([</span><span class="n">x</span><span class="o">.</span><span class="n">pred_classes</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">detected_instances</span><span class="p">])</span>
+
+  <span class="c1"># Select points given a corse prediction mask</span>
+  <span class="n">point_coords</span> <span class="o">=</span> <span class="n">get_uncertain_point_coords_with_randomness</span><span class="p">(</span>
+    <span class="n">mask_coarse_logits</span><span class="p">,</span>
+    <span class="k">lambda</span> <span class="n">logits</span><span class="p">:</span> <span class="n">calculate_uncertainty</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">pred_classes</span><span class="p">),</span>
+    <span class="n">num_points</span><span class="o">=</span><span class="n">num_points</span><span class="p">,</span>
+    <span class="n">oversample_ratio</span><span class="o">=</span><span class="n">oversample_ratio</span><span class="p">,</span>
+    <span class="n">importance_sample_ratio</span><span class="o">=</span><span class="n">importance_sample_ratio</span>
+  <span class="p">)</span>
+
+  <span class="n">H</span><span class="p">,</span> <span class="n">W</span> <span class="o">=</span> <span class="n">mask_coarse_logits</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">:]</span>
+  <span class="n">plot_mask</span><span class="p">(</span>
+    <span class="n">mask_coarse_logits</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">,</span> <span class="n">category_idx</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">),</span>
+    <span class="n">title</span><span class="o">=</span><span class="s2">&quot;Sampled points over the coarse prediction&quot;</span><span class="p">,</span>
+    <span class="n">point_coords</span><span class="o">=</span><span class="p">(</span>
+      <span class="n">W</span> <span class="o">*</span> <span class="n">point_coords</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">,</span> <span class="p">:,</span> <span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span> <span class="o">-</span> <span class="mf">0.5</span><span class="p">,</span>
+      <span class="n">H</span> <span class="o">*</span> <span class="n">point_coords</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">,</span> <span class="p">:,</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span> <span class="o">-</span> <span class="mf">0.5</span>
+    <span class="p">),</span>
+    <span class="n">point_marker_size</span><span class="o">=</span><span class="mi">50</span>
+  <span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="section" id="point-sampling-during-inference">
+<h2>Point sampling during inference<a class="headerlink" href="#point-sampling-during-inference" title="Permalink to this headline">¶</a></h2>
+<p>Starting from a 7x7 coarse prediction we bilinearly upsample it <code class="docutils literal notranslate"><span class="pre">num_subdivision_steps</span></code> times. At each step we find <code class="docutils literal notranslate"><span class="pre">num_subdivision_points</span></code> most uncertain points and make predictions for them using the PointRend head. See section 3.1 in the <a class="reference external" href="https://arxiv.org/abs/1912.08193">paper</a> to know more details.</p>
+<p>Change <code class="docutils literal notranslate"><span class="pre">num_subdivision_steps</span></code> and <code class="docutils literal notranslate"><span class="pre">num_subdivision_points</span></code> parameters to change inference behavior.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.layers</span> <span class="kn">import</span> <span class="n">interpolate</span>
+<span class="kn">from</span> <span class="nn">detectron2.projects.point_rend.roi_heads</span> <span class="kn">import</span> <span class="n">calculate_uncertainty</span>
+<span class="kn">from</span> <span class="nn">detectron2.projects.point_rend.point_features</span> <span class="kn">import</span> <span class="p">(</span>
+    <span class="n">get_uncertain_point_coords_on_grid</span><span class="p">,</span>
+    <span class="n">point_sample</span><span class="p">,</span>
+    <span class="n">point_sample_fine_grained_features</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">num_subdivision_steps</span> <span class="o">=</span> <span class="mi">5</span>
+<span class="n">num_subdivision_points</span> <span class="o">=</span> <span class="mi">28</span> <span class="o">*</span> <span class="mi">28</span>
+
+
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+  <span class="n">plot_mask</span><span class="p">(</span>
+      <span class="n">mask_coarse_logits</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="n">category_idx</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> 
+      <span class="n">title</span><span class="o">=</span><span class="s2">&quot;Coarse prediction&quot;</span>
+  <span class="p">)</span>
+
+  <span class="n">mask_logits</span> <span class="o">=</span> <span class="n">mask_coarse_logits</span>
+  <span class="k">for</span> <span class="n">subdivions_step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_subdivision_steps</span><span class="p">):</span>
+    <span class="c1"># Upsample mask prediction</span>
+    <span class="n">mask_logits</span> <span class="o">=</span> <span class="n">interpolate</span><span class="p">(</span>
+        <span class="n">mask_logits</span><span class="p">,</span> <span class="n">scale_factor</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s2">&quot;bilinear&quot;</span><span class="p">,</span> <span class="n">align_corners</span><span class="o">=</span><span class="kc">False</span>
+    <span class="p">)</span>
+    <span class="c1"># If `num_subdivision_points` is larger or equalt to the</span>
+    <span class="c1"># resolution of the next step, then we can skip this step</span>
+    <span class="n">H</span><span class="p">,</span> <span class="n">W</span> <span class="o">=</span> <span class="n">mask_logits</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">:]</span>
+    <span class="k">if</span> <span class="p">(</span>
+      <span class="n">num_subdivision_points</span> <span class="o">&gt;=</span> <span class="mi">4</span> <span class="o">*</span> <span class="n">H</span> <span class="o">*</span> <span class="n">W</span>
+      <span class="ow">and</span> <span class="n">subdivions_step</span> <span class="o">&lt;</span> <span class="n">num_subdivision_steps</span> <span class="o">-</span> <span class="mi">1</span>
+    <span class="p">):</span>
+      <span class="k">continue</span>
+    <span class="c1"># Calculate uncertainty for all points on the upsampled regular grid</span>
+    <span class="n">uncertainty_map</span> <span class="o">=</span> <span class="n">calculate_uncertainty</span><span class="p">(</span><span class="n">mask_logits</span><span class="p">,</span> <span class="n">pred_classes</span><span class="p">)</span>
+    <span class="c1"># Select most `num_subdivision_points` uncertain points</span>
+    <span class="n">point_indices</span><span class="p">,</span> <span class="n">point_coords</span> <span class="o">=</span> <span class="n">get_uncertain_point_coords_on_grid</span><span class="p">(</span>
+        <span class="n">uncertainty_map</span><span class="p">,</span> 
+        <span class="n">num_subdivision_points</span>
+    <span class="p">)</span>
+
+    <span class="c1"># Extract fine-grained and coarse features for the points</span>
+    <span class="n">fine_grained_features</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">point_sample_fine_grained_features</span><span class="p">(</span>
+      <span class="n">mask_features_list</span><span class="p">,</span> <span class="n">features_scales</span><span class="p">,</span> <span class="n">pred_boxes</span><span class="p">,</span> <span class="n">point_coords</span>
+    <span class="p">)</span>
+    <span class="n">coarse_features</span> <span class="o">=</span> <span class="n">point_sample</span><span class="p">(</span><span class="n">mask_coarse_logits</span><span class="p">,</span> <span class="n">point_coords</span><span class="p">,</span> <span class="n">align_corners</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+    <span class="c1"># Run PointRend head for these points</span>
+    <span class="n">point_logits</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">roi_heads</span><span class="o">.</span><span class="n">mask_point_head</span><span class="p">(</span><span class="n">fine_grained_features</span><span class="p">,</span> <span class="n">coarse_features</span><span class="p">)</span>
+
+    <span class="c1"># put mask point predictions to the right places on the upsampled grid.</span>
+    <span class="n">R</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="n">H</span><span class="p">,</span> <span class="n">W</span> <span class="o">=</span> <span class="n">mask_logits</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="p">(</span><span class="n">point_indices</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">]</span> <span class="o">%</span> <span class="n">W</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="p">(</span><span class="n">point_indices</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">]</span> <span class="o">//</span> <span class="n">W</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span>
+    <span class="n">point_indices</span> <span class="o">=</span> <span class="n">point_indices</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">expand</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">mask_logits</span> <span class="o">=</span> <span class="p">(</span>
+      <span class="n">mask_logits</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">R</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="n">H</span> <span class="o">*</span> <span class="n">W</span><span class="p">)</span>
+      <span class="o">.</span><span class="n">scatter_</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">point_indices</span><span class="p">,</span> <span class="n">point_logits</span><span class="p">)</span>
+      <span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">R</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="n">H</span><span class="p">,</span> <span class="n">W</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">plot_mask</span><span class="p">(</span>
+      <span class="n">mask_logits</span><span class="p">[</span><span class="n">instance_idx</span><span class="p">,</span> <span class="n">category_idx</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">),</span> 
+      <span class="n">title</span><span class="o">=</span><span class="s2">&quot;Subdivision step: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">subdivions_step</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span>
+      <span class="n">point_coords</span><span class="o">=</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>We can visualize mask prediction obtained in the previous block.</p>
+<div class="cell docutils container">
+<div class="cell_input docutils container">
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">detectron2.modeling</span> <span class="kn">import</span> <span class="n">GeneralizedRCNN</span>
+<span class="kn">from</span> <span class="nn">detectron2.modeling.roi_heads.mask_head</span> <span class="kn">import</span> <span class="n">mask_rcnn_inference</span>
+
+<span class="n">results</span> <span class="o">=</span> <span class="n">detected_instances</span>
+<span class="n">mask_rcnn_inference</span><span class="p">(</span><span class="n">mask_logits</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">GeneralizedRCNN</span><span class="o">.</span><span class="n">_postprocess</span><span class="p">(</span><span class="n">results</span><span class="p">,</span> <span class="n">batched_inputs</span><span class="p">,</span> <span class="n">images</span><span class="o">.</span><span class="n">image_sizes</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+
+<span class="c1"># We can use `Visualizer` to draw the predictions on the image.</span>
+<span class="n">v</span> <span class="o">=</span> <span class="n">Visualizer</span><span class="p">(</span><span class="n">im_transformed</span><span class="p">[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">coco_metadata</span><span class="p">)</span>
+<span class="n">v</span> <span class="o">=</span> <span class="n">v</span><span class="o">.</span><span class="n">draw_instance_predictions</span><span class="p">(</span><span class="n">results</span><span class="p">[</span><span class="s2">&quot;instances&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">))</span>
+<span class="n">cv2_imshow</span><span class="p">(</span><span class="n">v</span><span class="o">.</span><span class="n">get_image</span><span class="p">()[:,</span> <span class="p">:,</span> <span class="p">::</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+    <script type="text/x-thebe-config">
+    {
+        requestKernel: true,
+        binderOptions: {
+            repo: "binder-examples/jupyter-stacks-datascience",
+            ref: "master",
+        },
+        codeMirrorConfig: {
+            theme: "abcdef",
+            mode: "python"
+        },
+        kernelOptions: {
+            kernelName: "python3",
+            path: "./tutorials/tutorials"
+        },
+        predefinedOutput: true
+    }
+    </script>
+    <script>kernelName = 'python3'</script>
+
+              </div>
+              
+            
+                <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+</div>
+            
+        </div>
+    </div>
+    <footer class="footer">
+  <p>
+    
+      By Chen Yang, Jeremy Forest, Matthew Einhorn, Thomas Cleland<br/>
+    
+        &copy; Copyright 2021.<br/>
+  </p>
+</footer>
+</main>
+
+
+      </div>
+    </div>
+  
+  <script src="../../_static/js/index.be7d3bbb2ef33a8344ce.js"></script>
+
+  </body>
+</html>

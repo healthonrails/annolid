@@ -1,0 +1,74 @@
+# Cython needs to be installed before pycocotools
+!pip install cython
+!pip install opencv-python pillow pycocotools matplotlib 
+!pip install -U PyYAML
+
+!nvidia-smi
+
+# DCNv2 will not work if Pytorch is greater than 1.4.0
+!pip install torchvision==0.5.0
+!pip install torch==1.4.0
+
+# The root folder
+%cd /content
+# Clone the repo
+!git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+
+# install annolid
+%cd /content/annolid/
+!pip install -e .
+
+#!pip install -U opencv-python
+
+# Change to the DCNv2 directory
+%cd /content/annolid/annolid/segmentation/yolact/external/DCNv2
+
+# Build DCNv2
+!python setup.py build develop
+
+# Make sure we're in the yolact folder
+%cd /content/annolid/annolid/segmentation/
+
+# Create a new directory for the pre-trained weights
+!mkdir -p /content/annolid/annolid/segmentation/yolact/weights
+
+# Download the file
+!gdown --id 1ZPu1YR2UzGHQD0o1rEqy-j5bmEm3lbyP -O ./yolact/weights/yolact_plus_resnet50_54_800000.pth
+
+# Check the GPU availbe for your run
+!nvidia-smi
+
+#https://drive.google.com/file/d/1_kkJ8rlnoMymj0uw8VZkVEuFIMfLDwPh/view?usp=sharing
+!gdown --id 1_kkJ8rlnoMymj0uw8VZkVEuFIMfLDwPh -O /content/novelctrl_coco_dataset.zip
+
+%%shell
+#rm -rf /content/novelctrl_coco_dataset//
+#rm -rf /content/annolid/annolid/datasets/novelctrl_coco_dataset
+unzip /content/novelctrl_coco_dataset.zip -d /content/novelctrl_coco_dataset/
+# the following command is only for the demo dataset with relative 
+# paths to the dataset in the dataset data.yaml file.
+mv /content/novelctrl_coco_dataset/novelctrl_coco_dataset/ /content/annolid/annolid/datasets/
+
+# Start tensorboard for visualization of training
+%cd /content/annolid/annolid/segmentation/yolact/
+%load_ext tensorboard
+%tensorboard --logdir /content/annolid/runs/logs 
+
+%cd /content/annolid/annolid/segmentation/yolact/
+!python train.py --config=../../datasets/novelctrl_coco_dataset/data.yaml --batch_size=16 --keep_latest_interval=100 # --resume=weights/novelctrl_244_2202_interrupt.pth --start_iter=244
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# e.g. 
+!cp /content/annolid/annolid/segmentation/yolact/weights/your_model_xxxx.pth /content/drive/My\ Drive
+
+# optional
+#!cp /content/annolid/annolid/segmentation/yolact/weights/resnet50-19c8e357.pth /content/drive/My\ Drive
+
+# https://drive.google.com/file/d/1_UDnyYKQplOLMzv1hphk1gVqepmLeyGD/view?usp=sharing
+!gdown --id 1_UDnyYKQplOLMzv1hphk1gVqepmLeyGD -O /content/novelctrl.mkv
+
+!python eval.py --trained_model=weights/novelctrl_xxxx_xxxx.pth --config=../../datasets/novelctrl_coco/data.yaml --score_threshold=0.15 --top_k=9 --video_multiframe=1 --video=/content/novelctrl.mkv:novelctrl_tracked.mkv --display_mask=False --mot
+
+

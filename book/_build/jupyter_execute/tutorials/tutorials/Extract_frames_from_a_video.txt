@@ -1,0 +1,21 @@
+from google.colab import files
+my_vidoe = files.upload()
+
+# The root folder
+%cd /content
+# Clone the repo
+!git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+
+
+# install annolid
+%cd /content/annolid/
+!pip install -e .
+
+# You can upload a video or use gdown to download video from Google drive
+# Please change the absolute video path e.g. /content/wbc.mp4
+!python annolid/main.py -v /content/wbc.mp4 --extract_frames=10 --algo=random
+
+# please input the correct absolute folder path for the extracted frames
+# e.g. /content/wbc
+!zip -r -D my_extracted_video_frames.zip /content/my_video
+files.download('my_extracted_video_frames.zip')
