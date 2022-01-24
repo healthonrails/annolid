@@ -155,18 +155,6 @@
 </ul>
 <p aria-level="2" class="caption" role="heading">
  <span class="caption-text">
-  Tutorials
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference internal" href="../tutorials/Annolid_on_Detectron2_Tutorial.html">
-   Annolid on Detectron2 Tutorial
-  </a>
- </li>
-</ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
   Annolid Zoo
  </span>
 </p>
@@ -307,12 +295,12 @@
    </li>
    <li class="toc-h2 nav-item toc-entry">
     <a class="reference internal nav-link" href="#install-annolid-locally">
-     Install annolid locally
+     Install Annolid locally
     </a>
     <ul class="nav section-nav flex-column">
      <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#clone-the-code-repo-and-change-into-the-directory">
-       Clone the code repo and change into the directory
+      <a class="reference internal nav-link" href="#clone-annolid-repository-and-change-into-the-directory">
+       Clone Annolid repository and change into the directory
       </a>
      </li>
      <li class="toc-h3 nav-item toc-entry">
@@ -353,7 +341,12 @@
  </li>
  <li class="toc-h1 nav-item toc-entry">
   <a class="reference internal nav-link" href="#using-detectron2-on-google-colab">
-   Using Detectron2  on google Colab
+   Using Detectron2 on Google Colab
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#using-yolact-instead-of-detectron2">
+   Using YOLACT instead of Detectron2:
   </a>
  </li>
  <li class="toc-h1 nav-item toc-entry">
@@ -400,12 +393,12 @@
    </li>
    <li class="toc-h2 nav-item toc-entry">
     <a class="reference internal nav-link" href="#install-annolid-locally">
-     Install annolid locally
+     Install Annolid locally
     </a>
     <ul class="nav section-nav flex-column">
      <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#clone-the-code-repo-and-change-into-the-directory">
-       Clone the code repo and change into the directory
+      <a class="reference internal nav-link" href="#clone-annolid-repository-and-change-into-the-directory">
+       Clone Annolid repository and change into the directory
       </a>
      </li>
      <li class="toc-h3 nav-item toc-entry">
@@ -446,7 +439,12 @@
  </li>
  <li class="toc-h1 nav-item toc-entry">
   <a class="reference internal nav-link" href="#using-detectron2-on-google-colab">
-   Using Detectron2  on google Colab
+   Using Detectron2 on Google Colab
+  </a>
+ </li>
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#using-yolact-instead-of-detectron2">
+   Using YOLACT instead of Detectron2:
   </a>
  </li>
  <li class="toc-h1 nav-item toc-entry">
@@ -473,18 +471,23 @@
   <div class="tex2jax_ignore mathjax_ignore section" id="how-to-install">
 <h1>How to install<a class="headerlink" href="#how-to-install" title="Permalink to this headline">¶</a></h1>
 <p>To run Annolid, we suggest using Anaconda package/environment manager for Python. Download and install the <a class="reference external" href="https://www.anaconda.com/products/individual">Anaconda</a> environment first. Then do the following, using the bash shell in Linux or the conda command line (= Anaconda Prompt) in Windows.</p>
-<p>We also provide a pypi version of Annaconda that you can use but it is most likely not an as up-to-date version of the code as the codebase on Github.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>We also provide a pypi version of Annaconda that you can use but it is most likely not an as up-to-date version of the code as the codebase on Github (at least for the foreseable future)</p>
+</div>
 <div class="section" id="requirements">
 <h2>Requirements<a class="headerlink" href="#requirements" title="Permalink to this headline">¶</a></h2>
-<p>Ubuntu / macOS / Windows      <br />
-Python &gt;= 3.7                 <br />
-[PyQt4 / PyQt5]</p>
+<ul class="simple">
+<li><p>Ubuntu / macOS / Windows      \</p></li>
+<li><p>Python &gt;= 3.7                 \</p></li>
+<li><p>[PyQt4 / PyQt5]</p></li>
+</ul>
 </div>
 <div class="section" id="install-annolid-locally">
-<h2>Install annolid locally<a class="headerlink" href="#install-annolid-locally" title="Permalink to this headline">¶</a></h2>
+<h2>Install Annolid locally<a class="headerlink" href="#install-annolid-locally" title="Permalink to this headline">¶</a></h2>
 <p>We create a virtual environment called <em>annolid-env</em> into which we will install Annolid and all of its dependencies, along with whatever other Python tools we need. Python 3.7 is recommended, as it is the version being used for Annolid development.</p>
-<div class="section" id="clone-the-code-repo-and-change-into-the-directory">
-<h3>Clone the code repo and change into the directory<a class="headerlink" href="#clone-the-code-repo-and-change-into-the-directory" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="clone-annolid-repository-and-change-into-the-directory">
+<h3>Clone Annolid repository and change into the directory<a class="headerlink" href="#clone-annolid-repository-and-change-into-the-directory" title="Permalink to this headline">¶</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">git</span> <span class="n">clone</span> <span class="o">--</span><span class="n">recurse</span><span class="o">-</span><span class="n">submodules</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">github</span><span class="o">.</span><span class="n">com</span><span class="o">/</span><span class="n">healthonrails</span><span class="o">/</span><span class="n">annolid</span><span class="o">.</span><span class="n">git</span>
 <span class="n">cd</span> <span class="n">annolid</span>
 </pre></div>
@@ -502,16 +505,16 @@ Python &gt;= 3.7                 <br />
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Alternatively you can install with pip if you prefer
-pip install -e .</p>
+<p>Alternatively you can install with pip if you prefer using
+<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code></p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>If you encounter errors On Windows for pycocotools, please download and install <a class="reference external" href="https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&amp;rel=16">Visual studio 2019</a>. Then please run the following command in your terminal. <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&amp;subdirectory=PythonAPI&quot;</span></code></p>
+<p>On Windows, if you encounter errors for pycocotools, please download and install <a class="reference external" href="https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&amp;rel=16">Visual studio 2019</a>. Then please run the following command in your terminal. <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&amp;subdirectory=PythonAPI&quot;</span></code></p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>To fix error, <code class="docutils literal notranslate"><span class="pre">“Failed</span> <span class="pre">to</span> <span class="pre">load</span> <span class="pre">platform</span> <span class="pre">plugin</span> <span class="pre">“xcb”</span> <span class="pre">while</span> <span class="pre">launching</span> <span class="pre">qt5</span> <span class="pre">app</span> <span class="pre">on</span> <span class="pre">Linux</span></code> run <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">--reinstall</span> <span class="pre">libxcb-xinerama0</span></code></p>
+<p>To fix the error, <code class="docutils literal notranslate"><span class="pre">“Failed</span> <span class="pre">to</span> <span class="pre">load</span> <span class="pre">platform</span> <span class="pre">plugin</span> <span class="pre">“xcb”</span></code> while launching qt5 app on Linux run <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">--reinstall</span> <span class="pre">libxcb-xinerama0</span></code></p>
 </div>
 <p>We then activate the virtual environment we just created.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">conda</span> <span class="n">activate</span> <span class="n">annolid</span><span class="o">-</span><span class="n">env</span>
@@ -519,7 +522,7 @@ pip install -e .</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Be sure to activate the annolid virtual environment every time you restart Anaconda or your computer; the conda shell prompt should read “(annolid)”</p>
+<p>Be sure to activate the annolid virtual environment every time you restart Anaconda or your computer; the shell prompt should read “(annolid-env)”</p>
 </div>
 <p>Finally to open Annolid GUI, just type the following :</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">annolid</span>
@@ -531,12 +534,11 @@ pip install -e .</p>
 <h2>Install Detectron2 locally<a class="headerlink" href="#install-detectron2-locally" title="Permalink to this headline">¶</a></h2>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
-<p>if you intend to process your tagged videos using Google Colab (which you should do unless you are using a workstation with a higher-end GPU), then you do not need to install Detectron2 on your local machine, and you can ignore this section.</p>
+<p>If you intend to process your tagged videos using Google Colab (which you should do unless you are using a workstation with a higher-end GPU), then you do not need to install Detectron2 on your local machine, and you can ignore this section.</p>
 </div>
 <div class="section" id="id1">
 <h3>Requirements:<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h3>
-<p>Windows, Linux or macOS with Python ≥ 3.7
-PyTorch ≥ 1.5 and torchvision that matches the PyTorch installation. Install them together at <a class="reference external" href="http://pytorch.org">pytorch.org</a> to make sure of this. Presently, the combination of torch 1.8 and torchvision 0.9.1 works well, along with pyyaml 5.3, as shown below.
+<p>Windows, Linux or MacOS with Python ≥ 3.7, PyTorch ≥ 1.5 and torchvision that matches the PyTorch installation. Install them together at <a class="reference external" href="http://pytorch.org">pytorch.org</a> to make sure of this. Presently, the combination of torch 1.8 and torchvision 0.9.1 works well, along with pyyaml 5.3, as shown below.
 For purposes of using Annolid, it is OK to downgrade pyyaml from its current version to 5.3.</p>
 </div>
 <div class="section" id="install-detectron2-dependencies">
@@ -558,9 +560,11 @@ For purposes of using Annolid, it is OK to downgrade pyyaml from its current ver
 </div>
 <div class="section" id="install-detectron2-on-windows-10">
 <h3>Install Detectron2 on Windows 10<a class="headerlink" href="#install-detectron2-on-windows-10" title="Permalink to this headline">¶</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">clone</span> <span class="pre">https://github.com/facebookresearch/detectron2.git</span></code>
-<code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">detectron2</span></code>
-<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code></p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">git</span> <span class="n">clone</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">github</span><span class="o">.</span><span class="n">com</span><span class="o">/</span><span class="n">facebookresearch</span><span class="o">/</span><span class="n">detectron2</span><span class="o">.</span><span class="n">git</span>
+<span class="n">cd</span> <span class="n">detectron2</span>
+<span class="n">pip</span> <span class="n">install</span> <span class="o">-</span><span class="n">e</span> <span class="o">.</span>
+</pre></div>
+</div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>If you encounter an error on windows with message says:
@@ -570,9 +574,27 @@ For purposes of using Annolid, it is OK to downgrade pyyaml from its current ver
 </div>
 </div>
 <div class="tex2jax_ignore mathjax_ignore section" id="using-detectron2-on-google-colab">
-<h1>Using Detectron2  on google Colab<a class="headerlink" href="#using-detectron2-on-google-colab" title="Permalink to this headline">¶</a></h1>
-<p>Instructions will be posted here presently. (Colab uses CUDA 10.2 + torch 1.9.0).
-<a class="reference external" href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb"><img alt="Google Colab" src="https://colab.research.google.com/assets/colab-badge.svg" /></a></p>
+<h1>Using Detectron2 on Google Colab<a class="headerlink" href="#using-detectron2-on-google-colab" title="Permalink to this headline">¶</a></h1>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>If you installed Detectron2 locally you can skip this section.</p>
+</div>
+<p>This step is only if you did not install Detectron2 locally and intend to process your tagged videos using Google Colab.
+Google Colab uses CUDA 10.2 + torch 1.9.0.</p>
+<p><a class="reference external" href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb"><img alt="Google Colab" src="https://colab.research.google.com/assets/colab-badge.svg" /></a></p>
+</div>
+<div class="tex2jax_ignore mathjax_ignore section" id="using-yolact-instead-of-detectron2">
+<h1>Using YOLACT instead of Detectron2:<a class="headerlink" href="#using-yolact-instead-of-detectron2" title="Permalink to this headline">¶</a></h1>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>YOLACT models are less accurate comparing to Mask-RCNN in Detectron2. However, it is faster in terms of inference.</p>
+</div>
+<p>DCNv2 will not work if Pytorch is greater than 1.4.0</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>!pip install torchvision==0.5.0
+!pip install torch==1.4.0
+</pre></div>
+</div>
+<p>For more information, please check <a class="reference external" href="https://github.com/healthonrails/annolid/blob/master/docs/tutorials/Train_networks_tutorial_v1.0.1.ipynb">https://github.com/healthonrails/annolid/blob/master/docs/tutorials/Train_networks_tutorial_v1.0.1.ipynb</a> and <a class="reference external" href="https://github.com/healthonrails/yolac">https://github.com/healthonrails/yolac</a></p>
 </div>
 <div class="tex2jax_ignore mathjax_ignore section" id="alternative-installation">
 <h1>Alternative installation<a class="headerlink" href="#alternative-installation" title="Permalink to this headline">¶</a></h1>

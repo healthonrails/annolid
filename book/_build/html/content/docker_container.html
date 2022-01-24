@@ -128,8 +128,23 @@
   </a>
  </li>
  <li class="toctree-l1">
+  <a class="reference internal" href="extract_frames.html">
+   Extract frames
+  </a>
+ </li>
+ <li class="toctree-l1">
   <a class="reference internal" href="labelling_images.html">
    How to label images
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="save_labels.html">
+   Save Labels
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="create_coco.html">
+   Create your COCO format dataset
   </a>
  </li>
  <li class="toctree-l1">
@@ -283,9 +298,12 @@
                 
   <div class="tex2jax_ignore mathjax_ignore section" id="docker">
 <h1>Docker<a class="headerlink" href="#docker" title="Permalink to this headline">¶</a></h1>
-<p>We built a docker container for annolid to make it easier to access the package without the need to install anything beside Docker.</p>
-<p>You need to make sure that Docker is installed on your system.
-This has only been test on Ubuntu 20.04 LTS.</p>
+<p>We provide a script to build a docker container for Annolid to make it easier to access the package without the need to install anything besides Docker.</p>
+<p>You need to make sure that <a class="reference external" href="https://docs.docker.com/engine/install/ubuntu/">Docker</a> is installed on your system (or a similar software capable of building containerized applications)</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Currently this has only been tested on Ubuntu 20.04 LTS.</p>
+</div>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>cd annolid/docker
 docker build .
 xhost +local:docker

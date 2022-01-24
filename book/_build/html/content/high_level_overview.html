@@ -128,8 +128,23 @@
   </a>
  </li>
  <li class="toctree-l1">
+  <a class="reference internal" href="extract_frames.html">
+   Extract frames
+  </a>
+ </li>
+ <li class="toctree-l1">
   <a class="reference internal" href="labelling_images.html">
    How to label images
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="save_labels.html">
+   Save Labels
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="create_coco.html">
+   Create your COCO format dataset
   </a>
  </li>
  <li class="toctree-l1">
@@ -319,7 +334,7 @@
                 
   <div class="tex2jax_ignore mathjax_ignore section" id="high-level-overview">
 <h1>High level overview<a class="headerlink" href="#high-level-overview" title="Permalink to this headline">¶</a></h1>
-<p>A high level overview of its workflow consists in the following steps:</p>
+<p>At a high level Annolid’s workflow consists of the following steps:</p>
 <ol class="simple">
 <li><p>Labeling of frames (annotation) &amp; COCO formatting</p></li>
 <li><p>Training (fine-tuning) and inference (local worstation or Google Colab)</p></li>
@@ -329,14 +344,15 @@
 </div>
 <div class="tex2jax_ignore mathjax_ignore section" id="accessibility-and-efficiency">
 <h1>Accessibility and efficiency<a class="headerlink" href="#accessibility-and-efficiency" title="Permalink to this headline">¶</a></h1>
+<p>We work hard toward making Annolid as accessible as possible to anyone trying to use it and are striving to make all the code be also runnable on Google Colab.</p>
 <ul class="simple">
-<li><p>Options for training on Google Colab (as well as on a local workstation)</p></li>
+<li><p>Options for training on Google Colab as well as on a local workstation</p></li>
 <li><p>Fast training with quality- and speed-optimized options</p>
 <ul>
 <li><p>Model training :</p>
 <ul>
 <li><p>200 labeled images</p></li>
-<li><p>&lt; 2 hours for 3000 iterations on Colab</p></li>
+<li><p>&lt; 2 hours for 3000 iterations on Google Colab</p></li>
 <li><p>30 min on NVidia 1080Ti</p></li>
 </ul>
 </li>
