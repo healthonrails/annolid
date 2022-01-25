@@ -4,15 +4,15 @@
 # <a href="https://colab.research.google.com/github/healthonrails/annolid/blob/main/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 # # Annolid on Detectron2 Tutorial 1 : Introduction to Detectron2
-# 
+#
 # <img src="https://dl.fbaipublicfiles.com/detectron2/Detectron2-Logo-Horz.png" width="500">
-# 
+#
 # Welcome to Annolid on detectron2! This is modified from the official colab tutorial of detectron2. Here, we will go through some basics usage of detectron2, including the following:
 # * Run inference on images or videos, with an existing detectron2 model
 # * Train a detectron2 model on a new dataset
-# 
+#
 # You can make a copy of this tutorial by "File -> Open in playground mode" and play with it yourself. __DO NOT__ request access to this tutorial.
-# 
+#
 
 # # Install detectron2
 
@@ -20,19 +20,36 @@
 
 
 # Is running in colab or in jupyter-notebook
+import torchvision
+import torch
+from detectron2.data import MetadataCatalog, DatasetCatalog
+from detectron2.utils.visualizer import Visualizer
+from detectron2.config import get_cfg
+from detectron2.engine import DefaultPredictor
+from detectron2 import model_zoo
+from detectron2.utils.logger import setup_logger
+import detectron2
+import matplotlib.pyplot as plt
+import numpy as np
+import glob
+import random
+import cv2
+import os
+import json
+from IPython import get_ipython
+from IPython import display
 try:
-  import google.colab
-  IN_COLAB = True
+    import google.colab
+    IN_COLAB = True
 except:
-  IN_COLAB = False
+    IN_COLAB = False
 
 
 # In[2]:
 
 
-# install dependencies: 
+# install dependencies:
 get_ipython().system('pip install pyyaml==5.3')
-import torch, torchvision
 TORCH_VERSION = ".".join(torch.__version__.split(".")[:2])
 CUDA_VERSION = torch.__version__.split("+")[-1]
 print("torch: ", TORCH_VERSION, "; cuda: ", CUDA_VERSION)
@@ -48,15 +65,8 @@ get_ipython().system('pip install detectron2 -f https://dl.fbaipublicfiles.com/d
 
 
 # import some common libraries
-import json
-import os
-import cv2
-import random
-import glob
-import numpy as np
 if IN_COLAB:
-  from google.colab.patches import cv2_imshow
-import matplotlib.pyplot as plt
+    from google.colab.patches import cv2_imshow
 get_ipython().run_line_magic('matplotlib', 'inline')
 
 
@@ -64,16 +74,9 @@ get_ipython().run_line_magic('matplotlib', 'inline')
 
 
 # Setup detectron2 logger
-import detectron2
-from detectron2.utils.logger import setup_logger
 setup_logger()
 
 # import some common detectron2 utilities
-from detectron2 import model_zoo
-from detectron2.engine import DefaultPredictor
-from detectron2.config import get_cfg
-from detectron2.utils.visualizer import Visualizer
-from detectron2.data import MetadataCatalog, DatasetCatalog
 
 
 # In[5]:
@@ -90,7 +93,7 @@ else:
 
 # ## Upload a labeled dataset.
 # The following code is expecting the dataset in the COCO format to be in a ***.zip*** file. For example: ```sample_dataset.zip``` \
-# 
+#
 
 # In[6]:
 
@@ -109,7 +112,7 @@ else:
 
 
 # ### Note1: If you want to use your own dataset instead of the demo one, please uncomment and edit the following code.
-# 
+#
 # ### Note2: please make sure there is no white space in your file path if you encounter file not found issues.
 
 # In[8]:
@@ -141,7 +144,7 @@ else:
 # In[10]:
 
 
-# DATASET_NAME = 'NameOfMyDataset' 
+# DATASET_NAME = 'NameOfMyDataset'
 # DATASET_DIR = 'NameOfMyDatasetDirectory'
 
 
@@ -190,17 +193,19 @@ cfg = get_cfg()
 if GPU:
     pass
 else:
-    cfg.MODEL.DEVICE='cpu'
+    cfg.MODEL.DEVICE = 'cpu'
 
 
 # In[16]:
 
 
 # add project-specific config (e.g., TensorMask) here if you're not running a model in detectron2's core library
-cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
+cfg.merge_from_file(model_zoo.get_config_file(
+    "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
 cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.1  # set threshold for this model
 # Find a model from Detectron2's model zoo. You can use the https://dl.fbaipublicfiles... url as well
-cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
+cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
+    "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
 predictor = DefaultPredictor(cfg)
 outputs = predictor(im)
 
@@ -229,7 +234,8 @@ MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
 
 
 # We can use `Visualizer` to draw the predictions on the image.
-v = Visualizer(im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
+v = Visualizer(
+    im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
 out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
 if IN_COLAB:
     cv2_imshow(out.get_image()[:, :, ::-1])
