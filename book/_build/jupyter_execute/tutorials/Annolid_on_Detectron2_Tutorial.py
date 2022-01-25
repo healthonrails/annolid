@@ -54,6 +54,7 @@ import cv2
 import random
 import glob
 import numpy as np
+from IPython import  get_ipython
 if IN_COLAB:
   from google.colab.patches import cv2_imshow
 import matplotlib.pyplot as plt
