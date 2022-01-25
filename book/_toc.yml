@@ -18,7 +18,11 @@ parts:
     - file: content/tips_and_tricks
   - caption: Tutorials
     chapters:
-    - file: tutorials/Annolid_on_Detectron2_Tutorial
+    - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
+    - file: tutorials/Annolid_on_Detectron2_Tutorial_2_Train_a_Model
+    - file: tutorials/Annolid_on_Detectron2_Tutorial_3_Evaluate_our_model
+    - file: tutorials/Annolid_on_Detectron2_Tutorial_4_Running_inference
+    - file: tutorials/Annolid_on_Detectron2_Tutorial_full
   - caption: Annolid Zoo
     chapters:
     - file: content/annolid_zoo

@@ -143,20 +143,13 @@
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="tips_and_tricks.html">
-   Tips and tricks
+  <a class="reference internal" href="create_coco.html">
+   Create your COCO format dataset
   </a>
  </li>
-</ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  Tutorials
- </span>
-</p>
-<ul class="nav bd-sidenav">
  <li class="toctree-l1">
-  <a class="reference internal" href="../tutorials/Annolid_on_Detectron2_Tutorial.html">
-   Annolid on Detectron2 Tutorial
+  <a class="reference internal" href="tips_and_tricks.html">
+   Tips and tricks
   </a>
  </li>
 </ul>
@@ -296,13 +289,13 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#youtube-playlist">
-   Youtube playlist
+  <a class="reference internal nav-link" href="#annolid-can-be-applied-to-many-diverse-goals">
+   Annolid can be applied to many diverse goals
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#annolid-can-be-applied-to-many-diverse-goals">
-   Annolid can be applied to many diverse goals:
+  <a class="reference internal nav-link" href="#youtube-playlist">
+   Youtube playlist
   </a>
  </li>
 </ul>
@@ -331,13 +324,13 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#youtube-playlist">
-   Youtube playlist
+  <a class="reference internal nav-link" href="#annolid-can-be-applied-to-many-diverse-goals">
+   Annolid can be applied to many diverse goals
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#annolid-can-be-applied-to-many-diverse-goals">
-   Annolid can be applied to many diverse goals:
+  <a class="reference internal nav-link" href="#youtube-playlist">
+   Youtube playlist
   </a>
  </li>
 </ul>
@@ -351,10 +344,10 @@
                 
   <div class="tex2jax_ignore mathjax_ignore section" id="introduction">
 <h1>Introduction<a class="headerlink" href="#introduction" title="Permalink to this headline">¶</a></h1>
-<p>Annolid stands for:  Annotation + Annelid (segmentation)</p>
-<p>Annolid is based on instance segmentation models, which facilitate the tracking of multiple animals along with flexible state identification (e.g., behavior classification, urine deposition, interactions among objects). Annolid has self-supervised, weakly-supervised, and unsupervised training options. We are striving to incorporate optical flow mechanics to improve performances as well as improving labeling efficiency via autolabeling and iterative model training.</p>
+<p>Annolid stands for:  Annotation + Annelid (segmentation).</p>
+<p>Annolid is based on instance segmentation models. Instance segmentation is the task of attributing every pixel of an image to a specific category. It can be used to detect and delineate each distinct object of interest appearing in that image. As such it facilitates the tracking of multiple animals and along with it the flexible state identification (e.g., behavior classification, urine deposition, interactions among objects). Annolid has self-supervised, weakly-supervised, and unsupervised training options. We are striving to incorporate optical flow mechanics to improve performances as well as improving labeling efficiency via autolabeling and iterative model training.</p>
 <p>Currently, Annolid is a work-in-progress, still in its alpha version, and subject to major changes. Nevertheless we hope you can use this jupyterbook as an efficient support to guide you through the process of using Annolid for your specific use case.</p>
-<p>If you need help or encounter an issue don’t hesitate to reach out to the developers by openning an <a class="reference internal" href="get_in_touch.html"><span class="doc std std-doc">issue</span></a> on github</p>
+<p>If you need help or encounter an issue don’t hesitate to reach out to the developers by openning an <a class="reference internal" href="get_in_touch.html"><span class="doc std std-doc">issue</span></a> on Github.</p>
 <div class="section" id="video-introduction">
 <h2>Video introduction<a class="headerlink" href="#video-introduction" title="Permalink to this headline">¶</a></h2>
 <p>Below is a brief introduction to annolid:</p>
@@ -362,15 +355,11 @@
   <iframe width="720" height="480" src="https://www.youtube.com/embed/tVIE6vG9Gao" frameborder="0" allowfullscreen="true"> </iframe>
 </figure>
 </div>
-<div class="section" id="youtube-playlist">
-<h2>Youtube playlist<a class="headerlink" href="#youtube-playlist" title="Permalink to this headline">¶</a></h2>
-<p>You can find this video, tutorial on how to use annolid as well as exemples in annolid’s youtube playlist <a class="reference external" href="https://www.youtube.com/playlist?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc">here</a>.</p>
-</div>
 <div class="section" id="annolid-can-be-applied-to-many-diverse-goals">
-<h2>Annolid can be applied to many diverse goals:<a class="headerlink" href="#annolid-can-be-applied-to-many-diverse-goals" title="Permalink to this headline">¶</a></h2>
+<h2>Annolid can be applied to many diverse goals<a class="headerlink" href="#annolid-can-be-applied-to-many-diverse-goals" title="Permalink to this headline">¶</a></h2>
 <ul class="simple">
 <li><p>Animal Tracking</p></li>
-<li><p>Keypoints tracking (ie body parts)</p></li>
+<li><p>Keypoints tracking (i.e. body parts)</p></li>
 <li><p>Automated behavior recognition</p></li>
 </ul>
 <figure class="video_container">
@@ -418,12 +407,16 @@
   <iframe width="720" height="480" src="https://lh5.googleusercontent.com/CrYqegHOYWqkrYnbOHXSfK3n2T8iuyYHPyIQGBiMHwlltb6CIs4fO02KR9BAxz1Nju747gkKN32v5bEGlLDmpnQfCa5r8T9GSetMEtpp740D2KubY3f3rZCGdnbQxmqc92cuA7jmV7I" frameborder="0" allowfullscreen="true"> </iframe>
 </figure>
 <ul class="simple">
-<li><p>Multiple animal tracking with a large field of view
-Video courtesy of Santiago Forero and Alex Ophir:</p></li>
+<li><p>Multiple animal tracking with a large field of view</p></li>
 </ul>
+<p>Video courtesy of Santiago Forero and Alex Ophir:</p>
 <figure class="video_container">
-  <iframe width="720" height="480" src="https://drive.google.com/file/d/1cYdmueC-CaMhScpcB2E-eL9mkGDFuVCs/view?resourcekey" frameborder="0" allowfullscreen="true"> </iframe>
+  <iframe width="720" height="480" src="https://drive.google.com/file/d/1cYdmueC-CaMhScpcB2E-eL9mkGDFuVCs/preview" frameborder="0" allowfullscreen="true"> </iframe>
 </figure>
+</div>
+<div class="section" id="youtube-playlist">
+<h2>Youtube playlist<a class="headerlink" href="#youtube-playlist" title="Permalink to this headline">¶</a></h2>
+<p>You can find these videos, tutorials on how to best use Annolid as well as exemples in Annolid’s youtube playlist <a class="reference external" href="https://www.youtube.com/playlist?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc">here</a>.</p>
 </div>
 </div>
 

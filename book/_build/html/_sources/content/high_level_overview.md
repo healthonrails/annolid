@@ -1,6 +1,6 @@
 # High level overview
 
-A high level overview of its workflow consists in the following steps:
+At a high level Annolid's workflow consists of the following steps:
 
 1. Labeling of frames (annotation) & COCO formatting
 
@@ -13,12 +13,13 @@ A high level overview of its workflow consists in the following steps:
 
 
 # Accessibility and efficiency
+We work hard toward making Annolid as accessible as possible to anyone trying to use it and are striving to make all the code be also runnable on Google Colab.
 
-- Options for training on Google Colab (as well as on a local workstation)
+- Options for training on Google Colab as well as on a local workstation
 - Fast training with quality- and speed-optimized options
   - Model training :
       - 200 labeled images
-      - < 2 hours for 3000 iterations on Colab
+      - < 2 hours for 3000 iterations on Google Colab
       - 30 min on NVidia 1080Ti
   - Inference (applying trained model to behavior videos)
       - Mask R-CNN: ~7 FPS

@@ -1,9 +1,14 @@
 # Docker
 
-We built a docker container for annolid to make it easier to access the package without the need to install anything beside Docker.
+We provide a script to build a docker container for Annolid to make it easier to access the package without the need to install anything besides Docker.
 
-You need to make sure that Docker is installed on your system.
-This has only been test on Ubuntu 20.04 LTS.
+You need to make sure that [Docker](https://docs.docker.com/engine/install/ubuntu/) is installed on your system (or a similar software capable of building containerized applications)
+
+
+```{note}
+Currently this has only been tested on Ubuntu 20.04 LTS.
+```
+
 
 ```
 cd annolid/docker
