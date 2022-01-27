@@ -79,7 +79,10 @@ class Segmentor():
             model_config)  # Let training initialize from model zoo
         self.cfg.SOLVER.IMS_PER_BATCH = self.batch_size  # @param
         self.cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
-        print(f"{max_iterations} seems good enough for 100 label frames")
+        self.logger.info(f"Max iterations {max_iterations}")
+        self.logger.info(f"Batch size is: {batch_size}")
+        self.logger.info(f"Dataset dir is : {dataset_dir}")
+        self.logger.info(f"Model config file is : {model_config}")
         # @param    # 3000 iterations seems good enough for 100 frames dataset;
         #  you will need to train longer for a practical dataset
         self.cfg.SOLVER.MAX_ITER = max_iterations
