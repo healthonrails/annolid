@@ -2,6 +2,7 @@ import sys
 import os
 import os.path as osp
 import time
+import shutil
 import pandas as pd
 from collections import deque
 import torch
@@ -1010,9 +1011,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1308,6 +1309,11 @@ class AnnolidWindow(MainWindow):
                                     f"Done! Results are in folder: \
                                             {str(self.output_dir)}")
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
+        try:
+            shutil.make_archive(str(self.output_dir),
+                                'zip', self.output_dir)
+        except:
+            print("Failed to create the zip file")
 
     def visualization(self):
         try:
