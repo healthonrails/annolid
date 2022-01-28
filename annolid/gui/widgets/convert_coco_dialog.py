@@ -1,3 +1,5 @@
+import glob
+import os.path as osp
 from pathlib import Path
 from qtpy import QtCore
 from qtpy import QtWidgets
@@ -101,6 +103,9 @@ class ConvertCOODialog(QtWidgets.QDialog):
                                                                          "Select Directory")
         if self.annotation_dir is not None:
             self.annoFileLineEdit.setText(self.annotation_dir)
+            self.num_train_frames = len(
+                glob.glob(osp.join(self.annotation_dir, '*.json')))
+            self.trainFramesLineEdit.setText(str(self.num_train_frames))
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -117,5 +122,5 @@ class ConvertCOODialog(QtWidgets.QDialog):
 
         self.trainFramesLineEdit.setText(str(position))
         self.label1.setText(
-            f"You selected {str(self.num_train_frames)} frames for training"
+            f"{str(self.num_train_frames)} frames are availble for training"
         )
