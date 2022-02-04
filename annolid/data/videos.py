@@ -466,3 +466,24 @@ def track(video_file=None,
 
         cv2.destroyAllWindows()
         cap.release()
+
+
+def extract_video_metadata(cap):
+    """Extract video metadata
+
+    Args:
+        cap (VideoCapture): cv2 VideoCapture object
+
+    Returns:
+        dict : dict of video metadata
+    """
+    meta_data = {
+        'frame_width': cap.get(cv2.CAP_PROP_FRAME_WIDTH),
+        'frame_height': cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
+        'fps': cap.get(cv2.CAP_PROP_FPS),
+        'format': cap.get(cv2.CAP_PROP_FORMAT),
+        'frame_count': cap.get(cv2.CAP_PROP_FRAME_COUNT),
+        'fourcc': cap.get(cv2.CAP_PROP_FOURCC),
+        'model': cap.get(cv2.CAP_PROP_MODE)
+    }
+    return meta_data
