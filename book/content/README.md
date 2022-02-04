@@ -19,7 +19,7 @@ Learning yet another tool for behavior tracking and analysis is tough and takes 
 
 
 ## Exemples
-* Pose estimation:
+* keypoint detection based on body parts segmentation:
 
 <figure class="video_container">
   <iframe width="720" height="480" src="https://www.youtube.com/embed/op3A4_LuVj8" frameborder="0" allowfullscreen="true"> </iframe>

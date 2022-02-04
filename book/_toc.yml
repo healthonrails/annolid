@@ -16,6 +16,7 @@ parts:
     - file: content/save_labels
     - file: content/create_coco
     - file: content/tips_and_tricks
+
   - caption: Tutorials
     chapters:
     - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
@@ -23,9 +24,12 @@ parts:
     - file: tutorials/Annolid_on_Detectron2_Tutorial_3_Evaluate_our_model
     - file: tutorials/Annolid_on_Detectron2_Tutorial_4_Running_inference
     - file: tutorials/Annolid_on_Detectron2_Tutorial_full
+    - file: tutorials/Annolid_post_processing_distances
+  
   - caption: Annolid Zoo
     chapters:
     - file: content/annolid_zoo
+  
   - caption: Community
     chapters:
     - file: content/contributing
