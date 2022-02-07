@@ -371,3 +371,29 @@ class Segmentor():
             df_top.to_csv(str(tracking_results_dir / tracking_results_csv))
         print(f"Done. Please check you results in folder: {out_img_dir}")
         return out_img_dir
+
+    def extract_mask_roi_features(self, frame):
+        """extract mask ROI features from the given video frame
+
+        Args:
+            frame (cv2.frame): video frame read by cv2
+
+        Returns:
+            numpy array: mask features
+        """
+        im = frame[:, :, ::-1]
+        height, width = im.shape[:2]
+        image = torch.as_tensor(im.astype("float32").transpose(2, 0, 1))
+        inputs = [{"image": image, "height": height, "width": width}]
+        images = self.predictor.model.preprocess_image(inputs)
+        features = self.predictor.model.backbone(images.tensor)
+
+        proposals, _ = self.predictor.model.proposal_generator(
+            images, features)
+        instances, _ = self.predictor.model.roi_heads(
+            images, features, proposals)
+        mask_features = [features[f]
+                         for f in self.predictor.model.roi_heads.in_features]
+        mask_features = self.predictor.model.roi_heads.mask_pooler(
+            mask_features, [x.pred_boxes for x in instances])
+        return mask_features
