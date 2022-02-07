@@ -484,6 +484,6 @@ def extract_video_metadata(cap):
         'format': cap.get(cv2.CAP_PROP_FORMAT),
         'frame_count': cap.get(cv2.CAP_PROP_FRAME_COUNT),
         'fourcc': cap.get(cv2.CAP_PROP_FOURCC),
-        'model': cap.get(cv2.CAP_PROP_MODE)
+        'mode': cap.get(cv2.CAP_PROP_MODE)
     }
     return meta_data
