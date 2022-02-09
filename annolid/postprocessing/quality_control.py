@@ -74,6 +74,16 @@ def pred_dict_to_labelme(pred_row,
             cy = round((y1 + y2) / 2, 2)
             shape.addPoint((cx, cy))
             label_list.append(shape)
+    if segmentation is None:
+        shape = Shape(label=instance_name,
+                      shape_type='point',
+                      flags={}
+                      )
+        cx = round((x1 + x2) / 2, 2)
+        cy = round((y1 + y2) / 2, 2)
+        shape.addPoint((cx, cy))
+        label_list.append(shape)
+
     return label_list
 
 

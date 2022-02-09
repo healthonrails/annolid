@@ -1011,12 +1011,19 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
-                            ):
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
+                    elif '_labels' in str(tr):
+                        self._df = pd.read_csv(str(tr))
+                        try:
+                            self._df.rename(
+                                columns={'Unnamed: 0': 'frame_number'}, inplace=True)
+                        except:
+                            print('No need to change')
 
                 if self._df is not None:
                     try:
@@ -1025,6 +1032,7 @@ class AnnolidWindow(MainWindow):
                         pass
 
             self.video_results_folder = Path(video_filename).with_suffix('')
+
             self.video_results_folder.mkdir(
                 exist_ok=True,
                 parents=True
@@ -1164,7 +1172,25 @@ class AnnolidWindow(MainWindow):
         if self._df is not None:
             df_cur = self._df[self._df.frame_number == frame_number]
             frame_label_list = []
+            pd.options.mode.chained_assignment = None
             for row in df_cur.to_dict(orient='records'):
+                if 'x1' not in row:
+                    row['x1'] = 2
+                    row['y1'] = 2
+                    row['x2'] = 4
+                    row['y2'] = 4
+                    row['class_score'] = 1
+                    df_cur.drop('frame_number', axis=1, inplace=True)
+                    try:
+                        instance_names = df_cur.apply(lambda row:
+                                                      df_cur.columns[[i for i in range(
+                                                          len(row)) if row[i] > 0][0]
+                                                      ],
+                                                      axis=1).tolist()
+                        row['instance_name'] = '_'.join(instance_names)
+                    except IndexError:
+                        row['instance_name'] = 'unknown'
+                    row['segmentation'] = None
                 pred_label_list = pred_dict_to_labelme(row)
                 frame_label_list += pred_label_list
             label_json_file = str(filename).replace(".png", ".json")
