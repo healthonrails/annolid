@@ -1024,6 +1024,7 @@ class AnnolidWindow(MainWindow):
                                 columns={'Unnamed: 0': 'frame_number'}, inplace=True)
                         except:
                             print('No need to change')
+                        break
 
                 if self._df is not None:
                     try:
@@ -1169,7 +1170,9 @@ class AnnolidWindow(MainWindow):
         self.canvas.loadShapes(shapes, replace=replace)
 
     def loadPredictShapes(self, frame_number, filename):
-        if self._df is not None:
+
+        label_json_file = str(filename).replace(".png", ".json")
+        if self._df is not None and not Path(filename).exists():
             df_cur = self._df[self._df.frame_number == frame_number]
             frame_label_list = []
             pd.options.mode.chained_assignment = None
@@ -1193,7 +1196,7 @@ class AnnolidWindow(MainWindow):
                     row['segmentation'] = None
                 pred_label_list = pred_dict_to_labelme(row)
                 frame_label_list += pred_label_list
-            label_json_file = str(filename).replace(".png", ".json")
+
             save_labels(label_json_file,
                         str(filename),
                         frame_label_list,
@@ -1202,12 +1205,14 @@ class AnnolidWindow(MainWindow):
                         imageData=self.imageData,
                         save_image_to_json=False
                         )
+
+        if Path(label_json_file).exists():
             try:
                 self.labelFile = LabelFile(label_json_file)
                 if self.labelFile:
                     self.loadLabels(self.labelFile.shapes)
             except Exception:
-                pass
+                print(f'Count not load label json file {label_json_file}')
 
             if not Path(filename).exists():
                 os.remove(label_json_file)
