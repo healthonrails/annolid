@@ -212,6 +212,22 @@ class TracksResults():
     def get_labels(self):
         return list(self.df.instance_name.unique())
 
+    def find_last_show_position(self,
+                                instance_name='Female_52',
+                                frame_number=0):
+        """Find the last detection location and mask info the given instance and frame number
+
+        Args:
+            instance_name (str, optional): Instance name. Defaults to 'Female_52'.
+            frame_number (int, optional): frame number. Defaults to 0.
+
+        Returns:
+            pd.DataFrame: dataframe row
+        """
+        return self.df[(self.df.instance_name == instance_name) &
+                       (self.df.frame_number < frame_number)].sort_values(by='frame_number',
+                                                                          ascending=False).head(1)
+
     def array_to_image_data(self, img_arr):
         img_pil = PIL.Image.fromarray(img_arr)
         _img_data = img_pil_to_data(img_pil)
