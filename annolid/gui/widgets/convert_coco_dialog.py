@@ -32,14 +32,14 @@ class ConvertCOODialog(QtWidgets.QDialog):
         vbox = QtWidgets.QVBoxLayout()
 
         self.groupBoxFiles = QtWidgets.QGroupBox(
-            f"Please select annotaton directory")
+            f"Please select annotation directory")
         self.annoFileLineEdit = QtWidgets.QLineEdit(self)
 
         if self.annotation_dir is not None:
             self.annoFileLineEdit.setText(str(self.annotation_dir))
 
         self.annoFileButton = QtWidgets.QPushButton(
-            'Open Annotations Directory', self)
+            'Open Annotation Directory', self)
         self.annoFileButton.clicked.connect(
             self.onOutAnnoDirButtonClicked)
         hboxLayOut.addWidget(self.annoFileLineEdit)
@@ -122,5 +122,5 @@ class ConvertCOODialog(QtWidgets.QDialog):
 
         self.trainFramesLineEdit.setText(str(position))
         self.label1.setText(
-            f"{str(self.num_train_frames)} frames are availble for training"
+            f"{str(self.num_train_frames)} frames are available for training"
         )
