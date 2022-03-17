@@ -1,0 +1,14 @@
+__ignore__
+_background_
+nose
+left_ear
+right_ear
+neck
+left_forepaw
+right_forepaw
+center_back
+left_hindpaw
+right_hindpaw
+tail_base
+tail_middle
+tail_tip
