@@ -1084,8 +1084,7 @@ class AnnolidWindow(MainWindow):
         self.filename = str(filename)
         self.image = qimage
         imageData = ImageQt.fromqimage(qimage)
-        if not Path(filename).exists:
-            imageData.save(filename)
+       
         self.imageData = utils.img_pil_to_data(imageData)
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
