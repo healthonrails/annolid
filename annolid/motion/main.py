@@ -1,3 +1,9 @@
+"""
+RAFT: Recurrent All Pairs Field Transforms for Optical Flow
+ECCV 2020
+Zachary Teed and Jia Deng
+Modified from https://github.com/princeton-vl/RAFT/blob/master/demo.py
+"""
 import argparse
 import cv2
 import numpy as np
