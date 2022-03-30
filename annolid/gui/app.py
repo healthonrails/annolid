@@ -686,6 +686,14 @@ class AnnolidWindow(MainWindow):
             self._addItem(image_filename, label_file)
             self.setClean()
 
+    def getLabelFile(self):
+        if str(self.filename).lower().endswith(".json"):
+            label_file = str(self.filename)
+        else:
+            label_file = osp.splitext(str(self.filename))[0] + ".json"
+
+        return label_file
+
     def popLabelListMenu(self, point):
         try:
             self.menus.labelList.exec_(self.labelList.mapToGlobal(point))
