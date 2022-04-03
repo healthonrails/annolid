@@ -49,7 +49,6 @@ class Segmentor():
         self.right_object_name = 'RightTeaball'
         self.left_interact_name = 'LeftInteract'
         self.right_interact_name = 'RightInteract'
-        self.tracking_results = []
 
         try:
             register_coco_instances(f"{dataset_name}_train", {
@@ -334,6 +333,7 @@ class Segmentor():
 
         out_img_dir = key_frames(video_path)
         self.on_image_folder(out_img_dir)
+        tracking_results = []
 
         if num_frames <= 1000 or torch.cuda.is_available():
             frame_number = 0
@@ -351,17 +351,17 @@ class Segmentor():
                     out_dict['instance_name'] = None
                     out_dict['class_score'] = None
                     out_dict['segmentation'] = None
-                    self.tracking_results.append(out_dict)
+                    tracking_results.append(out_dict)
                     out_dict = {}
                 else:
                     _res = self._process_instances(
                         instances, frame_number, width)
-                    self.tracking_results += _res
+                    tracking_results.append(_res)
                 frame_number += 1
                 if frame_number % 100 == 0:
                     print("Processing frame number: ", frame_number)
 
-            df = pd.DataFrame(self.tracking_results)
+            df = pd.DataFrame(tracking_results)
             df_top = df.groupby(
                 ['frame_number', 'instance_name'], sort=False).head(1)
             tracking_results_dir = Path(self.dataset_dir).parent
