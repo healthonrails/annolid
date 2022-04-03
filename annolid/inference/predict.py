@@ -356,7 +356,7 @@ class Segmentor():
                 else:
                     _res = self._process_instances(
                         instances, frame_number, width)
-                    tracking_results.append(_res)
+                    tracking_results += _res
                 frame_number += 1
                 if frame_number % 100 == 0:
                     print("Processing frame number: ", frame_number)
