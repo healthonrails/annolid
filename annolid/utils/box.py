@@ -16,6 +16,8 @@ def get_box_client(config_file='../config/box_config.json'):
         Defaults to '../config/box_config.json'.
     Please copy developer token from the above url and and a row `"developer_token":"YOUR_TOKEN",`
     to the box_config.json file.
+    Returns: 
+       Client: box client object
     """
     with open(config_file, 'r') as cfg:
         box_cfg = json.load(cfg)
@@ -30,3 +32,40 @@ def get_box_client(config_file='../config/box_config.json'):
     )
     client = Client(oauth)
     return client
+
+
+def get_box_folder_items(client, folder_id='0'):
+    """get box folder and items in side the folder with provide folder id
+
+    Args:
+        client (Client): box API client
+        folder_id (str, optional): folder 
+        ID, e.g. from app.box.com/folder/FOLDER_ID
+        . Defaults to '0'.
+
+    Returns:
+        Folder, File: box folder and file objects
+    """
+    box_folder = client.folder(folder_id=folder_id)
+    return box_folder, box_folder.get_items()
+
+
+def upload_file(box_folder, local_file_path):
+    """upload a local file to the box folder
+
+    Args:
+        box_folder (folder object)
+        local_file_path (str): local file absolute path e.g. /data/video.mp4
+    """
+    box_folder.upload(local_file_path)
+
+
+def download_file(box_file, local_file_path):
+    """Download a file in box to local disk
+
+    Args:
+        box_file (File): box file object
+        local_file_path (str): local file path e.g. /data/video.mp4
+    """
+    with open(local_file_path, 'wb') as lf:
+        box_file.download_to(lf)
