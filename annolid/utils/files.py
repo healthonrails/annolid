@@ -37,3 +37,29 @@ def merge_annotation_folders(
         dest_img = os.path.basename(img).replace(' ', '_')
         shutil.copy(img, os.path.join(dest_dir, dest_img))
         shutil.copy(label_json, os.path.join(dest_dir, dest_json))
+
+
+def get_freezing_results(results_dir,
+                         video_name):
+    """check and fliter all the output results files from freezing analyzer.
+
+    Args:
+        results_dir (str): path to the result folder
+        video_name (str): video name without ext
+
+    Returns:
+        list: list of results files
+    """
+    filtered_results = []
+    res_files = os.listdir(results_dir)
+    for rf in res_files:
+        if video_name in rf:
+            if '_results.mp4' in rf:
+                filtered_results.append(rf)
+            if '_tracked.mp4' in rf:
+                filtered_results.append(rf)
+            if '_motion.csv' in rf:
+                filtered_results.append(rf)
+            if 'nix.csv' in rf:
+                filtered_results.append(rf)
+    return filtered_results
