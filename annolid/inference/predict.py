@@ -367,7 +367,7 @@ class Segmentor():
             tracking_results_dir = Path(self.dataset_dir).parent
             tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
             tracking_results_csv += f"_{str(Path(video_path).stem)}"
-            tracking_results_csv += "_mask_rcnn_tracking_results_with_segmenation.csv"
+            tracking_results_csv += "_mask_rcnn_tracking_results_with_segmentation.csv"
             df_top.to_csv(str(tracking_results_dir / tracking_results_csv))
         print(f"Done. Please check you results in folder: {out_img_dir}")
         return out_img_dir
