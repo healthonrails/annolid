@@ -1,4 +1,6 @@
+import argparse
 import os
+import sys
 import glob
 from annolid.postprocessing.glitter import tracks2nix
 
@@ -40,15 +42,37 @@ def get_freezing_results(results_dir, video_name):
     return filtered_results
 
 
-def main(videos_dir,
-         video_file_pattern='20*.mp4',
-         csv_dir='.',
-         csv_file_pattern='C57*.csv',
-         motion_threshold=0.01,
-         score_threshold=0.15
-         ):
-    videos = get_videos(videos_dir, video_file_pattern)
-    csvs = get_tracking_csvs(csv_dir, csv_file_pattern)
+def parse_arges(args=sys.argv[1:]):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video_folder",
+                        help="folder contains all the video files",
+                        required=True
+                        )
+    parser.add_argument('--video_pattern',
+                        help="pattern for matching video files",
+                        default='*/*.mp4',
+                        )
+    parser.add_argument('--csv_folder',
+                        help='folder with tracking csv files',
+                        required=True
+                        )
+    parser.add_argument('--csv_pattern',
+                        help="pattern for matching tracking csv files",
+                        default='*.csv')
+    parser.add_argument('--motion_threshold',
+                        help='motion threshold between 0 to 1',
+                        default=0.01)
+    parser.add_argument('--score_threshold',
+                        help="class score threshold",
+                        default=0.1
+                        )
+    return parser.parse_args(args)
+
+
+def main():
+    args = parse_arges()
+    videos = get_videos(args.video_folder, args.video_pattern)
+    csvs = get_tracking_csvs(args.csv_folder, args.csv_pattern)
     for v in videos:
         video_name = os.path.basename(v).split('.')[0]
         try:
@@ -58,12 +82,11 @@ def main(videos_dir,
             continue
         tracks2nix(v,
                    csv_file,
-                   score_threshold=score_threshold,
-                   motion_threshold=motion_threshold
+                   score_threshold=args.score_threshold,
+                   motion_threshold=args.motion_threshold
                    )
         print('Finish tracking video: ', video_name)
 
 
 if __name__ == '__main__':
-    results_dir = '/data'
-    main(results_dir, csv_dir=results_dir)
+    main()
