@@ -1,8 +1,10 @@
 import argparse
+from email.policy import default
 import os
 import sys
 import glob
 from annolid.postprocessing.glitter import tracks2nix
+from annolid.inference.predict import Segmentor
 
 
 def get_videos(videos_dir="/data/videos/",
@@ -24,6 +26,30 @@ def get_tracking_csvs(csv_dir='/data/csvs/',
         tracking_res[video_name_no_ext] = cs
 
     return tracking_res
+
+
+def get_segmentor(
+    model_path='model_final.path',
+    dataset_dir='/data/coco/dataset',
+    score_threshold=0.1
+):
+    """create an intance segmentation model
+
+    Args:
+        model_path (str, optional): file path to the trained model. Defaults to 'model_final.path'.
+        dataset_dir (str, optional): folder contains the coco dataset. Defaults to '/data/coco/dataset'.
+        score_threshold (float, optional): class threshold. Defaults to 0.1.
+
+    Returns:
+        model : Detectron2 model
+    """
+    segmentor = Segmentor(
+        dataset_dir,
+        model_path,
+        score_threshold
+    )
+
+    return segmentor
 
 
 def get_freezing_results(results_dir, video_name):
@@ -54,11 +80,19 @@ def parse_arges(args=sys.argv[1:]):
                         )
     parser.add_argument('--csv_folder',
                         help='folder with tracking csv files',
-                        required=True
+                        default='/data/'
                         )
     parser.add_argument('--csv_pattern',
                         help="pattern for matching tracking csv files",
                         default='*.csv')
+    parser.add_argument('--model_path',
+                        help='file path to the trained Detectron2 model',
+                        default='/data/model_final.pth'
+                        )
+    parser.add_argument('--dataset_dir',
+                        help='folder path to COCO format dataset that were used to trained the model',
+                        default='/data/coco_dataset'
+                        )
     parser.add_argument('--motion_threshold',
                         help='motion threshold between 0 to 1',
                         default=0.01)
@@ -71,9 +105,15 @@ def parse_arges(args=sys.argv[1:]):
 
 def main():
     args = parse_arges()
+    segmentor = None
     videos = get_videos(args.video_folder, args.video_pattern)
     csvs = get_tracking_csvs(args.csv_folder, args.csv_pattern)
+    if os.path.exists(args.model_path) and os.path.exists(args.dataset_dir):
+        segmentor = get_segmentor(args.model_path,
+                                  args.dataset_dir, args.score_threshold)
     for v in videos:
+        if segmentor:
+            segmentor.on_video(v)
         video_name = os.path.basename(v).split('.')[0]
         try:
             csv_file = csvs[video_name]
