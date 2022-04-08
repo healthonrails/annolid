@@ -69,3 +69,23 @@ def download_file(box_file, local_file_path):
     """
     with open(local_file_path, 'wb') as lf:
         box_file.download_to(lf)
+
+
+def is_results_complete(box_folder,
+                        result_file_pattern='_motion.csv',
+                        num_expected_results=0
+                        ):
+    """Check if a box folder contains all the expected result files
+
+    Args:
+        box_folder (BoxFolder): box folder object
+        result_file_pattern (str, optional): pattern in the file. Defaults to '_motion.csv'.
+
+    Returns:
+        bool: True if the folder contails the expected number of result files else False
+    """
+    num_of_results = 0
+    for bf in box_folder.get_items():
+        if result_file_pattern in bf.name:
+            num_of_results += 1
+    return num_of_results == num_expected_results
