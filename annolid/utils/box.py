@@ -2,6 +2,7 @@
 Please install  boxsdk
 `pip install boxsdk`
 """
+import os
 import json
 from boxsdk import OAuth2, Client
 
@@ -89,3 +90,29 @@ def is_results_complete(box_folder,
         if result_file_pattern in bf.name:
             num_of_results += 1
     return num_of_results == num_expected_results
+
+
+def upload_results(box_folder,
+                   tracking_results,
+                   csv_pattern='motion.csv'):
+    """upload the annolid output results to a box folder
+
+    Args:
+        box_folder (BoxFolder object): box folder contains the results files
+        tracking_results (dict): a dict contains the folder name : local file path
+        csv_pattern (str, optional): results csv file pattern. Defaults to 'motion.csv'.
+
+    Returns:
+        _type_: _description_
+    """
+    has_results = False
+    for bf in box_folder.get_items():
+        if csv_pattern in bf.name:
+            has_results = True
+            break
+    if not has_results:
+        local_file = tracking_results[box_folder.name]
+        if os.path.exists(local_file):
+            upload_file(box_folder, local_file)
+            print('Upload file: ', local_file)
+    return True
