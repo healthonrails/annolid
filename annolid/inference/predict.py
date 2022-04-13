@@ -324,7 +324,7 @@ class Segmentor():
         for img_path in imgs:
             self.on_image(img_path, display=False)
 
-    def on_video(self, video_path):
+    def on_video(self, video_path, num_instance_per_class=3):
         if not Path(video_path).exists():
             return
         self.cap = cv2.VideoCapture(video_path)
@@ -363,7 +363,7 @@ class Segmentor():
 
             df = pd.DataFrame(tracking_results)
             df_top = df.groupby(
-                ['frame_number', 'instance_name'], sort=False).head(1)
+                ['frame_number', 'instance_name'], sort=False).head(num_instance_per_class)
             tracking_results_dir = Path(self.dataset_dir).parent
             tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
             tracking_results_csv += f"_{str(Path(video_path).stem)}"
