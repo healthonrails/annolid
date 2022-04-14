@@ -1025,7 +1025,7 @@ class AnnolidWindow(MainWindow):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
-                    elif '_labels' in str(tr):
+                    elif '_labels' in str(tr) and _video_name in str(tr):
                         self._df = pd.read_csv(str(tr))
                         try:
                             self._df.rename(
@@ -1092,7 +1092,7 @@ class AnnolidWindow(MainWindow):
         self.filename = str(filename)
         self.image = qimage
         imageData = ImageQt.fromqimage(qimage)
-       
+
         self.imageData = utils.img_pil_to_data(imageData)
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
