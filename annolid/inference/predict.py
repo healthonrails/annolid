@@ -29,7 +29,8 @@ class Segmentor():
                  model_pth_path=None,
                  score_threshold=0.15,
                  overlap_threshold=0.95,
-                 model_config=None
+                 model_config=None,
+                 num_instances_per_class=1
                  ) -> None:
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold
@@ -49,6 +50,7 @@ class Segmentor():
         self.right_object_name = 'RightTeaball'
         self.left_interact_name = 'LeftInteract'
         self.right_interact_name = 'RightInteract'
+        self.num_instances_per_class = num_instances_per_class
 
         try:
             register_coco_instances(f"{dataset_name}_train", {
@@ -86,10 +88,12 @@ class Segmentor():
                    instances,
                    image_path,
                    height,
-                   width):
+                   width
+                   ):
         results = self._process_instances(instances, width=width)
         df_res = pd.DataFrame(results)
-        df_res = df_res.groupby(['instance_name'], sort=False).head(1)
+        df_res = df_res.groupby(['instance_name'], sort=False).head(
+            self.num_instances_per_class)
         results = df_res.to_dict(orient='records')
         frame_label_list = []
         for res in results:
@@ -324,7 +328,7 @@ class Segmentor():
         for img_path in imgs:
             self.on_image(img_path, display=False)
 
-    def on_video(self, video_path, num_instance_per_class=3):
+    def on_video(self, video_path):
         if not Path(video_path).exists():
             return
         self.cap = cv2.VideoCapture(video_path)
@@ -363,7 +367,7 @@ class Segmentor():
 
             df = pd.DataFrame(tracking_results)
             df_top = df.groupby(
-                ['frame_number', 'instance_name'], sort=False).head(num_instance_per_class)
+                ['frame_number', 'instance_name'], sort=False).head(self.num_instances_per_class)
             tracking_results_dir = Path(self.dataset_dir).parent
             tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
             tracking_results_csv += f"_{str(Path(video_path).stem)}"
