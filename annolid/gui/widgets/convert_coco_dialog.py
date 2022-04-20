@@ -3,6 +3,7 @@ import os.path as osp
 from pathlib import Path
 from qtpy import QtCore
 from qtpy import QtWidgets
+from annolid.utils.files import merge_annotation_folders
 
 
 class ConvertCOODialog(QtWidgets.QDialog):
@@ -102,9 +103,21 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.annotation_dir = QtWidgets.QFileDialog.getExistingDirectory(self,
                                                                          "Select Directory")
         if self.annotation_dir is not None:
-            self.annoFileLineEdit.setText(self.annotation_dir)
+
             self.num_train_frames = len(
                 glob.glob(osp.join(self.annotation_dir, '*.json')))
+            # try to merge folders in the current directory
+            # assume the subdir contains png and json files for each video
+            # merge them to a single folder
+            if self.num_train_frames < 1:
+
+                dest_dir = self.annotation_dir + '_merged'
+                merge_annotation_folders(
+                    self.annotation_dir, '*/*.png', dest_dir)
+                self.annotation_dir = dest_dir
+                self.num_train_frames = len(
+                    glob.glob(osp.join(self.annotation_dir, '*.json')))
+            self.annoFileLineEdit.setText(self.annotation_dir)
             self.trainFramesLineEdit.setText(str(self.num_train_frames))
 
     def slider(self):
