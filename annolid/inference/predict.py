@@ -401,3 +401,22 @@ class Segmentor():
         mask_features = self.predictor.model.roi_heads.mask_pooler(
             mask_features, [x.pred_boxes for x in instances])
         return mask_features
+
+    def extract_backbone_features(self, frame):
+        """extract backbone ROI features from the given video frame
+
+        Args:
+            frame (cv2.frame): video frame read by cv2
+
+        Returns:
+            numpy array: backbone features
+        """
+        im = frame[:, :, ::-1]
+        height, width = im.shape[:2]
+        image = torch.as_tensor(im.astype("float32").transpose(2, 0, 1))
+        inputs = [{"image": image, "height": height, "width": width}]
+        images = self.predictor.model.preprocess_image(inputs)
+
+        features = self.predictor.model.backbone(images.tensor)
+
+        return features
