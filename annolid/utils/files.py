@@ -4,6 +4,8 @@ import platform
 import shutil
 import glob
 
+from sklearn import cluster
+
 
 def open_or_start_file(file_name):
     # macOS
@@ -63,3 +65,13 @@ def get_freezing_results(results_dir,
             if 'nix.csv' in rf:
                 filtered_results.append(rf)
     return filtered_results
+
+
+def create_cluster_folders(cluster_labels,
+                           dest_dir='/data/video_embidings'):
+    if not os.path.exists(dest_dir):
+        os.makedirs(dest_dir)
+    for label in cluster_labels:
+        label_folder = os.path.join(dest_dir, f'cluster_{label}')
+        if not os.path.exists(label_folder):
+            os.makedirs(label_folder)
