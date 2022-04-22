@@ -4,8 +4,6 @@ import platform
 import shutil
 import glob
 
-from sklearn import cluster
-
 
 def open_or_start_file(file_name):
     # macOS
@@ -69,6 +67,12 @@ def get_freezing_results(results_dir,
 
 def create_cluster_folders(cluster_labels,
                            dest_dir='/data/video_embidings'):
+    """create a subfolder for each cluster
+
+    Args:
+        cluster_labels (list): unique cluster labels
+        dest_dir (str, optional): root dir for clusters. Defaults to '/data/video_embidings'.
+    """
     if not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
     for label in cluster_labels:
