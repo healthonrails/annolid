@@ -3,7 +3,6 @@ https://www.aicrowd.com/showcase/getting-started-mouse-triplets-video-data
 
 """
 
-from genericpath import exists
 import os
 import cv2
 import numpy as np
@@ -119,21 +118,19 @@ def points_to_labelme(video_file,
     keypoint_sequence = single_sequence['keypoints']
     annos = single_sequence['annotations']
     for i in range(vfs.total_frames()):
-        if i % skip_num == 0:
+        if i % skip_num == 0 or annos[0, i] == 1:
             frame = vfs.load_frame(i)
-
             try:
-
                 pose = keypoint_sequence[i]
             except IndexError:
                 print('out of index', i, video_file)
                 continue
             combined_pose = pose.reshape(-1, 2)
             hull_mask = pose_to_mask(combined_pose)
-            if annos[0, i] >= 1:
-                label = number_to_class[annos[0, i]]
-            elif annos[1, i] >= 1:
-                label = number_to_class[annos[1, i]]
+            if annos[0, i] == 1:
+                label = 'chase'
+            elif annos[1, i] == 1:
+                label = 'lights'
             else:
                 label = 'background'
             points = hull_mask.squeeze()
