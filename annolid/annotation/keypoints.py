@@ -127,3 +127,19 @@ def to_labelme(img_folder,
             save_labels(img_path.replace('.png', '.json'),
                         img_path, label_list, image_height,
                         image_width)
+
+
+def get_shapes(points,
+               label_name,
+               scale_factor=224/512):
+    """
+    Convert 2d points with label name to polygon shapes
+    """
+    shape = Shape(label=label_name,
+                  shape_type='polygon',
+                  flags={}
+                  )
+    for x, y in points * scale_factor:
+        if x > 0 and y > 0:
+            shape.addPoint((int(y), int(x)))
+    return shape
