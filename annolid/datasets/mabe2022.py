@@ -203,8 +203,9 @@ def points_to_labelme(video_file,
                 filename = os.path.join(dest_dir, seq + '_' + str(i) + '.png')
                 if not os.path.exists(filename):
                     cv2.imwrite(filename, frame)
+                img_path = os.path.basename(filename)
                 save_labels(filename.replace('.png', '.json'),
-                            filename, label_list, height, width)
+                            img_path, label_list, height, width)
 
 
 def main(user_train_path,
