@@ -22,6 +22,26 @@ def load_user_train(path_to_train='user_train.npy'):
         return
 
 
+def number_to_keypoint_names(
+        labels_text='./annolid/annotation/mabe_2022_labels.txt'
+):
+    """load MABA2022 keypoints names 
+
+    Args:
+        labels_text (str, optional): labels file contains the name of keypoints
+        . Defaults to './annolid/annotation/mabe_2022_labels.txt'.
+
+    Returns:
+        dict: dict with id and name pairs
+    """
+    num_to_keypoints = {}
+    with open(labels_text) as ml:
+        names = list(ml.readlines())
+        for i, name in enumerate(names[2:]):
+            num_to_keypoints[i] = name.strip()
+    return num_to_keypoints
+
+
 class MabeVideoDataset(torch.utils.data.Dataset):
     """
     Reads all frames from video files with frame skip
