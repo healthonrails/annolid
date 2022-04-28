@@ -9,6 +9,7 @@ import numpy as np
 
 import torch
 import torchvision.transforms as T
+from labelme.shape import Shape
 from annolid.data.videos import CV2Video
 from annolid.annotation.keypoints import save_labels, get_shapes
 
@@ -40,6 +41,47 @@ def number_to_keypoint_names(
         for i, name in enumerate(names[2:]):
             num_to_keypoints[i] = name.strip()
     return num_to_keypoints
+
+
+def get_shapes(points, label_name, scale_factor=224/512):
+    shape = Shape(label=label_name,
+                  shape_type='polygon',
+                  flags={}
+                  )
+    for x, y in points * scale_factor:
+        if x > 0 and y > 0:
+            shape.addPoint((int(y), int(x)))
+    return shape
+
+
+def keypoints_to_shapes(poses,
+                        animal_name='mouse',
+                        estimate_animal_mask=True,
+                        scale_factor=224/512):
+    keypoint_names = number_to_keypoint_names()
+    label_list = []
+    for aid, pose in enumerate(poses):
+        if estimate_animal_mask:
+            try:
+                hull_points = pose_to_mask(pose)
+                if len(hull_points) >= 4:
+                    animal_shape = get_shapes(
+                        hull_points.squeeze(), '_'.join([animal_name, str(aid)]))
+                    label_list.append(animal_shape)
+
+            except TypeError as err:
+                print(err)
+
+        for pid, point in enumerate(pose):
+            shape = Shape(label=keypoint_names[pid],
+                          shape_type='point',
+                          flags={}
+                          )
+            x = point[1] * scale_factor
+            y = point[0] * scale_factor
+            shape.addPoint((x, y))
+            label_list.append(shape)
+    return label_list
 
 
 class MabeVideoDataset(torch.utils.data.Dataset):
@@ -145,6 +187,7 @@ def points_to_labelme(video_file,
             except IndexError:
                 print('out of index', i, video_file)
                 continue
+            label_list = keypoints_to_shapes(pose)
             combined_pose = pose.reshape(-1, 2)
             hull_mask = pose_to_mask(combined_pose)
             if annos[0, i] == 1:
@@ -156,11 +199,12 @@ def points_to_labelme(video_file,
             points = hull_mask.squeeze()
             if points.shape[0] >= min_points:
                 shapes = get_shapes(points, label)
+                label_list.append(shapes)
                 filename = os.path.join(dest_dir, seq + '_' + str(i) + '.png')
                 if not os.path.exists(filename):
                     cv2.imwrite(filename, frame)
                 save_labels(filename.replace('.png', '.json'),
-                            filename, [shapes], height, width)
+                            filename, label_list, height, width)
 
 
 def main(user_train_path,
