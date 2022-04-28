@@ -51,6 +51,7 @@ class Segmentor():
         self.left_interact_name = 'LeftInteract'
         self.right_interact_name = 'RightInteract'
         self.num_instances_per_class = num_instances_per_class
+        self.custom_activation = {}
 
         try:
             register_coco_instances(f"{dataset_name}_train", {
@@ -420,3 +421,16 @@ class Segmentor():
         features = self.predictor.model.backbone(images.tensor)
 
         return features
+
+    def get_activation_frome_layer(self, layer_name):
+        """Get output from a given layer
+        e.g. usage
+        self.predictor.model.
+        roi_heads.box_predictor.register_forward_hook(get_activation('cls_score'))
+
+        Args:
+            layer_name (str): layer name like mask_head
+        """
+        def hook(model, input, output):
+            self.custom_activation[layer_name] = output
+        return hook
