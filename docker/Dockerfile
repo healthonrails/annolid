@@ -8,6 +8,7 @@ LABEL maintainer "Chen Yang <healthonrails@gmail.com>"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN \
+  apt-key adv --keyserver keyserver.ubuntu.com --recv-keys  A4B469963BF863CC  &&\
   apt-get update -qq && \
   apt-get install -qq -y \
     git \
@@ -35,7 +36,7 @@ USER annoliduser
 WORKDIR /home/annoliduser
 
 ENV PATH="/home/annoliduser/.local/bin:${PATH}"
-RUN wget https://bootstrap.pypa.io/get-pip.py && \
+RUN wget https://bootstrap.pypa.io/pip/3.6/get-pip.py && \
 	python3 get-pip.py --user && \
 	rm get-pip.py
 
