@@ -37,17 +37,19 @@
     <script src="../_static/jquery.js"></script>
     <script src="../_static/underscore.js"></script>
     <script src="../_static/doctools.js"></script>
-    <script src="../_static/togglebutton.js"></script>
     <script src="../_static/clipboard.min.js"></script>
     <script src="../_static/copybutton.js"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../_static/togglebutton.js"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown, .tag_hide_input div.cell_input, .tag_hide-input div.cell_input, .tag_hide_output div.cell_output, .tag_hide-output div.cell_output, .tag_hide_cell.cell, .tag_hide-cell.cell';</script>
     <script src="../_static/sphinx-book-theme.d59cb220de22ca1c485ebbdc042f0030.js"></script>
-    <script async="async" src="https://unpkg.com/thebe@0.5.1/lib/index.js"></script>
-    <script>
-        const thebe_selector = ".thebe"
-        const thebe_selector_input = "pre"
-        const thebe_selector_output = ".output"
-    </script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"
+const thebe_selector = ".thebe,.cell"
+const thebe_selector_input = "pre"
+const thebe_selector_output = ".output, .cell_output"
+</script>
     <script async="async" src="../_static/sphinx-thebe.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
@@ -285,11 +287,11 @@
         aria-label="Connect with source repository"><i class="fab fa-github"></i></button>
     <div class="dropdown-buttons sourcebuttons">
         <a class="repository-button"
-            href="https://github.com/jeremyforest/annolid/"><button type="button" class="btn btn-secondary topbarbtn"
+            href="https://github.com/healthonrails/annolid/"><button type="button" class="btn btn-secondary topbarbtn"
                 data-toggle="tooltip" data-placement="left" title="Source repository"><i
                     class="fab fa-github"></i>repository</button></a>
         <a class="issues-button"
-            href="https://github.com/jeremyforest/annolid//issues/new?title=Issue%20on%20page%20%2Ftutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2.html&body=Your%20issue%20content%20here."><button
+            href="https://github.com/healthonrails/annolid//issues/new?title=Issue%20on%20page%20%2Ftutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2.html&body=Your%20issue%20content%20here."><button
                 type="button" class="btn btn-secondary topbarbtn" data-toggle="tooltip" data-placement="left"
                 title="Open an issue"><i class="fas fa-lightbulb"></i>open issue</button></a>
         
@@ -310,7 +312,7 @@
         aria-label="Launch interactive content"><i class="fas fa-rocket"></i></button>
     <div class="dropdown-buttons">
         
-        <a class="binder-button" href="https://mybinder.org/v2/gh/jeremyforest/annolid/master?urlpath=tree/book/tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2.ipynb"><button type="button"
+        <a class="binder-button" href="https://mybinder.org/v2/gh/healthonrails/annolid/master?urlpath=tree/book/tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2.ipynb"><button type="button"
                 class="btn btn-secondary topbarbtn" title="Launch Binder" data-toggle="tooltip"
                 data-placement="left"><img class="binder-button-logo"
                     src="../_static/images/logo_binder.svg"
@@ -472,66 +474,364 @@
 </div>
 </div>
 <div class="cell_output docutils container">
-<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: pyyaml==5.3 in /home/jeremy/anaconda3/lib/python3.9/site-packages (5.3)
-torch:  1.10 ; cuda:  cu102
-Looking in links: https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.10/index.html
-Requirement already satisfied: detectron2 in /home/jeremy/anaconda3/lib/python3.9/site-packages (0.6+cu102)
-Requirement already satisfied: pycocotools&gt;=2.0.2 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (2.0.3)
-Requirement already satisfied: Pillow&gt;=7.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (8.4.0)
-Requirement already satisfied: tqdm&gt;4.29.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (4.62.3)
-Requirement already satisfied: omegaconf&gt;=2.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (2.1.1)
-Requirement already satisfied: hydra-core&gt;=1.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (1.1.1)
-Requirement already satisfied: iopath&lt;0.1.10,&gt;=0.1.7 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (0.1.9)
-Requirement already satisfied: black==21.4b2 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (21.4b2)
-Requirement already satisfied: termcolor&gt;=1.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (1.1.0)
-Requirement already satisfied: tensorboard in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (2.7.0)
-Requirement already satisfied: future in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (0.18.2)
-Requirement already satisfied: tabulate in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (0.8.9)
-Requirement already satisfied: pydot in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (1.4.2)
-Requirement already satisfied: yacs&gt;=0.1.8 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (0.1.8)
-Requirement already satisfied: matplotlib in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (3.4.3)
-Requirement already satisfied: cloudpickle in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (2.0.0)
-Requirement already satisfied: fvcore&lt;0.1.6,&gt;=0.1.5 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from detectron2) (0.1.5.post20211023)
-Requirement already satisfied: click&gt;=7.1.2 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from black==21.4b2-&gt;detectron2) (8.0.3)
-Requirement already satisfied: toml&gt;=0.10.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from black==21.4b2-&gt;detectron2) (0.10.2)
-Requirement already satisfied: regex&gt;=2020.1.8 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from black==21.4b2-&gt;detectron2) (2021.8.3)
-Requirement already satisfied: pathspec&lt;1,&gt;=0.8.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from black==21.4b2-&gt;detectron2) (0.9.0)
-Requirement already satisfied: mypy-extensions&gt;=0.4.3 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from black==21.4b2-&gt;detectron2) (0.4.3)
-Requirement already satisfied: appdirs in /home/jeremy/anaconda3/lib/python3.9/site-packages (from black==21.4b2-&gt;detectron2) (1.4.4)
-Requirement already satisfied: numpy in /home/jeremy/anaconda3/lib/python3.9/site-packages (from fvcore&lt;0.1.6,&gt;=0.1.5-&gt;detectron2) (1.20.3)
-Requirement already satisfied: pyyaml&gt;=5.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from fvcore&lt;0.1.6,&gt;=0.1.5-&gt;detectron2) (5.3)
-Requirement already satisfied: antlr4-python3-runtime==4.8 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from hydra-core&gt;=1.1-&gt;detectron2) (4.8)
-Requirement already satisfied: portalocker in /home/jeremy/anaconda3/lib/python3.9/site-packages (from iopath&lt;0.1.10,&gt;=0.1.7-&gt;detectron2) (2.3.2)
-Requirement already satisfied: setuptools&gt;=18.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from pycocotools&gt;=2.0.2-&gt;detectron2) (58.0.4)
-Requirement already satisfied: cython&gt;=0.27.3 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from pycocotools&gt;=2.0.2-&gt;detectron2) (0.29.24)
-Requirement already satisfied: python-dateutil&gt;=2.7 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from matplotlib-&gt;detectron2) (2.8.2)
-Requirement already satisfied: cycler&gt;=0.10 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from matplotlib-&gt;detectron2) (0.10.0)
-Requirement already satisfied: kiwisolver&gt;=1.0.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from matplotlib-&gt;detectron2) (1.3.1)
-Requirement already satisfied: pyparsing&gt;=2.2.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from matplotlib-&gt;detectron2) (3.0.4)
-Requirement already satisfied: six in /home/jeremy/anaconda3/lib/python3.9/site-packages (from cycler&gt;=0.10-&gt;matplotlib-&gt;detectron2) (1.16.0)
-Requirement already satisfied: werkzeug&gt;=0.11.15 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (2.0.2)
-Requirement already satisfied: absl-py&gt;=0.4 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (1.0.0)
-Requirement already satisfied: tensorboard-data-server&lt;0.7.0,&gt;=0.6.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (0.6.1)
-Requirement already satisfied: requests&lt;3,&gt;=2.21.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (2.26.0)
-Requirement already satisfied: google-auth-oauthlib&lt;0.5,&gt;=0.4.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (0.4.6)
-Requirement already satisfied: protobuf&gt;=3.6.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (3.19.1)
-Requirement already satisfied: grpcio&gt;=1.24.3 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (1.43.0)
-Requirement already satisfied: wheel&gt;=0.26 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (0.37.0)
-Requirement already satisfied: google-auth&lt;3,&gt;=1.6.3 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (2.3.3)
-Requirement already satisfied: markdown&gt;=2.6.8 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (3.3.6)
-Requirement already satisfied: tensorboard-plugin-wit&gt;=1.6.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from tensorboard-&gt;detectron2) (1.8.1)
-Requirement already satisfied: cachetools&lt;5.0,&gt;=2.0.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (4.2.4)
-Requirement already satisfied: rsa&lt;5,&gt;=3.1.4 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (4.8)
-Requirement already satisfied: pyasn1-modules&gt;=0.2.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (0.2.8)
-Requirement already satisfied: requests-oauthlib&gt;=0.7.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from google-auth-oauthlib&lt;0.5,&gt;=0.4.1-&gt;tensorboard-&gt;detectron2) (1.3.0)
-Requirement already satisfied: importlib-metadata&gt;=4.4 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from markdown&gt;=2.6.8-&gt;tensorboard-&gt;detectron2) (4.8.1)
-Requirement already satisfied: zipp&gt;=0.5 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from importlib-metadata&gt;=4.4-&gt;markdown&gt;=2.6.8-&gt;tensorboard-&gt;detectron2) (3.6.0)
-Requirement already satisfied: pyasn1&lt;0.5.0,&gt;=0.4.6 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from pyasn1-modules&gt;=0.2.1-&gt;google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (0.4.8)
-Requirement already satisfied: urllib3&lt;1.27,&gt;=1.21.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests&lt;3,&gt;=2.21.0-&gt;tensorboard-&gt;detectron2) (1.26.7)
-Requirement already satisfied: idna&lt;4,&gt;=2.5 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests&lt;3,&gt;=2.21.0-&gt;tensorboard-&gt;detectron2) (3.2)
-Requirement already satisfied: charset-normalizer~=2.0.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests&lt;3,&gt;=2.21.0-&gt;tensorboard-&gt;detectron2) (2.0.4)
-Requirement already satisfied: certifi&gt;=2017.4.17 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests&lt;3,&gt;=2.21.0-&gt;tensorboard-&gt;detectron2) (2021.10.8)
-Requirement already satisfied: oauthlib&gt;=3.0.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests-oauthlib&gt;=0.7.0-&gt;google-auth-oauthlib&lt;0.5,&gt;=0.4.1-&gt;tensorboard-&gt;detectron2) (3.1.1)
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Defaulting to user installation because normal site-packages is not writeable
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: pyyaml==5.3 in /usr/local/lib/python3.8/dist-packages (5.3)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span><span class=" -Color -Color-Yellow">WARNING: You are using pip version 22.0.3; however, version 22.0.4 is available.</span>
+<span class=" -Color -Color-Yellow">You should consider upgrading via the &#39;/usr/bin/python3 -m pip install --upgrade pip&#39; command.</span>
+
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>torch:  1.10 ; cuda:  cu102
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Defaulting to user installation because normal site-packages is not writeable
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Looking in links: https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.10/index.html
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span><span class=" -Color -Color-Bold -Color-Bold-Yellow">warning</span>: <span class=" -Color -Color-Bold">missing-index-doctype</span>
+
+<span class=" -Color -Color-Yellow">×</span> The package index page being used does not have a proper HTML doctype declaration.
+<span class=" -Color -Color-Yellow">╰─&gt;</span> Problematic URL: https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.10/index.html
+
+<span class=" -Color -Color-Bold -Color-Bold-Magenta">note</span>: This is an issue with the page at the URL mentioned above.
+<span class=" -Color -Color-Bold -Color-Bold-Cyan">hint</span>: You might need to reach out to the owner of that package index, to get this fixed. See https://github.com/pypa/pip/issues/10825 for context.
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting detectron2
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.10/detectron2-0.6%2Bcu102-cp38-cp38-linux_x86_64.whl (6.6 MB)
+?25l     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/6.6 MB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/6.6 MB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.1/6.6 MB</span> <span class=" -Color -Color-Red">46.9 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.1/6.6 MB</span> <span class=" -Color -Color-Red">46.9 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.1/6.6 MB</span> <span class=" -Color -Color-Red">1.7 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:04</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.1/6.6 MB</span> <span class=" -Color -Color-Red">1.7 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:04</span>
+     ━╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.3/6.6 MB</span> <span class=" -Color -Color-Red">1.9 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:04</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━<span class=" -Color -Color-C237">╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.7/6.6 MB</span> <span class=" -Color -Color-Red">3.3 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:02</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━<span class=" -Color -Color-C237">╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.7/6.6 MB</span> <span class=" -Color -Color-Red">3.3 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:02</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">1.1/6.6 MB</span> <span class=" -Color -Color-Red">4.0 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:02</span>
+     ━━━━━━━━<span class=" -Color -Color-C237">╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">1.4/6.6 MB</span> <span class=" -Color -Color-Red">4.9 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:02</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━━━━━━━━━━━╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">2.7/6.6 MB</span> <span class=" -Color -Color-Red">8.2 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━━━━━━━━━━━╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">2.8/6.6 MB</span> <span class=" -Color -Color-Red">7.2 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸<span class=" -Color -Color-C237">━━━━━━</span> <span class=" -Color -Color-Green">5.5/6.6 MB</span> <span class=" -Color -Color-Red">13.4 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━<span class=" -Color -Color-C237">╺━━</span> <span class=" -Color -Color-Green">6.1/6.6 MB</span> <span class=" -Color -Color-Red">13.4 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸ <span class=" -Color -Color-Green">6.5/6.6 MB</span> <span class=" -Color -Color-Red">13.8 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+     <span class=" -Color -Color-Red">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">6.6/6.6 MB</span> <span class=" -Color -Color-Red">12.8 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:00</span>
+?25h
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting pycocotools&gt;=2.0.2
+  Using cached pycocotools-2.0.4.tar.gz (106 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Installing build dependencies ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> /
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> -
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> /
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> -
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25h  Getting requirements to build wheel ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> | done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25h  Preparing metadata (pyproject.toml) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25hRequirement already satisfied: tensorboard in /home/jeremy/.local/lib/python3.8/site-packages (from detectron2) (2.8.0)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting omegaconf&gt;=2.1
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading omegaconf-2.1.2-py3-none-any.whl (74 kB)
+?25l     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/74.7 KB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+     <span class=" -Color -Color-Red">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">74.7/74.7 KB</span> <span class=" -Color -Color-Red">3.6 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:00</span>
+?25h
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting tabulate
+  Using cached tabulate-0.8.9-py3-none-any.whl (25 kB)
+Requirement already satisfied: matplotlib in /home/jeremy/.local/lib/python3.8/site-packages (from detectron2) (3.5.1)
+Requirement already satisfied: termcolor&gt;=1.1 in /home/jeremy/.local/lib/python3.8/site-packages (from detectron2) (1.1.0)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting pydot
+  Using cached pydot-1.4.2-py2.py3-none-any.whl (21 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting Pillow&gt;=7.1
+  Downloading Pillow-9.1.0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (4.3 MB)
+?25l     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/4.3 MB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━━━━━━━━╸<span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">1.5/4.3 MB</span> <span class=" -Color -Color-Red">47.8 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸ <span class=" -Color -Color-Green">4.3/4.3 MB</span> <span class=" -Color -Color-Red">71.5 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:01</span>
+     <span class=" -Color -Color-Red">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">4.3/4.3 MB</span> <span class=" -Color -Color-Red">55.6 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:00</span>
+?25h
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting fvcore&lt;0.1.6,&gt;=0.1.5
+  Downloading fvcore-0.1.5.post20220414.tar.gz (50 kB)
+?25l     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/50.0 KB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+     <span class=" -Color -Color-Red">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">50.0/50.0 KB</span> <span class=" -Color -Color-Red">7.9 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:00</span>
+?25h
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Preparing metadata (setup.py) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25hCollecting cloudpickle
+  Using cached cloudpickle-2.0.0-py3-none-any.whl (25 kB)
+Requirement already satisfied: tqdm&gt;4.29.0 in /home/jeremy/.local/lib/python3.8/site-packages (from detectron2) (4.63.0)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting black==21.4b2
+  Using cached black-21.4b2-py3-none-any.whl (130 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting yacs&gt;=0.1.8
+  Using cached yacs-0.1.8-py3-none-any.whl (14 kB)
+Requirement already satisfied: future in /usr/lib/python3/dist-packages (from detectron2) (0.18.2)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting hydra-core&gt;=1.1
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading hydra_core-1.1.2-py3-none-any.whl (147 kB)
+?25l     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/147.4 KB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+     <span class=" -Color -Color-Red">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">147.4/147.4 KB</span> <span class=" -Color -Color-Red">21.0 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:00</span>
+?25h
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting iopath&lt;0.1.10,&gt;=0.1.7
+  Using cached iopath-0.1.9-py3-none-any.whl (27 kB)
+Requirement already satisfied: appdirs in /home/jeremy/.local/lib/python3.8/site-packages (from black==21.4b2-&gt;detectron2) (1.4.4)
+Requirement already satisfied: click&gt;=7.1.2 in /home/jeremy/.local/lib/python3.8/site-packages (from black==21.4b2-&gt;detectron2) (8.0.3)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting toml&gt;=0.10.1
+  Using cached toml-0.10.2-py2.py3-none-any.whl (16 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting regex&gt;=2020.1.8
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading regex-2022.4.24-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (764 kB)
+?25l     <span class=" -Color -Color-C237">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">0.0/764.9 KB</span> <span class=" -Color -Color-Red">?</span> eta <span class=" -Color -Color-Cyan">-:--:--</span>
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>     <span class=" -Color -Color-Red">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span class=" -Color -Color-Green">764.9/764.9 KB</span> <span class=" -Color -Color-Red">60.7 MB/s</span> eta <span class=" -Color -Color-Cyan">0:00:00</span>
+?25hRequirement already satisfied: mypy-extensions&gt;=0.4.3 in /home/jeremy/.local/lib/python3.8/site-packages (from black==21.4b2-&gt;detectron2) (0.4.3)
+Requirement already satisfied: pathspec&lt;1,&gt;=0.8.1 in /home/jeremy/.local/lib/python3.8/site-packages (from black==21.4b2-&gt;detectron2) (0.9.0)
+Requirement already satisfied: numpy in /home/jeremy/.local/lib/python3.8/site-packages (from fvcore&lt;0.1.6,&gt;=0.1.5-&gt;detectron2) (1.22.2)
+Requirement already satisfied: pyyaml&gt;=5.1 in /usr/local/lib/python3.8/dist-packages (from fvcore&lt;0.1.6,&gt;=0.1.5-&gt;detectron2) (5.3)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting antlr4-python3-runtime==4.8
+  Using cached antlr4-python3-runtime-4.8.tar.gz (112 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Preparing metadata (setup.py) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25hCollecting importlib-resources&lt;5.3
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading importlib_resources-5.2.3-py3-none-any.whl (27 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting portalocker
+  Downloading portalocker-2.4.0-py2.py3-none-any.whl (16 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: kiwisolver&gt;=1.0.1 in /home/jeremy/.local/lib/python3.8/site-packages (from matplotlib-&gt;detectron2) (1.3.2)
+Requirement already satisfied: fonttools&gt;=4.22.0 in /home/jeremy/.local/lib/python3.8/site-packages (from matplotlib-&gt;detectron2) (4.29.1)
+Requirement already satisfied: python-dateutil&gt;=2.7 in /home/jeremy/.local/lib/python3.8/site-packages (from matplotlib-&gt;detectron2) (2.8.2)
+Requirement already satisfied: pyparsing&gt;=2.2.1 in /home/jeremy/.local/lib/python3.8/site-packages (from matplotlib-&gt;detectron2) (3.0.7)
+Requirement already satisfied: cycler&gt;=0.10 in /home/jeremy/.local/lib/python3.8/site-packages (from matplotlib-&gt;detectron2) (0.11.0)
+Requirement already satisfied: packaging&gt;=20.0 in /home/jeremy/.local/lib/python3.8/site-packages (from matplotlib-&gt;detectron2) (21.3)
+Requirement already satisfied: google-auth-oauthlib&lt;0.5,&gt;=0.4.1 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (0.4.6)
+Requirement already satisfied: tensorboard-data-server&lt;0.7.0,&gt;=0.6.0 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (0.6.1)
+Requirement already satisfied: werkzeug&gt;=0.11.15 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (2.0.3)
+Requirement already satisfied: markdown&gt;=2.6.8 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (3.3.6)
+Requirement already satisfied: grpcio&gt;=1.24.3 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (1.44.0)
+Requirement already satisfied: requests&lt;3,&gt;=2.21.0 in /usr/lib/python3/dist-packages (from tensorboard-&gt;detectron2) (2.22.0)
+Requirement already satisfied: tensorboard-plugin-wit&gt;=1.6.0 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (1.8.1)
+Requirement already satisfied: setuptools&gt;=41.0.0 in /usr/lib/python3/dist-packages (from tensorboard-&gt;detectron2) (45.2.0)
+Requirement already satisfied: wheel&gt;=0.26 in /usr/lib/python3/dist-packages (from tensorboard-&gt;detectron2) (0.34.2)
+Requirement already satisfied: absl-py&gt;=0.4 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (1.0.0)
+Requirement already satisfied: google-auth&lt;3,&gt;=1.6.3 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (2.6.0)
+Requirement already satisfied: protobuf&gt;=3.6.0 in /home/jeremy/.local/lib/python3.8/site-packages (from tensorboard-&gt;detectron2) (3.19.4)
+Requirement already satisfied: six in /usr/lib/python3/dist-packages (from absl-py&gt;=0.4-&gt;tensorboard-&gt;detectron2) (1.14.0)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: cachetools&lt;6.0,&gt;=2.0.0 in /home/jeremy/.local/lib/python3.8/site-packages (from google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (5.0.0)
+Requirement already satisfied: rsa&lt;5,&gt;=3.1.4 in /home/jeremy/.local/lib/python3.8/site-packages (from google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (4.8)
+Requirement already satisfied: pyasn1-modules&gt;=0.2.1 in /home/jeremy/.local/lib/python3.8/site-packages (from google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (0.2.8)
+Requirement already satisfied: requests-oauthlib&gt;=0.7.0 in /home/jeremy/.local/lib/python3.8/site-packages (from google-auth-oauthlib&lt;0.5,&gt;=0.4.1-&gt;tensorboard-&gt;detectron2) (1.3.1)
+Requirement already satisfied: zipp&gt;=3.1.0 in /home/jeremy/.local/lib/python3.8/site-packages (from importlib-resources&lt;5.3-&gt;hydra-core&gt;=1.1-&gt;detectron2) (3.8.0)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: importlib-metadata&gt;=4.4 in /home/jeremy/.local/lib/python3.8/site-packages (from markdown&gt;=2.6.8-&gt;tensorboard-&gt;detectron2) (4.11.2)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: pyasn1&lt;0.5.0,&gt;=0.4.6 in /home/jeremy/.local/lib/python3.8/site-packages (from pyasn1-modules&gt;=0.2.1-&gt;google-auth&lt;3,&gt;=1.6.3-&gt;tensorboard-&gt;detectron2) (0.4.8)
+Requirement already satisfied: oauthlib&gt;=3.0.0 in /usr/lib/python3/dist-packages (from requests-oauthlib&gt;=0.7.0-&gt;google-auth-oauthlib&lt;0.5,&gt;=0.4.1-&gt;tensorboard-&gt;detectron2) (3.1.0)
+Building wheels for collected packages: fvcore, antlr4-python3-runtime, pycocotools
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Building wheel for fvcore (setup.py) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+?25h  Created wheel for fvcore: filename=fvcore-0.1.5.post20220414-py3-none-any.whl size=61212 sha256=4cb72392a7e362d58febb42094258d25500f2b6393712de347918ee33a4d679a
+  Stored in directory: /home/jeremy/.cache/pip/wheels/3c/f1/3a/d775ab1ab50edd8ddf8a14992295a81195e0542027f8df3f3c
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Building wheel for antlr4-python3-runtime (setup.py) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+?25h  Created wheel for antlr4-python3-runtime: filename=antlr4_python3_runtime-4.8-py3-none-any.whl size=141230 sha256=7937ed7ea7b0bb74bcd3cb8e1c1df20a81d636033632722afb67023fc06cf12d
+  Stored in directory: /home/jeremy/.cache/pip/wheels/c8/d0/ab/d43c02eaddc5b9004db86950802442ad9a26f279c619e28da0
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Building wheel for pycocotools (pyproject.toml) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> /
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> -
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> /
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+?25h  Created wheel for pycocotools: filename=pycocotools-2.0.4-cp38-cp38-linux_x86_64.whl size=418859 sha256=0bdca99493d5725504f3c2bf5a17fbd75c67085c23d61bc3811e3c143ff9ba15
+  Stored in directory: /home/jeremy/.cache/pip/wheels/dd/e2/43/3e93cd653b3346b3d702bb0509bc611189f95d60407bff1484
+Successfully built fvcore antlr4-python3-runtime pycocotools
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Installing collected packages: tabulate, antlr4-python3-runtime, yacs, toml, regex, pydot, portalocker, Pillow, omegaconf, importlib-resources, cloudpickle, iopath, hydra-core, black, pycocotools, fvcore, detectron2
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Attempting uninstall: importlib-resources
+    Found existing installation: importlib-resources 5.7.1
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>    Uninstalling importlib-resources-5.7.1:
+      Successfully uninstalled importlib-resources-5.7.1
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Attempting uninstall: black
+    Found existing installation: black 22.1.0
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>    Uninstalling black-22.1.0:
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>      Successfully uninstalled black-22.1.0
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Successfully installed Pillow-9.1.0 antlr4-python3-runtime-4.8 black-21.4b2 cloudpickle-2.0.0 detectron2-0.6+cu102 fvcore-0.1.5.post20220414 hydra-core-1.1.2 importlib-resources-5.2.3 iopath-0.1.9 omegaconf-2.1.2 portalocker-2.4.0 pycocotools-2.0.4 pydot-1.4.2 regex-2022.4.24 tabulate-0.8.9 toml-0.10.2 yacs-0.1.8
+<span class=" -Color -Color-Yellow">WARNING: You are using pip version 22.0.3; however, version 22.0.4 is available.</span>
+<span class=" -Color -Color-Yellow">You should consider upgrading via the &#39;/usr/bin/python3 -m pip install --upgrade pip&#39; command.</span>
+
 </pre></div>
 </div>
 </div>
@@ -599,22 +899,104 @@ Requirement already satisfied: oauthlib&gt;=3.0.0 in /home/jeremy/anaconda3/lib/
 </div>
 </div>
 <div class="cell_output docutils container">
-<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Requirement already satisfied: gdown in /home/jeremy/anaconda3/lib/python3.9/site-packages (4.2.0)
-Requirement already satisfied: filelock in /home/jeremy/anaconda3/lib/python3.9/site-packages (from gdown) (3.3.1)
-Requirement already satisfied: six in /home/jeremy/anaconda3/lib/python3.9/site-packages (from gdown) (1.16.0)
-Requirement already satisfied: tqdm in /home/jeremy/anaconda3/lib/python3.9/site-packages (from gdown) (4.62.3)
-Requirement already satisfied: beautifulsoup4 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from gdown) (4.10.0)
-Requirement already satisfied: requests[socks] in /home/jeremy/anaconda3/lib/python3.9/site-packages (from gdown) (2.26.0)
-Requirement already satisfied: soupsieve&gt;1.2 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from beautifulsoup4-&gt;gdown) (2.2.1)
-Requirement already satisfied: urllib3&lt;1.27,&gt;=1.21.1 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests[socks]-&gt;gdown) (1.26.7)
-Requirement already satisfied: idna&lt;4,&gt;=2.5 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests[socks]-&gt;gdown) (3.2)
-Requirement already satisfied: charset-normalizer~=2.0.0 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests[socks]-&gt;gdown) (2.0.4)
-Requirement already satisfied: certifi&gt;=2017.4.17 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests[socks]-&gt;gdown) (2021.10.8)
-Requirement already satisfied: PySocks!=1.5.7,&gt;=1.5.6 in /home/jeremy/anaconda3/lib/python3.9/site-packages (from requests[socks]-&gt;gdown) (1.7.1)
-Downloading...
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Defaulting to user installation because normal site-packages is not writeable
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting gdown
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading gdown-4.4.0.tar.gz (14 kB)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Installing build dependencies ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25h  Getting requirements to build wheel ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> | done
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>?25h  Preparing metadata (pyproject.toml) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> | done
+?25hRequirement already satisfied: requests[socks] in /usr/lib/python3/dist-packages (from gdown) (2.22.0)
+Requirement already satisfied: beautifulsoup4 in /home/jeremy/.local/lib/python3.8/site-packages (from gdown) (4.11.1)
+Requirement already satisfied: six in /usr/lib/python3/dist-packages (from gdown) (1.14.0)
+Requirement already satisfied: tqdm in /home/jeremy/.local/lib/python3.8/site-packages (from gdown) (4.63.0)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting filelock
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Downloading filelock-3.6.0-py3-none-any.whl (10.0 kB)
+Requirement already satisfied: soupsieve&gt;1.2 in /home/jeremy/.local/lib/python3.8/site-packages (from beautifulsoup4-&gt;gdown) (2.3.2.post1)
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Collecting PySocks!=1.5.7,&gt;=1.5.6
+  Using cached PySocks-1.7.1-py3-none-any.whl (16 kB)
+Building wheels for collected packages: gdown
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  Building wheel for gdown (pyproject.toml) ... ?25l-
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> \
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> |
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> /
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> - done
+?25h  Created wheel for gdown: filename=gdown-4.4.0-py3-none-any.whl size=14775 sha256=ed647795ee86c4783adbbd265cc5cf044bf0ae6be6a1943d9399a789c89b664f
+  Stored in directory: /home/jeremy/.cache/pip/wheels/7b/7b/5d/656f46cd6889e4c93977be9586901d0adc1271b2d876c84c96
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Successfully built gdown
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Installing collected packages: PySocks, filelock, gdown
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Successfully installed PySocks-1.7.1 filelock-3.6.0 gdown-4.4.0
+<span class=" -Color -Color-Yellow">WARNING: You are using pip version 22.0.3; however, version 22.0.4 is available.</span>
+<span class=" -Color -Color-Yellow">You should consider upgrading via the &#39;/usr/bin/python3 -m pip install --upgrade pip&#39; command.</span>
+
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>/home/jeremy/.local/lib/python3.8/site-packages/gdown/cli.py:127: FutureWarning: Option `--id` was deprecated in version 4.3.1 and will be removed in 5.0. You don&#39;t need to pass it anymore to use a file ID.
+  warnings.warn(
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>Downloading...
 From: https://drive.google.com/uc?id=1fUXCLnoJ5SwXg54mj0NBKGzidsV8ALVR
 To: /home/jeremy/Documents/annolid/book/tutorials/novelctrlk6_8_coco_dataset.zip
-100%|██████████████████████████████████████| 10.3M/10.3M [00:00&lt;00:00, 96.4MB/s]
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  0%|                                               | 0.00/10.3M [00:00&lt;?, ?B/s]
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span> 71%|███████████████████████████           | 7.34M/10.3M [00:00&lt;00:00, 72.6MB/s]
+100%|██████████████████████████████████████| 10.3M/10.3M [00:00&lt;00:00, 90.4MB/s]
 </pre></div>
 </div>
 </div>
@@ -784,7 +1166,9 @@ To: /home/jeremy/Documents/annolid/book/tutorials/novelctrlk6_8_coco_dataset.zip
   inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00003224_49.jpg  
   inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00002628_21.jpg  
   inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00001838_25.jpg  
-  inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00002825_40.jpg  
+</pre></div>
+</div>
+<div class="output stream highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>  inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00002825_40.jpg  
   inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00002247_29.jpg  
   inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00003100_30.jpg  
   inflating: ./novelctrlk6_8_coco_dataset/train/JPEGImages/00001922_57.jpg  
@@ -930,10 +1314,66 @@ To: /home/jeremy/Documents/annolid/book/tutorials/novelctrlk6_8_coco_dataset.zip
 </div>
 </div>
 <div class="cell_output docutils container">
-<div class="output stderr highlight-myst-ansi notranslate"><div class="highlight"><pre><span></span>/home/jeremy/anaconda3/envs/annolid-env/lib/python3.7/site-packages/detectron2/structures/image_list.py:88: UserWarning: __floordiv__ is deprecated, and its behavior will change in a future version of pytorch. It currently rounds toward 0 (like the &#39;trunc&#39; function NOT &#39;floor&#39;). This results in incorrect rounding for negative values. To keep the current behavior, use torch.div(a, b, rounding_mode=&#39;trunc&#39;), or for actual floor division, use torch.div(a, b, rounding_mode=&#39;floor&#39;).
-  max_size = (max_size + (stride - 1)) // stride * stride
-/home/jeremy/anaconda3/envs/annolid-env/lib/python3.7/site-packages/torch/functional.py:445: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at  ../aten/src/ATen/native/TensorShape.cpp:2157.)
-  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+<div class="output traceback highlight-ipythontb notranslate"><div class="highlight"><pre><span></span><span class="gt">---------------------------------------------------------------------------</span>
+<span class="ne">RuntimeError</span><span class="g g-Whitespace">                              </span>Traceback (most recent call last)
+<span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">ipykernel_2342923</span><span class="o">/</span><span class="mf">1065141607.</span><span class="n">py</span> <span class="ow">in</span> <span class="o">&lt;</span><span class="n">module</span><span class="o">&gt;</span>
+<span class="g g-Whitespace">      </span><span class="mi">4</span> <span class="c1"># Find a model from Detectron2&#39;s model zoo. You can use the https://dl.fbaipublicfiles... url as well</span>
+<span class="g g-Whitespace">      </span><span class="mi">5</span> <span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">WEIGHTS</span> <span class="o">=</span> <span class="n">model_zoo</span><span class="o">.</span><span class="n">get_checkpoint_url</span><span class="p">(</span><span class="s2">&quot;COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml&quot;</span><span class="p">)</span>
+<span class="ne">----&gt; </span><span class="mi">6</span> <span class="n">predictor</span> <span class="o">=</span> <span class="n">DefaultPredictor</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+<span class="g g-Whitespace">      </span><span class="mi">7</span> <span class="n">outputs</span> <span class="o">=</span> <span class="n">predictor</span><span class="p">(</span><span class="n">im</span><span class="p">)</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/detectron2/engine/defaults.py</span> in <span class="ni">__init__</span><span class="nt">(self, cfg)</span>
+<span class="g g-Whitespace">    </span><span class="mi">280</span>     <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cfg</span><span class="p">):</span>
+<span class="g g-Whitespace">    </span><span class="mi">281</span>         <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span>  <span class="c1"># cfg can be modified by model</span>
+<span class="ne">--&gt; </span><span class="mi">282</span>         <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <span class="n">build_model</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">283</span>         <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
+<span class="g g-Whitespace">    </span><span class="mi">284</span>         <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">cfg</span><span class="o">.</span><span class="n">DATASETS</span><span class="o">.</span><span class="n">TEST</span><span class="p">):</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/detectron2/modeling/meta_arch/build.py</span> in <span class="ni">build_model</span><span class="nt">(cfg)</span>
+<span class="g g-Whitespace">     </span><span class="mi">21</span>     <span class="n">meta_arch</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">META_ARCHITECTURE</span>
+<span class="g g-Whitespace">     </span><span class="mi">22</span>     <span class="n">model</span> <span class="o">=</span> <span class="n">META_ARCH_REGISTRY</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">meta_arch</span><span class="p">)(</span><span class="n">cfg</span><span class="p">)</span>
+<span class="ne">---&gt; </span><span class="mi">23</span>     <span class="n">model</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="n">cfg</span><span class="o">.</span><span class="n">MODEL</span><span class="o">.</span><span class="n">DEVICE</span><span class="p">))</span>
+<span class="g g-Whitespace">     </span><span class="mi">24</span>     <span class="n">_log_api_usage</span><span class="p">(</span><span class="s2">&quot;modeling.meta_arch.&quot;</span> <span class="o">+</span> <span class="n">meta_arch</span><span class="p">)</span>
+<span class="g g-Whitespace">     </span><span class="mi">25</span>     <span class="k">return</span> <span class="n">model</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/torch/nn/modules/module.py</span> in <span class="ni">to</span><span class="nt">(self, *args, **kwargs)</span>
+<span class="g g-Whitespace">    </span><span class="mi">897</span>             <span class="k">return</span> <span class="n">t</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span> <span class="k">if</span> <span class="n">t</span><span class="o">.</span><span class="n">is_floating_point</span><span class="p">()</span> <span class="ow">or</span> <span class="n">t</span><span class="o">.</span><span class="n">is_complex</span><span class="p">()</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span> <span class="n">non_blocking</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">898</span> 
+<span class="ne">--&gt; </span><span class="mi">899</span>         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_apply</span><span class="p">(</span><span class="n">convert</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">900</span> 
+<span class="g g-Whitespace">    </span><span class="mi">901</span>     <span class="k">def</span> <span class="nf">register_backward_hook</span><span class="p">(</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/torch/nn/modules/module.py</span> in <span class="ni">_apply</span><span class="nt">(self, fn)</span>
+<span class="g g-Whitespace">    </span><span class="mi">568</span>     <span class="k">def</span> <span class="nf">_apply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">):</span>
+<span class="g g-Whitespace">    </span><span class="mi">569</span>         <span class="k">for</span> <span class="n">module</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">children</span><span class="p">():</span>
+<span class="ne">--&gt; </span><span class="mi">570</span>             <span class="n">module</span><span class="o">.</span><span class="n">_apply</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">571</span> 
+<span class="g g-Whitespace">    </span><span class="mi">572</span>         <span class="k">def</span> <span class="nf">compute_should_use_set_data</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">tensor_applied</span><span class="p">):</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/torch/nn/modules/module.py</span> in <span class="ni">_apply</span><span class="nt">(self, fn)</span>
+<span class="g g-Whitespace">    </span><span class="mi">568</span>     <span class="k">def</span> <span class="nf">_apply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">):</span>
+<span class="g g-Whitespace">    </span><span class="mi">569</span>         <span class="k">for</span> <span class="n">module</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">children</span><span class="p">():</span>
+<span class="ne">--&gt; </span><span class="mi">570</span>             <span class="n">module</span><span class="o">.</span><span class="n">_apply</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">571</span> 
+<span class="g g-Whitespace">    </span><span class="mi">572</span>         <span class="k">def</span> <span class="nf">compute_should_use_set_data</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">tensor_applied</span><span class="p">):</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/torch/nn/modules/module.py</span> in <span class="ni">_apply</span><span class="nt">(self, fn)</span>
+<span class="g g-Whitespace">    </span><span class="mi">591</span>             <span class="c1"># `with torch.no_grad():`</span>
+<span class="g g-Whitespace">    </span><span class="mi">592</span>             <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+<span class="ne">--&gt; </span><span class="mi">593</span>                 <span class="n">param_applied</span> <span class="o">=</span> <span class="n">fn</span><span class="p">(</span><span class="n">param</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">594</span>             <span class="n">should_use_set_data</span> <span class="o">=</span> <span class="n">compute_should_use_set_data</span><span class="p">(</span><span class="n">param</span><span class="p">,</span> <span class="n">param_applied</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">595</span>             <span class="k">if</span> <span class="n">should_use_set_data</span><span class="p">:</span>
+
+<span class="nn">~/anaconda3/envs/annolid-env/lib/python3.7/site-packages/torch/nn/modules/module.py</span> in <span class="ni">convert</span><span class="nt">(t)</span>
+<span class="g g-Whitespace">    </span><span class="mi">895</span>                 <span class="k">return</span> <span class="n">t</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span> <span class="k">if</span> <span class="n">t</span><span class="o">.</span><span class="n">is_floating_point</span><span class="p">()</span> <span class="ow">or</span> <span class="n">t</span><span class="o">.</span><span class="n">is_complex</span><span class="p">()</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+<span class="g g-Whitespace">    </span><span class="mi">896</span>                             <span class="n">non_blocking</span><span class="p">,</span> <span class="n">memory_format</span><span class="o">=</span><span class="n">convert_to_format</span><span class="p">)</span>
+<span class="ne">--&gt; </span><span class="mi">897</span>             <span class="k">return</span> <span class="n">t</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span> <span class="k">if</span> <span class="n">t</span><span class="o">.</span><span class="n">is_floating_point</span><span class="p">()</span> <span class="ow">or</span> <span class="n">t</span><span class="o">.</span><span class="n">is_complex</span><span class="p">()</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span> <span class="n">non_blocking</span><span class="p">)</span>
+<span class="g g-Whitespace">    </span><span class="mi">898</span> 
+<span class="g g-Whitespace">    </span><span class="mi">899</span>         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_apply</span><span class="p">(</span><span class="n">convert</span><span class="p">)</span>
+
+<span class="ne">RuntimeError</span>: CUDA error: out of memory
+<span class="n">CUDA</span> <span class="n">kernel</span> <span class="n">errors</span> <span class="n">might</span> <span class="n">be</span> <span class="n">asynchronously</span> <span class="n">reported</span> <span class="n">at</span> <span class="n">some</span> <span class="n">other</span> <span class="n">API</span> <span class="n">call</span><span class="p">,</span><span class="n">so</span> <span class="n">the</span> <span class="n">stacktrace</span> <span class="n">below</span> <span class="n">might</span> <span class="n">be</span> <span class="n">incorrect</span><span class="o">.</span>
+<span class="n">For</span> <span class="n">debugging</span> <span class="n">consider</span> <span class="n">passing</span> <span class="n">CUDA_LAUNCH_BLOCKING</span><span class="o">=</span><span class="mf">1.</span>
 </pre></div>
 </div>
 </div>
