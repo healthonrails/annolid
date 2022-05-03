@@ -2,58 +2,31 @@
 # coding: utf-8
 
 # # Annolid on Detectron2 Tutorial 4 : Running inference
-#
-# This is modified from the official colab tutorial of detectron2. Here, we will
-#
+# 
+# This is modified from the official colab tutorial of detectron2. Here, we will 
+# 
 # * Run inference using our previously trained model.
-#
+# 
 # You can make a copy of this tutorial by "File -> Open in playground mode" and play with it yourself. __DO NOT__ request access to this tutorial.
-#
+# 
 
 # In[1]:
 
 
 # Is running in colab or in jupyter-notebook
-import torchvision
-import torch
-from pathlib import Path
-import plotly.graph_objects as go
-import plotly.express as px
-from detectron2.utils.visualizer import ColorMode
-from detectron2.engine import DefaultTrainer
-import pycocotools.mask as mask_util
-import pandas as pd
-from detectron2.data.datasets import builtin_meta
-from detectron2.data import get_detection_dataset_dicts
-from detectron2.data.datasets import register_coco_instances
-from detectron2.data import MetadataCatalog, DatasetCatalog
-from detectron2.utils.visualizer import Visualizer
-from detectron2.config import get_cfg
-from detectron2.engine import DefaultPredictor
-from detectron2 import model_zoo
-from detectron2.utils.logger import setup_logger
-import detectron2
-import matplotlib.pyplot as plt
-import numpy as np
-import glob
-import random
-import cv2
-import os
-import json
-from IPython import get_ipython
-from IPython import display
 try:
-    import google.colab
-    IN_COLAB = True
+  import google.colab
+  IN_COLAB = True
 except:
-    IN_COLAB = False
+  IN_COLAB = False
 
 
 # In[2]:
 
 
-# install dependencies:
+# install dependencies: 
 get_ipython().system('pip install pyyaml==5.3')
+import torch, torchvision
 TORCH_VERSION = ".".join(torch.__version__.split(".")[:2])
 CUDA_VERSION = torch.__version__.split("+")[-1]
 print("torch: ", TORCH_VERSION, "; cuda: ", CUDA_VERSION)
@@ -69,8 +42,15 @@ get_ipython().system('pip install detectron2 -f https://dl.fbaipublicfiles.com/d
 
 
 # import some common libraries
+import json
+import os
+import cv2
+import random
+import glob
+import numpy as np
 if IN_COLAB:
-    from google.colab.patches import cv2_imshow
+  from google.colab.patches import cv2_imshow
+import matplotlib.pyplot as plt
 get_ipython().run_line_magic('matplotlib', 'inline')
 
 
@@ -78,9 +58,16 @@ get_ipython().run_line_magic('matplotlib', 'inline')
 
 
 # Setup detectron2 logger
+import detectron2
+from detectron2.utils.logger import setup_logger
 setup_logger()
 
 # import some common detectron2 utilities
+from detectron2 import model_zoo
+from detectron2.engine import DefaultPredictor
+from detectron2.config import get_cfg
+from detectron2.utils.visualizer import Visualizer
+from detectron2.data import MetadataCatalog, DatasetCatalog
 
 
 # In[5]:
@@ -117,22 +104,22 @@ get_ipython().system('gdown --id 1aMCeFWng0JkRbw9LOytXXrv4I2qCiH0h')
 
 
 if IN_COLAB:
-    VIDEO_INPUT = "/content/novelctrl.mkv"
+    VIDEO_INPUT="/content/novelctrl.mkv"
     OUTPUT_DIR = "/content/eval_output"
 else:
-    VIDEO_INPUT = "novelctrl.mkv"
+    VIDEO_INPUT="novelctrl.mkv"
     OUTPUT_DIR = "eval_output"
 
 
 # ### If you use your own video / dataset you need to update the VIDEO_INPUT name
 
-# In[ ]:
-
-
-VIDEO_INPUT = "YOUR_VIDEO_NAME"
-
-
 # In[9]:
+
+
+VIDEO_INPUT="YOUR_VIDEO_NAME"
+
+
+# In[10]:
 
 
 if IN_COLAB:
@@ -150,21 +137,23 @@ DATASET_NAME = DATASET_DIR = f"{dataset.replace('.zip','')}"
 # In[12]:
 
 
+from detectron2.data.datasets import register_coco_instances
+from detectron2.data import get_detection_dataset_dicts
+from detectron2.data.datasets import  builtin_meta
+
+
 # In[13]:
 
 
-register_coco_instances(f"{DATASET_NAME}_train", {
-}, f"{DATASET_DIR}/train/annotations.json", f"{DATASET_DIR}/train/")
-register_coco_instances(f"{DATASET_NAME}_valid", {
-}, f"{DATASET_DIR}/valid/annotations.json", f"{DATASET_DIR}/valid/")
+register_coco_instances(f"{DATASET_NAME}_train", {}, f"{DATASET_DIR}/train/annotations.json", f"{DATASET_DIR}/train/")
+register_coco_instances(f"{DATASET_NAME}_valid", {}, f"{DATASET_DIR}/valid/annotations.json", f"{DATASET_DIR}/valid/")
 
 
 # In[14]:
 
 
 _dataset_metadata = MetadataCatalog.get(f"{DATASET_NAME}_train")
-_dataset_metadata.thing_colors = [cc['color']
-                                  for cc in builtin_meta.COCO_CATEGORIES]
+_dataset_metadata.thing_colors = [cc['color'] for cc in builtin_meta.COCO_CATEGORIES]
 
 
 # In[15]:
@@ -183,6 +172,9 @@ print(f"{NUM_CLASSES} Number of classes in the dataset")
 # In[17]:
 
 
+import cv2
+
+
 # In[18]:
 
 
@@ -197,37 +189,47 @@ basename = os.path.basename(VIDEO_INPUT)
 # In[19]:
 
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+import os 
+os.makedirs(OUTPUT_DIR,exist_ok=True)
 
 
 # In[20]:
 
 
 def _frame_from_video(video):
-    attempt = 0
-    for i in range(num_frames):
-        success, frame = video.read()
-        if success:
-            yield frame
-        else:
-            attempt += 1
-            if attempt >= 2000:
-                break
-            else:
-                video.set(cv2.CAP_PROP_POS_FRAMES, i+1)
-                print('Cannot read this frame:', i)
-                continue
+  attempt = 0
+  for i in range(num_frames):
+      success, frame = video.read()
+      if success:
+          yield frame
+      else:
+          attempt += 1
+          if attempt >= 2000:
+              break
+          else:
+              video.set(cv2.CAP_PROP_POS_FRAMES, i+1)
+              print('Cannot read this frame:', i)
+              continue
 
 
 # In[21]:
 
 
+import pandas as pd
+import pycocotools.mask as mask_util
+
+
 # In[22]:
+
+
 class_names = _dataset_metadata.thing_classes
 print(class_names)
 
 
 # In[23]:
+
+
+from detectron2.engine import DefaultTrainer
 
 
 # In[24]:
@@ -242,32 +244,27 @@ cfg = get_cfg()
 if GPU:
     pass
 else:
-    cfg.MODEL.DEVICE = 'cpu'
+    cfg.MODEL.DEVICE='cpu'
 
 
 # In[26]:
 
 
-cfg.merge_from_file(model_zoo.get_config_file(
-    "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
+cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
 cfg.DATASETS.TRAIN = (f"{DATASET_NAME}_train",)
 cfg.DATASETS.TEST = ()
-cfg.DATALOADER.NUM_WORKERS = 2  # @param
+cfg.DATALOADER.NUM_WORKERS = 2 #@param
 cfg.DATALOADER.SAMPLER_TRAIN = "RepeatFactorTrainingSampler"
 cfg.DATALOADER.REPEAT_THRESHOLD = 0.3
-cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
-    "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")  # Let training initialize from model zoo
-cfg.SOLVER.IMS_PER_BATCH = 4  # @param
-cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
-# @param    # 300 iterations seems good enough for 100 frames dataset; you will need to train longer for a practical dataset
-cfg.SOLVER.MAX_ITER = 3000
-cfg.SOLVER.CHECKPOINT_PERIOD = 1000  # @param
-# @param   # faster, and good enough for this toy dataset (default: 512)
-cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 32
-# (see https://detectron2.readthedocs.io/tutorials/datasets.html#update-the-config-for-new-datasets)
-cfg.MODEL.ROI_HEADS.NUM_CLASSES = NUM_CLASSES
+cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")  # Let training initialize from model zoo
+cfg.SOLVER.IMS_PER_BATCH =  4 #@param
+cfg.SOLVER.BASE_LR = 0.0025 #@param # pick a good LR
+cfg.SOLVER.MAX_ITER = 3000 #@param    # 300 iterations seems good enough for 100 frames dataset; you will need to train longer for a practical dataset
+cfg.SOLVER.CHECKPOINT_PERIOD = 1000 #@param 
+cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 32 #@param   # faster, and good enough for this toy dataset (default: 512)
+cfg.MODEL.ROI_HEADS.NUM_CLASSES = NUM_CLASSES  #  (see https://detectron2.readthedocs.io/tutorials/datasets.html#update-the-config-for-new-datasets)
 os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
-trainer = DefaultTrainer(cfg)
+trainer = DefaultTrainer(cfg) 
 trainer.resume_or_load(resume=False)
 
 
@@ -275,17 +272,18 @@ trainer.resume_or_load(resume=False)
 
 
 # Inference should use the config with parameters that are used in training
-# cfg now already contains everything we've set previously.
+# cfg now already contains everything we've set previously. 
 # We simply update the weights with the newly trained ones to perform inference:
-# path to the model we just trained
-cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")
+cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")  # path to the model we just trained
 # set a custom testing threshold
-# @param {type: "slider", min:0.0, max:1.0, step: 0.01}
-cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.15
+cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.15   #@param {type: "slider", min:0.0, max:1.0, step: 0.01}
 predictor = DefaultPredictor(cfg)
 
 
 # In[28]:
+
+
+from detectron2.utils.visualizer import ColorMode
 
 
 # In[ ]:
@@ -294,10 +292,10 @@ predictor = DefaultPredictor(cfg)
 frame_number = 0
 tracking_results = []
 VIS = True
-for frame in _frame_from_video(video):
+for frame in _frame_from_video(video): 
     im = frame
     outputs = predictor(im)
-    out_dict = {}
+    out_dict = {}  
     instances = outputs["instances"].to("cpu")
     num_instance = len(instances)
     if num_instance == 0:
@@ -320,13 +318,12 @@ for frame in _frame_from_video(video):
         has_mask = instances.has("pred_masks")
 
         if has_mask:
-            rles = [
-                mask_util.encode(
-                    np.array(mask[:, :, None], order="F", dtype="uint8"))[0]
-                for mask in instances.pred_masks
+            rles =[
+                   mask_util.encode(np.array(mask[:,:,None], order="F", dtype="uint8"))[0]
+                   for mask in instances.pred_masks
             ]
             for rle in rles:
-                rle["counts"] = rle["counts"].decode("utf-8")
+              rle["counts"] = rle["counts"].decode("utf-8")
 
         assert len(rles) == len(boxes)
         for k in range(num_instance):
@@ -340,18 +337,17 @@ for frame in _frame_from_video(video):
             out_dict['class_score'] = scores[k]
             out_dict['segmentation'] = rles[k]
             if frame_number % 1000 == 0:
-                print(f"Frame number {frame_number}: {out_dict}")
+              print(f"Frame number {frame_number}: {out_dict}")
             tracking_results.append(out_dict)
             out_dict = {}
-
+        
     # format is documented at https://detectron2.readthedocs.io/tutorials/models.html#model-output-format
     if VIS:
         v = Visualizer(im[:, :, ::-1],
-                       metadata=_dataset_metadata,
-                       scale=0.5,
-                       # remove the colors of unsegmented pixels. This option is only available for segmentation models
-                       instance_mode=ColorMode.IMAGE_BW
-                       )
+                    metadata=_dataset_metadata, 
+                    scale=0.5, 
+                    instance_mode=ColorMode.IMAGE_BW   # remove the colors of unsegmented pixels. This option is only available for segmentation models
+         )
         out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
         out_image = out.get_image()[:, :, ::-1]
         if frame_number % 1000 == 0:
@@ -360,7 +356,7 @@ for frame in _frame_from_video(video):
             else:
                 plt.imshow(out_image)
                 plt.show()
-            # Trun off the visulization to save time after the first frame
+            #Trun off the visulization to save time after the first frame
             VIS = False
     frame_number += 1
     print(f"Processing frame number {frame_number}")
@@ -368,9 +364,9 @@ for frame in _frame_from_video(video):
 video.release()
 
 
-# ## All the tracking results will be saved to this Pandas dataframe.
-#
-#
+# ## All the tracking results will be saved to this Pandas dataframe. 
+# 
+# 
 
 # In[ ]:
 
@@ -404,7 +400,7 @@ df['cy'] = cy
 # In[ ]:
 
 
-df_top = df.groupby(['frame_number', 'instance_name'], sort=False).head(1)
+df_top = df.groupby(['frame_number','instance_name'],sort=False).head(1)
 
 
 # In[ ]:
@@ -418,24 +414,28 @@ df_top.head()
 # In[ ]:
 
 
-df_vis = df_top[df_top.instance_name != 'Text'][[
-    'frame_number', 'cx', 'cy', 'instance_name']]
+df_vis = df_top[df_top.instance_name != 'Text'][['frame_number','cx','cy','instance_name']]
 
 
 # In[ ]:
 
 
-fig = px.scatter(df_vis,
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+
+fig = px.scatter(df_vis, 
                  x="cx",
-                 y="cy",
+                 y="cy", 
                  color="instance_name",
-                 hover_data=['frame_number', 'cx', 'cy'])
+                 hover_data=['frame_number','cx','cy'])
 fig.show()
 
 
 # In[ ]:
 
 
+from pathlib import  Path
 tracking_results_csv = f"{Path(dataset).stem}_{Path(VIDEO_INPUT).stem}_{cfg.SOLVER.MAX_ITER}_iters_mask_rcnn_tracking_results_with_segmenation.csv"
 df_top.to_csv(tracking_results_csv)
 
@@ -451,3 +451,4 @@ if IN_COLAB:
 else:
     from IPython.display import FileLink
     FileLink(tracking_results_csv)
+
