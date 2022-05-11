@@ -1,7 +1,7 @@
 # Installs dependencies for Annolid managed by Anaconda. 
 #
-name: annolid-env
-#prefix: /path/to/my/envs/annolid-env
+name: annolid-dev
+#prefix: /path/to/my/envs/annolid-dev
 channels:
   - conda-forge
   - pytorch
@@ -45,3 +45,4 @@ dependencies:
     - PyQtWebEngine>=5.15.1
     - simplification>=0.5.7
     - dataclasses>=0.6; python_version < '3.7'
+    - jupyter-book==0.12.1
