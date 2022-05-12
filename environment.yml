@@ -19,8 +19,6 @@ dependencies:
   - matplotlib
   - git 
   - curl 
-  - unzip 
-  - conda-forge::bash
   - numpy>=1.18.2
   - scipy>=1.5.2
   - easydict>=1.9
