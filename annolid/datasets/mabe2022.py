@@ -23,6 +23,35 @@ def load_user_train(path_to_train='user_train.npy'):
         return
 
 
+def load_keypoints(path_to_keypoints='submission_keypoints.npy'):
+    if os.path.exists(path_to_keypoints):
+        keypoints = np.load(path_to_keypoints,
+                            allow_pickle=True).item()
+        return keypoints
+
+
+def keypoints_to_bbox(keypoints,
+                      padbbox=50,
+                      crop_size=512,
+                      scale_factor=224/512
+                      ):
+    """
+    Estimate bboxes from keypoints 
+    """
+    bboxes = []
+    for frame_number in range(len(keypoints)):
+        all_coords = np.int32(keypoints[frame_number].reshape(-1, 2))
+        min_vals = max(np.min(all_coords[:, 0]) - padbbox,
+                       0), max(np.min(all_coords[:, 1]) - padbbox, 0)
+        max_vals = min(np.max(all_coords[:, 0]) + padbbox, crop_size), min(
+            np.max(all_coords[:, 1]) + padbbox, crop_size)
+        bbox = (*min_vals, *max_vals)
+        bbox = np.array(bbox)
+        bbox = np.int32(bbox * scale_factor)
+        bboxes.append(bbox)
+    return np.array(bboxes)
+
+
 def number_to_keypoint_names(
         labels_text='./annolid/annotation/mabe_2022_labels.txt'
 ):
