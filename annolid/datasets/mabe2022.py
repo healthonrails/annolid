@@ -30,6 +30,35 @@ def load_keypoints(path_to_keypoints='submission_keypoints.npy'):
         return keypoints
 
 
+def get_body_part_dist(submission_keypoints,
+                       frame_id,
+                       sk,
+                       this_part,
+                       other_part):
+    """Euclidean distances between two body parts in the given frame
+
+    Args:
+        submission_keypoints (dict): submission keypoints
+        frame_id (int): frame id
+        sk (str): sequence key
+        this_part (int): body part number
+        other_part (int): body part number
+
+    Returns:
+        np.array :  array of distances
+    """
+    kpts = submission_keypoints['sequences'][sk]['keypoints']
+    kpts_this_part = kpts[frame_id, :, this_part, :]
+    kpts_other_part = kpts[frame_id, :, other_part, :]
+    dist0_1 = np.linalg.norm(kpts_this_part[0, :]-kpts_other_part[1, :])
+    dist1_0 = np.linalg.norm(kpts_this_part[1, :]-kpts_other_part[0, :])
+    dist0_2 = np.linalg.norm(kpts_this_part[0, :]-kpts_other_part[2, :])
+    dist2_0 = np.linalg.norm(kpts_this_part[2, :]-kpts_other_part[0, :])
+    dist1_2 = np.linalg.norm(kpts_this_part[1, :]-kpts_other_part[2, :])
+    dist2_1 = np.linalg.norm(kpts_this_part[2, :]-kpts_other_part[1, :])
+    return np.array([dist0_1, dist1_0, dist0_2, dist2_0, dist1_2, dist2_1])
+
+
 def keypoints_to_bbox(keypoints,
                       padbbox=50,
                       crop_size=512,
