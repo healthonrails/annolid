@@ -81,6 +81,15 @@ def keypoints_to_bbox(keypoints,
     return np.array(bboxes)
 
 
+def keypoints_dist_from_prev_frame(keypoint_sequence):
+    kshape = keypoint_sequence.shape
+    kpts_diff = (keypoint_sequence[1:, :, :, :] -
+                 keypoint_sequence[0:kshape[0]-1, :, :, :])
+    _kpts_diff = np.zeros(keypoint_sequence.shape)
+    _kpts_diff[1:, :, :, :] = kpts_diff
+    return _kpts_diff
+
+
 def number_to_keypoint_names(
         labels_text='./annolid/annotation/mabe_2022_labels.txt'
 ):
