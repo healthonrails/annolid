@@ -8,7 +8,7 @@ sys.setrecursionlimit(5000)  # required on Windows
 
 
 a = Analysis(
-    ['annolid/main.py'],
+    ['annolid/gui/app.py'],
     pathex=['annolid'],
     binaries=[],
     datas=[
