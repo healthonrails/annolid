@@ -7,7 +7,7 @@ channels:
   - pytorch
   - defaults
 dependencies:
-  - python==3.7
+  - python==3.7.6
   - pip
   - cython 
   - pytorch::torchvision
@@ -26,7 +26,7 @@ dependencies:
     - pillow>=8.3.1 
     - pycocotools>=2.0.2 
     # needed on KDE/Qt envs for matplotlib
-    - PyQt5>=5.15.1
+    - PyQt5==5.15.1
     - labelme>=4.5.6
     - opencv-python==4.1.2.30
     - opencv-contrib-python==4.1.2.30
@@ -40,7 +40,7 @@ dependencies:
     - tensorboard>=2.3.0
     - imageio>=2.8.0
     - imageio-ffmpeg>=0.4.2
-    - PyQtWebEngine>=5.15.1
+    - PyQtWebEngine==5.15.1
     - simplification>=0.5.7
     - dataclasses>=0.6; python_version < '3.7'
     - -e .
