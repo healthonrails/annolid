@@ -163,8 +163,8 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                           QtWidgets.QSizePolicy.Fixed)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
+                           QtWidgets.QSizePolicy.Expanding)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
 
         self.setMouseTracking(True)
