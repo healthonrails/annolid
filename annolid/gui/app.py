@@ -1019,9 +1019,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1504,7 +1504,9 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(__appname__)
-    app.setWindowIcon(newIcon("icon"))
+    annolid_icon = QtGui.QIcon(
+        str(Path(__file__).resolve().parent / "icons/icon_annolid.png"))
+    app.setWindowIcon(annolid_icon)
     win = AnnolidWindow(config=config)
 
     win.show()
