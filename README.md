@@ -139,3 +139,6 @@ The pretrained models will be shared to the [Google Drive folder](https://drive.
 # Feature requests and bug reports
 
 To request a new feature or report bugs, please use the link https://github.com/healthonrails/annolid/issues here.
+
+# Annolid Google groups
+[annolid@googlegroups.com](https://groups.google.com/g/annolid)
