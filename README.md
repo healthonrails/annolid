@@ -22,7 +22,7 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 
 ## User Guide
 
-A basic user guide with installation instructions and recent documentation can be found at [](https://healthonrails.github.io/annolid/) https://healthonrails.github.io/annolid/.
+A basic user guide with installation instructions and recent documentation can be found at [https://cplab.science/annolid or https://annolid.com](https://annolid.com).
 
 ## Examples
 ![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)
@@ -121,7 +121,7 @@ If you use Annolid in your research, please use the following BibTeX entry.
   year =         {2020}
 }
 ```
-[For more information:](https://healthonrails.github.io/annolid/) https://healthonrails.github.io/annolid/
+[For more information:](https://cplab.science/annolid) https://cplab.science/annolid
 .
 
 # SfN 2021 poster
