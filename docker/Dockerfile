@@ -2,7 +2,8 @@
 # 1. https://github.com/facebookresearch/detectron2/blob/main/docker/Dockerfile
 # 2. https://github.com/wkentaro/labelme/blob/main/docker/Dockerfile
 # Use 18.04 to avoid opencv incompatibility issues
-FROM nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04
+#FROM nvidia/cuda:11.1.1-cudnn8-devel-ubuntu18.04
+FROM pytorch/pytorch:1.10.0-cuda11.3-cudnn8-devel
 LABEL maintainer "Chen Yang <healthonrails@gmail.com>"
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -42,7 +43,7 @@ RUN wget https://bootstrap.pypa.io/pip/3.6/get-pip.py && \
 
 # install dependencies
 RUN pip install --user tensorboard cmake
-RUN pip install --user torch==1.9 torchvision==0.10 -f https://download.pytorch.org/whl/cu111/torch_stable.html
+#RUN pip install --user torch==1.9 torchvision==0.10 -f https://download.pytorch.org/whl/cu111/torch_stable.html
 
 RUN pip install --user 'git+https://github.com/facebookresearch/fvcore'
 # install detectron2
