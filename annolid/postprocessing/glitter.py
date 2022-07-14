@@ -524,7 +524,7 @@ def tracks2nix(video_file=None,
                         points=points
                     )
 
-                if _class in behaviors:
+                if _class in behaviors and _class not in body_parts:
                     cv2.rectangle(frame, (5, 35),
                                   (5 + 140, 35 + 35), (0, 0, 0), -1)
                     cv2.putText(frame, f"{_class}",
