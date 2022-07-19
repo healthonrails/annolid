@@ -24,7 +24,6 @@ dependencies:
   - easydict>=1.9
   - pip:
     - pillow>=8.3.1 
-    - pycocotools>=2.0.2 
     # needed on KDE/Qt envs for matplotlib
     - PyQt5==5.15.1
     - labelme>=4.5.6
