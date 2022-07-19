@@ -50,6 +50,25 @@ or with conda (recommended as this will install everything in a virtual environm
 conda env create -f environment.yml
 ```
 
+### Note for Mac M1 Chip users
+If you encounter the folloing errors,
+```
+Intel MKL FATAL ERROR: This system does not meet the minimum requirements for use of the Intel(R) Math Kernel Library.
+The processor must support the Intel(R) Supplemental Streaming SIMD Extensions 3 (Intel(R) SSSE3) instructions.
+The processor must support the Intel(R) Streaming SIMD Extensions 4.2 (Intel(R) SSE4.2) instructions.
+The processor must support the Intel(R) Advanced Vector Extensions (Intel(R) AVX) instructions.
+[end of output]
+```
+Please try the following commands.
+```
+conda create -n annolid-env python=3.7
+conda activate annolid-env 
+# Please skip this git clone step, if you have already done it in the previous step
+git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+cd annolid
+pip install -e .
+annolid
+```
 
 Note: if you got this error:
 `ERROR: Could not find a version that satisfies the requirement decord>=0.4.0`
