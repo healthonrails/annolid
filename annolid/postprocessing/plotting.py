@@ -1,6 +1,5 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-from regex import F
 
 
 def plot_trajactory(tracking_csv,

@@ -9,3 +9,4 @@ opencv-python>=4.1.2.30
 opencv-contrib-python>=4.1.2.30
 pycocotools>=2.0.2
 simplification>=0.5.7
+pandas>=1.1.3
