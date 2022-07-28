@@ -18,7 +18,7 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 
 ## Annolid video tutorials
 
-[![Annolid Youtube playlist](https://i9.ytimg.com/vi/pb8X4bqLRZ0/mq2.jpg?sqp=CKzjp4sG&rs=AOn4CLDiKkwHnt7dBr1GBVrNZJQXd0wbJw)](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc "Annolid Youtube playlist")
+[![Annolid Youtube playlist](docs/imgs/00002895_7.jpg)](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc "Annolid Youtube playlist")
 
 ## User Guide
 
@@ -27,11 +27,13 @@ A basic user guide with installation instructions and recent documentation can b
 ## Examples
 [![Multiple Animal Tracking](docs/imgs/mutiple_animal_tracking.png)](https://youtu.be/lTlycRAzAnI)
 
-Instance segmentations             |  Behavior prediction
-:-------------------------:|:-------------------------:
-![](docs/imgs/example_segmentation.png) | ![](docs/imgs/example_vis.png)
+|         Instance segmentations          |      Behavior prediction       |
+| :-------------------------------------: | :----------------------------: |
+| ![](docs/imgs/example_segmentation.png) | ![](docs/imgs/example_vis.png) |
 
-[![Mouse behavior analysis with instance segmentation based deep learning networks](http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8) "Mouse behavior analysis with instance segmentation based deep learning networks")
+[![Mouse behavior analysis with instance segmentation based deep learning networks](http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8)
+
+Mouse behavior analysis with instance segmentation based deep learning networks
 
 ## Local Installation
 create a conda env
