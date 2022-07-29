@@ -51,10 +51,8 @@ cd annolid
 ```bash
 pip install -e .
 ```
-or with conda (recommended as this will install everything in a virtual environment)
-```bash
-conda env create -f environment.yml
-```
+The pip install command will attempt to determine your computer's resources (like a GPU) automatically.  To control this directly, you alternatively can use the conda env command and the appropriate environment file (.yml).
+For alternative installation methods, see the Annolid documentation ([https://cplab.science/annolid or https://annolid.com](https://cplab.science/annolid)).
 
 ### Note for Mac M1 Chip users
 If you encounter the folloing errors,
@@ -167,3 +165,4 @@ To request a new feature or report bugs, please use the link https://github.com/
 
 # Annolid Google groups
 [annolid@googlegroups.com](https://groups.google.com/g/annolid)
+
