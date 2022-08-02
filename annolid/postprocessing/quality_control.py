@@ -115,7 +115,8 @@ class TracksResults():
     def to_labelme_json(self,
                         output_dir: str,
                         keypoint_area_threshold: int = 265,
-                        key_frames=False
+                        key_frames=False,
+                        skip_frames=30,
                         ) -> str:
 
         width = self.video_width()
@@ -166,46 +167,41 @@ class TracksResults():
                         continue
 
         else:
+            frame_numbers = self.df.frame_number.unique()
+            for frame_number in frame_numbers:
+                if frame_number % skip_frames == 0:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                    ret, frame = self.cap.read()
+                    if ret:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_label_list = []
+                        img_path = f"{output_dir}/{Path(self.video_file).stem}_{frame_number:09}.png"
+                        PIL.Image.fromarray(frame).save(img_path)
+                        df_cur = self.df[self.df.frame_number == frame_number]
+                        for row in df_cur.to_dict(orient='records'):
+                            try:
+                                label_list = pred_dict_to_labelme(
+                                    row,
+                                    keypoint_area_threshold
+                                )
+                                # each row is a dict of the single instance prediction
+                                frame_label_list += label_list
+                                save_labels(img_path.replace(".png", ".json"),
+                                            img_path,
+                                            frame_label_list,
+                                            height,
+                                            width,
+                                            imageData=None,
+                                            save_image_to_json=False
 
-            while self.cap.isOpened():
-
-                frame_number = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-
-                frame_label_list = []
-                img_path = f"{output_dir}/{Path(self.video_file).stem}_{frame_number:09}.png"
-
-                ret, frame = self.cap.read()
-                if ret:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    PIL.Image.fromarray(frame).save(img_path)
-                    df_cur = self.df[self.df.frame_number == frame_number]
-
-                    for row in df_cur.to_dict(orient='records'):
-
-                        try:
-                            label_list = pred_dict_to_labelme(
-                                row,
-                                keypoint_area_threshold
-                            )
-                            # each row is a dict of the single instance prediction
-                            frame_label_list += label_list
-                            save_labels(img_path.replace(".png", ".json"),
-                                        img_path,
-                                        frame_label_list,
-                                        height,
-                                        width,
-                                        imageData=None,
-                                        save_image_to_json=False
-
-                                        )
-                            yield (frame_number / num_frames) * 100, Path(img_path).stem + '.json'
-                        except ValueError:
-                            yield 0, 'No predictions'
-                            continue
-                elif not self._is_running:
-                    break
+                                            )
+                                yield (frame_number / num_frames) * 100 + 1, Path(img_path).stem + '.json'
+                            except ValueError:
+                                yield 0, 'No predictions'
+                                continue
                 else:
-                    break
+                    yield (frame_number / num_frames) * 100 + 1, 'Skipped'
+            yield 100, 'Done'
 
         self.clean_up()
 
