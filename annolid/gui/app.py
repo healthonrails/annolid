@@ -1021,7 +1021,7 @@ class AnnolidWindow(MainWindow):
                     if ('tracking' in str(tr) and
                             _video_name in str(tr)
                             and '_nix' not in str(tr)
-                            ):
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1370,11 +1370,13 @@ class AnnolidWindow(MainWindow):
     def quality_control(self):
         video_file = None
         tracking_results = None
+        skip_num_frames = None
         qc_dialog = QualityControlDialog()
 
         if qc_dialog.exec_():
             video_file = qc_dialog.video_file
             tracking_results = qc_dialog.tracking_results
+            skip_num_frames = qc_dialog.skip_num_frames
         else:
             return
 
@@ -1388,7 +1390,8 @@ class AnnolidWindow(MainWindow):
         out_dir = Path(out_dir)
         out_dir.mkdir(exist_ok=True, parents=True)
         trs = TracksResults(video_file, tracking_results)
-        label_json_gen = trs.to_labelme_json(str(out_dir))
+        label_json_gen = trs.to_labelme_json(str(out_dir),
+                                             skip_frames=skip_num_frames)
         try:
             if label_json_gen is not None:
                 pwj = ProgressingWindow(label_json_gen)

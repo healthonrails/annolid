@@ -9,6 +9,15 @@ class QualityControlDialog(QtWidgets.QDialog):
         self.setWindowTitle("Convert tracking results to labelme format")
         self.video_file = None
         self.tracking_results = None
+        self.skip_num_frames = 30
+
+        self.slider()
+
+        self.label1 = QtWidgets.QLabel(
+            f"Please type or select number of frames to skip default={self.skip_num_frames}")
+
+        self.framesLineEdit = QtWidgets.QLineEdit(self)
+        self.framesLineEdit.setText(str(self.skip_num_frames))
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -42,6 +51,9 @@ class QualityControlDialog(QtWidgets.QDialog):
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.groupBoxVideoFiles)
         vbox.addWidget(self.groupBoxFiles)
+        vbox.addWidget(self.label1)
+        vbox.addWidget(self.framesLineEdit)
+        vbox.addWidget(self.slider)
         vbox.addWidget(self.buttonbox)
 
         self.setLayout(vbox)
@@ -79,3 +91,20 @@ class QualityControlDialog(QtWidgets.QDialog):
         )
         if self.tracking_results is not None:
             self.inputFileLineEdit.setText(self.tracking_results)
+
+    def slider(self):
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setMinimum(1)
+        self.slider.setMaximum(1000)
+        self.slider.setValue(10)
+        self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.slider.setTickInterval(1)
+        self.slider.valueChanged.connect(self.onSliderChange)
+
+    def onSliderChange(self, position):
+        self.skip_num_frames = int(position) if position and str(
+            position).isdigit() else 1
+        self.framesLineEdit.setText(str(position))
+
+        self.label1.setText(
+            f"You have selected to skip {str(self.skip_num_frames)} frames each time.")
