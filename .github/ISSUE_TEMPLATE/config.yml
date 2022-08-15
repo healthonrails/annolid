@@ -3,7 +3,7 @@ contact_links:
     url: https://github.com/healthonrails/annolid/discussions
     about: Share your ideas and ask questions.
   - name: "Request new features or report bugs for Annolid"
-    url: https://github.com/healthonrails/annolid/issues
+    url: https://github.com/healthonrails/annolid/issues/new
     about: Request new features or report bugs.
   - name: "Annolid documentation"
     url: https://cplab.science/annolid
