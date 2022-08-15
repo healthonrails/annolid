@@ -1,0 +1,10 @@
+contact_links:
+  - name: "Ideas / general questions about Annolid"
+    url: https://github.com/healthonrails/annolid/discussions
+    about: Share your ideas and ask questions.
+  - name: "Request new features or report bugs for Annolid"
+    url: https://github.com/healthonrails/annolid/issues
+    about: Request new features or report bugs.
+  - name: "Annolid documentation"
+    url: https://cplab.science/annolid
+    about: Check the documentation
