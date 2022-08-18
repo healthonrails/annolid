@@ -15,3 +15,6 @@
 	path = annolid/segmentation/SCOPS
 	url = https://github.com/healthonrails/SCOPS.git
 
+[submodule "annolid/detector/yolov7"]
+	path = annolid/detector/yolov7
+	url = https://github.com/healthonrails/yolov7.git
