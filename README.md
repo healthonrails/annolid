@@ -81,6 +81,7 @@ try to install [ffmpeg](https://ffmpeg.org/) or you can install it in conda with
 
 FYI: it is helpful to compress videos to reduce diskspace using ffmpeg using `ffmpeg -i my_video.mp4 -vcodec libx264 my_video_compressed.mp4`
 
+Tip: to fix the error like `objc[13977]: Class QCocoaPageLayoutDelegate is implemented in both /Users/xxx/anaconda3/envs/annolid-env/lib/python3.7/site-packages/cv2/.dylibs/QtGui (0x10ebd85c0) and /Users/xxx/anaconda3/envs/annolid-env/lib/python3.7/site-packages/PyQt5/Qt/lib/QtPrintSupport.framework/Versions/5/QtPrintSupport (0x10fc9d540`, please try the command `conda install qtpy`. 
 ## Launch annolid user interface based on labelme
 ```bash
 source activate annolid-env
