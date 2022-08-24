@@ -9,5 +9,5 @@ prune annolid/detector/YOLOv3/weight/yolov3-tiny.weights
 prune docs/tutorials/Untitled.ipynb
 prune docs/tutorials/.ipynb_checkpoints
 include environment.yml
-recursive-include annolid/configs *.yaml
-recursive-include annolid/annotation *
+recursive-include annolid/configs 
+recursive-include annolid/annotation
