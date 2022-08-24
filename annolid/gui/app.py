@@ -50,7 +50,7 @@ from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
 __appname__ = 'Annolid'
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
