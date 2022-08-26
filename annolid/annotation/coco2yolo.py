@@ -57,7 +57,7 @@ def create_dataset(json_file='annotation.json',
                     box = xywh2cxcywh(ann["bbox"], (img_width, img_height))
                     if class_id is not None:
                         atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"], box[0],
-                                                        box[1], box[2], box[3]))
+                                                           box[1], box[2], box[3]))
                     else:
                         atf.write("%s %s %s %s %s\n" % (ann["category_id"], box[0],
                                                         box[1], box[2], box[3]))
@@ -71,8 +71,8 @@ def create_dataset(json_file='annotation.json',
     names = list(categories)
     # dataset folder is in same dir as the yolov5 folder
     with open(data_yaml, 'w') as dy:
-        dy.write(f"train: ../{results_dir}/images/train\n")
-        dy.write(f"val: ../{results_dir}/images/val\n")
+        dy.write(f"train: {results_dir}/images/train\n")
+        dy.write(f"val: {results_dir}/images/val\n")
         dy.write(f"nc: {len(names)}\n")
         dy.write(f"names: {names}")
 
