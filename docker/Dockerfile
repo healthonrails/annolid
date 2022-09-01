@@ -8,7 +8,6 @@ LABEL maintainer "Chen Yang <healthonrails@gmail.com>"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN \
-  apt-key adv --keyserver keyserver.ubuntu.com --recv-keys  A4B469963BF863CC  &&\
   apt-get update -qq && \
   apt-get install -qq -y \
     git \
