@@ -28,7 +28,8 @@ def tracks2nix(video_file=None,
                deep=False,
                pretrained_model=None,
                subject_names=None,
-               behavior_names=None
+               behavior_names=None,
+               overlap_threshold=0.1
                ):
     """
     Args:
@@ -45,6 +46,7 @@ def tracks2nix(video_file=None,
         pretrained_model (str): path to the trained motion model. defaults to None.
         subject_name (str): a list of comma seperated subject names like vole_01,vole_02,...
         behavior_names (str): a list of comma seperated behavior names like rearing,walking,... 
+        overlay_threshold (float): overlay threshold between two masks e.g. between animal and a zone default 0.1
 
     Create a nix format csv file and annotated video
     """
@@ -109,11 +111,21 @@ def tracks2nix(video_file=None,
         else:
             return False
 
+    def animal_in_zone(animal_mask,
+                       zone_mask,
+                       threshold=0.1
+                       ):
+        if animal_mask is not None and zone_mask is not None:
+            overlap = mask_util.iou([animal_mask], [zone_mask], [
+                False, False]).flatten()[0]
+            return overlap > threshold
+        else:
+            return False
+
     def keypoint_in_body_mask(
             frame_number,
             keypoint_name,
             animal_name=None):
-
         if animal_name is None:
             animal_name = subject_animal_name
 
@@ -195,8 +207,8 @@ def tracks2nix(video_file=None,
     # add an instance name to animal names list if not in it
     for instance_name in instance_names:
         if (instance_name not in animal_names and (
-                    instance_name not in behaviors
-                    or instance_name not in zones_names)
+                instance_name not in behaviors
+                or instance_name not in zones_names)
                 ):
             animal_names += ' ' + instance_name
 
@@ -291,6 +303,7 @@ def tracks2nix(video_file=None,
 
         right_zone_box = None
         left_zone_box = None
+        zone_masks = []
 
         if zones:
             for zs in zones:
@@ -312,6 +325,7 @@ def tracks2nix(video_file=None,
                     m = mask_util.decode(rle)
                     frame = draw.draw_binary_masks(
                         frame, [m], [zone_label])
+                    zone_masks.append((zone_label, rle))
                 except:
                     # skip non polygon zones
                     continue
@@ -343,6 +357,19 @@ def tracks2nix(video_file=None,
                     if score >= score_threshold and (_class in animal_names
                                                      or _class.lower() in animal_names):
                         _mask = ast.literal_eval(_mask)
+
+                        for zm in zone_masks:
+                            if animal_in_zone(_mask, zm[1], overlap_threshold):
+                                event = f"{_class}_in_{zm[0]}"
+                                timestamps[frame_timestamp][f'event:{event}'] = 1
+                                draw.draw_boxes(
+                                    frame,
+                                    bbox,
+                                    identities=[event],
+                                    draw_track=False,
+                                    points=points
+                                )
+
                         mask_area = mask_util.area(_mask)
                         _mask = mask_util.decode(_mask)[:, :]
                         frame = draw.draw_binary_masks(
@@ -429,9 +456,9 @@ def tracks2nix(video_file=None,
 
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                        score >= score_threshold
-                        and _class not in body_parts
-                        and _class not in animal_names
+                            score >= score_threshold
+                            and _class not in body_parts
+                            and _class not in animal_names
                         ):
 
                     if _class == 'grooming':
@@ -467,8 +494,8 @@ def tracks2nix(video_file=None,
                     is_keypoint_in_mask = keypoint_in_body_mask(
                         _frame_num, _class, subject_animal_name)
                     if (is_keypoint_in_mask
-                            or any(map(str.isdigit, _class))
-                            or _class in _animal_object_list
+                                or any(map(str.isdigit, _class))
+                                or _class in _animal_object_list
                             ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
@@ -481,8 +508,8 @@ def tracks2nix(video_file=None,
                                         0.65, color, 2)
 
                 if (left_interact > 0
-                        and 'left' in _class.lower()
-                        and 'interact' in _class.lower()
+                    and 'left' in _class.lower()
+                    and 'interact' in _class.lower()
                     ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
@@ -497,8 +524,8 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                            and 'right' in _class.lower() and
-                            'interact' in _class.lower()
+                        and 'right' in _class.lower() and
+                        'interact' in _class.lower()
                         ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
