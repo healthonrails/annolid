@@ -352,6 +352,8 @@ def tracks2nix(video_file=None,
                 _class = _class[0]
                 score = score[0]
 
+            bbox = [[x1, y1, x2, y2]]
+
             if not pd.isnull(_mask) and overlay_mask:
                 if _class not in zones_names:
                     if score >= score_threshold and (_class in animal_names
@@ -452,8 +454,6 @@ def tracks2nix(video_file=None,
                         [cx, cy_glitter],
                         min(int((x2-x1)/2), int(glitter_y2-glitter_y1))
                     ]
-                bbox = [[x1, y1, x2, y2]]
-
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
                             score >= score_threshold
