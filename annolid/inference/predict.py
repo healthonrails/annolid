@@ -329,7 +329,7 @@ class Segmentor():
         for img_path in imgs:
             self.on_image(img_path, display=False)
 
-    def on_video(self, video_path):
+    def on_video(self, video_path, skip_frames=1):
         if not Path(video_path).exists():
             return
         self.cap = cv2.VideoCapture(video_path)
@@ -343,25 +343,26 @@ class Segmentor():
         if num_frames <= 1000 or torch.cuda.is_available():
             frame_number = 0
             for frame in videos.frame_from_video(self.cap, num_frames):
-                outputs = self.predictor(frame)
-                out_dict = {}
-                instances = outputs["instances"].to("cpu")
-                num_instance = len(instances)
-                if num_instance == 0:
-                    out_dict['frame_number'] = frame_number
-                    out_dict['x1'] = None
-                    out_dict['y1'] = None
-                    out_dict['x2'] = None
-                    out_dict['y2'] = None
-                    out_dict['instance_name'] = None
-                    out_dict['class_score'] = None
-                    out_dict['segmentation'] = None
-                    tracking_results.append(out_dict)
+                if frame_number % skip_frames == 0:
+                    outputs = self.predictor(frame)
                     out_dict = {}
-                else:
-                    _res = self._process_instances(
-                        instances, frame_number, width)
-                    tracking_results += _res
+                    instances = outputs["instances"].to("cpu")
+                    num_instance = len(instances)
+                    if num_instance == 0:
+                        out_dict['frame_number'] = frame_number
+                        out_dict['x1'] = None
+                        out_dict['y1'] = None
+                        out_dict['x2'] = None
+                        out_dict['y2'] = None
+                        out_dict['instance_name'] = None
+                        out_dict['class_score'] = None
+                        out_dict['segmentation'] = None
+                        tracking_results.append(out_dict)
+                        out_dict = {}
+                    else:
+                        _res = self._process_instances(
+                            instances, frame_number, width)
+                        tracking_results += _res
                 frame_number += 1
                 if frame_number % 100 == 0:
                     print("Processing frame number: ", frame_number)
