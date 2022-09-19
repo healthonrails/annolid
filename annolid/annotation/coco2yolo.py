@@ -24,13 +24,14 @@ def xywh2cxcywh(box, img_size):
 def create_dataset(json_file='annotation.json',
                    results_dir='yolov5_dataset',
                    dataset_type='train',
-                   class_id=None
+                   class_id=None,
+                   is_segmentation=True
                    ):
     categories = []
-    images_path = Path(f"{results_dir}/images/{dataset_type}")
+    images_path = Path(f"{results_dir}/{dataset_type}/images")
     images_path.mkdir(parents=True, exist_ok=True)
 
-    labels_path = Path(f"{results_dir}/labels/{dataset_type}")
+    labels_path = Path(f"{results_dir}/{dataset_type}/labels")
     labels_path.mkdir(parents=True, exist_ok=True)
 
     with open(json_file, 'r') as jf:
@@ -54,13 +55,31 @@ def create_dataset(json_file='annotation.json',
         with open(anno_txt_flie, 'w') as atf:
             for ann in data['annotations']:
                 if ann["image_id"] == img_id:
-                    box = xywh2cxcywh(ann["bbox"], (img_width, img_height))
-                    if class_id is not None:
-                        atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"], box[0],
-                                                           box[1], box[2], box[3]))
-                    else:
-                        atf.write("%s %s %s %s %s\n" % (ann["category_id"], box[0],
-                                                        box[1], box[2], box[3]))
+                    if ann["segmentation"] and is_segmentation:
+                        points = []
+                        i = 0
+                        while i <= len(ann['segmentation'][0])/2:
+                            points.append(str(ann['segmentation']
+                                              [0][i] / img_width))
+                            points.append(str(ann['segmentation'][0]
+                                              [i+1] / img_height))
+                            i += 2
+                        if class_id is not None:
+                            atf.write(
+                                f"{class_id} {ann['category_id']} {' '.join(points)}\n")
+                        else:
+                            atf.write(
+                                f"{ann['category_id']} {' '.join(points)}\n")
+                    elif not is_segmentation:
+                        if ann['bbox']:
+                            box = xywh2cxcywh(
+                                ann["bbox"], (img_width, img_height))
+                            if class_id is not None:
+                                atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"], box[0],
+                                                                   box[1], box[2], box[3]))
+                            else:
+                                atf.write("%s %s %s %s %s\n" % (ann["category_id"], box[0],
+                                                                box[1], box[2], box[3]))
 
     for c in data["categories"]:
         # exclude backgroud with id 0
@@ -71,8 +90,8 @@ def create_dataset(json_file='annotation.json',
     names = list(categories)
     # dataset folder is in same dir as the yolov5 folder
     with open(data_yaml, 'w') as dy:
-        dy.write(f"train: {results_dir}/images/train\n")
-        dy.write(f"val: {results_dir}/images/val\n")
+        dy.write(f"train: {os.path.basename(results_dir)}/train/images\n")
+        dy.write(f"val: {os.path.basename(results_dir)}/val/images\n")
         dy.write(f"nc: {len(names)}\n")
         dy.write(f"names: {names}")
 
