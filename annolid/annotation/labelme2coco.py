@@ -1,4 +1,6 @@
 """
+This file contains functions to convert labelme json files to
+COCO format dataset.
 Modified from
 https://github.com/wkentaro/labelme/blob/master
 /examples/instance_segmentation/labelme2coco.py
@@ -7,6 +9,7 @@ import collections
 import datetime
 import glob
 import json
+import logging
 import os
 import os.path as osp
 import sys
@@ -16,10 +19,13 @@ import numpy as np
 from pathlib import Path
 import labelme
 
+logger = logging.getLogger(__name__)
+
 try:
     import pycocotools.mask
 except ImportError:
-    print("Please install pycocotools:\n\n    pip install pycocotools\n")
+    logger.warning(
+        "Please install pycocotools:\n\n    pip install pycocotools\n")
     sys.exit(1)
 
 
@@ -66,7 +72,7 @@ def convert(input_annotated_dir,
         valid_mask_dir = osp.join(output_annotated_dir, 'valid', 'Masks')
         _create_dirs(valid_mask_dir)
 
-    print("Creating dataset:", output_annotated_dir)
+    logger.info(f"Creating dataset:  {output_annotated_dir}")
     training_examples_sofar = 0
 
     now = datetime.datetime.now()
@@ -178,6 +184,11 @@ def convert(input_annotated_dir,
             label = shape["label"]
             group_id = shape.get("group_id")
 
+            if group_id is None:
+                group_id = uuid.uuid1()
+
+            instance = (label, group_id)
+
             shape_type = shape.get("shape_type", "polygon")
 
             if train_valid_split > 1:
@@ -225,16 +236,11 @@ def convert(input_annotated_dir,
                     shape_type = "polygon"
                 except IndexError:
                     continue
-                    print(f"{filename} has a invalid point {points}.")
+                    logger.warning(f"{filename} has a invalid point {points}.")
 
             mask = labelme.utils.shape_to_mask(
                 img.shape[:2], points, shape_type
             )
-
-            if group_id is None:
-                group_id = uuid.uuid1()
-
-            instance = (label, group_id)
 
             if instance in masks:
                 masks[instance] = masks[instance] | mask
@@ -381,25 +387,25 @@ def convert(input_annotated_dir,
     data_yaml = Path(f"{output_annotated_dir}/data.yaml")
     names = list(categories)
     input_annotated_dir_name = os.path.basename(input_annotated_dir)
-    output_annotated_dir_name = os.path.basename(output_annotated_dir)
+    output_annotated_dir_name = Path(os.path.basename(output_annotated_dir))
     # dataset folder is in same dir as the yolov5 folder
     with open(data_yaml, 'w') as dy:
         dy.write(f"DATASET:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")
         dy.write(
-            f"""    train_info: '{data_yaml.parent /"train"/"annotations.json"}'\n""")
+            f"""    train_info: '{output_annotated_dir_name /"train"/"annotations.json"}'\n""")
         dy.write(
-            f"""    train_images: '{data_yaml.parent /"train"}'\n""")
+            f"""    train_images: '{output_annotated_dir_name /"train"}'\n""")
         dy.write(
-            f"""    valid_info: '{data_yaml.parent /"valid"/"annotations.json"}'\n""")
+            f"""    valid_info: '{output_annotated_dir_name /"valid"/"annotations.json"}'\n""")
         dy.write(
-            f"""    valid_images: '{data_yaml.parent /"valid"}'\n""")
+            f"""    valid_images: '{output_annotated_dir_name /"valid"}'\n""")
         dy.write(f"    class_names: {names}\n")
 
         dy.write(f"YOLACT:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")
         dy.write(f"    dataset: 'dataset_{input_annotated_dir_name}_coco'\n")
         dy.write(f"    max_size: 512\n")
-    print('Done.')
-    print("All: ", class_instance_counter)
-    print("Training set: ", train_class_instance_counter)
+    logger.info('Done.')
+    logger.info(f"All: {class_instance_counter}")
+    logger.info(f"Training set:  {train_class_instance_counter}")
