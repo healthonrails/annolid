@@ -48,8 +48,8 @@ class COCO2Labeme():
         class_names = json_data['categories'][0]['keypoints']
         images = json_data['images']
         annotations = json_data['annotations']
-        for img in images:
-            img_id = img['id']
+        for i, img in enumerate(images):
+            label_list = []
             img_file_name = os.path.join(self.images_dir, img['file_name'])
             if not os.path.exists(img_file_name):
                 logger.info(f"Image file {img_file_name} does not exist!")
@@ -58,15 +58,14 @@ class COCO2Labeme():
             img_height = img['height']
             img_width = img['width']
             try:
-                img_kpts = annotations[img_id]['keypoints']
+                img_kpts = annotations[i]['keypoints']
             except IndexError:
                 logger.info(f"No keypoints for  img {img_file_name}")
                 continue
-            label_list = []
             for i, label in enumerate(class_names):
                 i *= 3
                 x, y, v = img_kpts[i:i+3]
-                if not (x <= 0 and y <= 0):
+                if not(x <= 0 and y <= 0):
                     s = Shape(label=label, shape_type='point', flags={})
                     s.addPoint((x, y))
                     label_list.append(s)
