@@ -1349,7 +1349,7 @@ class AnnolidWindow(MainWindow):
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
         try:
             shutil.make_archive(str(self.output_dir),
-                                'zip', self.output_dir)
+                                'zip', self.output_dir.parent, self.output_dir.stem)
         except:
             print("Failed to create the zip file")
 
