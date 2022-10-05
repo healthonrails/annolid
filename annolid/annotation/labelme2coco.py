@@ -228,15 +228,17 @@ def convert(input_annotated_dir,
 
             if shape_type == 'point':
                 try:
+                    min_dim = min(img.shape)
                     cx, cy = points[0]
-                    radius = 10.0 + np.random.choice(np.arange(0, 1, 0.1))
+                    radius = min_dim * 0.01 + \
+                        np.random.choice(np.arange(0, 1, 0.1))
                     xs = cx + (radius * np.cos(np.array(_angles) * np.pi/180))
                     ys = cy + (radius * np.sin(np.array(_angles) * np.pi/180))
                     points = np.asarray([list(p) for p in zip(xs, ys)])
                     shape_type = "polygon"
                 except IndexError:
-                    continue
                     logger.warning(f"{filename} has a invalid point {points}.")
+                    continue
 
             mask = labelme.utils.shape_to_mask(
                 img.shape[:2], points, shape_type
