@@ -15,7 +15,7 @@ from labelme.utils.image import img_pil_to_data
 
 
 def pred_dict_to_labelme(pred_row,
-                         keypoint_area_threshold=256,
+                         keypoint_area_threshold=512,
                          score_threshold=0.5
                          ):
     """[summary]
@@ -24,7 +24,7 @@ def pred_dict_to_labelme(pred_row,
         pred_row ([list[dict]]): [List of predict dicts]
         keypoint_area_threshold (int, optional): 
         [area less than the threshold will be treated as keypoints ]. 
-        Defaults to 256.
+        Defaults to 512.
 
     Returns:
         [type]: [description]
