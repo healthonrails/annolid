@@ -146,6 +146,18 @@ If you use Annolid in your research, please use the following BibTeX entry.
   year =         {2020}
 }
 ```
+
+# Other open-access pre-prints related to Annolid
+```
+@article{pranic2022rates,
+  title={Rates but not acoustic features of ultrasonic vocalizations are related to non-vocal behaviors in mouse pups},
+  author={Pranic, Nicole M and Kornbrek, Caroline and Yang, Chen and Cleland, Thomas A and Tschida, Katherine A},
+  journal={bioRxiv},
+  year={2022},
+  publisher={Cold Spring Harbor Laboratory}
+}
+```
+
 [For more information:](https://cplab.science/annolid) https://cplab.science/annolid
 .
 
