@@ -329,15 +329,20 @@ class Segmentor():
         for img_path in imgs:
             self.on_image(img_path, display=False)
 
-    def on_video(self, video_path, skip_frames=1):
+    def on_video(self,
+                 video_path,
+                 skip_frames=1,
+                 on_keyframes=True
+                 ):
         if not Path(video_path).exists():
             return
         self.cap = cv2.VideoCapture(video_path)
         num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-        out_img_dir = key_frames(video_path)
-        self.on_image_folder(out_img_dir)
+        if on_keyframes:
+            out_img_dir = key_frames(video_path)
+            self.on_image_folder(out_img_dir)
         tracking_results = []
 
         if num_frames <= 1000 or torch.cuda.is_available():
