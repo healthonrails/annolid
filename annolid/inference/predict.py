@@ -380,8 +380,11 @@ class Segmentor():
             tracking_results_csv += f"_{str(Path(video_path).stem)}"
             tracking_results_csv += "_mask_rcnn_tracking_results_with_segmentation.csv"
             df_top.to_csv(str(tracking_results_dir / tracking_results_csv))
-        print(f"Done. Please check you results in folder: {out_img_dir}")
-        return out_img_dir
+        if on_keyframes:
+            print(f"Done. Please check you results in folder: {out_img_dir}")
+            return out_img_dir
+        else:
+            return tracking_results_dir
 
     def extract_mask_roi_features(self, frame):
         """extract mask ROI features from the given video frame
