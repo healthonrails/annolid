@@ -459,6 +459,17 @@ class AnnolidWindow(MainWindow):
             label_file = osp.join(self.output_dir, label_file_without_path)
         return label_file
 
+    def removeSelectedPoint(self):
+        self.canvas.removeSelectedPoint()
+        self.canvas.update()
+        if self.canvas.hShape and not self.canvas.hShape.points:
+            self.canvas.deleteShape(self.canvas.hShape)
+            self.remLabels([self.canvas.hShape])
+            self.setDirty()
+            if self.noShapes():
+                for action in self.actions.onShapesPresent:
+                    action.setEnabled(False)
+
     def importDirImages(self, dirpath, pattern=None, load=True):
         self.actions.openNextImg.setEnabled(True)
         self.actions.openPrevImg.setEnabled(True)
