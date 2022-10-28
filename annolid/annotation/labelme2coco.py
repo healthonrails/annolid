@@ -39,7 +39,8 @@ def convert(input_annotated_dir,
             labels_file='labels.txt',
             vis=False,
             save_mask=True,
-            train_valid_split=0.7
+            train_valid_split=0.7,
+            radius_ratio=0.2
             ):
 
     assert os.path.isfile(
@@ -230,7 +231,7 @@ def convert(input_annotated_dir,
                 try:
                     min_dim = min(img.shape)
                     cx, cy = points[0]
-                    radius = min_dim * 0.01 + \
+                    radius = min_dim * radius_ratio + \
                         np.random.choice(np.arange(0, 1, 0.1))
                     xs = cx + (radius * np.cos(np.array(_angles) * np.pi/180))
                     ys = cy + (radius * np.sin(np.array(_angles) * np.pi/180))
