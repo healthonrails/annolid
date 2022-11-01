@@ -2,6 +2,7 @@ import sys
 import os
 import os.path as osp
 import time
+import html
 import shutil
 import pandas as pd
 from collections import deque
@@ -22,7 +23,6 @@ from PIL import ImageQt
 import requests
 import subprocess
 from labelme.app import MainWindow
-from labelme.utils import newIcon
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
@@ -492,7 +492,12 @@ class AnnolidWindow(MainWindow):
 
     def _get_rgb_by_label(self, label):
         if self._config["shape_color"] == "auto":
-            item = self.uniqLabelList.findItemsByLabel(label)[0]
+            item = self.uniqLabelList.findItemByLabel(label)
+            if item is None:
+                item = self.uniqLabelList.createItemFromLabel(label)
+                self.uniqLabelList.addItem(item)
+                rgb = self._get_rgb_by_label(label)
+                self.uniqLabelList.setItemLabel(item, label, rgb)
             label_id = self.uniqLabelList.indexFromItem(item).row() + 1
             label_id += self._config["shift_auto_shape_color"]
             return LABEL_COLORMAP[label_id % len(LABEL_COLORMAP)]
@@ -507,7 +512,7 @@ class AnnolidWindow(MainWindow):
 
     def _update_shape_color(self, shape):
 
-        if not self.uniqLabelList.findItemsByLabel(shape.label):
+        if not self.uniqLabelList.findItemByLabel(shape.label):
             item = self.uniqLabelList.createItemFromLabel(shape.label)
             self.uniqLabelList.addItem(item)
             rgb = self._get_rgb_by_label(shape.label)
@@ -526,37 +531,21 @@ class AnnolidWindow(MainWindow):
             text = shape.label
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
-        shape_points_hash = hash(
-            str(sorted(shape.points, key=lambda point: point.x())))
-        self.shape_hash_ids[shape_points_hash] = self.shape_hash_ids.get(
-            shape_points_hash, 0) + 1
-        if self.shape_hash_ids[shape_points_hash] <= 1:
-            self.label_stats[text] = self.label_stats.get(text, 0) + 1
         label_list_item = LabelListWidgetItem(text, shape)
         self.labelList.addItem(label_list_item)
-        items = self.uniqLabelList.findItemsByLabel(shape.label)
-        if not items:
-            item = self.uniqLabelList.createItemFromLabel(
-                shape.label
-            )
+        if self.uniqLabelList.findItemByLabel(shape.label) is None:
+            item = self.uniqLabelList.createItemFromLabel(shape.label)
             self.uniqLabelList.addItem(item)
             rgb = self._get_rgb_by_label(shape.label)
-            self.uniqLabelList.setItemLabel(
-                item, f"{shape.label} [{self.label_stats.get(text,0)} instance]", rgb)
-        else:
-            for item in items:
-                rgb = self._get_rgb_by_label(shape.label)
-                self.uniqLabelList.setItemLabel(
-                    item, f"{shape.label} [{self.label_stats.get(text,0)} instances]", rgb)
-
+            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
         self.labelDialog.addLabelHistory(shape.label)
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
 
-        r, g, b = self._update_shape_color(shape)
+        self._update_shape_color(shape)
         label_list_item.setText(
             '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
-                text, r, g, b
+                html.escape(text), *shape.fill_color.getRgb()[:3]
             )
         )
 
@@ -599,7 +588,7 @@ class AnnolidWindow(MainWindow):
         else:
             item.setText("{} ({})".format(shape.label, shape.group_id))
         self.setDirty()
-        if not self.uniqLabelList.findItemsByLabel(shape.label):
+        if not self.uniqLabelList.findItemByLabel(shape.label):
             item = QtWidgets.QListWidgetItem()
             item.setData(Qt.UserRole, shape.label)
             self.uniqLabelList.addItem(item)
@@ -1030,8 +1019,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
                         ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
