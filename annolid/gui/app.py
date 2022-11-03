@@ -526,29 +526,6 @@ class AnnolidWindow(MainWindow):
         shape.select_fill_color = QtGui.QColor(r, g, b, 155)
         return r, g, b
 
-    def addLabel(self, shape):
-        if shape.group_id is None:
-            text = shape.label
-        else:
-            text = "{} ({})".format(shape.label, shape.group_id)
-        label_list_item = LabelListWidgetItem(text, shape)
-        self.labelList.addItem(label_list_item)
-        if self.uniqLabelList.findItemByLabel(shape.label) is None:
-            item = self.uniqLabelList.createItemFromLabel(shape.label)
-            self.uniqLabelList.addItem(item)
-            rgb = self._get_rgb_by_label(shape.label)
-            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
-        self.labelDialog.addLabelHistory(shape.label)
-        for action in self.actions.onShapesPresent:
-            action.setEnabled(True)
-
-        self._update_shape_color(shape)
-        label_list_item.setText(
-            '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
-                html.escape(text), *shape.fill_color.getRgb()[:3]
-            )
-        )
-
     def editLabel(self, item=None):
         if item and not isinstance(item, LabelListWidgetItem):
             raise TypeError("item must be LabelListWidgetItem type")
