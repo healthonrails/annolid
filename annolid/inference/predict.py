@@ -24,6 +24,10 @@ from annolid.data import videos
 
 
 class Segmentor():
+    """
+    Class for training and inferencing Mask-RCNN based models.
+    """
+
     def __init__(self,
                  dataset_dir=None,
                  model_pth_path=None,
@@ -296,10 +300,6 @@ class Segmentor():
                         out_dict = {}
                         continue
 
-                    # if not self.subject_overlap_with_left_object():
-                    #     out_dict = {}
-                    #     continue
-
                 elif out_dict['instance_name'] == self.right_interact_name:
                     self._save_pred_history(out_dict,
                                             self.right_interact_name,
@@ -311,10 +311,6 @@ class Segmentor():
                     if not self._overlap_with_right_object(out_dict):
                         out_dict = {}
                         continue
-
-                    # if not self.subject_overlap_with_right_object():
-                    #     out_dict = {}
-                    #     continue
 
                 results.append(out_dict)
             out_dict = {}
@@ -384,6 +380,7 @@ class Segmentor():
             print(f"Done. Please check you results in folder: {out_img_dir}")
             return out_img_dir
         else:
+            print(f"Done!")
             return tracking_results_dir
 
     def extract_mask_roi_features(self, frame):
