@@ -1,8 +1,7 @@
 import pandas as pd
 import os
 from annolid.annotation.keypoints import save_labels
-from annolid.annotation.masks import mask_area, mask_to_polygons
-from labelme import label_file
+from annolid.annotation.masks import mask_to_polygons
 from labelme.shape import Shape
 from pathlib import Path
 import cv2
@@ -61,6 +60,7 @@ def pred_dict_to_labelme(pred_row,
                 all_points = np.array(
                     list(zip(polys[0::2], polys[1::2])))
                 for x, y in all_points:
+                    # do not add 0,0 to the list
                     if x >= 1 and y >= 1:
                         shape.addPoint((x, y))
                 label_list.append(shape)
@@ -83,7 +83,8 @@ def pred_dict_to_labelme(pred_row,
                       )
         cx = round((x1 + x2) / 2, 2)
         cy = round((y1 + y2) / 2, 2)
-        if cx>= 1 and cy >=1:
+        # not adding points like (0,0) i.e. the top left corner
+        if cx >= 1 and cy >= 1:
             shape.addPoint((cx, cy))
             label_list.append(shape)
 
