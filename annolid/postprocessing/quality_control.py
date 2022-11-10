@@ -18,7 +18,7 @@ def pred_dict_to_labelme(pred_row,
                          keypoint_area_threshold=512,
                          score_threshold=0.5
                          ):
-    """[summary]
+    """Converted predict instance to labelme json format.
 
     Args:
         pred_row ([list[dict]]): [List of predict dicts]
@@ -27,7 +27,7 @@ def pred_dict_to_labelme(pred_row,
         Defaults to 512.
 
     Returns:
-        [type]: [description]
+        [List]: [A list of labeme shapes]
     """
     label_list = []
     try:
@@ -61,7 +61,8 @@ def pred_dict_to_labelme(pred_row,
                 all_points = np.array(
                     list(zip(polys[0::2], polys[1::2])))
                 for x, y in all_points:
-                    shape.addPoint((x, y))
+                    if x >= 1 and y >= 1:
+                        shape.addPoint((x, y))
                 label_list.append(shape)
             except IndexError:
                 pass
@@ -72,8 +73,9 @@ def pred_dict_to_labelme(pred_row,
                           )
             cx = round((x1 + x2) / 2, 2)
             cy = round((y1 + y2) / 2, 2)
-            shape.addPoint((cx, cy))
-            label_list.append(shape)
+            if cx >= 1 and cy >= 1:
+                shape.addPoint((cx, cy))
+                label_list.append(shape)
     if segmentation is None:
         shape = Shape(label=instance_name,
                       shape_type='point',
@@ -81,8 +83,9 @@ def pred_dict_to_labelme(pred_row,
                       )
         cx = round((x1 + x2) / 2, 2)
         cy = round((y1 + y2) / 2, 2)
-        shape.addPoint((cx, cy))
-        label_list.append(shape)
+        if cx>= 1 and cy >=1:
+            shape.addPoint((cx, cy))
+            label_list.append(shape)
 
     return label_list
 
