@@ -255,7 +255,6 @@ class Segmentor():
 
         if num_instance != len(rles):
             num_instance = len(rles)
-            print(f"{num_instance} filtered instances ")
         for k in range(num_instance):
             box = boxes[k]
             out_dict['frame_number'] = frame_number
@@ -328,7 +327,7 @@ class Segmentor():
     def on_video(self,
                  video_path,
                  skip_frames=1,
-                 on_keyframes=True
+                 on_keyframes=False
                  ):
         if not Path(video_path).exists():
             return
