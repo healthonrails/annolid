@@ -996,9 +996,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1369,17 +1369,14 @@ class AnnolidWindow(MainWindow):
         trs = TracksResults(video_file, tracking_results)
         label_json_gen = trs.to_labelme_json(str(out_dir),
                                              skip_frames=skip_num_frames)
-        try:
-            if label_json_gen is not None:
-                pwj = ProgressingWindow(label_json_gen)
-                if pwj.exec_():
-                    trs._is_running = False
-                    pwj.running_submitted.emit('stopped')
-                    pwj.runner_thread.terminate()
-                    pwj.runner_thread.quit()
-        except Exception:
-            pass
-        finally:
+
+        if label_json_gen is not None:
+            i = 0
+            for _ in label_json_gen:
+                if i % 1000 == 0:
+                    print(i, _)
+                i += 1
+            print("Done!")
             self.importDirImages(str(out_dir))
 
     def glitter2(self):
