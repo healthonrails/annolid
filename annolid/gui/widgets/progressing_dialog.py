@@ -2,7 +2,6 @@ import sys
 import time
 from qtpy import QtWidgets as qtw
 from qtpy import QtCore as qtc
-from qtpy import QtGui as qtg
 
 
 class Runner(qtc.QObject):
@@ -80,3 +79,5 @@ class ProgressingWindow(qtw.QDialog):
                              )
         self.results.setItem(row, 1,
                              qtw.QTableWidgetItem(str(content)))
+        if self.results.rowCount() >= 100:
+            self.clear_running()

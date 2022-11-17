@@ -1377,8 +1377,6 @@ class AnnolidWindow(MainWindow):
                     pwj.running_submitted.emit('stopped')
                     pwj.runner_thread.terminate()
                     pwj.runner_thread.quit()
-                    pwj.runner_thread.wait()
-
         except Exception:
             pass
         finally:
