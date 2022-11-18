@@ -1369,14 +1369,18 @@ class AnnolidWindow(MainWindow):
         trs = TracksResults(video_file, tracking_results)
         label_json_gen = trs.to_labelme_json(str(out_dir),
                                              skip_frames=skip_num_frames)
-
-        if label_json_gen is not None:
-            i = 0
-            for _ in label_json_gen:
-                if i % 1000 == 0:
-                    print(i, _)
-                i += 1
-            print("Done!")
+        
+        try:
+            if label_json_gen is not None:
+                pwj = ProgressingWindow(label_json_gen)
+                if pwj.exec_():
+                    trs._is_running = False
+                    pwj.running_submitted.emit('stopped')
+                    pwj.runner_thread.terminate()
+                    pwj.runner_thread.quit()
+        except Exception:
+            pass
+        finally:
             self.importDirImages(str(out_dir))
 
     def glitter2(self):
