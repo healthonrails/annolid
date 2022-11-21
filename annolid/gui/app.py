@@ -526,6 +526,44 @@ class AnnolidWindow(MainWindow):
         shape.select_fill_color = QtGui.QColor(r, g, b, 155)
         return r, g, b
 
+    def addLabel(self, shape):
+        if shape.group_id is None:
+            text = shape.label
+        else:
+            text = "{} ({})".format(shape.label, shape.group_id)
+        shape_points_hash = hash(
+            str(sorted(shape.points, key=lambda point: point.x())))
+        self.shape_hash_ids[shape_points_hash] = self.shape_hash_ids.get(
+            shape_points_hash, 0) + 1
+        if self.shape_hash_ids[shape_points_hash] <= 1:
+            self.label_stats[text] = self.label_stats.get(text, 0) + 1
+        label_list_item = LabelListWidgetItem(text, shape)
+        self.labelList.addItem(label_list_item)
+        item = self.uniqLabelList.findItemByLabel(shape.label)
+        if item is None:
+            item = self.uniqLabelList.createItemFromLabel(
+                shape.label
+            )
+            self.uniqLabelList.addItem(item)
+            rgb = self._get_rgb_by_label(shape.label)
+            self.uniqLabelList.setItemLabel(
+                item, f"{shape.label} [{self.label_stats.get(text,0)} instance]", rgb)
+        else:
+            rgb = self._get_rgb_by_label(shape.label)
+            self.uniqLabelList.setItemLabel(
+                item, f"{shape.label} [{self.label_stats.get(text,0)} instances]", rgb)
+
+        self.labelDialog.addLabelHistory(shape.label)
+        for action in self.actions.onShapesPresent:
+            action.setEnabled(True)
+
+        r, g, b = self._update_shape_color(shape)
+        label_list_item.setText(
+            '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
+                html.escape(text), r, g, b
+            )
+        )
+
     def editLabel(self, item=None):
         if item and not isinstance(item, LabelListWidgetItem):
             raise TypeError("item must be LabelListWidgetItem type")
@@ -1369,7 +1407,7 @@ class AnnolidWindow(MainWindow):
         trs = TracksResults(video_file, tracking_results)
         label_json_gen = trs.to_labelme_json(str(out_dir),
                                              skip_frames=skip_num_frames)
-        
+
         try:
             if label_json_gen is not None:
                 pwj = ProgressingWindow(label_json_gen)
