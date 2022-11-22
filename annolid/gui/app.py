@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import os.path as osp
 import time
 import html
@@ -22,6 +23,7 @@ import PIL
 from PIL import ImageQt
 import requests
 import subprocess
+from labelme.shape import Shape
 from labelme.app import MainWindow
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
@@ -1026,6 +1028,7 @@ class AnnolidWindow(MainWindow):
             cur_video_folder = Path(video_filename).parent
             _tracking_results = cur_video_folder.glob('*.csv')
             _tracking_results = list(_tracking_results)
+            self.prev_shapes_list = []
             if len(_tracking_results) >= 1:
                 # go over all the tracking csv files
                 # use the first matched file with video name
@@ -1036,7 +1039,7 @@ class AnnolidWindow(MainWindow):
                     if ('tracking' in str(tr) and
                             _video_name in str(tr)
                             and '_nix' not in str(tr)
-                            ):
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1160,6 +1163,8 @@ class AnnolidWindow(MainWindow):
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         self.loadPredictShapes(frame_number, filename)
+        for i in range(len(self.prev_shapes_list)):
+            self.loadShapes(self.prev_shapes_list[i], replace=False)
         return True
 
     def clean_up(self):
@@ -1182,6 +1187,43 @@ class AnnolidWindow(MainWindow):
                 self.seg_pred_thread.wait()
             except RuntimeError:
                 print("Bye!")
+
+    def loadLabels(self, shapes):
+        s = []
+        for shape in shapes:
+            label = shape["label"]
+            points = shape["points"]
+            shape_type = shape["shape_type"]
+            flags = shape["flags"]
+            group_id = shape["group_id"]
+            other_data = shape["other_data"]
+
+            if not points:
+                # skip point-empty shape
+                continue
+
+            shape = Shape(
+                label=label,
+                shape_type=shape_type,
+                group_id=group_id,
+            )
+            for x, y in points:
+                shape.addPoint(QtCore.QPointF(x, y))
+            shape.close()
+
+            default_flags = {}
+            if self._config["label_flags"]:
+                for pattern, keys in self._config["label_flags"].items():
+                    if re.match(pattern, label):
+                        for key in keys:
+                            default_flags[key] = False
+            shape.flags = default_flags
+            shape.flags.update(flags)
+            shape.other_data = other_data
+
+            s.append(shape)
+        self.loadShapes(s)
+        return s
 
     def loadShapes(self, shapes, replace=True):
         self._noSelectionSlot = True
@@ -1232,7 +1274,10 @@ class AnnolidWindow(MainWindow):
             try:
                 self.labelFile = LabelFile(label_json_file)
                 if self.labelFile:
-                    self.loadLabels(self.labelFile.shapes)
+                    shapes = self.loadLabels(self.labelFile.shapes)
+                    if len(self.prev_shapes_list) > 5:
+                        self.prev_shapes_list.pop(0)
+                    self.prev_shapes_list.append(shapes)
             except Exception:
                 print(f'Count not load label json file {label_json_file}')
 
