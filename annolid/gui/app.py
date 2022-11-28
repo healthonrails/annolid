@@ -1025,10 +1025,10 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.setEnabled(True)
 
         if video_filename:
+            import collections
             cur_video_folder = Path(video_filename).parent
             _tracking_results = cur_video_folder.glob('*.csv')
             _tracking_results = list(_tracking_results)
-            self.prev_shapes_list = []
             if len(_tracking_results) >= 1:
                 # go over all the tracking csv files
                 # use the first matched file with video name
@@ -1037,9 +1037,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
-                        ):
+                                _video_name in str(tr)
+                                and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1163,8 +1163,6 @@ class AnnolidWindow(MainWindow):
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         self.loadPredictShapes(frame_number, filename)
-        for i in range(len(self.prev_shapes_list)):
-            self.loadShapes(self.prev_shapes_list[i], replace=False)
         return True
 
     def clean_up(self):
@@ -1220,8 +1218,8 @@ class AnnolidWindow(MainWindow):
             shape.flags = default_flags
             shape.flags.update(flags)
             shape.other_data = other_data
-
             s.append(shape)
+
         self.loadShapes(s)
         return s
 
@@ -1275,9 +1273,6 @@ class AnnolidWindow(MainWindow):
                 self.labelFile = LabelFile(label_json_file)
                 if self.labelFile:
                     shapes = self.loadLabels(self.labelFile.shapes)
-                    if len(self.prev_shapes_list) > 5:
-                        self.prev_shapes_list.pop(0)
-                    self.prev_shapes_list.append(shapes)
             except Exception:
                 print(f'Count not load label json file {label_json_file}')
 
