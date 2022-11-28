@@ -1025,7 +1025,6 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.setEnabled(True)
 
         if video_filename:
-            import collections
             cur_video_folder = Path(video_filename).parent
             _tracking_results = cur_video_folder.glob('*.csv')
             _tracking_results = list(_tracking_results)
