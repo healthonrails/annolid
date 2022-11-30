@@ -228,6 +228,19 @@ class TracksResults():
                        (self.df.frame_number < frame_number)].sort_values(by='frame_number',
                                                                           ascending=False).head(1)
 
+    def get_missing_instances_names(self,
+                                    frame_number,
+                                    expected_instance_names=None):
+        """Find the missing instance names in the current frame not in the expected list
+        Args:
+            frame_number (int): current video frame number
+            expected_instance_names (list): a list of expected instances e.g.[mouse_1,mouse_2]
+        """
+        instance_names = self.df[self.df.frame_number ==
+                                 frame_number].instance_name
+        unique_names_in_current_frame = set(instance_names.to_list())
+        return set(expected_instance_names) - unique_names_in_current_frame
+
     def array_to_image_data(self, img_arr):
         img_pil = PIL.Image.fromarray(img_arr)
         _img_data = img_pil_to_data(img_pil)
