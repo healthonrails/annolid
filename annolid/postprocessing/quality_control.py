@@ -214,19 +214,45 @@ class TracksResults():
 
     def find_last_show_position(self,
                                 instance_name='Female_52',
-                                frame_number=0):
+                                frame_number=0,
+                                frames_backward=30
+                                ):
         """Find the last detection location and mask info the given instance and frame number
 
         Args:
             instance_name (str, optional): Instance name. Defaults to 'Female_52'.
             frame_number (int, optional): frame number. Defaults to 0.
+            frames_backword (int, optional): number of frames back. Defaults to 30.
 
         Returns:
             pd.DataFrame: dataframe row
         """
         return self.df[(self.df.instance_name == instance_name) &
-                       (self.df.frame_number < frame_number)].sort_values(by='frame_number',
-                                                                          ascending=False).head(1)
+                       (self.df.frame_number < frame_number) &
+                       (self.df.frame_number > frame_number - frames_backward)
+                       ].sort_values(by='frame_number',
+                                     ascending=False).head(1)
+
+    def find_future_show_position(self,
+                                  instance_name='Female_52',
+                                  frame_number=0,
+                                  frames_forward=30
+                                  ):
+        """Find the next detection location and mask info the given instance and frame number
+
+        Args:
+            instance_name (str, optional): Instance name. Defaults to 'Female_52'.
+            frame_number (int, optional): frame number. Defaults to 0.
+            frames_forword (int, optional): number of frames forward. Defaults to 30.
+
+        Returns:
+            pd.DataFrame: dataframe row
+        """
+        return self.df[(self.df.instance_name == instance_name) &
+                       (self.df.frame_number > frame_number) &
+                       (self.df.frame_number <= frame_number + frames_forward)
+                       ].sort_values(by='frame_number',
+                                     ascending=True).head(1)
 
     def get_missing_instances_names(self,
                                     frame_number,
