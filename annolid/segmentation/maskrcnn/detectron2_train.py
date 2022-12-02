@@ -97,7 +97,10 @@ class Segmentor():
         self.cfg.OUTPUT_DIR = self.out_put_dir
         os.makedirs(self.cfg.OUTPUT_DIR, exist_ok=True)
         self.trainer = DefaultTrainer(self.cfg)
-        self.trainer.resume_or_load(resume=True)
+        if model_pth_path is not None:
+            self.trainer.resume_or_load(resume=False)
+        else:
+            self.trainer.resume_or_load(resume=True)
 
     def train(self):
         self.trainer.train()
