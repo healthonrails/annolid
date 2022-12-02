@@ -21,6 +21,7 @@ class Segmentor():
                  overlap_threshold=0.7,
                  max_iterations=3000,
                  batch_size=8,
+                 model_pth_path=None,
                  model_config=None
                  ) -> None:
         self.dataset_dir = dataset_dir
@@ -75,8 +76,11 @@ class Segmentor():
         self.cfg.DATALOADER.NUM_WORKERS = 2  # @param
         self.cfg.DATALOADER.SAMPLER_TRAIN = "RepeatFactorTrainingSampler"
         self.cfg.DATALOADER.REPEAT_THRESHOLD = 0.3
-        self.cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
-            model_config)  # Let training initialize from model zoo
+        if model_pth_path is not None:
+            self.cfg.MODEL.WEIGHTS = model_pth_path
+        else:
+            self.cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
+                model_config)  # Let training initialize from model zoo
         self.cfg.SOLVER.IMS_PER_BATCH = self.batch_size  # @param
         self.cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
         self.logger.info(f"Max iterations {max_iterations}")

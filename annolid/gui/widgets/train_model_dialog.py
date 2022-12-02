@@ -14,6 +14,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.config_file = None
         self.out_dir = None
         self.max_iterations = 2000
+        self.trained_model = None
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -35,6 +36,18 @@ class TrainModelDialog(QtWidgets.QDialog):
         hboxLayOut.addWidget(self.inputFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
 
+        self.groupBoxModelFiles = QtWidgets.QGroupBox(
+            "Please select a trained pth model file (optional)")
+        self.inputModelFileLineEdit = QtWidgets.QLineEdit(self)
+        self.inputModelFileButton = QtWidgets.QPushButton('Open', self)
+        self.inputModelFileButton.clicked.connect(
+            self.onInputModelFileButtonClicked)
+        model_hboxLayOut = QtWidgets.QHBoxLayout()
+
+        model_hboxLayOut.addWidget(self.inputModelFileLineEdit)
+        model_hboxLayOut.addWidget(self.inputModelFileButton)
+        self.groupBoxModelFiles.setLayout(model_hboxLayOut)
+
         self.groupBoxOutDir = QtWidgets.QGroupBox(
             "Please choose output directory (Optional)")
         self.outFileDirEdit = QtWidgets.QLineEdit(self)
@@ -49,7 +62,6 @@ class TrainModelDialog(QtWidgets.QDialog):
         vbox.addWidget(self.groupBox)
         vbox.addWidget(self.label1)
         vbox.addWidget(self.slider)
-
         vbox.addWidget(self.groupBoxFiles)
 
         if self.algo == 'MaskRCNN':
@@ -59,6 +71,7 @@ class TrainModelDialog(QtWidgets.QDialog):
             vbox.addWidget(self.label2)
             vbox.addWidget(self.max_iter_slider)
 
+        vbox.addWidget(self.groupBoxModelFiles)
         vbox.addWidget(self.groupBoxOutDir)
         vbox.addWidget(self.buttonbox)
 
@@ -143,3 +156,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.max_iterations = self.max_iter_slider.value()
         self.label2.setText(
             f"You selected to {str(self.max_iterations)} iterations")
+
+    def onInputModelFileButtonClicked(self):
+        self.trained_model, fiter = QtWidgets.QFileDialog.getOpenFileName(
+            parent=self,
+            caption="Open trained model file",
+            directory=str(Path()),
+            filter='*'
+        )
+        if self.trained_model is not None:
+            self.inputModelFileLineEdit.setText(self.trained_model)

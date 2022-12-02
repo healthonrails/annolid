@@ -914,6 +914,7 @@ class AnnolidWindow(MainWindow):
         out_dir = None
         max_iterations = 2000
         batch_size = 8
+        model_path = None
 
         if dlg.exec_():
             config_file = dlg.config_file
@@ -921,6 +922,7 @@ class AnnolidWindow(MainWindow):
             algo = dlg.algo
             out_dir = dlg.out_dir
             max_iterations = dlg.max_iterations
+            model_path = dlg.trained_model
 
         if config_file is None:
             return
@@ -954,7 +956,8 @@ class AnnolidWindow(MainWindow):
             dataset_dir = str(Path(config_file).parent)
             segmentor = Segmentor(dataset_dir, out_dir,
                                   max_iterations=max_iterations,
-                                  batch_size=batch_size
+                                  batch_size=batch_size,
+                                  model_pth_path=model_path
                                   )
             out_runs_dir = segmentor.out_put_dir
             process = start_tensorboard(log_dir=out_runs_dir)
