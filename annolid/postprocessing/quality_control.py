@@ -287,3 +287,31 @@ class TracksResults():
 
     def clean_up(self):
         self.cap.release()
+
+    def instance_center_distances(self, old_instances, cur_instances):
+        """calculate the center distance between instances in the previous and current frames.
+
+        Args:
+            old_instances (pd.DataFrame): instances in the previous frame
+            cur_instances (pd.DataFrame): instances in  the current frame
+
+        Returns:
+            dict: key: (prev frame_number, prev int(center_x), prev int(center_y),
+                        current frame_number, current int(center_x),curent int(center_y)
+                  val: (dist, old instance name, current instance name)
+        """
+        dists = {}
+        for cidx, ci in cur_instances.iterrows():
+            for oidx, oi in old_instances.iterrows():
+                if (ci['frame_number'] == oi['frame_number']
+                            and int(ci['cx']) == int(oi['cx'])
+                            and int(ci['cy']) == int(oi['cy'])
+                        ):
+                    continue
+                dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
+                               (ci['cy']-oi['cy']) ** 2)
+                key = (oi['frame_number'], int(oi['cx']), int(oi['cy']),
+                       ci['frame_number'], int(ci['cx']), int(ci['cy'])
+                       )
+                dists[key] = (dist, oi['instance_name'], ci['instance_name'])
+        return dists
