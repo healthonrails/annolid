@@ -843,8 +843,7 @@ class AnnolidWindow(MainWindow):
             if out_folder.exists():
                 QtWidgets.QMessageBox.about(self,
                                             f"You folder {str(out_folder)} is not empty.",
-                                            "Please backup your data and rename it. Then try again.")
-                return
+                                            "Please backup your data or rename it.")
 
             from annolid.inference.predict import Segmentor
             dataset_dir = str(Path(config_file).parent)
