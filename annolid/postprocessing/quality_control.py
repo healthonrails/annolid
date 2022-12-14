@@ -304,8 +304,8 @@ class TracksResults():
         for cidx, ci in cur_instances.iterrows():
             for oidx, oi in old_instances.iterrows():
                 if (ci['frame_number'] == oi['frame_number']
-                            and int(ci['cx']) == int(oi['cx'])
-                            and int(ci['cy']) == int(oi['cy'])
+                        and int(ci['cx']) == int(oi['cx'])
+                        and int(ci['cy']) == int(oi['cy'])
                         ):
                     continue
                 dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
@@ -315,3 +315,22 @@ class TracksResults():
                        )
                 dists[key] = (dist, oi['instance_name'], ci['instance_name'])
         return dists
+
+    def get_missing_instance_frames(self,
+                                    instance_name='mouse_1'):
+        """Get the frame numbers that do not have a prediction for instance with the 
+        provided instance name
+
+        Args:
+            instance_name (str, optional): instance name. Defaults to 'mouse_1'.
+
+        Returns:
+            set: frame numbers
+        """
+
+        _df = self.df[self.df.instance_name == instance_name]
+        max_frame_number = max(_df.frame_numbers)
+        all_frames = set(range(0, max_frame_number+1))
+        frames_with_preds = set(_df.frame_numbers)
+        del _df
+        return all_frames - frames_with_preds
