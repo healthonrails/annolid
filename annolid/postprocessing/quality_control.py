@@ -15,7 +15,7 @@ from labelme.utils.image import img_pil_to_data
 
 def pred_dict_to_labelme(pred_row,
                          keypoint_area_threshold=512,
-                         score_threshold=0.5
+                         score_threshold=0.01
                          ):
     """Converted predict instance to labelme json format.
 
@@ -24,6 +24,7 @@ def pred_dict_to_labelme(pred_row,
         keypoint_area_threshold (int, optional): 
         [area less than the threshold will be treated as keypoints ]. 
         Defaults to 512.
+        score_threshold (float): class score threshold, default 0.01
 
     Returns:
         [List]: [A list of labeme shapes]
