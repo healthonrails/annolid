@@ -307,7 +307,7 @@ class TracksResults():
                 if (ci['frame_number'] == oi['frame_number']
                         and int(ci['cx']) == int(oi['cx'])
                         and int(ci['cy']) == int(oi['cy'])
-                        ):
+                    ):
                     continue
                 dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
                                (ci['cy']-oi['cy']) ** 2)
@@ -335,3 +335,28 @@ class TracksResults():
         frames_with_preds = set(_df.frame_number)
         del _df
         return all_frames - frames_with_preds
+
+    def fill_missing_instances(self, instance_name='mouse_2'):
+        """Fill the given missing instance with the nearest exsiting predicitons
+
+        Args:
+            instance_name (str, optional): predicted instance name. Defaults to 'mouse_2'.
+
+        Returns:
+            pd.Dataframe: dataframe with filled instances
+        """
+        fill_rows = []
+        missing_frames = list(self.get_missing_instance_frames(
+            instance_name=instance_name))
+        for frame_number in sorted(missing_frames):
+            fp = self.find_future_show_position(instance_name, frame_number)
+            lp = self.find_last_show_position(instance_name, frame_number)
+            if frame_number - lp.frame_number.values[0] > fp.frame_number.values[0] - frame_number:
+                fp.frame_number = frame_number
+                fill_rows.append(fp)
+            else:
+                lp.frame_number = frame_number
+                fill_rows.append(lp)
+        self.df = self.df.append(fill_rows, ignore_index=True)
+        del fill_rows
+        return self.df
