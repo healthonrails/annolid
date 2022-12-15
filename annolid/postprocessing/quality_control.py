@@ -329,8 +329,8 @@ class TracksResults():
         """
 
         _df = self.df[self.df.instance_name == instance_name]
-        max_frame_number = max(_df.frame_numbers)
+        max_frame_number = max(_df.frame_number)
         all_frames = set(range(0, max_frame_number+1))
-        frames_with_preds = set(_df.frame_numbers)
+        frames_with_preds = set(_df.frame_number)
         del _df
         return all_frames - frames_with_preds
