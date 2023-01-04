@@ -127,3 +127,16 @@ Click **Edit** -> **Keep Previous Annotation**
 `D` : Next Image
 `A` : Prev Image
 
+
+#### Here are some additional examples of labelling using different shapes:
+
+Labelling a person in an image: Use a polygon to outline the person's body.
+Labelling a car in an image: Use a polygon to outline the car.
+Labelling a road in an image: Use a polygon to outline the road.
+Labelling a pedestrian crossing in an image: Use a polygon to outline the pedestrian crossing.
+Pitfalls to avoid when labelling:
+
+Avoid using too few points to define a polygon. For example, using only two points to define a polygon will result in an invalid shape.
+Avoid using too many points to define a polygon. This can make the label more difficult to understand and can also increase the file size of the labelled image.
+Be careful when creating a rectangle label. Make sure to click and drag the mouse to create the rectangle, rather than just clicking to create individual points.
+It's also important to ensure that the labels are accurate and consistent. For example, if you are labelling objects in an image, make sure to use the same label type (e.g., polygon) for all objects and to label all relevant parts of the object (e.g., the entire body of a person, rather than just their head).
