@@ -47,6 +47,7 @@
 <li class="toctree-l1"><a class="reference internal" href="extract_frames.html#select-frames-randomly-by-reservoir-sampling">Select frames randomly by reservoir sampling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="extract_frames.html#extract-all-the-key-frames-from-a-video-used-by-the-compression-methods">Extract all the key frames from a video used by the compression methods</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#output-csv-format">Output CSV format</a></li>
 <li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
 <li class="toctree-l1"><a class="reference internal" href="faqs.html">Threshold based object segmenation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-wmv-format-to-mp4-format-using-ffmpeg">Convert WMV format to mp4 format using ffmpeg</a></li>
@@ -99,6 +100,20 @@
 Here is an example of predicted polygon annotions.</p>
 <p><img alt="_images/predicted_polygons.png" src="_images/predicted_polygons.png" />
 The GPU workstation will run inference for all the frames in the provided video and will save the predicted results into a CSV file.</p>
+</div>
+<div class="section" id="output-csv-format">
+<h1>Output CSV format<a class="headerlink" href="#output-csv-format" title="Permalink to this headline">¶</a></h1>
+<p>Here are the columns of the Annolid CSV output format:
+frame_number: int, 0 based numbers for frames e.g. 10 the 11th frame
+x1: float, the top left x value of the instance bounding box
+y1: float, the top left y value of the instance bounding box
+x2: float, the bottom right x value of the instance bounding box
+y2: float, the bottom right y value of the instance bounding box
+instance_name: string, the unique name of the instances or the class name
+class_score: float, the confidence score between 0 to 1 for the class or instance name
+segmentation: run length encoding of the instance binary mask
+cx: float, optional, the center x value of the instance bounding box
+cy: float, optional, the center y value of the instance bounding box</p>
 </div>
 
 
