@@ -20,16 +20,27 @@ Here is an example of predicted polygon annotions.
 ![](../imgs/predicted_polygons.png)
 The GPU workstation will run inference for all the frames in the provided video and will save the predicted results into a CSV file.
 
-# Output CSV format 
+# Output CSV format
+
 Here are the columns of the Annolid CSV output format: 
+
 frame_number: int, 0 based numbers for frames e.g. 10 the 11th frame
+
 x1: float, the top left x value of the instance bounding box
+
 y1: float, the top left y value of the instance bounding box
+
 x2: float, the bottom right x value of the instance bounding box
+
 y2: float, the bottom right y value of the instance bounding box
+
 instance_name: string, the unique name of the instances or the class name
+
 class_score: float, the confidence score between 0 to 1 for the class or instance name
+
 segmentation: run length encoding of the instance binary mask
+
 cx: float, optional, the center x value of the instance bounding box
+
 cy: float, optional, the center y value of the instance bounding box
 
