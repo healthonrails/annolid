@@ -146,9 +146,7 @@ class Segmentor():
 
         if out_dict['instance_name'] == instance_name:
             if instance_queue.full():
-                instance_high_score = instance_queue.get()
                 instance_queue.get()
-                instance_queue.put(instance_high_score)
             else:
                 instance_queue.put(
                     (1-out_dict['class_score'], out_dict))
