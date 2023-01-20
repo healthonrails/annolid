@@ -146,7 +146,11 @@ class Segmentor():
 
         if out_dict['instance_name'] == instance_name:
             if instance_queue.full():
-                instance_queue.get()
+                try:
+                    instance_queue.get()
+                except TypeError:
+                    print(
+                        "Comparison between instances of 'dict' and 'dict' is not supported.")
             else:
                 instance_queue.put(
                     (1-out_dict['class_score'], out_dict))
