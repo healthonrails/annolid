@@ -29,7 +29,7 @@ def tracks2nix(video_file=None,
                pretrained_model=None,
                subject_names=None,
                behavior_names=None,
-               overlap_threshold=0.1
+               overlap_threshold=0.00001
                ):
     """
     Args:
@@ -454,6 +454,8 @@ def tracks2nix(video_file=None,
                         [cx, cy_glitter],
                         min(int((x2-x1)/2), int(glitter_y2-glitter_y1))
                     ]
+                if _class == 'Center':
+                    continue
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
                             score >= score_threshold
