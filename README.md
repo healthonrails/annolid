@@ -117,7 +117,7 @@ label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_fema
 * For autolabeling, you can label 20 frames and train a model. Then you can use the trained model to predict on the video and add the corrected predictions to the training set to train a better model. Repeat the process until the model is matching human performance.
   ![Auto-labeling](docs/imgs/human_in_the_loop.png)
 
-
+* Write labeling guidelines by starting with this [template](https://docs.google.com/document/d/1fjgRSni7PNzMCSKw7NqVfGAp29phcf3NzrAojUhpVUY/edit#).
 ## Tracking and re-identification
 
 * To link instances across frames, we treat each instance as its own class across frames.
