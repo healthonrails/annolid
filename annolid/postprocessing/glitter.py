@@ -115,7 +115,7 @@ def tracks2nix(video_file=None,
 
     def animal_in_zone(animal_mask,
                        zone_mask,
-                       threshold=0.1
+                       threshold
                        ):
         if animal_mask is not None and zone_mask is not None:
             overlap = mask_util.iou([animal_mask], [zone_mask], [
