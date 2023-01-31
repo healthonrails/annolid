@@ -94,13 +94,47 @@
 <span id="annolid-annotation-coco2yolo-module"></span><h2>annolid.annotation.coco2yolo module<a class="headerlink" href="#module-annolid.annotation.coco2yolo" title="Permalink to this headline">¶</a></h2>
 <dl class="function">
 <dt id="annolid.annotation.coco2yolo.create_dataset">
-<code class="sig-prename descclassname">annolid.annotation.coco2yolo.</code><code class="sig-name descname">create_dataset</code><span class="sig-paren">(</span><em class="sig-param">json_file='annotation.json'</em>, <em class="sig-param">results_dir='yolov5_dataset'</em>, <em class="sig-param">dataset_type='train'</em>, <em class="sig-param">class_id=None</em>, <em class="sig-param">is_segmentation=True</em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/annolid/annotation/coco2yolo.html#create_dataset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#annolid.annotation.coco2yolo.create_dataset" title="Permalink to this definition">¶</a></dt>
-<dd></dd></dl>
+<code class="sig-prename descclassname">annolid.annotation.coco2yolo.</code><code class="sig-name descname">create_dataset</code><span class="sig-paren">(</span><em class="sig-param">json_file='annotation.json'</em>, <em class="sig-param">results_dir='yolo_dataset'</em>, <em class="sig-param">dataset_type='train'</em>, <em class="sig-param">class_id=None</em>, <em class="sig-param">is_segmentation=True</em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/annolid/annotation/coco2yolo.html#create_dataset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#annolid.annotation.coco2yolo.create_dataset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Convert COCO format dataset to YOLOV format</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>json_file</strong> (<em>str</em><em>, </em><em>optional</em>) – file path for annotation.json. Defaults to ‘annotation.json’.</p></li>
+<li><p><strong>results_dir</strong> (<em>str</em><em>, </em><em>optional</em>) – result directory. Defaults to ‘yolov5_dataset’.</p></li>
+<li><p><strong>dataset_type</strong> (<em>str</em><em>, </em><em>optional</em>) – train or val or test. Defaults to ‘train’.</p></li>
+<li><p><strong>class_id</strong> (<em>int</em><em>, </em><em>optional</em>) – class id. Defaults to None.</p></li>
+<li><p><strong>is_segmentation</strong> (<em>bool</em><em>, </em><em>optional</em>) – segmentation labeling. Defaults to True.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns</dt>
+<dd class="field-even"><p>a list of labeled class names</p>
+</dd>
+<dt class="field-odd">Return type</dt>
+<dd class="field-odd"><p>list</p>
+</dd>
+</dl>
+</dd></dl>
 
 <dl class="function">
 <dt id="annolid.annotation.coco2yolo.xywh2cxcywh">
 <code class="sig-prename descclassname">annolid.annotation.coco2yolo.</code><code class="sig-name descname">xywh2cxcywh</code><span class="sig-paren">(</span><em class="sig-param">box</em>, <em class="sig-param">img_size</em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/annolid/annotation/coco2yolo.html#xywh2cxcywh"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#annolid.annotation.coco2yolo.xywh2cxcywh" title="Permalink to this definition">¶</a></dt>
-<dd></dd></dl>
+<dd><p>convert COCO bounding box format to YOLO format.
+The YOLO format bounding box values were normalized with width and height values</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>box</strong> (<em>list</em>) – COCO bounding box format (x_top_left, y_top_left, width, height)</p></li>
+<li><p><strong>img_size</strong> (<em>tuple</em>) – (img_width, img_height)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns</dt>
+<dd class="field-even"><p>normalized YOLO format bounding box (x_center,y_center, width, height)</p>
+</dd>
+<dt class="field-odd">Return type</dt>
+<dd class="field-odd"><p>tuple</p>
+</dd>
+</dl>
+</dd></dl>
 
 </div>
 <div class="section" id="annolid-annotation-labelme2coco-module">

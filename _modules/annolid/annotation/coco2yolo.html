@@ -93,6 +93,17 @@
 
 
 <div class="viewcode-block" id="xywh2cxcywh"><a class="viewcode-back" href="../../../_templates/annolid.annotation.html#annolid.annotation.coco2yolo.xywh2cxcywh">[docs]</a><span class="k">def</span> <span class="nf">xywh2cxcywh</span><span class="p">(</span><span class="n">box</span><span class="p">,</span> <span class="n">img_size</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;convert COCO bounding box format to YOLO format.</span>
+<span class="sd">    The YOLO format bounding box values were normalized with width and height values</span>
+
+
+<span class="sd">    Args:</span>
+<span class="sd">        box (list): COCO bounding box format (x_top_left, y_top_left, width, height)</span>
+<span class="sd">        img_size (tuple): (img_width, img_height)</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        tuple: normalized YOLO format bounding box (x_center,y_center, width, height)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">dw</span> <span class="o">=</span> <span class="mf">1.</span> <span class="o">/</span> <span class="n">img_size</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
     <span class="n">dh</span> <span class="o">=</span> <span class="mf">1.</span> <span class="o">/</span> <span class="n">img_size</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
 
@@ -110,11 +121,23 @@
 
 
 <div class="viewcode-block" id="create_dataset"><a class="viewcode-back" href="../../../_templates/annolid.annotation.html#annolid.annotation.coco2yolo.create_dataset">[docs]</a><span class="k">def</span> <span class="nf">create_dataset</span><span class="p">(</span><span class="n">json_file</span><span class="o">=</span><span class="s1">&#39;annotation.json&#39;</span><span class="p">,</span>
-                   <span class="n">results_dir</span><span class="o">=</span><span class="s1">&#39;yolov5_dataset&#39;</span><span class="p">,</span>
+                   <span class="n">results_dir</span><span class="o">=</span><span class="s1">&#39;yolo_dataset&#39;</span><span class="p">,</span>
                    <span class="n">dataset_type</span><span class="o">=</span><span class="s1">&#39;train&#39;</span><span class="p">,</span>
                    <span class="n">class_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
                    <span class="n">is_segmentation</span><span class="o">=</span><span class="kc">True</span>
                    <span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Convert COCO format dataset to YOLOV format</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        json_file (str, optional): file path for annotation.json. Defaults to &#39;annotation.json&#39;.</span>
+<span class="sd">        results_dir (str, optional):  result directory. Defaults to &#39;yolov5_dataset&#39;.</span>
+<span class="sd">        dataset_type (str, optional): train or val or test. Defaults to &#39;train&#39;.</span>
+<span class="sd">        class_id (int, optional): class id. Defaults to None.</span>
+<span class="sd">        is_segmentation (bool, optional): segmentation labeling. Defaults to True.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        list: a list of labeled class names</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">categories</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="n">images_path</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{results_dir}</span><span class="s2">/</span><span class="si">{dataset_type}</span><span class="s2">/images&quot;</span><span class="p">)</span>
     <span class="n">images_path</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
