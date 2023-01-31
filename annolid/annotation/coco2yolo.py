@@ -5,6 +5,17 @@ import shutil
 
 
 def xywh2cxcywh(box, img_size):
+    """convert COCO bounding box format to YOLO format.
+    The YOLO format bounding box values were normalized with width and height values
+
+
+    Args:
+        box (list): COCO bounding box format (x_top_left, y_top_left, width, height)
+        img_size (tuple): (img_width, img_height)
+
+    Returns:
+        tuple: normalized YOLO format bounding box (x_center,y_center, width, height)
+    """
     dw = 1. / img_size[0]
     dh = 1. / img_size[1]
 
@@ -22,11 +33,23 @@ def xywh2cxcywh(box, img_size):
 
 
 def create_dataset(json_file='annotation.json',
-                   results_dir='yolov5_dataset',
+                   results_dir='yolo_dataset',
                    dataset_type='train',
                    class_id=None,
                    is_segmentation=True
                    ):
+    """Convert COCO format dataset to YOLOV format
+
+    Args:
+        json_file (str, optional): file path for annotation.json. Defaults to 'annotation.json'.
+        results_dir (str, optional):  result directory. Defaults to 'yolov5_dataset'.
+        dataset_type (str, optional): train or val or test. Defaults to 'train'.
+        class_id (int, optional): class id. Defaults to None.
+        is_segmentation (bool, optional): segmentation labeling. Defaults to True.
+
+    Returns:
+        list: a list of labeled class names
+    """
     categories = []
     images_path = Path(f"{results_dir}/{dataset_type}/images")
     images_path.mkdir(parents=True, exist_ok=True)
