@@ -143,3 +143,30 @@ def get_shapes(points,
         if x > 0 and y > 0:
             shape.addPoint((int(y), int(x)))
     return shape
+
+
+def calc_pck(gt_keypoints, est_keypoints, threshold=0.3):
+    """The PCK (Percentage of Correct Keypoints) metric is a common evaluation metric 
+    used to assess the accuracy of pose estimation algorithms. 
+    It measures the percentage of keypoints (joints) whose projection error is 
+    less than a certain threshold (default 0.3). 
+    The projection error is the Euclidean distance between 
+    the ground truth keypoint location and the estimated keypoint location in the image plane.
+
+    Args:
+        gt_keypoints (ndarray): ground truth keypoints (num_keypoints, 2)
+        est_keypoints (ndarray): estimated keypoints 
+        threshold (float, optional): threshold. Defaults to 0.3.
+
+    Returns:
+        float: the PCK@threshold score
+    """
+    num_keypoints = gt_keypoints.shape[0]
+    pck = np.zeros(num_keypoints)
+    for i in range(num_keypoints):
+        gt_kp = gt_keypoints[i]
+        est_kp = est_keypoints[i]
+        error = np.linalg.norm(gt_kp - est_kp)
+        if error < threshold:
+            pck[i] = 1
+    return np.mean(pck)
