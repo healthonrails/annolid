@@ -37,6 +37,7 @@ A basic user guide with installation instructions and recent documentation can b
 Mouse behavior analysis with instance segmentation based deep learning networks
 
 ## Local Installation
+### First you need to install [anaconda](https://docs.anaconda.com/anaconda/install/index.html).
 create a conda env
 ```
 conda create -n annolid-env python=3.7
