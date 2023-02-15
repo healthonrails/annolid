@@ -139,6 +139,23 @@
 <span class="sd">        class_id (int, optional): class id. Defaults to None.</span>
 <span class="sd">        is_segmentation (bool, optional): segmentation labeling. Defaults to True.</span>
 
+<span class="sd">    For example the YOLOV8 format </span>
+<span class="sd">    train</span>
+<span class="sd">       images</span>
+<span class="sd">          1.jpg</span>
+<span class="sd">          2.jpg</span>
+<span class="sd">        labels</span>
+<span class="sd">            1.txt</span>
+<span class="sd">            2.txt </span>
+<span class="sd">    Inside the 1.txt, the first value is class id, rest of them are x, y pairs</span>
+<span class="sd">    0 0.6481018062499999 0.2623046875 0.6664123531249999 0.2623046875 0.6526794437500001 0.1952907984375</span>
+<span class="sd">      0.62596435625 0.18576388906250002 0.6037536625000001 0.189420571875 0.6072265625 0.21825086875 </span>
+<span class="sd">      0.6204650875 0.24717881875 0.6481018062499999 0.2623046875</span>
+
+<span class="sd">    How to use this with command line? </span>
+<span class="sd">    python annolid/main.py --coco2yolo /test_yolov_coco_dataset/train/annotations.json  \</span>
+<span class="sd">        --dataset_type train  --to test_yolov/</span>
+
 <span class="sd">    Returns:</span>
 <span class="sd">        list: a list of labeled class names</span>
 <span class="sd">    &quot;&quot;&quot;</span>
@@ -206,7 +223,8 @@
     <span class="c1"># dataset folder is in same dir as the yolov5 folder</span>
     <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">data_yaml</span><span class="p">,</span> <span class="s1">&#39;w&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">dy</span><span class="p">:</span>
         <span class="n">dy</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;train: {os.path.basename(results_dir)}/train/images</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
-        <span class="n">dy</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;val: {os.path.basename(results_dir)}/val/images</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">dy</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;valid: {os.path.basename(results_dir)}/valid/images</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">dy</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;test: {os.path.basename(results_dir)}/test/images</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="n">dy</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;nc: {len(names)}</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="n">dy</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;names: </span><span class="si">{names}</span><span class="s2">&quot;</span><span class="p">)</span>
 
