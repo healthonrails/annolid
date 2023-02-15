@@ -47,6 +47,23 @@ def create_dataset(json_file='annotation.json',
         class_id (int, optional): class id. Defaults to None.
         is_segmentation (bool, optional): segmentation labeling. Defaults to True.
 
+    For example the YOLOV8 format 
+    train
+       images
+          1.jpg
+          2.jpg
+        labels
+            1.txt
+            2.txt 
+    Inside the 1.txt, the first value is class id, rest of them are x, y pairs
+    0 0.6481018062499999 0.2623046875 0.6664123531249999 0.2623046875 0.6526794437500001 0.1952907984375
+      0.62596435625 0.18576388906250002 0.6037536625000001 0.189420571875 0.6072265625 0.21825086875 
+      0.6204650875 0.24717881875 0.6481018062499999 0.2623046875
+
+    How to use this with command line? 
+    python annolid/main.py --coco2yolo /test_yolov_coco_dataset/train/annotations.json  \
+        --dataset_type train  --to test_yolov/
+
     Returns:
         list: a list of labeled class names
     """
@@ -114,7 +131,8 @@ def create_dataset(json_file='annotation.json',
     # dataset folder is in same dir as the yolov5 folder
     with open(data_yaml, 'w') as dy:
         dy.write(f"train: {os.path.basename(results_dir)}/train/images\n")
-        dy.write(f"val: {os.path.basename(results_dir)}/val/images\n")
+        dy.write(f"valid: {os.path.basename(results_dir)}/valid/images\n")
+        dy.write(f"test: {os.path.basename(results_dir)}/test/images\n")
         dy.write(f"nc: {len(names)}\n")
         dy.write(f"names: {names}")
 
