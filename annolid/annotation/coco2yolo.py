@@ -36,7 +36,7 @@ def create_dataset(json_file='annotation.json',
                    results_dir='yolo_dataset',
                    dataset_type='train',
                    class_id=None,
-                   is_segmentation=True
+                   is_segmentation=None
                    ):
     """Convert COCO format dataset to YOLOV format
 
@@ -96,7 +96,7 @@ def create_dataset(json_file='annotation.json',
         with open(anno_txt_flie, 'w') as atf:
             for ann in data['annotations']:
                 if ann["image_id"] == img_id:
-                    if ann["segmentation"] and is_segmentation:
+                    if ann["segmentation"] and is_segmentation == 'seg':
                         points = []
                         i = 0
                         while i < len(ann['segmentation'][0])-1:
@@ -111,7 +111,7 @@ def create_dataset(json_file='annotation.json',
                         else:
                             atf.write(
                                 f"{ann['category_id']-1} {' '.join(points)}\n")
-                    elif not is_segmentation:
+                    elif is_segmentation == 'detect':
                         if ann['bbox']:
                             box = xywh2cxcywh(
                                 ann["bbox"], (img_width, img_height))

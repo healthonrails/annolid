@@ -83,6 +83,9 @@ def parse_args():
     arg_builder.add_argument('--tracks2glitter', type=str, default=None,
                              help="tracking results csv file."
                              )
+    arg_builder.add_argument('--seg_or_detect', type=str, default='seg',
+                             help="create segmentation dataset or detection dataset"
+                             )
 
     args = vars(arg_builder.parse_args())
     return args
@@ -113,7 +116,8 @@ def main():
     if args["coco2yolo"] is not None:
         names = coco2yolo.create_dataset(args['coco2yolo'],
                                          results_dir=args['to'],
-                                         dataset_type=args['dataset_type']
+                                         dataset_type=args['dataset_type'],
+                                         is_segmentation=args['seg_or_detect']
                                          )
         print(names)
         print("Done.")
