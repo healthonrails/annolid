@@ -20,6 +20,7 @@ dependencies:
   - git 
   - curl
   - pyqt
+  - qtpy
   - opencv
   - pyqtwebengine  
   - numpy>=1.18.2

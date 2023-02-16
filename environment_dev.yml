@@ -21,6 +21,7 @@ dependencies:
   - curl 
   - unzip
   - pyqt
+  - qtpy
   - opencv
   - pyqtwebengine 
   - conda-forge::bash
