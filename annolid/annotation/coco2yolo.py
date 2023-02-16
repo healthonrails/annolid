@@ -90,7 +90,8 @@ def create_dataset(json_file='annotation.json',
 
         file_name = file_name.replace("\\", "/")
         shutil.copy(img_file_path / file_name, images_path)
-        anno_txt_name = os.path.basename(file_name).split(".")[0] + ".txt"
+        anno_txt_name = os.path.splitext(
+            os.path.basename(file_name))[0] + ".txt"
         anno_txt_flie = labels_path / anno_txt_name
         with open(anno_txt_flie, 'w') as atf:
             for ann in data['annotations']:
@@ -98,7 +99,7 @@ def create_dataset(json_file='annotation.json',
                     if ann["segmentation"] and is_segmentation:
                         points = []
                         i = 0
-                        while i <= len(ann['segmentation'][0])/2:
+                        while i < len(ann['segmentation'][0])-1:
                             points.append(str(ann['segmentation']
                                               [0][i] / img_width))
                             points.append(str(ann['segmentation'][0]
@@ -106,19 +107,19 @@ def create_dataset(json_file='annotation.json',
                             i += 2
                         if class_id is not None:
                             atf.write(
-                                f"{class_id} {ann['category_id']} {' '.join(points)}\n")
+                                f"{class_id} {ann['category_id']-1} {' '.join(points)}\n")
                         else:
                             atf.write(
-                                f"{ann['category_id']} {' '.join(points)}\n")
+                                f"{ann['category_id']-1} {' '.join(points)}\n")
                     elif not is_segmentation:
                         if ann['bbox']:
                             box = xywh2cxcywh(
                                 ann["bbox"], (img_width, img_height))
                             if class_id is not None:
-                                atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"], box[0],
+                                atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"]-1, box[0],
                                                                    box[1], box[2], box[3]))
                             else:
-                                atf.write("%s %s %s %s %s\n" % (ann["category_id"], box[0],
+                                atf.write("%s %s %s %s %s\n" % (ann["category_id"]-1, box[0],
                                                                 box[1], box[2], box[3]))
 
     for c in data["categories"]:
@@ -130,9 +131,9 @@ def create_dataset(json_file='annotation.json',
     names = list(categories)
     # dataset folder is in same dir as the yolov5 folder
     with open(data_yaml, 'w') as dy:
-        dy.write(f"train: {os.path.basename(results_dir)}/train/images\n")
-        dy.write(f"val: {os.path.basename(results_dir)}/val/images\n")
-        dy.write(f"test: {os.path.basename(results_dir)}/test/images\n")
+        dy.write(f"train: ../train/images\n")
+        dy.write(f"val: ../val/images\n")
+        dy.write(f"test: ../test/images\n")
         dy.write(f"nc: {len(names)}\n")
         dy.write(f"names: {names}")
 
