@@ -107,7 +107,7 @@
 <li><p><strong>results_dir</strong> (<em>str</em><em>, </em><em>optional</em>) – result directory. Defaults to ‘yolov5_dataset’.</p></li>
 <li><p><strong>dataset_type</strong> (<em>str</em><em>, </em><em>optional</em>) – train or val or test. Defaults to ‘train’.</p></li>
 <li><p><strong>class_id</strong> (<em>int</em><em>, </em><em>optional</em>) – class id. Defaults to None.</p></li>
-<li><p><strong>is_segmentation</strong> (<em>bool</em><em>, </em><em>optional</em>) – segmentation labeling. Defaults to True.</p></li>
+<li><p><strong>is_segmentation</strong> (<em>bool</em><em>, </em><em>optional</em>) – segmentation or detection. Defaults to None.</p></li>
 </ul>
 </dd>
 </dl>
@@ -135,6 +135,8 @@ train</p>
 </div></blockquote>
 <p>How to use this with command line?
 python annolid/main.py –coco2yolo /test_yolov_coco_dataset/train/annotations.json          –dataset_type train  –to test_yolov/</p>
+<p>How to convert COCO format dataset to YOLOV8 detection bbox format?
+python annolid/main.py –coco2yolo ~/Downloads/Testframes_coco_dataset/train/annotations.json           –dataset_type train  –to ~/Downloads/test_mouse/ –seg_or_detect detect</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns</dt>
 <dd class="field-odd"><p>a list of labeled class names</p>

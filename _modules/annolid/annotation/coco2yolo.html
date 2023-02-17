@@ -137,7 +137,7 @@
 <span class="sd">        results_dir (str, optional):  result directory. Defaults to &#39;yolov5_dataset&#39;.</span>
 <span class="sd">        dataset_type (str, optional): train or val or test. Defaults to &#39;train&#39;.</span>
 <span class="sd">        class_id (int, optional): class id. Defaults to None.</span>
-<span class="sd">        is_segmentation (bool, optional): segmentation labeling. Defaults to True.</span>
+<span class="sd">        is_segmentation (bool, optional): segmentation or detection. Defaults to None.</span>
 
 <span class="sd">    For example the YOLOV8 format </span>
 <span class="sd">    train</span>
@@ -155,6 +155,10 @@
 <span class="sd">    How to use this with command line? </span>
 <span class="sd">    python annolid/main.py --coco2yolo /test_yolov_coco_dataset/train/annotations.json  \</span>
 <span class="sd">        --dataset_type train  --to test_yolov/</span>
+
+<span class="sd">    How to convert COCO format dataset to YOLOV8 detection bbox format?</span>
+<span class="sd">    python annolid/main.py --coco2yolo ~/Downloads/Test\ frames_coco_dataset/train/annotations.json \</span>
+<span class="sd">          --dataset_type train  --to ~/Downloads/test_mouse/ --seg_or_detect detect</span>
 
 <span class="sd">    Returns:</span>
 <span class="sd">        list: a list of labeled class names</span>
