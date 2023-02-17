@@ -45,7 +45,7 @@ def create_dataset(json_file='annotation.json',
         results_dir (str, optional):  result directory. Defaults to 'yolov5_dataset'.
         dataset_type (str, optional): train or val or test. Defaults to 'train'.
         class_id (int, optional): class id. Defaults to None.
-        is_segmentation (bool, optional): segmentation labeling. Defaults to True.
+        is_segmentation (bool, optional): segmentation or detection. Defaults to None.
 
     For example the YOLOV8 format 
     train
@@ -63,6 +63,10 @@ def create_dataset(json_file='annotation.json',
     How to use this with command line? 
     python annolid/main.py --coco2yolo /test_yolov_coco_dataset/train/annotations.json  \
         --dataset_type train  --to test_yolov/
+
+    How to convert COCO format dataset to YOLOV8 detection bbox format?
+    python annolid/main.py --coco2yolo ~/Downloads/Test\ frames_coco_dataset/train/annotations.json \
+          --dataset_type train  --to ~/Downloads/test_mouse/ --seg_or_detect detect
 
     Returns:
         list: a list of labeled class names
