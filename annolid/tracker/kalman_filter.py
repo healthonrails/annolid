@@ -1,9 +1,4 @@
-"""
-Modified from here: 
-https://github.com/nwojke/deep_sort/blob/master/deep_sort/kalman_filter.py
-https://github.com/ZQPei/deep_sort_pytorch/
-"""
-
+# vim: expandtab:ts=4:sw=4
 import numpy as np
 import scipy.linalg
 
@@ -29,11 +24,11 @@ class KalmanFilter(object):
     """
     A simple Kalman filter for tracking bounding boxes in image space.
     The 8-dimensional state space
-        x, y, a, h, vx, vy, va, vh
-    contains the bounding box center position (x, y), aspect ratio a, height h,
+        x, y, w, h, vx, vy, vw, vh
+    contains the bounding box center position (x, y), width w, height h,
     and their respective velocities.
     Object motion follows a constant velocity model. The bounding box location
-    (x, y, a, h) is taken as direct observation of the state space (linear
+    (x, y, w, h) is taken as direct observation of the state space (linear
     observation model).
     """
 
@@ -57,8 +52,8 @@ class KalmanFilter(object):
         Parameters
         ----------
         measurement : ndarray
-            Bounding box coordinates (x, y, a, h) with center position (x, y),
-            aspect ratio a, and height h.
+            Bounding box coordinates (x, y, w, h) with center position (x, y),
+            width w, and height h.
         Returns
         -------
         (ndarray, ndarray)
@@ -71,13 +66,13 @@ class KalmanFilter(object):
         mean = np.r_[mean_pos, mean_vel]
 
         std = [
+            2 * self._std_weight_position * measurement[2],
             2 * self._std_weight_position * measurement[3],
+            2 * self._std_weight_position * measurement[2],
             2 * self._std_weight_position * measurement[3],
-            1e-2,
-            2 * self._std_weight_position * measurement[3],
+            10 * self._std_weight_velocity * measurement[2],
             10 * self._std_weight_velocity * measurement[3],
-            10 * self._std_weight_velocity * measurement[3],
-            1e-5,
+            10 * self._std_weight_velocity * measurement[2],
             10 * self._std_weight_velocity * measurement[3]]
         covariance = np.diag(np.square(std))
         return mean, covariance
@@ -99,18 +94,18 @@ class KalmanFilter(object):
             state. Unobserved velocities are initialized to 0 mean.
         """
         std_pos = [
+            self._std_weight_position * mean[2],
             self._std_weight_position * mean[3],
-            self._std_weight_position * mean[3],
-            1e-2,
+            self._std_weight_position * mean[2],
             self._std_weight_position * mean[3]]
         std_vel = [
+            self._std_weight_velocity * mean[2],
             self._std_weight_velocity * mean[3],
-            self._std_weight_velocity * mean[3],
-            1e-5,
+            self._std_weight_velocity * mean[2],
             self._std_weight_velocity * mean[3]]
         motion_cov = np.diag(np.square(np.r_[std_pos, std_vel]))
 
-        mean = np.dot(self._motion_mat, mean)
+        mean = np.dot(mean, self._motion_mat.T)
         covariance = np.linalg.multi_dot((
             self._motion_mat, covariance, self._motion_mat.T)) + motion_cov
 
@@ -131,9 +126,9 @@ class KalmanFilter(object):
             estimate.
         """
         std = [
+            self._std_weight_position * mean[2],
             self._std_weight_position * mean[3],
-            self._std_weight_position * mean[3],
-            1e-1,
+            self._std_weight_position * mean[2],
             self._std_weight_position * mean[3]]
         innovation_cov = np.diag(np.square(std))
 
@@ -141,6 +136,45 @@ class KalmanFilter(object):
         covariance = np.linalg.multi_dot((
             self._update_mat, covariance, self._update_mat.T))
         return mean, covariance + innovation_cov
+
+    def multi_predict(self, mean, covariance):
+        """Run Kalman filter prediction step (Vectorized version).
+        Parameters
+        ----------
+        mean : ndarray
+            The Nx8 dimensional mean matrix of the object states at the previous
+            time step.
+        covariance : ndarray
+            The Nx8x8 dimensional covariance matrics of the object states at the
+            previous time step.
+        Returns
+        -------
+        (ndarray, ndarray)
+            Returns the mean vector and covariance matrix of the predicted
+            state. Unobserved velocities are initialized to 0 mean.
+        """
+        std_pos = [
+            self._std_weight_position * mean[:, 2],
+            self._std_weight_position * mean[:, 3],
+            self._std_weight_position * mean[:, 2],
+            self._std_weight_position * mean[:, 3]]
+        std_vel = [
+            self._std_weight_velocity * mean[:, 2],
+            self._std_weight_velocity * mean[:, 3],
+            self._std_weight_velocity * mean[:, 2],
+            self._std_weight_velocity * mean[:, 3]]
+        sqr = np.square(np.r_[std_pos, std_vel]).T
+
+        motion_cov = []
+        for i in range(len(mean)):
+            motion_cov.append(np.diag(sqr[i]))
+        motion_cov = np.asarray(motion_cov)
+
+        mean = np.dot(mean, self._motion_mat.T)
+        left = np.dot(self._motion_mat, covariance).transpose((1, 0, 2))
+        covariance = np.dot(left, self._motion_mat.T) + motion_cov
+
+        return mean, covariance
 
     def update(self, mean, covariance, measurement):
         """Run Kalman filter correction step.
@@ -151,8 +185,8 @@ class KalmanFilter(object):
         covariance : ndarray
             The state's covariance matrix (8x8 dimensional).
         measurement : ndarray
-            The 4 dimensional measurement vector (x, y, a, h), where (x, y)
-            is the center position, a the aspect ratio, and h the height of the
+            The 4 dimensional measurement vector (x, y, w, h), where (x, y)
+            is the center position, w the width, and h the height of the
             bounding box.
         Returns
         -------
@@ -174,7 +208,7 @@ class KalmanFilter(object):
         return new_mean, new_covariance
 
     def gating_distance(self, mean, covariance, measurements,
-                        only_position=False):
+                        only_position=False, metric='maha'):
         """Compute gating distance between state distribution and measurements.
         A suitable distance threshold can be obtained from `chi2inv95`. If
         `only_position` is False, the chi-square distribution has 4 degrees of
@@ -204,10 +238,15 @@ class KalmanFilter(object):
             mean, covariance = mean[:2], covariance[:2, :2]
             measurements = measurements[:, :2]
 
-        cholesky_factor = np.linalg.cholesky(covariance)
         d = measurements - mean
-        z = scipy.linalg.solve_triangular(
-            cholesky_factor, d.T, lower=True, check_finite=False,
-            overwrite_b=True)
-        squared_maha = np.sum(z * z, axis=0)
-        return squared_maha
+        if metric == 'gaussian':
+            return np.sum(d * d, axis=1)
+        elif metric == 'maha':
+            cholesky_factor = np.linalg.cholesky(covariance)
+            z = scipy.linalg.solve_triangular(
+                cholesky_factor, d.T, lower=True, check_finite=False,
+                overwrite_b=True)
+            squared_maha = np.sum(z * z, axis=0)
+            return squared_maha
+        else:
+            raise ValueError('invalid distance metric')
