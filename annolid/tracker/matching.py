@@ -2,7 +2,6 @@
 # https://github.com/NirAharon/BoT-SORT
 import numpy as np
 import scipy
-import lap
 from scipy.spatial.distance import cdist
 from annolid.tracker import kalman_filter
 
@@ -106,6 +105,8 @@ def linear_assignment(cost_matrix: np.ndarray, thresh: float) -> tuple:
             - unmatched_a (tuple): A tuple containing the indices of unmatched rows.
             - unmatched_b (tuple): A tuple containing the indices of unmatched columns.
     """
+    import lap
+
     if cost_matrix.size == 0:
         return np.empty((0, 2), dtype=int), tuple(range(cost_matrix.shape[0])), tuple(range(cost_matrix.shape[1]))
 
