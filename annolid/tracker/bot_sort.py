@@ -3,10 +3,10 @@
 import numpy as np
 from collections import deque
 
-from tracker import matching
-from tracker.gmc import GMC
-from tracker.basetrack import BaseTrack, TrackState
-from tracker.kalman_filter import KalmanFilter
+from annolid.tracker import matching
+from annolid.tracker.gmc import GMC
+from annolid.tracker.basetrack import BaseTrack, TrackState
+from annolid.tracker.kalman_filter import KalmanFilter
 
 
 class STrack(BaseTrack):
@@ -204,7 +204,18 @@ class STrack(BaseTrack):
 
 
 class BoTSORT(object):
-    def __init__(self, args, frame_rate=30):
+    def __init__(self,
+                 track_high_thresh: float = 0.45,
+                 track_low_thresh: float = 0.1,
+                 new_track_thresh: float = 0.6,
+                 track_buffer: int = 30,
+                 match_thresh: float = 0.3,
+                 proximity_thresh: float = 0.5,
+                 appearance_thresh: float = 0.25,
+                 cmc_method: str = 'sparseOptFlow',
+                 frame_rate=30,
+                 lambda_=0.985
+                 ):
 
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
@@ -212,27 +223,23 @@ class BoTSORT(object):
         BaseTrack.clear_count()
 
         self.frame_id = 0
-        self.args = args
+        self.lambda_ = lambda_
+        self.match_thres = match_thresh
 
-        self.track_high_thresh = args.track_high_thresh
-        self.track_low_thresh = args.track_low_thresh
-        self.new_track_thresh = args.new_track_thresh
+        self.track_high_thresh = track_high_thresh
+        self.track_low_thresh = track_low_thresh
+        self.new_track_thresh = new_track_thresh
 
-        self.buffer_size = int(frame_rate / 30.0 * args.track_buffer)
+        self.buffer_size = int(frame_rate / 30.0 * track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
 
         # ReID module
-        self.proximity_thresh = args.proximity_thresh
-        self.appearance_thresh = args.appearance_thresh
+        self.proximity_thresh = proximity_thresh
+        self.appearance_thresh = appearance_thresh
 
-        if args.with_reid:
-            from fast_reid.fast_reid_interfece import FastReIDInterface
-            self.encoder = FastReIDInterface(
-                args.fast_reid_config, args.fast_reid_weights, args.device)
-
-        self.gmc = GMC(method=args.cmc_method, verbose=[
-                       args.name, args.ablation])
+        self.gmc = GMC(method=cmc_method, verbose=[
+                       None, False])
 
     def update(self, output_results, img):
         self.frame_id += 1
@@ -258,7 +265,7 @@ class BoTSORT(object):
             classes = classes[lowest_inds]
 
             # Find high threshold detections
-            remain_inds = scores > self.args.track_high_thresh
+            remain_inds = scores > self.track_high_thresh
             dets = bboxes[remain_inds]
             scores_keep = scores[remain_inds]
             classes_keep = classes[remain_inds]
@@ -271,18 +278,10 @@ class BoTSORT(object):
             scores_keep = []
             classes_keep = []
 
-        '''Extract embeddings '''
-        if self.args.with_reid:
-            features_keep = self.encoder.inference(img, dets)
-
         if len(dets) > 0:
             '''Detections'''
-            if self.args.with_reid:
-                detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s, f) for
-                              (tlbr, s, f) in zip(dets, scores_keep, features_keep)]
-            else:
-                detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
-                              (tlbr, s) in zip(dets, scores_keep)]
+            detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
+                          (tlbr, s) in zip(dets, scores_keep)]
         else:
             detections = []
 
@@ -310,30 +309,10 @@ class BoTSORT(object):
         ious_dists = matching.iou_distance(strack_pool, detections)
         ious_dists_mask = (ious_dists > self.proximity_thresh)
 
-        if not self.args.mot20:
-            ious_dists = matching.fuse_score(ious_dists, detections)
-
-        if self.args.with_reid:
-            emb_dists = matching.embedding_distance(
-                strack_pool, detections) / 2.0
-            raw_emb_dists = emb_dists.copy()
-            emb_dists[emb_dists > self.appearance_thresh] = 1.0
-            emb_dists[ious_dists_mask] = 1.0
-            dists = np.minimum(ious_dists, emb_dists)
-
-            # Popular ReID method (JDE / FairMOT)
-            # raw_emb_dists = matching.embedding_distance(strack_pool, detections)
-            # dists = matching.fuse_motion(self.kalman_filter, raw_emb_dists, strack_pool, detections)
-            # emb_dists = dists
-
-            # IoU making ReID
-            # dists = matching.embedding_distance(strack_pool, detections)
-            # dists[ious_dists_mask] = 1.0
-        else:
-            dists = ious_dists
+        dists = ious_dists
 
         matches, u_track, u_detection = matching.linear_assignment(
-            dists, thresh=self.args.match_thresh)
+            dists, thresh=self.match_thresh)
 
         for itracked, idet in matches:
             track = strack_pool[itracked]
@@ -347,8 +326,8 @@ class BoTSORT(object):
 
         ''' Step 3: Second association, with low score detection boxes'''
         if len(scores):
-            inds_high = scores < self.args.track_high_thresh
-            inds_low = scores > self.args.track_low_thresh
+            inds_high = scores < self.track_high_thresh
+            inds_low = scores > self.track_low_thresh
             inds_second = np.logical_and(inds_low, inds_high)
             dets_second = bboxes[inds_second]
             scores_second = scores[inds_second]
@@ -391,18 +370,8 @@ class BoTSORT(object):
         detections = [detections[i] for i in u_detection]
         ious_dists = matching.iou_distance(unconfirmed, detections)
         ious_dists_mask = (ious_dists > self.proximity_thresh)
-        if not self.args.mot20:
-            ious_dists = matching.fuse_score(ious_dists, detections)
 
-        if self.args.with_reid:
-            emb_dists = matching.embedding_distance(
-                unconfirmed, detections) / 2.0
-            raw_emb_dists = emb_dists.copy()
-            emb_dists[emb_dists > self.appearance_thresh] = 1.0
-            emb_dists[ious_dists_mask] = 1.0
-            dists = np.minimum(ious_dists, emb_dists)
-        else:
-            dists = ious_dists
+        dists = ious_dists
 
         matches, u_unconfirmed, u_detection = matching.linear_assignment(
             dists, thresh=0.7)
