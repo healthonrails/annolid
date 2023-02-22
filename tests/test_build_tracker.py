@@ -1,5 +1,5 @@
 import unittest
-from annolid.tracker.build_tracker import build_tracker
+from annolid.tracker.build_BoTSORT import build_tracker
 from annolid.tracker.bot_sort import BoTSORT
 
 
