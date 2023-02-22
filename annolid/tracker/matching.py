@@ -4,8 +4,6 @@ import numpy as np
 import scipy
 import lap
 from scipy.spatial.distance import cdist
-
-from cython_bbox import bbox_overlaps as bbox_ious
 from annolid.tracker import kalman_filter
 
 
@@ -133,6 +131,7 @@ def ious(atlbrs, btlbrs):
     :param btlbrs: list[tlbr] | np.ndarray
     :return: ious np.ndarray
     """
+    from cython_bbox import bbox_overlaps as bbox_ious
     ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float)
     if ious.size == 0:
         return ious
