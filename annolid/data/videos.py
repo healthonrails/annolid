@@ -420,7 +420,7 @@ def track(video_file=None,
                 detect(opt, points=points)
                 strip_optimizer(opt.weights)
     else:
-        from annolid.tracker import build_tracker
+        from annolid.tracker.build_deepsort import build_tracker
         from annolid.detector import build_detector
         from annolid.utils.draw import draw_boxes
         if not (os.path.isfile(video_file)):
