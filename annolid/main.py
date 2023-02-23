@@ -64,6 +64,16 @@ def parse_args():
     arg_builder.add_argument('--labelme2coco', type=str, default=None,
                              help="input dir for labelme annotation e.g. ./extract_frames"
                              )
+
+    arg_builder.add_argument('--labelme2yolo', type=str, default=None,
+                             help="input dir for labelme json files . ./video_frmaes"
+                             )
+    arg_builder.add_argument('--val_size', type=float, nargs="?", default=None,
+                             help="The validation dataset size, e.g. 0.1"
+                             )
+    arg_builder.add_argument('--test_size', type=float, nargs="?", default=None,
+                             help="The test dataset size, e.g. 0.1"
+                             )
     arg_builder.add_argument('--keypoints2labelme', type=str, default=None,
                              help="input dir for keypoitns image dir e.g. ./mouse_m8s4"
                              )
@@ -121,6 +131,13 @@ def main():
                                          )
         print(names)
         print("Done.")
+
+    if args['labelme2yolo'] is not None:
+        from annotation import labelme2yolo
+        converter = labelme2yolo.Labelme2YOLO(args['labelme2yolo'])
+        converter.convert(
+            val_size=args['val_size'], test_size=args['test_size'])
+        print('Done')
 
     if args['labelme2coco'] is not None:
         from annotation import labelme2coco
