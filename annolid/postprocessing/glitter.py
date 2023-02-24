@@ -209,9 +209,9 @@ def tracks2nix(video_file=None,
     # add an instance name to animal names list if not in it
     for instance_name in instance_names:
         if (instance_name not in animal_names and (
-                instance_name not in behaviors
-                or instance_name not in zones_names)
-            ):
+                    instance_name not in behaviors
+                    or instance_name not in zones_names)
+                ):
             animal_names += ' ' + instance_name
 
     metadata_dict = {}
@@ -345,6 +345,7 @@ def tracks2nix(video_file=None,
             _class = bf['instance_name'],
             score = bf['class_score'],
             _mask = bf['segmentation']
+            tracking_id = bf['tracking_id']
             if isinstance(_frame_num, tuple):
                 _frame_num = _frame_num[0]
                 x1 = x1[0]
@@ -376,6 +377,7 @@ def tracks2nix(video_file=None,
 
                         mask_area = mask_util.area(_mask)
                         _mask = mask_util.decode(_mask)[:, :]
+
                         frame = draw.draw_binary_masks(
                             frame, [_mask], [_class])
 
@@ -458,10 +460,10 @@ def tracks2nix(video_file=None,
                     ]
                 # only draw behavior with bbox not body parts
                 if (is_draw and _class in behaviors and
-                    score >= score_threshold
-                    and _class not in body_parts
-                    and _class not in animal_names
-                    ):
+                        score >= score_threshold
+                        and _class not in body_parts
+                        and _class not in animal_names
+                        ):
 
                     if _class == 'grooming':
                         label = f"{_class}: {num_grooming} times"
@@ -476,7 +478,7 @@ def tracks2nix(video_file=None,
                     elif "rearing" in _class:
                         label = 'rearing'
                     else:
-                        label = f"{_class}:{round(score * 100,2)}%"
+                        label = f"{_class}-{tracking_id}-{round(score * 100,2)}%"
 
                     if _class == 'RightInteract' and right_interact <= 0:
                         pass
@@ -496,23 +498,23 @@ def tracks2nix(video_file=None,
                     is_keypoint_in_mask = keypoint_in_body_mask(
                         _frame_num, _class, subject_animal_name)
                     if (is_keypoint_in_mask
-                        or any(map(str.isdigit, _class))
-                        or _class in _animal_object_list
-                        ):
+                            or any(map(str.isdigit, _class))
+                            or _class in _animal_object_list
+                            ):
                         if 'zone' not in _class.lower():
                             cv2.circle(frame, (cx, cy),
                                        6,
                                        color,
                                        -1)
                         if _class in animal_names and 'zone' not in _class.lower():
-                            cv2.putText(frame, f"-{_class}:{score*100:.2f}%",
+                            cv2.putText(frame, f"-{_class}{tracking_id}-{score*100:.2f}%",
                                         (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                         0.65, color, 2)
 
                 if (left_interact > 0
                         and 'left' in _class.lower()
                         and 'interact' in _class.lower()
-                        ):
+                    ):
                     num_left_interact += 1
                     timestamps[frame_timestamp]['event:LeftInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
@@ -526,9 +528,9 @@ def tracks2nix(video_file=None,
                         points=points
                     )
                 if (right_interact > 0
-                        and 'right' in _class.lower() and
-                        'interact' in _class.lower()
-                    ):
+                            and 'right' in _class.lower() and
+                            'interact' in _class.lower()
+                        ):
                     num_right_interact += 1
                     timestamps[frame_timestamp]['event:RightInteract'] = 1
                     timestamps[frame_timestamp]['pos:interact_center_:x'] = cx
