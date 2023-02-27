@@ -229,6 +229,8 @@ class Segmentor():
         boxes = instances.pred_boxes.tensor
         scores = instances.scores
         classes = instances.pred_classes
+        if instances.has('ID'):
+            tracking_ids = instances.ID
         # apply nms for all the class
         _keep = nms(boxes, scores, self.overlap_threshold)
         boxes = boxes[_keep]
@@ -269,6 +271,7 @@ class Segmentor():
             out_dict['instance_name'] = self.class_names[classes[k]]
             out_dict['class_score'] = scores[k]
             out_dict['segmentation'] = rles[k]
+            out_dict['tracking_id'] = tracking_ids[k] if tracking_ids else None
 
             if scores[k] >= self.score_threshold:
                 out_dict['instance_name'] = TracksResults.switch_left_right(
@@ -329,13 +332,31 @@ class Segmentor():
     def on_video(self,
                  video_path,
                  skip_frames=1,
-                 on_keyframes=False
+                 on_keyframes=False,
+                 tracking=True
                  ):
         if not Path(video_path).exists():
             return
         self.cap = cv2.VideoCapture(video_path)
         num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        tracker = None
+        if tracking:
+            from detectron2.config import CfgNode as CfgNode_
+            from detectron2.tracking.base_tracker import build_tracker_head
+            cfg = CfgNode_()
+            cfg.TRACKER_HEADS = CfgNode_()
+            cfg.TRACKER_HEADS.TRACKER_NAME = "IOUWeightedHungarianBBoxIOUTracker"
+            cfg.TRACKER_HEADS.VIDEO_HEIGHT = height
+            cfg.TRACKER_HEADS.VIDEO_WIDTH = width
+            cfg.TRACKER_HEADS.MAX_NUM_INSTANCES = 200
+            cfg.TRACKER_HEADS.MAX_LOST_FRAME_COUNT = 30
+            cfg.TRACKER_HEADS.MIN_BOX_REL_DIM = 0.02
+            cfg.TRACKER_HEADS.MIN_INSTANCE_PERIOD = 1
+            cfg.TRACKER_HEADS.TRACK_IOU_THRESHOLD = 0.3
+            tracker = build_tracker_head(cfg)
 
         if on_keyframes:
             out_img_dir = key_frames(video_path)
@@ -349,6 +370,8 @@ class Segmentor():
                     outputs = self.predictor(frame)
                     out_dict = {}
                     instances = outputs["instances"].to("cpu")
+                    if tracker:
+                        instances = tracker.update(instances)
                     num_instance = len(instances)
                     if num_instance == 0:
                         out_dict['frame_number'] = frame_number
@@ -359,6 +382,7 @@ class Segmentor():
                         out_dict['instance_name'] = None
                         out_dict['class_score'] = None
                         out_dict['segmentation'] = None
+                        out_dict['tracking_id'] = None
                         tracking_results.append(out_dict)
                         out_dict = {}
                     else:
@@ -380,9 +404,10 @@ class Segmentor():
         if on_keyframes:
             print(f"Done. Please check you results in folder: {out_img_dir}")
             return out_img_dir
+        elif not torch.cuda.is_available():
+            print("Exit. No GPU is available on this device")
         else:
             print(f"Done!")
-            return tracking_results_dir
 
     def extract_mask_roi_features(self, frame):
         """extract mask ROI features from the given video frame
