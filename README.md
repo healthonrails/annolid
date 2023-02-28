@@ -56,6 +56,26 @@ pip install -e .
 The pip install command will attempt to determine your computer's resources (like a GPU) automatically.  To control this directly, you alternatively can use the conda env command and the appropriate environment file (.yml).
 For alternative installation methods, see the Annolid documentation ([https://cplab.science/annolid or https://annolid.com](https://cplab.science/annolid)).
 
+### Recommended steps for Ubuntu 20.04 machine with GPUs
+* Open a terminal window and navigate to the directory where the Annolid source code was downloaded.
+
+* Create a Conda environment based on the specifications in the environment.yml file located in the Annolid source code directory using the following command:
+
+```bash
+conda env create -f environment.yml
+```
+This command will create a new Conda environment with the required packages and dependencies needed to run Annolid on an Ubuntu 20.04 machine with GPUs.
+
+* Activate the new Conda environment using the following command:
+```bash
+conda activate annolid-env 
+```
+
+* Verify that the installation was successful by running the annolid
+```bash
+annolid
+```
+That's it! You should now have Annolid installed on your Ubuntu 20.04 machine with GPUs and be able to use it for video analysis and annotation tasks.
 ### Note for Mac M1 Chip users
 If you encounter the folloing errors,
 ```
