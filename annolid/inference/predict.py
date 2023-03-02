@@ -117,6 +117,17 @@ class Segmentor():
         return json_path
 
     def on_image(self, image_path, display=True):
+        """
+        This function takes the path of an image file as input,
+          applies instance segmentation on it,
+        and displays the results if 'display' parameter is set to True.
+        Args:
+            image_path (str): The path of the image file.
+            display (bool): Whether to display the results or not. Default is True.
+
+        Returns:
+            None
+        """
         image = cv2.imread(image_path)
         height, width, _ = image.shape
         preds = self.predictor(image)
@@ -323,6 +334,17 @@ class Segmentor():
     def on_image_folder(self,
                         image_folder
                         ):
+        """
+        This function takes an image folder path as
+          input and processes all the images in it.
+        It finds all the .jpg or .png images in the folder
+          and calls the on_image() method for each image.
+        Args:
+        image_folder (str): Path of the image folder
+
+        Returns:
+            None
+        """
         imgs = glob.glob(str(Path(image_folder) / '*.jpg'))
         if len(imgs) <= 0:
             imgs = glob.glob(str(Path(image_folder) / '*.png'))
