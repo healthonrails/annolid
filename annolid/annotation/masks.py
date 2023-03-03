@@ -1,6 +1,7 @@
 import cv2
 import ast
 import numpy as np
+from scipy import ndimage
 import pycocotools.mask as mask_util
 from simplification.cutil import simplify_coords_vwp
 
@@ -91,3 +92,29 @@ def mask_iou(this_mask, other_mask):
                              [other_mask],
                              [False, False])
     return _iou.flatten()[0]
+
+
+def calculate_mask_centroid(mask):
+    """
+    Calculate the centroid of an instance mask in COCO format.
+
+    Arguments:
+    mask -- a binary mask in COCO format (list of RLE-encoded strings)
+
+    Returns:
+    A tuple containing the x and y coordinates of the centroid in the original image.
+    """
+    try:
+        mask_array = mask_util.decode(mask)
+    except TypeError:
+        mask_array = ast.literal_eval(mask)
+        rle = [mask_array]
+        mask_array = mask_util.decode(rle)
+    # Calculate the center of mass of the binary mask
+    center_of_mass = ndimage.measurements.center_of_mass(mask_array)
+
+    # Convert the center of mass to the original image coordinates
+    x = int(center_of_mass[1])
+    y = int(center_of_mass[0])
+
+    return x, y
