@@ -75,6 +75,13 @@ conda activate annolid-env
 ```bash
 annolid
 ```
+Note: For error NVIDIA GeForce RTX 3090 with CUDA capability sm_86 is not compatible with the current PyTorch installation,
+please try the following command.
+```
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+
+```
+
 That's it! You should now have Annolid installed on your Ubuntu 20.04 machine with GPUs and be able to use it for video analysis and annotation tasks.
 ### Note for Mac M1 Chip users
 If you encounter the folloing errors,
