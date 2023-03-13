@@ -16,7 +16,6 @@ import functools
 from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtWidgets
-from qtpy.QtWidgets import QLabel
 from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
