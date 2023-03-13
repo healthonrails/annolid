@@ -16,6 +16,7 @@ import functools
 from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtWidgets
+from qtpy.QtWidgets import QLabel
 from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
@@ -33,6 +34,7 @@ from labelme.label_file import LabelFile
 from labelme import utils
 from labelme.widgets import ToolBar
 from labelme.config import get_config
+from annolid.gui.widgets.canvas import Canvas
 from annolid.annotation import labelme2coco
 from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
@@ -198,6 +200,31 @@ class AnnolidWindow(MainWindow):
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
 
+        self.canvas = self.labelList.canvas = Canvas(
+            epsilon=self._config["epsilon"],
+            double_click=self._config["canvas"]["double_click"],
+            num_backups=self._config["canvas"]["num_backups"],
+            crosshair=self._config["canvas"]["crosshair"],
+        )
+        self.canvas.zoomRequest.connect(self.zoomRequest)
+        scrollArea = QtWidgets.QScrollArea()
+        scrollArea.setWidget(self.canvas)
+        scrollArea.setWidgetResizable(True)
+        self.scrollBars = {
+            Qt.Vertical: scrollArea.verticalScrollBar(),
+            Qt.Horizontal: scrollArea.horizontalScrollBar(),
+        }
+
+        self.canvas.scrollRequest.connect(self.scrollRequest)
+
+        self.canvas.newShape.connect(self.newShape)
+        self.canvas.shapeMoved.connect(self.setDirty)
+        self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
+        self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
+        self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
+
+        self.setCentralWidget(scrollArea)
+
         open_video = action(
             self.tr("&Open Video"),
             self.openVideo,
@@ -322,11 +349,38 @@ class AnnolidWindow(MainWindow):
 
         colab.setIcon(QtGui.QIcon(str(
             self.here / "icons/colab.png")))
+        shortcuts = self._config["shortcuts"]
+
+        delete = action(
+            self.tr("Delete Polygons"),
+            self.deleteSelectedShape,
+            shortcuts["delete_polygon"],
+            "cancel",
+            self.tr("Delete the selected polygons"),
+            enabled=False,
+        )
+
+        edit = action(
+            self.tr("&Edit Label"),
+            self.editLabel,
+            shortcuts["edit_label"],
+            "edit",
+            self.tr("Modify the label of the selected polygon"),
+            enabled=False,
+        )
+        # Lavel list context menu.
+        labelMenu = QtWidgets.QMenu()
+        utils.addActions(labelMenu, (edit, delete))
 
         visualization.setIcon(QtGui.QIcon(str(
             self.here / "icons/visualization.png")))
 
         self.menus = utils.struct(
+            file=self.menu(self.tr("&File")),
+            edit=self.menu(self.tr("&Edit")),
+            view=self.menu(self.tr("&View")),
+            help=self.menu(self.tr("&Help")),
+            labelList=labelMenu,
             recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
             frames=self.menu(self.tr("&Extract Frames")),
             open_video=self.menu(self.tr("&Open Video")),
@@ -381,9 +435,103 @@ class AnnolidWindow(MainWindow):
         self.destroyed.connect(self.clean_up)
         self.stepSizeWidget.valueChanged.connect(self.update_step_size)
         atexit.register(self.clean_up)
+        # Callbacks:
+        self.zoomWidget.valueChanged.connect(self.paintCanvas)
+
+        self.populateModeActions()
 
     def update_step_size(self, value):
         self.step_size = value
+
+    def populateModeActions(self):
+        tool, menu = self.actions.tool, self.actions.menu
+        self.tools.clear()
+        utils.addActions(self.tools, tool)
+        self.canvas.menus[0].clear()
+        utils.addActions(self.canvas.menus[0], menu)
+        self.menus.edit.clear()
+        actions = (
+            self.actions.createMode,
+            self.actions.createRectangleMode,
+            self.actions.createCircleMode,
+            self.actions.createLineMode,
+            self.actions.createPointMode,
+            self.actions.createLineStripMode,
+            self.actions.editMode,
+        )
+        utils.addActions(self.menus.edit, actions + self.actions.editMenu)
+
+    def scrollRequest(self, delta, orientation):
+        units = -delta * 0.1  # natural scroll
+        bar = self.scrollBars[orientation]
+        value = bar.value() + bar.singleStep() * units
+        self.setScroll(orientation, value)
+
+    def resetState(self):
+        self.labelList.clear()
+        self.filename = None
+        self.imagePath = None
+        self.imageData = None
+        self.labelFile = None
+        self.otherData = None
+        self.canvas.resetState()
+
+    def toggleDrawMode(self, edit=True, createMode="polygon"):
+        self.canvas.setEditing(edit)
+        self.canvas.createMode = createMode
+        if edit:
+            self.actions.createMode.setEnabled(True)
+            self.actions.createRectangleMode.setEnabled(True)
+            self.actions.createCircleMode.setEnabled(True)
+            self.actions.createLineMode.setEnabled(True)
+            self.actions.createPointMode.setEnabled(True)
+            self.actions.createLineStripMode.setEnabled(True)
+        else:
+            if createMode == "polygon":
+                self.actions.createMode.setEnabled(False)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(True)
+            elif createMode == "rectangle":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(False)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(True)
+            elif createMode == "line":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(False)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(True)
+            elif createMode == "point":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(False)
+                self.actions.createLineStripMode.setEnabled(True)
+            elif createMode == "circle":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createCircleMode.setEnabled(False)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(True)
+            elif createMode == "linestrip":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(False)
+            else:
+                raise ValueError("Unsupported createMode: %s" % createMode)
+        self.actions.editMode.setEnabled(not edit)
 
     def closeFile(self, _value=False):
         if not self.mayContinue():
@@ -1038,8 +1186,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                                _video_name in str(tr)
-                                and '_nix' not in str(tr)
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
                             ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
