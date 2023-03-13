@@ -3,7 +3,7 @@ from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
 from labelme import QT5
-from labelme.shape import Shape
+from annolid.gui.shape import Shape
 import labelme.utils
 
 
