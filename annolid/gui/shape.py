@@ -118,6 +118,14 @@ class Shape(object):
     def setOpen(self):
         self._closed = False
 
+    def find_polygon_center(self, points):
+        n = len(points)
+        x_sum = sum(p.x() for p in points)
+        y_sum = sum(p.y() for p in points)
+        x_center = x_sum / n
+        y_center = y_sum / n
+        return (x_center, y_center)
+
     def getRectFromLine(self, pt1, pt2):
         x1, y1 = pt1.x(), pt1.y()
         x2, y2 = pt2.x(), pt2.y()
@@ -179,6 +187,14 @@ class Shape(object):
                             label_x - self.point_size,
                             label_y - self.point_size,
                             f"length:{round(dist,2)}pixels")
+
+            if self.label:
+                painter.setFont(QtGui.QFont(
+                    "Arial", 3 * self.point_size/self.scale))
+                label_x, label_y = self.find_polygon_center(
+                    self.points)
+                painter.drawText(
+                    label_x+1, label_y, self.label)
 
             painter.drawPath(line_path)
             painter.drawPath(vrtx_path)
