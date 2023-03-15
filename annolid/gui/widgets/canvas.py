@@ -93,8 +93,9 @@ class Canvas(QtWidgets.QWidget):
         self._cursor = CURSOR_DEFAULT
 
         self.label = QLabel(self)
-        self.label.resize(120, 20)
-        self.label.setStyleSheet("background-color:white")
+        self.label.setAlignment(QtCore.Qt.AlignCenter)
+        #self.label.resize(120, 20)
+        # self.label.setStyleSheet("background-color:white")
 
         # Menus:
         # 0: right-click without selection and dragging of shapes
@@ -215,9 +216,13 @@ class Canvas(QtWidgets.QWidget):
         except AttributeError:
             return
 
-        text = f'x:{pos.x():.1f},y:{pos.y():.1f}'
+        x, y = ev.x(), ev.y()
+        text = f'x:{x:.1f},y:{y:.1f}'
         self.label.setText(text)
-
+        self.label.adjustSize()
+        label_width = self.label.width()
+        label_height = self.label.height()
+        self.label.move(x - label_width / 2, y - label_height - 5)
         self.prevMovePoint = pos
         self.restoreCursor()
 
