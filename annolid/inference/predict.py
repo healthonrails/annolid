@@ -282,7 +282,10 @@ class Segmentor():
             out_dict['instance_name'] = self.class_names[classes[k]]
             out_dict['class_score'] = scores[k]
             out_dict['segmentation'] = rles[k]
-            out_dict['tracking_id'] = tracking_ids[k] if tracking_ids else None
+            if len(self.class_names) <= 1:
+                out_dict['tracking_id'] = 0
+            else:
+                out_dict['tracking_id'] = tracking_ids[k] if tracking_ids else None
 
             if scores[k] >= self.score_threshold:
                 out_dict['instance_name'] = TracksResults.switch_left_right(
