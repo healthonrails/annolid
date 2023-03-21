@@ -179,14 +179,15 @@ class Shape(object):
 
                         label_x, label_y = self.points[0].x(
                         ), self.points[0].y()
-                        dist = labelme.utils.distance(
-                            self.points[0] - self.points[1])
-                        painter.setFont(QtGui.QFont(
-                            "Arial", 3 * self.point_size/self.scale))
-                        painter.drawText(
-                            label_x - self.point_size,
-                            label_y - self.point_size,
-                            f"length:{round(dist,2)}pixels")
+                        if len(self.points) > 1:
+                            dist = labelme.utils.distance(
+                                self.points[0] - self.points[1])
+                            painter.setFont(QtGui.QFont(
+                                "Arial", 3 * self.point_size/self.scale))
+                            painter.drawText(
+                                label_x - self.point_size,
+                                label_y - self.point_size,
+                                f"length:{round(dist,2)}pixels")
 
             if self.label:
                 painter.setFont(QtGui.QFont(
@@ -271,10 +272,13 @@ class Shape(object):
                 rectangle = self.getCircleRectFromLine(self.points)
                 path.addEllipse(rectangle)
         else:
-            path = QtGui.QPainterPath(self.points[0])
-            for p in self.points[1:]:
-                path.lineTo(p)
-        return path
+            if self.points:
+                path = QtGui.QPainterPath(self.points[0])
+                for p in self.points[1:]:
+                    path.lineTo(p)
+                return path
+            else:
+                return QtGui.QPainterPath()
 
     def boundingRect(self):
         return self.makePath().boundingRect()
