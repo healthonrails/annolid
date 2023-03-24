@@ -39,10 +39,11 @@ def pred_dict_to_labelme(pred_row,
         instance_name = pred_row['instance_name']
         score = pred_row['class_score']
         segmentation = pred_row["segmentation"]
+        tracking_id = pred_row["tracking_id"]
     except ValueError:
         return
 
-    if segmentation and segmentation != 'nan' and score >= score_threshold:
+    if segmentation and segmentation != 'None' and segmentation != 'nan' and score >= score_threshold:
         try:
             _mask = ast.literal_eval(segmentation)
         except ValueError:
@@ -77,17 +78,14 @@ def pred_dict_to_labelme(pred_row,
             if cx >= 1 and cy >= 1:
                 shape.addPoint((cx, cy))
                 label_list.append(shape)
-    if segmentation is None:
-        shape = Shape(label=instance_name,
-                      shape_type='point',
-                      flags={}
-                      )
-        cx = round((x1 + x2) / 2, 2)
-        cy = round((y1 + y2) / 2, 2)
-        # not adding points like (0,0) i.e. the top left corner
-        if cx >= 1 and cy >= 1:
-            shape.addPoint((cx, cy))
-            label_list.append(shape)
+    if segmentation is None or segmentation == 'None':
+        rect_shape = Shape(label=f"{instance_name}_{tracking_id}",
+                           shape_type='rectangle',
+                           flags={}
+                           )
+        rect_shape.addPoint((x1, y1))
+        rect_shape.addPoint((x2, y2))
+        label_list.append(rect_shape)
 
     return label_list
 
@@ -305,9 +303,9 @@ class TracksResults():
         for cidx, ci in cur_instances.iterrows():
             for oidx, oi in old_instances.iterrows():
                 if (ci['frame_number'] == oi['frame_number']
-                        and int(ci['cx']) == int(oi['cx'])
-                        and int(ci['cy']) == int(oi['cy'])
-                    ):
+                            and int(ci['cx']) == int(oi['cx'])
+                            and int(ci['cy']) == int(oi['cy'])
+                        ):
                     continue
                 dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
                                (ci['cy']-oi['cy']) ** 2)
