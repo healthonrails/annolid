@@ -54,8 +54,10 @@ def pred_dict_to_labelme(pred_row,
             polys, has_holes = mask_to_polygons(_mask)
             try:
                 polys = polys[0]
+                label_name = instance_name + \
+                    f"_{tracking_id}" if tracking_id else ''
 
-                shape = Shape(label=instance_name,
+                shape = Shape(label=label_name,
                               shape_type='polygon',
                               flags={}
                               )
@@ -303,9 +305,9 @@ class TracksResults():
         for cidx, ci in cur_instances.iterrows():
             for oidx, oi in old_instances.iterrows():
                 if (ci['frame_number'] == oi['frame_number']
-                            and int(ci['cx']) == int(oi['cx'])
-                            and int(ci['cy']) == int(oi['cy'])
-                        ):
+                    and int(ci['cx']) == int(oi['cx'])
+                    and int(ci['cy']) == int(oi['cy'])
+                    ):
                     continue
                 dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
                                (ci['cy']-oi['cy']) ** 2)
