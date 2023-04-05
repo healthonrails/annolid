@@ -3,7 +3,7 @@ import math
 
 from qtpy import QtCore
 from qtpy import QtGui
-
+from labelme.logger import logger
 import labelme.utils
 
 
@@ -110,6 +110,28 @@ class Shape(object):
         self.points.insert(i, point)
 
     def removePoint(self, i):
+        if not self.canAddPoint():
+            logger.warning(
+                "Cannot remove point from: shape_type=%r",
+                self.shape_type,
+            )
+            return
+
+        if self.shape_type == "polygon" and len(self.points) <= 3:
+            logger.warning(
+                "Cannot remove point from: shape_type=%r, len(points)=%d",
+                self.shape_type,
+                len(self.points),
+            )
+            return
+
+        if self.shape_type == "linestrip" and len(self.points) <= 2:
+            logger.warning(
+                "Cannot remove point from: shape_type=%r, len(points)=%d",
+                self.shape_type,
+                len(self.points),
+            )
+            return
         self.points.pop(i)
 
     def isClosed(self):
