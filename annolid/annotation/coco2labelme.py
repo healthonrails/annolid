@@ -45,11 +45,13 @@ class COCO2Labeme():
         return data
 
     def to_labelme(self, json_data):
-        class_names = json_data['categories'][0]['keypoints']
+        class_names = [name['name'] for name in json_data['categories']]
         images = json_data['images']
         annotations = json_data['annotations']
+
         for i, img in enumerate(images):
             label_list = []
+            img_id = img['id']
             img_file_name = os.path.join(self.images_dir, img['file_name'])
             if not os.path.exists(img_file_name):
                 logger.info(f"Image file {img_file_name} does not exist!")
@@ -57,17 +59,15 @@ class COCO2Labeme():
             img_file_json = Path(img_file_name).with_suffix('.json')
             img_height = img['height']
             img_width = img['width']
-            try:
-                img_kpts = annotations[i]['keypoints']
-            except IndexError:
-                logger.info(f"No keypoints for  img {img_file_name}")
-                continue
-            for i, label in enumerate(class_names):
-                i *= 3
-                x, y, v = img_kpts[i:i+3]
-                if not(x <= 0 and y <= 0):
-                    s = Shape(label=label, shape_type='point', flags={})
-                    s.addPoint((x, y))
+            for annos in annotations:
+                if int(annos['image_id']) == int(img_id):
+                    points = annos['segmentation'][0]
+                    cat_id = annos['category_id']
+
+                    s = Shape(label=class_names[cat_id],
+                              shape_type='polygon', flags={})
+                    for k in range(0, len(points)-1, 2):
+                        s.addPoint((points[k], points[k+1]))
                     label_list.append(s)
             save_labels(img_file_json,
                         img_file_name, label_list, img_height, img_width)
@@ -78,3 +78,9 @@ class COCO2Labeme():
             json_data = self.parse_coco_json(jf)
             self.to_labelme(json_data)
             logger.info(f"Finished {jf} .")
+
+
+if __name__ == '__main__':
+    cl = COCO2Labeme('/path/to/dataset_coco/',
+                     '/path/to/dataset_coco/')
+    cl.convert()
