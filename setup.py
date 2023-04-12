@@ -22,7 +22,7 @@ setuptools.setup(
                       'opencv-contrib-python>=4.1.2.30',
                       'opencv-python-headless>=4.1.2.30',
                       'PyYAML>=5.3',
-                      'labelme==5.1.1',
+                      'labelme==5.2.0',
                       'decord>=0.4.0',
                       'torch>=1.7',
                       'torchvision>=0.8',

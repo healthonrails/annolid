@@ -1,6 +1,7 @@
 import copy
 import math
-
+import numpy as np
+import cv2
 from qtpy import QtCore
 from qtpy import QtGui
 from labelme.logger import logger
@@ -17,6 +18,7 @@ DEFAULT_SELECT_LINE_COLOR = QtGui.QColor(255, 255, 255)  # selected
 DEFAULT_SELECT_FILL_COLOR = QtGui.QColor(0, 255, 0, 155)  # selected
 DEFAULT_VERTEX_FILL_COLOR = QtGui.QColor(0, 255, 0, 255)  # hovering
 DEFAULT_HVERTEX_FILL_COLOR = QtGui.QColor(255, 255, 255, 255)  # hovering
+DEFAULT_NEG_VERTEX_FILL_COLOR = QtGui.QColor(255, 0, 0, 255)
 
 
 class Shape(object):
@@ -341,3 +343,171 @@ class Shape(object):
 
     def __setitem__(self, key, value):
         self.points[key] = value
+
+
+class MultipoinstShape(Shape):
+    """
+    Modified from
+    https://github.com/originlake/labelme-with-segment-anything/blob/main/labelme/shape.py
+    """
+
+    positive_vertex_fill_color = DEFAULT_VERTEX_FILL_COLOR
+    negative_vertex_fill_color = DEFAULT_NEG_VERTEX_FILL_COLOR
+
+    def __init__(
+        self,
+    ):
+        super(MultipoinstShape, self).__init__()
+        self.labels = []
+        self.shape_type = 'multipoints'
+
+    def addPoint(self, point, is_positive=True):
+        if not self.points or point != self.points[0]:
+            self.points.append(point)
+            self.labels.append(is_positive)
+
+    def canAddPoint(self):
+        return True
+
+    def popPoint(self):
+        if self.points:
+            self.labels.pop()
+            return self.points.pop()
+        return None
+
+    def removePoint(self, i):
+
+        if len(self.points) <= 1:
+            logger.warning(
+                "Cannot remove point from: shape_type=%r, len(points)=%d",
+                self.shape_type,
+                len(self.points),
+            )
+            return
+        self.labels.pop(i)
+        self.points.pop(i)
+
+    def paint(self, painter):
+        if self.points:
+            d = self.point_size / self.scale
+            shape = self.point_type
+            pos_pen = QtGui.QPen(self.positive_vertex_fill_color)
+            neg_pen = QtGui.QPen(self.negative_vertex_fill_color)
+            # Try using integer sizes for smoother drawing(?)
+            pos_pen.setWidth(max(1, int(round(2.0 / self.scale))))
+            neg_pen.setWidth(max(1, int(round(2.0 / self.scale))))
+            for i, (point, is_positive) in enumerate(zip(self.points, self.labels)):
+                if is_positive:
+                    painter.setPen(pos_pen)
+                else:
+                    painter.setPen(neg_pen)
+
+                if shape == self.P_SQUARE:
+                    painter.drawRect(point.x() - d / 2,
+                                     point.y() - d / 2, d, d)
+                elif shape == self.P_ROUND:
+                    painter.drawEllipse(point, d / 2.0, d / 2.0)
+                else:
+                    assert False, "unsupported vertex shape"
+
+    def highlightClear(self):
+        """Clear the highlighted point"""
+        # self._highlightIndex = None
+        pass
+
+
+class MaskShape(object):
+    """
+    Modified from
+    https://github.com/originlake/labelme-with-segment-anything/blob/main/labelme/shape.py
+    """
+
+    mask_color = np.array([0, 0, 255, 64], np.uint8)
+    boundary_color = np.array([0, 0, 255, 128], np.uint8)
+
+    def __init__(self,
+                 label=None,
+                 group_id=None,
+                 flags=None,
+                 description=None):
+        self.label = label
+        self.group_id = group_id
+        self.fill = False
+        self.selected = False
+        self.flags = flags
+        self.description = description
+        self.other_data = {}
+        self.rgba_mask = None
+        self.mask = None
+        self.logits = None
+        self.scale = 1
+
+    def setScaleMask(self, scale, mask):
+        self.scale = scale
+        self.mask = mask
+
+    def getQImageMask(self,):
+        if self.mask is None:
+            return None
+        mask = (self.mask * 255).astype(np.uint8)
+        mask = cv2.resize(mask, None, fx=1/self.scale, fy=1 /
+                          self.scale, interpolation=cv2.INTER_NEAREST)
+        if self.rgba_mask is not None and mask.shape[0] == self.rgba_mask.shape[0] and mask.shape[1] == self.rgba_mask.shape[1]:
+            self.rgba_mask[:] = 0
+        else:
+            self.rgba_mask = np.zeros(
+                [mask.shape[0], mask.shape[1], 4], dtype=np.uint8)
+        self.rgba_mask[mask > 128] = self.mask_color
+        kernel = np.ones([5, 5], dtype=np.uint8)
+        bound = mask - cv2.erode(mask, kernel, iterations=1)
+        self.rgba_mask[bound > 128] = self.boundary_color
+        qimage = QtGui.QImage(
+            self.rgba_mask.data, self.rgba_mask.shape[1], self.rgba_mask.shape[0], QtGui.QImage.Format_RGBA8888)
+        return qimage
+
+    def paint(self, painter):
+        qimage = self.getQImageMask()
+        if qimage is not None:
+            painter.drawImage(QtCore.QPoint(0, 0), qimage)
+
+    def toPolygons(self, epsilon):
+        contours, hierarchy = cv2.findContours(
+            (self.mask*255).astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+        shapes = []
+        if len(contours) == 0:
+            return shapes
+        current_idx = 0
+        while current_idx != -1:
+            next_idx, _, child_current_idx, _ = hierarchy[0][current_idx]
+            contour = contours[current_idx]
+            contour = cv2.approxPolyDP(contour, epsilon, True)
+            contour = contour[:, 0, :] / self.scale
+            contour = np.concatenate([contour, contour[:1, :]], axis=0)
+            while child_current_idx != -1:
+                child_next_idx, _, _, _ = hierarchy[0][child_current_idx]
+                child_contour = contours[child_current_idx]
+                if len(child_contour) >= 10 / self.scale:
+                    child_contour = cv2.approxPolyDP(
+                        child_contour, epsilon, True)
+                    child_contour = child_contour[:, 0, :] / self.scale
+                    child_contour = np.concatenate(
+                        [child_contour, child_contour[:1, :]], axis=0)
+                    contour = np.concatenate(
+                        [contour[:2, :], child_contour, contour[1:, :]], axis=0)
+                child_current_idx = child_next_idx
+            current_idx = next_idx
+            if len(contour) < 5:
+                continue
+            shape = Shape(shape_type="polygon",
+                          label=self.label,
+                          group_id=self.group_id,
+                          flags=self.flags,
+                          description=self.description)
+            for x, y in contour:
+                shape.addPoint(QtCore.QPointF(x, y))
+            shapes.append(shape)
+
+        return shapes
+
+    def copy(self):
+        return copy.deepcopy(self)
