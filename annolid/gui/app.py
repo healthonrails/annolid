@@ -23,7 +23,7 @@ import PIL
 from PIL import ImageQt
 import requests
 import subprocess
-from labelme.shape import Shape
+from annolid.gui.shape import Shape
 from labelme.app import MainWindow
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
