@@ -32,7 +32,7 @@ from labelme.label_file import LabelFileError
 from labelme.label_file import LabelFile
 from labelme import utils
 from labelme.widgets import ToolBar
-from labelme.config import get_config
+from annolid.configs import get_config
 from annolid.gui.widgets.canvas import Canvas
 from annolid.annotation import labelme2coco
 from annolid.data import videos
