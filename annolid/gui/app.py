@@ -204,6 +204,7 @@ class AnnolidWindow(MainWindow):
             double_click=self._config["canvas"]["double_click"],
             num_backups=self._config["canvas"]["num_backups"],
             crosshair=self._config["canvas"]["crosshair"],
+            sam=self._config["sam"]
         )
         self.canvas.zoomRequest.connect(self.zoomRequest)
         scrollArea = QtWidgets.QScrollArea()
@@ -223,6 +224,13 @@ class AnnolidWindow(MainWindow):
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
 
         self.setCentralWidget(scrollArea)
+
+        self.createPolygonSAMMode = action(
+            self.tr("Create Polygons With Segment Anything"),
+            self.segmentAnything,
+            icon="objects",
+            tip=self.tr("Start creating polygons with segment anything"),
+        )
 
         open_video = action(
             self.tr("&Open Video"),
@@ -391,7 +399,6 @@ class AnnolidWindow(MainWindow):
             save_labels=self.menu(self.tr("&Save Labels")),
             quality_control=self.menu(self.tr("&Quality Control")),
             colab=self.menu(self.tr("&Open in Colab")),
-
         )
 
         _action_tools = list(self.actions.tool)
@@ -406,6 +413,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(save_labeles)
         _action_tools.append(quality_control)
         _action_tools.append(colab)
+        _action_tools.append(self.createPolygonSAMMode)
 
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
@@ -441,6 +449,13 @@ class AnnolidWindow(MainWindow):
 
     def update_step_size(self, value):
         self.step_size = value
+
+    def segmentAnything(self,):
+        try:
+            self.toggleDrawMode(False, createMode="polygonSAM")
+            self.canvas.loadSamPredictor()
+        except ImportError as e:
+            print(e)
 
     def populateModeActions(self):
         tool, menu = self.actions.tool, self.actions.menu
@@ -485,6 +500,7 @@ class AnnolidWindow(MainWindow):
             self.actions.createLineMode.setEnabled(True)
             self.actions.createPointMode.setEnabled(True)
             self.actions.createLineStripMode.setEnabled(True)
+            self.createPolygonSAMMode.setEnabled(True)
         else:
             if createMode == "polygon":
                 self.actions.createMode.setEnabled(False)
@@ -493,6 +509,7 @@ class AnnolidWindow(MainWindow):
                 self.actions.createLineMode.setEnabled(True)
                 self.actions.createPointMode.setEnabled(True)
                 self.actions.createLineStripMode.setEnabled(True)
+                self.createPolygonSAMMode.setEnabled(True)
             elif createMode == "rectangle":
                 self.actions.createMode.setEnabled(True)
                 self.actions.createRectangleMode.setEnabled(False)
@@ -500,6 +517,7 @@ class AnnolidWindow(MainWindow):
                 self.actions.createLineMode.setEnabled(True)
                 self.actions.createPointMode.setEnabled(True)
                 self.actions.createLineStripMode.setEnabled(True)
+                self.createPolygonSAMMode.setEnabled(True)
             elif createMode == "line":
                 self.actions.createMode.setEnabled(True)
                 self.actions.createRectangleMode.setEnabled(True)
@@ -507,6 +525,7 @@ class AnnolidWindow(MainWindow):
                 self.actions.createLineMode.setEnabled(False)
                 self.actions.createPointMode.setEnabled(True)
                 self.actions.createLineStripMode.setEnabled(True)
+                self.createPolygonSAMMode.setEnabled(True)
             elif createMode == "point":
                 self.actions.createMode.setEnabled(True)
                 self.actions.createRectangleMode.setEnabled(True)
@@ -514,6 +533,7 @@ class AnnolidWindow(MainWindow):
                 self.actions.createLineMode.setEnabled(True)
                 self.actions.createPointMode.setEnabled(False)
                 self.actions.createLineStripMode.setEnabled(True)
+                self.createPolygonSAMMode.setEnabled(True)
             elif createMode == "circle":
                 self.actions.createMode.setEnabled(True)
                 self.actions.createRectangleMode.setEnabled(True)
@@ -521,6 +541,7 @@ class AnnolidWindow(MainWindow):
                 self.actions.createLineMode.setEnabled(True)
                 self.actions.createPointMode.setEnabled(True)
                 self.actions.createLineStripMode.setEnabled(True)
+                self.createPolygonSAMMode.setEnabled(True)
             elif createMode == "linestrip":
                 self.actions.createMode.setEnabled(True)
                 self.actions.createRectangleMode.setEnabled(True)
@@ -528,6 +549,15 @@ class AnnolidWindow(MainWindow):
                 self.actions.createLineMode.setEnabled(True)
                 self.actions.createPointMode.setEnabled(True)
                 self.actions.createLineStripMode.setEnabled(False)
+                self.createPolygonSAMMode.setEnabled(True)
+            elif createMode == "polygonSAM":
+                self.actions.createMode.setEnabled(True)
+                self.actions.createRectangleMode.setEnabled(True)
+                self.actions.createCircleMode.setEnabled(True)
+                self.actions.createLineMode.setEnabled(True)
+                self.actions.createPointMode.setEnabled(True)
+                self.actions.createLineStripMode.setEnabled(True)
+                self.createPolygonSAMMode.setEnabled(False)
             else:
                 raise ValueError("Unsupported createMode: %s" % createMode)
         self.actions.editMode.setEnabled(not edit)
@@ -1185,9 +1215,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
-                            ):
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
