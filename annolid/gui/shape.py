@@ -21,9 +21,17 @@ DEFAULT_HVERTEX_FILL_COLOR = QtGui.QColor(255, 255, 255, 255)  # hovering
 
 class Shape(object):
 
-    P_SQUARE, P_ROUND = 0, 1
+    # Render handles as squares
+    P_SQUARE = 0
 
-    MOVE_VERTEX, NEAR_VERTEX = 0, 1
+    # Render handles as circles
+    P_ROUND = 1
+
+    # Flag for the handles we would move if dragging
+    MOVE_VERTEX = 0
+
+    # Flag for all other handles on the curent shape
+    NEAR_VERTEX = 1
 
     # The following class variables influence the drawing of all shape objects.
     line_color = DEFAULT_LINE_COLOR
@@ -43,6 +51,7 @@ class Shape(object):
         shape_type=None,
         flags=None,
         group_id=None,
+        description=None,
     ):
         self.label = label
         self.group_id = group_id
@@ -51,6 +60,7 @@ class Shape(object):
         self.selected = False
         self.shape_type = shape_type
         self.flags = flags
+        self.description = description
         self.other_data = {}
 
         self._highlightIndex = None
@@ -270,6 +280,8 @@ class Shape(object):
         return post_i
 
     def containsPoint(self, point):
+        if not self.makePath():
+            return False
         return self.makePath().contains(point)
 
     def getCircleRectFromLine(self, line):
