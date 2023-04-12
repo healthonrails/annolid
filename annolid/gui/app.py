@@ -1609,6 +1609,44 @@ class AnnolidWindow(MainWindow):
         finally:
             self.importDirImages(str(out_dir))
 
+    def newShape(self):
+        """Pop-up and give focus to the label editor.
+        position MUST be in global coordinates.
+        """
+        items = self.uniqLabelList.selectedItems()
+        text = None
+        if items:
+            text = items[0].data(Qt.UserRole)
+        flags = {}
+        group_id = None
+        if self._config["display_label_popup"] or not text:
+            previous_text = self.labelDialog.edit.text()
+            text, flags, group_id, description = self.labelDialog.popUp(text)
+            if not text:
+                self.labelDialog.edit.setText(previous_text)
+        if text and not self.validateLabel(text):
+            self.errorMessage(
+                self.tr("Invalid label"),
+                self.tr("Invalid label '{}' with validation type '{}'").format(
+                    text, self._config["validate_label"]
+                ),
+            )
+            text = ""
+        if text:
+            self.labelList.clearSelection()
+            shapes = self.canvas.setLastLabel(text, flags)
+            for shape in shapes:
+                shape.group_id = group_id
+                shape.description = description
+                self.addLabel(shape)
+            self.actions.editMode.setEnabled(True)
+            self.actions.undoLastPoint.setEnabled(False)
+            self.actions.undo.setEnabled(True)
+            self.setDirty()
+        else:
+            self.canvas.undoLastLine()
+            self.canvas.shapesBackups.pop()
+
     def glitter2(self):
         """
         overlay the predicted masks and bboxes on the inference video

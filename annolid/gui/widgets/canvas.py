@@ -3,8 +3,11 @@ from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
 from labelme import QT5
-from annolid.gui.shape import Shape
+from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
 import labelme.utils
+import numpy as np
+import cv2
+import os
 
 
 # TODO(unknown):
@@ -56,7 +59,17 @@ class Canvas(QtWidgets.QWidget):
                 "line": False,
                 "point": False,
                 "linestrip": False,
+                "polygonSAM": False,
             },
+        )
+        self.sam_config = kwargs.pop(
+            "sam",
+            {
+                "maxside": 2048,
+                "approxpoly_epsilon": 0.5,
+                "weights": "vit-h",
+                "device": "cuda"
+            }
         )
         super(Canvas, self).__init__(*args, **kwargs)
         # Initialise local state.
@@ -104,6 +117,8 @@ class Canvas(QtWidgets.QWidget):
         # Set widget options.
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.WheelFocus)
+        self.sam_predictor = None
+        self.sam_mask = MaskShape()
 
     def fillDrawing(self):
         return self._fill_drawing
@@ -124,9 +139,71 @@ class Canvas(QtWidgets.QWidget):
             "line",
             "point",
             "linestrip",
+            "polygonSAM",
         ]:
             raise ValueError("Unsupported createMode: %s" % value)
         self._createMode = value
+        self.sam_mask = MaskShape()
+        self.current = None
+
+    def loadSamPredictor(self,):
+        """
+        The code requires Python version 3.8 or higher, along with PyTorch version 1.7 or higher, as well as TorchVision version 0.8 or higher. To install these dependencies, kindly refer to the instructions provided here. It's strongly recommended to install both PyTorch and TorchVision with CUDA support.
+To install Segment Anything, run the following command in your terminal:
+pip install git+https://github.com/facebookresearch/segment-anything.git
+
+        """
+        if not self.sam_predictor:
+            import torch
+            from pathlib import Path
+            from segment_anything import sam_model_registry, SamPredictor
+            here = Path(os.path.abspath(__file__)
+                        ).parent.parent.parent / 'segmentation' / 'SAM'
+            cachedir = str(here)
+            os.makedirs(cachedir, exist_ok=True)
+            weight_file = os.path.join(
+                cachedir, self.sam_config["weights"] + ".pth")
+            weight_urls = {
+                "vit_h": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
+                "vit_l": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
+                "vit_b": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+            }
+            if not os.path.isfile(weight_file):
+                torch.hub.download_url_to_file(
+                    weight_urls[self.sam_config["weights"]], weight_file)
+            sam = sam_model_registry[self.sam_config["weights"]](
+                checkpoint=weight_file)
+            if self.sam_config["device"] == "cuda" and torch.cuda.is_available():
+                sam.to(device="cuda")
+            self.sam_predictor = SamPredictor(sam)
+        self.samEmbedding()
+
+    def samEmbedding(self,):
+        image = self.pixmap.toImage().copy()
+        img_size = image.size()
+        s = image.bits().asstring(img_size.height() * img_size.width() * image.depth()//8)
+        image = np.frombuffer(s, dtype=np.uint8).reshape(
+            [img_size.height(), img_size.width(), image.depth()//8])
+        image = image[:, :, :3].copy()
+        h, w, _ = image.shape
+        self.sam_image_scale = self.sam_config["maxside"] / max(h, w)
+        self.sam_image_scale = min(1, self.sam_image_scale)
+        image = cv2.resize(image, None, fx=self.sam_image_scale,
+                           fy=self.sam_image_scale, interpolation=cv2.INTER_LINEAR)
+        self.sam_predictor.set_image(image)
+        self.update()
+
+    def samPrompt(self, points, labels):
+        masks, scores, logits = self.sam_predictor.predict(
+            point_coords=points*self.sam_image_scale,
+            point_labels=labels,
+            mask_input=self.sam_mask.logits[None, :,
+                                            :] if self.sam_mask.logits is not None else None,
+            multimask_output=False
+        )
+        self.sam_mask.logits = logits[np.argmax(scores), :, :]
+        mask = masks[np.argmax(scores), :, :]
+        self.sam_mask.setScaleMask(self.sam_image_scale, mask)
 
     def storeShapes(self):
         shapesBackup = []
@@ -228,10 +305,14 @@ class Canvas(QtWidgets.QWidget):
 
         # Polygon drawing.
         if self.drawing():
-            self.line.shape_type = self.createMode
+            self.line.shape_type = self.createMode if "polygonSAM" != self.createMode else "polygon"
 
             self.overrideCursor(CURSOR_DRAW)
             if not self.current:
+                if self.createMode == "polygonSAM":
+                    points = np.array([[pos.x(), pos.y()]])
+                    labels = np.array([1])
+                    self.samPrompt(points, labels)
                 self.repaint()  # draw crosshair
                 return
 
@@ -265,6 +346,8 @@ class Canvas(QtWidgets.QWidget):
             elif self.createMode == "point":
                 self.line.points = [self.current[0]]
                 self.line.close()
+            elif self.createMode == "polygonSAM":
+                self.line.points = [pos, pos]
             self.repaint()
             self.current.highlightClear()
             return
@@ -396,10 +479,22 @@ class Canvas(QtWidgets.QWidget):
                         self.line[0] = self.current[-1]
                         if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
                             self.finalise()
+                    elif self.createMode == "polygonSAM":
+                        self.current.addPoint(self.line[1], True)
+                        points = [[point.x(), point.y()]
+                                  for point in self.current.points]
+                        labels = [int(label) for label in self.current.labels]
+                        self.samPrompt(np.array(points), np.array(labels))
+                        if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                            self.finalise()
                 elif not self.outOfPixmap(pos):
                     # Create new shape.
-                    self.current = Shape(shape_type=self.createMode)
-                    self.current.addPoint(pos)
+                    if self.createMode != "polygonSAM":
+                        self.current = Shape(shape_type=self.createMode)
+                        self.current.addPoint(pos)
+                    else:
+                        self.current = MultipoinstShape()
+                        self.current.addPoint(pos, True)
                     if self.createMode == "point":
                         self.finalise()
                     else:
@@ -423,27 +518,46 @@ class Canvas(QtWidgets.QWidget):
                 self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                 self.prevPoint = pos
                 self.repaint()
-        elif ev.button() == QtCore.Qt.RightButton and self.editing():
-            group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
-            if not self.selectedShapes or (
-                self.hShape is not None
-                and self.hShape not in self.selectedShapes
-            ):
-                self.selectShapePoint(pos, multiple_selection_mode=group_mode)
-                self.repaint()
-            self.prevPoint = pos
+        elif ev.button() == QtCore.Qt.RightButton:
+            if self.drawing() and self.createMode == "polygonSAM":
+                if self.current:
+                    self.current.addPoint(self.line[1], False)
+                    points = [[point.x(), point.y()]
+                              for point in self.current.points]
+                    labels = [int(label) for label in self.current.labels]
+                    self.samPrompt(np.array(points), np.array(labels))
+                    if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                        self.finalise()
+                elif not self.outOfPixmap(pos):
+                    self.current = MultipoinstShape()
+                    self.current.addPoint(pos, False)
+                    self.line.points = [pos, pos]
+                    self.setHiding()
+                    self.drawingPolygon.emit(True)
+                    self.update()
+            elif self.editing():
+                group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+                if not self.selectedShapes or (
+                    self.hShape is not None
+                    and self.hShape not in self.selectedShapes
+                ):
+                    self.selectShapePoint(
+                        pos, multiple_selection_mode=group_mode)
+                    self.repaint()
+                self.prevPoint = pos
 
     def mouseReleaseEvent(self, ev):
         if ev.button() == QtCore.Qt.RightButton:
-            menu = self.menus[len(self.selectedShapesCopy) > 0]
-            self.restoreCursor()
-            if (
-                not menu.exec_(self.mapToGlobal(ev.pos()))
-                and self.selectedShapesCopy
-            ):
-                # Cancel the move by deleting the shadow copy.
-                self.selectedShapesCopy = []
-                self.repaint()
+            if self.createMode != 'polygonSAM':
+                menu = self.menus[len(self.selectedShapesCopy) > 0]
+                self.restoreCursor()
+                if (
+                    not menu.exec_(self.mapToGlobal(ev.pos()))
+                    and self.selectedShapesCopy
+                ):
+                    # Cancel the move by deleting the shadow copy.
+                    self.selectedShapesCopy = []
+                    self.repaint()
         elif ev.button() == QtCore.Qt.LeftButton:
             if self.editing():
                 if (
@@ -494,6 +608,8 @@ class Canvas(QtWidgets.QWidget):
         self._hideBackround = self.hideBackround if enable else False
 
     def canCloseShape(self):
+        if self.createMode == "polygonSAM":
+            return self.drawing() and self.current and len(self.current) > 0
         return self.drawing() and self.current and len(self.current) > 2
 
     def mouseDoubleClickEvent(self, ev):
@@ -646,6 +762,7 @@ class Canvas(QtWidgets.QWidget):
         p.translate(self.offsetToCenter())
 
         p.drawPixmap(0, 0, self.pixmap)
+        self.sam_mask.paint(p)
 
         # draw crosshair
         if (
@@ -669,6 +786,7 @@ class Canvas(QtWidgets.QWidget):
             )
 
         Shape.scale = self.scale
+        MultipoinstShape.scale = self.scale
         for shape in self.shapes:
             if (shape.selected or not self._hideBackround) and self.isVisible(
                 shape
@@ -715,8 +833,12 @@ class Canvas(QtWidgets.QWidget):
     def finalise(self):
         assert self.current
         self.current.close()
-        self.shapes.append(self.current)
+        if self.createMode == 'polygonSAM':
+            self.shapes.append(self.sam_mask)
+        else:
+            self.shapes.append(self.current)
         self.storeShapes()
+        self.sam_mask = MaskShape()
         self.current = None
         self.setHiding(False)
         self.newShape.emit()
@@ -874,9 +996,19 @@ class Canvas(QtWidgets.QWidget):
         assert text
         self.shapes[-1].label = text
         self.shapes[-1].flags = flags
+        polygons = None
+        if isinstance(self.shapes[-1], MaskShape):
+            mask_shape = self.shapes.pop()
+            polygons = mask_shape.toPolygons(
+                self.sam_config["approxpoly_epsilon"])
+            self.shapes.extend(polygons)
         self.shapesBackups.pop()
         self.storeShapes()
-        return self.shapes[-1]
+
+        if isinstance(polygons, list):
+            return polygons
+        else:
+            return self.shapes[-1:]
 
     def undoLastLine(self):
         assert self.shapes
@@ -886,7 +1018,7 @@ class Canvas(QtWidgets.QWidget):
             self.line.points = [self.current[-1], self.current[0]]
         elif self.createMode in ["rectangle", "line", "circle"]:
             self.current.points = self.current.points[0:1]
-        elif self.createMode == "point":
+        elif self.createMode in ["point", "polygonSAM"]:
             self.current = None
         self.drawingPolygon.emit(True)
 
@@ -905,6 +1037,11 @@ class Canvas(QtWidgets.QWidget):
         self.pixmap = pixmap
         if clear_shapes:
             self.shapes = []
+            self.sam_mask = MaskShape()
+            self.current = None
+
+        if self.createMode == "polygonSAM" and self.pixmap and self.sam_predictor:
+            self.samEmbedding()
         self.update()
 
     def loadShapes(self, shapes, replace=True):
@@ -914,6 +1051,7 @@ class Canvas(QtWidgets.QWidget):
             self.shapes.extend(shapes)
         self.storeShapes()
         self.current = None
+        self.sam_mask = MaskShape()
         self.hShape = None
         self.hVertex = None
         self.hEdge = None
