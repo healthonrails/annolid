@@ -1013,7 +1013,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
     def undoLastLine(self):
         assert self.shapes
         self.current = self.shapes.pop()
-        self.current.setOpen()
+        if self.createMode != "polygonSAM":
+            self.current.setOpen()
         if self.createMode in ["polygon", "linestrip"]:
             self.line.points = [self.current[-1], self.current[0]]
         elif self.createMode in ["rectangle", "line", "circle"]:
