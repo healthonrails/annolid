@@ -6,7 +6,6 @@ from qtpy import QtCore
 from qtpy import QtGui
 from labelme.logger import logger
 import labelme.utils
-from annolid.annotation.masks import mask_to_polygons
 
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
@@ -471,22 +470,26 @@ class MaskShape(object):
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
-    def toPolygons(self):
-        contours, _ = mask_to_polygons(self.mask)
+    def toPolygons(self, epsilon=1.3):
+        contours, hierarchy = cv2.findContours(
+            (self.mask*255).astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
         shapes = []
         if len(contours) == 0:
             return shapes
-        contour = contours[0]
-        contour = contour / self.scale
-        contour = np.array(list(zip(contour[0::2], contour[1::2])))
+        # Merge all the contours into a single contour
+        merged_contour = np.concatenate(contours)
+        merged_contour = cv2.approxPolyDP(merged_contour, epsilon, True)
+        merged_contour = merged_contour[:, 0, :] / self.scale
+        merged_contour = np.concatenate(
+            [merged_contour, merged_contour[:1, :]], axis=0)
+        # Create a Shape object from the merged contour
         shape = Shape(shape_type="polygon",
                       label=self.label,
                       group_id=self.group_id,
                       flags=self.flags,
                       description=self.description)
-        for x, y in contour:
-            if x >= 1 and y >= 1:
-                shape.addPoint(QtCore.QPointF(x, y))
+        for x, y in merged_contour:
+            shape.addPoint(QtCore.QPointF(x, y))
         shapes.append(shape)
         return shapes
 
