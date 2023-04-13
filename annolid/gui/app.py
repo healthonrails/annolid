@@ -451,13 +451,6 @@ class AnnolidWindow(MainWindow):
         self.step_size = value
 
     def segmentAnything(self,):
-        if not torch.cuda.is_available():
-            QtWidgets.QMessageBox.about(self,
-                                        "GPU not available",
-                                        """For optimal performance, it is recommended to \
-                                            use a GPU for running the Segment Anything model. \
-                                                Running the model on a CPU will result \
-                                                    in significantly longer processing times.""")
         try:
             self.toggleDrawMode(False, createMode="polygonSAM")
             self.canvas.loadSamPredictor()

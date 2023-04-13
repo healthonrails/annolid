@@ -157,6 +157,14 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             import torch
             from pathlib import Path
             from segment_anything import sam_model_registry, SamPredictor
+            from annolid.utils.devices import has_gpu
+            if not has_gpu() and not torch.cuda.is_available():
+                QtWidgets.QMessageBox.about(self,
+                                            "GPU not available",
+                                            """For optimal performance, it is recommended to \
+                                                use a GPU for running the Segment Anything model. \
+                                                    Running the model on a CPU will result \
+                                                        in significantly longer processing times.""")
             here = Path(os.path.abspath(__file__)
                         ).parent.parent.parent / 'segmentation' / 'SAM'
             cachedir = str(here)

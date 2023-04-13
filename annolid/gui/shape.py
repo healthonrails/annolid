@@ -471,8 +471,12 @@ class MaskShape(object):
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
     def toPolygons(self, epsilon=1.3):
+        # Fill the holes inside the mask
+        filled_mask = cv2.morphologyEx((self.mask*255).astype(
+            np.uint8), cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        # Find the contours of the filled mask
         contours, hierarchy = cv2.findContours(
-            (self.mask*255).astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+            filled_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         shapes = []
         if len(contours) == 0:
             return shapes
