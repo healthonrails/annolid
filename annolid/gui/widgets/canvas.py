@@ -67,7 +67,7 @@ class Canvas(QtWidgets.QWidget):
             {
                 "maxside": 2048,
                 "approxpoly_epsilon": 0.5,
-                "weights": "vit-h",
+                "weights": "vit_h",
                 "device": "cuda"
             }
         )
