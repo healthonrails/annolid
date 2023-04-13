@@ -6,7 +6,7 @@ from qtpy import QtCore
 from qtpy import QtGui
 from labelme.logger import logger
 import labelme.utils
-
+from annolid.annotation.masks import mask_to_polygons
 
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
@@ -471,43 +471,23 @@ class MaskShape(object):
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
-    def toPolygons(self, epsilon):
-        contours, hierarchy = cv2.findContours(
-            (self.mask*255).astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    def toPolygons(self):
+        contours, _ = mask_to_polygons(self.mask)
         shapes = []
         if len(contours) == 0:
             return shapes
-        current_idx = 0
-        while current_idx != -1:
-            next_idx, _, child_current_idx, _ = hierarchy[0][current_idx]
-            contour = contours[current_idx]
-            contour = cv2.approxPolyDP(contour, epsilon, True)
-            contour = contour[:, 0, :] / self.scale
-            contour = np.concatenate([contour, contour[:1, :]], axis=0)
-            while child_current_idx != -1:
-                child_next_idx, _, _, _ = hierarchy[0][child_current_idx]
-                child_contour = contours[child_current_idx]
-                if len(child_contour) >= 10 / self.scale:
-                    child_contour = cv2.approxPolyDP(
-                        child_contour, epsilon, True)
-                    child_contour = child_contour[:, 0, :] / self.scale
-                    child_contour = np.concatenate(
-                        [child_contour, child_contour[:1, :]], axis=0)
-                    contour = np.concatenate(
-                        [contour[:2, :], child_contour, contour[1:, :]], axis=0)
-                child_current_idx = child_next_idx
-            current_idx = next_idx
-            if len(contour) < 5:
-                continue
-            shape = Shape(shape_type="polygon",
-                          label=self.label,
-                          group_id=self.group_id,
-                          flags=self.flags,
-                          description=self.description)
-            for x, y in contour:
+        contour = contours[0]
+        contour = contour / self.scale
+        contour = np.array(list(zip(contour[0::2], contour[1::2])))
+        shape = Shape(shape_type="polygon",
+                      label=self.label,
+                      group_id=self.group_id,
+                      flags=self.flags,
+                      description=self.description)
+        for x, y in contour:
+            if x >= 1 and y >= 1:
                 shape.addPoint(QtCore.QPointF(x, y))
-            shapes.append(shape)
-
+        shapes.append(shape)
         return shapes
 
     def copy(self):

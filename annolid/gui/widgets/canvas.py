@@ -999,8 +999,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         polygons = None
         if isinstance(self.shapes[-1], MaskShape):
             mask_shape = self.shapes.pop()
-            polygons = mask_shape.toPolygons(
-                self.sam_config["approxpoly_epsilon"])
+            polygons = mask_shape.toPolygons()
             self.shapes.extend(polygons)
         self.shapesBackups.pop()
         self.storeShapes()
