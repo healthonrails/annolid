@@ -226,7 +226,7 @@ class AnnolidWindow(MainWindow):
         self.setCentralWidget(scrollArea)
 
         self.createPolygonSAMMode = action(
-            self.tr("Create Polygons With Segment Anything"),
+            self.tr("AI Polygons"),
             self.segmentAnything,
             icon="objects",
             tip=self.tr("Start creating polygons with segment anything"),
@@ -405,15 +405,15 @@ class AnnolidWindow(MainWindow):
         _action_tools.insert(0, frames)
         _action_tools.insert(1, open_video)
         _action_tools.insert(2, step_size)
+        _action_tools.append(self.createPolygonSAMMode)
         _action_tools.append(coco)
         _action_tools.append(models)
-        _action_tools.append(visualization)
         _action_tools.append(tracks)
         _action_tools.append(glitter2)
         _action_tools.append(save_labeles)
         _action_tools.append(quality_control)
         _action_tools.append(colab)
-        _action_tools.append(self.createPolygonSAMMode)
+        _action_tools.append(visualization)
 
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
@@ -451,6 +451,11 @@ class AnnolidWindow(MainWindow):
         self.step_size = value
 
     def segmentAnything(self,):
+        if not torch.cuda.is_available():
+            QtWidgets.QMessageBox.about(self,
+                                        "Not GPU available",
+                                        "At least one GPU  is required to run Segment Anything model.")
+            return
         try:
             self.toggleDrawMode(False, createMode="polygonSAM")
             self.canvas.loadSamPredictor()
@@ -1215,9 +1220,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
+                            _video_name in str(tr)
+                            and '_nix' not in str(tr)
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
