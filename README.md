@@ -7,6 +7,9 @@
 
 
 An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.
+## Effortless Object Labeling with Minimal Points: Automated Polygon Generation using Segment Anything Models
+
+![Effortlessly Create Polygon Labels for Objects using Segment Anything Models](docs/imgs/annolid_with_segment_anything.gif)
 
 ## Overview of Annolid workflow
 
