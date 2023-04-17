@@ -35,6 +35,7 @@ setuptools.setup(
                       'PyQtWebEngine>=5.15.1',
                       'simplification>=0.5.7',
                       "dataclasses>=0.6; python_version < '3.7'",
+                      "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
                       ],
     python_requires='>=3.6',
 
