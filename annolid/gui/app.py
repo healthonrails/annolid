@@ -756,8 +756,10 @@ class AnnolidWindow(MainWindow):
         shape = item.shape()
         if shape is None:
             return
-        text, flags, group_id = self.labelDialog.popUp(
-            text=shape.label, flags=shape.flags, group_id=shape.group_id,
+        text, flags, group_id, description = self.labelDialog.popUp(
+            text=shape.label, flags=shape.flags,
+            group_id=shape.group_id,
+            description=shape.description,
         )
         if text is None:
             return
@@ -772,6 +774,7 @@ class AnnolidWindow(MainWindow):
         shape.label = text
         shape.flags = flags
         shape.group_id = group_id
+        shape.description = description
 
         r, g, b = self._update_shape_color(shape)
 
@@ -1217,7 +1220,7 @@ class AnnolidWindow(MainWindow):
                     if ('tracking' in str(tr) and
                             _video_name in str(tr)
                             and '_nix' not in str(tr)
-                            ):
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
