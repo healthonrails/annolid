@@ -18,7 +18,6 @@ setuptools.setup(
     install_requires=['numpy>=1.18.2',
                       'scipy>=1.5.2',
                       'easydict>=1.9',
-                      'opencv-python>=4.1.2.30',
                       'opencv-contrib-python>=4.1.2.30',
                       'opencv-python-headless>=4.1.2.30',
                       'PyYAML>=5.3',
