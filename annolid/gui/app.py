@@ -1205,6 +1205,8 @@ class AnnolidWindow(MainWindow):
 
         video_filename = str(video_filename)
         self.stepSizeWidget.setEnabled(True)
+        if self.seekbar:
+            self.statusBar().removeWidget(self.seekbar)
 
         if video_filename:
             cur_video_folder = Path(video_filename).parent
