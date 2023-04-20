@@ -1,4 +1,55 @@
 import pandas as pd
+"""
+The choice of tracking metrics to report in research papers depends on
+ the specific application and goals of the research. 
+ However, some commonly used tracking metrics include:
+
+Precision and Recall: Precision measures the percentage of correctly
+ identified tracks out of the total number of identified tracks,
+   while recall measures the percentage of correctly identified 
+   tracks out of the total number of ground truth tracks. 
+These metrics are often used to evaluate the accuracy of a tracking algorithm.
+
+Multiple Object Tracking Accuracy (MOTA): MOTA is a comprehensive metric that takes
+into account various sources of tracking errors, including missed detections,
+ false positives, and identity switches. 
+ It is calculated as 1 - (Total number of False Positives + 
+ Total number of Missed Targets + Total number of Identity Switches)
+   / Total number of Ground Truth Objects.
+
+Multiple Object Tracking Precision (MOTP): MOTP measures the average
+ distance between the predicted track and the ground truth track across all frames. 
+ It is calculated as the sum of all distances between matched predicted and ground 
+ truth tracks, divided by the total number of matches.
+
+ID F1 Score: This metric measures the harmonic mean of precision and recall 
+for each tracked identity. It is calculated as 2 * (Precision * Recall) / (Precision + Recall),
+ where Precision and Recall are calculated for each identity separately.
+
+Fragmentation Index (Frag): Frag measures the number of times a single ground 
+truth object is tracked by multiple predicted tracks. It is calculated as the 
+total number of identity switches divided by the total number of ground truth objects.
+
+Mostly Tracked Targets (MT): MT measures the percentage of ground truth objects
+ that are tracked for at least 80% of their lifespan.
+
+Mostly Lost Targets (ML): ML measures the percentage of ground truth objects
+ that are tracked for less than 20% of their lifespan.
+
+False Positive Rate (FPR): FPR measures the percentage of falsely detected 
+objects out of the total number of detections.
+
+False Negative Rate (FNR): FNR measures the percentage of ground truth
+ objects that are not detected by the tracker.
+
+Processing Speed: Processing speed measures the number of frames processed 
+per unit time, such as frames per second (FPS) or milliseconds per frame. 
+This metric is often reported to evaluate the computational efficiency of a tracking algorithm.
+
+These are just some of the commonly used tracking metrics in research papers,
+ and there may be other application-specific metrics used as well.
+
+"""
 
 
 def extract_digits(s: str) -> str:
