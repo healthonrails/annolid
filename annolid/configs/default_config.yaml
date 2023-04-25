@@ -79,7 +79,7 @@ canvas:
 
 # segment anything related parameters
 sam:
-  weights: vit_h # vit_h, vit_l or vit_b
+  weights: vit_b # vit_h, vit_l or vit_b
   maxside: 1280 # will downsize the image during inference to the maxsize.
   approxpoly_epsilon: 1 # adjust the poylgon simplification algorithm. The large the less vertices.
   device: "cuda" # "cuda" or "cpu"
