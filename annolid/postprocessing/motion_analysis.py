@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+from scipy.signal import savgol_filter
+
 
 """
 The specific features that research papers report for motion analysis depend on 
@@ -44,6 +46,37 @@ These are just some of the common features that are often reported in motion
  analysis research papers. The specific features that are relevant will 
  depend on the particular application and research question.
 """
+
+
+def calculate_smoothed_velocity(node_locations: np.ndarray,
+                                win: int = 25,
+                                poly: int = 3) -> np.ndarray:
+    """
+    Calculate the velocity of a time series data for each coordinate of a node location array,
+    after smoothing it with the Savitzky-Golay filter.
+
+    Parameters
+    ----------
+    node_locations : np.ndarray
+        A 2D array with shape (frames, 2) representing the node locations over time.
+    win : int, optional
+        The length of the window to use for smoothing. Default is 25.
+    poly : int, optional
+        The order of the polynomial to fit with. Default is 3.
+
+    Returns
+    -------
+    np.ndarray
+        A 1D array representing the magnitude of the first derivative of the smoothed data.
+    """
+    # Apply Savitzky-Golay filter to the input data to smooth it
+    node_locations_smoothed = savgol_filter(
+        node_locations, window_length=win, polyorder=poly, deriv=1, axis=0)
+
+    # Calculate the velocity by taking the norm of the first derivative of the smoothed data in each dimension
+    node_velocities = np.linalg.norm(node_locations_smoothed, axis=1)
+
+    return node_velocities
 
 
 def calculate_object_motion(csv_path, fps, save_path):
