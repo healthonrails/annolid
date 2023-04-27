@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 
 
@@ -46,6 +47,177 @@ These are just some of the common features that are often reported in motion
  analysis research papers. The specific features that are relevant will 
  depend on the particular application and research question.
 """
+
+
+def df_to_center_loc(tracking_csv):
+    df = pd.read_csv(tracking_csv)
+    # pivot the DataFrame to have a hierarchical column index with instance_name on the top level
+    df_pivot = pd.pivot_table(df, values=['cx', 'cy'], index=[
+                              'frame_number'], columns=['instance_name'])
+
+    # convert the pivoted DataFrame to a numpy array
+    center_loc = np.array(df_pivot)
+
+    # reshape the array to the desired shape
+    center_loc = center_loc.reshape((center_loc.shape[0], -1, 2))
+
+    # return the reshaped array
+    return center_loc
+
+
+def plot_center_locations(center_loc, labels=None):
+    import seaborn as sns
+    import matplotlib as mpl
+    """
+    Plots the center locations of multiple objects over time, and the tracks of the objects.
+
+    Args:
+    - center_loc (numpy.ndarray): An array of shape (num_frames, 2, num_objects) containing the x and y
+                                  coordinates of center position data for multiple objects.
+    - labels (list of str, optional): A list of strings containing labels for each object.
+
+    Returns:
+    - figs (list of matplotlib.figure.Figure): The matplotlib figure objects containing the plots.
+    """
+
+    num_objects = center_loc.shape[2]
+
+    if labels is None:
+        labels = [f"object-{i}" for i in range(num_objects)]
+
+    sns.set('notebook', 'ticks', font_scale=1.2)
+    mpl.rcParams['figure.figsize'] = [15, 6]
+
+    fig1, ax1 = plt.subplots()
+    for i in range(num_objects):
+        ax1.plot(center_loc[:, 0, i], color=f"C{i}", label=labels[i])
+        ax1.plot(-1 * center_loc[:, 1, i], color=f"C{i}")
+    ax1.legend(loc="center right")
+    ax1.set_title('Center locations')
+
+    fig2, ax2 = plt.subplots(figsize=(7, 7))
+    for i in range(num_objects):
+        ax2.plot(center_loc[:, 0, i], center_loc[:, 1, i],
+                 color=f"C{i}", label=labels[i])
+    ax2.legend()
+    ax2.set_xlim(0, 1024)
+    ax2.set_xticks([])
+    ax2.set_ylim(0, 1024)
+    ax2.set_yticks([])
+    ax2.set_title('Center tracks')
+
+    figs = [fig1, fig2]
+
+    return figs
+
+
+def calculate_correlation(data_x, data_y, window_size):
+    """
+    Calculates the rolling correlation between two time series data_x 
+    and data_y with a window size of window_size.
+
+    Parameters:
+    data_x (numpy array): First time series
+    data_y (numpy array): Second time series
+    window_size (int): Size of the rolling window used for correlation calculation
+
+    Returns:
+    numpy array: Array of rolling correlation values
+    """
+
+    series_x = pd.Series(data_x)
+    series_y = pd.Series(data_y)
+
+    return np.array(series_y.rolling(window_size).corr(series_x))
+
+
+def plot_center_tracks_and_velocities(center_loc, center_vel):
+    """
+    Plots the tracks of instances and colors them by the magnitude of their velocity.
+
+    Args:
+    - center_loc: numpy array of shape (num_frames, num_instances,
+      2) representing the center locations of instances
+    - center_vel: numpy array of shape (num_frames, num_instances, 
+    2) representing the velocity of instances
+
+    Returns:
+    - None
+    """
+
+    fig = plt.figure(figsize=(15, 6))
+
+    ax1 = fig.add_subplot(121)
+    ax1.plot(center_loc[:, 0], center_loc[:, 1])
+    ax1.set_xlim(0, 1024)
+    ax1.set_xticks([])
+    ax1.set_ylim(0, 1024)
+    ax1.set_yticks([])
+    ax1.set_title('Center tracks')
+
+    kp = center_vel
+    vmin = 0
+    vmax = 10
+
+    ax2 = fig.add_subplot(122)
+    ax2.scatter(center_loc[:, 0], center_loc[:, 1],
+                c=kp, s=4, vmin=vmin, vmax=vmax)
+    ax2.set_xlim(0, 1024)
+    ax2.set_xticks([])
+    ax2.set_ylim(0, 1024)
+    ax2.set_yticks([])
+    ax2.set_title('Center tracks colored by magnitude of velocity')
+    ax2.legend()
+
+    plt.show()
+
+
+def plot_covariance(center_vel1, center_vel2):
+    """
+    Plots the covariance of two velocity vectors
+
+    Args:
+        center_vel1 (ndarray): velocity vector for the first instance with shape (n_frames,)
+        center_vel2 (ndarray): velocity vector for the second instance with shape (n_frames,)
+
+    Returns:
+        None
+    """
+
+    cov_vel = calculate_correlation(center_vel1, center_vel2, window_size=50)
+
+    fig, ax = plt.subplots(2, 1, sharex=True, figsize=(15, 6))
+    ax[0].plot(center_vel1, 'y', label='Instance 1')
+    ax[0].plot(center_vel2, 'g', label='Instance 2')
+    ax[0].legend()
+    ax[0].set_title('Forward Velocity')
+
+    ax[1].plot(cov_vel, 'c', markersize=1)
+    ax[1].set_ylim(-1.2, 1.2)
+    ax[1].set_title('Covariance')
+
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_center_velocities(center_loc, center_vel):
+    fig = plt.figure(figsize=(15, 7))
+
+    # plot the x and y positions of the center locations for the first instance
+    ax1 = fig.add_subplot(211)
+    ax1.plot(center_loc[:, 0, 0], 'k', label='x')
+    ax1.plot(-1*center_loc[:, 1, 0], 'k', label='y')
+    ax1.legend()
+    ax1.set_xticks([])
+    ax1.set_title('Center Positions')
+
+    # plot the velocity of the first instance
+    ax2 = fig.add_subplot(212, sharex=ax1)
+    ax2.imshow(center_vel[:, np.newaxis].T, aspect='auto', vmin=0, vmax=10)
+    ax2.set_yticks([])
+    ax2.set_title('Velocity')
+
+    plt.show()
 
 
 def calculate_smoothed_velocity(node_locations: np.ndarray,
