@@ -242,6 +242,8 @@ class Segmentor():
         classes = instances.pred_classes
         if instances.has('ID'):
             tracking_ids = instances.ID
+        else:
+            tracking_ids = None
         # apply nms for all the class
         _keep = nms(boxes, scores, self.overlap_threshold)
         boxes = boxes[_keep]
@@ -358,7 +360,7 @@ class Segmentor():
                  video_path,
                  skip_frames=1,
                  on_keyframes=False,
-                 tracking=True
+                 tracking=False
                  ):
         if not Path(video_path).exists():
             return
