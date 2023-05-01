@@ -107,7 +107,7 @@ class Canvas(QtWidgets.QWidget):
 
         self.label = QLabel(self)
         self.label.setAlignment(QtCore.Qt.AlignCenter)
-        #self.label.resize(120, 20)
+        # self.label.resize(120, 20)
         # self.label.setStyleSheet("background-color:white")
 
         # Menus:
@@ -990,7 +990,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self.snapping = True
         elif self.editing():
             if self.movingShape and self.selectedShapes:
-                index = self.shapes.index(self.selectedShapes[0])
+                try:
+                    index = self.shapes.index(self.selectedShapes[0])
+                except ValueError:
+                    return
                 if (
                     self.shapesBackups[-1][index].points
                     != self.shapes[index].points
