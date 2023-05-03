@@ -52,6 +52,7 @@ from annolid.gui.widgets.video_slider import VideoSlider
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
+from annolid.annotation.timestamps import convert_frame_number_to_time
 __appname__ = 'Annolid'
 __version__ = "1.1.3"
 
@@ -897,6 +898,64 @@ class AnnolidWindow(MainWindow):
         except AttributeError:
             return
 
+    def setDirty(self):
+        # Even if we autosave the file, we keep the ability to undo
+        self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
+
+        if self._config["auto_save"] or self.actions.saveAuto.isChecked():
+            label_file = osp.splitext(self.imagePath)[0] + ".json"
+            if self.output_dir:
+                label_file_without_path = osp.basename(label_file)
+                label_file = osp.join(self.output_dir, label_file_without_path)
+            self.saveLabels(label_file)
+            return
+        self.dirty = True
+        self.actions.save.setEnabled(True)
+        title = __appname__
+        if self.filename is not None:
+            title = self.getTitle(clean=False)
+        self.setWindowTitle(title)
+
+    def getTitle(self, clean=True):
+        title = __appname__
+        _filename = os.path.basename(self.filename)
+        if self.video_loader:
+            if self.frame_number:
+                self._time_stamp = convert_frame_number_to_time(
+                    self.frame_number)
+                if clean:
+                    title = f"{title}-Video Timestamp:{self._time_stamp}"
+                    title = f"{title}-Frame_number:{self.frame_number}-File Name:{_filename}"
+                else:
+                    title = f"{title}-Video Timestamp:{self._time_stamp}"
+
+                    title = f"{title}-Frame_number:{self.frame_number}-{_filename}*"
+            else:
+                if clean:
+                    title = "{} - {}".format(title, _filename)
+                else:
+                    title = "{} - {}*".format(title, _filename)
+        return title
+
+    def setClean(self):
+        self.dirty = False
+        self.actions.save.setEnabled(False)
+        self.actions.createMode.setEnabled(True)
+        self.actions.createRectangleMode.setEnabled(True)
+        self.actions.createCircleMode.setEnabled(True)
+        self.actions.createLineMode.setEnabled(True)
+        self.actions.createPointMode.setEnabled(True)
+        self.actions.createLineStripMode.setEnabled(True)
+        title = __appname__
+        if self.filename is not None:
+            title = self.getTitle()
+        self.setWindowTitle(title)
+
+        if self.hasLabelFile():
+            self.actions.deleteFile.setEnabled(True)
+        else:
+            self.actions.deleteFile.setEnabled(False)
+
     def save_labels(self):
         """Save the labels into a selected text file.
         """
@@ -1183,6 +1242,7 @@ class AnnolidWindow(MainWindow):
         self.frame_number = frame_number
         self.filename = self.video_results_folder / \
             f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
+        self.current_frame_time_stamp = self.video_loader.get_time_stamp()
         self.frame_loader.request(frame_number)
 
     def openVideo(self, _value=False):
@@ -1222,7 +1282,7 @@ class AnnolidWindow(MainWindow):
                     if ('tracking' in str(tr) and
                             _video_name in str(tr)
                             and '_nix' not in str(tr)
-                        ):
+                            ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1250,6 +1310,8 @@ class AnnolidWindow(MainWindow):
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
             self.video_loader = videos.CV2Video(video_filename)
+            self.fps = self.video_loader.get_fps()
+
             self.num_frames = self.video_loader.total_frames()
             self.seekbar = VideoSlider()
             self.seekbar.keyPress.connect(self.keyPressEvent)

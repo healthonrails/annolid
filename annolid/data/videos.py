@@ -182,6 +182,8 @@ class CV2Video():
         self.width = None
         self.height = None
         self.first_frame = None
+        self.fps = None
+        self.current_frame_timestamp = None
 
     @property
     def __lock(self):
@@ -204,10 +206,17 @@ class CV2Video():
             self.height = self.first_frame.shape[0]
         return self.height
 
+    def get_fps(self):
+        # Get the FPS of the video
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        return self.fps
+
     def load_frame(self, frame_number):
         with self.__lock:
             if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != frame_number:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                self.current_frame_timestamp = self.cap.get(
+                    cv2.CAP_PROP_POS_MSEC)
             ret, frame = self.cap.read()
 
         if not ret or frame is None:
@@ -216,6 +225,9 @@ class CV2Video():
         # convert bgr to rgb
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return frame
+
+    def get_time_stamp(self):
+        return self.current_frame_timestamp
 
     def total_frames(self):
         return int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -396,7 +408,7 @@ def track(video_file=None,
     points = [deque(maxlen=30) for _ in range(1000)]
 
     if name == "YOLOV5":
-         # avoid installing pytorch
+        # avoid installing pytorch
         # if the user only wants to use it for
         # extract frames
         # maybe there is a better way to do this
