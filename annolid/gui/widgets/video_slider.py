@@ -32,6 +32,8 @@ class VideoSliderMark:
             * "predicted"
             * "tick"
             * "tick_column"
+            * "event_start"
+            * "event_end"
         val: Beginning of mark range
         color: Color of mark, can be string or (r, g, b) tuple.
         filled: Whether the mark is shown filled (solid color).
@@ -54,6 +56,8 @@ class VideoSliderMark:
             predicted=(1, 170, 247),  # light blue
             tick="lightGray",
             tick_column="gray",
+            event_start="green",
+            event_end="red",
         )
 
         if self.mark_type in colors:
@@ -85,7 +89,7 @@ class VideoSliderMark:
 
     @property
     def top_pad(self):
-        if self.mark_type == "tick_column":
+        if self.mark_type in ["tick_column", "event_start", "event_end"]:
             return 40
         if self.mark_type == "tick":
             return 0
@@ -93,7 +97,7 @@ class VideoSliderMark:
 
     @property
     def bottom_pad(self):
-        if self.mark_type == "tick_column":
+        if self.mark_type in ["tick_column", "event_start", "event_end"]:
             return 200
         if self.mark_type == "tick":
             return 0
@@ -101,7 +105,7 @@ class VideoSliderMark:
 
     @property
     def visual_width(self):
-        if self.mark_type in ("open", "filled", "tick"):
+        if self.mark_type in ("open", "filled", "tick", "event_start", "event_end"):
             return 2
         if self.mark_type in ("tick_column", "simple", "predicted"):
             return 1
@@ -899,7 +903,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
         return [
             mark
             for mark in self._marks
-            if (mark.val == val and mark.mark_type not in ("tick", "tick_column"))
+            if (mark.val == val and mark.mark_type not in ("tick", "tick_column", "event_start", "event_end"))
         ]
 
     def isMarkedVal(self, val: int) -> bool:

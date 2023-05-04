@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import csv
 import os.path as osp
 import time
 import html
@@ -48,7 +49,7 @@ from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
 import webbrowser
 import atexit
-from annolid.gui.widgets.video_slider import VideoSlider
+from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
@@ -197,6 +198,8 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.video_file = None
         self.isPlaying = False
+        self._time_stamp = ''
+        self.timestamp_set = set()
         self.annotation_dir = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
@@ -598,6 +601,8 @@ class AnnolidWindow(MainWindow):
             self.video_file = None
             self.annotation_dir = None
             self.statusBar().removeWidget(self.seekbar)
+            self.statusBar().removeWidget(self.saveButton)
+            self.statusBar().removeWidget(self.playButton)
             self.seekbar = None
             self._df = None
             self.label_stats = {}
@@ -607,6 +612,12 @@ class AnnolidWindow(MainWindow):
             self.frame_number = 0
             self.step_size = 1
             self.video_results_folder = None
+            self.timestamp_set = set()
+            self.isPlaying = False
+            self._time_stamp = ''
+            self.saveButton = None
+            self.playButton = None
+            self.timer = None
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)
@@ -1236,6 +1247,14 @@ class AnnolidWindow(MainWindow):
             self.statusBar().showMessage(
                 self.tr(f"Training..."))
 
+    def add_highlighted_mark(self, val,
+                             mark_type='event_start',
+                             color='green'):
+        """Adds a new highlighted mark with a green filled color to the slider."""
+        highlighted_mark = VideoSliderMark(mark_type=mark_type,
+                                           val=val, _color=color)
+        self.seekbar.addMark(highlighted_mark)
+
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
             if event.key() == Qt.Key_Right:
@@ -1249,14 +1268,42 @@ class AnnolidWindow(MainWindow):
             elif event.key() == Qt.Key_0:
                 self.seekbar.setValue(0)
             elif event.key() == Qt.Key_Space:
-                if self.isPlaying:
-                    self.stopPlaying()
-                else:
-                    self.startPlaying()
+                self.togglePlay()
+            elif event.key() == Qt.Key_S:
+                timestamp = self._time_stamp
+                event_type = 'event_start'
+                self.timestamp_set.add(
+                    (timestamp, (self.frame_number, event_type)))
+                self.add_highlighted_mark(
+                    self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_E:
+                timestamp = self._time_stamp
+                event_type = 'event_end'
+                self.timestamp_set.add(
+                    (timestamp, (self.frame_number, event_type)))
+                self.add_highlighted_mark(
+                    self.frame_number, mark_type=event_type)
+            elif event.key() == Qt.Key_Q:
                 self.seekbar.setValue(self.seekbar._val_max)
             else:
                 event.ignore()
+
+    def saveTimestampList(self):
+        # Open file dialog to get file path
+        default_timestamp_csv_file = str(
+            os.path.dirname(self.filename)) + '_timestamps.csv'
+        file_dialog = QtWidgets.QFileDialog()
+        file_dialog.setDefaultSuffix('.csv')
+        file_path, _ = file_dialog.getSaveFileName(self, "Save Timestamps", default_timestamp_csv_file,
+                                                   "CSV files (*.csv)")
+        if file_path:
+            with open(file_path, 'w') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Timestamp', 'Frame_number'])
+                for timestamp in sorted(self.timestamp_set, key=lambda x: x[1]):
+                    writer.writerow(timestamp)
+            QtWidgets.QMessageBox.information(
+                self, "Timestamps saved", "Timestamps saved successfully!")
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)
@@ -1315,9 +1362,9 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                                _video_name in str(tr)
-                                and '_nix' not in str(tr)
-                            ):
+                        _video_name in str(tr)
+                        and '_nix' not in str(tr)
+                        ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
                         break
@@ -1384,10 +1431,14 @@ class AnnolidWindow(MainWindow):
             self.playButton.setIcon(
                 QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
             self.playButton.clicked.connect(self.togglePlay)
+            # create save button
+            self.saveButton = QtWidgets.QPushButton("Save Timestamps", self)
+            self.saveButton.clicked.connect(self.saveTimestampList)
 
             # Add the play button to the status bar
             self.statusBar().addWidget(self.playButton)
             self.statusBar().addWidget(self.seekbar, stretch=1)
+            self.statusBar().addWidget(self.saveButton)
 
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
