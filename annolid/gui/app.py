@@ -196,6 +196,7 @@ class AnnolidWindow(MainWindow):
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
+        self.isPlaying = False
         self.annotation_dir = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
@@ -490,6 +491,23 @@ class AnnolidWindow(MainWindow):
         self.labelFile = None
         self.otherData = None
         self.canvas.resetState()
+
+    def playVideo(self, isPlaying=False):
+        self.isPlaying = isPlaying
+        if self.video_loader is None:
+            return
+        if self.isPlaying:
+            self.timer = QtCore.QTimer()
+            self.timer.timeout.connect(self.openNextImg)
+            self.timer.start(1/self.fps)
+        else:
+            self.timer.stop()
+
+    def startPlaying(self):
+        self.playVideo(isPlaying=True)
+
+    def stopPlaying(self):
+        self.playVideo(isPlaying=False)
 
     def toggleDrawMode(self, edit=True, createMode="polygon"):
         self.canvas.setEditing(edit)
@@ -1231,12 +1249,29 @@ class AnnolidWindow(MainWindow):
             elif event.key() == Qt.Key_0:
                 self.seekbar.setValue(0)
             elif event.key() == Qt.Key_Space:
+                if self.isPlaying:
+                    self.stopPlaying()
+                else:
+                    self.startPlaying()
+            elif event.key() == Qt.Key_E:
                 self.seekbar.setValue(self.seekbar._val_max)
             else:
                 event.ignore()
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)
+
+    def togglePlay(self):
+        if self.isPlaying:
+            self.stopPlaying()
+            self.playButton.setIcon(
+                QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
+            self.playButton.setText("Play")
+        else:
+            self.startPlaying()
+            self.playButton.setIcon(
+                QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaStop))
+            self.playButton.setText("Pause")
 
     def set_frame_number(self, frame_number):
         self.frame_number = frame_number
@@ -1280,8 +1315,8 @@ class AnnolidWindow(MainWindow):
 
                 for tr in _tracking_results:
                     if ('tracking' in str(tr) and
-                            _video_name in str(tr)
-                            and '_nix' not in str(tr)
+                                _video_name in str(tr)
+                                and '_nix' not in str(tr)
                             ):
                         _tracking_csv_file = str(tr)
                         self._df = pd.read_csv(_tracking_csv_file)
@@ -1344,6 +1379,14 @@ class AnnolidWindow(MainWindow):
             self.seekbar.setMaximum(self.num_frames-1)
             self.seekbar.setEnabled(True)
             self.seekbar.resizeEvent()
+            # Create a play button
+            self.playButton = QtWidgets.QPushButton("Play", self)
+            self.playButton.setIcon(
+                QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
+            self.playButton.clicked.connect(self.togglePlay)
+
+            # Add the play button to the status bar
+            self.statusBar().addWidget(self.playButton)
             self.statusBar().addWidget(self.seekbar, stretch=1)
 
     def image_to_canvas(self, qimage, filename, frame_number):
