@@ -954,7 +954,7 @@ class AnnolidWindow(MainWindow):
                 self._time_stamp = convert_frame_number_to_time(
                     self.frame_number)
                 if clean:
-                    title = f"{title}-Video Timestamp:{self._time_stamp}"
+                    title = f"{title}-Video Timestamp:{self._time_stamp}-total:{len(self.timestamp_dict.keys())}"
                     title = f"{title}-Frame_number:{self.frame_number}-File Name:{_filename}"
                 else:
                     title = f"{title}-Video Timestamp:{self._time_stamp}"
@@ -1274,7 +1274,9 @@ class AnnolidWindow(MainWindow):
             for i in range(len(_marks)):
                 if _curr_val == _marks[i].val:
                     self.seekbar.removeMark(_marks[i])
-                    del self.timestamp_dict[(_curr_val, _marks[i].mark_type)]
+                    _key = (_curr_val, _marks[i].mark_type)
+                    if _key in self.timestamp_dict:
+                        del self.timestamp_dict[_key]
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
@@ -1399,7 +1401,7 @@ class AnnolidWindow(MainWindow):
                         except:
                             print('No need to change')
                         break
-                    elif '_timestamps' in str(tr) and _video_name in str(tr):
+                    elif 'timestamp' in str(tr) and _video_name in str(tr):
                         _df_timestamps = pd.read_csv(str(tr))
                         # clear timestamp dict
                         self.timestamp_dict = dict()
@@ -1407,7 +1409,12 @@ class AnnolidWindow(MainWindow):
                         # iterate over the rows of the DataFrame
                         for _, row in _df_timestamps.iterrows():
                             timestamp = row['Timestamp']
-                            frame_number, mark_type = eval(row['Frame_number'])
+                            frame_time = row['Frame_number']
+                            if isinstance(frame_time, int):
+                                frame_number = frame_time
+                                mark_type = 'event_start'
+                            else:
+                                frame_number, mark_type = eval(frame_time)
                             # add the timestamp and frame_number to the dictionary
                             self.timestamp_dict[(
                                 frame_number, mark_type)] = timestamp
@@ -1461,6 +1468,7 @@ class AnnolidWindow(MainWindow):
             self.seekbar.setMaximum(self.num_frames-1)
             self.seekbar.setEnabled(True)
             self.seekbar.resizeEvent()
+            self.seekbar.setTooltipCallable(self.tooltip_callable)
             # Create a play button
             self.playButton = QtWidgets.QPushButton("Play", self)
             self.playButton.setIcon(
@@ -1478,6 +1486,9 @@ class AnnolidWindow(MainWindow):
                 for frame_number, mark_type in self.timestamp_dict.keys():
                     self.add_highlighted_mark(val=frame_number,
                                               mark_type=mark_type)
+
+    def tooltip_callable(self, val):
+        return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
 
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
