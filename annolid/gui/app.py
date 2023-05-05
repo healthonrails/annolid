@@ -199,8 +199,9 @@ class AnnolidWindow(MainWindow):
         self.video_file = None
         self.isPlaying = False
         self._time_stamp = ''
-        self.timestamp_set = set()
+        self.timestamp_dict = dict()
         self.annotation_dir = None
+        self.highlighted_mark = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
 
@@ -612,7 +613,7 @@ class AnnolidWindow(MainWindow):
             self.frame_number = 0
             self.step_size = 1
             self.video_results_folder = None
-            self.timestamp_set = set()
+            self.timestamp_dict = dict()
             self.isPlaying = False
             self._time_stamp = ''
             self.saveButton = None
@@ -1254,6 +1255,26 @@ class AnnolidWindow(MainWindow):
         highlighted_mark = VideoSliderMark(mark_type=mark_type,
                                            val=val, _color=color)
         self.seekbar.addMark(highlighted_mark)
+        return highlighted_mark
+
+    def remove_highlighted_mark(self):
+        if self.highlighted_mark is not None:
+            self.seekbar.setValue(self.highlighted_mark.val)
+            if self.isPlaying:
+                self.togglePlay()
+            self.seekbar.removeMark(self.highlighted_mark)
+            _item = (self.highlighted_mark.val,
+                     self.highlighted_mark.mark_type)
+            if _item in self.timestamp_dict:
+                del self.timestamp_dict[_item]
+                self.highlighted_mark = None
+        else:
+            _curr_val = self.seekbar.value()
+            _marks = list(self.seekbar.getMarks())
+            for i in range(len(_marks)):
+                if _curr_val == _marks[i].val:
+                    self.seekbar.removeMark(_marks[i])
+                    del self.timestamp_dict[(_curr_val, _marks[i].mark_type)]
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
@@ -1272,17 +1293,19 @@ class AnnolidWindow(MainWindow):
             elif event.key() == Qt.Key_S:
                 timestamp = self._time_stamp
                 event_type = 'event_start'
-                self.timestamp_set.add(
-                    (timestamp, (self.frame_number, event_type)))
-                self.add_highlighted_mark(
+                self.timestamp_dict[(
+                    self.frame_number, event_type)] = timestamp
+                self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_E:
                 timestamp = self._time_stamp
                 event_type = 'event_end'
-                self.timestamp_set.add(
-                    (timestamp, (self.frame_number, event_type)))
-                self.add_highlighted_mark(
+                self.timestamp_dict[(
+                    self.frame_number, event_type)] = timestamp
+                self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
+            elif event.key() == Qt.Key_R:
+                self.remove_highlighted_mark()
             elif event.key() == Qt.Key_Q:
                 self.seekbar.setValue(self.seekbar._val_max)
             else:
@@ -1300,8 +1323,8 @@ class AnnolidWindow(MainWindow):
             with open(file_path, 'w') as f:
                 writer = csv.writer(f)
                 writer.writerow(['Timestamp', 'Frame_number'])
-                for timestamp in sorted(self.timestamp_set, key=lambda x: x[1]):
-                    writer.writerow(timestamp)
+                for _key in sorted(self.timestamp_dict.keys()):
+                    writer.writerow([self.timestamp_dict[_key], _key])
             QtWidgets.QMessageBox.information(
                 self, "Timestamps saved", "Timestamps saved successfully!")
 
@@ -1376,6 +1399,18 @@ class AnnolidWindow(MainWindow):
                         except:
                             print('No need to change')
                         break
+                    elif '_timestamps' in str(tr) and _video_name in str(tr):
+                        _df_timestamps = pd.read_csv(str(tr))
+                        # clear timestamp dict
+                        self.timestamp_dict = dict()
+
+                        # iterate over the rows of the DataFrame
+                        for _, row in _df_timestamps.iterrows():
+                            timestamp = row['Timestamp']
+                            frame_number, mark_type = eval(row['Frame_number'])
+                            # add the timestamp and frame_number to the dictionary
+                            self.timestamp_dict[(
+                                frame_number, mark_type)] = timestamp
 
                 if self._df is not None:
                     try:
@@ -1439,6 +1474,10 @@ class AnnolidWindow(MainWindow):
             self.statusBar().addWidget(self.playButton)
             self.statusBar().addWidget(self.seekbar, stretch=1)
             self.statusBar().addWidget(self.saveButton)
+            if self.timestamp_dict:
+                for frame_number, mark_type in self.timestamp_dict.keys():
+                    self.add_highlighted_mark(val=frame_number,
+                                              mark_type=mark_type)
 
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
