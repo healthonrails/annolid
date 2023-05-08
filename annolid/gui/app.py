@@ -49,6 +49,7 @@ from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
 import webbrowser
 import atexit
+import qimage2ndarray
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
@@ -121,10 +122,8 @@ class LoadFrameThread(QtCore.QObject):
 
         self.working_lock.unlock()
         if frame is not None:
-            img_pil = PIL.Image.fromarray(frame)
-            imageData = utils.img_pil_to_data(img_pil)
-            image = QtGui.QImage.fromData(imageData)
-            self.res_frame.emit(image)
+            qimage = qimage2ndarray.array2qimage(frame)
+            self.res_frame.emit(qimage)
 
     def request(self, frame_number):
         self.frame_queue.append(frame_number)
