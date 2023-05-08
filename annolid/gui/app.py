@@ -503,7 +503,11 @@ class AnnolidWindow(MainWindow):
         if self.isPlaying:
             self.timer = QtCore.QTimer()
             self.timer.timeout.connect(self.openNextImg)
-            self.timer.start(1/self.fps)
+            if self.fps:
+                self.timer.start(1 / self.fps)
+            else:
+                # handle the zero FPS case here, e.g.:
+                self.timer.start(1/30)
         else:
             self.timer.stop()
 
@@ -1248,12 +1252,26 @@ class AnnolidWindow(MainWindow):
             self.statusBar().showMessage(
                 self.tr(f"Training..."))
 
-    def add_highlighted_mark(self, val,
+    def handle_uniq_label_list_selection_change(self):
+        selected_items = self.uniqLabelList.selectedItems()
+        if selected_items:
+            self.add_highlighted_mark()
+        else:
+            self.add_highlighted_mark(mark_type='event_end',
+                                      color='red')
+
+    def add_highlighted_mark(self, val=None,
                              mark_type='event_start',
                              color='green'):
         """Adds a new highlighted mark with a green filled color to the slider."""
+        if val is None:
+            val = self.frame_number
+        else:
+            val = int(val)
         highlighted_mark = VideoSliderMark(mark_type=mark_type,
                                            val=val, _color=color)
+        self.timestamp_dict[(val, mark_type)
+                            ] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
         self.seekbar.addMark(highlighted_mark)
         return highlighted_mark
 
@@ -1293,17 +1311,11 @@ class AnnolidWindow(MainWindow):
             elif event.key() == Qt.Key_Space:
                 self.togglePlay()
             elif event.key() == Qt.Key_S:
-                timestamp = self._time_stamp
                 event_type = 'event_start'
-                self.timestamp_dict[(
-                    self.frame_number, event_type)] = timestamp
                 self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_E:
-                timestamp = self._time_stamp
                 event_type = 'event_end'
-                self.timestamp_dict[(
-                    self.frame_number, event_type)] = timestamp
                 self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_R:
@@ -1687,6 +1699,8 @@ class AnnolidWindow(MainWindow):
             self.set_frame_number(self.frame_number)
             # update the seekbar value
             self.seekbar.setValue(self.frame_number)
+            self.uniqLabelList.itemSelectionChanged.connect(
+                self.handle_uniq_label_list_selection_change)
 
         elif len(self.imageList) <= 0:
             return
