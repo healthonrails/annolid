@@ -1364,6 +1364,39 @@ class AnnolidWindow(MainWindow):
         self.current_frame_time_stamp = self.video_loader.get_time_stamp()
         self.frame_loader.request(frame_number)
 
+    def load_tracking_results(self, cur_video_folder, video_filename):
+        """Load tracking results from CSV files in the given folder that match the video filename."""
+        _tracking_csv_file = None
+        _video_name = Path(video_filename).stem
+        for tr in cur_video_folder.glob('*.csv'):
+            if not tr.is_file() or not tr.suffix == '.csv':
+                continue
+
+            if 'timestamp' in tr.name and _video_name in tr.name:
+                _df_timestamps = pd.read_csv(str(tr))
+                # iterate over the rows of the DataFrame
+                for _, row in _df_timestamps.iterrows():
+                    timestamp = row['Timestamp']
+                    frame_time = row['Frame_number']
+                    if isinstance(frame_time, int):
+                        frame_number = frame_time
+                        mark_type = 'event_start'
+                    else:
+                        frame_number, mark_type = eval(frame_time)
+                    # add the timestamp and frame_number to the dictionary
+                    self.timestamp_dict[(
+                        frame_number, mark_type)] = timestamp
+            if 'tracking' in tr.name and _video_name in tr.name and '_nix' not in tr.name:
+                _tracking_csv_file = tr
+            elif '_labels' in tr.name and _video_name in tr.name:
+                self._df = pd.read_csv(tr)
+                self._df.rename(
+                    columns={'Unnamed: 0': 'frame_number'}, inplace=True)
+
+        if _tracking_csv_file is not None:
+            self._df = pd.read_csv(_tracking_csv_file)
+            self._df = self._df.drop(columns=['Unnamed: 0'], errors='ignore')
+
     def openVideo(self, _value=False):
         """open a video for annotaiton frame by frame
 
@@ -1389,53 +1422,10 @@ class AnnolidWindow(MainWindow):
 
         if video_filename:
             cur_video_folder = Path(video_filename).parent
-            _tracking_results = cur_video_folder.glob('*.csv')
-            _tracking_results = list(_tracking_results)
-            if len(_tracking_results) >= 1:
-                # go over all the tracking csv files
-                # use the first matched file with video name
-                # and segmentation
-                _video_name = str(Path(video_filename).stem)
-
-                for tr in _tracking_results:
-                    if ('tracking' in str(tr) and
-                        _video_name in str(tr)
-                        and '_nix' not in str(tr)
-                        ):
-                        _tracking_csv_file = str(tr)
-                        self._df = pd.read_csv(_tracking_csv_file)
-                        break
-                    elif '_labels' in str(tr) and _video_name in str(tr):
-                        self._df = pd.read_csv(str(tr))
-                        try:
-                            self._df.rename(
-                                columns={'Unnamed: 0': 'frame_number'}, inplace=True)
-                        except:
-                            print('No need to change')
-                        break
-                    elif 'timestamp' in str(tr) and _video_name in str(tr):
-                        _df_timestamps = pd.read_csv(str(tr))
-                        # clear timestamp dict
-                        self.timestamp_dict = dict()
-
-                        # iterate over the rows of the DataFrame
-                        for _, row in _df_timestamps.iterrows():
-                            timestamp = row['Timestamp']
-                            frame_time = row['Frame_number']
-                            if isinstance(frame_time, int):
-                                frame_number = frame_time
-                                mark_type = 'event_start'
-                            else:
-                                frame_number, mark_type = eval(frame_time)
-                            # add the timestamp and frame_number to the dictionary
-                            self.timestamp_dict[(
-                                frame_number, mark_type)] = timestamp
-
-                if self._df is not None:
-                    try:
-                        self._df = self._df.drop(columns=['Unnamed: 0'])
-                    except KeyError:
-                        pass
+            # go over all the tracking csv files
+            # use the first matched file with video name
+            # and segmentation
+            self.load_tracking_results(cur_video_folder, video_filename)
 
             self.video_results_folder = Path(video_filename).with_suffix('')
 
