@@ -502,11 +502,7 @@ class AnnolidWindow(MainWindow):
         if self.isPlaying:
             self.timer = QtCore.QTimer()
             self.timer.timeout.connect(self.openNextImg)
-            if self.fps:
-                self.timer.start(1 / self.fps)
-            else:
-                # handle the zero FPS case here, e.g.:
-                self.timer.start(1/30)
+            self.timer.start(10)
         else:
             self.timer.stop()
 
@@ -1685,6 +1681,7 @@ class AnnolidWindow(MainWindow):
                     self.frame_number += 1
             else:
                 self.frame_number = self.num_frames
+                self.togglePlay()
             self.set_frame_number(self.frame_number)
             # update the seekbar value
             self.seekbar.setValue(self.frame_number)

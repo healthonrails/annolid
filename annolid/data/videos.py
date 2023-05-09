@@ -6,12 +6,18 @@ import numpy as np
 import random
 import subprocess
 from pathlib import Path
-import decord as de
 from collections import deque
 import multiprocessing
 from annolid.segmentation.maskrcnn import inference
 
-sys.path.append("detector/yolov5/")
+try:
+    import decord as de
+    IS_DECORD_INSTALLED = True
+except ImportError:
+    IS_DECORD_INSTALLED = False
+    print("Decord is not installed.")
+else:
+    print("Decord is installed.")
 
 
 def frame_from_video(video, num_frames):
@@ -174,22 +180,20 @@ def video_loader(video_file=None):
     return vr
 
 
-class CV2Video():
-    def __init__(self, video_file) -> None:
-        if not Path(video_file).exists:
-            return
-        self.cap = cv2.VideoCapture(video_file)
+class CV2Video:
+    def __init__(self, video_file):
+        self.video_file = Path(video_file).resolve()
+
+        if IS_DECORD_INSTALLED:
+            self.reader = de.VideoReader(str(self.video_file))
+        else:
+            self.reader = None
+            self.cap = cv2.VideoCapture(str(self.video_file))
+        self.current_frame_timestamp = None
         self.width = None
         self.height = None
         self.first_frame = None
         self.fps = None
-        self.current_frame_timestamp = None
-
-    @property
-    def __lock(self):
-        if not hasattr(self, "_lock"):
-            self._lock = multiprocessing.RLock()
-        return self._lock
 
     def get_first_frame(self):
         if self.first_frame is None:
@@ -207,30 +211,38 @@ class CV2Video():
         return self.height
 
     def get_fps(self):
-        # Get the FPS of the video
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.reader is not None:
+            self.fps = self.reader.get_avg_fps()
+        else:
+            self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         return self.fps
 
     def load_frame(self, frame_number):
-        with self.__lock:
+        if self.reader is not None:
+            frame = self.reader[frame_number].asnumpy()
+        else:
             if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != frame_number:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
                 self.current_frame_timestamp = self.cap.get(
                     cv2.CAP_PROP_POS_MSEC)
             ret, frame = self.cap.read()
 
-        if not ret or frame is None:
-            raise KeyError(f"Cannot load frame number: {frame_number}")
+            if not ret or frame is None:
+                raise KeyError(f"Cannot load frame number: {frame_number}")
 
-        # convert bgr to rgb
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # convert bgr to rgb
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         return frame
 
     def get_time_stamp(self):
         return self.current_frame_timestamp
 
     def total_frames(self):
-        return int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if self.reader is not None:
+            return len(self.reader)
+        else:
+            return int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
 
 def extract_frames(video_file='None',
@@ -405,6 +417,7 @@ def track(video_file=None,
           name="YOLOV5",
           weights=None
           ):
+
     points = [deque(maxlen=30) for _ in range(1000)]
 
     if name == "YOLOV5":
@@ -412,6 +425,7 @@ def track(video_file=None,
         # if the user only wants to use it for
         # extract frames
         # maybe there is a better way to do this
+        sys.path.append("detector/yolov5/")
         import torch
         from annolid.detector.yolov5.detect import detect
         from annolid.utils.config import get_config
