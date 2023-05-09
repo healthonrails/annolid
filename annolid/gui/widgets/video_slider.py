@@ -89,7 +89,7 @@ class VideoSliderMark:
 
     @property
     def top_pad(self):
-        if self.mark_type in ["tick_column", "event_start", "event_end"]:
+        if self.mark_type in ["tick_column"]:
             return 40
         if self.mark_type == "tick":
             return 0
@@ -97,7 +97,7 @@ class VideoSliderMark:
 
     @property
     def bottom_pad(self):
-        if self.mark_type in ["tick_column", "event_start", "event_end"]:
+        if self.mark_type in ["tick_column"]:
             return 200
         if self.mark_type == "tick":
             return 0
@@ -693,7 +693,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
                                   width, height, pen, brush)
         self._mark_items[new_mark] = line
 
-        if new_mark.mark_type == "tick":
+        if new_mark.mark_type in ["tick", "event_start", "event_end"]:
             # Show tick mark behind other slider marks
             self._mark_items[new_mark].setZValue(0)
 
