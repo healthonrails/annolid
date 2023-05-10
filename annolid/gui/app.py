@@ -1263,12 +1263,13 @@ class AnnolidWindow(MainWindow):
             val = self.frame_number
         else:
             val = int(val)
-        highlighted_mark = VideoSliderMark(mark_type=mark_type,
-                                           val=val, _color=color)
-        self.timestamp_dict[(val, mark_type)
-                            ] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
-        self.seekbar.addMark(highlighted_mark)
-        return highlighted_mark
+        if (val, mark_type) not in self.timestamp_dict:
+            highlighted_mark = VideoSliderMark(mark_type=mark_type,
+                                               val=val, _color=color)
+            self.timestamp_dict[(val, mark_type)
+                                ] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
+            self.seekbar.addMark(highlighted_mark)
+            return highlighted_mark
 
     def remove_highlighted_mark(self):
         if self.highlighted_mark is not None:
@@ -1281,6 +1282,14 @@ class AnnolidWindow(MainWindow):
             if _item in self.timestamp_dict:
                 del self.timestamp_dict[_item]
                 self.highlighted_mark = None
+        elif self.seekbar.isMarkedVal(self.frame_number):
+            cur_marks = self.seekbar.getMarksAtVal(self.frame_number)
+            for cur_mark in cur_marks:
+                self.seekbar.removeMark(cur_mark)
+                _key = (self.frame_number, cur_mark.mark_type)
+                if _key in self.timestamp_dict:
+                    del self.timestamp_dict[_key]
+            self.seekbar.setTickMarks()
         else:
             _curr_val = self.seekbar.value()
             _marks = list(self.seekbar.getMarks())
@@ -1290,6 +1299,7 @@ class AnnolidWindow(MainWindow):
                     _key = (_curr_val, _marks[i].mark_type)
                     if _key in self.timestamp_dict:
                         del self.timestamp_dict[_key]
+            self.seekbar.setTickMarks()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
@@ -1485,7 +1495,10 @@ class AnnolidWindow(MainWindow):
                                               mark_type=mark_type)
 
     def tooltip_callable(self, val):
-        return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
+        if self.highlighted_mark is not None:
+            if self.frame_number == val:
+                return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
+        return ''
 
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
