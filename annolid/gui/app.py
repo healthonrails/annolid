@@ -1257,13 +1257,15 @@ class AnnolidWindow(MainWindow):
 
     def add_highlighted_mark(self, val=None,
                              mark_type='event_start',
-                             color='green'):
+                             color='green',
+                             init_load=False
+                             ):
         """Adds a new highlighted mark with a green filled color to the slider."""
         if val is None:
             val = self.frame_number
         else:
             val = int(val)
-        if (val, mark_type) not in self.timestamp_dict:
+        if init_load or (val, mark_type) not in self.timestamp_dict:
             highlighted_mark = VideoSliderMark(mark_type=mark_type,
                                                val=val, _color=color)
             self.timestamp_dict[(val, mark_type)
@@ -1492,7 +1494,9 @@ class AnnolidWindow(MainWindow):
             if self.timestamp_dict:
                 for frame_number, mark_type in self.timestamp_dict.keys():
                     self.add_highlighted_mark(val=frame_number,
-                                              mark_type=mark_type)
+                                              mark_type=mark_type,
+                                              init_load=True
+                                              )
 
     def tooltip_callable(self, val):
         if self.highlighted_mark is not None:
