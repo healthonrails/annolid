@@ -454,6 +454,7 @@ class AnnolidWindow(MainWindow):
 
     def update_step_size(self, value):
         self.step_size = value
+        self.stepSizeWidget.setValue(self.step_size)
 
     def segmentAnything(self,):
         try:
@@ -1329,6 +1330,16 @@ class AnnolidWindow(MainWindow):
                 self.remove_highlighted_mark()
             elif event.key() == Qt.Key_Q:
                 self.seekbar.setValue(self.seekbar._val_max)
+            elif event.key() == Qt.Key_1 or event.key() == Qt.Key_I:
+                self.update_step_size(1)
+            elif event.key() == Qt.Key_2 or event.key() == Qt.Key_F:
+                self.update_step_size(self.step_size + 10)
+            elif event.key() == Qt.Key_B:
+                self.update_step_size(self.step_size - 10)
+            elif event.key() == Qt.Key_M:
+                self.update_step_size(self.step_size - 1)
+            elif event.key() == Qt.Key_P:
+                self.update_step_size(self.step_size + 1)
             else:
                 event.ignore()
 
