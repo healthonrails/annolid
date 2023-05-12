@@ -6,7 +6,7 @@ from qtpy import QtWidgets
 class StepSizeWidget(QtWidgets.QSpinBox):
     def __init__(self, value=1):
         super(StepSizeWidget, self).__init__()
-        self.setRange(1, 1000)
+        self.setRange(-1000, 1000)
         self.setValue(value)
         self.setToolTip("Video Step Size")
         self.setStatusTip(self.toolTip())
