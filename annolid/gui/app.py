@@ -954,12 +954,12 @@ class AnnolidWindow(MainWindow):
                 self._time_stamp = convert_frame_number_to_time(
                     self.frame_number)
                 if clean:
-                    title = f"{title}-Video Timestamp:{self._time_stamp}-total:{len(self.timestamp_dict.keys())}"
-                    title = f"{title}-Frame_number:{self.frame_number}-File Name:{_filename}"
+                    title = f"{title}-Video Timestamp:{self._time_stamp}|Events:{len(self.timestamp_dict.keys())}"
+                    title = f"{title}|Frame_number:{self.frame_number}"
                 else:
-                    title = f"{title}-Video Timestamp:{self._time_stamp}"
+                    title = f"{title}|Video Timestamp:{self._time_stamp}"
 
-                    title = f"{title}-Frame_number:{self.frame_number}-{_filename}*"
+                    title = f"{title}|Frame_number:{self.frame_number}*"
             else:
                 if clean:
                     title = "{} - {}".format(title, _filename)
