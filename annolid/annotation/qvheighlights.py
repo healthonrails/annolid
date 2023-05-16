@@ -52,7 +52,3 @@ def convert_csv_to_json(csv_file,
     # Write the dataset to a JSONL file
     write_jsonl_file(dataset, output_file_path)
     return dataset
-
-
-if __name__ == '__main__':
-    convert_csv_to_json("/Users/chenyang/Downloads/ants_timestamps.csv")
