@@ -43,7 +43,6 @@ from annolid.gui.widgets import TrainModelDialog
 from annolid.gui.widgets import Glitter2Dialog
 from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import TrackDialog
-from qtpy.QtWebEngineWidgets import QWebEngineView
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
@@ -155,6 +154,7 @@ class VisualizationWindow(QtWidgets.QDialog):
 
     def __init__(self):
         super(VisualizationWindow, self).__init__()
+        from qtpy.QtWebEngineWidgets import QWebEngineView
         self.setWindowTitle("Visualization Tensorboard")
         self.process = start_tensorboard()
         self.browser = QWebEngineView()
