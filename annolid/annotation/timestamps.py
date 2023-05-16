@@ -35,3 +35,24 @@ def convert_frame_number_to_time(frame_number, fps=29.97):
     milliseconds = int((total_seconds - int(total_seconds)) * 1000)
     time_stamp = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
     return time_stamp
+
+
+def convert_timestamp_to_seconds(timestamp):
+    """
+    Convert a timestamp in the format '00:00:01.368' to seconds.
+
+    Args:
+        timestamp (str): The timestamp in the format 'HH:MM:SS.MMM'.
+
+    Returns:
+        float: The equivalent number of seconds.
+
+    Examples:
+        >>> convert_timestamp_to_seconds('00:00:01.368')
+        1.368
+        >>> convert_timestamp_to_seconds('01:23:45.678')
+        5025.678
+    """
+    hours, minutes, seconds = map(float, timestamp.split(':'))
+    total_seconds = (hours * 3600) + (minutes * 60) + seconds
+    return total_seconds
