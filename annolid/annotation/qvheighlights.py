@@ -15,6 +15,39 @@ def write_jsonl_file(dataset, output_file):
 def convert_csv_to_json(csv_file,
                         query=None,
                         output_file_path="output.jsonl"):
+    """
+    Convert a CSV file containing event start and event end annotations to a JSONL file.
+
+    Args:
+        csv_file (str): The path to the CSV file.
+        query (str, optional): The query for the annotations. Defaults to None.
+        output_file_path (str, optional): The path to the output JSONL file. Defaults to "output.jsonl".
+
+    Returns:
+        None
+
+    Examples:
+        >>> convert_csv_to_json('example.csv')
+        # Converts the 'example.csv' file to 'output.jsonl' without a query field
+
+        >>> convert_csv_to_json('example.csv', query='A family is playing basketball together on a green court outside.')
+        # Converts the 'example.csv' file to 'output.jsonl' with the provided query field
+
+        >>> convert_csv_to_json('example.csv', output_file_path='annotations.jsonl')
+        # Converts the 'example.csv' file to 'annotations.jsonl' without a query field
+
+        Below is an example of the annotation:
+
+        {
+            "qid": 8737, 
+            "query": "A family is playing basketball together on a green court outside.", 
+            "duration": 126, 
+            "vid": "bP5KfdFJzC4_660.0_810.0", 
+            "relevant_windows": [[0, 16]],
+            "relevant_clip_ids": [0, 1, 2, 3, 4, 5, 6, 7], 
+            "saliency_scores": [[4, 1, 1], [4, 1, 1], [4, 2, 1], [4, 3, 2], [4, 3, 2], [4, 3, 3], [4, 3, 3], [4, 3, 2]]
+        }
+    """
     dataset = []
     with open(csv_file, 'r') as file:
         reader = csv.reader(file)
