@@ -39,6 +39,54 @@ def point_list_to_numpy_array(point_list: List[str]) -> np.ndarray:
     return np.array([xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax])
 
 
+def find_bbox_from_shape(shape):
+    """
+    Calculate the bounding box coordinates (cx, cy, width, height) from the labelme shape.
+
+    Args:
+        shape (dict): Labelme shape dictionary containing the "points" list.
+
+    Returns:
+        tuple: A tuple containing the center coordinates (cx, cy) and the width and height of the bounding box.
+
+    Example:
+        shape = {
+            "label": "rat",
+            "points": [
+                [523.4615384615385, 196.15384615384613],
+                [515.7692307692307, 217.69230769230768],
+                ...
+            ],
+            "group_id": null,
+            "shape_type": "polygon",
+            "flags": {}
+        }
+
+        cx, cy, width, height = find_bbox_from_shape(shape)
+    """
+    points = shape["points"]
+
+    # Extract x and y coordinates separately
+    x_coords = [point[0] for point in points]
+    y_coords = [point[1] for point in points]
+
+    # Calculate minimum and maximum x and y values
+    min_x = min(x_coords)
+    max_x = max(x_coords)
+    min_y = min(y_coords)
+    max_y = max(y_coords)
+
+    # Calculate center coordinates (cx, cy)
+    cx = (min_x + max_x) / 2
+    cy = (min_y + max_y) / 2
+
+    # Calculate width and height
+    width = max_x - min_x
+    height = max_y - min_y
+
+    return cx, cy, width, height
+
+
 class Labelme2YOLO:
     """Class that converts Labelme JSON files to YOLO format.
 
@@ -270,6 +318,9 @@ class Labelme2YOLO:
         """
         Returns the label_id and scaled points of the given shape object in YOLO format.
         """
+        cx, cy, w, h = find_bbox_from_shape(labelme_shape)
+        scaled_cxcywh = [cx/image_width, cy /
+                         image_height, w/image_width, h/image_height]
         # Extract the points from the shape object
         point_list = labelme_shape['points']
         # Create an array of zeros with length 2 * len(point_list)
@@ -282,7 +333,7 @@ class Labelme2YOLO:
         # Map the label of the shape to a label_id
         label_id = self.label_to_id_dict[labelme_shape['label']]
         # Return the label_id and points as a list
-        return label_id, points.tolist()
+        return label_id,  scaled_cxcywh + points.tolist()
 
     def circle_shape_to_yolo(self, labelme_shape, image_height, image_width):
         """

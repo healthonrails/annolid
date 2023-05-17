@@ -55,7 +55,7 @@ def create_dataset(json_file='annotation.json',
         labels
             1.txt
             2.txt 
-    Inside the 1.txt, the first value is class id, rest of them are x, y pairs
+    Inside the 1.txt, the first value is class id, cx, cy, width, height, rest of them are x, y pairs
     0 0.6481018062499999 0.2623046875 0.6664123531249999 0.2623046875 0.6526794437500001 0.1952907984375
       0.62596435625 0.18576388906250002 0.6037536625000001 0.189420571875 0.6072265625 0.21825086875 
       0.6204650875 0.24717881875 0.6481018062499999 0.2623046875
@@ -66,7 +66,7 @@ def create_dataset(json_file='annotation.json',
 
     How to convert COCO format dataset to YOLOV8 detection bbox format?
     python annolid/main.py --coco2yolo ~/Downloads/Test\ frames_coco_dataset/train/annotations.json \
-          --dataset_type train  --to ~/Downloads/test_mouse/ --seg_or_detect detect
+          --dataset_type train  --to ~/Downloads/test_mouse/ --seg_or_detect detect | seg
 
     Returns:
         list: a list of labeled class names
@@ -100,8 +100,12 @@ def create_dataset(json_file='annotation.json',
         with open(anno_txt_flie, 'w') as atf:
             for ann in data['annotations']:
                 if ann["image_id"] == img_id:
+                    if ann['bbox']:
+                        box = xywh2cxcywh(
+                            ann["bbox"], (img_width, img_height))
                     if ann["segmentation"] and is_segmentation == 'seg':
                         points = []
+
                         i = 0
                         while i < len(ann['segmentation'][0])-1:
                             points.append(str(ann['segmentation']
@@ -111,20 +115,18 @@ def create_dataset(json_file='annotation.json',
                             i += 2
                         if class_id is not None:
                             atf.write(
-                                f"{class_id} {ann['category_id']-1} {' '.join(points)}\n")
+                                f"{class_id} {ann['category_id']-1} {box[0]} {box[1]} {box[2]} {box[3]} {' '.join(points)}\n")
                         else:
                             atf.write(
-                                f"{ann['category_id']-1} {' '.join(points)}\n")
+                                f"{ann['category_id']-1} {box[0]} {box[1]} {box[2]} {box[3]} {' '.join(points)}\n")
                     elif is_segmentation == 'detect':
-                        if ann['bbox']:
-                            box = xywh2cxcywh(
-                                ann["bbox"], (img_width, img_height))
-                            if class_id is not None:
-                                atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"]-1, box[0],
-                                                                   box[1], box[2], box[3]))
-                            else:
-                                atf.write("%s %s %s %s %s\n" % (ann["category_id"]-1, box[0],
-                                                                box[1], box[2], box[3]))
+
+                        if class_id is not None:
+                            atf.write("%s %s %s %s %s %s\n" % (class_id, ann["category_id"]-1, box[0],
+                                                               box[1], box[2], box[3]))
+                        else:
+                            atf.write("%s %s %s %s %s\n" % (ann["category_id"]-1, box[0],
+                                                            box[1], box[2], box[3]))
 
     for c in data["categories"]:
         # exclude backgroud with id 0
