@@ -46,6 +46,7 @@ from annolid.gui.widgets import TrackDialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
+from annolid.gui.widgets.audio import AudioWidget
 import webbrowser
 import atexit
 import qimage2ndarray
@@ -439,6 +440,8 @@ class AnnolidWindow(MainWindow):
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
         self.video_results_folder = None
         self.seekbar = None
+        self.audio_widget = None
+        self.audio_dock = None
 
         self.frame_worker = QtCore.QThread()
         self.frame_loader = LoadFrameThread()
@@ -600,6 +603,12 @@ class AnnolidWindow(MainWindow):
             self.video_loader = None
             self.num_frames = None
             self.video_file = None
+            if self.audio_widget:
+                self.audio_widget.close()
+            self.audio_widget = None
+            if self.audio_dock:
+                self.audio_dock.close()
+            self.audio_dock = None
             self.annotation_dir = None
             self.statusBar().removeWidget(self.seekbar)
             self.statusBar().removeWidget(self.saveButton)
@@ -1458,6 +1467,12 @@ class AnnolidWindow(MainWindow):
 
             self.num_frames = self.video_loader.total_frames()
             self.seekbar = VideoSlider()
+            self.audio_widget = AudioWidget(self.video_file)
+            self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
+            self.audio_dock.setObjectName("Audio")
+            self.audio_dock.setWidget(self.audio_widget)
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
 
@@ -1497,7 +1512,6 @@ class AnnolidWindow(MainWindow):
             # create save button
             self.saveButton = QtWidgets.QPushButton("Save Timestamps", self)
             self.saveButton.clicked.connect(self.saveTimestampList)
-
             # Add the play button to the status bar
             self.statusBar().addWidget(self.playButton)
             self.statusBar().addWidget(self.seekbar, stretch=1)
@@ -2016,6 +2030,7 @@ def main():
     config = get_config(config_file_or_yaml, config_from_args)
 
     app = QtWidgets.QApplication(sys.argv)
+
     app.setApplicationName(__appname__)
     annolid_icon = QtGui.QIcon(
         str(Path(__file__).resolve().parent / "icons/icon_annolid.png"))

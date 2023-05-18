@@ -1,5 +1,14 @@
 import warnings
-
+try:
+    import sounddevice as sd
+except ImportError:
+    print("The 'sounddevice' module is required for audio playback.")
+    print("Please install it by running: pip install sounddevice")
+try:
+    import librosa
+except ImportError:
+    print("The 'librosa' module is required for audio loading.")
+    print("Please install it by running: pip install librosa")
 # Suppress the Warnings
 warnings.filterwarnings("ignore")
 
@@ -23,7 +32,6 @@ class AudioLoader:
         Parameters:
         - file_path (str): Path to the video or audio file.
         """
-        import librosa
         # Load audio data and sample rate using librosa
         audio_data, sample_rate = librosa.load(file_path, sr=None)
         self.audio_data = audio_data
@@ -57,6 +65,25 @@ class AudioLoader:
         return audio_frame
 
     def play(self):
-        import sounddevice as sd
-        sd.play(self.audio_data)
-        sd.wait()
+        """
+        Play the entire audio file.
+        """
+        sd.play(self.audio_data, self.sample_rate, blocking=False)
+
+    def play_selected_part(self, x_start, x_end):
+        """
+        Play the selected part of the audio between the given x-axis values.
+
+        Args:
+            x_start (float): Start position on the x-axis.
+            x_end (float): End position on the x-axis.
+        """
+        # Calculate the start and end indices based on x-axis values
+        start_index = int(x_start * self.sample_rate)
+        end_index = int(x_end * self.sample_rate)
+
+        # Extract the selected part of the audio
+        selected_audio = self.audio_data[start_index:end_index]
+
+        # Play the selected audio using sounddevice
+        sd.play(selected_audio, self.sample_rate, blocking=True)

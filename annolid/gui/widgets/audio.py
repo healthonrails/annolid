@@ -1,10 +1,11 @@
 import sys
 import numpy as np
-from PyQt5 import QtWidgets
-from PyQt5.QtWidgets import QVBoxLayout, QGridLayout
+from qtpy import QtWidgets
+from qtpy.QtWidgets import QVBoxLayout, QGridLayout
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from annolid.data.audios import AudioLoader
+from qtpy.QtCore import Qt
 
 
 class AudioWidget(QtWidgets.QWidget):
@@ -23,11 +24,16 @@ class AudioWidget(QtWidgets.QWidget):
         self.figure_spectrum = Figure()
         self.canvas_waveform = FigureCanvas(self.figure_waveform)
         self.canvas_spectrum = FigureCanvas(self.figure_spectrum)
+
         self.layout = QGridLayout(self)
         self.layout.addWidget(self.canvas_waveform, 0, 0)
         self.layout.addWidget(self.canvas_spectrum, 1, 0)
         self.setLayout(self.layout)
         self.audio_loader = AudioLoader(audio_path)
+        self.canvas_waveform.mpl_connect(
+            'button_press_event', self.on_canvas_clicked)
+        self.canvas_spectrum.mpl_connect(
+            'button_press_event', self.on_canvas_clicked)
 
         self.plot()
 
@@ -55,6 +61,20 @@ class AudioWidget(QtWidgets.QWidget):
 
         self.canvas_waveform.draw()
         self.canvas_spectrum.draw()
+
+    def on_canvas_clicked(self, event):
+        """
+        Handle the mouse press event on the canvas.
+
+        Args:
+            event (matplotlib.backend_bases.MouseEvent): Mouse event object.
+        """
+        if event.button == Qt.LeftButton:
+            x = event.xdata
+            if x is not None:
+                x_start = x
+                x_end = x + 1
+                self.audio_loader.play_selected_part(x_start, x_end)
 
 
 if __name__ == '__main__':
