@@ -7,7 +7,6 @@ import random
 import subprocess
 from pathlib import Path
 from collections import deque
-import multiprocessing
 from annolid.segmentation.maskrcnn import inference
 
 try:
@@ -16,8 +15,6 @@ try:
 except ImportError:
     IS_DECORD_INSTALLED = False
     print("Decord is not installed.")
-else:
-    print("Decord is installed.")
 
 
 def frame_from_video(video, num_frames):
