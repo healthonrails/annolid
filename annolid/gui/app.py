@@ -1992,11 +1992,33 @@ def main():
         action="store_true",
         help="show version"
     )
+    # config for the gui
+    parser.add_argument(
+        "--nodata",
+        dest="store_data",
+        action="store_false",
+        help="stop storing image data to JSON file",
+        default=argparse.SUPPRESS,
+    )
+
+    parser.add_argument(
+        "--autosave",
+        dest="auto_save",
+        action="store_true",
+        help="auto save",
+        default=argparse.SUPPRESS,
+    )
 
     parser.add_argument(
         '--labels',
         default=argparse.SUPPRESS,
         help="comma separated list of labels or file containing labels"
+    )
+
+    parser.add_argument(
+        "--flags",
+        help="comma separated list of flags OR file containing flags",
+        default=argparse.SUPPRESS,
     )
 
     default_config_file = str(Path.home() / '.labelmerc')
@@ -2007,7 +2029,27 @@ def main():
         help=f"config file or yaml format string default {default_config_file}"
     )
 
+    parser.add_argument(
+        "--keep-prev",
+        action="store_true",
+        help="keep annotation of previous frame",
+        default=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        help="epsilon to find nearest vertex on canvas",
+        default=argparse.SUPPRESS,
+    )
+
     args = parser.parse_args()
+
+    if hasattr(args, "flags"):
+        if os.path.isfile(args.flags):
+            with codecs.open(args.flags, "r", encoding="utf-8") as f:
+                args.flags = [line.strip() for line in f if line.strip()]
+        else:
+            args.flags = [line for line in args.flags.split(",") if line]
 
     if hasattr(args, "labels"):
         if Path(args.labels).is_file():
