@@ -251,6 +251,14 @@ class AnnolidWindow(MainWindow):
             )
         ))
 
+        open_audio = action(
+            self.tr("&Open Audio"),
+            self.openAudio,
+            None,
+            "Open Audio",
+            self.tr("Open Audio")
+        )
+
         step_size = QtWidgets.QWidgetAction(self)
         step_size.setIcon(QtGui.QIcon(
             str(
@@ -425,7 +433,7 @@ class AnnolidWindow(MainWindow):
         self.tools.clear()
         utils.addActions(self.tools, self.actions.tool)
         utils.addActions(self.menus.frames, (frames,))
-        utils.addActions(self.menus.open_video, (open_video,))
+        utils.addActions(self.menus.open_video, (open_video, open_audio))
         utils.addActions(self.menus.coco, (coco,))
         utils.addActions(self.menus.models, (models,))
         utils.addActions(self.menus.visualization, (visualization,))
@@ -458,6 +466,14 @@ class AnnolidWindow(MainWindow):
     def update_step_size(self, value):
         self.step_size = value
         self.stepSizeWidget.setValue(self.step_size)
+
+    def openAudio(self):
+        if self.video_file:
+            self.audio_widget = AudioWidget(self.video_file)
+            self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
+            self.audio_dock.setObjectName("Audio")
+            self.audio_dock.setWidget(self.audio_widget)
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
 
     def segmentAnything(self,):
         try:
@@ -1467,12 +1483,6 @@ class AnnolidWindow(MainWindow):
 
             self.num_frames = self.video_loader.total_frames()
             self.seekbar = VideoSlider()
-            self.audio_widget = AudioWidget(self.video_file)
-            self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
-            self.audio_dock.setObjectName("Audio")
-            self.audio_dock.setWidget(self.audio_widget)
-            self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
-
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
 
