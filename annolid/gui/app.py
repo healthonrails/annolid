@@ -1379,9 +1379,14 @@ class AnnolidWindow(MainWindow):
         if file_path:
             with open(file_path, 'w') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Timestamp', 'Frame_number'])
+                writer.writerow(['Timestamp', 'Frame_number', 'Time_seconds'])
                 for _key in sorted(self.timestamp_dict.keys()):
-                    writer.writerow([self.timestamp_dict[_key], _key])
+                    if self.fps:
+                        time_seconds = int(_key[0]) / self.fps
+                    else:
+                        time_seconds = int(_key[0]) / 29.97
+                    writer.writerow(
+                        [self.timestamp_dict[_key], _key, time_seconds])
             QtWidgets.QMessageBox.information(
                 self, "Timestamps saved", "Timestamps saved successfully!")
 
