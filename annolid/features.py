@@ -3,8 +3,56 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 import numpy as np
 import cv2
-import logging
-import glob
+
+try:
+    import clip
+except ImportError:
+    # Handle the case where CLIP is not installed
+    print("CLIP library is not installed. Please install it to use CLIP-related functionality.")
+    # Perform fallback or error handling actions
+    print("pip install git+https://github.com/openai/CLIP.git")
+
+
+class CLIPModel:
+    """
+    Wrapper class for CLIP model and related operations.
+    """
+
+    def __init__(self, clip_version="ViT-B/32"):
+        """
+        Initializes the CLIP model.
+
+        clip_version (str): The version of the CLIP model to load.
+        """
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.clip_model, self.clip_preprocess = clip.load(
+            clip_version, device=self.device)
+
+    def encode_image(self, image):
+        """
+        Encodes the given image using the CLIP model.
+
+        image (PIL.Image): The input image to encode.
+
+        Returns:
+            torch.Tensor: The encoded image tensor.
+        """
+        image = self.clip_preprocess(image).unsqueeze(0).to(self.device)
+        image_features = self.clip_model.encode_image(image)
+        return image_features.cpu().detach().numpy()
+
+    def encode_text(self, text):
+        """
+        Encodes the given text using the CLIP model.
+
+        text (str): The input text to encode.
+
+        Returns:
+            torch.Tensor: The encoded text tensor.
+        """
+        text = clip.tokenize(text).to(self.device)
+        text_features = self.clip_model.encode_text(text)
+        return text_features.cpu().detach().numpy()
 
 
 class Embedding():
