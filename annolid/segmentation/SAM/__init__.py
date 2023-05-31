@@ -2,6 +2,7 @@ import os
 from segment_anything import build_sam, SamAutomaticMaskGenerator
 from PIL import Image
 import numpy as np
+import torch
 
 
 class SAMModel:
@@ -19,8 +20,9 @@ class SAMModel:
         if not os.path.exists(sam_checkpoint):
             raise FileNotFoundError(
                 f"SAM checkpoint file not found at path: {sam_checkpoint}")
-
         self.sam = build_sam(checkpoint=sam_checkpoint)
+        if torch.cuda.is_available():
+            self.sam.to(device="cuda")
 
     def generate_masks(self, image_path,
                        stability_score_threshold=.98,
