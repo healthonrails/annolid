@@ -73,7 +73,12 @@ class SAMModel:
 
     def generate_masks(self, image_path,
                        stability_score_threshold=.98,
-                       predicted_iou_threshold=.98):
+                       predicted_iou_threshold=.98,
+                       min_mask_region_area=100,
+                       points_per_side=32,
+                       crop_n_layers=1,
+                       crop_n_points_downscale_factor=2
+                       ):
         """
         Generates masks using the SAM model for the given image.
 
@@ -81,13 +86,47 @@ class SAMModel:
         stability_score_threshold (float): Filtering threshold for stability/quality of SAM masks.
         predicted_iou_threshold (float): Threshold for the model's (SAM's) own prediction of quality.
 
+        Here are several optional tunable parameters in automatic mask generation that control how densely points
+        are sampled and what the thresholds are for removing low-quality or duplicate masks. 
+        Additionally, generation can be automatically run on crops of the image to get improved 
+        performance on smaller objects, and post-processing can remove stray pixels and holes.
+
+        Example configuration:
+
+        mask_generator = SamAutomaticMaskGenerator(
+            model=sam,
+            points_per_side=32,  # Number of points to sample along each side of the bounding box
+            pred_iou_thresh=0.86,  # IOU threshold for removing duplicate masks
+            stability_score_thresh=0.92,  # Threshold for removing low-quality masks based on stability score
+            crop_n_layers=1,  # Number of layers to use when cropping the image
+            crop_n_points_downscale_factor=2,  # Downscale factor applied to the number of points when cropping the image
+            min_mask_region_area=100  # Minimum area threshold for removing small regions in the final mask
+
+        Parameters:
+        - model: The model used for mask generation.
+        - points_per_side: The number of points to sample along each side of the bounding box.
+        - pred_iou_thresh: The IOU threshold for removing duplicate masks.
+        - stability_score_thresh: The threshold for removing low-quality masks based on the stability score.
+        - crop_n_layers: The number of layers to use when cropping the image.
+        - crop_n_points_downscale_factor: The downscale factor applied to the number of points when cropping the image.
+        - min_mask_region_area: The minimum area threshold for removing small regions in the final mask (requires open-cv for post-processing).
+
+        Note: The provided configuration is just an example.
+        You may need to adjust these parameters based on your specific requirements and dataset.
+
         Returns:
             List: List of SAM masks.
         """
         image = Image.open(image_path)
         image_np = np.asarray(image)
 
-        mask_generator = SamAutomaticMaskGenerator(self.sam)
+        mask_generator = SamAutomaticMaskGenerator(model=self.sam,
+                                                   points_per_side=points_per_side,
+                                                   pred_iou_thresh=predicted_iou_threshold,
+                                                   stability_score_thresh=stability_score_threshold,
+                                                   crop_n_layers=crop_n_layers,
+                                                   crop_n_points_downscale_factor=crop_n_points_downscale_factor,
+                                                   min_mask_region_area=min_mask_region_area)  # Requires open-cv to run post-processing
         masks = mask_generator.generate(image_np)
 
         filtered_masks = []
