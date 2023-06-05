@@ -307,7 +307,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.label.adjustSize()
         label_width = self.label.width()
         label_height = self.label.height()
-        self.label.move(x - label_width / 2, y + label_height)
+        self.label.move(int(x - label_width / 2), int(y + label_height))
         self.prevMovePoint = pos
         self.restoreCursor()
 
