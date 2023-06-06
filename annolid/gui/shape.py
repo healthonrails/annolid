@@ -224,12 +224,13 @@ class Shape(object):
                                 f"length:{round(dist,2)}pixels")
 
             if self.label:
-                painter.setFont(QtGui.QFont(
-                    "Arial", 3 * self.point_size/self.scale))
+                font = QtGui.QFont(
+                    "Arial", int(3 * self.point_size/self.scale))
+                painter.setFont(font)
                 label_x, label_y = self.find_polygon_center(
                     self.points)
                 painter.drawText(
-                    label_x+1, label_y, self.label)
+                    int(label_x)+1, int(label_y), self.label)
 
             painter.drawPath(line_path)
             painter.drawPath(vrtx_path)
