@@ -29,13 +29,17 @@ class AudioWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.canvas_waveform, 0, 0)
         self.layout.addWidget(self.canvas_spectrum, 1, 0)
         self.setLayout(self.layout)
-        self.audio_loader = AudioLoader(audio_path)
+        try:
+            self.audio_loader = AudioLoader(audio_path)
+        except Exception as e:
+            self.audio_loader = None
         self.canvas_waveform.mpl_connect(
             'button_press_event', self.on_canvas_clicked)
         self.canvas_spectrum.mpl_connect(
             'button_press_event', self.on_canvas_clicked)
 
-        self.plot()
+        if self.audio_loader:
+            self.plot()
 
     def plot(self):
         """Plot the audio waveform and spectrum."""
