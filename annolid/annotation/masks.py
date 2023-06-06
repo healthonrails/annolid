@@ -29,11 +29,11 @@ def mask_to_polygons(mask,
 
     res = res[-2]
     try:
-        res_simp = simplify_coords_vwp(np.array(res[0].squeeze()), 30.0)
+        res_simp = simplify_coords_vwp(np.array(res[0]).reshape(-1, 2), 30.0)
         res_simp = np.array(res_simp)
         res = [np.expand_dims(res_simp, axis=1)]
-    except ValueError:
-        print('Failed to simplify the points.')
+    except ValueError as e:
+        print('Failed to simplify the points:', str(e))
 
     if use_convex_hull:
         hull = []
