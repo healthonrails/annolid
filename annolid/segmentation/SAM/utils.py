@@ -1,3 +1,7 @@
+import numpy as np
+import cv2
+
+
 def convert_to_annolid_format(frame_number, masks):
     """Converts predicted SAM masks information to annolid format.
 
@@ -48,3 +52,36 @@ def convert_to_annolid_format(frame_number, masks):
         })
 
     return pred_rows
+
+
+def crop_image_with_masks(image, masks):
+    """
+    Crop the image based on provided masks and apply the masks to each cropped region.
+
+    Args:
+        image (numpy.ndarray): The input image.
+        masks (list): A list of dictionaries containing mask data.
+
+    Returns:
+        list: A list of cropped images with applied masks.
+    """
+    cropped_images = []
+
+    for mask_data in masks:
+        # Extract mask and bounding box data
+        bbox = mask_data['bbox']
+        seg = mask_data['segmentation']
+        x, y, w, h = bbox
+
+        # Crop the image based on the bounding box
+        cropped_image = image[y:y+h, x:x+w]
+
+        # Create an 8-bit mask from the segmentation data
+        mask = np.asarray(seg[y:y+h, x:x+w], dtype=np.uint8) * 255
+        # Apply the mask to the cropped image
+        cropped_image = cv2.bitwise_and(
+            cropped_image, cropped_image, mask=mask)
+
+        cropped_images.append(cropped_image)
+
+    return cropped_images
