@@ -54,13 +54,20 @@ def convert_to_annolid_format(frame_number, masks):
     return pred_rows
 
 
-def crop_image_with_masks(image, masks):
+def crop_image_with_masks(image,
+                          masks,
+                          max_area=8000,
+                          min_area=500,
+                          width_height_ratio=0.9):
     """
     Crop the image based on provided masks and apply the masks to each cropped region.
 
     Args:
         image (numpy.ndarray): The input image.
         masks (list): A list of dictionaries containing mask data.
+        max_area (int): Max area of the mask
+        min_area (int): Min area of the mask
+        width_height_ratio(float): Min width / height
 
     Returns:
         list: A list of cropped images with applied masks.
@@ -81,9 +88,10 @@ def crop_image_with_masks(image, masks):
         # Apply the mask to the cropped image
         cropped_image = cv2.bitwise_and(
             cropped_image, cropped_image, mask=mask)
-        # convert to rgb
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
-
-        cropped_images.append(cropped_image)
+        if (mask_data['area'] >= min_area and
+            mask_data['area'] <= max_area and
+                w/h >= width_height_ratio):
+            cropped_images.append(cropped_image)
 
     return cropped_images
