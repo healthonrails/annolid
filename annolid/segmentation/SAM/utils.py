@@ -49,7 +49,7 @@ def convert_to_annolid_format(frame_number, masks):
             "x2": x2,
             "y2": y2,
             "instance_name": instance_name,
-            "score": score,
+            "class_score": score,
             "segmentation": segmentation,
             "tracking_id": tracking_id
         })
