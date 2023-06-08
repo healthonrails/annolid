@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import pycocotools.mask as mask_util
 
 
 def convert_to_annolid_format(frame_number, masks):
@@ -37,6 +38,8 @@ def convert_to_annolid_format(frame_number, masks):
         instance_name = mask.get("instance_name", 'object')
         score = mask.get("predicted_iou", '')
         segmentation = mask.get("segmentation", '')
+        # encode binary mask to COCO RLE format
+        segmentation = mask_util.encode(segmentation)
         tracking_id = mask.get("tracking_id", "")
 
         pred_rows.append({
