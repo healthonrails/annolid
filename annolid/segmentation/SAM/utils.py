@@ -81,6 +81,8 @@ def crop_image_with_masks(image, masks):
         # Apply the mask to the cropped image
         cropped_image = cv2.bitwise_and(
             cropped_image, cropped_image, mask=mask)
+        # convert to rgb
+        cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
 
         cropped_images.append(cropped_image)
 
