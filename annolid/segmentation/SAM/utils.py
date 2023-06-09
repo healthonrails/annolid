@@ -98,3 +98,31 @@ def crop_image_with_masks(image,
             cropped_images.append(cropped_image)
 
     return cropped_images
+
+
+def process_video_and_save_tracking_results(video_file, mask_generator):
+    """
+    Process a video file, generate tracking results with segmentation masks,
+    and save the results to a CSV file.
+
+    Args:
+        video_file (str): Path to the video file.
+        mask_generator: An instance of the mask generator class.
+
+    Returns:
+        None
+    """
+    import decord as de
+    import pandas as pd
+    video_reader = de.VideoReader(video_file)
+    tracking_results = []
+
+    for key_index in video_reader.get_key_indices():
+        frame = video_reader[key_index].asnumpy()
+        masks = mask_generator.generate(frame)
+        tracking_results += convert_to_annolid_format(key_index, masks)
+        print(key_index)
+
+    dataframe = pd.DataFrame(tracking_results)
+    output_file = f"{video_file.split('.')[0]}_mask_tracking_results_with_segmentation.csv"
+    dataframe.to_csv(output_file)
