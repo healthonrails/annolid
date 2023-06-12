@@ -763,7 +763,7 @@ class AnnolidWindow(MainWindow):
 
     def addLabel(self, shape):
         if shape.group_id is None:
-            text = shape.label
+            text = str(shape.label)
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
         shape_points_hash = hash(
@@ -788,7 +788,7 @@ class AnnolidWindow(MainWindow):
             self.uniqLabelList.setItemLabel(
                 item, f"{shape.label} [{self.label_stats.get(text,0)} instances]", rgb)
 
-        self.labelDialog.addLabelHistory(shape.label)
+        self.labelDialog.addLabelHistory(str(shape.label))
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
 
@@ -813,7 +813,7 @@ class AnnolidWindow(MainWindow):
         if shape is None:
             return
         text, flags, group_id, description = self.labelDialog.popUp(
-            text=shape.label, flags=shape.flags,
+            text=str(shape.label), flags=shape.flags,
             group_id=shape.group_id,
             description=shape.description,
         )
@@ -1035,7 +1035,7 @@ class AnnolidWindow(MainWindow):
 
             with open(file_name, 'w') as lt:
                 for ltl in labels_text_list:
-                    lt.writelines(ltl+'\n')
+                    lt.writelines(str(ltl)+'\n')
 
     def frames(self):
         """Extract frames based on the selected algos.

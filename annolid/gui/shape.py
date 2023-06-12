@@ -230,7 +230,7 @@ class Shape(object):
                 label_x, label_y = self.find_polygon_center(
                     self.points)
                 painter.drawText(
-                    int(label_x)+1, int(label_y), self.label)
+                    int(label_x)+1, int(label_y), str(self.label))
 
             painter.drawPath(line_path)
             painter.drawPath(vrtx_path)
