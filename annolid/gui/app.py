@@ -1396,6 +1396,7 @@ class AnnolidWindow(MainWindow):
     def togglePlay(self):
         if self.isPlaying:
             self.stopPlaying()
+            self.update_step_size(1)
             self.playButton.setIcon(
                 QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
             self.playButton.setText("Play")
