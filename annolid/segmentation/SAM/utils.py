@@ -195,7 +195,7 @@ def process_video_and_save_tracking_results(video_file, mask_generator, model=No
         frame = video_reader[key_index].asnumpy()
         masks = mask_generator.generate(frame)
         tracking_results += convert_to_annolid_format(
-            key_index, masks, frame, model, existing_masks)
+            key_index, masks, frame, model, existing_masks=existing_masks)
         print(key_index)
 
     dataframe = pd.DataFrame(tracking_results)
