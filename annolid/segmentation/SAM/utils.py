@@ -1,9 +1,79 @@
 import numpy as np
 import cv2
+import torch
 import pycocotools.mask as mask_util
+from PIL import Image
 
 
-def convert_to_annolid_format(frame_number, masks):
+def get_mask_features(image, mask, model, preprocess=None):
+    """
+    Computes the features of the mask portion of an image.
+
+    Args:
+        image (ndarray): The input image.
+        mask (ndarray): The mask for cropping the image.
+        model: The CLIP model used for encoding image features.
+
+    Returns:
+        mask_features (Tensor): The features of the mask portion of the image.
+    """
+    # Apply the mask to the image
+    masked_image = image.copy()
+    masked_image[~mask] = 0
+
+    # Preprocess the masked image
+    masked_image = preprocess(Image.fromarray(masked_image))
+
+    # Convert the image to tensor and move to GPU
+    # image_input = torch.tensor(masked_image).unsqueeze(0).cuda()
+    image_input = masked_image.unsqueeze(0).cuda().float()
+
+    with torch.no_grad():
+        # Encode image features
+        image_features = model.encode_image(image_input).float()
+
+    return image_features.detach().cpu().numpy()
+
+
+def generate_mask_id(mask_features, existing_masks, threshold=0.9):
+    """
+    Generates an ID for the mask based on its features and compares it with existing masks.
+
+    Args:
+        mask_features (ndarray): The features of the mask.
+        existing_masks (list): List of existing masks and their features.
+        threshold (float): Similarity threshold for considering a match (default: 0.9).
+
+    Returns:
+        mask_id (int): The generated ID for the mask.
+    """
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    mask_id = -1  # Initialize the mask ID
+
+    for idx, (existing_id, existing_features) in enumerate(existing_masks):
+        similarity = cosine_similarity(mask_features, existing_features)
+
+        if similarity > threshold:
+            mask_id = existing_id
+            break
+
+    if mask_id == -1:
+        # Assign a new ID if no match is found
+        mask_id = len(existing_masks) + 1
+        existing_masks.append((mask_id, mask_features))
+
+    return mask_id
+
+
+def convert_to_annolid_format(frame_number,
+                              masks,
+                              frame=None,
+                              model=None,
+                              min_mask_area=float('-inf'),
+                              max_mask_area=float('inf'),
+                              existing_masks=None
+                              ):
     """Converts predicted SAM masks information to annolid format.
 
     Args:
@@ -24,35 +94,38 @@ def convert_to_annolid_format(frame_number, masks):
                 - "frame_number": The frame number associated with the masks.
                 - "x1", "y1", "x2", "y2": The coordinates of the bounding box in XYXY format.
                 - "instance_name": The name of the instance/object.
-                - "score": The predicted IoU (Intersection over Union) for the mask.
+                - "class_score": The predicted IoU (Intersection over Union) for the mask.
                 - "segmentation": The segmentation mask.
                 - "tracking_id": The tracking ID associated with the mask.
 
     """
     pred_rows = []
     for mask in masks:
-        x1 = mask.get("bbox")[0]
-        y1 = mask.get("bbox")[1]
-        x2 = mask.get("bbox")[0] + mask.get("bbox")[2]
-        y2 = mask.get("bbox")[1] + mask.get("bbox")[3]
-        instance_name = mask.get("instance_name", 'object')
-        score = mask.get("predicted_iou", '')
-        segmentation = mask.get("segmentation", '')
-        # encode binary mask to COCO RLE format
-        segmentation = mask_util.encode(segmentation)
-        tracking_id = mask.get("tracking_id", "")
+        mask_area = mask.get("area", 0)
+        if min_mask_area <= mask_area <= max_mask_area:
+            x1 = mask.get("bbox")[0]
+            y1 = mask.get("bbox")[1]
+            x2 = mask.get("bbox")[0] + mask.get("bbox")[2]
+            y2 = mask.get("bbox")[1] + mask.get("bbox")[3]
+            score = mask.get("predicted_iou", '')
+            segmentation = mask.get("segmentation", '')
+            mask_features = get_mask_features(frame, segmentation, model)
+            mask_id = generate_mask_id(mask_features, existing_masks)
+            instance_name = mask.get("instance_name", f'instance_{mask_id}')
+            segmentation = mask_util.encode(segmentation)
+            tracking_id = mask.get("tracking_id", "")
 
-        pred_rows.append({
-            "frame_number": frame_number,
-            "x1": x1,
-            "y1": y1,
-            "x2": x2,
-            "y2": y2,
-            "instance_name": instance_name,
-            "class_score": score,
-            "segmentation": segmentation,
-            "tracking_id": tracking_id
-        })
+            pred_rows.append({
+                "frame_number": frame_number,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "instance_name": instance_name,
+                "class_score": score,
+                "segmentation": segmentation,
+                "tracking_id": tracking_id
+            })
 
     return pred_rows
 
@@ -100,7 +173,7 @@ def crop_image_with_masks(image,
     return cropped_images
 
 
-def process_video_and_save_tracking_results(video_file, mask_generator):
+def process_video_and_save_tracking_results(video_file, mask_generator, model=None):
     """
     Process a video file, generate tracking results with segmentation masks,
     and save the results to a CSV file.
@@ -116,11 +189,13 @@ def process_video_and_save_tracking_results(video_file, mask_generator):
     import pandas as pd
     video_reader = de.VideoReader(video_file)
     tracking_results = []
+    existing_masks = []
 
     for key_index in video_reader.get_key_indices():
         frame = video_reader[key_index].asnumpy()
         masks = mask_generator.generate(frame)
-        tracking_results += convert_to_annolid_format(key_index, masks)
+        tracking_results += convert_to_annolid_format(
+            key_index, masks, frame, model, existing_masks)
         print(key_index)
 
     dataframe = pd.DataFrame(tracking_results)
