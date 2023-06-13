@@ -1610,25 +1610,17 @@ class AnnolidWindow(MainWindow):
         return True
 
     def clean_up(self):
-        if self.frame_worker is not None:
-            try:
-                self.frame_worker.quit()
-                self.frame_worker.wait()
-            except RuntimeError:
-                print("Thank you!")
-        if self.seg_train_thread is not None:
-            try:
-                self.seg_train_thread.quit()
-                self.seg_train_thread.wait()
-            except RuntimeError:
-                print("See you next time!")
+        def quit_and_wait(thread, message):
+            if thread is not None:
+                try:
+                    thread.quit()
+                    thread.wait()
+                except RuntimeError:
+                    print(message)
 
-        if self.seg_pred_thread is not None:
-            try:
-                self.seg_pred_thread.quit()
-                self.seg_pred_thread.wait()
-            except RuntimeError:
-                print("Bye!")
+        quit_and_wait(self.frame_worker, "Thank you!")
+        quit_and_wait(self.seg_train_thread, "See you next time!")
+        quit_and_wait(self.seg_pred_thread, "Bye!")
 
     def loadLabels(self, shapes):
         s = []
