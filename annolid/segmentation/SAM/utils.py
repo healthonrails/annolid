@@ -35,7 +35,7 @@ def get_mask_features(image, mask, model, preprocess=None):
     return image_features.detach().cpu().numpy()
 
 
-def generate_mask_id(mask_features, existing_masks, threshold=0.9):
+def generate_mask_id(mask_features, existing_masks, threshold=6.0, distance_metric="euclidean"):
     """
     Generates an ID for the mask based on its features and compares it with existing masks.
 
@@ -43,25 +43,36 @@ def generate_mask_id(mask_features, existing_masks, threshold=0.9):
         mask_features (ndarray): The features of the mask.
         existing_masks (list): List of existing masks and their features.
         threshold (float): Similarity threshold for considering a match (default: 0.9).
+        distance_metric (str): Distance metric to be used (default: "euclidean").
+                               Options: "euclidean", "cosine".
 
     Returns:
         mask_id (int): The generated ID for the mask.
     """
-    from sklearn.metrics.pairwise import cosine_similarity
+    from scipy.spatial.distance import euclidean, cosine
 
     mask_id = -1  # Initialize the mask ID
 
-    for idx, (existing_id, existing_features) in enumerate(existing_masks):
-        similarity = cosine_similarity(mask_features, existing_features)
+    if distance_metric == "euclidean":
+        distance_function = euclidean
+    elif distance_metric == "cosine":
+        distance_function = cosine
+    else:
+        raise ValueError(
+            "Invalid distance metric. Choose either 'euclidean' or 'cosine'.")
 
-        if similarity > threshold:
+    for idx, (existing_id, existing_features) in enumerate(existing_masks):
+        similarity = distance_function(
+            mask_features.flatten(), existing_features.flatten())
+
+        if similarity < threshold:
             mask_id = existing_id
             break
 
     if mask_id == -1:
         # Assign a new ID if no match is found
         mask_id = len(existing_masks) + 1
-        existing_masks.append((mask_id, mask_features))
+        existing_masks.append((mask_id, mask_features.flatten()))
 
     return mask_id
 
