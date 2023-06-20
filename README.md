@@ -54,6 +54,7 @@ cd annolid
 
 * Install the package with pip
 ```bash
+pip install git+https://github.com/facebookresearch/segment-anything.git
 pip install -e .
 ```
 The pip install command will attempt to determine your computer's resources (like a GPU) automatically.  To control this directly, you alternatively can use the conda env command and the appropriate environment file (.yml).
@@ -86,7 +87,7 @@ pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --e
 ```
 
 That's it! You should now have Annolid installed on your Ubuntu 20.04 machine with GPUs and be able to use it for video analysis and annotation tasks.
-### Note for Mac M1 Chip users
+### Note for Mac M1/M2 Chip users
 If you encounter the folloing errors,
 ```
 Intel MKL FATAL ERROR: This system does not meet the minimum requirements for use of the Intel(R) Math Kernel Library.
