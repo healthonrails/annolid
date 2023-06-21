@@ -694,6 +694,10 @@ class AnnolidWindow(MainWindow):
             label_file = osp.join(self.output_dir, label_file_without_path)
         return label_file
 
+    def tutorial(self):
+        url = "https://github.com/healthonrails/annolid/tree/main/docs/tutorials"  # NOQA
+        webbrowser.open(url)
+
     def removeSelectedPoint(self):
         self.canvas.removeSelectedPoint()
         self.canvas.update()
