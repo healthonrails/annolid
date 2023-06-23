@@ -141,6 +141,20 @@ label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_fema
 
 * For body parts, please use keypoint with names like nose, tail_base, or left_ear.
 
+
+## Instructions for labeling behaviors with timestamps using keys:
+![Efficient Timestamp Labeling and Editing of Behaviors: Streamlined Key Shortcuts and Video Slider Controls](docs/imgs/scoring_behavior_in_timestamps.gif)
+### To label behaviors, use the following key shortcuts:
+* Press 's' to indicate the start of an event.
+* Press 'e' to mark the end of an event.
+* If you click play on the seek bar, it will play with a specific interval.
+* Use 'f' to add 10 frames and 'b' to subtract 10 frames at a time.
+### To edit the predicted timestamps provided by Annolid:
+* Click the tick mark on the video slider bar.
+* Press 'r' to remove the event.
+### Once you have finished labeling the behaviors, follow these steps:
+* Click the "Save Timestamps" button to save the scored behaviors.
+
 ## How many frames do you need to label?
 
 * 20 to 100 frames per video
