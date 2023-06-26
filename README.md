@@ -155,6 +155,19 @@ label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_fema
 ### Once you have finished labeling the behaviors, follow these steps:
 * Click the "Save Timestamps" button to save the scored behaviors.
 
+## To enable frame-level labels in Annolid using a multi-select component:
+
+* Launch Annolid with the "--flags" option. For example: annolid --flags "digging,rearing,grooming".
+* This will display a flags list with a multi-select component.
+* In the multi-select component, you can see a list of available labels.
+* Click and hold the mouse button to select multiple labels simultaneously.
+* Release the mouse button to finalize your selection.
+### To save the selected frame-level labels in Annolid, you can follow either of these methods:
+* Press Ctrl+S: 
+    Use the keyboard shortcut Ctrl+S to save the selected frame-level labels.
+* Click the "Save" button: 
+    Alternatively, you can click the "Save" button in the user interface to save the selected frame-level labels.
+
 ## How many frames do you need to label?
 
 * 20 to 100 frames per video
