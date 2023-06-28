@@ -961,6 +961,26 @@ class AnnolidWindow(MainWindow):
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
 
+        checked_items = set()  # Create an empty set to store the unique checked items
+
+        # Iterate over the items in self.flag_widget
+        for index in range(self.flag_widget.count()):
+            # Get the item at the current index
+            item = self.flag_widget.item(index)
+
+            # Check if the item is checked
+            if item.checkState() == Qt.Checked:
+                _event = item.text()  # Get the text of the checked item
+
+                # Check if the checked item is not already in checked_items
+                if _event not in checked_items:
+                    # Add the checked item to checked_items set
+                    checked_items.add(_event)
+
+                    # Call self.add_highlighted_mark with the checked item as mark_type
+                    self.add_highlighted_mark(
+                        self.frame_number, mark_type=_event)
+
         if self._config["auto_save"] or self.actions.saveAuto.isChecked():
             label_file = osp.splitext(self.imagePath)[0] + ".json"
             if self.output_dir:
