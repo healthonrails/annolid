@@ -109,7 +109,7 @@ class VideoSliderMark:
             return 2
         if self.mark_type in ("tick_column", "simple", "predicted"):
             return 1
-        return 0
+        return 2
 
     def get_height(self, container_height):
         height = container_height
