@@ -141,6 +141,14 @@ label each instance with a unique name or ID (e.g. vole_1, mouse_2, or frog_fema
 
 * For body parts, please use keypoint with names like nose, tail_base, or left_ear.
 
+## annolid config file
+The first time you run annolid, it will create a config file in the user's home directory ~/.labelmerc
+ (C:\Users\<username>\.labelmerc on Windows). 
+ You can edit this file, and the changes will take effect the next time you launch labelme. 
+ To set the auto_save option to true, open the labelmerc file in a text editor and add the line auto_save: true. 
+ Save the changes, and labelme will automatically save your annotations when you make them.
+If you prefer to use a config file from a different location, 
+  you can specify the file path by using the --config flag followed by the path to your desired config file.
 
 ## Instructions for labeling behaviors with timestamps using keys:
 ![Efficient Timestamp Labeling and Editing of Behaviors: Streamlined Key Shortcuts and Video Slider Controls](docs/imgs/scoring_behavior_in_timestamps.gif)
