@@ -968,6 +968,8 @@ class AnnolidWindow(MainWindow):
             # Get the item at the current index
             item = self.flag_widget.item(index)
 
+            if not self.filename:
+                return
             # Check if the item is checked
             if item.checkState() == Qt.Checked:
                 _event = item.text()  # Get the text of the checked item
