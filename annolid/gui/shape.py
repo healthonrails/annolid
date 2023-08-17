@@ -57,8 +57,12 @@ class Shape(object):
         self.label = label
         self.group_id = group_id
         self.points = []
+        self.point_labels = []
         self.fill = False
         self.selected = False
+        self._shape_raw = None
+        self._points_raw = []
+        self._shape_type_raw = None
         self.shape_type = shape_type
         self.flags = flags
         self.description = description
@@ -81,6 +85,18 @@ class Shape(object):
 
         self.shape_type = shape_type
 
+    def setShapeRefined(self, points, point_labels, shape_type):
+        self._shape_raw = (self.points, self.point_labels, self.shape_type)
+        self.points = points
+        self.point_labels = point_labels
+        self.shape_type = shape_type
+
+    def restoreShapeRaw(self):
+        if self._shape_raw is None:
+            return
+        self.points, self.point_labels, self.shape_type = self._shape_raw
+        self._shape_raw = None
+
     @property
     def shape_type(self):
         return self._shape_type
@@ -89,6 +105,8 @@ class Shape(object):
     def shape_type(self, value):
         if value is None:
             value = "polygon"
+        if value == 'ai_polygon':
+            value = 'points'
         if value not in [
             "polygon",
             "rectangle",
@@ -97,6 +115,7 @@ class Shape(object):
             "circle",
             "linestrip",
             "multipoints",
+            "points",
         ]:
             raise ValueError("Unexpected shape_type: {}".format(value))
         self._shape_type = value
@@ -104,11 +123,12 @@ class Shape(object):
     def close(self):
         self._closed = True
 
-    def addPoint(self, point):
+    def addPoint(self, point, label=1):
         if self.points and point == self.points[0]:
             self.close()
         else:
             self.points.append(point)
+            self.point_labels.append(label)
 
     def canAddPoint(self):
         return self.shape_type in ["polygon", "linestrip"]
@@ -118,8 +138,9 @@ class Shape(object):
             return self.points.pop()
         return None
 
-    def insertPoint(self, i, point):
+    def insertPoint(self, i, point, label=1):
         self.points.insert(i, point)
+        self.point_labels.insert(i, label)
 
     def removePoint(self, i):
         if not self.canAddPoint():
@@ -145,6 +166,7 @@ class Shape(object):
             )
             return
         self.points.pop(i)
+        self.point_labels.pop(i)
 
     def isClosed(self):
         return self._closed
@@ -177,6 +199,7 @@ class Shape(object):
 
             line_path = QtGui.QPainterPath()
             vrtx_path = QtGui.QPainterPath()
+            negative_vrtx_path = QtGui.QPainterPath()
 
             if self.shape_type == "rectangle":
                 assert len(self.points) in [1, 2]
@@ -197,6 +220,16 @@ class Shape(object):
                 for i, p in enumerate(self.points):
                     line_path.lineTo(p)
                     self.drawVertex(vrtx_path, i)
+
+            elif self.shape_type == "points":
+                #assert len(self.points) == len(self.point_labels)
+                for i, (p, l) in enumerate(
+                    zip(self.points, self.point_labels)
+                ):
+                    if l == 1:
+                        self.drawVertex(vrtx_path, i)
+                    else:
+                        self.drawVertex(negative_vrtx_path, i)
             else:
                 line_path.moveTo(self.points[0])
                 # Uncommenting the following line will draw 2 paths

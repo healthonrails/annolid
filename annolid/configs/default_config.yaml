@@ -62,6 +62,7 @@ fit_to_content:
 # canvas
 epsilon: 10.0
 canvas:
+  fill_drawing: true
   # None: do nothing
   # close: close polygon
   double_click: close
@@ -76,6 +77,7 @@ canvas:
     point: false
     linestrip: false
     polygonSAM: false
+    ai_polygon: false
 
 # segment anything related parameters
 sam:
