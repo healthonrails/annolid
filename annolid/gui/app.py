@@ -229,6 +229,8 @@ class AnnolidWindow(MainWindow):
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
 
+        self.flag_widget.itemClicked.connect(self.flag_item_clicked)
+
         self.setCentralWidget(scrollArea)
 
         self.createPolygonSAMMode = action(
@@ -466,6 +468,13 @@ class AnnolidWindow(MainWindow):
     def update_step_size(self, value):
         self.step_size = value
         self.stepSizeWidget.setValue(self.step_size)
+
+    def flag_item_clicked(self, item):
+        item_text = item.text()
+        # Call self.add_highlighted_mark with the clicked item as mark_type
+        if self.seekbar:
+            self.add_highlighted_mark(
+                self.frame_number, mark_type=item_text)
 
     def openAudio(self):
         if self.video_file:
