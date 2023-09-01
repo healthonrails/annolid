@@ -347,7 +347,7 @@ def tracks2nix(video_file=None,
             _mask = bf['segmentation']
             try:
                 tracking_id = int(bf['tracking_id'])
-            except ValueError:
+            except Exception:
                 tracking_id = ''
             if isinstance(_frame_num, tuple):
                 _frame_num = _frame_num[0]
