@@ -39,7 +39,10 @@ def pred_dict_to_labelme(pred_row,
         instance_name = pred_row['instance_name']
         score = pred_row['class_score']
         segmentation = pred_row["segmentation"]
-        tracking_id = pred_row["tracking_id"]
+        try:
+            tracking_id = pred_row["tracking_id"]
+        except KeyError:
+            tracking_id = -1
     except ValueError:
         return
 
