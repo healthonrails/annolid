@@ -204,6 +204,7 @@ class AnnolidWindow(MainWindow):
         self.highlighted_mark = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
+        self.prev_flags = set()
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -471,10 +472,20 @@ class AnnolidWindow(MainWindow):
 
     def flag_item_clicked(self, item):
         item_text = item.text()
+
+        # Handle item clicked event (selection)
+        if item.isSelected():
+            # Item is selected
+            self.prev_flags.add(item_text)
+        else:
+            # Item is deselected
+            if item_text in self.prev_flags:
+                self.prev_flags.remove(item_text)
         # Call self.add_highlighted_mark with the clicked item as mark_type
         if self.seekbar:
-            self.add_highlighted_mark(
-                self.frame_number, mark_type=item_text)
+            for itxt in self.prev_flags:
+                self.add_highlighted_mark(
+                    self.frame_number, mark_type=itxt)
 
     def openAudio(self):
         if self.video_file:
