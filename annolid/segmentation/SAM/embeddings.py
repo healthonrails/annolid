@@ -6,12 +6,75 @@ import os
 import pickle
 from segment_anything import sam_model_registry, SamPredictor
 """
+Image Embeddings Generation for All Slices of a Tiff Stack Data
+
+This script provides functions to load, preprocess, and create embeddings for 
+input 3d stack tiff images along three Cartesian directions (X, Y, Z) using a Self-Attention Model (SAM).
+ The generated embeddings are saved to a pickle file for further analysis and processing.
+
+Functions:
+    1. load_image(input_filepath):
+        - Load and preprocess the input tomography image.
+        - Args:
+            - input_filepath (str): Path to the input image file.
+        - Returns:
+            - img (numpy.ndarray): Preprocessed image data.
+
+    2. create_embeddings(img, output_filepath, sam_checkpoint_path):
+        - Create embeddings for the input image along X, Y, and Z directions and save them to a pickle file.
+        - Args:
+            - img (numpy.ndarray): Preprocessed image data.
+            - output_filepath (str): Path to save the output embeddings pickle file.
+            - sam_checkpoint_path (str): Path to the SAM model checkpoint.
+
+    3. get_image_slice(img, dimension, index):
+        - Extract an image slice along a specified dimension (0 for X, 1 for Y, 2 for Z).
+        - Args:
+            - img (numpy.ndarray): Preprocessed image data.
+            - dimension (int): Dimension along which to extract the slice (0 for X, 1 for Y, 2 for Z).
+            - index (int): Index of the slice.
+        - Returns:
+            - img_slice (numpy.ndarray): Extracted image slice.
+
+    4. save_embeddings(output_filepath, embeddings):
+        - Save embeddings to a pickle file.
+        - Args:
+            - output_filepath (str): Path to save the output embeddings pickle file.
+            - embeddings (list): List of embeddings data.
+
+Usage:
+    - Import this script into your Python environment.
+    - Call the provided functions with your input data to generate and save image embeddings.
+
+Example:
+    ```python
+    import cv2
+    import numpy as np
+    import torch
+    import sys
+    import os
+    import pickle
+    from segment_anything import sam_model_registry, SamPredictor
+
+    # Specify paths and load input image
+    input_filepath = "path/to/input_image.png"
+    output_filepath = "path/to/output_embeddings"
+    sam_checkpoint_path = "path/to/sam_model_checkpoint.pth"
+
+    img = load_image(input_filepath)
+    create_embeddings(img, output_filepath, sam_checkpoint_path)
+    ```
+
+Note:
+    - Ensure that all required dependencies are installed.
+    - Adjust the provided paths and settings to match your specific use case.
+
 Reference:
 @article{semeraro2023tomosam,
-  title={TomoSAM: a 3D Slicer extension using SAM for tomography segmentation},
-  author={Semeraro, Federico and Quintart, Alexandre and Izquierdo, Sergio Fraile and Ferguson, Joseph C},
-  journal={arXiv preprint arXiv:2306.08609},
-  year={2023}
+title={TomoSAM: a 3D Slicer extension using SAM for tomography segmentation},
+author={Semeraro, Federico and Quintart, Alexandre and Izquierdo, Sergio Fraile and Ferguson, Joseph C},
+journal={arXiv preprint arXiv:2306.08609},
+year={2023}
 } 
 
 """
