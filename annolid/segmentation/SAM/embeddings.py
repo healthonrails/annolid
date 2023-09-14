@@ -9,12 +9,12 @@ from segment_anything import sam_model_registry, SamPredictor
 Image Embeddings Generation for All Slices of a Tiff Stack Data
 
 This script provides functions to load, preprocess, and create embeddings for 
-input 3d stack tiff images along three Cartesian directions (X, Y, Z) using a Self-Attention Model (SAM).
+input 3d stack tiff images along three Cartesian directions (X, Y, Z) using a Segment Anything Model (SAM).
  The generated embeddings are saved to a pickle file for further analysis and processing.
 
 Functions:
     1. load_image(input_filepath):
-        - Load and preprocess the input tomography image.
+        - Load and preprocess the input tiff stack image.
         - Args:
             - input_filepath (str): Path to the input image file.
         - Returns:
