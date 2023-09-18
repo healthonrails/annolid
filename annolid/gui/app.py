@@ -374,6 +374,7 @@ class AnnolidWindow(MainWindow):
         colab.setIcon(QtGui.QIcon(str(
             self.here / "icons/colab.png")))
         shortcuts = self._config["shortcuts"]
+        self.shortcuts = shortcuts
 
         delete = action(
             self.tr("Delete Polygons"),
@@ -1402,11 +1403,11 @@ class AnnolidWindow(MainWindow):
             elif event.key() == Qt.Key_Space:
                 self.togglePlay()
             elif event.key() == Qt.Key_S:
-                event_type = 'event_start'
+                event_type = self._config['events']["start"]
                 self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_E:
-                event_type = 'event_end'
+                event_type = self._config['events']["end"]
                 self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_R:

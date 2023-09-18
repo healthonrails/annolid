@@ -122,3 +122,7 @@ shortcuts:
   edit_label: Ctrl+E
   toggle_keep_prev_mode: Ctrl+P
   remove_selected_point: [Meta+H, Backspace]
+
+events:
+  start: event_start
+  end: event_end
