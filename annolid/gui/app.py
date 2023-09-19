@@ -198,13 +198,13 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.video_file = None
         self.isPlaying = False
+        self.event_type = None
         self._time_stamp = ''
         self.timestamp_dict = dict()
         self.annotation_dir = None
         self.highlighted_mark = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
-        self.prev_flags = set()
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -473,20 +473,7 @@ class AnnolidWindow(MainWindow):
 
     def flag_item_clicked(self, item):
         item_text = item.text()
-
-        # Handle item clicked event (selection)
-        if item.isSelected():
-            # Item is selected
-            self.prev_flags.add(item_text)
-        else:
-            # Item is deselected
-            if item_text in self.prev_flags:
-                self.prev_flags.remove(item_text)
-        # Call self.add_highlighted_mark with the clicked item as mark_type
-        if self.seekbar:
-            for itxt in self.prev_flags:
-                self.add_highlighted_mark(
-                    self.frame_number, mark_type=itxt)
+        self.event_type = item_text
 
     def openAudio(self):
         if self.video_file:
@@ -994,8 +981,6 @@ class AnnolidWindow(MainWindow):
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
 
-        checked_items = set()  # Create an empty set to store the unique checked items
-
         # Iterate over the items in self.flag_widget
         for index in range(self.flag_widget.count()):
             # Get the item at the current index
@@ -1006,15 +991,7 @@ class AnnolidWindow(MainWindow):
             # Check if the item is checked
             if item.checkState() == Qt.Checked:
                 _event = item.text()  # Get the text of the checked item
-
-                # Check if the checked item is not already in checked_items
-                if _event not in checked_items:
-                    # Add the checked item to checked_items set
-                    checked_items.add(_event)
-
-                    # Call self.add_highlighted_mark with the checked item as mark_type
-                    self.add_highlighted_mark(
-                        self.frame_number, mark_type=_event)
+                self.event_type = _event
 
         if self._config["auto_save"] or self.actions.saveAuto.isChecked():
             label_file = osp.splitext(self.imagePath)[0] + ".json"
@@ -1403,13 +1380,19 @@ class AnnolidWindow(MainWindow):
             elif event.key() == Qt.Key_Space:
                 self.togglePlay()
             elif event.key() == Qt.Key_S:
-                event_type = self._config['events']["start"]
+                if self.event_type is None:
+                    event_type = self._config['events']["start"]
+                else:
+                    event_type = self.event_type + '_start'
                 self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type)
             elif event.key() == Qt.Key_E:
-                event_type = self._config['events']["end"]
+                if self.event_type is None:
+                    event_type = self._config['events']["end"]
+                else:
+                    event_type = self.event_type + '_end'
                 self.highlighted_mark = self.add_highlighted_mark(
-                    self.frame_number, mark_type=event_type)
+                    self.frame_number, mark_type=event_type, color='red')
             elif event.key() == Qt.Key_R:
                 self.remove_highlighted_mark()
             elif event.key() == Qt.Key_Q:
