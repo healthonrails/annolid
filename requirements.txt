@@ -8,7 +8,7 @@ decord>=0.4.0
 opencv-python>=4.1.2.30
 opencv-contrib-python>=4.1.2.30
 pycocotools>=2.0.2
-simplification>=0.6.11
+simplification==0.6.11
 pandas>=1.1.3
 shapely>=1.7.1
 scipy
