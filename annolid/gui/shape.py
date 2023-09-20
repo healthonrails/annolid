@@ -250,10 +250,10 @@ class Shape(object):
                             dist = labelme.utils.distance(
                                 self.points[0] - self.points[1])
                             painter.setFont(QtGui.QFont(
-                                "Arial", 3 * self.point_size/self.scale))
+                                "Arial", 3 * int(self.point_size/self.scale)))
                             painter.drawText(
-                                label_x - self.point_size,
-                                label_y - self.point_size,
+                                int(label_x - self.point_size),
+                                int(label_y - self.point_size),
                                 f"length:{round(dist,2)}pixels")
 
             if self.label:
