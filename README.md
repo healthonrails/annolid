@@ -168,8 +168,8 @@ If you prefer to use a config file from a different location,
 * Launch Annolid with the "--flags" option. For example: annolid --flags "digging,rearing,grooming".
 * This will display a flags list with a multi-select component.
 * In the multi-select component, you can see a list of available labels.
-* Click and hold the mouse button to select multiple labels simultaneously.
-* Release the mouse button to finalize your selection.
+* If you choose an event or behavior item from the flags list and then press 's,' it will encode that behavior or event. Pressing the 'e' key will encode the end of the behavior.
+* To eliminate the added event from the seekbar, simply press the 'R' key.
 ### To save the selected frame-level labels in Annolid, you can follow either of these methods:
 * Press Ctrl+S: 
     Use the keyboard shortcut Ctrl+S to save the selected frame-level labels.
