@@ -9,6 +9,31 @@ import glob
 import imageio
 
 
+# Function to clone a Git repository
+def clone_git_repository(repo_url, destination_path):
+    try:
+        # Create the destination directory if it doesn't exist
+        os.makedirs(destination_path, exist_ok=True)
+
+        # Execute the Git clone command
+        subprocess.run(["git", "clone", repo_url, destination_path])
+
+        print("Repository cloned successfully.")
+    except Exception as e:
+        print(f"Failed to clone repository: {e}")
+
+# Function to download a file
+def download_file(url, destination_path):
+    import requests
+    response = requests.get(url)
+    if response.status_code == 200:
+        with open(destination_path, 'wb') as file:
+            file.write(response.content)
+            print("Download complete.")
+    else:
+        print("Failed to download file.")
+
+
 def open_or_start_file(file_name):
     # macOS
     if platform.system() == 'Darwin':
