@@ -980,32 +980,35 @@ class AnnolidWindow(MainWindow):
     def setDirty(self):
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
-
-        # Iterate over the items in self.flag_widget
-        for index in range(self.flag_widget.count()):
-            # Get the item at the current index
-            item = self.flag_widget.item(index)
-
-            if not self.filename:
-                return
-            # Check if the item is checked
-            if item.checkState() == Qt.Checked:
-                _event = item.text()  # Get the text of the checked item
-                self.event_type = _event
-
         if self._config["auto_save"] or self.actions.saveAuto.isChecked():
-            label_file = osp.splitext(self.imagePath)[0] + ".json"
-            if self.output_dir:
-                label_file_without_path = osp.basename(label_file)
-                label_file = osp.join(self.output_dir, label_file_without_path)
-            self.saveLabels(label_file)
-            return
+            if self.filename:
+                label_file = osp.splitext(self.filename)[0] + ".json"
+                if self.output_dir:
+                    label_file_without_path = osp.basename(label_file)
+                    label_file = osp.join(
+                        self.output_dir, label_file_without_path)
+                self.saveLabels(label_file)
+                self.saveFile()
+                return
         self.dirty = True
         self.actions.save.setEnabled(True)
         title = __appname__
         if self.filename is not None:
             title = self.getTitle(clean=False)
         self.setWindowTitle(title)
+
+        if self.flag_widget:
+            # Iterate over the items in self.flag_widget
+            for index in range(self.flag_widget.count()):
+                # Get the item at the current index
+                item = self.flag_widget.item(index)
+
+                if not self.filename:
+                    return
+                # Check if the item is checked
+                if item.checkState() == Qt.Checked:
+                    _event = item.text()  # Get the text of the checked item
+                    self.event_type = _event
 
     def getTitle(self, clean=True):
         title = __appname__
