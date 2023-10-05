@@ -7,7 +7,7 @@ setuptools.setup(
     version="1.1.3",
     author="Chen Yang",
     author_email="healthonrails@gmail.com",
-    description="An Annotation and instance segmenation based mutiple animal tracking package",
+    description="An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.",
     url="https://github.com/healthonrails/annolid",
     packages=setuptools.find_packages(),
     classifiers=[
@@ -22,7 +22,7 @@ setuptools.setup(
                       'opencv-python-headless>=4.1.2.30',
                       'PyYAML>=5.3',
                       'labelme==5.3.1',
-                      #'decord>=0.4.0',
+                      # 'decord>=0.4.0',
                       'torch>=1.7',
                       'torchvision>=0.8',
                       'pandas>=1.1.3',
@@ -33,7 +33,7 @@ setuptools.setup(
                       'qimage2ndarray>=1.8',
                       'simplification==0.6.11',
                       "dataclasses>=0.6; python_version < '3.7'",
-                      #"segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
+                      # "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
                       ],
     python_requires='>=3.6',
 
