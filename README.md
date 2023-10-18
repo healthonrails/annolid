@@ -13,7 +13,7 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 
 ## Overview of Annolid workflow
 
-![Overview of Annolid workflow](docs/imgs/annolid_workflow.svg)
+![Overview of Annolid workflow](docs/imgs/Annolid_workflow.svg)
 
 * Labeling of frames (annotation)
 * COCO formatting
