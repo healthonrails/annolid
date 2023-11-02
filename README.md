@@ -23,6 +23,9 @@ An annotation and instance segmentation-based multiple animal tracking and behav
 ## Annolid video tutorials
 
 [![Annolid Youtube playlist](docs/imgs/00002895_7.jpg)](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc "Annolid Youtube playlist")
+|   YouTube Channel | Annolid documentations|
+| :-------------------------------------: | :----------------------------: |
+| ![](docs/imgs/annolid_youtube.png) | ![](docs/imgs/annolid_qr.png) |
 
 ## User Guide
 
