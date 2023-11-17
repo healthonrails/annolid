@@ -241,9 +241,14 @@ def convert(input_annotated_dir,
                     logger.warning(f"{filename} has a invalid point {points}.")
                     continue
 
-            mask = labelme.utils.shape_to_mask(
-                img.shape[:2], points, shape_type
-            )
+            try:
+                mask = labelme.utils.shape_to_mask(
+                    img.shape[:2], points, shape_type
+                )
+            except:
+                logger.warning("Polygon must have points more than 2")
+                continue
+
 
             if instance in masks:
                 masks[instance] = masks[instance] | mask
