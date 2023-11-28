@@ -236,6 +236,10 @@ If you use Annolid in your research, please use the following BibTeX entry.
 and behavior analysis package
 ](https://youtu.be/tVIE6vG9Gao)
 
+# SfN 2023 posters
+* PSTR512.02 - Annolid: Annotate, Segment, and Track Anything You Need
+* PSTR512.01 - Scoring rodent digging behavior with Annolid
+
 # Datasets
 **New** An example dataset annotated by Annolid and converted to COCO format dataset is now available from
 this Google Drive link https://drive.google.com/file/d/1fUXCLnoJ5SwXg54mj0NBKGzidsV8ALVR/view?usp=sharing.
