@@ -241,6 +241,23 @@ class AnnolidWindow(MainWindow):
             tip=self.tr("Start creating polygons with segment anything"),
         )
 
+        createAiPolygonMode = action(
+            self.tr("Create AI-Polygon"),
+            lambda: self.toggleDrawMode(False, createMode="ai_polygon"),
+            None,
+            "objects",
+            self.tr("Start drawing ai_polygon. Ctrl+LeftClick ends creation."),
+            enabled=False,
+        )
+
+        createAiPolygonMode.changed.connect(
+            lambda: self.canvas.initializeAiModel(
+                name=self._selectAiModelComboBox.currentText()
+            )
+            if self.canvas.createMode == "ai_polygon"
+            else None
+        )
+
         open_video = action(
             self.tr("&Open Video"),
             self.openVideo,
@@ -541,101 +558,27 @@ class AnnolidWindow(MainWindow):
         self.playVideo(isPlaying=False)
 
     def toggleDrawMode(self, edit=True, createMode="polygon"):
+
+        draw_actions = {
+            "polygon": self.actions.createMode,
+            "rectangle": self.actions.createRectangleMode,
+            "circle": self.actions.createCircleMode,
+            "point": self.actions.createPointMode,
+            "line": self.actions.createLineMode,
+            "linestrip": self.actions.createLineStripMode,
+            "ai_polygon": self.actions.createAiPolygonMode,
+            "ai_mask": self.actions.createAiMaskMode,
+            "polygonSAM": self.createPolygonSAMMode,
+        }
+
         self.canvas.setEditing(edit)
         self.canvas.createMode = createMode
         if edit:
-            self.actions.createMode.setEnabled(True)
-            self.actions.createRectangleMode.setEnabled(True)
-            self.actions.createCircleMode.setEnabled(True)
-            self.actions.createLineMode.setEnabled(True)
-            self.actions.createPointMode.setEnabled(True)
-            self.actions.createLineStripMode.setEnabled(True)
-            self.createPolygonSAMMode.setEnabled(True)
+            for draw_action in draw_actions.values():
+                draw_action.setEnabled(True)
         else:
-            if createMode == "polygon":
-                self.actions.createMode.setEnabled(False)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.createPolygonSAMMode.setEnabled(True)
-            elif createMode == "rectangle":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(False)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.createPolygonSAMMode.setEnabled(True)
-            elif createMode == "line":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(False)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.createPolygonSAMMode.setEnabled(True)
-            elif createMode == "point":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(False)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.createPolygonSAMMode.setEnabled(True)
-            elif createMode == "circle":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(False)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.createPolygonSAMMode.setEnabled(True)
-            elif createMode == "linestrip":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(False)
-                self.createPolygonSAMMode.setEnabled(True)
-            elif createMode == "polygonSAM":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.createPolygonSAMMode.setEnabled(False)
-            elif createMode == "ai_polygon":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.actions.createAiPolygonMode.setEnabled(False)
-                self.canvas.initializeAiModel(
-                    name=self._selectAiModelComboBox.currentText()
-                )
-                self._selectAiModelComboBox.setEnabled(True)
-            elif createMode == "ai_mask":
-                self.actions.createMode.setEnabled(True)
-                self.actions.createRectangleMode.setEnabled(True)
-                self.actions.createCircleMode.setEnabled(True)
-                self.actions.createLineMode.setEnabled(True)
-                self.actions.createPointMode.setEnabled(True)
-                self.actions.createLineStripMode.setEnabled(True)
-                self.actions.createAiPolygonMode.setEnabled(False)
-                self.canvas.initializeAiModel(
-                    name=self._selectAiModelComboBox.currentText()
-                )
-                self._selectAiModelComboBox.setEnabled(True)
-                self.actions.createAiMaskMode.setEnabled(False)
-
-            else:
-                raise ValueError("Unsupported createMode: %s" % createMode)
+            for draw_mode, draw_action in draw_actions.items():
+                draw_action.setEnabled(createMode != draw_mode)
         self.actions.editMode.setEnabled(not edit)
 
     def closeFile(self, _value=False):
