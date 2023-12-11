@@ -851,6 +851,9 @@ class AnnolidWindow(MainWindow):
                     group_id=s.group_id,
                     shape_type=s.shape_type,
                     flags=s.flags,
+                    mask=None
+                    if s.mask is None
+                    else utils.img_arr_to_b64(s.mask),
                 )
             )
             return data
@@ -1632,6 +1635,7 @@ class AnnolidWindow(MainWindow):
             shape_type = shape["shape_type"]
             flags = shape["flags"]
             group_id = shape["group_id"]
+            description = shape.get("description", "")
             other_data = shape["other_data"]
 
             if not points:
@@ -1642,6 +1646,8 @@ class AnnolidWindow(MainWindow):
                 label=label,
                 shape_type=shape_type,
                 group_id=group_id,
+                description=description,
+                mask=shape["mask"],
             )
             for x, y in points:
                 shape.addPoint(QtCore.QPointF(x, y))
