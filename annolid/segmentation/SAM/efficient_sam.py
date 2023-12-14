@@ -3,158 +3,131 @@ import cv2
 import numpy as np
 import torch
 from torchvision.transforms import ToTensor
+from PIL import Image
 
 
 class EfficientSAM:
     """
-    Class for EfficientSAM segmentation using TorchScript models.
+    Class for EfficientSAM segmentation.
     Reference: 
     https://github.com/yformer/EfficientSAM
     @article{xiong2023efficientsam,
-  title={EfficientSAM: Leveraged Masked Image Pretraining for Efficient Segment Anything},
-  author={Yunyang Xiong, Bala Varadarajan, Lemeng Wu, Xiaoyu Xiang, Fanyi Xiao, Chenchen Zhu,
-    Xiaoliang Dai, Dilin Wang, Fei Sun, Forrest Iandola, Raghuraman Krishnamoorthi, Vikas Chandra},
-  journal={arXiv:2312.00863},
-  year={2023}
-}
+    title={EfficientSAM: Leveraged Masked Image Pretraining for Efficient Segment Anything},
+    author={Yunyang Xiong, Bala Varadarajan, Lemeng Wu, Xiaoyu Xiang, Fanyi Xiao, Chenchen Zhu,
+        Xiaoliang Dai, Dilin Wang, Fei Sun, Forrest Iandola, Raghuraman Krishnamoorthi, Vikas Chandra},
+    journal={arXiv:2312.00863},
+    year={2023}
+    }
     """
 
-    def __init__(self, model_path):
+    def __init__(self, model):
         """
-        Initialize the EfficientSAM class.
+        Initialize the EfficientSAM with a given model.
 
         Parameters:
-        - model_path (str): Path to the TorchScript model file.
+        - model: The model for prediction.
         """
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
-        self.model = self._load_model(model_path).to(self.device)
+        self.model = model
 
-    def _load_model(self, model_path):
+    def run_box_or_points(self, img_path, pts_sampled, pts_labels):
         """
-        Load the TorchScript model from the given path.
+        Run the box or points algorithm and return the predicted result.
 
         Parameters:
-        - model_path (str): Path to the TorchScript model file.
+        - img_path (str): Path to the input image.
+        - pts_sampled (list): List of sampled points.
+        - pts_labels (list): List of labels corresponding to sampled points.
 
         Returns:
-        - torch.jit.ScriptModule: Loaded TorchScript model.
+        - numpy.ndarray: Predicted result as a numpy array.
         """
-        try:
-            # Download and load the model
-            return torch.jit.load(model_path)
-        except Exception as e:
-            raise ValueError(f"Error loading the model: {e}")
-
-    def _preprocess_image(self, image_path):
-        """
-        Preprocess the input image.
-
-        Parameters:
-        - image_path (str): Path to the input image.
-
-        Returns:
-        - torch.Tensor: Preprocessed image tensor.
-        """
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        img_tensor = ToTensor()(image)
-        return img_tensor[None, ...].to(self.device)
-
-    def _get_mask_and_iou(self, img_tensor, points_sampled, labels):
-        """
-        Get segmentation mask and IoU predictions.
-
-        Parameters:
-        - img_tensor (torch.Tensor): Preprocessed image tensor.
-        - points_sampled (torch.Tensor): Sampled points tensor.
-        - labels (torch.Tensor): Tensor containing labels.
-
-        Returns:
-        - Tuple[np.ndarray, np.ndarray]: Segmentation masks and IoU predictions.
-        """
+        image_np = np.array(Image.open(img_path))
+        img_tensor = ToTensor()(image_np)
+        pts_sampled = torch.reshape(torch.tensor(pts_sampled), [1, 1, -1, 2])
+        pts_labels = torch.reshape(torch.tensor(pts_labels), [1, 1, -1])
         predicted_logits, predicted_iou = self.model(
-            img_tensor, points_sampled.to(self.device), labels.to(self.device))
-        predicted_logits = predicted_logits.cpu()
-        all_masks = torch.ge(torch.sigmoid(
-            predicted_logits[0, 0, :, :, :]), 0.5).numpy()
-        predicted_iou = predicted_iou[0, 0, ...].cpu().detach().numpy()
-        return all_masks, predicted_iou
+            img_tensor[None, ...],
+            pts_sampled,
+            pts_labels,
+        )
 
-    def run_ours_point(self, image_path, points_sampled):
+        sorted_ids = torch.argsort(predicted_iou, dim=-1, descending=True)
+        predicted_iou = torch.take_along_dim(predicted_iou, sorted_ids, dim=2)
+        predicted_logits = torch.take_along_dim(
+            predicted_logits, sorted_ids[..., None, None], dim=2
+        )
+
+        return torch.ge(predicted_logits[0, 0, 0, :, :], 0).cpu().detach().numpy()
+
+    def show_mask(self, mask, ax, random_color=False):
         """
-        Run point segmentation.
+        Show the mask on the given axis.
 
         Parameters:
-        - image_path (str): Path to the input image.
-        - points_sampled (np.ndarray): Sampled points.
-
-        Returns:
-        - np.ndarray: Selected mask using predicted IoU.
+        - mask (numpy.ndarray): Mask array.
+        - ax: Matplotlib axis to display the mask.
+        - random_color (bool): Whether to use a random color for the mask.
         """
-        img_tensor = self._preprocess_image(image_path)
-        points_sampled = torch.reshape(torch.tensor(points_sampled), [
-                                       1, 1, -1, 2]).to(self.device)
-        max_num_pts = points_sampled.shape[2]
-        labels = torch.ones(1, 1, max_num_pts).to(self.device)
+        color = np.concatenate([np.random.random(3), np.array(
+            [0.6])], axis=0) if random_color else np.array([30 / 255, 144 / 255, 255 / 255, 0.8])
+        h, w = mask.shape[-2:]
+        mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+        ax.imshow(mask_image)
 
-        all_masks, predicted_iou = self._get_mask_and_iou(
-            img_tensor, points_sampled, labels)
-
-        max_predicted_iou = -1
-        selected_mask_using_predicted_iou = None
-        for m in range(all_masks.shape[0]):
-            curr_predicted_iou = predicted_iou[m]
-            if curr_predicted_iou > max_predicted_iou or selected_mask_using_predicted_iou is None:
-                max_predicted_iou = curr_predicted_iou
-                selected_mask_using_predicted_iou = all_masks[m]
-
-        return selected_mask_using_predicted_iou
-
-    def run_ours_box(self, image_path, points_sampled):
+    def show_points(self, coords, labels, ax, marker_size=375):
         """
-        Run box segmentation.
+        Show the points on the given axis.
 
         Parameters:
-        - image_path (str): Path to the input image.
-        - points_sampled (np.ndarray): Sampled points.
-
-        Returns:
-        - np.ndarray: Selected mask using predicted IoU.
+        - coords (numpy.ndarray): Coordinates of points.
+        - labels (numpy.ndarray): Labels corresponding to points.
+        - ax: Matplotlib axis to display the points.
+        - marker_size (int): Size of the markers.
         """
-        img_tensor = self._preprocess_image(image_path)
-        bbox = torch.reshape(torch.tensor(points_sampled),
-                             [1, 1, 2, 2]).to(self.device)
-        bbox_labels = torch.reshape(torch.tensor(
-            [2, 3]), [1, 1, 2]).to(self.device)
+        pos_points = coords[labels == 1]
+        neg_points = coords[labels == 0]
+        self._scatter_points(ax, pos_points, color="green",
+                             marker_size=marker_size)
+        self._scatter_points(ax, neg_points, color="red",
+                             marker_size=marker_size)
 
-        all_masks, predicted_iou = self._get_mask_and_iou(
-            img_tensor, bbox, bbox_labels)
+    def _scatter_points(self, ax, points, color, marker_size):
+        ax.scatter(
+            points[:, 0],
+            points[:, 1],
+            color=color,
+            marker="*",
+            s=marker_size,
+            edgecolor="white",
+            linewidth=1.25,
+        )
 
-        max_predicted_iou = -1
-        selected_mask_using_predicted_iou = None
-        for m in range(all_masks.shape[0]):
-            curr_predicted_iou = predicted_iou[m]
-            if curr_predicted_iou > max_predicted_iou or selected_mask_using_predicted_iou is None:
-                max_predicted_iou = curr_predicted_iou
-                selected_mask_using_predicted_iou = all_masks[m]
-
-        return selected_mask_using_predicted_iou
-
-    @staticmethod
-    def show_anns_ours(mask, ax):
+    def show_box(self, box, ax):
         """
-        Show segmentation annotations.
+        Show the bounding box on the given axis.
 
         Parameters:
-        - mask (np.ndarray): Segmentation mask.
-        - ax (matplotlib.axes.Axes): Matplotlib axes to display the mask.
+        - box (list): List containing [x0, y0, x1, y1] coordinates of the box.
+        - ax: Matplotlib axis to display the box.
+        """
+        x0, y0, x1, y1 = box
+        w, h = x1 - x0, y1 - y0
+        ax.add_patch(
+            plt.Rectangle((x0, y0), w, h, edgecolor="yellow",
+                          facecolor=(0, 0, 0, 0), lw=5)
+        )
+
+    def show_annotations(self, mask, ax):
+        """
+        Show annotations using the given mask on the given axis.
+
+        Parameters:
+        - mask (numpy.ndarray): Mask array.
+        - ax: Matplotlib axis to display the annotations.
         """
         ax.set_autoscale_on(False)
-        img = np.ones((mask[0].shape[0], mask[0].shape[1], 4))
+        img = np.ones((mask.shape[0], mask.shape[1], 4))
         img[:, :, 3] = 0
-        for ann in mask:
-            m = ann
-            color_mask = np.concatenate([np.random.random(3), [0.5]])
-            img[m] = color_mask
+        color_mask = [0, 1, 0, 0.7]
+        img[np.logical_not(mask)] = color_mask
         ax.imshow(img)
