@@ -12,7 +12,7 @@ import gdown
 import imgviz
 import labelme.ai
 from labelme.logger import logger
-
+from annolid.segmentation import SAM
 
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
@@ -156,15 +156,15 @@ class Canvas(QtWidgets.QWidget):
         self.current = None
 
     def initializeAiModel(self, name):
-        if name not in [model.name for model in labelme.ai.MODELS]:
+        if name not in [model.name for model in SAM.MODELS]:
             raise ValueError("Unsupported ai model: %s" % name)
-        model = [model for model in labelme.ai.MODELS if model.name == name][0]
+        model = [model for model in SAM.MODELS if model.name == name][0]
 
         if self._ai_model is not None and self._ai_model.name == model.name:
             logger.debug("AI model is already initialized: %r" % model.name)
         else:
             logger.debug("Initializing AI model: %r" % model.name)
-            self._ai_model = labelme.ai.SegmentAnythingModel(
+            self._ai_model = SAM.SegmentAnythingModel(
                 name=model.name,
                 encoder_path=gdown.cached_download(
                     url=model.encoder_weight.url,
@@ -568,7 +568,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                             self.current.shape_type = "circle"
                         self.line.points = [pos, pos]
                         if (
-                            self.createMode in ["ai_polygon","ai_mask"]
+                            self.createMode in ["ai_polygon", "ai_mask"]
                             and is_shift_pressed
                         ):
                             self.line.point_labels = [0, 0]
@@ -845,10 +845,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
         # draw crosshair
         if (self._crosshair[self._createMode]
-            and self.drawing()
-            and self.prevMovePoint
-            and not self.outOfPixmap(self.prevMovePoint)
-            ):
+                and self.drawing()
+                and self.prevMovePoint
+                and not self.outOfPixmap(self.prevMovePoint)
+                ):
             p.setPen(QtGui.QColor(0, 0, 0))
             p.drawLine(
                 0,

@@ -17,6 +17,17 @@ Weight = collections.namedtuple("Weight", ["url", "md5"])
 
 MODELS = [
     Model(
+        name="Segment-Anything (Edge)",
+        encoder_weight=Weight(
+            url="https://huggingface.co/spaces/chongzhou/EdgeSAM/resolve/main/weights/edge_sam_3x_encoder.onnx",  # NOQA
+            md5="e0745d06f3ee9c5e01a667b56a40875b",
+        ),
+        decoder_weight=Weight(
+            url="https://huggingface.co/spaces/chongzhou/EdgeSAM/resolve/main/weights/edge_sam_3x_decoder.onnx",  # NOQA
+            md5="9fe1d5521b4349ab710e9cc970936970",
+        ),
+    ),
+    Model(
         name="Segment-Anything (speed)",
         encoder_weight=Weight(
             url="https://github.com/wkentaro/labelme/releases/download/sam-20230416/sam_vit_b_01ec64.quantized.encoder.onnx",  # NOQA
