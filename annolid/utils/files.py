@@ -9,7 +9,25 @@ import glob
 import imageio
 
 
+def find_most_recent_file(folder_path):
+    # List all files in the folder
+    all_files = os.listdir(folder_path)
+
+    # Filter out directories and get file paths
+    file_paths = [os.path.join(folder_path, file) for file in all_files if os.path.isfile(
+        os.path.join(folder_path, file))]
+
+    if not file_paths:
+        return None  # No files found
+
+    # Get the most recent file based on modification time
+    most_recent_file = max(file_paths, key=os.path.getmtime)
+
+    return most_recent_file
+
 # Function to clone a Git repository
+
+
 def clone_git_repository(repo_url, destination_path):
     try:
         # Create the destination directory if it doesn't exist
@@ -23,6 +41,8 @@ def clone_git_repository(repo_url, destination_path):
         print(f"Failed to clone repository: {e}")
 
 # Function to download a file
+
+
 def download_file(url, destination_path):
     import requests
     response = requests.get(url)
