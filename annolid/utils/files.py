@@ -6,7 +6,6 @@ import subprocess
 import platform
 import shutil
 import glob
-import imageio
 
 
 def find_most_recent_file(folder_path):
@@ -193,6 +192,7 @@ def create_gif(img_folder: str, gif_name: str,
     --------
     None
     """
+    import imageio
     # Get the paths of the images
     saved_img_paths = gb.glob(img_folder + "/*." + suffix)
 
@@ -206,7 +206,7 @@ def create_gif(img_folder: str, gif_name: str,
     # Load the images and resize them to the specified size
     frames = []
     for img_path in sorted(saved_img_paths)[start_frame:end_frame]:
-        img = imageio.imread(img_path)
+        img = cv2.imread(img_path)
         img = cv2.resize(img, size)
         frames.append(img)
 
