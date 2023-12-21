@@ -207,6 +207,7 @@ class AnnolidWindow(MainWindow):
         self.highlighted_mark = None
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
+        self.prev_shapes = None
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -1503,7 +1504,13 @@ class AnnolidWindow(MainWindow):
             )
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
-            self.video_loader = videos.CV2Video(video_filename)
+            try:
+                self.video_loader = videos.CV2Video(video_filename)
+            except Exception:
+                QtWidgets.QMessageBox.about(self,
+                                            "Not a valid video file",
+                                            f"Please check and open a correct video file.")
+                return
             self.fps = self.video_loader.get_fps()
 
             self.num_frames = self.video_loader.total_frames()
