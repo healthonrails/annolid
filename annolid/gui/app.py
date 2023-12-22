@@ -488,7 +488,8 @@ class AnnolidWindow(MainWindow):
 
         self._selectAiModelComboBox.clear()
         self._selectAiModelComboBox.addItems([model.name for model in MODELS])
-        self._selectAiModelComboBox.setCurrentIndex(1)
+        #Set EdgeSAM as default
+        self._selectAiModelComboBox.setCurrentIndex(0)
         self._selectAiModelComboBox.currentIndexChanged.connect(
             lambda: self.canvas.initializeAiModel(
                 name=self._selectAiModelComboBox.currentText()
