@@ -549,26 +549,31 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     if self.createMode != "polygonSAM":
                         self.current = Shape(shape_type="points" if self.createMode in [
                                              "ai_polygon", "ai_mask"] else self.createMode)
-                        self.current.addPoint(pos)
+                        self.current.addPoint(pos, label=0 if is_shift_pressed else 1)
+                        if self.createMode == "point":
+                            self.finalise()
+                        elif (
+                            self.createMode in ["ai_polygon", "ai_mask"]
+                            and ev.modifiers() & QtCore.Qt.ControlModifier
+                        ):
+                            self.finalise()
+                        else:
+                            if self.createMode == "circle":
+                                self.current.shape_type = "circle"
+                            self.line.points = [pos, pos]
+                            if (
+                                self.createMode in ["ai_polygon", "ai_mask"]
+                                and is_shift_pressed
+                            ):
+                                self.line.point_labels = [0, 0]
+                            else:
+                                self.line.point_labels = [1, 1]
+                            self.setHiding()
+                            self.drawingPolygon.emit(True)
+                            self.update()
                     else:
                         self.current = MultipoinstShape()
                         self.current.addPoint(pos, True)
-                    if self.createMode == "point":
-                        self.finalise()
-                    else:
-                        if self.createMode == "circle":
-                            self.current.shape_type = "circle"
-                        self.line.points = [pos, pos]
-                        if (
-                            self.createMode in ["ai_polygon", "ai_mask"]
-                            and is_shift_pressed
-                        ):
-                            self.line.point_labels = [0, 0]
-                        else:
-                            self.line.point_labels = [1, 1]
-                        self.setHiding()
-                        self.drawingPolygon.emit(True)
-                        self.update()
             elif self.editing():
                 if self.selectedEdge():
                     self.addPointToEdge()
@@ -728,6 +733,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         top = self.pixmap.height() - 1
         bottom = 0
         for s in self.selectedShapes:
+            if s.shape_type == 'mask':
+                continue
             rect = s.boundingRect()
             if rect.left() < left:
                 left = rect.left()

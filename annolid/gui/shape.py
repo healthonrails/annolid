@@ -109,8 +109,6 @@ class Shape(object):
     def shape_type(self, value):
         if value is None:
             value = "polygon"
-        if value == 'ai_polygon':
-            value = 'points'
         if value not in [
             "polygon",
             "rectangle",
@@ -374,14 +372,11 @@ class Shape(object):
                 rectangle = self.getCircleRectFromLine(self.points)
                 path.addEllipse(rectangle)
         else:
-            if self.points:
-                path = QtGui.QPainterPath(self.points[0])
-                for p in self.points[1:]:
-                    path.lineTo(p)
-                return path
-            else:
-                return QtGui.QPainterPath()
-
+            path = QtGui.QPainterPath(self.points[0])
+            for p in self.points[1:]:
+                path.lineTo(p)
+            return path
+            
     def boundingRect(self):
         return self.makePath().boundingRect()
 
