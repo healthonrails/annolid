@@ -39,7 +39,7 @@ class TestFindMostRecentFile(unittest.TestCase):
             mock_datetime.now.return_value = mock_current_time
 
             # Call the function with the temporary folder
-            result = find_most_recent_file(self.temp_folder)
+            result = find_most_recent_file(self.temp_folder, file_ext='.txt')
 
         # Expect the most recent file to be the first in the list (modified 1 day ago)
         expected_result = os.path.join(self.temp_folder, "test_file_1.txt")
