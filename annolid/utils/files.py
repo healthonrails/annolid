@@ -8,13 +8,13 @@ import shutil
 import glob
 
 
-def find_most_recent_file(folder_path):
+def find_most_recent_file(folder_path, file_ext=".json"):
     # List all files in the folder
     all_files = os.listdir(folder_path)
 
     # Filter out directories and get file paths
     file_paths = [os.path.join(folder_path, file) for file in all_files if os.path.isfile(
-        os.path.join(folder_path, file))]
+        os.path.join(folder_path, file)) and file.endswith(file_ext)]
 
     if not file_paths:
         return None  # No files found

@@ -30,6 +30,9 @@ shape:
   hvertex_fill_color: [255, 255, 255, 255]
   point_size: 8
 
+ai:
+  default: 'EfficientSam (speed)'
+
 # main
 flag_dock:
   show: true
@@ -123,6 +126,9 @@ shortcuts:
   edit_label: Ctrl+E
   toggle_keep_prev_mode: Ctrl+P
   remove_selected_point: [Meta+H, Backspace]
+  show_all_polygons: null
+  hide_all_polygons: null
+  toggle_all_polygons: T
 
 events:
   start: event_start

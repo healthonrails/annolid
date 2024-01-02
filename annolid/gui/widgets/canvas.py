@@ -8,11 +8,9 @@ import labelme.utils
 import numpy as np
 import cv2
 import os
-import gdown
 import imgviz
 import labelme.ai
 from labelme.logger import logger
-from annolid.segmentation import SAM
 
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
@@ -156,25 +154,19 @@ class Canvas(QtWidgets.QWidget):
         self.current = None
 
     def initializeAiModel(self, name):
-        if name not in [model.name for model in SAM.MODELS]:
+        if name not in [model.name for model in labelme.ai.MODELS]:
             raise ValueError("Unsupported ai model: %s" % name)
-        model = [model for model in SAM.MODELS if model.name == name][0]
+        model = [model for model in labelme.ai.MODELS if model.name == name][0]
 
         if self._ai_model is not None and self._ai_model.name == model.name:
             logger.debug("AI model is already initialized: %r" % model.name)
         else:
             logger.debug("Initializing AI model: %r" % model.name)
-            self._ai_model = SAM.SegmentAnythingModel(
-                name=model.name,
-                encoder_path=gdown.cached_download(
-                    url=model.encoder_weight.url,
-                    md5=model.encoder_weight.md5,
-                ),
-                decoder_path=gdown.cached_download(
-                    url=model.decoder_weight.url,
-                    md5=model.decoder_weight.md5,
-                ),
-            )
+            self._ai_model = model()
+
+        if self.pixmap is None:
+            logger.warning("Pixmap is not set yet")
+            return
 
         self._ai_model.set_image(
             image=labelme.utils.img_qt_to_arr(self.pixmap.toImage())

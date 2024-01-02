@@ -32,6 +32,7 @@ from labelme.widgets import LabelListWidgetItem
 from labelme.label_file import LabelFileError
 from labelme.label_file import LabelFile
 from labelme import utils
+from labelme.logger import logger
 from labelme.widgets import ToolBar
 from annolid.configs import get_config
 from annolid.gui.widgets.canvas import Canvas
@@ -55,8 +56,7 @@ from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.timestamps import convert_frame_number_to_time
-from annolid.segmentation.SAM import MODELS
-
+from labelme.ai import MODELS
 __appname__ = 'Annolid'
 __version__ = "1.1.3"
 
@@ -487,9 +487,18 @@ class AnnolidWindow(MainWindow):
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
 
         self._selectAiModelComboBox.clear()
-        self._selectAiModelComboBox.addItems([model.name for model in MODELS])
-        #Set EdgeSAM as default
-        self._selectAiModelComboBox.setCurrentIndex(0)
+        model_names = [model.name for model in MODELS]
+        self._selectAiModelComboBox.addItems(model_names)
+        # Set EdgeSAM as default
+        if self._config["ai"]["default"] in model_names:
+            model_index = model_names.index(self._config["ai"]["default"])
+        else:
+            logger.warning(
+                "Default AI model is not found: %r",
+                self._config["ai"]["default"],
+            )
+            model_index = 0
+        self._selectAiModelComboBox.setCurrentIndex(model_index)
         self._selectAiModelComboBox.currentIndexChanged.connect(
             lambda: self.canvas.initializeAiModel(
                 name=self._selectAiModelComboBox.currentText()
