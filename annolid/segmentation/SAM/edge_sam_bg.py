@@ -6,6 +6,14 @@ from annolid.utils.files import find_most_recent_file
 import json
 from annolid.gui.shape import Shape
 from annolid.annotation.keypoints import save_labels
+import numpy as np
+
+
+def calculate_polygon_center(polygon_vertices):
+    x_coords, y_coords = zip(*polygon_vertices)
+    center_x = np.mean(x_coords)
+    center_y = np.mean(y_coords)
+    return np.array([(center_x, center_y)])
 
 
 class VideoProcessor:
@@ -26,6 +34,7 @@ class VideoProcessor:
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
         self.edge_sam = self.get_model(encoder_path, decoder_path)
+        self.num_frames = self.video_loader.total_frames()
 
     def get_model(self, encoder_path, decoder_path):
         """
@@ -85,8 +94,9 @@ class VideoProcessor:
 
         # Example usage of predict_polygon_from_points
         for label, points in points_dict.items():
-            point_labels = [1] * len(points)
             self.edge_sam.set_image(cur_frame)
+            points = calculate_polygon_center(points)
+            point_labels = [1] * len(points)
             polygon = self.edge_sam.predict_polygon_from_points(
                 points, point_labels)
 
@@ -106,7 +116,7 @@ class VideoProcessor:
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
                     height=height, width=width)
 
-    def process_video_frames(self, start_frame, end_frame, step):
+    def process_video_frames(self, start_frame, end_frame=None, step=10):
         """
         Process multiple frames of the video.
 
@@ -115,6 +125,8 @@ class VideoProcessor:
         - end_frame (int): Ending frame number.
         - step (int): Step between frames.
         """
+        if end_frame is None:
+            end_frame = self.num_frames
         for i in range(start_frame, end_frame + 1, step):
             self.process_frame(i)
 
@@ -130,9 +142,9 @@ class VideoProcessor:
 
 if __name__ == '__main__':
     # Usage
-    video_path = "monkey_u.mp4"
+    video_path = "animal.mp4"
     encoder_path = "edge_sam_3x_encoder.onnx"
     decoder_path = "edge_sam_3x_decoder.onnx"
 
     video_processor = VideoProcessor(video_path, encoder_path, decoder_path)
-    video_processor.process_video_frames(30, 100, 10)
+    video_processor.process_video_frames(0, 500, 1)
