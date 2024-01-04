@@ -5,7 +5,6 @@ import threading
 import imgviz
 import numpy as np
 import onnxruntime
-import PIL.Image
 import skimage.measure
 import cv2
 from labelme.logger import logger
@@ -219,6 +218,7 @@ def _compute_mask_from_points(
 def _compute_polygon_from_points(
     image_size, decoder_session, image, image_embedding, points, point_labels
 ):
+    from annolid.annotation.masks import mask_to_polygons
     mask = _compute_mask_from_points(
         image_size=image_size,
         decoder_session=decoder_session,
@@ -227,23 +227,8 @@ def _compute_polygon_from_points(
         points=points,
         point_labels=point_labels,
     )
-
-    contours = skimage.measure.find_contours(np.pad(mask, pad_width=1))
-    contour = max(contours, key=_get_contour_length)
-    POLYGON_APPROX_TOLERANCE = 0.004
-    polygon = skimage.measure.approximate_polygon(
-        coords=contour,
-        tolerance=np.ptp(contour, axis=0).max() * POLYGON_APPROX_TOLERANCE,
-    )
-    polygon = np.clip(polygon, (0, 0), (mask.shape[0] - 1, mask.shape[1] - 1))
-    polygon = polygon[:-1]  # drop last point that is duplicate of first point
-    if 0:
-        image_pil = PIL.Image.fromarray(image)
-        imgviz.draw.line_(image_pil, yx=polygon, fill=(0, 255, 0))
-        for point in polygon:
-            imgviz.draw.circle_(
-                image_pil, center=point, diameter=10, fill=(0, 255, 0)
-            )
-        imgviz.io.imsave("contour.jpg", np.asarray(image_pil))
-
-    return polygon[:, ::-1]  # yx -> xy
+    polygons, has_holes = mask_to_polygons(mask)
+    polys = polygons[0]
+    all_points = np.array(
+        list(zip(polys[0::2], polys[1::2])))
+    return all_points

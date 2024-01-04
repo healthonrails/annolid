@@ -28,14 +28,15 @@ def calculate_polygon_center(polygon_vertices):
     return np.array([(center_x, center_y)])
 
 
-class VideoProcessor():
+class VideoProcessor:
     """
     A class for processing video frames using the Segment-Anything model.
     """
 
     def __init__(self,
                  video_path,
-                 num_center_points=3
+                 num_center_points=3,
+                 model_name="Segment-Anything (Edge)"
                  ):
         """
         Initialize the VideoProcessor.
@@ -44,10 +45,10 @@ class VideoProcessor():
         - video_path (str): Path to the video file.
         - num_center_points (int): number of center points for prompt.
         """
-        super(VideoProcessor, self).__init__()
         self.video_path = video_path
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
+        self.sam_name = model_name
         self.edge_sam = self.get_model()
         self.num_frames = self.video_loader.total_frames()
         self.center_points = MaxSizeQueue(max_size=num_center_points)
@@ -55,8 +56,7 @@ class VideoProcessor():
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
-                  decoder_path="edge_sam_3x_decoder.onnx",
-                  name="Segment-Anything (Edge)"
+                  decoder_path="edge_sam_3x_decoder.onnx"
                   ):
         """
         Load the Segment-Anything model.
@@ -69,6 +69,7 @@ class VideoProcessor():
         Returns:
         - SegmentAnythingModel: The loaded model.
         """
+        name = self.sam_name
         model = SegmentAnythingModel(name, encoder_path, decoder_path)
         return model
 
@@ -138,7 +139,8 @@ class VideoProcessor():
         self.most_recent_file = filename
         img_filename = str(filename.with_suffix('.png'))
         cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
-        cv2.imwrite(img_filename, cur_frame)
+        if not Path(img_filename).exists():
+            cv2.imwrite(img_filename, cur_frame)
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
                     height=height, width=width)
 
