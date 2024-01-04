@@ -1,6 +1,6 @@
 import cv2
 from pathlib import Path
-from segment_anything import SegmentAnythingModel
+from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel
 from annolid.data.videos import CV2Video
 from annolid.utils.files import find_most_recent_file
 import json
@@ -28,7 +28,7 @@ def calculate_polygon_center(polygon_vertices):
     return np.array([(center_x, center_y)])
 
 
-class VideoProcessor:
+class VideoProcessor():
     """
     A class for processing video frames using the Segment-Anything model.
     """
@@ -44,12 +44,14 @@ class VideoProcessor:
         - video_path (str): Path to the video file.
         - num_center_points (int): number of center points for prompt.
         """
+        super(VideoProcessor, self).__init__()
         self.video_path = video_path
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
         self.edge_sam = self.get_model()
         self.num_frames = self.video_loader.total_frames()
         self.center_points = MaxSizeQueue(max_size=num_center_points)
+        self.most_recent_file = self.get_most_recent_file()
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
@@ -107,8 +109,10 @@ class VideoProcessor:
         cur_frame = self.video_loader.load_frame(frame_number)
 
         height, width, _ = cur_frame.shape
+        if self.most_recent_file is None:
+            return
 
-        points_dict, _ = self.load_json_file(self.get_most_recent_file())
+        points_dict, _ = self.load_json_file(self.most_recent_file)
         label_list = []
 
         # Example usage of predict_polygon_from_points
@@ -131,6 +135,7 @@ class VideoProcessor:
 
         filename = self.video_folder / \
             (self.video_folder.name + f"_{frame_number:0>{9}}.json")
+        self.most_recent_file = filename
         img_filename = str(filename.with_suffix('.png'))
         cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
         cv2.imwrite(img_filename, cur_frame)
@@ -158,7 +163,8 @@ class VideoProcessor:
         Returns:
         - str: Path to the most recent file.
         """
-        return find_most_recent_file(self.video_folder)
+        _recent_file = find_most_recent_file(self.video_folder)
+        return _recent_file
 
 
 if __name__ == '__main__':

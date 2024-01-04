@@ -56,6 +56,7 @@ from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.timestamps import convert_frame_number_to_time
+from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from labelme.ai import MODELS
 __appname__ = 'Annolid'
 __version__ = "1.1.3"
@@ -905,6 +906,23 @@ class AnnolidWindow(MainWindow):
                 otherData=self.otherData,
                 flags=flags,
             )
+
+            if self.video_file:
+                self.video_processor = VideoProcessor(self.video_file)
+                self.seg_pred_thread.start()
+                end_frame = self.frame_number + 90 * self.step_size
+                if end_frame >= self.num_frames:
+                    end_frame = self.num_frames - 1
+                self.pred_worker = FlexibleWorker(
+                    function=self.video_processor.process_video_frames,
+                    start_frame=self.frame_number,
+                    end_frame=end_frame,
+                    step=self.step_size
+                )
+                self.pred_worker.moveToThread(self.seg_pred_thread)
+                self.pred_worker.start.connect(self.pred_worker.run)
+                self.pred_worker.start.emit()
+
             self.labelFile = lf
             items = self.fileListWidget.findItems(
                 self.imagePath, Qt.MatchExactly

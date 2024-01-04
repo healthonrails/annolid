@@ -10,6 +10,8 @@ import glob
 
 def find_most_recent_file(folder_path, file_ext=".json"):
     # List all files in the folder
+    if not os.path.exists(folder_path):
+        return
     all_files = os.listdir(folder_path)
 
     # Filter out directories and get file paths
