@@ -130,9 +130,10 @@ class VideoProcessor:
         self.sam_name = model_name
         self.edge_sam = self.get_model()
         self.num_frames = self.video_loader.total_frames()
-        self.center_points = MaxSizeQueue(max_size=num_center_points)
         self.most_recent_file = self.get_most_recent_file()
         self.num_points_inside_edges = 3
+        self.num_center_points = num_center_points
+        self.center_points = MaxSizeQueue(max_size=self.num_center_points)
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
@@ -206,6 +207,7 @@ class VideoProcessor:
 
         # Example usage of predict_polygon_from_points
         for label, points in points_dict.items():
+
             self.edge_sam.set_image(cur_frame)
             orig_points = points
             bbox_points = find_bbox(points)
@@ -220,6 +222,7 @@ class VideoProcessor:
 
             self.center_points.enqueue(points[0])
             points = self.center_points.to_numpy()
+            self.center_points = MaxSizeQueue(max_size=self.num_center_points)
             points = np.concatenate(
                 (points, bbox_points), axis=0)
             if len(points_inside_edges.shape) > 1:
