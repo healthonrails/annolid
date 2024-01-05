@@ -7,7 +7,7 @@ import json
 from annolid.gui.shape import Shape
 from annolid.annotation.keypoints import save_labels
 import numpy as np
-from collections import deque
+from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
 
 
@@ -131,9 +131,9 @@ class VideoProcessor:
         self.edge_sam = self.get_model()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
-        self.num_points_inside_edges = 3
+        self.num_points_inside_edges = num_center_points
         self.num_center_points = num_center_points
-        self.center_points = MaxSizeQueue(max_size=self.num_center_points)
+        self.center_points_dict = defaultdict()
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
@@ -210,21 +210,20 @@ class VideoProcessor:
 
             self.edge_sam.set_image(cur_frame)
             orig_points = points
-            bbox_points = find_bbox(points)
             points = calculate_polygon_center(points)
 
             polygon = Polygon(orig_points)
-            # Find the center of the polygon
             # Randomly sample points inside the edges of the polygon
             points_inside_edges = random_sample_inside_edges(polygon,
                                                              self.num_points_inside_edges)
-            points_uni = uniform_points_inside_polygon(polygon, 3)
+            points_uni = uniform_points_inside_polygon(
+                polygon, self.num_points_inside_edges)
+            center_points = self.center_points_dict.get(label,
+                                                        MaxSizeQueue(max_size=self.num_center_points))
+            center_points.enqueue(points[0])
+            points = center_points.to_numpy()
+            self.center_points_dict[label] = center_points
 
-            self.center_points.enqueue(points[0])
-            points = self.center_points.to_numpy()
-            self.center_points = MaxSizeQueue(max_size=self.num_center_points)
-            points = np.concatenate(
-                (points, bbox_points), axis=0)
             if len(points_inside_edges.shape) > 1:
                 points = np.concatenate(
                     (points, points_inside_edges), axis=0)
