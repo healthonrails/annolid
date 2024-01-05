@@ -155,8 +155,8 @@ def _get_contour_length(contour):
 
 
 def _compute_mask_from_points(
-    image_size, decoder_session, image, image_embedding, points, point_labels
-):
+        image_size, decoder_session, image, image_embedding,
+        points, point_labels):
     input_point = np.array(points, dtype=np.float32)
     input_label = np.array(point_labels, dtype=np.int32)
 

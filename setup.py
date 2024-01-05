@@ -29,6 +29,7 @@ setuptools.setup(
                       'pycocotools>=2.0.2',
                       'tensorboard>=2.3.0',
                       'imageio>=2.8.0',
+                      'shapely>=2.0.2',
                       'imageio-ffmpeg>=0.4.2',
                       'qimage2ndarray>=1.8',
                       'simplification==0.6.11',
