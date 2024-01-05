@@ -910,7 +910,7 @@ class AnnolidWindow(MainWindow):
             if self.video_file:
                 self.video_processor = VideoProcessor(self.video_file)
                 self.seg_pred_thread.start()
-                end_frame = self.frame_number + 90 * self.step_size
+                end_frame = self.frame_number + 60 * self.step_size
                 if end_frame >= self.num_frames:
                     end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
