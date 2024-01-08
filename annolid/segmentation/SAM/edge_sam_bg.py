@@ -216,6 +216,9 @@ class VideoProcessor:
             self.edge_sam.set_image(cur_frame)
             orig_points = points
             points = calculate_polygon_center(points)
+            if len(orig_points) < 4:
+                orig_points = random_sample_near_center(
+                    Point(orig_points), 4, 3)
 
             polygon = Polygon(orig_points)
             # Randomly sample points inside the edges of the polygon
@@ -256,6 +259,7 @@ class VideoProcessor:
         cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
         if not Path(img_filename).exists():
             cv2.imwrite(img_filename, cur_frame)
+
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
                     height=height, width=width)
 

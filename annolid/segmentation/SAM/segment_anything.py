@@ -228,6 +228,9 @@ def _compute_polygon_from_points(
         point_labels=point_labels,
     )
     polygons, has_holes = mask_to_polygons(mask)
+    if len(polygons) == 0:
+        logger.warning("No polygon found, returning empty polygon.")
+        return np.empty((0, 2), dtype=np.float32)
     polys = polygons[0]
     all_points = np.array(
         list(zip(polys[0::2], polys[1::2])))
