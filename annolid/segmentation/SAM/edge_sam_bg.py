@@ -1,3 +1,4 @@
+import os
 import cv2
 from pathlib import Path
 from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel
@@ -151,6 +152,10 @@ class VideoProcessor:
         - SegmentAnythingModel: The loaded model.
         """
         name = self.sam_name
+        current_file_path = os.path.abspath(__file__)
+        current_folder = os.path.dirname(current_file_path)
+        encoder_path = os.path.join(current_folder, encoder_path)
+        decoder_path = os.path.join(current_folder, decoder_path)
         model = SegmentAnythingModel(name, encoder_path, decoder_path)
         return model
 
