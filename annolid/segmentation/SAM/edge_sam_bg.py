@@ -202,23 +202,32 @@ class VideoProcessor:
         - frame_number (int): Frame number to process.
         """
         cur_frame = self.video_loader.load_frame(frame_number)
+        self.edge_sam.set_image(cur_frame)
+        filename = self.video_folder / \
+            (self.video_folder.name + f"_{frame_number:0>{9}}.json")
 
         height, width, _ = cur_frame.shape
         if self.most_recent_file is None:
             return
+        if (str(frame_number) not in str(self.most_recent_file) or
+                str(frame_number - 1) not in str(self.most_recent_file)):
+            last_frame_annotation = self.video_folder / \
+                (self.video_folder.name + f"_{frame_number-1:0>{9}}.json")
+            if os.path.exists(last_frame_annotation):
+                self.most_recent_file = last_frame_annotation
 
         points_dict, _ = self.load_json_file(self.most_recent_file)
         label_list = []
 
         # Example usage of predict_polygon_from_points
         for label, points in points_dict.items():
-
-            self.edge_sam.set_image(cur_frame)
             orig_points = points
-            points = calculate_polygon_center(points)
-            if len(orig_points) < 4:
+            if len(points) == 0:
+                continue
+            if len(points) < 4:
                 orig_points = random_sample_near_center(
-                    Point(orig_points), 4, 3)
+                    Point(points), 4, 3)
+            points = calculate_polygon_center(orig_points)
 
             polygon = Polygon(orig_points)
             # Randomly sample points inside the edges of the polygon
@@ -252,8 +261,6 @@ class VideoProcessor:
                     p_shape.addPoint((x, y))
             label_list.append(p_shape)
 
-        filename = self.video_folder / \
-            (self.video_folder.name + f"_{frame_number:0>{9}}.json")
         self.most_recent_file = filename
         img_filename = str(filename.with_suffix('.png'))
         cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
