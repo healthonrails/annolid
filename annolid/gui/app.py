@@ -1034,6 +1034,52 @@ class AnnolidWindow(MainWindow):
                     title = "{} - {}*".format(title, _filename)
         return title
 
+    def deleteAllFuturePredictions(self):
+        if self.video_loader:
+            prediction_folder = self.video_results_folder
+            for prediction_file in os.listdir(prediction_folder):
+                prediction_file_path = os.path.join(
+                    prediction_folder, prediction_file)
+                if os.path.isfile(prediction_file_path):
+                    if ".json" in prediction_file_path:
+                        is_future_frames = int(prediction_file_path.split(
+                            '_')[-1].replace('.json', '')) > self.frame_number
+                        if is_future_frames:
+                            os.remove(prediction_file_path)
+            logger.info(
+                "All predictions from the next frames are removed from now on.")
+
+    def deleteFile(self):
+        mb = QtWidgets.QMessageBox
+        msg = self.tr(
+            "You are about to permanently delete this label file, "
+            "Or all the predicted label files from the next frame, "
+            "what would you like to do?"
+        )
+        msg_box = mb(self)
+        msg_box.setIcon(mb.Warning)
+        msg_box.setText(msg)
+        msg_box.setStandardButtons(mb.No | mb.Yes | mb.YesToAll)
+        msg_box.setDefaultButton(mb.No)
+        answer = msg_box.exec_()
+
+        if answer == mb.No:
+            return
+        elif answer == mb.YesToAll:
+            # Handle the case to delete all predictions from now on
+            self.deleteAllFuturePredictions()
+        else:
+            label_file = self.getLabelFile()
+            if osp.exists(label_file):
+                os.remove(label_file)
+                logger.info("Label file is removed: {}".format(label_file))
+
+                item = self.fileListWidget.currentItem()
+                if item:
+                    item.setCheckState(Qt.Unchecked)
+
+                self.resetState()
+
     def setClean(self):
         self.dirty = False
         self.actions.save.setEnabled(False)
