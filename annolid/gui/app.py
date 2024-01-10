@@ -67,6 +67,7 @@ LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
 class FlexibleWorker(QtCore.QObject):
     start = QtCore.Signal()
+    finished = QtCore.Signal()
 
     def __init__(self, function, *args, **kwargs):
         super(FlexibleWorker, self).__init__()
@@ -77,6 +78,7 @@ class FlexibleWorker(QtCore.QObject):
 
     def run(self):
         self.function(*self.args, **self.kwargs)
+        self.finished.emit()
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -863,6 +865,11 @@ class AnnolidWindow(MainWindow):
             imgviz.io.imsave(image_filename, img)
         return image_filename
 
+    def predict_is_ready(self):
+        QtWidgets.QMessageBox.information(
+            self, "Prediction Ready",
+            "Predictions for the next 60 video frames have been generated!")
+
     def saveLabels(self, filename):
         lf = LabelFile()
 
@@ -921,6 +928,10 @@ class AnnolidWindow(MainWindow):
                 )
                 self.pred_worker.moveToThread(self.seg_pred_thread)
                 self.pred_worker.start.connect(self.pred_worker.run)
+                self.seg_pred_thread.started.connect(self.pred_worker.start)
+                self.pred_worker.finished.connect(self.predict_is_ready)
+                self.seg_pred_thread.finished.connect(
+                    self.seg_pred_thread.quit)
                 self.pred_worker.start.emit()
 
             self.labelFile = lf
