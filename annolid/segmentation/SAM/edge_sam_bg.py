@@ -244,7 +244,7 @@ class VideoProcessor:
                 continue
             if len(points) < 4:
                 orig_points = random_sample_near_center(
-                    Point(points), 4, 3)
+                    Point(points[0]), 4, 3)
             points = calculate_polygon_center(orig_points)
 
             polygon = Polygon(orig_points)
