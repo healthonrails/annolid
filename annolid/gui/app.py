@@ -1607,7 +1607,6 @@ class AnnolidWindow(MainWindow):
             self.set_frame_number(self.frame_number)
 
             self.actions.openNextImg.setEnabled(True)
-            self.openNextImg(load=True)
 
             self.actions.openPrevImg.setEnabled(True)
 
