@@ -6,6 +6,18 @@ import pycocotools.mask as mask_util
 from simplification.cutil import simplify_coords_vwp
 
 
+def binary_mask_to_coco_rle(binary_mask):
+    # Ensure the binary mask is in the correct format (numpy array with dtype=bool)
+    binary_mask = np.asarray(binary_mask, dtype=np.uint8)
+
+    # Convert the binary mask to COCO RLE format
+    coco_rle = mask_util.encode(np.asfortranarray(binary_mask))
+    coco_rle['counts'] = coco_rle['counts'].decode(
+        'UTF-8')  # Convert bytes to string
+
+    return coco_rle
+
+
 def mask_to_polygons(mask,
                      use_convex_hull=False):
     """
