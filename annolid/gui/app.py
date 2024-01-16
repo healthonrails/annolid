@@ -1520,36 +1520,47 @@ class AnnolidWindow(MainWindow):
 
     def load_tracking_results(self, cur_video_folder, video_filename):
         """Load tracking results from CSV files in the given folder that match the video filename."""
-        _tracking_csv_file = None
-        _video_name = Path(video_filename).stem
+        self.timestamp_dict = {}  # Assuming timestamp_dict is an instance variable
+
+        video_name = Path(video_filename).stem
+        tracking_csv_file = None
+
         for tr in cur_video_folder.glob('*.csv'):
-            if not tr.is_file() or not tr.suffix == '.csv':
+            if not (tr.is_file() and tr.suffix == '.csv'):
                 continue
 
-            if 'timestamp' in tr.name and _video_name in tr.name:
-                _df_timestamps = pd.read_csv(str(tr))
-                # iterate over the rows of the DataFrame
-                for _, row in _df_timestamps.iterrows():
-                    timestamp = row['Timestamp']
-                    frame_time = row['Frame_number']
-                    if isinstance(frame_time, int):
-                        frame_number = frame_time
-                        mark_type = 'event_start'
-                    else:
-                        frame_number, mark_type = eval(frame_time)
-                    # add the timestamp and frame_number to the dictionary
-                    self.timestamp_dict[(
-                        frame_number, mark_type)] = timestamp
-            if 'tracking' in tr.name and _video_name in tr.name and '_nix' not in tr.name:
-                _tracking_csv_file = tr
-            elif '_labels' in tr.name and _video_name in tr.name:
-                self._df = pd.read_csv(tr)
-                self._df.rename(
-                    columns={'Unnamed: 0': 'frame_number'}, inplace=True)
+            if 'timestamp' in tr.name and video_name in tr.name:
+                self._load_timestamps(tr)
 
-        if _tracking_csv_file is not None:
-            self._df = pd.read_csv(_tracking_csv_file)
+            if 'tracking' in tr.name and video_name in tr.name and '_nix' not in tr.name:
+                tracking_csv_file = tr
+
+            elif '_labels' in tr.name and video_name in tr.name:
+                self._load_labels(tr)
+
+        if tracking_csv_file:
+            self._df = pd.read_csv(tracking_csv_file)
             self._df = self._df.drop(columns=['Unnamed: 0'], errors='ignore')
+
+    def _load_timestamps(self, timestamp_csv_file):
+        """Load timestamps from the given CSV file and update timestamp_dict."""
+        df_timestamps = pd.read_csv(str(timestamp_csv_file))
+        for _, row in df_timestamps.iterrows():
+            timestamp = row['Timestamp']
+            frame_time = row['Frame_number']
+
+            if isinstance(frame_time, int):
+                frame_number = frame_time
+                mark_type = 'event_start'
+            else:
+                frame_number, mark_type = eval(frame_time)
+
+            self.timestamp_dict[(frame_number, mark_type)] = timestamp
+
+    def _load_labels(self, labels_csv_file):
+        """Load labels from the given CSV file."""
+        self._df = pd.read_csv(labels_csv_file)
+        self._df.rename(columns={'Unnamed: 0': 'frame_number'}, inplace=True)
 
     def openVideo(self, _value=False):
         """open a video for annotaiton frame by frame
