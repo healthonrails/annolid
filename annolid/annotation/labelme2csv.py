@@ -75,7 +75,7 @@ def convert_json_to_csv(json_folder, csv_file=None):
                 data = read_json_file(os.path.join(json_folder, json_file))
                 frame_number = get_frame_number_from_filename(json_file)
                 img_height, img_width = data["imageHeight"], data["imageWidth"]
-                img_shape = (img_width, img_height)
+                img_shape = (img_height, img_width)
 
                 for shape in data["shapes"]:
                     instance_name = shape["label"]
