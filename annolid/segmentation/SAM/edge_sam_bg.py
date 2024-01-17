@@ -8,6 +8,8 @@ import json
 from annolid.gui.shape import Shape
 from annolid.annotation.keypoints import save_labels
 import numpy as np
+import labelme
+from annolid.annotation.masks import mask_to_polygons
 from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
 
@@ -187,8 +189,6 @@ class VideoProcessor:
         Returns:
         - tuple: A tuple containing two dictionaries (points_dict, point_labels_dict).
         """
-        import labelme
-        from annolid.annotation.masks import mask_to_polygons
         with open(json_file_path, 'r') as json_file:
             data = json.load(json_file)
 

@@ -1221,8 +1221,24 @@ class AnnolidWindow(MainWindow):
         out_video_file = str(Path(video_file).name)
         out_video_file = f"tracked_{out_video_file}"
 
-        if config_file is None:
+        if config_file is None and algo != "SAM Predictions":
             return
+        if algo == 'SAM Predictions':
+            from annolid.annotation import labelme2csv
+            out_folder = Path(video_file).with_suffix('')
+            if not out_folder.exists():
+                QtWidgets.QMessageBox.about(self,
+                                            "No predictions",
+                                            "Help SAM achieve precise predictions by labeling a few frames.\
+                                              Your input is valuable!")
+
+                return
+            labelme2csv.convert_json_to_csv(str(out_folder))
+            QtWidgets.QMessageBox.about(self,
+                                        "Tracking results are ready.",
+                                        f"Kindly review the file here: {str(out_folder) + '.csv'}.")
+            self.statusBar().showMessage(
+                self.tr(f"Done"))
 
         if algo == 'Detectron2':
             try:
@@ -1262,6 +1278,8 @@ class AnnolidWindow(MainWindow):
                                         Please do not close Annolid GUI"
                                         )
             self.importDirImages(out_result_dir)
+            self.statusBar().showMessage(
+                self.tr(f"Tracking..."))
 
         if algo == 'YOLACT':
             if not torch.cuda.is_available():
@@ -1293,8 +1311,8 @@ class AnnolidWindow(MainWindow):
                                         "Started",
                                         f"Results are in folder: \
                                             {str(out_runs_dir)}")
-        self.statusBar().showMessage(
-            self.tr(f"Tracking..."))
+            self.statusBar().showMessage(
+                self.tr(f"Tracking..."))
 
     def models(self):
         """
