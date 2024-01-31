@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import onnxruntime
 import matplotlib.pyplot as plt
+from annolid.annotation.masks import mask_to_polygons
 
 
 class ONNXInference:
@@ -118,18 +119,7 @@ class ONNXInference:
         masks[masks > 0.0] = 255
         masks[masks <= 0.0] = 0
         masks = masks.astype(np.uint8)
-        contours, _ = cv2.findContours(
-            masks, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
-        )
-
-        approx_contours = [cv2.approxPolyDP(
-            contour, 0.001 * cv2.arcLength(contour, True), True)
-            for contour in contours]
-
-        polygon_points_list = [
-            approx.reshape(-1, 2).tolist()
-            for approx in approx_contours if len(approx) >= 3]
-
+        polygon_points_list = mask_to_polygons(masks)
         return polygon_points_list
 
 
@@ -167,11 +157,11 @@ def show_points(coords, labels, ax, marker_size=375):
 
 
 if __name__ == "__main__":
-    encoder_model_path = "sam_hq_vit_l_encoder_quant.onnx"
-    decoder_model_path = "sam_hq_vit_l_decoder.onnx"
+    encoder_model_path = "/Users/chenyang/Desktop/annolid/annolid/segmentation/SAM/sam_hq_vit_l_encoder_quant.onnx"
+    decoder_model_path = "/Users/chenyang/Desktop/annolid/annolid/segmentation/SAM/sam_hq_vit_l_decoder.onnx"
     onnx_wrapper = ONNXInferenceWrapper(encoder_model_path, decoder_model_path)
     prompt = [{"type": "point", "data": [965, 351], "label": 1}]
-    image_path = "bird1_000000002.png"
+    image_path = "/Users/chenyang/Downloads/bird1/bird1_000000002.png"
     result_masks = onnx_wrapper.infer(image_path, prompt)
     image = cv2.imread(image_path)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -180,6 +170,8 @@ if __name__ == "__main__":
     plt.imshow(image)
     input_point = np.array([[965, 351]])
     input_label = np.array([1])
+    polygon = onnx_wrapper.model.post_process(result_masks)
+    print(polygon)
 
     show_points(input_point, input_label, plt.gca())
     show_mask(result_masks, plt.gca())
