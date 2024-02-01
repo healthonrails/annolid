@@ -33,6 +33,7 @@ setuptools.setup(
                       'imageio-ffmpeg>=0.4.2',
                       'qimage2ndarray>=1.8',
                       'simplification==0.6.11',
+                      'tokenizers',
                       "dataclasses>=0.6; python_version < '3.7'",
                       # "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
                       ],
