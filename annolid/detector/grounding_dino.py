@@ -33,10 +33,20 @@ class GroundingDINO:
             model_abs_path (str): Absolute path to the model
             model_type (str): Type of the model
         """
+        self.remote_onnx_url = "https://github.com/healthonrails/annolid/releases/download/v1.1.3/"
+        self.onnx_md5 = "b301409dadcd46c23271af8cf1ff364e"
+
         if model_abs_path is None:
             current_directory = os.path.dirname(os.path.abspath(__file__))
+            onnx_model_name = model_type + '_quant.onnx'
             model_abs_path = os.path.join(
-                current_directory, model_type + '_quant.onnx')
+                current_directory, onnx_model_name)
+            if not os.path.exists(model_abs_path):
+                import gdown
+                gdown.cached_download(self.remote_onnx_url + onnx_model_name,
+                                      model_abs_path,
+                                      md5=self.onnx_md5
+                                      )
 
         self.net = ONNXBaseModel(model_abs_path)
         self.model_configs = self._get_configs(model_type)
@@ -180,7 +190,7 @@ class GroundingDINO:
 
     def predict_bboxes(self, image, text_prompt=None):
         """
-        Predict shapes from image.
+        Predict bboxes from image.
 
         Args:
             image: Input image
