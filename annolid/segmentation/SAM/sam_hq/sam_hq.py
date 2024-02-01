@@ -21,7 +21,7 @@ class SamHQSegmenter:
     https://github.com/SysCV/sam-hq
     """
 
-    _REMOTE_MODEL_URL = "https://huggingface.co/lkeab/hq-sam/blob/main/"
+    _REMOTE_MODEL_URL = "https://huggingface.co/lkeab/hq-sam/resolve/main/"
     _MD5_DICT = {'vit_l': "08947267966e4264fb39523eccc33f86"}
 
     def __init__(self, checkpoint_path=None, model_type="vit_l", device="cpu"):
@@ -42,6 +42,7 @@ class SamHQSegmenter:
         self.predictor = SamPredictor(self.sam)
 
     def _download_model(self, model_type):
+        import gdown
         """
         Download the model checkpoint file if it does not exist locally.
 
@@ -58,16 +59,10 @@ class SamHQSegmenter:
         if not os.path.exists(model_abs_path):
             url = self._REMOTE_MODEL_URL + model_name
             expected_md5 = self._MD5_DICT[model_type]
-
-            with request.urlopen(url) as response:
-                data = response.read()
-                md5_checksum = hashlib.md5(data).hexdigest()
-
-                if md5_checksum == expected_md5:
-                    with open(model_abs_path, 'wb') as f:
-                        f.write(data)
-                else:
-                    raise ValueError("Downloaded file is corrupted!")
+            gdown.cached_download(url,
+                                  model_abs_path,
+                                  md5=expected_md5
+                                  )
 
         return model_abs_path
 
