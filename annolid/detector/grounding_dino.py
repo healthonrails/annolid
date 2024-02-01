@@ -33,6 +33,11 @@ class GroundingDINO:
             model_abs_path (str): Absolute path to the model
             model_type (str): Type of the model
         """
+        if model_abs_path is None:
+            current_directory = os.path.dirname(os.path.abspath(__file__))
+            model_abs_path = os.path.join(
+                current_directory, model_type + '_quant.onnx')
+
         self.net = ONNXBaseModel(model_abs_path)
         self.model_configs = self._get_configs(model_type)
         self.net.max_text_len = self.model_configs['max_text_len']
@@ -172,6 +177,34 @@ class GroundingDINO:
             shapes.append(shape)
 
         return shapes
+
+    def predict_bboxes(self, image, text_prompt=None):
+        """
+        Predict shapes from image.
+
+        Args:
+            image: Input image
+            text_prompt: Text prompt associated with the image
+
+        Returns:
+            bboxes: List of predicted bboxes
+        """
+        if image is None:
+            return []
+
+        blob, inputs, caption = self.preprocess(image, text_prompt)
+        outputs = self.net.get_onnx_inference(
+            blob, input_data=inputs, extract=False)
+        boxes_filt, pred_phrases = self.postprocess(outputs, caption)
+
+        bboxes = []
+        img_h, img_w, _ = image.shape
+        boxes = self._rescale_boxes(boxes_filt, img_h, img_w)
+        for box, label_info in zip(boxes, pred_phrases):
+            label, _ = label_info
+            bboxes.append((box, label))
+
+        return bboxes
 
     @staticmethod
     def sigmoid(x):
