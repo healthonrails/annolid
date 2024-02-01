@@ -36,6 +36,7 @@ from labelme.logger import logger
 from labelme.widgets import ToolBar
 from annolid.configs import get_config
 from annolid.gui.widgets.canvas import Canvas
+from annolid.gui.widgets.text_prompt import AiRectangleWidget
 from annolid.annotation import labelme2coco
 from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
@@ -247,6 +248,15 @@ class AnnolidWindow(MainWindow):
             tip=self.tr("Start creating polygons with segment anything"),
         )
 
+        createAIRectangleMode = action(
+            self.tr("AI Rectangles"),
+            lambda: self.toggleDrawMode(False, createMode='ai_rectangle'),
+            None,
+            icon="objects",
+            tip=self.tr("Start creating rectangles with Grouding DINO"),
+            enabled=False,
+        )
+
         createAiPolygonMode = action(
             self.tr("Create AI-Polygon"),
             lambda: self.toggleDrawMode(False, createMode="ai_polygon"),
@@ -254,6 +264,12 @@ class AnnolidWindow(MainWindow):
             "objects",
             self.tr("Start drawing ai_polygon. Ctrl+LeftClick ends creation."),
             enabled=False,
+        )
+
+        createAIRectangleMode.changed.connect(
+            lambda: self.canvas.initializeAiRectModel()
+            if self.canvas.createMode == "ai_rectangle"
+            else None
         )
 
         createAiPolygonMode.changed.connect(
@@ -442,11 +458,18 @@ class AnnolidWindow(MainWindow):
             colab=self.menu(self.tr("&Open in Colab")),
         )
 
+        self.aiRectangle = AiRectangleWidget()
+        self.aiRectangle._aiRectanglePrompt.returnPressed.connect(
+            lambda: self.canvas.predictAiRectangle(
+                self.aiRectangle._aiRectanglePrompt.text())
+        )
+
         _action_tools = list(self.actions.tool)
         _action_tools.insert(0, frames)
         _action_tools.insert(1, open_video)
         _action_tools.insert(2, step_size)
         _action_tools.append(self.createPolygonSAMMode)
+        _action_tools.append(self.aiRectangle.aiRectangleAction)
         _action_tools.append(coco)
         _action_tools.append(models)
         _action_tools.append(tracks)
@@ -595,6 +618,7 @@ class AnnolidWindow(MainWindow):
             "line": self.actions.createLineMode,
             "linestrip": self.actions.createLineStripMode,
             "ai_polygon": self.actions.createAiPolygonMode,
+            "ai_rectangle": self.actions.createAIRectangleMode,
             "ai_mask": self.actions.createAiMaskMode,
             "polygonSAM": self.createPolygonSAMMode,
         }
@@ -1624,6 +1648,8 @@ class AnnolidWindow(MainWindow):
                 QtWidgets.QMessageBox.about(self,
                                             "Not a valid video file",
                                             f"Please check and open a correct video file.")
+                self.video_file = None
+                self.video_loader = None
                 return
             self.fps = self.video_loader.get_fps()
 

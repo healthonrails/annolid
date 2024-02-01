@@ -3,15 +3,18 @@ from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
 from labelme import QT5
-from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
-import labelme.utils
+
+
 import numpy as np
 import cv2
 import os
 import imgviz
 import labelme.ai
 from labelme.logger import logger
-
+import labelme.utils
+from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
+from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
+from annolid.detector.grounding_dino import GroundingDINO
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -122,6 +125,7 @@ class Canvas(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.WheelFocus)
         self._ai_model = None
+        self._ai_model_rect = None
         self.sam_predictor = None
         self.sam_mask = MaskShape()
 
@@ -146,6 +150,7 @@ class Canvas(QtWidgets.QWidget):
             "linestrip",
             "polygonSAM",
             "ai_polygon",
+            "ai_rectangle",
             "ai_mask",
         ]:
             raise ValueError("Unsupported createMode: %s" % value)
@@ -164,13 +169,35 @@ class Canvas(QtWidgets.QWidget):
             logger.debug("Initializing AI model: %r" % model.name)
             self._ai_model = model()
 
-        if self.pixmap is None:
+        if self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
             return
 
         self._ai_model.set_image(
             image=labelme.utils.img_qt_to_arr(self.pixmap.toImage())
         )
+
+    def predictAiRectangle(self, prompt):
+        if self.pixmap.isNull():
+            logger.warning("Pixmap is not set yet")
+            return
+        if self._ai_model_rect == None:
+            self._ai_model_rect = GroundingDINO()
+        qt_image = self.pixmap.toImage()
+        image_data = convert_qt_image_to_rgb_cv_image(qt_image)
+        bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
+        for box, label in bboxes:
+            x1, y1, x2, y2 = box
+            self.current = Shape(
+                label=label,
+                shape_type='polygon',
+            )
+            self.current.addPoint(QtCore.QPointF(x1, y1))
+            self.current.addPoint(QtCore.QPointF(x2, y1))
+            self.current.addPoint(QtCore.QPointF(x2, y2))
+            self.current.addPoint(QtCore.QPointF(x1, y2))
+
+            self.finalise()
 
     def loadSamPredictor(self,):
         """
@@ -179,6 +206,9 @@ To install Segment Anything, run the following command in your terminal:
 pip install git+https://github.com/facebookresearch/segment-anything.git
 
         """
+        if self.pixmap.isNull():
+            logger.warning("Pixmap is not set yet")
+            return
         if not self.sam_predictor:
             import torch
             from pathlib import Path
@@ -228,6 +258,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.update()
 
     def samPrompt(self, points, labels):
+        if self.pixmap.isNull():
+            logger.warning("Pixmap is not set yet")
+            return
         masks, scores, logits = self.sam_predictor.predict(
             point_coords=points*self.sam_image_scale,
             point_labels=labels,
@@ -549,7 +582,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     if self.createMode != "polygonSAM":
                         self.current = Shape(shape_type="points" if self.createMode in [
                                              "ai_polygon", "ai_mask"] else self.createMode)
-                        self.current.addPoint(pos, label=0 if is_shift_pressed else 1)
+                        self.current.addPoint(
+                            pos, label=0 if is_shift_pressed else 1)
                         if self.createMode == "point":
                             self.finalise()
                         elif (
