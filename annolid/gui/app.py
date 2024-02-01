@@ -248,15 +248,6 @@ class AnnolidWindow(MainWindow):
             tip=self.tr("Start creating polygons with segment anything"),
         )
 
-        createAIRectangleMode = action(
-            self.tr("AI Rectangles"),
-            lambda: self.toggleDrawMode(False, createMode='ai_rectangle'),
-            None,
-            icon="objects",
-            tip=self.tr("Start creating rectangles with Grouding DINO"),
-            enabled=False,
-        )
-
         createAiPolygonMode = action(
             self.tr("Create AI-Polygon"),
             lambda: self.toggleDrawMode(False, createMode="ai_polygon"),
@@ -264,12 +255,6 @@ class AnnolidWindow(MainWindow):
             "objects",
             self.tr("Start drawing ai_polygon. Ctrl+LeftClick ends creation."),
             enabled=False,
-        )
-
-        createAIRectangleMode.changed.connect(
-            lambda: self.canvas.initializeAiRectModel()
-            if self.canvas.createMode == "ai_rectangle"
-            else None
         )
 
         createAiPolygonMode.changed.connect(
@@ -618,7 +603,6 @@ class AnnolidWindow(MainWindow):
             "line": self.actions.createLineMode,
             "linestrip": self.actions.createLineStripMode,
             "ai_polygon": self.actions.createAiPolygonMode,
-            "ai_rectangle": self.actions.createAIRectangleMode,
             "ai_mask": self.actions.createAiMaskMode,
             "polygonSAM": self.createPolygonSAMMode,
         }
