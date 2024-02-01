@@ -1,0 +1,1 @@
+from .sam_hq import SamHQSegmenter

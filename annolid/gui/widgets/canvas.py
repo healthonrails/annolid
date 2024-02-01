@@ -15,6 +15,7 @@ import labelme.utils
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
 from annolid.detector.grounding_dino import GroundingDINO
+from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -127,6 +128,7 @@ class Canvas(QtWidgets.QWidget):
         self._ai_model = None
         self._ai_model_rect = None
         self.sam_predictor = None
+        self.sam_hq_model = None
         self.sam_mask = MaskShape()
 
     def fillDrawing(self):
@@ -183,25 +185,32 @@ class Canvas(QtWidgets.QWidget):
             return
         if self._ai_model_rect == None:
             self._ai_model_rect = GroundingDINO()
+        if self.sam_hq_model is None:
+            self.sam_hq_model = SamHQSegmenter()
         qt_image = self.pixmap.toImage()
         image_data = convert_qt_image_to_rgb_cv_image(qt_image)
         bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
-        for box, label in bboxes:
+        _bboxes = [list(box) for box, _ in bboxes]
+        masks, scores, _bboxes = self.sam_hq_model.segment_objects(
+            image_data, _bboxes
+        )
+        for i, box in enumerate(_bboxes):
             x1, y1, x2, y2 = box
-            self.current = Shape(
-                label=label,
-                shape_type='polygon',
-            )
-            self.current.addPoint(QtCore.QPointF(x1, y1))
-            self.current.addPoint(QtCore.QPointF(x2, y1))
-            self.current.addPoint(QtCore.QPointF(x2, y2))
-            self.current.addPoint(QtCore.QPointF(x1, y2))
 
+            self.current = Shape()
+            self.current.setShapeRefined(
+                shape_type="mask",
+                points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
+                point_labels=[1, 1],
+                mask=masks[i][int(y1):int(y2), int(x1):int(x2)],
+            )
             self.finalise()
 
     def loadSamPredictor(self,):
         """
-        The code requires Python version 3.8 or higher, along with PyTorch version 1.7 or higher, as well as TorchVision version 0.8 or higher. To install these dependencies, kindly refer to the instructions provided here. It's strongly recommended to install both PyTorch and TorchVision with CUDA support.
+        The code requires Python version 3.8 or higher, along with PyTorch version 1.7 or higher,
+        as well as TorchVision version 0.8 or higher. To install these dependencies, 
+        kindly refer to the instructions provided here. It's strongly recommended to install both PyTorch and TorchVision with CUDA support.
 To install Segment Anything, run the following command in your terminal:
 pip install git+https://github.com/facebookresearch/segment-anything.git
 

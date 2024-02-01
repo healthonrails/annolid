@@ -34,19 +34,18 @@ class SamHQSegmenter:
         - device (str): Device to run the model on (e.g., 'cpu' or 'cuda').
         """
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
-            checkpoint_path = self._download_model(checkpoint_path, model_type)
+            checkpoint_path = self._download_model(model_type)
 
         self.device = device
         self.sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
         self.sam.to(device=self.device)
         self.predictor = SamPredictor(self.sam)
 
-    def _download_model(self, checkpoint_path, model_type):
+    def _download_model(self, model_type):
         """
         Download the model checkpoint file if it does not exist locally.
 
         Parameters:
-        - checkpoint_path (str): Path to the model checkpoint file.
         - model_type (str): Type of the SAM model to be used.
 
         Returns:
