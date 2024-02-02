@@ -61,6 +61,7 @@ class Canvas(QtWidgets.QWidget):
             {
                 "polygon": False,
                 "rectangle": True,
+                "grounding_sam": False,
                 "circle": False,
                 "line": False,
                 "point": False,
@@ -152,7 +153,7 @@ class Canvas(QtWidgets.QWidget):
             "linestrip",
             "polygonSAM",
             "ai_polygon",
-            "ai_rectangle",
+            "grounding_sam",
             "ai_mask",
         ]:
             raise ValueError("Unsupported createMode: %s" % value)
@@ -194,10 +195,12 @@ class Canvas(QtWidgets.QWidget):
         masks, scores, _bboxes = self.sam_hq_model.segment_objects(
             image_data, _bboxes
         )
-        for i, box in enumerate(_bboxes):
+        for i, (box, label) in enumerate(bboxes):
             x1, y1, x2, y2 = box
-
-            self.current = Shape()
+            self.current = Shape(label=label,
+                                 flags={},
+                                 group_id=i,
+                                 description='grounding_sam')
             self.current.setShapeRefined(
                 shape_type="mask",
                 points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
@@ -381,7 +384,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.restoreCursor()
         # Polygon drawing.
         if self.drawing():
-            if self.createMode in ["ai_polygon", "ai_mask"]:
+            if self.createMode in ["ai_polygon", "ai_mask", "grounding_sam"]:
                 self.line.shape_type = "points"
             else:
                 self.line.shape_type = self.createMode if "polygonSAM" != self.createMode else "polygon"
@@ -590,13 +593,14 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     # Create new shape.
                     if self.createMode != "polygonSAM":
                         self.current = Shape(shape_type="points" if self.createMode in [
-                                             "ai_polygon", "ai_mask"] else self.createMode)
+                                             "ai_polygon", "ai_mask", "grounding_sam"] else self.createMode)
                         self.current.addPoint(
                             pos, label=0 if is_shift_pressed else 1)
                         if self.createMode == "point":
                             self.finalise()
                         elif (
-                            self.createMode in ["ai_polygon", "ai_mask"]
+                            self.createMode in [
+                                "ai_polygon", "ai_mask", "grounding_sam"]
                             and ev.modifiers() & QtCore.Qt.ControlModifier
                         ):
                             self.finalise()
@@ -605,7 +609,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                                 self.current.shape_type = "circle"
                             self.line.points = [pos, pos]
                             if (
-                                self.createMode in ["ai_polygon", "ai_mask"]
+                                self.createMode in [
+                                    "ai_polygon", "ai_mask", "grounding_sam"]
                                 and is_shift_pressed
                             ):
                                 self.line.point_labels = [0, 0]
@@ -732,7 +737,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             return
         if (
             self.createMode == "polygon" and self.canCloseShape()
-        ) or self.createMode in ["ai_polygon", "ai_mask"]:
+        ) or self.createMode in ["ai_polygon", "ai_mask", "grounding_sam"]:
             self.finalise()
         if (
             self.double_click == "close"
@@ -886,11 +891,12 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.sam_mask.paint(p)
 
         # draw crosshair
-        if (self._crosshair[self._createMode]
-                and self.drawing()
-                and self.prevMovePoint
-                and not self.outOfPixmap(self.prevMovePoint)
-                ):
+        if ((not self.createMode == 'grounding_sam')
+            and (self._crosshair[self._createMode]
+                 and self.drawing()
+                 and self.prevMovePoint
+                 and not self.outOfPixmap(self.prevMovePoint)
+                 )):
             p.setPen(QtGui.QColor(0, 0, 0))
             p.drawLine(
                 0,
@@ -912,7 +918,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 shape
             ):
                 shape.fill = shape.selected or shape == self.hShape
-                shape.paint(p)
+                try:
+                    shape.paint(p)
+                except SystemError as e:
+                    print(e)
         if self.current:
             self.current.paint(p)
             self.line.paint(p)

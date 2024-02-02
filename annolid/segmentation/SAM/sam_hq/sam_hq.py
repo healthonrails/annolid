@@ -82,16 +82,20 @@ class SamHQSegmenter:
         input_box = torch.tensor(bboxes, device=self.predictor.device)
         transformed_box = self.predictor.transform.apply_boxes_torch(
             input_box, image.shape[:2])
-        masks, scores, _ = self.predictor.predict_torch(
-            point_coords=None,
-            point_labels=None,
-            boxes=transformed_box,
-            multimask_output=False,
-            hq_token_only=hq_token_only,
-        )
-        masks = masks.squeeze(1).cpu().numpy()
-        scores = scores.squeeze(1).cpu().numpy()
-        input_box = input_box.cpu().numpy()
+        try:
+            masks, scores, _ = self.predictor.predict_torch(
+                point_coords=None,
+                point_labels=None,
+                boxes=transformed_box,
+                multimask_output=False,
+                hq_token_only=hq_token_only,
+            )
+            masks = masks.squeeze(1).cpu().numpy()
+            scores = scores.squeeze(1).cpu().numpy()
+            input_box = input_box.cpu().numpy()
+        except RuntimeError as e:
+            print(e)
+            return [], [], []
         return masks, scores, input_box
 
     @staticmethod
@@ -123,10 +127,10 @@ class SamHQSegmenter:
         """
         pos_points = coords[labels == 1]
         neg_points = coords[labels == 0]
-        ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', 
+        ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green',
                    marker='*', s=marker_size, edgecolor='white',
                    linewidth=1.25)
-        ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', 
+        ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red',
                    marker='*', s=marker_size, edgecolor='white',
                    linewidth=1.25)
 

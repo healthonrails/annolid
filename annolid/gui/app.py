@@ -265,6 +265,15 @@ class AnnolidWindow(MainWindow):
             else None
         )
 
+        self.createGroundingSAMMode = action(
+            self.tr("Create GroundingSAM"),
+            lambda: self.toggleDrawMode(False, createMode="grounding_sam"),
+            None,
+            "objects",
+            self.tr("Start using grounding_sam"),
+            enabled=False,
+        )
+
         open_video = action(
             self.tr("&Open Video"),
             self.openVideo,
@@ -445,8 +454,7 @@ class AnnolidWindow(MainWindow):
 
         self.aiRectangle = AiRectangleWidget()
         self.aiRectangle._aiRectanglePrompt.returnPressed.connect(
-            lambda: self.canvas.predictAiRectangle(
-                self.aiRectangle._aiRectanglePrompt.text())
+            self._grounding_sam
         )
 
         _action_tools = list(self.actions.tool)
@@ -519,6 +527,11 @@ class AnnolidWindow(MainWindow):
         )
 
         self.populateModeActions()
+
+    def _grounding_sam(self):
+        self.toggleDrawMode(False, createMode="grounding_sam")
+        self.canvas.predictAiRectangle(
+            self.aiRectangle._aiRectanglePrompt.text())
 
     def update_step_size(self, value):
         self.step_size = value
@@ -605,6 +618,7 @@ class AnnolidWindow(MainWindow):
             "ai_polygon": self.actions.createAiPolygonMode,
             "ai_mask": self.actions.createAiMaskMode,
             "polygonSAM": self.createPolygonSAMMode,
+            "grouding_sam": self.createGroundingSAMMode,
         }
 
         self.canvas.setEditing(edit)
@@ -2056,40 +2070,53 @@ class AnnolidWindow(MainWindow):
         """Pop-up and give focus to the label editor.
         position MUST be in global coordinates.
         """
-        items = self.uniqLabelList.selectedItems()
-        text = None
-        if items:
-            text = items[0].data(Qt.UserRole)
-        flags = {}
-        group_id = None
-        description = ""
-        if self._config["display_label_popup"] or not text:
-            previous_text = self.labelDialog.edit.text()
-            text, flags, group_id, description = self.labelDialog.popUp(text)
-            if not text:
-                self.labelDialog.edit.setText(previous_text)
-        if text and not self.validateLabel(text):
-            self.errorMessage(
-                self.tr("Invalid label"),
-                self.tr("Invalid label '{}' with validation type '{}'").format(
-                    text, self._config["validate_label"]
-                ),
-            )
-            text = ""
-        if text:
+        if self.canvas.createMode == 'grounding_sam':
             self.labelList.clearSelection()
-            shapes = self.canvas.setLastLabel(text, flags)
+            shapes = [
+                shape for shape in self.canvas.shapes
+                if shape.description == 'grounding_sam']
             for shape in shapes:
-                shape.group_id = group_id
-                shape.description = description
                 self.addLabel(shape)
             self.actions.editMode.setEnabled(True)
             self.actions.undoLastPoint.setEnabled(False)
             self.actions.undo.setEnabled(True)
             self.setDirty()
         else:
-            self.canvas.undoLastLine()
-            self.canvas.shapesBackups.pop()
+            items = self.uniqLabelList.selectedItems()
+            text = None
+            if items:
+                text = items[0].data(Qt.UserRole)
+            flags = {}
+            group_id = None
+            description = ""
+            if self._config["display_label_popup"] or not text:
+                previous_text = self.labelDialog.edit.text()
+                text, flags, group_id, description = self.labelDialog.popUp(
+                    text)
+                if not text:
+                    self.labelDialog.edit.setText(previous_text)
+            if text and not self.validateLabel(text):
+                self.errorMessage(
+                    self.tr("Invalid label"),
+                    self.tr("Invalid label '{}' with validation type '{}'").format(
+                        text, self._config["validate_label"]
+                    ),
+                )
+                text = ""
+            if text:
+                self.labelList.clearSelection()
+                shapes = self.canvas.setLastLabel(text, flags)
+                for shape in shapes:
+                    shape.group_id = group_id
+                    shape.description = description
+                    self.addLabel(shape)
+                self.actions.editMode.setEnabled(True)
+                self.actions.undoLastPoint.setEnabled(False)
+                self.actions.undo.setEnabled(True)
+                self.setDirty()
+            else:
+                self.canvas.undoLastLine()
+                self.canvas.shapesBackups.pop()
 
     def glitter2(self):
         """
