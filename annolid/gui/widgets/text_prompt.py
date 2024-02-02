@@ -23,7 +23,7 @@ class AiRectangleWidget(QtWidgets.QWidget):
         self._aiRectanglePrompt.setFont(QtGui.QFont("Arial", 10))
         self._aiRectanglePrompt.setFixedWidth(200)
 
-        aiRectangleLabel = QtWidgets.QLabel(self.tr("AI Rectangle Prompt"))
+        aiRectangleLabel = QtWidgets.QLabel(self.tr("Text Prompt"))
         aiRectangleLabel.setAlignment(QtCore.Qt.AlignCenter)
         aiRectangleLabel.setFont(QtGui.QFont(None, 10))
         aiRectangleLabel.setFixedWidth(200)

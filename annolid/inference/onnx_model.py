@@ -1,5 +1,6 @@
 import os
 import onnxruntime as ort
+from annolid.utils.devices import has_gpu
 
 
 class ONNXBaseModel:
@@ -19,6 +20,8 @@ class ONNXBaseModel:
         - model_path (str): Path to the ONNX model file.
         - device_type (str, optional): Type of device to run inference on, 'cpu' (default) or 'gpu'.
         """
+        if has_gpu():
+            device_type = 'gpu'
         self.sess_opts = ort.SessionOptions()
         self.sess_opts.inter_op_num_threads = int(
             os.environ.get("OMP_NUM_THREADS", 1))

@@ -3,9 +3,8 @@ import cv2
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from urllib import request
-import hashlib
 from segment_anything import sam_model_registry, SamPredictor
+from annolid.utils.devices import has_gpu
 
 
 class SamHQSegmenter:
@@ -14,7 +13,8 @@ class SamHQSegmenter:
     References: 
     @inproceedings{sam_hq,
     title={Segment Anything in High Quality},
-    author={Ke, Lei and Ye, Mingqiao and Danelljan, Martin and Liu, Yifan and Tai, Yu-Wing and Tang, Chi-Keung and Yu, Fisher},
+    author={Ke, Lei and Ye, Mingqiao and Danelljan, Martin and Liu, 
+    Yifan and Tai, Yu-Wing and Tang, Chi-Keung and Yu, Fisher},
     booktitle={NeurIPS},
     year={2023}
 }  
@@ -33,12 +33,13 @@ class SamHQSegmenter:
         - model_type (str): Type of the SAM model to be used.
         - device (str): Device to run the model on (e.g., 'cpu' or 'cuda').
         """
+        if has_gpu() and torch.cuda.is_available():
+            device = 'cuda'
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             checkpoint_path = self._download_model(model_type)
 
-        self.device = device
         self.sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
-        self.sam.to(device=self.device)
+        self.sam.to(device=device)
         self.predictor = SamPredictor(self.sam)
 
     def _download_model(self, model_type):
@@ -122,9 +123,11 @@ class SamHQSegmenter:
         """
         pos_points = coords[labels == 1]
         neg_points = coords[labels == 0]
-        ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white',
+        ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', 
+                   marker='*', s=marker_size, edgecolor='white',
                    linewidth=1.25)
-        ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white',
+        ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', 
+                   marker='*', s=marker_size, edgecolor='white',
                    linewidth=1.25)
 
     @staticmethod
