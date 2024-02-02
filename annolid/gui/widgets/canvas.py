@@ -201,6 +201,7 @@ class Canvas(QtWidgets.QWidget):
                                  flags={},
                                  group_id=i,
                                  description='grounding_sam')
+            self.current.other_data['score'] = str(scores[i])
             self.current.setShapeRefined(
                 shape_type="mask",
                 points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],

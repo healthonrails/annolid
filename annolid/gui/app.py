@@ -2075,8 +2075,8 @@ class AnnolidWindow(MainWindow):
             shapes = [
                 shape for shape in self.canvas.shapes
                 if shape.description == 'grounding_sam']
-            for shape in shapes:
-                self.addLabel(shape)
+            shape = shapes.pop()
+            self.addLabel(shape)
             self.actions.editMode.setEnabled(True)
             self.actions.undoLastPoint.setEnabled(False)
             self.actions.undo.setEnabled(True)
