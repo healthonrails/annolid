@@ -35,7 +35,8 @@ setuptools.setup(
                       'simplification==0.6.11',
                       'tokenizers',
                       "dataclasses>=0.6; python_version < '3.7'",
-                      # "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
+                      #"segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
+                      "segment-anything @ git+https://github.com/SysCV/sam-hq.git",
                       ],
     python_requires='>=3.6',
 
