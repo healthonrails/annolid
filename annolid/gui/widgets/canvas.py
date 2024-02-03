@@ -180,7 +180,7 @@ class Canvas(QtWidgets.QWidget):
             image=labelme.utils.img_qt_to_arr(self.pixmap.toImage())
         )
 
-    def predictAiRectangle(self, prompt):
+    def predictAiRectangle(self, prompt, is_polygon_output=True):
         if self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
             return
@@ -196,18 +196,25 @@ class Canvas(QtWidgets.QWidget):
             image_data, _bboxes
         )
         for i, (box, label) in enumerate(bboxes):
-            x1, y1, x2, y2 = box
-            self.current = Shape(label=label,
-                                 flags={},
-                                 group_id=i,
-                                 description='grounding_sam')
+
+            if is_polygon_output:
+                self.current = MaskShape(label=f"{label}_{i}",
+                                         flags={},
+                                         description='grounding_sam')
+                self.current.mask = masks[i]
+                self.current = self.current.toPolygons()[0]
+            else:
+                x1, y1, x2, y2 = box
+                self.current = Shape(label=f"{label}_{i}",
+                                     flags={},
+                                     description='grounding_sam')
+                self.current.setShapeRefined(
+                    shape_type="mask",
+                    points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
+                    point_labels=[1, 1],
+                    mask=masks[i][int(y1):int(y2), int(x1):int(x2)],
+                )
             self.current.other_data['score'] = str(scores[i])
-            self.current.setShapeRefined(
-                shape_type="mask",
-                points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
-                point_labels=[1, 1],
-                mask=masks[i][int(y1):int(y2), int(x1):int(x2)],
-            )
             self.finalise()
 
     def loadSamPredictor(self,):
@@ -1005,7 +1012,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         return not (0 <= p.x() <= w - 1 and 0 <= p.y() <= h - 1)
 
     def finalise(self):
-        assert self.current
+        # assert self.current
         if self.createMode == "ai_polygon":
             # convert points to polygon by an AI model
             assert self.current.shape_type == "points"
@@ -1040,7 +1047,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 point_labels=[1, 1],
                 mask=mask[y1:y2, x1:x2],
             )
-        self.current.close()
+        if self.createMode != 'grounding_sam':
+            self.current.close()
         if self.createMode == 'polygonSAM':
             self.shapes.append(self.sam_mask)
         else:

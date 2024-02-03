@@ -477,7 +477,7 @@ class MultipoinstShape(Shape):
         pass
 
 
-class MaskShape(object):
+class MaskShape(MultipoinstShape):
     """
     Modified from
     https://github.com/originlake/labelme-with-segment-anything/blob/main/labelme/shape.py
@@ -502,6 +502,7 @@ class MaskShape(object):
         self.mask = None
         self.logits = None
         self.scale = 1
+        self.points = []
 
     def setScaleMask(self, scale, mask):
         self.scale = scale
@@ -555,6 +556,7 @@ class MaskShape(object):
                       description=self.description)
         for x, y in merged_contour:
             shape.addPoint(QtCore.QPointF(x, y))
+        self.points = shape.points
         shapes.append(shape)
         return shapes
 
