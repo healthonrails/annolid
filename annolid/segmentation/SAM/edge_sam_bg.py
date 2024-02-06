@@ -12,6 +12,12 @@ import labelme
 from annolid.annotation.masks import mask_to_polygons
 from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
+from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
+from annolid.gui.shape import MaskShape
+
+SAM_HQ = None
+if SAM_HQ is None:
+    SAM_HQ = SamHQSegmenter()
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -92,7 +98,7 @@ def random_sample_outside_edges(polygon, num_points):
     return np.array(sampled_points)
 
 
-def find_bbox(polygon_points):
+def find_bbox_center(polygon_points):
     # Convert the list of polygon points to a NumPy array
     points_array = np.array(polygon_points)
 
@@ -108,6 +114,20 @@ def find_bbox(polygon_points):
     bbox_center = np.array([(center_x, center_y)])
 
     return bbox_center
+
+
+def find_bbox(polygon_points):
+    # Convert the list of polygon points to a NumPy array
+    points_array = np.array(polygon_points)
+
+    # Calculate the bounding box
+    min_x, min_y = np.min(points_array, axis=0)
+    max_x, max_y = np.max(points_array, axis=0)
+
+    # Return the top left point and bottom right as a NumPy array
+    bbox_ = np.array([min_x, min_y, max_x, max_y])
+
+    return bbox_
 
 
 class MaxSizeQueue(deque):
@@ -171,7 +191,7 @@ class VideoProcessor:
         Returns:
         - SegmentAnythingModel: The loaded model.
         """
-        name = self.sam_name
+        name = "Segment-Anything (Edge)"
         current_file_path = os.path.abspath(__file__)
         current_folder = os.path.dirname(current_file_path)
         encoder_path = os.path.join(current_folder, encoder_path)
@@ -237,70 +257,93 @@ class VideoProcessor:
         points_dict, _ = self.load_json_file(self.most_recent_file)
         label_list = []
 
-        # Example usage of predict_polygon_from_points
-        for label, points in points_dict.items():
-            orig_points = points
-            if len(points) == 0:
-                continue
-            if len(points) < 4:
-                orig_points = random_sample_near_center(
-                    Point(points[0]), 4, 3)
-            points = calculate_polygon_center(orig_points)
+        if self.sam_name == 'sam_hq':
+            bboxes = []
+            for label, points in points_dict.items():
+                _bbox = find_bbox(points)
+                bboxes.append((_bbox, label))
 
-            polygon = Polygon(orig_points)
-            # Randomly sample points inside the edges of the polygon
-            points_inside_edges = random_sample_inside_edges(polygon,
-                                                             self.num_points_inside_edges)
-            points_outside_edges = random_sample_outside_edges(polygon,
-                                                               self.num_points_inside_edges * 3
-                                                               )
-            points_uni = uniform_points_inside_polygon(
-                polygon, self.num_points_inside_edges)
-            center_points = self.center_points_dict.get(label,
-                                                        MaxSizeQueue(max_size=self.num_center_points))
+            _bboxes = [list(box) for box, _ in bboxes]
+            masks, scores, input_box = SAM_HQ.segment_objects(
+                cur_frame, _bboxes)
 
-            center_points.enqueue(points[0])
-            points = center_points.to_numpy()
-            self.center_points_dict[label] = center_points
+            for i, (box, label) in enumerate(bboxes):
 
-            # use other instance's center points as negative point prompts
-            other_polygon_center_points = [
-                value for k, v in self.center_points_dict.items() if k != label for value in v]
-            other_polygon_center_points = np.array(
-                [(x[0], x[1]) for x in other_polygon_center_points])
+                current_shape = MaskShape(label=label,
+                                          flags={},
+                                          description='grounding_sam')
+                current_shape.mask = masks[i]
+                current_shape = current_shape.toPolygons()[0]
+                points = []
+                for point in current_shape.points:
+                    points.append([point.x(), point.y()])
+                current_shape.points = points
+                label_list.append(current_shape)
+        else:
+            # Example usage of predict_polygon_from_points
+            for label, points in points_dict.items():
+                orig_points = points
+                if len(points) == 0:
+                    continue
+                if len(points) < 4:
+                    orig_points = random_sample_near_center(
+                        Point(points[0]), 4, 3)
+                points = calculate_polygon_center(orig_points)
 
-            if len(points_inside_edges.shape) > 1:
-                points = np.concatenate(
-                    (points, points_inside_edges), axis=0)
-            if len(points_uni) > 1:
-                points = np.concatenate(
-                    (points, points_uni), axis=0
-                )
+                polygon = Polygon(orig_points)
+                # Randomly sample points inside the edges of the polygon
+                points_inside_edges = random_sample_inside_edges(polygon,
+                                                                 self.num_points_inside_edges)
+                points_outside_edges = random_sample_outside_edges(polygon,
+                                                                   self.num_points_inside_edges * 3
+                                                                   )
+                points_uni = uniform_points_inside_polygon(
+                    polygon, self.num_points_inside_edges)
+                center_points = self.center_points_dict.get(label,
+                                                            MaxSizeQueue(max_size=self.num_center_points))
 
-            point_labels = [1] * len(points)
-            if len(points_outside_edges) > 1:
-                points = np.concatenate(
-                    (points, points_outside_edges), axis=0
-                )
-                point_labels += [0] * len(points_outside_edges)
+                center_points.enqueue(points[0])
+                points = center_points.to_numpy()
+                self.center_points_dict[label] = center_points
 
-            if len(other_polygon_center_points) > 1:
-                points = np.concatenate(
-                    (points, other_polygon_center_points),
-                    axis=0
-                )
-                point_labels += [0] * len(other_polygon_center_points)
+                # use other instance's center points as negative point prompts
+                other_polygon_center_points = [
+                    value for k, v in self.center_points_dict.items() if k != label for value in v]
+                other_polygon_center_points = np.array(
+                    [(x[0], x[1]) for x in other_polygon_center_points])
 
-            polygon = self.edge_sam.predict_polygon_from_points(
-                points, point_labels)
+                if len(points_inside_edges.shape) > 1:
+                    points = np.concatenate(
+                        (points, points_inside_edges), axis=0)
+                if len(points_uni) > 1:
+                    points = np.concatenate(
+                        (points, points_uni), axis=0
+                    )
 
-            # Save the LabelMe JSON to a file
-            p_shape = Shape(label, shape_type='polygon', flags={})
-            for x, y in polygon:
-                # do not add 0,0 to the list
-                if x >= 1 and y >= 1:
-                    p_shape.addPoint((x, y))
-            label_list.append(p_shape)
+                point_labels = [1] * len(points)
+                if len(points_outside_edges) > 1:
+                    points = np.concatenate(
+                        (points, points_outside_edges), axis=0
+                    )
+                    point_labels += [0] * len(points_outside_edges)
+
+                if len(other_polygon_center_points) > 1:
+                    points = np.concatenate(
+                        (points, other_polygon_center_points),
+                        axis=0
+                    )
+                    point_labels += [0] * len(other_polygon_center_points)
+
+                polygon = self.edge_sam.predict_polygon_from_points(
+                    points, point_labels)
+
+                # Save the LabelMe JSON to a file
+                p_shape = Shape(label, shape_type='polygon', flags={})
+                for x, y in polygon:
+                    # do not add 0,0 to the list
+                    if x >= 1 and y >= 1:
+                        p_shape.addPoint((x, y))
+                label_list.append(p_shape)
 
         self.most_recent_file = filename
         img_filename = str(filename.with_suffix('.png'))
