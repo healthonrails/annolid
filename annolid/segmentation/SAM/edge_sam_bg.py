@@ -168,7 +168,7 @@ class VideoProcessor:
         self.sam_name = model_name
         if model_name == 'sam_hq' and VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
-        else:
+        elif model_name == "Segment-Anything (Edge)":
             self.edge_sam = self.get_model()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
