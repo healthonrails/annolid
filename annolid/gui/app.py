@@ -937,14 +937,17 @@ class AnnolidWindow(MainWindow):
             )
 
             if self.video_file:
-                self.video_processor = VideoProcessor(self.video_file)
+                self.video_processor = VideoProcessor(
+                    self.video_file,
+                    model_name='sam_hq' if torch.cuda.is_available()
+                    else "Segment-Anything (Edge)")
                 self.seg_pred_thread.start()
                 end_frame = self.frame_number + 60 * self.step_size
                 if end_frame >= self.num_frames:
                     end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
                     function=self.video_processor.process_video_frames,
-                    start_frame=self.frame_number,
+                    start_frame=self.frame_number+1,
                     end_frame=end_frame,
                     step=self.step_size
                 )

@@ -15,10 +15,6 @@ from shapely.geometry import Point, Polygon
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
 
-SAM_HQ = None
-if SAM_HQ is None:
-    SAM_HQ = SamHQSegmenter()
-
 
 def uniform_points_inside_polygon(polygon, num_points):
     # Get the bounding box of the polygon
@@ -152,6 +148,7 @@ class VideoProcessor:
     """
     A class for processing video frames using the Segment-Anything model.
     """
+    sam_hq = None
 
     def __init__(self,
                  video_path,
@@ -169,7 +166,10 @@ class VideoProcessor:
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
         self.sam_name = model_name
-        self.edge_sam = self.get_model()
+        if model_name == 'sam_hq' and VideoProcessor.sam_hq is None:
+            VideoProcessor.sam_hq = SamHQSegmenter()
+        else:
+            self.edge_sam = self.get_model()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
         self.num_points_inside_edges = num_center_points
@@ -240,7 +240,8 @@ class VideoProcessor:
         - frame_number (int): Frame number to process.
         """
         cur_frame = self.video_loader.load_frame(frame_number)
-        self.edge_sam.set_image(cur_frame)
+        if self.sam_name == "Segment-Anything (Edge)":
+            self.edge_sam.set_image(cur_frame)
         filename = self.video_folder / \
             (self.video_folder.name + f"_{frame_number:0>{9}}.json")
 
@@ -264,7 +265,7 @@ class VideoProcessor:
                 bboxes.append((_bbox, label))
 
             _bboxes = [list(box) for box, _ in bboxes]
-            masks, scores, input_box = SAM_HQ.segment_objects(
+            masks, scores, input_box = VideoProcessor.sam_hq.segment_objects(
                 cur_frame, _bboxes)
 
             for i, (box, label) in enumerate(bboxes):
