@@ -895,7 +895,7 @@ class AnnolidWindow(MainWindow):
 
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
-                                        f"Please check and label a frame")
+                                        f"Please label this frame")
             return
 
         if self.video_file:
@@ -910,12 +910,16 @@ class AnnolidWindow(MainWindow):
                 end_frame = self.frame_number + to_frame * self.step_size
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
+            if self.step_size < 0:
+                self.step_size = -self.step_size
             self.pred_worker = FlexibleWorker(
                 function=self.video_processor.process_video_frames,
                 start_frame=self.frame_number+1,
                 end_frame=end_frame,
-                step=1 if self.step_size < 0 else self.step_size
+                step=self.step_size
             )
+            self.frame_number += 1
+            self.stepSizeWidget.predict_button.setEnabled(False)
             self.pred_worker.moveToThread(self.seg_pred_thread)
             self.pred_worker.start.connect(self.pred_worker.run)
             self.seg_pred_thread.started.connect(self.pred_worker.start)
@@ -927,7 +931,8 @@ class AnnolidWindow(MainWindow):
     def predict_is_ready(self):
         QtWidgets.QMessageBox.information(
             self, "Prediction Ready",
-            "Predictions for the next 60 video frames have been generated!")
+            "Predictions for the video frames have been generated!")
+        self.stepSizeWidget.predict_button.setEnabled(True)
 
     def saveLabels(self, filename):
         lf = LabelFile()
