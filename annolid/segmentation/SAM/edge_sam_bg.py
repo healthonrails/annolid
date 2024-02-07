@@ -240,6 +240,7 @@ class VideoProcessor:
         - frame_number (int): Frame number to process.
         """
         cur_frame = self.video_loader.load_frame(frame_number)
+        cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
         if self.sam_name == "Segment-Anything (Edge)":
             self.edge_sam.set_image(cur_frame)
         filename = self.video_folder / \
@@ -348,12 +349,11 @@ class VideoProcessor:
 
         self.most_recent_file = filename
         img_filename = str(filename.with_suffix('.png'))
-        cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
         if not Path(img_filename).exists():
             cv2.imwrite(img_filename, cur_frame)
 
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
-                    height=height, width=width)
+                    height=height, width=width, save_image_to_json=False)
 
     def process_video_frames(self, start_frame=0, end_frame=None, step=10):
         """
