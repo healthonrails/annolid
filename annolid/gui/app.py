@@ -501,6 +501,8 @@ class AnnolidWindow(MainWindow):
         self.seg_train_thread = QtCore.QThread()
         self.destroyed.connect(self.clean_up)
         self.stepSizeWidget.valueChanged.connect(self.update_step_size)
+        self.stepSizeWidget.predict_button.pressed.connect(
+            self.predict_from_next_frame)
         atexit.register(self.clean_up)
         # Callbacks:
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
@@ -535,7 +537,7 @@ class AnnolidWindow(MainWindow):
 
     def update_step_size(self, value):
         self.step_size = value
-        self.stepSizeWidget.setValue(self.step_size)
+        self.stepSizeWidget.set_value(self.step_size)
 
     def flag_item_clicked(self, item):
         item_text = item.text()
@@ -887,6 +889,41 @@ class AnnolidWindow(MainWindow):
             imgviz.io.imsave(image_filename, img)
         return image_filename
 
+    def predict_from_next_frame(self,
+                                to_frame=60):
+        if len(self.canvas.shapes) <= 0:
+
+            QtWidgets.QMessageBox.about(self,
+                                        "No Shapes or Labeled Frames",
+                                        f"Please check and label a frame")
+            return
+
+        if self.video_file:
+            self.video_processor = VideoProcessor(
+                self.video_file,
+                model_name='sam_hq' if torch.cuda.is_available()
+                else "Segment-Anything (Edge)")
+            self.seg_pred_thread.start()
+            if self.step_size < 0:
+                end_frame = self.num_frames + self.step_size
+            else:
+                end_frame = self.frame_number + to_frame * self.step_size
+            if end_frame >= self.num_frames:
+                end_frame = self.num_frames - 1
+            self.pred_worker = FlexibleWorker(
+                function=self.video_processor.process_video_frames,
+                start_frame=self.frame_number+1,
+                end_frame=end_frame,
+                step=1 if self.step_size < 0 else self.step_size
+            )
+            self.pred_worker.moveToThread(self.seg_pred_thread)
+            self.pred_worker.start.connect(self.pred_worker.run)
+            self.seg_pred_thread.started.connect(self.pred_worker.start)
+            self.pred_worker.finished.connect(self.predict_is_ready)
+            self.seg_pred_thread.finished.connect(
+                self.seg_pred_thread.quit)
+            self.pred_worker.start.emit()
+
     def predict_is_ready(self):
         QtWidgets.QMessageBox.information(
             self, "Prediction Ready",
@@ -935,29 +972,6 @@ class AnnolidWindow(MainWindow):
                 otherData=self.otherData,
                 flags=flags,
             )
-
-            if self.video_file:
-                self.video_processor = VideoProcessor(
-                    self.video_file,
-                    model_name='sam_hq' if torch.cuda.is_available()
-                    else "Segment-Anything (Edge)")
-                self.seg_pred_thread.start()
-                end_frame = self.frame_number + 60 * self.step_size
-                if end_frame >= self.num_frames:
-                    end_frame = self.num_frames - 1
-                self.pred_worker = FlexibleWorker(
-                    function=self.video_processor.process_video_frames,
-                    start_frame=self.frame_number+1,
-                    end_frame=end_frame,
-                    step=self.step_size
-                )
-                self.pred_worker.moveToThread(self.seg_pred_thread)
-                self.pred_worker.start.connect(self.pred_worker.run)
-                self.seg_pred_thread.started.connect(self.pred_worker.start)
-                self.pred_worker.finished.connect(self.predict_is_ready)
-                self.seg_pred_thread.finished.connect(
-                    self.seg_pred_thread.quit)
-                self.pred_worker.start.emit()
 
             self.labelFile = lf
             items = self.fileListWidget.findItems(
