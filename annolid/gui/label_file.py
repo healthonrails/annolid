@@ -98,12 +98,12 @@ class LabelFile(object):
             elif self.is_video_frame is not None:
                 imagePath = None
                 imageData = None
-            else:
+            elif data["imagePath"] is not None:
                 # relative path from label file to relative path from cwd
                 imagePath = osp.join(osp.dirname(filename), data["imagePath"])
                 imageData = self.load_image_file(imagePath)
             flags = data.get("flags") or {}
-            if self.is_video_frame is None:
+            if self.is_video_frame is None and data["imagePath"] is not None:
                 imagePath = data["imagePath"]
                 self._check_image_height_and_width(
                     base64.b64encode(imageData).decode("utf-8"),
