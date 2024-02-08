@@ -37,6 +37,12 @@ ONNX Export
  --return-single-mask
 ```
 
+Example usage for bboxes input
+```python efficientvit_sam.py  --model xl1 --encoder_model xl1_encoder.onnx \
+--decoder_model xl1_decoder.onnx --mode boxes \
+ --boxes "[[16,8,220,180],[230,190,440,400]]"
+ ```
+
 """
 
 
@@ -117,6 +123,56 @@ def show_box(box, ax):
     w, h = box[2] - box[0], box[3] - box[1]
     ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor="green",
                                facecolor=(0, 0, 0, 0), lw=2))
+
+
+def preprocess(x, img_size):
+    """
+    Preprocess the input image.
+    """
+    pixel_mean = [123.675 / 255, 116.28 / 255, 103.53 / 255]
+    pixel_std = [58.395 / 255, 57.12 / 255, 57.375 / 255]
+
+    x = torch.tensor(x)
+    resize_transform = SamResize(img_size)
+    x = resize_transform(x).float() / 255
+    x = transforms.Normalize(mean=pixel_mean, std=pixel_std)(x)
+
+    h, w = x.shape[-2:]
+    th, tw = img_size, img_size
+    assert th >= h and tw >= w
+    x = F.pad(x, (0, tw - w, 0, th - h), value=0).unsqueeze(0).numpy()
+
+    return x
+
+
+def resize_longest_image_size(input_image_size: torch.Tensor,
+                              longest_side: int) -> torch.Tensor:
+    input_image_size = input_image_size.to(torch.float32)
+    scale = longest_side / torch.max(input_image_size)
+    transformed_size = scale * input_image_size
+    transformed_size = torch.floor(transformed_size + 0.5).to(torch.int64)
+    return transformed_size
+
+
+def mask_postprocessing(masks: torch.Tensor,
+                        orig_im_size: torch.Tensor) -> torch.Tensor:
+    img_size = 1024
+    masks = torch.tensor(masks)
+    orig_im_size = torch.tensor(orig_im_size)
+    masks = F.interpolate(
+        masks,
+        size=(img_size, img_size),
+        mode="bilinear",
+        align_corners=False,
+    )
+
+    prepadded_size = resize_longest_image_size(orig_im_size, img_size)
+    masks = masks[..., : int(prepadded_size[0]), : int(prepadded_size[1])]
+    orig_im_size = orig_im_size.to(torch.int64)
+    h, w = orig_im_size[0], orig_im_size[1]
+    masks = F.interpolate(masks, size=(
+        h, w), mode="bilinear", align_corners=False)
+    return masks
 
 
 class SamEncoder:
@@ -241,56 +297,6 @@ class SamDecoder:
         return boxes
 
 
-def preprocess(x, img_size):
-    """
-    Preprocess the input image.
-    """
-    pixel_mean = [123.675 / 255, 116.28 / 255, 103.53 / 255]
-    pixel_std = [58.395 / 255, 57.12 / 255, 57.375 / 255]
-
-    x = torch.tensor(x)
-    resize_transform = SamResize(img_size)
-    x = resize_transform(x).float() / 255
-    x = transforms.Normalize(mean=pixel_mean, std=pixel_std)(x)
-
-    h, w = x.shape[-2:]
-    th, tw = img_size, img_size
-    assert th >= h and tw >= w
-    x = F.pad(x, (0, tw - w, 0, th - h), value=0).unsqueeze(0).numpy()
-
-    return x
-
-
-def resize_longest_image_size(input_image_size: torch.Tensor,
-                              longest_side: int) -> torch.Tensor:
-    input_image_size = input_image_size.to(torch.float32)
-    scale = longest_side / torch.max(input_image_size)
-    transformed_size = scale * input_image_size
-    transformed_size = torch.floor(transformed_size + 0.5).to(torch.int64)
-    return transformed_size
-
-
-def mask_postprocessing(masks: torch.Tensor,
-                        orig_im_size: torch.Tensor) -> torch.Tensor:
-    img_size = 1024
-    masks = torch.tensor(masks)
-    orig_im_size = torch.tensor(orig_im_size)
-    masks = F.interpolate(
-        masks,
-        size=(img_size, img_size),
-        mode="bilinear",
-        align_corners=False,
-    )
-
-    prepadded_size = resize_longest_image_size(orig_im_size, img_size)
-    masks = masks[..., : int(prepadded_size[0]), : int(prepadded_size[1])]
-    orig_im_size = orig_im_size.to(torch.int64)
-    h, w = orig_im_size[0], orig_im_size[1]
-    masks = F.interpolate(masks, size=(
-        h, w), mode="bilinear", align_corners=False)
-    return masks
-
-
 class EfficientViTSAM:
     """
     EfficientViTSAM model for image segmentation.
@@ -340,7 +346,7 @@ class EfficientViTSAM:
                 point_coords=point_coords,
                 point_labels=point_labels,
             )
-            return masks.squeeze().cpu().numpy()
+            return masks.cpu().numpy()
 
         elif self.mode == "boxes":
             boxes = np.array(bboxes, dtype=np.float32)
@@ -349,7 +355,7 @@ class EfficientViTSAM:
                 origin_image_size=origin_image_size,
                 boxes=boxes,
             )
-            return masks.squeeze().cpu().numpy()
+            return masks.cpu().numpy()
         else:
             return []
 
@@ -377,6 +383,7 @@ if __name__ == "__main__":
 
     encoder = SamEncoder(model_path=args.encoder_model)
     decoder = SamDecoder(model_path=args.decoder_model)
+    eff_sam = EfficientViTSAM()
 
     raw_img = cv2.cvtColor(cv2.imread(args.img_path), cv2.COLOR_BGR2RGB)
     origin_image_size = raw_img.shape[:2]
@@ -429,6 +436,7 @@ if __name__ == "__main__":
         plt.savefig(args.out_path, bbox_inches="tight",
                     dpi=300, pad_inches=0.0)
         print(f"Result saved in {args.out_path}")
-
+        _masks = eff_sam.run_inference(raw_img, boxes)
+        print(_masks.shape, _masks)
     else:
         raise NotImplementedError
