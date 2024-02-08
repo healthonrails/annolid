@@ -153,7 +153,8 @@ class VideoProcessor:
     def __init__(self,
                  video_path,
                  num_center_points=3,
-                 model_name="Segment-Anything (Edge)"
+                 model_name="Segment-Anything (Edge)",
+                 save_image_to_disk=True
                  ):
         """
         Initialize the VideoProcessor.
@@ -175,6 +176,7 @@ class VideoProcessor:
         self.num_points_inside_edges = num_center_points
         self.num_center_points = num_center_points
         self.center_points_dict = defaultdict()
+        self.save_image_to_disk = save_image_to_disk
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
@@ -348,9 +350,11 @@ class VideoProcessor:
                 label_list.append(p_shape)
 
         self.most_recent_file = filename
-        img_filename = str(filename.with_suffix('.png'))
-        if not Path(img_filename).exists():
-            cv2.imwrite(img_filename, cur_frame)
+        img_filename = None
+        if self.save_image_to_disk:
+            img_filename = str(filename.with_suffix('.png'))
+            if not Path(img_filename).exists():
+                cv2.imwrite(img_filename, cur_frame)
 
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
                     height=height, width=width, save_image_to_json=False)

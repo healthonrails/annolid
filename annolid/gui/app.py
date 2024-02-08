@@ -29,11 +29,11 @@ from labelme.app import MainWindow
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
-from labelme.label_file import LabelFileError
-from labelme.label_file import LabelFile
 from labelme import utils
 from labelme.logger import logger
 from labelme.widgets import ToolBar
+from annolid.gui.label_file import LabelFileError
+from annolid.gui.label_file import LabelFile
 from annolid.configs import get_config
 from annolid.gui.widgets.canvas import Canvas
 from annolid.gui.widgets.text_prompt import AiRectangleWidget
@@ -902,7 +902,9 @@ class AnnolidWindow(MainWindow):
             self.video_processor = VideoProcessor(
                 self.video_file,
                 model_name='sam_hq' if torch.cuda.is_available()
-                else "Segment-Anything (Edge)")
+                else "Segment-Anything (Edge)",
+                save_image_to_disk=False
+            )
             self.seg_pred_thread.start()
             if self.step_size < 0:
                 end_frame = self.num_frames + self.step_size
@@ -1894,14 +1896,16 @@ class AnnolidWindow(MainWindow):
 
         if Path(label_json_file).exists():
             try:
-                self.labelFile = LabelFile(label_json_file)
+                self.labelFile = LabelFile(label_json_file,
+                                           is_video_frame=True)
                 if self.labelFile:
                     shapes = self.loadLabels(self.labelFile.shapes)
-            except Exception:
-                print(f'Count not load label json file {label_json_file}')
+            except Exception as e:
+                print(e)
 
-            if not Path(filename).exists():
-                os.remove(label_json_file)
+            if self._df is not None:
+                if not Path(filename).exists():
+                    os.remove(label_json_file)
 
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
