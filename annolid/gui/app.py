@@ -1852,6 +1852,9 @@ class AnnolidWindow(MainWindow):
     def loadShapes(self, shapes, replace=True):
         self._noSelectionSlot = True
         for shape in shapes:
+            if not isinstance(shape.points[0], QtCore.QPointF):
+                shape.points = [QtCore.QPointF(x, y)
+                                for x, y in shape.points]
             self.addLabel(shape)
         self.labelList.clearSelection()
         self._noSelectionSlot = False
@@ -1885,27 +1888,16 @@ class AnnolidWindow(MainWindow):
                 pred_label_list = pred_dict_to_labelme(row)
                 frame_label_list += pred_label_list
 
-            save_labels(label_json_file,
-                        str(filename),
-                        frame_label_list,
-                        self.video_loader.height,
-                        self.video_loader.width,
-                        imageData=self.imageData,
-                        save_image_to_json=False
-                        )
+            self.loadShapes(frame_label_list)
 
         if Path(label_json_file).exists():
             try:
                 self.labelFile = LabelFile(label_json_file,
                                            is_video_frame=True)
                 if self.labelFile:
-                    shapes = self.loadLabels(self.labelFile.shapes)
+                    self.loadLabels(self.labelFile.shapes)
             except Exception as e:
                 print(e)
-
-            if self._df is not None:
-                if not Path(filename).exists():
-                    os.remove(label_json_file)
 
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
