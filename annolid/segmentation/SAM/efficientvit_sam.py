@@ -315,8 +315,11 @@ class EfficientViTSAM:
         self.current_folder = os.path.dirname(current_file_path)
         encoder_model = self._get_or_download(encoder_model)
         decoder_model = self._get_or_download(decoder_model)
-        self.encoder_model = SamEncoder(model_path=encoder_model)
-        self.decoder_model = SamDecoder(model_path=decoder_model)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.encoder_model = SamEncoder(
+            model_path=encoder_model, device=device)
+        self.decoder_model = SamDecoder(
+            model_path=decoder_model, device=device)
         self.mode = mode
 
     def _get_or_download(self,
