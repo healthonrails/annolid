@@ -1,5 +1,6 @@
 import argparse
 import cv2
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 import onnxruntime as ort
@@ -7,7 +8,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from torchvision.transforms.functional import resize
-
+import gdown
 import yaml
 from copy import deepcopy
 from typing import Any, Tuple, Union
@@ -191,7 +192,6 @@ class SamEncoder:
             raise ValueError(
                 "Invalid device, please use 'cuda' or 'cpu' device.")
 
-        print(f"loading encoder model from {model_path}...")
         self.session = ort.InferenceSession(
             model_path, opt, providers=provider, **kwargs)
         self.input_name = self.session.get_inputs()[0].name
@@ -224,7 +224,6 @@ class SamDecoder:
             raise ValueError(
                 "Invalid device, please use 'cuda' or 'cpu' device.")
 
-        print(f"loading decoder model from {model_path}...")
         self.target_size = target_size
         self.mask_threshold = mask_threshold
         self.session = ort.InferenceSession(
@@ -301,6 +300,10 @@ class EfficientViTSAM:
     """
     EfficientViTSAM model for image segmentation.
     """
+    _REMOTE_MODEL_URL = "https://github.com/healthonrails/annolid/releases/download/v1.1.3/"
+    _MD5_DICT = {"xl1_decoder.onnx": "a5ad8f15eee579a043d133762a994a5c",
+                 "xl1_encoder.onnx": "69dafb5fb92edd6324ffa34fc2b2602b"
+                 }
 
     def __init__(self,
                  model_type='xl1',
@@ -308,9 +311,26 @@ class EfficientViTSAM:
                  decoder_model="xl1_decoder.onnx",
                  mode="boxes"):
         self.model_type = model_type
-        self.encoder_model = encoder_model
-        self.decoder_model = decoder_model
+        current_file_path = os.path.abspath(__file__)
+        self.current_folder = os.path.dirname(current_file_path)
+        encoder_model = self._get_or_download(encoder_model)
+        decoder_model = self._get_or_download(decoder_model)
+        self.encoder_model = SamEncoder(model_path=encoder_model)
+        self.decoder_model = SamDecoder(model_path=decoder_model)
         self.mode = mode
+
+    def _get_or_download(self,
+                         model_path,
+                         ):
+        abs_model_path = os.path.join(self.current_folder, model_path)
+        if not os.path.exists(abs_model_path):
+            url = self._REMOTE_MODEL_URL + model_path
+            expected_md5 = self._MD5_DICT[model_path]
+            gdown.cached_download(url,
+                                  abs_model_path,
+                                  md5=expected_md5
+                                  )
+        return abs_model_path
 
     def preprocess_image(self, raw_img):
         """
@@ -328,19 +348,16 @@ class EfficientViTSAM:
         """
         Run inference on the input image.
         """
-        encoder = SamEncoder(model_path=self.encoder_model)
-        decoder = SamDecoder(model_path=self.decoder_model)
-
         raw_img = cv_image
         origin_image_size = raw_img.shape[:2]
         img = self.preprocess_image(raw_img)
-        img_embeddings = encoder(img)
+        img_embeddings = self.encoder_model(img)
         if self.mode == "point":
             H, W, _ = raw_img.shape
             point = np.array(point, dtype=np.float32)
             point_coords = point[..., :2]
             point_labels = point[..., 2]
-            masks, _, _ = decoder.run(
+            masks, _, _ = self.decoder_model.run(
                 img_embeddings=img_embeddings,
                 origin_image_size=origin_image_size,
                 point_coords=point_coords,
@@ -350,7 +367,7 @@ class EfficientViTSAM:
 
         elif self.mode == "boxes":
             boxes = np.array(bboxes, dtype=np.float32)
-            masks, _, _ = decoder.run(
+            masks, _, _ = self.decoder_model.run(
                 img_embeddings=img_embeddings,
                 origin_image_size=origin_image_size,
                 boxes=boxes,

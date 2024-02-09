@@ -90,15 +90,14 @@ class LabelFile(object):
         try:
             with open(filename, "r") as f:
                 data = json.load(f)
+            imageData = None
+            imagePath = None
 
             if data["imageData"] is not None:
                 imageData = base64.b64decode(data["imageData"])
                 if PY2 and QT4:
                     imageData = utils.img_data_to_png_data(imageData)
-            elif self.is_video_frame is not None:
-                imagePath = None
-                imageData = None
-            elif data["imagePath"] is not None:
+            elif data["imagePath"] is not None and data["imagePath"] != "":
                 # relative path from label file to relative path from cwd
                 imagePath = osp.join(osp.dirname(filename), data["imagePath"])
                 imageData = self.load_image_file(imagePath)

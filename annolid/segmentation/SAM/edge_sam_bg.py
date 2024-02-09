@@ -14,6 +14,7 @@ from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
+from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -171,6 +172,8 @@ class VideoProcessor:
             VideoProcessor.sam_hq = SamHQSegmenter()
         elif model_name == "Segment-Anything (Edge)":
             self.edge_sam = self.get_model()
+        elif model_name == "efficientvit_sam":
+            self.edge_sam = EfficientViTSAM()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
         self.num_points_inside_edges = num_center_points
@@ -261,22 +264,29 @@ class VideoProcessor:
         points_dict, _ = self.load_json_file(self.most_recent_file)
         label_list = []
 
-        if self.sam_name == 'sam_hq':
+        if self.sam_name == 'sam_hq' or self.sam_name == "efficientvit_sam":
             bboxes = []
             for label, points in points_dict.items():
                 _bbox = find_bbox(points)
                 bboxes.append((_bbox, label))
 
             _bboxes = [list(box) for box, _ in bboxes]
-            masks, scores, input_box = VideoProcessor.sam_hq.segment_objects(
-                cur_frame, _bboxes)
+            if self.sam_name == 'sam_hq':
+                masks, scores, input_box = VideoProcessor.sam_hq.segment_objects(
+                    cur_frame, _bboxes)
+            elif self.sam_name == "efficientvit_sam":
+                masks = self.edge_sam.run_inference(cur_frame, _bboxes)
 
             for i, (box, label) in enumerate(bboxes):
 
                 current_shape = MaskShape(label=label,
                                           flags={},
                                           description='grounding_sam')
-                current_shape.mask = masks[i]
+                mask = masks[i]
+                if self.sam_name == "efficientvit_sam":
+                    h, w = mask.shape[-2:]
+                    mask = mask.reshape(h, w, 1)
+                current_shape.mask = mask
                 current_shape = current_shape.toPolygons()[0]
                 points = []
                 for point in current_shape.points:

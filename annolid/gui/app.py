@@ -889,6 +889,16 @@ class AnnolidWindow(MainWindow):
             imgviz.io.imsave(image_filename, img)
         return image_filename
 
+    def _select_sam_model_name(self):
+        model_name = "Segment-Anything (Edge)"
+        if torch.cuda.is_available():
+            model_name = 'sam_hq'
+        elif self._selectAiModelComboBox.currentText() == "EfficientSam (accuracy)":
+            model_name = "efficientvit_sam"
+        else:
+            model_name = "Segment-Anything (Edge)"
+        return model_name
+
     def predict_from_next_frame(self,
                                 to_frame=60):
         if len(self.canvas.shapes) <= 0:
@@ -898,11 +908,12 @@ class AnnolidWindow(MainWindow):
                                         f"Please label this frame")
             return
 
+        model_name = self._select_sam_model_name()
+
         if self.video_file:
             self.video_processor = VideoProcessor(
                 self.video_file,
-                model_name='sam_hq' if torch.cuda.is_available()
-                else "Segment-Anything (Edge)",
+                model_name=model_name,
                 save_image_to_disk=False
             )
             self.seg_pred_thread.start()

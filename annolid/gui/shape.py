@@ -86,8 +86,6 @@ class Shape(object):
             # is used for drawing the pending line a different color.
             self.line_color = line_color
 
-        self.shape_type = shape_type
-
     def setShapeRefined(self, shape_type, points, point_labels, mask=None):
         self._shape_raw = (self.shape_type, self.points, self.point_labels)
         self.shape_type = shape_type
@@ -98,7 +96,7 @@ class Shape(object):
     def restoreShapeRaw(self):
         if self._shape_raw is None:
             return
-        self.shape_type, self.points, self.point_labels  = self._shape_raw
+        self.shape_type, self.points, self.point_labels = self._shape_raw
         self._shape_raw = None
 
     @property
@@ -292,7 +290,6 @@ class Shape(object):
             painter.drawPath(negative_vrtx_path)
             painter.fillPath(negative_vrtx_path, QtGui.QColor(255, 0, 0, 255))
 
-
     def drawVertex(self, path, i):
         d = self.point_size / self.scale
         shape = self.point_type
@@ -345,7 +342,7 @@ class Shape(object):
                 self.mask.shape[1] - 1,
             )
             return self.mask[y, x]
-        
+
         if not self.makePath():
             return False
         return self.makePath().contains(point)
@@ -376,7 +373,7 @@ class Shape(object):
             for p in self.points[1:]:
                 path.lineTo(p)
             return path
-            
+
     def boundingRect(self):
         return self.makePath().boundingRect()
 
