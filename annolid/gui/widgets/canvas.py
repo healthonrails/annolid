@@ -163,8 +163,10 @@ class Canvas(QtWidgets.QWidget):
 
     def initializeAiModel(self, name):
         if name not in [model.name for model in labelme.ai.MODELS]:
-            raise ValueError("Unsupported ai model: %s" % name)
-        model = [model for model in labelme.ai.MODELS if model.name == name][0]
+            logger.warning("Unsupported ai model: %s" % name)
+            model = labelme.ai.MODELS[3]
+        else: 
+            model = [model for model in labelme.ai.MODELS if model.name == name][0]
 
         if self._ai_model is not None and self._ai_model.name == model.name:
             logger.debug("AI model is already initialized: %r" % model.name)

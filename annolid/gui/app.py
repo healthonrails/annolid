@@ -508,7 +508,10 @@ class AnnolidWindow(MainWindow):
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
 
         self._selectAiModelComboBox.clear()
-        model_names = [model.name for model in MODELS]
+        self.custom_ai_model_names = [
+            'SAM_HQ', 'Cutie_VOS', "EfficientVit_SAM"]
+        model_names = [model.name for model in MODELS] + \
+            self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
         # Set EdgeSAM as default
         if self._config["ai"]["default"] in model_names:
@@ -893,8 +896,10 @@ class AnnolidWindow(MainWindow):
         model_name = "Segment-Anything (Edge)"
         if torch.cuda.is_available():
             model_name = 'sam_hq'
-        elif self._selectAiModelComboBox.currentText() == "EfficientSam (accuracy)":
+        elif self._selectAiModelComboBox.currentText() == "EfficientVit_SAM":
             model_name = "efficientvit_sam"
+        elif self._selectAiModelComboBox.currentText() == "Cutie_VOS":
+            model_name = "Cutie_VOS"
         else:
             model_name = "Segment-Anything (Edge)"
         return model_name
@@ -929,7 +934,8 @@ class AnnolidWindow(MainWindow):
                 function=self.video_processor.process_video_frames,
                 start_frame=self.frame_number+1,
                 end_frame=end_frame,
-                step=self.step_size
+                step=self.step_size,
+                is_cutie=model_name == "Cutie_VOS",
             )
             self.frame_number += 1
             self.stepSizeWidget.predict_button.setEnabled(False)

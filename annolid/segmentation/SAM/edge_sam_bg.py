@@ -15,6 +15,8 @@ from shapely.geometry import Point, Polygon
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
 from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
+from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
+from labelme.utils.shape import shapes_to_label
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -150,6 +152,7 @@ class VideoProcessor:
     A class for processing video frames using the Segment-Anything model.
     """
     sam_hq = None
+    cutie_processor = None
 
     def __init__(self,
                  video_path,
@@ -167,6 +170,7 @@ class VideoProcessor:
         self.video_path = video_path
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
+        self.first_frame = self.video_loader.get_first_frame()
         self.sam_name = model_name
         if model_name == 'sam_hq' and VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
@@ -180,6 +184,39 @@ class VideoProcessor:
         self.num_center_points = num_center_points
         self.center_points_dict = defaultdict()
         self.save_image_to_disk = save_image_to_disk
+
+    def load_shapes(self, label_json_file):
+        with open(label_json_file, 'r') as json_file:
+            data = json.load(json_file)
+        shapes = data.get('shapes', [])
+        return shapes
+
+    def process_video_with_cutite(self, frames_to_propagate=100):
+        self.most_recent_file = self.get_most_recent_file()
+        label_name_to_value = {"_background_": 0}
+        frame_number = int(
+            Path(self.most_recent_file).stem.split('_')[-1])
+        shapes = self.load_shapes(self.most_recent_file)
+        for shape in sorted(shapes, key=lambda x: x["label"]):
+            label_name = shape["label"]
+            if label_name in label_name_to_value:
+                label_value = label_name_to_value[label_name]
+            else:
+                label_value = len(label_name_to_value)
+                label_name_to_value[label_name] = label_value
+
+        image_size = self.first_frame.shape
+        mask, _ = shapes_to_label(
+            image_size, shapes, label_name_to_value)
+        if VideoProcessor.cutie_processor is None:
+            VideoProcessor.cutie_processor = CutieVideoProcessor(
+                self.video_path, debug=False)
+        VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
+                                                               mask,
+                                                               frames_to_propagate=frames_to_propagate,
+                                                               visualize_every=20,
+                                                               labels_dict=label_name_to_value
+                                                               )
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
@@ -369,7 +406,12 @@ class VideoProcessor:
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
                     height=height, width=width, save_image_to_json=False)
 
-    def process_video_frames(self, start_frame=0, end_frame=None, step=10):
+    def process_video_frames(self,
+                             start_frame=0,
+                             end_frame=None,
+                             step=10,
+                             is_cutie=True
+                             ):
         """
         Process multiple frames of the video.
 
@@ -378,10 +420,13 @@ class VideoProcessor:
         - end_frame (int): Ending frame number.
         - step (int): Step between frames.
         """
-        if end_frame is None:
-            end_frame = self.num_frames
-        for i in range(start_frame, end_frame + 1, step):
-            self.process_frame(i)
+        if is_cutie:
+            self.process_video_with_cutite(frames_to_propagate=end_frame)
+        else:
+            if end_frame is None:
+                end_frame = self.num_frames
+            for i in range(start_frame, end_frame + 1, step):
+                self.process_frame(i)
 
     def get_most_recent_file(self):
         """
