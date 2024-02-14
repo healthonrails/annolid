@@ -19,6 +19,7 @@ from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCor
 from annolid.segmentation.cutie_vos.inference.utils.args_utils import get_dataset_cfg
 from pathlib import Path
 import gdown
+from annolid.utils.devices import get_device
 
 """
 References:
@@ -43,11 +44,12 @@ class CutieVideoProcessor:
         self.debug = debug
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = get_device()  # 'cuda' if torch.cuda.is_available() else 'cpu'
         self.cutie, self.cfg = self._initialize_model()
         self.processor = None
 
     def _initialize_model(self):
+        # general setup
         torch.cuda.empty_cache()
         with torch.inference_mode():
             initialize(version_base='1.3.2', config_path="config",
@@ -63,9 +65,9 @@ class CutieVideoProcessor:
             with open_dict(cfg):
                 cfg['weights'] = model_path
             data_cfg = get_dataset_cfg(cfg)
-            cutie_model = CUTIE(cfg).eval()
+            cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
-                cfg.weights, map_location=torch.device('cpu'))
+                cfg.weights, map_location=self.device)
             cutie_model.load_weights(model_weights)
         return cutie_model, cfg
 

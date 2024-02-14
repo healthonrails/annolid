@@ -893,15 +893,16 @@ class AnnolidWindow(MainWindow):
         return image_filename
 
     def _select_sam_model_name(self):
-        model_name = "Segment-Anything (Edge)"
-        if torch.cuda.is_available():
-            model_name = 'sam_hq'
-        elif self._selectAiModelComboBox.currentText() == "EfficientVit_SAM":
-            model_name = "efficientvit_sam"
-        elif self._selectAiModelComboBox.currentText() == "Cutie_VOS":
-            model_name = "Cutie_VOS"
-        else:
-            model_name = "Segment-Anything (Edge)"
+        model_names = {
+            "SAM_HQ": "sam_hq",
+            "EfficientVit_SAM": "efficientvit_sam",
+            "Cutie_VOS": "Cutie_VOS"
+        }
+        default_model_name = "Segment-Anything (Edge)"
+
+        current_text = self._selectAiModelComboBox.currentText()
+        model_name = model_names.get(current_text, default_model_name)
+
         return model_name
 
     def predict_from_next_frame(self,
