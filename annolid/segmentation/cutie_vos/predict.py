@@ -102,7 +102,7 @@ class CutieVideoProcessor:
         current_frame_index = frame_number
 
         with torch.inference_mode():
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
                 while cap.isOpened():
                     cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
                     _, frame = cap.read()
