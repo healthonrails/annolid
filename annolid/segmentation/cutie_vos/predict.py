@@ -99,6 +99,13 @@ class CutieVideoProcessor:
         cap = cv2.VideoCapture(self.video_name)
         value_to_label_names = {
             v: k for k, v in labels_dict.items()} if labels_dict else {}
+        # Get the total number of frames
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_number == total_frames - 1:
+            return
+
+        current_frame_index = frame_number
+        end_frame_number = frame_number + frames_to_propagate
         current_frame_index = frame_number
 
         with torch.inference_mode():
@@ -106,10 +113,13 @@ class CutieVideoProcessor:
                 while cap.isOpened():
                     cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
                     _, frame = cap.read()
-                    if frame is None or current_frame_index > frame_number + frames_to_propagate:
+                    if frame is None or current_frame_index > end_frame_number:
                         break
                     frame_torch = image_to_torch(frame, device=self.device)
-                    if current_frame_index == 0 or (frame_number > 0 and current_frame_index % frame_number == 0):
+                    if (current_frame_index == 0 or
+                        (current_frame_index == frame_number == 1) or
+                            (frame_number > 1 and
+                             current_frame_index % frame_number == 0)):
                         mask_torch = index_numpy_to_one_hot_torch(
                             mask, num_objects + 1).to(self.device)
                         prediction = self.processor.step(
