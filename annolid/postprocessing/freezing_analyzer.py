@@ -88,7 +88,7 @@ class FreezingAnalyzer():
     def mask_iou(self, row):
         x = ast.literal_eval(row.segmentation_x)
         y = ast.literal_eval(row.segmentation_y)
-        _iou = mask_util.iou([x], [y], [False, False]).flatten()[0]
+        _iou = mask_util.iou([x], [y], [False]).flatten()[0]
         return _iou
 
     def run(self,

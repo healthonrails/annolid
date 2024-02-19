@@ -80,17 +80,17 @@ def convert_json_to_csv(json_folder, csv_file=None):
                 for shape in data["shapes"]:
                     instance_name = shape["label"]
                     points = shape["points"]
+                    if len(points) > 2:
+                        mask = convert_shape_to_mask(img_shape, points)
+                        bboxs = masks_to_bboxes(mask[None, :, :])
+                        segmentation = binary_mask_to_coco_rle(mask)
+                        class_score = 1.0
 
-                    mask = convert_shape_to_mask(img_shape, points)
-                    bboxs = masks_to_bboxes(mask[None, :, :])
-                    segmentation = binary_mask_to_coco_rle(mask)
-                    class_score = 1.0
-
-                    x1, y1, x2, y2 = bboxs[0]
-                    csv_writer.writerow(
-                        [frame_number, x1, y1, x2, y2,
-                         instance_name, class_score,
-                         segmentation, 0])
+                        x1, y1, x2, y2 = bboxs[0]
+                        csv_writer.writerow(
+                            [frame_number, x1, y1, x2, y2,
+                             instance_name, class_score,
+                             segmentation, 0])
 
     print(f"CSV file '{csv_file}' has been created.")
 
