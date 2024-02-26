@@ -38,15 +38,16 @@ class CutieVideoProcessor:
     _REMOTE_MODEL_URL = "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
     _MD5 = "a6071de6136982e396851903ab4c083a"
 
-    def __init__(self, video_name, debug=False):
+    def __init__(self, video_name, mem_every=5, debug=False):
         self.video_name = video_name
         self.video_folder = Path(video_name).with_suffix("")
+        self.mem_every = mem_every
         self.debug = debug
+        self.processor = None
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
-        self.device = get_device()  # 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = get_device()
         self.cutie, self.cfg = self._initialize_model()
-        self.processor = None
 
     def _initialize_model(self):
         # general setup
@@ -64,7 +65,7 @@ class CutieVideoProcessor:
                                       )
             with open_dict(cfg):
                 cfg['weights'] = model_path
-            data_cfg = get_dataset_cfg(cfg)
+            cfg['mem_every'] = self.mem_every
             cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
                 cfg.weights, map_location=self.device)
@@ -94,8 +95,7 @@ class CutieVideoProcessor:
                                 labels_dict=None):
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
-        if self.processor is None:
-            self.processor = InferenceCore(self.cutie, cfg=self.cfg)
+        self.processor = InferenceCore(self.cutie, cfg=self.cfg)
         cap = cv2.VideoCapture(self.video_name)
         value_to_label_names = {
             v: k for k, v in labels_dict.items()} if labels_dict else {}
