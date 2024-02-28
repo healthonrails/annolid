@@ -953,6 +953,8 @@ class AnnolidWindow(MainWindow):
             self.pred_worker.start.emit()
 
     def lost_tracking_instance(self, message):
+        if message is None:
+            return
         message, current_frame_index = message.split("#")
         current_frame_index = int(current_frame_index)
         QtWidgets.QMessageBox.information(
