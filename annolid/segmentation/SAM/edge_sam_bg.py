@@ -191,7 +191,7 @@ class VideoProcessor:
         shapes = data.get('shapes', [])
         return shapes
 
-    def process_video_with_cutite(self, frames_to_propagate=100):
+    def process_video_with_cutite(self, frames_to_propagate=100, mem_every=5):
         self.most_recent_file = self.get_most_recent_file()
         label_name_to_value = {"_background_": 0}
         frame_number = int(
@@ -210,13 +210,14 @@ class VideoProcessor:
             image_size, shapes, label_name_to_value)
         if VideoProcessor.cutie_processor is None:
             VideoProcessor.cutie_processor = CutieVideoProcessor(
-                self.video_path, debug=False)
-        VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
-                                                               mask,
-                                                               frames_to_propagate=frames_to_propagate,
-                                                               visualize_every=20,
-                                                               labels_dict=label_name_to_value
-                                                               )
+                self.video_path, mem_every=mem_every, debug=False)
+        message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
+                                                                         mask,
+                                                                         frames_to_propagate=frames_to_propagate,
+                                                                         visualize_every=20,
+                                                                         labels_dict=label_name_to_value
+                                                                         )
+        return message
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",
@@ -410,7 +411,8 @@ class VideoProcessor:
                              start_frame=0,
                              end_frame=None,
                              step=10,
-                             is_cutie=True
+                             is_cutie=True,
+                             mem_every=5
                              ):
         """
         Process multiple frames of the video.
@@ -421,7 +423,11 @@ class VideoProcessor:
         - step (int): Step between frames.
         """
         if is_cutie:
-            self.process_video_with_cutite(frames_to_propagate=end_frame)
+            # always predict to the end of the video
+            end_frame = self.num_frames
+            message = self.process_video_with_cutite(
+                frames_to_propagate=end_frame, mem_every=mem_every)
+            return message
         else:
             if end_frame is None:
                 end_frame = self.num_frames

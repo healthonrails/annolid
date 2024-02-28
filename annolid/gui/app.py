@@ -69,6 +69,7 @@ LABEL_COLORMAP = imgviz.label_colormap(value=200)
 class FlexibleWorker(QtCore.QObject):
     start = QtCore.Signal()
     finished = QtCore.Signal()
+    return_value = QtCore.Signal(object)
 
     def __init__(self, function, *args, **kwargs):
         super(FlexibleWorker, self).__init__()
@@ -78,7 +79,8 @@ class FlexibleWorker(QtCore.QObject):
         self.kwargs = kwargs
 
     def run(self):
-        self.function(*self.args, **self.kwargs)
+        result = self.function(*self.args, **self.kwargs)
+        self.return_value.emit(result)
         self.finished.emit()
 
 
@@ -937,16 +939,28 @@ class AnnolidWindow(MainWindow):
                 end_frame=end_frame,
                 step=self.step_size,
                 is_cutie=model_name == "Cutie_VOS",
+                mem_every=self.step_size if self.step_size > 1 else 5
             )
             self.frame_number += 1
             self.stepSizeWidget.predict_button.setEnabled(False)
             self.pred_worker.moveToThread(self.seg_pred_thread)
             self.pred_worker.start.connect(self.pred_worker.run)
             self.seg_pred_thread.started.connect(self.pred_worker.start)
+            self.pred_worker.return_value.connect(self.lost_tracking_instance)
             self.pred_worker.finished.connect(self.predict_is_ready)
             self.seg_pred_thread.finished.connect(
                 self.seg_pred_thread.quit)
             self.pred_worker.start.emit()
+
+    def lost_tracking_instance(self, message):
+        message, current_frame_index = message.split("#")
+        current_frame_index = int(current_frame_index)
+        QtWidgets.QMessageBox.information(
+            self, "Stop early",
+            message
+        )
+        self.stepSizeWidget.predict_button.setEnabled(True)
+        self.set_frame_number(current_frame_index)
 
     def predict_is_ready(self):
         QtWidgets.QMessageBox.information(

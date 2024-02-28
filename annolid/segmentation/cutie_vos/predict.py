@@ -44,6 +44,7 @@ class CutieVideoProcessor:
         self.mem_every = mem_every
         self.debug = debug
         self.processor = None
+        self.num_tracking_instances = 0
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
         self.device = get_device()
@@ -95,6 +96,7 @@ class CutieVideoProcessor:
                                 labels_dict=None):
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
+            self.num_tracking_instances = num_objects
         self.processor = InferenceCore(self.cutie, cfg=self.cfg)
         cap = cv2.VideoCapture(self.video_name)
         value_to_label_names = {
@@ -133,6 +135,19 @@ class CutieVideoProcessor:
                     mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
                                  for label_id in np.unique(prediction)[1:]}
                     self._save_annotation(filename, mask_dict, frame.shape)
+                    # if we lost tracking one of the instances, return the current frame number
+                    num_instances_in_current_frame = mask_dict.keys()
+                    if len(num_instances_in_current_frame) < self.num_tracking_instances:
+                        delimiter = '#'
+                        message = (
+                            f"There are {self.num_tracking_instances - len(num_instances_in_current_frame)} "
+                            f"missing instance(s) in the current frame ({current_frame_index}).\n\n"
+                            f"Here is the list of instances detected in the current frame:\n"
+                            f"{', '.join(str(instance) for instance in num_instances_in_current_frame)}"
+                        )
+                        message_with_index = message + \
+                            delimiter + str(current_frame_index)
+                        return message_with_index
                     if self.debug and current_frame_index % visualize_every == 0:
                         visualization = overlay_davis(frame, prediction)
                         plt.imshow(
