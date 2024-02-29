@@ -20,7 +20,6 @@ from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
-import PIL
 from PIL import ImageQt
 import requests
 import subprocess
@@ -226,6 +225,7 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget = StepSizeWidget()
         self.prev_shapes = None
         self.pred_worker = None
+        self.video_processor = None
         # Initialize a flag to control thread termination
         self.stop_prediction_flag = False
 
@@ -702,6 +702,8 @@ class AnnolidWindow(MainWindow):
             self.stop_prediction_flag = False
             self.imageData = None
             self.frame_loader = LoadFrameThread()
+            self.video_processor.cutie_processor = None
+            self.video_processor = None
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)

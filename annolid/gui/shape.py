@@ -529,7 +529,7 @@ class MaskShape(MultipoinstShape):
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
-    def toPolygons(self, epsilon=1.3):
+    def toPolygons(self, epsilon=4.7):
         # Fill the holes inside the mask
         filled_mask = cv2.morphologyEx((self.mask*255).astype(
             np.uint8), cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
