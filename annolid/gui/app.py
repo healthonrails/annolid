@@ -702,7 +702,8 @@ class AnnolidWindow(MainWindow):
             self.stop_prediction_flag = False
             self.imageData = None
             self.frame_loader = LoadFrameThread()
-            self.video_processor.cutie_processor = None
+            if self.video_processor is not None:
+                self.video_processor.cutie_processor = None
             self.video_processor = None
 
     def toolbar(self, title, actions=None):
