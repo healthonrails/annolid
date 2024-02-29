@@ -1006,14 +1006,24 @@ class AnnolidWindow(MainWindow):
                 self, "Stop early",
                 message
             )
+        self.stepSizeWidget.predict_button.setText(
+            "Pred")  # Change button text
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;")
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.set_frame_number(current_frame_index)
+        self.stop_prediction_flag = False
 
     def predict_is_ready(self):
         QtWidgets.QMessageBox.information(
             self, "Prediction Ready",
             "Predictions for the video frames have been generated!")
+        self.stepSizeWidget.predict_button.setText(
+            "Pred")  # Change button text
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;")
         self.stepSizeWidget.predict_button.setEnabled(True)
+        self.stop_prediction_flag = False
 
     def saveLabels(self, filename):
         lf = LabelFile()
