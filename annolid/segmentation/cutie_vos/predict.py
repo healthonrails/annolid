@@ -20,6 +20,7 @@ from annolid.segmentation.cutie_vos.inference.utils.args_utils import get_datase
 from pathlib import Path
 import gdown
 from annolid.utils.devices import get_device
+from labelme.logger import logger
 
 """
 References:
@@ -67,6 +68,8 @@ class CutieVideoProcessor:
             with open_dict(cfg):
                 cfg['weights'] = model_path
             cfg['mem_every'] = self.mem_every
+            logger.info(
+                f"Saving into working memeory for every: {self.mem_every}.")
             cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
                 cfg.weights, map_location=self.device)
@@ -93,7 +96,9 @@ class CutieVideoProcessor:
                                 mask=None,
                                 frames_to_propagate=60,
                                 visualize_every=30,
-                                labels_dict=None):
+                                labels_dict=None,
+                                pred_worker=None,
+                                ):
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
             self.num_tracking_instances = num_objects
@@ -101,6 +106,8 @@ class CutieVideoProcessor:
         cap = cv2.VideoCapture(self.video_name)
         value_to_label_names = {
             v: k for k, v in labels_dict.items()} if labels_dict else {}
+        instance_names = set(labels_dict.keys())
+        instance_names.remove('_background_')
         # Get the total number of frames
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if frame_number == total_frames - 1:
@@ -110,52 +117,69 @@ class CutieVideoProcessor:
         end_frame_number = frame_number + frames_to_propagate
         current_frame_index = frame_number
 
+        delimiter = '#'
+
         with torch.inference_mode():
             with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
                 while cap.isOpened():
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
-                    _, frame = cap.read()
-                    if frame is None or current_frame_index > end_frame_number:
-                        break
-                    frame_torch = image_to_torch(frame, device=self.device)
-                    if (current_frame_index == 0 or
-                        (current_frame_index == frame_number == 1) or
-                            (frame_number > 1 and
-                             current_frame_index % frame_number == 0)):
-                        mask_torch = index_numpy_to_one_hot_torch(
-                            mask, num_objects + 1).to(self.device)
-                        prediction = self.processor.step(
-                            frame_torch, mask_torch[1:], idx_mask=False)
-                    else:
-                        prediction = self.processor.step(frame_torch)
-                    prediction = torch_prob_to_numpy_mask(prediction)
-                    filename = self.video_folder / \
-                        (self.video_folder.name +
-                         f"_{current_frame_index:0>{9}}.json")
-                    mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
-                                 for label_id in np.unique(prediction)[1:]}
-                    self._save_annotation(filename, mask_dict, frame.shape)
-                    # if we lost tracking one of the instances, return the current frame number
-                    num_instances_in_current_frame = mask_dict.keys()
-                    if len(num_instances_in_current_frame) < self.num_tracking_instances:
-                        delimiter = '#'
-                        message = (
-                            f"There are {self.num_tracking_instances - len(num_instances_in_current_frame)} "
-                            f"missing instance(s) in the current frame ({current_frame_index}).\n\n"
-                            f"Here is the list of instances detected in the current frame:\n"
-                            f"{', '.join(str(instance) for instance in num_instances_in_current_frame)}"
-                        )
-                        message_with_index = message + \
-                            delimiter + str(current_frame_index)
-                        return message_with_index
-                    if self.debug and current_frame_index % visualize_every == 0:
-                        visualization = overlay_davis(frame, prediction)
-                        plt.imshow(
-                            cv2.cvtColor(visualization, cv2.COLOR_BGR2RGB))
-                        plt.title(str(current_frame_index))
-                        plt.axis('off')
-                        plt.show()
-                    current_frame_index += 1
+                    while not pred_worker.is_stopped():
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
+                        _, frame = cap.read()
+                        if frame is None or current_frame_index > end_frame_number:
+                            break
+                        frame_torch = image_to_torch(frame, device=self.device)
+                        if (current_frame_index == 0 or
+                            (current_frame_index == frame_number == 1) or
+                                (frame_number > 1 and
+                                 current_frame_index % frame_number == 0)):
+                            mask_torch = index_numpy_to_one_hot_torch(
+                                mask, num_objects + 1).to(self.device)
+                            prediction = self.processor.step(
+                                frame_torch, mask_torch[1:], idx_mask=False)
+                        else:
+                            prediction = self.processor.step(frame_torch)
+                        prediction = torch_prob_to_numpy_mask(prediction)
+                        filename = self.video_folder / \
+                            (self.video_folder.name +
+                             f"_{current_frame_index:0>{9}}.json")
+                        mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
+                                     for label_id in np.unique(prediction)[1:]}
+                        self._save_annotation(filename, mask_dict, frame.shape)
+                        # if we lost tracking one of the instances, return the current frame number
+                        num_instances_in_current_frame = mask_dict.keys()
+                        if len(num_instances_in_current_frame) < self.num_tracking_instances:
+                            missing_instances = instance_names - \
+                                set(num_instances_in_current_frame)
+                            num_missing_instances = self.num_tracking_instances - \
+                                len(num_instances_in_current_frame)
+                            message = (
+                                f"There are {num_missing_instances} missing instance(s) in the current frame ({current_frame_index}).\n\n"
+                                f"Here is the list of instances missing or occluded in the current frame:\n"
+                                f"Some occluded instances will be recovered automatically in the later frame:\n"
+                                f"{', '.join(str(instance) for instance in missing_instances)}"
+                            )
+                            message_with_index = message + \
+                                delimiter + str(current_frame_index)
+                            logger.info(message)
+                            # If half of the instances are missing, then stop the prediction.
+                            if len(num_instances_in_current_frame) < self.num_tracking_instances / 2:
+                                return message_with_index
+
+                        if self.debug and current_frame_index % visualize_every == 0:
+                            visualization = overlay_davis(frame, prediction)
+                            plt.imshow(
+                                cv2.cvtColor(visualization, cv2.COLOR_BGR2RGB))
+                            plt.title(str(current_frame_index))
+                            plt.axis('off')
+                            plt.show()
+                        current_frame_index += 1
+                    break
+
+                message = ("Stop at frame:\n") + \
+                    delimiter + str(current_frame_index-1)
+                # Release the video capture object
+                cap.release()
+                return message
 
 
 if __name__ == '__main__':

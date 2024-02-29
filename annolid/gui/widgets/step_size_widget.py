@@ -19,6 +19,8 @@ class StepSizeWidget(QtWidgets.QWidget):
 
         # Predict Button
         self.predict_button = QtWidgets.QPushButton("Pred")
+        self.predict_button.setStyleSheet(
+            "background-color: green; color: white;")
 
         # Connect valueChanged signal of QSpinBox to self.valueChanged
         self.step_size_spin_box.valueChanged.connect(self.emit_value_changed)

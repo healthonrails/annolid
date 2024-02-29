@@ -184,6 +184,10 @@ class VideoProcessor:
         self.num_center_points = num_center_points
         self.center_points_dict = defaultdict()
         self.save_image_to_disk = save_image_to_disk
+        self.pred_worker = None
+
+    def set_pred_worker(self, pred_worker):
+        self.pred_worker = pred_worker
 
     def load_shapes(self, label_json_file):
         with open(label_json_file, 'r') as json_file:
@@ -191,7 +195,9 @@ class VideoProcessor:
         shapes = data.get('shapes', [])
         return shapes
 
-    def process_video_with_cutite(self, frames_to_propagate=100, mem_every=5):
+    def process_video_with_cutite(self, frames_to_propagate=100,
+                                  mem_every=5
+                                  ):
         self.most_recent_file = self.get_most_recent_file()
         label_name_to_value = {"_background_": 0}
         frame_number = int(
@@ -215,7 +221,8 @@ class VideoProcessor:
                                                                          mask,
                                                                          frames_to_propagate=frames_to_propagate,
                                                                          visualize_every=20,
-                                                                         labels_dict=label_name_to_value
+                                                                         labels_dict=label_name_to_value,
+                                                                         pred_worker=self.pred_worker
                                                                          )
         return message
 
@@ -422,17 +429,20 @@ class VideoProcessor:
         - end_frame (int): Ending frame number.
         - step (int): Step between frames.
         """
-        if is_cutie:
-            # always predict to the end of the video
-            end_frame = self.num_frames
-            message = self.process_video_with_cutite(
-                frames_to_propagate=end_frame, mem_every=mem_every)
-            return message
-        else:
-            if end_frame is None:
+        while not self.pred_worker.is_stopped():
+            if is_cutie:
+                # always predict to the end of the video
                 end_frame = self.num_frames
-            for i in range(start_frame, end_frame + 1, step):
-                self.process_frame(i)
+                message = self.process_video_with_cutite(
+                    frames_to_propagate=end_frame,
+                    mem_every=mem_every
+                )
+                return message
+            else:
+                if end_frame is None:
+                    end_frame = self.num_frames
+                for i in range(start_frame, end_frame + 1, step):
+                    self.process_frame(i)
 
     def get_most_recent_file(self):
         """

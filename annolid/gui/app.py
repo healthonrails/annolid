@@ -70,6 +70,7 @@ class FlexibleWorker(QtCore.QObject):
     start = QtCore.Signal()
     finished = QtCore.Signal()
     return_value = QtCore.Signal(object)
+    stop_signal = QtCore.Signal()
 
     def __init__(self, function, *args, **kwargs):
         super(FlexibleWorker, self).__init__()
@@ -77,11 +78,21 @@ class FlexibleWorker(QtCore.QObject):
         self.function = function
         self.args = args
         self.kwargs = kwargs
+        self.stopped = False
+
+        self.stop_signal.connect(self.stop)
 
     def run(self):
+        self.stopped = False
         result = self.function(*self.args, **self.kwargs)
         self.return_value.emit(result)
         self.finished.emit()
+
+    def stop(self):
+        self.stopped = True
+
+    def is_stopped(self):
+        return self.stopped
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -214,6 +225,9 @@ class AnnolidWindow(MainWindow):
         self.step_size = 1
         self.stepSizeWidget = StepSizeWidget()
         self.prev_shapes = None
+        self.pred_worker = None
+        # Initialize a flag to control thread termination
+        self.stop_prediction_flag = False
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -678,6 +692,16 @@ class AnnolidWindow(MainWindow):
             self.saveButton = None
             self.playButton = None
             self.timer = None
+            self.filename = None
+            self.canvas.pixmap = None
+            self.event_type = None
+            self.highlighted_mark = None
+            self.stepSizeWidget = StepSizeWidget()
+            self.prev_shapes = None
+            self.pred_worker = None
+            self.stop_prediction_flag = False
+            self.imageData = None
+            self.frame_loader = LoadFrameThread()
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)
@@ -907,6 +931,16 @@ class AnnolidWindow(MainWindow):
 
         return model_name
 
+    def stop_prediction(self):
+        # Emit the stop signal to signal the prediction thread to stop
+        self.pred_worker.stop_signal.emit()
+        self.stepSizeWidget.predict_button.setText(
+            "Pred")  # Change button text
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;")
+
+        self.stop_prediction_flag = False
+
     def predict_from_next_frame(self,
                                 to_frame=60):
         if len(self.canvas.shapes) <= 0:
@@ -915,52 +949,61 @@ class AnnolidWindow(MainWindow):
                                         "No Shapes or Labeled Frames",
                                         f"Please label this frame")
             return
-
-        model_name = self._select_sam_model_name()
-
-        if self.video_file:
-            self.video_processor = VideoProcessor(
-                self.video_file,
-                model_name=model_name,
-                save_image_to_disk=False
-            )
-            self.seg_pred_thread.start()
-            if self.step_size < 0:
-                end_frame = self.num_frames + self.step_size
-            else:
-                end_frame = self.frame_number + to_frame * self.step_size
-            if end_frame >= self.num_frames:
-                end_frame = self.num_frames - 1
-            if self.step_size < 0:
-                self.step_size = -self.step_size
-            self.pred_worker = FlexibleWorker(
-                function=self.video_processor.process_video_frames,
-                start_frame=self.frame_number+1,
-                end_frame=end_frame,
-                step=self.step_size,
-                is_cutie=model_name == "Cutie_VOS",
-                mem_every=self.step_size if self.step_size > 1 else 5
-            )
-            self.frame_number += 1
-            self.stepSizeWidget.predict_button.setEnabled(False)
-            self.pred_worker.moveToThread(self.seg_pred_thread)
-            self.pred_worker.start.connect(self.pred_worker.run)
-            self.seg_pred_thread.started.connect(self.pred_worker.start)
-            self.pred_worker.return_value.connect(self.lost_tracking_instance)
-            self.pred_worker.finished.connect(self.predict_is_ready)
-            self.seg_pred_thread.finished.connect(
-                self.seg_pred_thread.quit)
-            self.pred_worker.start.emit()
+        if self.pred_worker and self.stop_prediction_flag:
+            # If prediction is running, stop the prediction
+            self.stop_prediction()
+        else:
+            model_name = self._select_sam_model_name()
+            if self.video_file:
+                self.video_processor = VideoProcessor(
+                    self.video_file,
+                    model_name=model_name,
+                    save_image_to_disk=False
+                )
+                self.seg_pred_thread.start()
+                if self.step_size < 0:
+                    end_frame = self.num_frames + self.step_size
+                else:
+                    end_frame = self.frame_number + to_frame * self.step_size
+                if end_frame >= self.num_frames:
+                    end_frame = self.num_frames - 1
+                if self.step_size < 0:
+                    self.step_size = -self.step_size
+                self.pred_worker = FlexibleWorker(
+                    function=self.video_processor.process_video_frames,
+                    start_frame=self.frame_number+1,
+                    end_frame=end_frame,
+                    step=self.step_size,
+                    is_cutie=True,
+                    mem_every=self.step_size
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                self.frame_number += 1
+                self.stepSizeWidget.predict_button.setText(
+                    "Stop")  # Change button text
+                self.stepSizeWidget.predict_button.setStyleSheet(
+                    "background-color: red; color: white;")
+                self.stop_prediction_flag = True
+                self.pred_worker.moveToThread(self.seg_pred_thread)
+                self.pred_worker.start.connect(self.pred_worker.run)
+                self.seg_pred_thread.started.connect(self.pred_worker.start)
+                self.pred_worker.return_value.connect(
+                    self.lost_tracking_instance)
+                self.pred_worker.finished.connect(self.predict_is_ready)
+                self.seg_pred_thread.finished.connect(
+                    self.seg_pred_thread.quit)
+                self.pred_worker.start.emit()
 
     def lost_tracking_instance(self, message):
         if message is None:
             return
         message, current_frame_index = message.split("#")
         current_frame_index = int(current_frame_index)
-        QtWidgets.QMessageBox.information(
-            self, "Stop early",
-            message
-        )
+        if "missing instance(s)" in message:
+            QtWidgets.QMessageBox.information(
+                self, "Stop early",
+                message
+            )
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.set_frame_number(current_frame_index)
 
