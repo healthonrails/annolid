@@ -946,15 +946,14 @@ class AnnolidWindow(MainWindow):
 
     def predict_from_next_frame(self,
                                 to_frame=60):
-        if len(self.canvas.shapes) <= 0:
-
+        if self.pred_worker and self.stop_prediction_flag:
+            # If prediction is running, stop the prediction
+            self.stop_prediction()
+        elif len(self.canvas.shapes) <= 0:
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
                                         f"Please label this frame")
             return
-        if self.pred_worker and self.stop_prediction_flag:
-            # If prediction is running, stop the prediction
-            self.stop_prediction()
         else:
             model_name = self._select_sam_model_name()
             if self.video_file:
