@@ -186,6 +186,7 @@ class CutieVideoProcessor:
                             # If half of the instances are missing, then stop the prediction.
                             if len(num_instances_in_current_frame) < self.num_tracking_instances / 2:
                                 return message_with_index
+                            pred_worker.stop_signal.emit()
                             # Release the video capture object
                             cap.release()
                             # Release the video writer if recording is set to True
@@ -209,6 +210,7 @@ class CutieVideoProcessor:
 
                 message = ("Stop at frame:\n") + \
                     delimiter + str(current_frame_index-1)
+                pred_worker.stop_signal.emit()
                 # Release the video capture object
                 cap.release()
                 # Release the video writer if recording is set to True
