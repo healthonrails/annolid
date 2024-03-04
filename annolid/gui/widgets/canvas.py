@@ -113,6 +113,7 @@ class Canvas(QtWidgets.QWidget):
         self.hShapeIsSelected = False
         self._painter = QtGui.QPainter()
         self._cursor = CURSOR_DEFAULT
+        self.mouse_xy_text = ""
 
         self.label = QLabel(self)
         self.label.setAlignment(QtCore.Qt.AlignCenter)
@@ -165,7 +166,7 @@ class Canvas(QtWidgets.QWidget):
         if name not in [model.name for model in labelme.ai.MODELS]:
             logger.warning("Unsupported ai model: %s" % name)
             model = labelme.ai.MODELS[3]
-        else: 
+        else:
             model = [model for model in labelme.ai.MODELS if model.name == name][0]
 
         if self._ai_model is not None and self._ai_model.name == model.name:
@@ -383,8 +384,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             return
 
         x, y = ev.x(), ev.y()
-        text = f'x:{pos.x():.1f},y:{pos.y():.1f}'
-        self.label.setText(text)
+        self.mouse_xy_text = f'x:{pos.x():.1f},y:{pos.y():.1f}'
+        self.label.setText(self.mouse_xy_text)
         self.label.adjustSize()
         label_width = self.label.width()
         label_height = self.label.height()
@@ -495,7 +496,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self.hEdge = None
                 shape.highlightVertex(index, shape.MOVE_VERTEX)
                 self.overrideCursor(CURSOR_POINT)
-                self.setToolTip(self.tr("Click & drag to move point"))
+                self.setToolTip(self.tr(f"Click & drag to move point"))
+                self.label.setText(shape.label + "," + self.mouse_xy_text)
+                self.label.adjustSize()
                 self.setStatusTip(self.toolTip())
                 self.update()
                 break
@@ -508,6 +511,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self.prevhEdge = self.hEdge = index_edge
                 self.overrideCursor(CURSOR_POINT)
                 self.setToolTip(self.tr("Click to create point"))
+                self.label.setText(shape.label + "," + self.mouse_xy_text)
+                self.label.adjustSize()
                 self.setStatusTip(self.toolTip())
                 self.update()
                 break
@@ -519,6 +524,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self.prevhShape = self.hShape = shape
                 self.prevhEdge = self.hEdge
                 self.hEdge = None
+                self.label.setText(shape.label + "," + self.mouse_xy_text)
+                self.label.adjustSize()
                 self.setToolTip(
                     self.tr("Click & drag to move shape '%s'") % shape.label
                 )
@@ -1017,7 +1024,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         # assert self.current
         if self.createMode == "ai_polygon":
             # convert points to polygon by an AI model
-            assert self.current.shape_type == "points"
+            if self.current.shape_type != "points":
+                return
             points = self._ai_model.predict_polygon_from_points(
                 points=[
                     [point.x(), point.y()] for point in self.current.points
