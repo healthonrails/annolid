@@ -936,7 +936,8 @@ class AnnolidWindow(MainWindow):
 
     def stop_prediction(self):
         # Emit the stop signal to signal the prediction thread to stop
-        self.pred_worker.stop_signal.emit()
+        self.pred_worker.stop()
+        self.seg_pred_thread.quit()
         self.stepSizeWidget.predict_button.setText(
             "Pred")  # Change button text
         self.stepSizeWidget.predict_button.setStyleSheet(
@@ -962,6 +963,8 @@ class AnnolidWindow(MainWindow):
                     model_name=model_name,
                     save_image_to_disk=False
                 )
+                if not self.seg_pred_thread.isRunning():
+                    self.seg_pred_thread = QtCore.QThread()
                 self.seg_pred_thread.start()
                 if self.step_size < 0:
                     end_frame = self.num_frames + self.step_size

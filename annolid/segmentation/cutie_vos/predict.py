@@ -51,6 +51,15 @@ class CutieVideoProcessor:
         self.device = get_device()
         self.cutie, self.cfg = self._initialize_model()
 
+    def initialize_video_writer(self, output_video_path,
+                                frame_width,
+                                frame_height,
+                                fps=30
+                                ):
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.video_writer = cv2.VideoWriter(
+            output_video_path, fourcc, fps, (frame_width, frame_height))
+
     def _initialize_model(self):
         # general setup
         torch.cuda.empty_cache()
@@ -98,6 +107,8 @@ class CutieVideoProcessor:
                                 visualize_every=30,
                                 labels_dict=None,
                                 pred_worker=None,
+                                recording=True,
+                                output_video_path=None
                                 ):
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
@@ -118,6 +129,17 @@ class CutieVideoProcessor:
         current_frame_index = frame_number
 
         delimiter = '#'
+
+        if recording:
+            if output_video_path is None:
+                output_video_path = str(
+                    self.video_folder) + f"_start_frame_{current_frame_index}_tracked.mp4"
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # Get the frames per second (fps) of the video
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            self.initialize_video_writer(
+                output_video_path, frame_width, frame_height, fps)
 
         with torch.inference_mode():
             with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
@@ -164,6 +186,16 @@ class CutieVideoProcessor:
                             # If half of the instances are missing, then stop the prediction.
                             if len(num_instances_in_current_frame) < self.num_tracking_instances / 2:
                                 return message_with_index
+                            # Release the video capture object
+                            cap.release()
+                            # Release the video writer if recording is set to True
+                            if recording:
+                                self.video_writer.release()
+                            return message_with_index
+                        if recording:
+                            visualization = overlay_davis(frame, prediction)
+                            # Write the frame to the video file
+                            self.video_writer.write(visualization)
 
                         if self.debug and current_frame_index % visualize_every == 0:
                             visualization = overlay_davis(frame, prediction)
@@ -179,6 +211,9 @@ class CutieVideoProcessor:
                     delimiter + str(current_frame_index-1)
                 # Release the video capture object
                 cap.release()
+                # Release the video writer if recording is set to True
+                if recording:
+                    self.video_writer.release()
                 return message
 
 
