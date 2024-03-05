@@ -46,7 +46,7 @@ Mouse behavior analysis with instance segmentation based deep learning networks
 ### First you need to install [anaconda](https://docs.anaconda.com/anaconda/install/index.html).
 create a conda env
 ```
-conda create -n annolid-env python=3.7
+conda create -n annolid-env python=3.11
 conda activate annolid-env 
 ```
 * Clone the code repo and change into the directory
@@ -101,7 +101,7 @@ The processor must support the Intel(R) Advanced Vector Extensions (Intel(R) AVX
 ```
 Please try the following commands.
 ```
-conda create -n annolid-env python=3.7
+conda create -n annolid-env python=3.11
 conda activate annolid-env 
 # Please skip this git clone step, if you have already done it in the previous step
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
@@ -209,6 +209,13 @@ docker run -it -v /tmp/.X11-unix:/tmp/.X11-unix/ -e DISPLAY=$DISPLAY  <Image ID>
 # Citing Annolid
 If you use Annolid in your research, please use the following BibTeX entry.
 ```
+@article{yang2023automated,
+  title={Automated Behavioral Analysis Using Instance Segmentation},
+  author={Yang, Chen and Forest, Jeremy and Einhorn, Matthew and Cleland, Thomas A},
+  journal={arXiv preprint arXiv:2312.07723},
+  year={2023}
+}
+
 @misc{yang2020Annolid,
   author =       {Chen Yang, Jeremy Forest, Matthew Einhorn, Thomas Cleland},
   title =        {Annolid:  an instance segmentation-based multiple animal tracking and behavior analysis package},
