@@ -403,9 +403,9 @@ def tracks2nix(video_file=None,
             is_draw = is_draw  # and (left_interact > 0 or right_interact > 0)
 
             if not math.isnan(x1) and _frame_num == frame_number:
-                cx = int((x1 + x2) / 2)
+                cx = int((x1 + x2) / 2) if 'cx' not in bf else int(bf['cx'])
                 cy_glitter = int((glitter_y1 + glitter_y2) / 2)
-                cy = int((y1 + y2) / 2)
+                cy = int((y1 + y2) / 2) if 'cy' not in bf else int(bf['cy'])
                 _, color = draw.get_label_color(
                     _class)
 
@@ -510,7 +510,7 @@ def tracks2nix(video_file=None,
                                        color,
                                        -1)
                         if _class in animal_names and 'zone' not in _class.lower():
-                            mask_label = f"-{_class}{tracking_id}-{score*100:.2f}%" if len(
+                            mask_label = f"-{_class}{tracking_id if tracking_id != 0 else ''}" if len(
                                 bbox_info) < 10 else str(tracking_id)
                             cv2.putText(frame, mask_label,
                                         (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,

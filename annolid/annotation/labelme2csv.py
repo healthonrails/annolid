@@ -88,7 +88,7 @@ def convert_json_to_csv(json_folder, csv_file=None):
                         class_score = 1.0
 
                         if len(bboxs) > 0:
-                            cy, cx = polygon_center(points)
+                            cx, cy = polygon_center(points)
                             x1, y1, x2, y2 = bboxs[0]
                             csv_writer.writerow(
                                 [frame_number, x1, y1, x2, y2, cx, cy,
