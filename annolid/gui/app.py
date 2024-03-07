@@ -70,6 +70,7 @@ class FlexibleWorker(QtCore.QObject):
     finished = QtCore.Signal()
     return_value = QtCore.Signal(object)
     stop_signal = QtCore.Signal()
+    progress_changed = QtCore.Signal(int)
 
     def __init__(self, function, *args, **kwargs):
         super(FlexibleWorker, self).__init__()
@@ -92,6 +93,9 @@ class FlexibleWorker(QtCore.QObject):
 
     def is_stopped(self):
         return self.stopped
+
+    def progress_callback(self, progress):
+        self.progress_changed.emit(progress)
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -228,6 +232,10 @@ class AnnolidWindow(MainWindow):
         self.video_processor = None
         # Initialize a flag to control thread termination
         self.stop_prediction_flag = False
+        # Create progress bar
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -477,12 +485,12 @@ class AnnolidWindow(MainWindow):
         _action_tools.insert(0, frames)
         _action_tools.insert(1, open_video)
         _action_tools.insert(2, step_size)
-        _action_tools.append(self.createPolygonSAMMode)
         _action_tools.append(self.aiRectangle.aiRectangleAction)
-        _action_tools.append(coco)
-        _action_tools.append(models)
         _action_tools.append(tracks)
         _action_tools.append(glitter2)
+        _action_tools.append(coco)
+        _action_tools.append(models)
+        _action_tools.append(self.createPolygonSAMMode)
         _action_tools.append(save_labeles)
         _action_tools.append(quality_control)
         _action_tools.append(colab)
@@ -1345,12 +1353,15 @@ class AnnolidWindow(MainWindow):
         display_mask = False
         out_video_file = None
 
+        if self.video_file is not None:
+            dlg.inputVideoFileLineEdit.setText(self.video_file)
+
         if dlg.exec_():
             config_file = dlg.config_file
             score_threshold = 0.15
             algo = dlg.algo
             out_dir = dlg.out_dir
-            video_file = dlg.video_file
+            video_file = dlg.video_file if self.video_file is None else self.video_file
             model_path = dlg.trained_model
 
         if video_file is None:
@@ -1359,24 +1370,44 @@ class AnnolidWindow(MainWindow):
         out_video_file = str(Path(video_file).name)
         out_video_file = f"tracked_{out_video_file}"
 
-        if config_file is None and algo != "SAM Predictions":
+        if config_file is None and algo != "Predictions":
             return
-        if algo == 'SAM Predictions':
+        if algo == 'Predictions':
             from annolid.annotation import labelme2csv
+            if self.video_file is not None:
+                video_file = self.video_file
             out_folder = Path(video_file).with_suffix('')
             if not out_folder.exists():
                 QtWidgets.QMessageBox.about(self,
                                             "No predictions",
-                                            "Help SAM achieve precise predictions by labeling a few frames.\
+                                            "Help Annolid achieve precise predictions by labeling a frame.\
                                               Your input is valuable!")
 
                 return
-            labelme2csv.convert_json_to_csv(str(out_folder))
-            QtWidgets.QMessageBox.about(self,
-                                        "Tracking results are ready.",
-                                        f"Kindly review the file here: {str(out_folder) + '.csv'}.")
-            self.statusBar().showMessage(
-                self.tr(f"Done"))
+
+            def update_progress(progress):
+                self.progress_bar.setValue(progress)
+
+            self.statusBar().addWidget(self.progress_bar)
+
+            self.worker = FlexibleWorker(
+                labelme2csv.convert_json_to_csv, str(out_folder),
+                progress_callback=update_progress)
+            self.thread = QtCore.QThread()
+            self.worker.moveToThread(self.thread)
+            self.worker.start.connect(self.worker.run)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.worker.finished.connect(lambda:
+                                         QtWidgets.QMessageBox.about(self,
+                                                                     "Tracking results are ready.",
+                                                                     f"Kindly review the file here: {str(out_folder) + '.csv'}."))
+            self.worker.progress_changed.connect(update_progress)
+
+            self.thread.start()
+            self.worker.start.emit()
+            self.statusBar().removeWidget(self.progress_bar)
 
         if algo == 'Detectron2':
             try:

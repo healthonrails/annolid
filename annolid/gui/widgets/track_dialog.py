@@ -102,7 +102,7 @@ class TrackDialog(QtWidgets.QDialog):
         self.radio_btn2.toggled.connect(self.onRadioButtonChecked)
         self.radio_btn2.setEnabled(True)
         hboxLayOut.addWidget(self.radio_btn2)
-        self.radio_btn3 = QtWidgets.QRadioButton("SAM Predictions")
+        self.radio_btn3 = QtWidgets.QRadioButton("Predictions")
         self.radio_btn3.toggled.connect(self.onRadioButtonChecked)
         self.radio_btn3.setEnabled(True)
         hboxLayOut.addWidget(self.radio_btn3)
@@ -153,7 +153,7 @@ class TrackDialog(QtWidgets.QDialog):
         if self.algo == 'Detectron2':
             self.label2.hide()
             self.top_k_slider.hide()
-        if self.algo == "SAM Predictions":
+        if self.algo == "Predictions":
             self.top_k_slider.hide()
             self.groupBoxModelFiles.hide()
             self.label2.hide()

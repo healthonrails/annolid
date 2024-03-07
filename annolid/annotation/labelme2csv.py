@@ -1,6 +1,7 @@
 import json
 import csv
 import os
+from tqdm import tqdm
 import argparse
 from labelme.utils import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
@@ -50,13 +51,15 @@ def convert_shape_to_mask(img_shape, points):
     return mask
 
 
-def convert_json_to_csv(json_folder, csv_file=None):
+def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
     """
     Convert JSON files in a folder to annolid CSV format file.
 
     Parameters:
     - json_folder (str): Path to the folder containing JSON files.
     - csv_file (str): Output CSV file.
+    - progress_callback (function): Callback function to report progress.
+
 
     Returns:
     - None
@@ -71,31 +74,38 @@ def convert_json_to_csv(json_folder, csv_file=None):
         csv_writer = csv.writer(csv_output)
         csv_writer.writerow(csv_header)
 
-        for json_file in os.listdir(json_folder):
-            if json_file.endswith(".json"):
-                data = read_json_file(os.path.join(json_folder, json_file))
-                frame_number = get_frame_number_from_filename(json_file)
-                img_height, img_width = data["imageHeight"], data["imageWidth"]
-                img_shape = (img_height, img_width)
+        json_files = [f for f in os.listdir(
+            json_folder) if f.endswith('.json')]
+        total_files = len(json_files)
+        num_processed_files = 0
 
-                for shape in data["shapes"]:
-                    instance_name = shape["label"]
-                    points = shape["points"]
-                    if len(points) > 2:
-                        mask = convert_shape_to_mask(img_shape, points)
-                        bboxs = masks_to_bboxes(mask[None, :, :])
-                        segmentation = binary_mask_to_coco_rle(mask)
-                        class_score = 1.0
+        for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
+            data = read_json_file(os.path.join(json_folder, json_file))
+            frame_number = get_frame_number_from_filename(json_file)
+            img_height, img_width = data["imageHeight"], data["imageWidth"]
+            img_shape = (img_height, img_width)
 
-                        if len(bboxs) > 0:
-                            cx, cy = polygon_center(points)
-                            x1, y1, x2, y2 = bboxs[0]
-                            csv_writer.writerow(
-                                [frame_number, x1, y1, x2, y2, cx, cy,
-                                 instance_name, class_score,
-                                 segmentation, 0])
+            for shape in data["shapes"]:
+                instance_name = shape["label"]
+                points = shape["points"]
+                if len(points) > 2:
+                    mask = convert_shape_to_mask(img_shape, points)
+                    bboxs = masks_to_bboxes(mask[None, :, :])
+                    segmentation = binary_mask_to_coco_rle(mask)
+                    class_score = 1.0
 
-    print(f"CSV file '{csv_file}' has been created.")
+                    if len(bboxs) > 0:
+                        cx, cy = polygon_center(points)
+                        x1, y1, x2, y2 = bboxs[0]
+                        csv_writer.writerow(
+                            [frame_number, x1, y1, x2, y2, cx, cy,
+                                instance_name, class_score,
+                                segmentation, 0])
+            num_processed_files += 1
+            if progress_callback:
+                progress_callback(int(num_processed_files / total_files) * 100)
+
+    return f"CSV file '{csv_file}' has been created."
 
 
 def main():
