@@ -125,9 +125,10 @@ class CutieVideoProcessor:
             self._cx_values.append(cx)
             self._cy_values.append(cy)
             if self._flow_hsv is not None:
-                magnitude = self._flow_hsv[..., 0]
+                # unnormalized magnitude
+                magnitude = self._flow_hsv[..., 2]
                 self._motion_index = np.sum(
-                    self._mask * magnitude) / np.sum(self._mask)
+                    mask * magnitude) / np.sum(mask)
             else:
                 self._motion_index = -1
             self._motion_indices.append(self._motion_index)
@@ -240,8 +241,8 @@ class CutieVideoProcessor:
                             # Stop the prediction if more than half of the instances are missing,
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if (not has_occlusion or
-                                len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                ):
+                                    len(num_instances_in_current_frame) < self.num_tracking_instances / 2
+                                    ):
                                 pred_worker.stop_signal.emit()
                                 # Release the video capture object
                                 cap.release()

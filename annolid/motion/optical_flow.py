@@ -23,6 +23,6 @@ def compute_optical_flow(prev_frame, current_frame):
     flow_hsv = np.zeros_like(prev_frame)
     flow_hsv[..., 0] = angle_degrees
     flow_hsv[..., 1] = magnitude_normalized
-    flow_hsv[..., 2] = 255
+    flow_hsv[..., 2] = magnitude
 
     return flow_hsv, flow
