@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import torch
 from raft import RAFT
-from annolid.utils import flow_viz
+from annolid.motion import flow_viz
 from annolid.motion.utils import InputPadder
 from torch.utils.data import DataLoader, IterableDataset
 

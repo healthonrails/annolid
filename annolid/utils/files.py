@@ -6,6 +6,7 @@ import subprocess
 import platform
 import shutil
 import glob
+import pandas as pd
 
 
 def find_most_recent_file(folder_path, file_ext=".json"):
@@ -25,6 +26,40 @@ def find_most_recent_file(folder_path, file_ext=".json"):
     most_recent_file = max(file_paths, key=os.path.getmtime)
 
     return most_recent_file
+
+
+def create_tracking_csv_file(frame_numbers,
+                             instance_names,
+                             cx_values,
+                             cy_values,
+                             motion_indices,
+                             output_file):
+    """
+    Create a tracking CSV file with the specified columns.
+
+    Args:
+    - frame_numbers (list): List of frame numbers.
+    - instance_names (list): List of instance names.
+    - cx_values (list): List of cx values.
+    - cy_values (list): List of cy values.
+    - motion_indices (list): List of motion indices.
+    - output_file (str): Output CSV file name.
+    """
+
+    # Create a DataFrame
+    data = {
+        'frame_number': frame_numbers,
+        'instance_name': instance_names,
+        'cx': cx_values,
+        'cy': cy_values,
+        'motion_index': motion_indices
+    }
+
+    df = pd.DataFrame(data)
+
+    # Save DataFrame to CSV file
+    df.to_csv(output_file, index=False)
+
 
 # Function to clone a Git repository
 

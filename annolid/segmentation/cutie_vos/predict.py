@@ -20,6 +20,9 @@ from pathlib import Path
 import gdown
 from annolid.utils.devices import get_device
 from labelme.logger import logger
+from annolid.motion.optical_flow import compute_optical_flow
+from annolid.utils import draw
+from annolid.utils.files import create_tracking_csv_file
 
 """
 References:
@@ -31,6 +34,20 @@ References:
 }
 https://github.com/hkchengrex/Cutie/tree/main
 """
+
+
+def find_mask_center_opencv(mask):
+    # Convert boolean mask to integer mask (0 for background, 255 for foreground)
+    mask_int = mask.astype(np.uint8) * 255
+
+    # Calculate the moments of the binary image
+    moments = cv2.moments(mask_int)
+
+    # Calculate the centroid coordinates
+    cx = int(moments["m10"] / moments["m00"])
+    cy = int(moments["m01"] / moments["m00"])
+
+    return cx, cy
 
 
 class CutieVideoProcessor:
@@ -49,6 +66,19 @@ class CutieVideoProcessor:
         self.current_folder = os.path.dirname(current_file_path)
         self.device = get_device()
         self.cutie, self.cfg = self._initialize_model()
+
+        self._frame_numbers = []
+        self._instance_names = []
+        self._cx_values = []
+        self._cy_values = []
+        self._motion_indices = []
+        self.output_tracking_csvpath = None
+        self._frame_number = None
+        self._motion_index = ''
+        self._instance_name = ''
+        self._flow = None
+        self._flow_hsv = None
+        self._mask = None
 
     def initialize_video_writer(self, output_video_path,
                                 frame_width,
@@ -89,6 +119,18 @@ class CutieVideoProcessor:
         label_list = []
         for label_id, mask in mask_dict.items():
             label = str(label_id)
+            self._instance_names.append(label)
+            self._frame_numbers.append(self._frame_number)
+            cx, cy = find_mask_center_opencv(mask)
+            self._cx_values.append(cx)
+            self._cy_values.append(cy)
+            if self._flow_hsv is not None:
+                magnitude = self._flow_hsv[..., 0]
+                self._motion_index = np.sum(
+                    self._mask * magnitude) / np.sum(self._mask)
+            else:
+                self._motion_index = -1
+            self._motion_indices.append(self._motion_index)
             current_shape = MaskShape(label=label,
                                       flags={},
                                       description='grounding_sam')
@@ -118,7 +160,8 @@ class CutieVideoProcessor:
         value_to_label_names = {
             v: k for k, v in labels_dict.items()} if labels_dict else {}
         instance_names = set(labels_dict.keys())
-        instance_names.remove('_background_')
+        if '_background_ i' in instance_names:
+            instance_names.remove('_background_')
         # Get the total number of frames
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if frame_number == total_frames - 1:
@@ -127,6 +170,8 @@ class CutieVideoProcessor:
         current_frame_index = frame_number
         end_frame_number = frame_number + frames_to_propagate
         current_frame_index = frame_number
+        prev_frame = None
+        flow_hsv = None
 
         delimiter = '#'
 
@@ -134,6 +179,8 @@ class CutieVideoProcessor:
             if output_video_path is None:
                 output_video_path = str(
                     self.video_folder) + f"_start_frame_{current_frame_index}_tracked.mp4"
+                self.output_tracking_csvpath = output_video_path.replace(
+                    '.mp4', '.csv')
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             # Get the frames per second (fps) of the video
@@ -149,6 +196,7 @@ class CutieVideoProcessor:
                         _, frame = cap.read()
                         if frame is None or current_frame_index > end_frame_number:
                             break
+                        self._frame_number = current_frame_index
                         frame_torch = image_to_torch(frame, device=self.device)
                         if (current_frame_index == 0 or
                             (current_frame_index == frame_number == 1) or
@@ -161,6 +209,12 @@ class CutieVideoProcessor:
                         else:
                             prediction = self.processor.step(frame_torch)
                         prediction = torch_prob_to_numpy_mask(prediction)
+
+                        if prev_frame is not None:
+                            self._flow_hsv, self._flow = compute_optical_flow(
+                                prev_frame, frame)
+                            self._mask = prediction > 0
+
                         filename = self.video_folder / \
                             (self.video_folder.name +
                              f"_{current_frame_index:0>{9}}.json")
@@ -197,6 +251,18 @@ class CutieVideoProcessor:
                                 return message_with_index
                         if recording:
                             visualization = overlay_davis(frame, prediction)
+                            if self._flow_hsv is not None:
+                                flow_bgr = cv2.cvtColor(
+                                    self._flow_hsv, cv2.COLOR_HSV2BGR)
+                                expanded_prediction = np.expand_dims(
+                                    self._mask, axis=-1)
+                                flow_bgr = flow_bgr * expanded_prediction
+                                # Overlay optical flow on the frame
+                                visualization = cv2.addWeighted(
+                                    visualization, 1, flow_bgr, 0.4, 0)
+                                visualization = draw.draw_flow(
+                                    visualization, self._flow)
+
                             # Write the frame to the video file
                             self.video_writer.write(visualization)
 
@@ -207,9 +273,18 @@ class CutieVideoProcessor:
                             plt.title(str(current_frame_index))
                             plt.axis('off')
                             plt.show()
+                        # Update prev_frame with the current frame
+                        prev_frame = frame.copy()
                         current_frame_index += 1
+
                     break
 
+                create_tracking_csv_file(self._frame_numbers,
+                                         self._instance_names,
+                                         self._cx_values,
+                                         self._cy_values,
+                                         self._motion_indices,
+                                         self.output_tracking_csvpath)
                 message = ("Stop at frame:\n") + \
                     delimiter + str(current_frame_index-1)
                 pred_worker.stop_signal.emit()
