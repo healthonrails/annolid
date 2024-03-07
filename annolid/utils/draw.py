@@ -145,26 +145,32 @@ def draw_boxes(img,
     return img
 
 
-def draw_flow(img,
-              flow,
-              step=16,
-              quiver=(0, 100, 0)
-              ):
+def draw_flow(img, flow, step=16, quiver=(0, 100, 0)):
     """
     Modified from here 
     https://gist.github.com/RodolfoFerro/11d39fad57e21b5e85fe4d4a906cf098
-
     """
 
     h, w = img.shape[:2]
     y, x = np.mgrid[step/2:h:step, step/2:w:step].reshape(2, -1).astype(int)
     fx, fy = flow[y, x].T
+
+    # Filter out zero flow vectors
+    non_zero_indices = (fx != 0) | (fy != 0)
+    x = x[non_zero_indices]
+    y = y[non_zero_indices]
+    fx = fx[non_zero_indices]
+    fy = fy[non_zero_indices]
+
     lines = np.vstack([x, y, x + fx, y + fy]).T.reshape(-1, 2, 2)
     lines = np.int32(lines + 0.5)
-    vis = img
+    vis = img.copy()  # Make a copy of the original image to draw on
+
+    # Draw the flow vectors
     cv2.polylines(vis, lines, 0, quiver, 3)
     for (x1, y1), (_x2, _y2) in lines:
         cv2.circle(vis, (x1, y1), 1, (0, 255, 0), -1)
+
     return vis
 
 
@@ -191,7 +197,7 @@ def draw_keypoint_connections(frame,
     for kp0, kp1, color in keypoint_connection_rules:
         if kp0 in keypoints and kp1 in keypoints:
             kp0_point = keypoints[kp0][0:2]
-            #kp0_color = keypoints[kp0][-1]
+            # kp0_color = keypoints[kp0][-1]
             kp1_point = keypoints[kp1][0:2]
             dist = np.linalg.norm(np.array(kp0_point)-np.array(kp1_point))
             if dist < max_dist:

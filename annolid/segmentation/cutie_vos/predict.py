@@ -242,7 +242,7 @@ class CutieVideoProcessor:
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if (not has_occlusion or
                                     len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                    ):
+                                ):
                                 pred_worker.stop_signal.emit()
                                 # Release the video capture object
                                 cap.release()
@@ -258,11 +258,14 @@ class CutieVideoProcessor:
                                 expanded_prediction = np.expand_dims(
                                     self._mask, axis=-1)
                                 flow_bgr = flow_bgr * expanded_prediction
+                                # Reshape mask_array to match the shape of flow_array
+                                mask_array_reshaped = np.repeat(
+                                    self._mask[:, :, np.newaxis], 2, axis=2)
                                 # Overlay optical flow on the frame
                                 visualization = cv2.addWeighted(
-                                    visualization, 1, flow_bgr, 0.4, 0)
+                                    visualization, 1, flow_bgr, 0.5, 0)
                                 visualization = draw.draw_flow(
-                                    visualization, self._flow)
+                                    visualization, self._flow * mask_array_reshaped)
 
                             # Write the frame to the video file
                             self.video_writer.write(visualization)
