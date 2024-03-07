@@ -151,7 +151,7 @@ class CutieVideoProcessor:
                                 pred_worker=None,
                                 recording=True,
                                 output_video_path=None,
-                                has_occlusion=True,
+                                has_occlusion=False,
                                 ):
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
