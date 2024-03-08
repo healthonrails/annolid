@@ -128,7 +128,11 @@ class CutieVideoProcessor:
             label = str(label_id)
             self._instance_names.append(label)
             self._frame_numbers.append(self._frame_number)
-            cx, cy = find_mask_center_opencv(mask)
+            try:
+                cx, cy = find_mask_center_opencv(mask)
+            except ZeroDivisionError as e:
+                logger.info(e)
+                continue
             self._cx_values.append(cx)
             self._cy_values.append(cy)
             if self._flow_hsv is not None:
