@@ -33,7 +33,9 @@ def create_tracking_csv_file(frame_numbers,
                              cx_values,
                              cy_values,
                              motion_indices,
-                             output_file):
+                             output_file,
+                             fps=30
+                             ):
     """
     Create a tracking CSV file with the specified columns.
 
@@ -44,15 +46,19 @@ def create_tracking_csv_file(frame_numbers,
     - cy_values (list): List of cy values.
     - motion_indices (list): List of motion indices.
     - output_file (str): Output CSV file name.
+    = motion_index (float): 
     """
+    from annolid.utils.videos import frame_to_timestamp
+    timestamps = frame_to_timestamp(frame_numbers, fps)
 
     # Create a DataFrame
     data = {
+        'timestamp': timestamps,
         'frame_number': frame_numbers,
         'instance_name': instance_names,
         'cx': cx_values,
         'cy': cy_values,
-        'motion_index': motion_indices
+        'motion_index': motion_indices,
     }
 
     df = pd.DataFrame(data)

@@ -161,18 +161,20 @@ class CutieVideoProcessor:
         value_to_label_names = {
             v: k for k, v in labels_dict.items()} if labels_dict else {}
         instance_names = set(labels_dict.keys())
-        if '_background_ i' in instance_names:
+        if '_background_' in instance_names:
             instance_names.remove('_background_')
         # Get the total number of frames
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if frame_number == total_frames - 1:
             return
 
+        # Get the frames per second (fps) of the video
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
         current_frame_index = frame_number
         end_frame_number = frame_number + frames_to_propagate
         current_frame_index = frame_number
         prev_frame = None
-        flow_hsv = None
 
         delimiter = '#'
 
@@ -184,8 +186,6 @@ class CutieVideoProcessor:
                     '.mp4', '.csv')
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            # Get the frames per second (fps) of the video
-            fps = cap.get(cv2.CAP_PROP_FPS)
             self.initialize_video_writer(
                 output_video_path, frame_width, frame_height, fps)
 
@@ -288,7 +288,8 @@ class CutieVideoProcessor:
                                          self._cx_values,
                                          self._cy_values,
                                          self._motion_indices,
-                                         self.output_tracking_csvpath)
+                                         self.output_tracking_csvpath,
+                                         fps)
                 message = ("Stop at frame:\n") + \
                     delimiter + str(current_frame_index-1)
                 pred_worker.stop_signal.emit()
