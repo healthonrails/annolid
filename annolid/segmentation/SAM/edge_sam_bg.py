@@ -214,9 +214,12 @@ class VideoProcessor:
         image_size = self.first_frame.shape
         mask, _ = shapes_to_label(
             image_size, shapes, label_name_to_value)
+        if VideoProcessor.sam_hq is None:
+            VideoProcessor.sam_hq = SamHQSegmenter()
         if VideoProcessor.cutie_processor is None:
             VideoProcessor.cutie_processor = CutieVideoProcessor(
                 self.video_path, mem_every=mem_every, debug=False)
+        VideoProcessor.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
         message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
                                                                          mask,
                                                                          frames_to_propagate=frames_to_propagate,

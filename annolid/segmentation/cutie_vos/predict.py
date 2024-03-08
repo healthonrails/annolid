@@ -12,6 +12,7 @@ from annolid.segmentation.cutie_vos.interactive_utils import (
     index_numpy_to_one_hot_torch,
     overlay_davis
 )
+from shapely.geometry import Polygon
 from omegaconf import open_dict
 from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
@@ -23,6 +24,7 @@ from labelme.logger import logger
 from annolid.motion.optical_flow import compute_optical_flow
 from annolid.utils import draw
 from annolid.utils.files import create_tracking_csv_file
+from annolid.utils.lru_cache import BboxCache
 
 """
 References:
@@ -79,6 +81,11 @@ class CutieVideoProcessor:
         self._flow = None
         self._flow_hsv = None
         self._mask = None
+        self.cache = BboxCache(max_size=mem_every * 10)
+        self.sam_hq = None
+
+    def set_same_hq(self, sam_hq):
+        self.sam_hq = sam_hq
 
     def initialize_video_writer(self, output_video_path,
                                 frame_width,
@@ -138,10 +145,26 @@ class CutieVideoProcessor:
             current_shape.mask = mask
             current_shape = current_shape.toPolygons()[0]
             points = [[point.x(), point.y()] for point in current_shape.points]
+            # Create a Shapely Polygon object from the list of points
+            polygon = Polygon(points)
+
+            # Get the bounding box coordinates (minx, miny, maxx, maxy)
+            _bbox = polygon.bounds
+            self.cache.add_bbox(label, _bbox)
             current_shape.points = points
             label_list.append(current_shape)
         save_labels(filename=filename, imagePath=None, label_list=label_list,
                     height=height, width=width, save_image_to_json=False)
+
+    def segement_with_bbox(self, instance_names, cur_frame):
+        label_mask_dict = {}
+        for instance_name in instance_names:
+            _bboxes = self.cache.get_most_recent_bbox(instance_name)
+            masks, scores, input_box = self.sam_hq.segment_objects(
+                cur_frame, [_bboxes])
+            if scores[0] > 0.3:
+                label_mask_dict[instance_name] = masks[0]
+        return label_mask_dict
 
     def process_video_with_mask(self, frame_number=0,
                                 mask=None,
@@ -221,7 +244,7 @@ class CutieVideoProcessor:
                              f"_{current_frame_index:0>{9}}.json")
                         mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
                                      for label_id in np.unique(prediction)[1:]}
-                        self._save_annotation(filename, mask_dict, frame.shape)
+
                         # if we lost tracking one of the instances, return the current frame number
                         num_instances_in_current_frame = mask_dict.keys()
                         if len(num_instances_in_current_frame) < self.num_tracking_instances:
@@ -238,18 +261,34 @@ class CutieVideoProcessor:
                             message_with_index = message + \
                                 delimiter + str(current_frame_index)
                             logger.info(message)
+
+                            segemented_instances = self.segement_with_bbox(
+                                missing_instances, frame)
+                            if len(segemented_instances) < 1:
+                                has_occlusion = True
+                            else:
+                                logger.info(
+                                    f"Recovered: {segemented_instances.keys()}")
+                                mask_dict.update(segemented_instances)
+                                logger.info(f"After merge: {mask_dict.keys()}")
+                                self._save_annotation(
+                                    filename, mask_dict, frame.shape)
                             # Stop the prediction if more than half of the instances are missing,
                             # or when there is no occlusion in the video and one instance loses tracking.
-                            if (not has_occlusion or
-                                    len(num_instances_in_current_frame) < self.num_tracking_instances / 2
+                            if len(mask_dict) < self.num_tracking_instances:
+                                if (not has_occlusion or
+                                        len(num_instances_in_current_frame) < self.num_tracking_instances / 2
                                     ):
-                                pred_worker.stop_signal.emit()
-                                # Release the video capture object
-                                cap.release()
-                                # Release the video writer if recording is set to True
-                                if recording:
-                                    self.video_writer.release()
-                                return message_with_index
+                                    pred_worker.stop_signal.emit()
+                                    # Release the video capture object
+                                    cap.release()
+                                    # Release the video writer if recording is set to True
+                                    if recording:
+                                        self.video_writer.release()
+                                    return message_with_index
+
+                        self._save_annotation(filename, mask_dict, frame.shape)
+
                         if recording:
                             visualization = overlay_davis(frame, prediction)
                             if self._flow_hsv is not None:
