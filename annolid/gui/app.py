@@ -946,6 +946,7 @@ class AnnolidWindow(MainWindow):
         # Emit the stop signal to signal the prediction thread to stop
         self.pred_worker.stop()
         self.seg_pred_thread.quit()
+        self.seg_pred_thread.wait()
         self.stepSizeWidget.predict_button.setText(
             "Pred")  # Change button text
         self.stepSizeWidget.predict_button.setStyleSheet(

@@ -529,7 +529,7 @@ class MaskShape(MultipoinstShape):
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
-    def toPolygons(self, epsilon=2.0):
+    def toPolygons(self, epsilon=2.0, merge_contours=False):
         # Fill the holes inside the mask
         filled_mask = cv2.morphologyEx((self.mask*255).astype(
             np.uint8), cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
@@ -539,12 +539,30 @@ class MaskShape(MultipoinstShape):
         shapes = []
         if len(contours) == 0:
             return shapes
-        # Merge all the contours into a single contour
-        merged_contour = np.concatenate(contours)
-        merged_contour = cv2.approxPolyDP(merged_contour, epsilon, True)
-        merged_contour = merged_contour[:, 0, :] / self.scale
-        merged_contour = np.concatenate(
-            [merged_contour, merged_contour[:1, :]], axis=0)
+
+        if merge_contours:
+            # Merge all the contours into a single contour
+            merged_contour = np.concatenate(contours)
+            merged_contour = cv2.approxPolyDP(merged_contour, epsilon, True)
+            merged_contour = merged_contour[:, 0, :] / self.scale
+            merged_contour = np.concatenate(
+                [merged_contour, merged_contour[:1, :]], axis=0)
+        else:
+            # Find the contour with the largest area
+            largest_contour = max(contours, key=cv2.contourArea)
+
+            # Approximate the largest contour using Douglas-Peucker algorithm
+            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
+            approximated_contour = cv2.approxPolyDP(
+                largest_contour, epsilon, True)
+
+            # Scale the merged contour if necessary
+            scaled_contour = approximated_contour[:, 0, :] / self.scale
+
+            # Close the contour by duplicating its first point at the end
+            merged_contour = np.concatenate(
+                [scaled_contour, scaled_contour[:1, :]], axis=0)
+
         # Create a Shape object from the merged contour
         shape = Shape(shape_type="polygon",
                       label=self.label,

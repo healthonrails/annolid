@@ -149,7 +149,7 @@ class CutieVideoProcessor:
                                 visualize_every=30,
                                 labels_dict=None,
                                 pred_worker=None,
-                                recording=True,
+                                recording=False,
                                 output_video_path=None,
                                 has_occlusion=False,
                                 ):
@@ -177,13 +177,13 @@ class CutieVideoProcessor:
         prev_frame = None
 
         delimiter = '#'
+        self.output_tracking_csvpath = str(
+            self.video_folder) + f"_start_frame_{current_frame_index}_tracked.csv"
 
         if recording:
             if output_video_path is None:
-                output_video_path = str(
-                    self.video_folder) + f"_start_frame_{current_frame_index}_tracked.mp4"
-                self.output_tracking_csvpath = output_video_path.replace(
-                    '.mp4', '.csv')
+                output_video_path = self.output_tracking_csvpath.replace(
+                    '.csv', '.mp4')
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.initialize_video_writer(
@@ -242,7 +242,7 @@ class CutieVideoProcessor:
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if (not has_occlusion or
                                     len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                ):
+                                    ):
                                 pred_worker.stop_signal.emit()
                                 # Release the video capture object
                                 cap.release()
