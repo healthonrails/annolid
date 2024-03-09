@@ -17,6 +17,7 @@ from annolid.gui.shape import MaskShape
 from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
 from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
 from labelme.utils.shape import shapes_to_label
+from annolid.utils.logger import logger
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -199,6 +200,10 @@ class VideoProcessor:
                                   mem_every=5
                                   ):
         self.most_recent_file = self.get_most_recent_file()
+        if self.most_recent_file is None:
+            message = f"No label file was saved.Please save a frame #0"
+            logger.info(message)
+            return message
         label_name_to_value = {"_background_": 0}
         frame_number = int(
             Path(self.most_recent_file).stem.split('_')[-1])
@@ -212,6 +217,8 @@ class VideoProcessor:
                 label_name_to_value[label_name] = label_value
 
         image_size = self.first_frame.shape
+        logger.info(f"Loaded the shapes from: {self.most_recent_file}")
+        logger.info(f"Frame size: {image_size}")
         mask, _ = shapes_to_label(
             image_size, shapes, label_name_to_value)
         if VideoProcessor.sam_hq is None:

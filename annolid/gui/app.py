@@ -29,7 +29,8 @@ from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
 from labelme import utils
-from labelme.logger import logger
+from annolid.utils.logger import logger
+from annolid.utils.files import count_json_files
 from labelme.widgets import ToolBar
 from annolid.gui.label_file import LabelFileError
 from annolid.gui.label_file import LabelFile
@@ -57,6 +58,8 @@ from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+from annolid.annotation import labelme2csv
+
 from labelme.ai import MODELS
 __appname__ = 'Annolid'
 __version__ = "1.1.3"
@@ -225,8 +228,8 @@ class AnnolidWindow(MainWindow):
         self.timestamp_dict = dict()
         self.annotation_dir = None
         self.highlighted_mark = None
-        self.step_size = 1
-        self.stepSizeWidget = StepSizeWidget()
+        self.step_size = 5
+        self.stepSizeWidget = StepSizeWidget(5)
         self.prev_shapes = None
         self.pred_worker = None
         self.video_processor = None
@@ -692,7 +695,7 @@ class AnnolidWindow(MainWindow):
             self.changed_json_stats = {}
             self._pred_res_folder_suffix = '_tracking_results_labelme'
             self.frame_number = 0
-            self.step_size = 1
+            self.step_size = 5
             self.video_results_folder = None
             self.timestamp_dict = dict()
             self.isPlaying = False
@@ -1036,6 +1039,11 @@ class AnnolidWindow(MainWindow):
             "background-color: green; color: white;")
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
+        if self.video_loader is not None:
+            num_json_files = count_json_files(self.video_results_folder)
+            if num_json_files == self.num_frames:
+                # convert json labels to csv file
+                self.convert_json_to_tracked_csv()
 
     def saveLabels(self, filename):
         lf = LabelFile()
@@ -1177,7 +1185,7 @@ class AnnolidWindow(MainWindow):
         if self.video_loader:
             if self.frame_number:
                 self._time_stamp = convert_frame_number_to_time(
-                    self.frame_number)
+                    self.frame_number, self.fps)
                 if clean:
                     title = f"{title}-Video Timestamp:{self._time_stamp}|Events:{len(self.timestamp_dict.keys())}"
                     title = f"{title}|Frame_number:{self.frame_number}"
@@ -1336,6 +1344,42 @@ class AnnolidWindow(MainWindow):
             self.tr(f"Finshed extracting frames."))
         self.importDirImages(out_frames_dir)
 
+    def convert_json_to_tracked_csv(self):
+        if self.video_file is not None:
+            video_file = self.video_file
+            out_folder = Path(video_file).with_suffix('')
+        if not out_folder.exists():
+            QtWidgets.QMessageBox.about(self,
+                                        "No predictions",
+                                        "Help Annolid achieve precise predictions by labeling a frame.\
+                                            Your input is valuable!")
+
+            return
+
+        def update_progress(progress):
+            self.progress_bar.setValue(progress)
+
+        self.statusBar().addWidget(self.progress_bar)
+
+        self.worker = FlexibleWorker(
+            labelme2csv.convert_json_to_csv, str(out_folder),
+            progress_callback=update_progress)
+        self.thread = QtCore.QThread()
+        self.worker.moveToThread(self.thread)
+        self.worker.start.connect(self.worker.run)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.worker.finished.connect(lambda:
+                                     QtWidgets.QMessageBox.about(self,
+                                                                 "Tracking results are ready.",
+                                                                 f"Kindly review the file here: {str(out_folder) + '.csv'}."))
+        self.worker.progress_changed.connect(update_progress)
+
+        self.thread.start()
+        self.worker.start.emit()
+        self.statusBar().removeWidget(self.progress_bar)
+
     def tracks(self):
         """
         Track animals using the train models for a video
@@ -1373,42 +1417,9 @@ class AnnolidWindow(MainWindow):
 
         if config_file is None and algo != "Predictions":
             return
+        # Convert annolid predicted json files to a single tracked csv file
         if algo == 'Predictions':
-            from annolid.annotation import labelme2csv
-            if self.video_file is not None:
-                video_file = self.video_file
-            out_folder = Path(video_file).with_suffix('')
-            if not out_folder.exists():
-                QtWidgets.QMessageBox.about(self,
-                                            "No predictions",
-                                            "Help Annolid achieve precise predictions by labeling a frame.\
-                                              Your input is valuable!")
-
-                return
-
-            def update_progress(progress):
-                self.progress_bar.setValue(progress)
-
-            self.statusBar().addWidget(self.progress_bar)
-
-            self.worker = FlexibleWorker(
-                labelme2csv.convert_json_to_csv, str(out_folder),
-                progress_callback=update_progress)
-            self.thread = QtCore.QThread()
-            self.worker.moveToThread(self.thread)
-            self.worker.start.connect(self.worker.run)
-            self.worker.finished.connect(self.thread.quit)
-            self.worker.finished.connect(self.worker.deleteLater)
-            self.thread.finished.connect(self.thread.deleteLater)
-            self.worker.finished.connect(lambda:
-                                         QtWidgets.QMessageBox.about(self,
-                                                                     "Tracking results are ready.",
-                                                                     f"Kindly review the file here: {str(out_folder) + '.csv'}."))
-            self.worker.progress_changed.connect(update_progress)
-
-            self.thread.start()
-            self.worker.start.emit()
-            self.statusBar().removeWidget(self.progress_bar)
+            self.convert_json_to_tracked_csv()
 
         if algo == 'Detectron2':
             try:
@@ -1803,7 +1814,9 @@ class AnnolidWindow(MainWindow):
             self.seekbar = VideoSlider()
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
-
+            logger.info(f"Working on video:{self.video_file}.")
+            logger.info(
+                f"FPS: {self.fps}, Total number of frames: {self.num_frames}")
             # load the first frame
             self.set_frame_number(self.frame_number)
 
@@ -1927,7 +1940,7 @@ class AnnolidWindow(MainWindow):
                     thread.quit()
                     thread.wait()
                 except RuntimeError:
-                    print(message)
+                    logger.info(message)
 
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")

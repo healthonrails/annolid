@@ -2,6 +2,7 @@ import os
 import matplotlib.pyplot as plt
 import cv2
 import torch
+import gdown
 import numpy as np
 from PIL import Image
 from annolid.gui.shape import MaskShape
@@ -18,9 +19,9 @@ from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
 from pathlib import Path
-import gdown
+from annolid.utils.shapes import shapes_to_label
 from annolid.utils.devices import get_device
-from labelme.logger import logger
+from annolid.utils.logger import logger
 from annolid.motion.optical_flow import compute_optical_flow
 from annolid.utils import draw
 from annolid.utils.files import create_tracking_csv_file
@@ -83,6 +84,8 @@ class CutieVideoProcessor:
         self._mask = None
         self.cache = BboxCache(max_size=mem_every * 10)
         self.sam_hq = None
+        self.output_tracking_csvpath = str(
+            self.video_folder) + f"_tracked.csv"
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -121,53 +124,72 @@ class CutieVideoProcessor:
             cutie_model.load_weights(model_weights)
         return cutie_model, cfg
 
+    def _save_bbox(self, points, frame_area, label):
+        # A linearring requires at least 4 coordinates.
+        # good quality polygon
+        if len(points) >= 10:
+            # Create a Shapely Polygon object from the list of points
+            polygon = Polygon(points)
+            # Get the bounding box coordinates (minx, miny, maxx, maxy)
+            _bbox = polygon.bounds
+            # Calculate the area of the bounding box
+            bbox_area = (_bbox[2] - _bbox[0]) * (_bbox[3] - _bbox[1])
+            # bbox area should bigger enough
+            if bbox_area <= (frame_area * 0.10) and bbox_area >= (frame_area * 0.02):
+                self.cache.add_bbox(label, _bbox)
+
+    def _save_results(self, label, mask):
+        try:
+            cx, cy = find_mask_center_opencv(mask)
+        except ZeroDivisionError as e:
+            logger.info(e)
+            return
+        self._instance_names.append(label)
+        self._frame_numbers.append(self._frame_number)
+        self._cx_values.append(cx)
+        self._cy_values.append(cy)
+        if self._flow_hsv is not None:
+            # unnormalized magnitude
+            magnitude = self._flow_hsv[..., 2]
+            self._motion_index = np.sum(
+                mask * magnitude) / np.sum(mask)
+        else:
+            self._motion_index = -1
+        self._motion_indices.append(self._motion_index)
+
     def _save_annotation(self, filename, mask_dict, frame_shape):
         height, width, _ = frame_shape
+        frame_area = height * width
         label_list = []
         for label_id, mask in mask_dict.items():
             label = str(label_id)
-            self._instance_names.append(label)
-            self._frame_numbers.append(self._frame_number)
-            try:
-                cx, cy = find_mask_center_opencv(mask)
-            except ZeroDivisionError as e:
-                logger.info(e)
-                continue
-            self._cx_values.append(cx)
-            self._cy_values.append(cy)
-            if self._flow_hsv is not None:
-                # unnormalized magnitude
-                magnitude = self._flow_hsv[..., 2]
-                self._motion_index = np.sum(
-                    mask * magnitude) / np.sum(mask)
-            else:
-                self._motion_index = -1
-            self._motion_indices.append(self._motion_index)
+            self._save_results(label, mask)
+
             current_shape = MaskShape(label=label,
                                       flags={},
                                       description='grounding_sam')
             current_shape.mask = mask
             current_shape = current_shape.toPolygons()[0]
             points = [[point.x(), point.y()] for point in current_shape.points]
-            # Create a Shapely Polygon object from the list of points
-            polygon = Polygon(points)
-
-            # Get the bounding box coordinates (minx, miny, maxx, maxy)
-            _bbox = polygon.bounds
-            self.cache.add_bbox(label, _bbox)
+            self._save_bbox(points, frame_area, label)
             current_shape.points = points
             label_list.append(current_shape)
         save_labels(filename=filename, imagePath=None, label_list=label_list,
                     height=height, width=width, save_image_to_json=False)
+        return label_list
 
-    def segement_with_bbox(self, instance_names, cur_frame):
+    def segement_with_bbox(self, instance_names, cur_frame, score_threshold=0.88):
         label_mask_dict = {}
         for instance_name in instance_names:
             _bboxes = self.cache.get_most_recent_bbox(instance_name)
-            masks, scores, input_box = self.sam_hq.segment_objects(
-                cur_frame, [_bboxes])
-            if scores[0] > 0.3:
-                label_mask_dict[instance_name] = masks[0]
+            if _bboxes is not None:
+                masks, scores, input_box = self.sam_hq.segment_objects(
+                    cur_frame, [_bboxes])
+                logger.info(
+                    f"Use bbox prompt to recover {instance_name} with score {scores}.")
+                logger.info(f"Using score threshold: {score_threshold} ")
+                if scores[0] > score_threshold:
+                    label_mask_dict[instance_name] = masks[0]
         return label_mask_dict
 
     def process_video_with_mask(self, frame_number=0,
@@ -202,10 +224,8 @@ class CutieVideoProcessor:
         end_frame_number = frame_number + frames_to_propagate
         current_frame_index = frame_number
         prev_frame = None
-
+        need_new_segment = False
         delimiter = '#'
-        self.output_tracking_csvpath = str(
-            self.video_folder) + f"_start_frame_{current_frame_index}_tracked.csv"
 
         if recording:
             if output_video_path is None:
@@ -229,11 +249,12 @@ class CutieVideoProcessor:
                         if (current_frame_index == 0 or
                             (current_frame_index == frame_number == 1) or
                                 (frame_number > 1 and
-                                 current_frame_index % frame_number == 0)):
+                                 current_frame_index % frame_number == 0)) or need_new_segment:
                             mask_torch = index_numpy_to_one_hot_torch(
                                 mask, num_objects + 1).to(self.device)
                             prediction = self.processor.step(
                                 frame_torch, mask_torch[1:], idx_mask=False)
+                            need_new_segment = False
                         else:
                             prediction = self.processor.step(frame_torch)
                         prediction = torch_prob_to_numpy_mask(prediction)
@@ -270,19 +291,27 @@ class CutieVideoProcessor:
                                 missing_instances, frame)
                             if len(segemented_instances) < 1:
                                 has_occlusion = True
+                                self.num_tracking_instances = len(
+                                    mask_dict.keys())
                             else:
                                 logger.info(
                                     f"Recovered: {segemented_instances.keys()}")
                                 mask_dict.update(segemented_instances)
                                 logger.info(f"After merge: {mask_dict.keys()}")
-                                self._save_annotation(
+                                _saved_shapes = self._save_annotation(
                                     filename, mask_dict, frame.shape)
+                                # commit the new segments to memeory
+                                need_new_segment = True
+                                self.num_tracking_instances = len(
+                                    mask_dict.keys())
+                                mask, _ = shapes_to_label(
+                                    frame.shape, _saved_shapes, labels_dict)
                             # Stop the prediction if more than half of the instances are missing,
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if len(mask_dict) < self.num_tracking_instances:
                                 if (not has_occlusion or
                                         len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                    ):
+                                        ):
                                     pred_worker.stop_signal.emit()
                                     # Release the video capture object
                                     cap.release()
