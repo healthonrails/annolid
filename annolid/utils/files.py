@@ -9,6 +9,30 @@ import glob
 import pandas as pd
 
 
+def count_json_files(folder_path):
+    """
+    Count the number of JSON files in a given folder.
+
+    Args:
+    - folder_path (str): The path to the folder containing JSON files.
+
+    Returns:
+    - int: The number of JSON files found in the folder.
+    """
+    # Initialize a counter for the number of JSON files
+    json_file_count = 0
+
+    # Iterate through the files in the folder
+    for filename in os.listdir(folder_path):
+        # Check if the file ends with ".json"
+        if filename.endswith('.json'):
+            # Increment the JSON file counter
+            json_file_count += 1
+
+    # Return the number of JSON files found in the folder
+    return json_file_count
+
+
 def find_most_recent_file(folder_path, file_ext=".json"):
     # List all files in the folder
     if not os.path.exists(folder_path):
@@ -37,7 +61,7 @@ def create_tracking_csv_file(frame_numbers,
                              fps=30
                              ):
     """
-    Create a tracking CSV file with the specified columns.
+    Create or update a tracking CSV file with the specified columns.
 
     Args:
     - frame_numbers (list): List of frame numbers.
@@ -46,14 +70,16 @@ def create_tracking_csv_file(frame_numbers,
     - cy_values (list): List of cy values.
     - motion_indices (list): List of motion indices.
     - output_file (str): Output CSV file name.
-    = motion_index (float): 
+    - fps (int): Frames per second for generating timestamps.
     """
-    from annolid.utils.videos import frame_to_timestamp
-    timestamps = frame_to_timestamp(frame_numbers, fps)
+    try:
+        # Read existing CSV file into a DataFrame if it exists
+        existing_data = pd.read_csv(output_file)
+    except FileNotFoundError:
+        existing_data = pd.DataFrame()
 
-    # Create a DataFrame
-    data = {
-        'timestamp': timestamps,
+    # Create a DataFrame for new data
+    new_data = {
         'frame_number': frame_numbers,
         'instance_name': instance_names,
         'cx': cx_values,
@@ -61,10 +87,19 @@ def create_tracking_csv_file(frame_numbers,
         'motion_index': motion_indices,
     }
 
-    df = pd.DataFrame(data)
+    # Append new data to the existing DataFrame
+    updated_data = pd.concat([existing_data, pd.DataFrame(new_data)])
 
-    # Save DataFrame to CSV file
-    df.to_csv(output_file, index=False)
+    # Remove duplicates from the DataFrame
+    updated_data.drop_duplicates(inplace=True)
+
+    # Generate timestamps based on frame numbers and FPS
+    timestamps_seconds = pd.to_datetime(
+        updated_data['frame_number'] / fps, unit='s')
+    updated_data['timestamps'] = timestamps_seconds.dt.time
+
+    # Write the updated DataFrame back to the CSV file without including the index column
+    updated_data.to_csv(output_file, index=False)
 
 
 # Function to clone a Git repository
