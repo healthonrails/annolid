@@ -10,6 +10,9 @@ def shapes_to_label(img_shape, shapes, label_name_to_value):
     instances = []
     for shape in shapes:
         points = [point for point in shape.points]
+        if len(points) < 3:
+            # polygon must have more than 2 points
+            continue
         label = shape.label
         group_id = shape.group_id
         if group_id is None:
