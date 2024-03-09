@@ -9,7 +9,7 @@ def shapes_to_label(img_shape, shapes, label_name_to_value):
     ins = np.zeros_like(cls)
     instances = []
     for shape in shapes:
-        points = [(point.x(), point.y()) for point in shape.points]
+        points = [point for point in shape.points]
         label = shape.label
         group_id = shape.group_id
         if group_id is None:
