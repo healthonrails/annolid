@@ -162,7 +162,8 @@ class CoTrackerProcessor:
             f"grid_size: {grid_size}, grid_query_frame: {grid_query_frame}")
 
         video = read_video_from_path(self.video_path)
-        video = torch.from_numpy(video).permute(0, 3, 1, 2)[None].float()
+        video = torch.from_numpy(video).permute(0, 3, 1, 2)[
+            None].float().to(self.device)
         pred_tracks, pred_visibility = self.model(
             video, queries=self.queries[None],
             backward_tracking=True)
