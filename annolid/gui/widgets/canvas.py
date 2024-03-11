@@ -818,7 +818,11 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
     def boundedMoveVertex(self, pos):
         index, shape = self.hVertex, self.hShape
-        point = shape[index]
+        try:
+            point = shape[index]
+        except IndexError as e:
+            logger.inf(e)
+            return
         if self.outOfPixmap(pos):
             pos = self.intersectionPoint(point, pos)
         shape.moveVertexBy(index, pos - point)

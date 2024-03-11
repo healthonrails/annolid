@@ -55,6 +55,7 @@ class Shape(object):
         group_id=None,
         description=None,
         mask=None,
+        visible=True,
     ):
         self.label = label
         self.group_id = group_id
@@ -70,6 +71,7 @@ class Shape(object):
         self.description = description
         self.other_data = {}
         self.mask = mask
+        self.visible = visible
 
         self._highlightIndex = None
         self._highlightMode = self.NEAR_VERTEX

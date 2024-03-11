@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 import pandas as pd
-from labelme import label_file
+from annolid.gui import label_file
 from labelme.shape import Shape
 
 
@@ -41,6 +41,7 @@ def save_labels(filename,
                 group_id=s.group_id,
                 shape_type=s.shape_type,
                 flags=s.flags,
+                visible=s.visible
             )
         )
         return data
