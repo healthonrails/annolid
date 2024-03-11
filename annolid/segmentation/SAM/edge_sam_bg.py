@@ -18,6 +18,7 @@ from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
 from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
 from labelme.utils.shape import shapes_to_label
 from annolid.utils.logger import logger
+from annolid.tracker.cotracker.track import CoTrackerProcessor
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -429,7 +430,8 @@ class VideoProcessor:
                              end_frame=None,
                              step=10,
                              is_cutie=True,
-                             mem_every=5
+                             mem_every=5,
+                             point_tracking=False,
                              ):
         """
         Process multiple frames of the video.
@@ -448,11 +450,20 @@ class VideoProcessor:
                     mem_every=mem_every
                 )
                 return message
-            else:
+            elif point_tracking:
+                tracker_processor = CoTrackerProcessor(
+                    self.video_path, self.most_recent_file)
+                message = tracker_processor.process_video()
+                self.pred_worker.stop_signal.emit()
+                return message
+            elif not point_tracking and not is_cutie:
                 if end_frame is None:
                     end_frame = self.num_frames
                 for i in range(start_frame, end_frame + 1, step):
                     self.process_frame(i)
+            else:
+                self.pred_worker.stop_singal.emit()
+                return f"Not implemented#404"
 
     def get_most_recent_file(self):
         """

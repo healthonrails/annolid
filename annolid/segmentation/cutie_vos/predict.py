@@ -5,7 +5,7 @@ import torch
 import gdown
 import numpy as np
 from PIL import Image
-from annolid.gui.shape import MaskShape
+from annolid.gui.shape import MaskShape, Shape
 from annolid.annotation.keypoints import save_labels
 from annolid.segmentation.cutie_vos.interactive_utils import (
     image_to_torch,
@@ -19,7 +19,7 @@ from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
 from pathlib import Path
-from annolid.utils.shapes import shapes_to_label
+from annolid.utils.shapes import shapes_to_label, extract_flow_points_in_mask
 from annolid.utils.devices import get_device
 from annolid.utils.logger import logger
 from annolid.motion.optical_flow import compute_optical_flow
@@ -86,6 +86,7 @@ class CutieVideoProcessor:
         self.sam_hq = None
         self.output_tracking_csvpath = str(
             self.video_folder) + f"_tracked.csv"
+        self.showing_KMedoids_in_mask = False
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -163,7 +164,9 @@ class CutieVideoProcessor:
         label_list = []
         for label_id, mask in mask_dict.items():
             label = str(label_id)
+
             self._save_results(label, mask)
+            self.save_KMedoids_in_mask(label_list, mask)
 
             current_shape = MaskShape(label=label,
                                       flags={},
@@ -177,6 +180,18 @@ class CutieVideoProcessor:
         save_labels(filename=filename, imagePath=None, label_list=label_list,
                     height=height, width=width, save_image_to_json=False)
         return label_list
+
+    def save_KMedoids_in_mask(self, label_list, mask):
+        if self._flow is not None and self.showing_KMedoids_in_mask:
+            flow_points = extract_flow_points_in_mask(mask, self._flow)
+            for fpoint in flow_points.tolist():
+                fpoint_shape = Shape(label='kmedoids',
+                                     flags={},
+                                     shape_type='point',
+                                     description="kmedoids of flow in mask"
+                                     )
+                fpoint_shape.points = [fpoint]
+                label_list.append(fpoint_shape)
 
     def segement_with_bbox(self, instance_names, cur_frame, score_threshold=0.88):
         label_mask_dict = {}
