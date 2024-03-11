@@ -8,6 +8,7 @@ from pathlib import Path
 from annolid.annotation.keypoints import save_labels
 from annolid.gui.shape import Shape
 from annolid.tracker.cotracker.visualizer import Visualizer
+from annolid.utils.logger import logger
 """
 @article{karaev2023cotracker,
   title={CoTracker: It is Better to Track Together},
@@ -90,7 +91,7 @@ class CoTrackerProcessor:
                               grid_size=grid_size,
                               grid_query_frame=grid_query_frame)
 
-    def process_video(self, grid_size=10, grid_query_frame=0):
+    def process_video(self, grid_size=10, grid_query_frame=0, need_visualize=True):
         if not os.path.isfile(self.video_path):
             raise ValueError("Video file does not exist")
 
@@ -104,7 +105,8 @@ class CoTrackerProcessor:
                 pred_tracks, pred_visibility = self.process_step(
                     window_frames, is_first_step, grid_size, grid_query_frame)
                 if pred_tracks is not None:
-                    print(i, pred_tracks.shape, pred_visibility.shape)
+                    logger.info(
+                        f"Tracking frame {i}, {pred_tracks.shape}, {pred_visibility.shape}")
                 is_first_step = False
             window_frames.append(frame)
 
@@ -112,23 +114,27 @@ class CoTrackerProcessor:
             window_frames[-(i % self.model.step) - self.model.step - 1:],
             is_first_step, grid_size, grid_query_frame)
 
-        print("Tracks are computed")
+        logger.info("Tracks are computed")
+        message = self.extract_frame_points(
+            pred_tracks, pred_visibility, query_frame=0)
 
-        video = torch.tensor(np.stack(window_frames),
-                             device=self.device).permute(0, 3, 1, 2)[None]
-        vis = Visualizer(save_dir="./saved_videos", pad_value=120,
-                         linewidth=3, tracks_leave_trace=-1)
-        res_video, frame_points_dict = vis.visualize(video, pred_tracks, pred_visibility,
-                                                     query_frame=grid_query_frame)
+        if need_visualize:
+            video = torch.tensor(np.stack(window_frames),
+                                 device=self.device).permute(0, 3, 1, 2)[None]
+            vis = Visualizer(save_dir="./saved_videos", pad_value=120,
+                             linewidth=3, tracks_leave_trace=-1)
+            vis.visualize(video, pred_tracks, pred_visibility,
+                          query_frame=grid_query_frame)
+        return message
 
-        self.save_tracked_points_to_label_json(frame_points_dict)
-        return f"All Frames have been processed#{len(frame_points_dict.keys())}"
-
-    def save_results_to_json(self, pred_tracks, pred_visibility, frame_index):
+    def save_current_frame_tracked_points_to_json(self, frame_number, points):
+        json_file_path = self.video_result_folder / \
+            (self.video_result_folder.name +
+             f"_{frame_number:0>{9}}.json")
         label_list = []
-        for label, point_vis in zip(self.point_labels, pred_tracks):
-            point, visible = point_vis
-            point = point.tolist()
+        for label, _point in zip(self.point_labels, points):
+            _point, visible = _point
+            _point = _point.tolist()
             cur_shape = Shape(
                 label=label,
                 flags={},
@@ -136,35 +142,37 @@ class CoTrackerProcessor:
                 shape_type='point',
                 visible=visible
             )
-            cur_shape.points = [point]
+            cur_shape.points = [_point]
             label_list.append(cur_shape)
-
-        json_file_path = self.video_result_folder / \
-            (self.video_result_folder.name +
-             f"_{frame_index:0>{9}}.json")
         save_labels(json_file_path, imagePath="", label_list=label_list,
                     width=self.video_width, height=self.video_height)
+        if frame_number % 100 == 0:
+            logger.info(f"Saved {json_file_path}")
 
-    def save_tracked_points_to_label_json(self, frame_points_dict):
-        for frame_number, _points in frame_points_dict.items():
-            json_file_path = self.video_result_folder / \
-                (self.video_result_folder.name +
-                 f"_{frame_number:0>{9}}.json")
-            label_list = []
-            for label, _point in zip(self.point_labels, _points):
-                _point, visible = _point
-                _point = _point.tolist()
-                cur_shape = Shape(
-                    label=label,
-                    flags={},
-                    description="Cotracker",
-                    shape_type='point',
-                    visible=visible
-                )
-                cur_shape.points = [_point]
-                label_list.append(cur_shape)
-            save_labels(json_file_path, imagePath="", label_list=label_list,
-                        width=self.video_width, height=self.video_height)
+    def extract_frame_points(
+        self,
+        tracks: torch.Tensor,  # (B,T,N,2)
+        visibility: torch.Tensor = None,  # (B, T, N, 1) bool
+        query_frame: int = 0,
+    ):
+        # Prepare the dictionary to hold frame points and their visibility
+        # frame_point_dict = defaultdict(list)
+        tracks = tracks[0].long().detach().cpu().numpy()  # S, N, 2
+
+        # Iterate over each frame
+        for t in range(query_frame, tracks.shape[0]):
+            _points = []
+            for i in range(tracks.shape[1]):
+                coord = (tracks[t, i, 0], tracks[t, i, 1])
+                coord = np.array(coord)
+                visible = True
+                if visibility is not None:
+                    visible = visibility[0, t, i].item()
+                _points.append((coord, visible))
+            self.save_current_frame_tracked_points_to_json(t, _points)
+        message = f"Saved all json file #{tracks.shape[0]}"
+        logger.info(message)
+        return message
 
 
 if __name__ == "__main__":

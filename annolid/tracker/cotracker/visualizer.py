@@ -24,7 +24,6 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
-from collections import defaultdict
 
 
 def read_video_from_path(path):
@@ -92,9 +91,6 @@ class Visualizer:
         self.pad_value = pad_value
         self.linewidth = linewidth
         self.fps = fps
-        # Create a defaultdict where the key is the frame number
-        # with a list of points in the frame
-        self.frame_points_dict = defaultdict(list)
 
     def visualize(
         self,
@@ -142,7 +138,7 @@ class Visualizer:
         if save_video:
             self.save_video(res_video, filename=filename,
                             writer=writer, step=step)
-        return res_video, self.frame_points_dict
+        return res_video
 
     def save_video(self, video, filename, writer=None, step=0):
         if writer is not None:
@@ -281,9 +277,6 @@ class Visualizer:
                 visibile = True
                 if visibility is not None:
                     visibile = visibility[0, t, i].item()
-                unpadded_coord = np.array(coord) - self.pad_value
-                self.frame_points_dict[t].append(
-                    (unpadded_coord, visibile))
                 if coord[0] != 0 and coord[1] != 0:
                     if not compensate_for_camera_motion or (
                         compensate_for_camera_motion and segm_mask[i] > 0
