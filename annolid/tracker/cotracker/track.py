@@ -5,6 +5,7 @@ import imageio.v3 as iio
 import numpy as np
 import json
 from pathlib import Path
+from labelme.utils.shape import shape_to_mask
 from annolid.annotation.keypoints import save_labels
 from annolid.gui.shape import Shape
 from annolid.tracker.cotracker.visualizer import Visualizer
@@ -24,17 +25,19 @@ from annolid.tracker.cotracker.visualizer import read_video_from_path
 
 class CoTrackerProcessor:
     def __init__(self, video_path, json_path=None, is_online=True):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = self.load_model(is_online=is_online)
         self.video_path = video_path
         self.video_result_folder = Path(self.video_path).with_suffix('')
         if not self.video_result_folder.exists():
             self.video_result_folder.mkdir(exist_ok=True)
         self.point_labels = []
-        self.queries = self.load_queries(json_path)
+        self.mask = None
+        self.mask_label = None
         self.video_height = None
         self.video_width = None
         self.is_online = is_online
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.queries = self.load_queries(json_path)
+        self.model = self.load_model(is_online=is_online)
 
     def get_frame_number(self, json_file):
         # assume json file name pattern as
@@ -72,6 +75,13 @@ class CoTrackerProcessor:
                 points = shape['points'][0]
                 self.point_labels.append(label)
                 queries.append([frame_number] + points)
+            if shape['shape_type'] == 'polygon':
+                self.mask_label = shape['label']
+                img_shape = (data["imageHeight"], data["imageWidth"])
+                self.mask = shape_to_mask(
+                    img_shape, shape["points"], shape_type="polygon").astype(np.uint8)
+                self.mask = torch.from_numpy(
+                    self.mask)[None, None].to(self.device)
 
         queries_tensor = torch.tensor(queries)
         if torch.cuda.is_available():
@@ -86,22 +96,25 @@ class CoTrackerProcessor:
         video_chunk = torch.tensor(np.stack(
             window_frames[-self.model.step * 2:]),
             device=self.device).float().permute(0, 3, 1, 2)[None]
+
         if self.queries is not None:
             return self.model(video_chunk,
                               is_first_step=is_first_step,
                               grid_size=grid_size,
                               grid_query_frame=grid_query_frame,
-                              queries=self.queries[None])
+                              queries=self.queries[None]
+                              )
         else:
             return self.model(video_chunk,
                               is_first_step=is_first_step,
                               grid_size=grid_size,
-                              grid_query_frame=grid_query_frame)
+                              grid_query_frame=grid_query_frame,
+                              )
 
     def process_video(self,
                       grid_size=10,
                       grid_query_frame=0,
-                      need_visualize=True):
+                      need_visualize=False):
         if not os.path.isfile(self.video_path):
             raise ValueError("Video file does not exist")
         if self.is_online:
@@ -159,14 +172,19 @@ class CoTrackerProcessor:
                                   grid_size=10,
                                   grid_query_frame=0):
         logger.info(
-            f"grid_size: {grid_size}, grid_query_frame: {grid_query_frame}")
+            f"grid_size: {grid_size}, grid_query_frame:\
+              {grid_query_frame}, mask label: {self.mask_label}")
 
         video = read_video_from_path(self.video_path)
         video = torch.from_numpy(video).permute(0, 3, 1, 2)[
             None].float().to(self.device)
         pred_tracks, pred_visibility = self.model(
-            video, queries=self.queries[None],
-            backward_tracking=True)
+            video,
+            grid_size=grid_size,
+            queries=self.queries[None],
+            backward_tracking=True,
+            segm_mask=self.mask,
+        )
         return pred_tracks, pred_visibility, video
 
     def save_current_frame_tracked_points_to_json(self, frame_number, points):
@@ -230,5 +248,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     tracker_processor = CoTrackerProcessor(
-        args.video_path, args.json_path)
+        args.video_path, args.json_path, is_online=False)
     tracker_processor.process_video(args.grid_size, args.grid_query_frame)
