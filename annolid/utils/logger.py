@@ -6,11 +6,12 @@ import sys
 import termcolor
 from pathlib import Path
 import datetime
+from typing import Union
 
 __appname__ = "annolid"
 
 
-def resolve_path(path: Path | str) -> Path:
+def resolve_path(path: Union[Path, str]) -> Path:
     return Path(path).expanduser().resolve()
 
 
