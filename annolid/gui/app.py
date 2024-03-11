@@ -1072,6 +1072,7 @@ class AnnolidWindow(MainWindow):
                     mask=None
                     if s.mask is None
                     else utils.img_arr_to_b64(s.mask),
+                    visible=s.visible,
                 )
             )
             return data
