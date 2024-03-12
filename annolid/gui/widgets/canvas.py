@@ -1014,8 +1014,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
     def offsetToCenter(self):
         s = self.scale
         area = super(Canvas, self).size()
-        w, h = self.pixmap.width() * s, self.pixmap.height() * s
         aw, ah = area.width(), area.height()
+        if self.pixmap is None:
+            return QtCore.QPointF(0, 0)
+        w, h = self.pixmap.width() * s, self.pixmap.height() * s
         x = (aw - w) / (2 * s) if aw > w else 0
         y = (ah - h) / (2 * s) if ah > h else 0
         return QtCore.QPointF(x, y)
