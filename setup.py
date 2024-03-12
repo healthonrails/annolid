@@ -45,6 +45,7 @@ setuptools.setup(
                       # 'PyQt5 == 5.15.7',
                       'Pillow>=9.3.0,<=9.5.0',
                       "chardet>=5.2.0",
+                      "scikit-learn-extra >= 0.3.0",
                       # "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
                       "segment-anything @ git+https://github.com/SysCV/sam-hq.git",
                       ],

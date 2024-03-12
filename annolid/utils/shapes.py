@@ -2,7 +2,6 @@ import labelme
 import numpy as np
 import uuid
 from shapely.geometry import Polygon, Point
-import torch
 from sklearn_extra.cluster import KMedoids
 
 
@@ -86,10 +85,6 @@ def extract_flow_points_in_mask(mask, flow, num_points=8):
         numpy.ndarray: An array of (x, y) pairs representing 
         the representative points extracted from the flow field.
     """
-    try:
-        from sklearn_extra.cluster import KMedoids
-    except:
-        print("Please install: pip install scikit-learn-extra >= 0.3.0")
     # Get valid indices from the binary mask
     valid_indices = np.argwhere(mask != 0)
 
