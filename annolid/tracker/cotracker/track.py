@@ -13,6 +13,9 @@ from annolid.utils.logger import logger
 from annolid.utils.files import get_frame_number_from_json
 from annolid.utils.files import find_manual_labeled_json_files
 from annolid.data.videos import CV2Video
+from annolid.utils.shapes import sample_grid_in_polygon
+
+
 """
 @article{karaev2023cotracker,
   title={CoTracker: It is Better to Track Together},
@@ -29,12 +32,13 @@ class CoTrackerProcessor:
         self.video_path = video_path
         self.video_loader = CV2Video(self.video_path)
         self.video_result_folder = Path(video_path).with_suffix('')
+        self.total_num_frames = self.video_loader.total_frames()
         self.create_video_result_folder()
         self.point_labels = []
         self.mask = None
         self.mask_label = None
-        self.video_height = None
-        self.video_width = None
+        first_frame = self.video_loader.get_first_frame()
+        self.video_height, self.video_width, _ = first_frame.shape
         self.is_online = is_online
         self.start_frame = 0
         self.end_frame = 0
@@ -53,32 +57,99 @@ class CoTrackerProcessor:
         return torch.hub.load("facebookresearch/co-tracker", model_name).to(self.device)
 
     def load_queries(self):
+        """
+        Load queries from JSON files and process shapes to extract queries.
+
+        Returns:
+            torch.Tensor: A tensor containing the selected queries.
+        """
         json_files = find_manual_labeled_json_files(self.video_result_folder)
         queries = []
+
         for json_path in sorted(json_files):
-            if json_path is None:
+            if not json_path:
                 continue
+
             json_abs_path = self.video_result_folder / json_path
             with open(json_abs_path, 'r') as file:
                 data = json.load(file)
+
             frame_number = get_frame_number_from_json(json_path)
             if self.end_frame > 0 and frame_number <= self.end_frame:
-                for shape in data['shapes']:
-                    if shape['shape_type'] == 'point':
-                        label = shape['label']
-                        points = shape['points'][0]
-                        self.point_labels.append(label)
-                        queries.append([frame_number] + points)
-                    if self.mask is None and shape['shape_type'] == 'polygon':
-                        self.mask_label = shape['label']
-                        img_shape = (data["imageHeight"], data["imageWidth"])
-                        self.mask = shape_to_mask(
-                            img_shape, shape["points"], shape_type="polygon").astype(np.uint8)
-                        self.mask = torch.from_numpy(
-                            self.mask)[None, None].to(self.device)
+                queries.extend(self._process_shapes(
+                    data['shapes'], frame_number))
 
         queries_tensor = torch.tensor(queries).float().to(self.device)
         return queries_tensor
+
+    def _process_shapes(self, shapes, frame_number):
+        """
+        Process shapes to extract queries.
+
+        Args:
+            shapes (list): List of shapes in JSON format.
+            frame_number (int): Frame number associated with the shapes.
+
+        Returns:
+            list: List of extracted queries.
+        """
+        processed_queries = []
+
+        for shape in shapes:
+            label = shape['label']
+            shape_type = shape['shape_type']
+            if shape_type == 'point':
+                processed_queries.append(self._process_point(
+                    shape['points'][0], frame_number, label))
+            elif shape_type == 'polygon':
+                processed_queries.extend(self._process_polygon(
+                    shape['points'], frame_number, label))
+
+        return processed_queries
+
+    def _process_point(self, point, frame_number, label):
+        """
+        Process a single point shape to extract query.
+
+        Args:
+            point (list): Coordinates of the point.
+            frame_number (int): Frame number associated with the point.
+            label (str): Label associated with the point.
+
+        Returns:
+            list: Extracted query.
+        """
+        self.point_labels.append(label)
+        return [frame_number] + point
+
+    def _process_polygon(self, points, frame_number, label):
+        """
+        Process a polygon shape to extract queries.
+
+        Args:
+            points (list): List of points defining the polygon.
+            frame_number (int): Frame number associated with the polygon.
+            label (str): Label associated with the polygon.
+
+        Returns:
+            list: List of extracted queries.
+        """
+        queries = []
+
+        if self.mask is None:
+            self.mask_label = label
+            img_shape = (self.video_height, self.video_width)
+            self.mask = shape_to_mask(
+                img_shape, points, shape_type="polygon").astype(np.uint8)
+            self.mask = torch.from_numpy(self.mask)[None, None].to(self.device)
+
+        points_in_polygon = sample_grid_in_polygon(points)
+        logger.info(f"Sampled {len(points_in_polygon)} points.")
+        for point in points_in_polygon:
+            self.point_labels.append(label)
+            queries.append([frame_number] + list(point))
+
+        return queries
 
     def process_step(self, window_frames,
                      is_first_step,

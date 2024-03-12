@@ -1,7 +1,9 @@
 import labelme
 import numpy as np
 import uuid
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, Point
+import torch
+from sklearn_extra.cluster import KMedoids
 
 
 def shapes_to_label(img_shape, shapes, label_name_to_value):
@@ -106,3 +108,33 @@ def extract_flow_points_in_mask(mask, flow, num_points=8):
     medoids_locations = np.array([(x, y) for y, x in medoids_indices])
 
     return medoids_locations
+
+
+def sample_grid_in_polygon(polygon_points, grid_size=5):
+    """
+    Samples a grid with the given grid size inside a polygon's bounding box.
+
+    Args:
+        polygon_points (list of tuples): List of (x, y) points defining the polygon.
+        grid_size (float): Size of the grid cells. Default is 1.
+
+    Returns:
+        numpy.ndarray: An array of (x, y) pairs representing 
+        the grid points sampled inside the polygon's bounding box.
+    """
+    # Create a Shapely polygon from the given points
+    polygon = Polygon(polygon_points)
+
+    # Get the bounding box of the polygon
+    min_x, min_y, max_x, max_y = polygon.bounds
+
+    # Generate grid points within the bounding box
+    x_points = np.arange(np.ceil(min_x), np.floor(max_x) + 1, grid_size)
+    y_points = np.arange(np.ceil(min_y), np.floor(max_y) + 1, grid_size)
+    grid_points = np.array(np.meshgrid(x_points, y_points)).T.reshape(-1, 2)
+
+    # Filter points that lie within the polygon
+    valid_points = [point for point in grid_points if Point(
+        point).within(polygon)]
+
+    return np.array(valid_points)
