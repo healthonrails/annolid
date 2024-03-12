@@ -1213,19 +1213,40 @@ class AnnolidWindow(MainWindow):
         return title
 
     def deleteAllFuturePredictions(self):
-        if self.video_loader:
-            prediction_folder = self.video_results_folder
-            for prediction_file in os.listdir(prediction_folder):
-                prediction_file_path = os.path.join(
-                    prediction_folder, prediction_file)
-                if os.path.isfile(prediction_file_path):
-                    if ".json" in prediction_file_path:
-                        is_future_frames = int(prediction_file_path.split(
-                            '_')[-1].replace('.json', '')) > self.frame_number
-                        if is_future_frames:
-                            os.remove(prediction_file_path)
-            logger.info(
-                "All predictions from the next frames are removed from now on.")
+        """
+        Delete all future predictions files except manually labeled ones.
+
+        This method removes all prediction files for future frames, excluding
+        those that have been manually labeled.
+
+        Returns:
+            None
+        """
+        if not self.video_loader:
+            return
+
+        prediction_folder = self.video_results_folder
+        deleted_files = 0
+
+        for prediction_file in os.listdir(prediction_folder):
+            prediction_file_path = os.path.join(
+                prediction_folder, prediction_file)
+            if not os.path.isfile(prediction_file_path):
+                continue
+            if not prediction_file_path.endswith('.json'):
+                continue
+
+            frame_number = int(prediction_file_path.split(
+                '_')[-1].replace('.json', ''))
+            is_future_frames = frame_number > self.frame_number
+            is_manually_saved = os.path.exists(
+                prediction_file_path.replace('.json', '.png'))
+            if is_future_frames and not is_manually_saved:
+                os.remove(prediction_file_path)
+                deleted_files += 1
+
+        logger.info(
+            f"{deleted_files} predictions from the next frames were removed, excluding manually labeled files.")
 
     def deleteFile(self):
         mb = QtWidgets.QMessageBox
