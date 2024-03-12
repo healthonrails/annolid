@@ -9,6 +9,18 @@ import glob
 import pandas as pd
 
 
+def get_frame_number_from_json(json_file):
+    # Assume json file name pattern as
+    # xxxx_000000000.json
+    # Split the file name by '_' and '.'
+    parts = json_file.split('_')
+    # Extract the part between '_' and '.json'
+    frame_number_str = parts[-1].split('.')[0]
+    # Convert the frame number string to an integer
+    frame_number = int(frame_number_str)
+    return frame_number
+
+
 def count_json_files(folder_path):
     """
     Count the number of JSON files in a given folder.

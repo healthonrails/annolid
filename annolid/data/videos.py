@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import random
 import subprocess
+from typing import Generator, List
 from pathlib import Path
 from collections import deque
 from annolid.segmentation.maskrcnn import inference
@@ -239,6 +240,58 @@ class CV2Video:
             return len(self.reader)
         else:
             return int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    def get_frames_in_batches(self, start_frame: int,
+                              end_frame: int,
+                              batch_size: int) -> Generator[np.ndarray, None, None]:
+        """
+        Retrieves frames in batches between start and end frames.
+
+        Args:
+            start_frame (int): The starting frame number.
+            end_frame (int): The ending frame number.
+            batch_size (int): The size of each batch.
+
+        Yields:
+            np.ndarray: A batch of video frames.
+        """
+        if start_frame >= end_frame:
+            raise ValueError("Start frame must be less than end frame.")
+
+        total_frames = self.total_frames()
+        end_frame = min(end_frame, total_frames)
+
+        if end_frame - start_frame < batch_size:
+            batch_size = end_frame - start_frame
+
+        for batch_start in range(start_frame, end_frame, batch_size):
+            batch_end = min(batch_start + batch_size, end_frame)
+            for frame_number in range(batch_start, batch_end):
+                yield self.load_frame(frame_number)
+
+    def get_frames_between(self, start_frame: int,
+                           end_frame: int) -> List[np.ndarray]:
+        """
+        Retrieves all frames between start and end frames.
+
+        Args:
+            start_frame (int): The starting frame number.
+            end_frame (int): The ending frame number.
+
+        Returns:
+            List[np.ndarray]: A list of video frames.
+        """
+        if start_frame >= end_frame:
+            raise ValueError("Start frame must be less than end frame.")
+
+        total_frames = self.total_frames()
+        end_frame = min(end_frame, total_frames)
+
+        frames = []
+        for frame_number in range(start_frame, end_frame):
+            frames.append(self.load_frame(frame_number))
+
+        return np.stack(frames)
 
 
 def extract_frames(video_file='None',
