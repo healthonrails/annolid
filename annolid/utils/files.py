@@ -9,6 +9,40 @@ import glob
 import pandas as pd
 
 
+def find_manual_labeled_json_files(folder_path):
+    """
+    Find manually labeled JSON files that correspond to PNG
+      files in the given folder.
+
+    Args:
+        folder_path (str): Path to the folder 
+        containing PNG and JSON files.
+
+    Returns:
+        list: List of manually labeled JSON filenames.
+    """
+    manually_labeled_files = []
+
+    # Check if the folder exists
+    if not os.path.exists(folder_path):
+        return manually_labeled_files
+
+    # Get the folder name
+    folder_name = os.path.basename(folder_path)
+
+    # Iterate over files in the folder
+    for filename in os.listdir(folder_path):
+        # Check if file is a PNG and contains the folder name
+        if filename.endswith('.png') and folder_name in filename:
+            # Construct the corresponding JSON filename
+            json_filename = filename.replace('.png', '.json')
+            # Check if corresponding JSON file exists
+            if os.path.exists(os.path.join(folder_path, json_filename)):
+                manually_labeled_files.append(json_filename)
+
+    return manually_labeled_files
+
+
 def get_frame_number_from_json(json_file):
     # Assume json file name pattern as
     # xxxx_000000000.json

@@ -10,8 +10,9 @@ from annolid.annotation.keypoints import save_labels
 from annolid.gui.shape import Shape
 from annolid.tracker.cotracker.visualizer import Visualizer
 from annolid.utils.logger import logger
-from annolid.tracker.cotracker.visualizer import read_video_from_path
-
+from annolid.utils.files import get_frame_number_from_json
+from annolid.utils.files import find_manual_labeled_json_files
+from annolid.data.videos import CV2Video
 """
 @article{karaev2023cotracker,
   title={CoTracker: It is Better to Track Together},
@@ -26,97 +27,89 @@ from annolid.tracker.cotracker.visualizer import read_video_from_path
 class CoTrackerProcessor:
     def __init__(self, video_path, json_path=None, is_online=True):
         self.video_path = video_path
-        self.video_result_folder = Path(self.video_path).with_suffix('')
-        if not self.video_result_folder.exists():
-            self.video_result_folder.mkdir(exist_ok=True)
+        self.video_loader = CV2Video(self.video_path)
+        self.video_result_folder = Path(video_path).with_suffix('')
+        self.create_video_result_folder()
         self.point_labels = []
         self.mask = None
         self.mask_label = None
         self.video_height = None
         self.video_width = None
         self.is_online = is_online
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.queries = self.load_queries(json_path)
-        self.model = self.load_model(is_online=is_online)
+        self.start_frame = 0
+        self.end_frame = 0
+        self.predict_interval = 60
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
+        self.queries = None
+        self.model = self.load_model()
 
-    def get_frame_number(self, json_file):
-        # assume json file name pattern as
-        # xxxx_000000000.json
-        # Split the file name by '_' and '.'
-        parts = json_file.split('_')
-        # Extract the part between '_' and '.json'
-        frame_number_str = parts[-1].split('.')[0]
-        # Convert the frame number string to an integer
-        frame_number = int(frame_number_str)
-        return frame_number
+    def create_video_result_folder(self):
+        if not self.video_result_folder.exists():
+            self.video_result_folder.mkdir(exist_ok=True)
 
-    def load_model(self, is_online=True):
-        if is_online:
-            return torch.hub.load("facebookresearch/co-tracker",
-                                  "cotracker2_online").to(self.device)
-        else:
-            return torch.hub.load("facebookresearch/co-tracker",
-                                  "cotracker2").to(self.device)
+    def load_model(self):
+        model_name = "cotracker2_online" if self.is_online else "cotracker2"
+        return torch.hub.load("facebookresearch/co-tracker", model_name).to(self.device)
 
-    def load_queries(self, json_path):
-        if json_path is None:
-            return None
-
-        with open(json_path, 'r') as file:
-            data = json.load(file)
-
-        frame_number = self.get_frame_number(json_path)
-
+    def load_queries(self):
+        json_files = find_manual_labeled_json_files(self.video_result_folder)
         queries = []
-        for shape in data['shapes']:
-            if shape['shape_type'] == 'point':
-                label = shape['label']
-                # Assuming there's only one point per shape
-                points = shape['points'][0]
-                self.point_labels.append(label)
-                queries.append([frame_number] + points)
-            if shape['shape_type'] == 'polygon':
-                self.mask_label = shape['label']
-                img_shape = (data["imageHeight"], data["imageWidth"])
-                self.mask = shape_to_mask(
-                    img_shape, shape["points"], shape_type="polygon").astype(np.uint8)
-                self.mask = torch.from_numpy(
-                    self.mask)[None, None].to(self.device)
+        for json_path in sorted(json_files):
+            if json_path is None:
+                continue
+            json_abs_path = self.video_result_folder / json_path
+            with open(json_abs_path, 'r') as file:
+                data = json.load(file)
+            frame_number = get_frame_number_from_json(json_path)
+            if self.end_frame > 0 and frame_number <= self.end_frame:
+                for shape in data['shapes']:
+                    if shape['shape_type'] == 'point':
+                        label = shape['label']
+                        points = shape['points'][0]
+                        self.point_labels.append(label)
+                        queries.append([frame_number] + points)
+                    if self.mask is None and shape['shape_type'] == 'polygon':
+                        self.mask_label = shape['label']
+                        img_shape = (data["imageHeight"], data["imageWidth"])
+                        self.mask = shape_to_mask(
+                            img_shape, shape["points"], shape_type="polygon").astype(np.uint8)
+                        self.mask = torch.from_numpy(
+                            self.mask)[None, None].to(self.device)
 
-        queries_tensor = torch.tensor(queries)
-        if torch.cuda.is_available():
-            queries_tensor = queries_tensor.cuda()
+        queries_tensor = torch.tensor(queries).float().to(self.device)
         return queries_tensor
 
-    def process_step(self,
-                     window_frames,
+    def process_step(self, window_frames,
                      is_first_step,
                      grid_size,
                      grid_query_frame):
-        video_chunk = torch.tensor(np.stack(
-            window_frames[-self.model.step * 2:]),
-            device=self.device).float().permute(0, 3, 1, 2)[None]
+        video_chunk = torch.tensor(np.stack(window_frames[-self.model.step * 2:]),
+                                   device=self.device).float().permute(0, 3, 1, 2)[None]
 
+        kwargs = {
+            'is_first_step': is_first_step,
+            'grid_size': grid_size,
+            'grid_query_frame': grid_query_frame,
+        }
         if self.queries is not None:
-            return self.model(video_chunk,
-                              is_first_step=is_first_step,
-                              grid_size=grid_size,
-                              grid_query_frame=grid_query_frame,
-                              queries=self.queries[None]
-                              )
-        else:
-            return self.model(video_chunk,
-                              is_first_step=is_first_step,
-                              grid_size=grid_size,
-                              grid_query_frame=grid_query_frame,
-                              )
+            kwargs['queries'] = self.queries[None]
+
+        return self.model(video_chunk, **kwargs)
 
     def process_video(self,
+                      start_frame=0,
+                      end_frame=60,
                       grid_size=10,
                       grid_query_frame=0,
                       need_visualize=False):
         if not os.path.isfile(self.video_path):
             raise ValueError("Video file does not exist")
+        self.start_frame = start_frame
+        self.end_frame = end_frame
+        logger.info(f"Processing from frame {start_frame} to {end_frame}")
+        self.queries = self.load_queries()
+
         if self.is_online:
             window_frames = []
             is_first_step = True
@@ -135,13 +128,15 @@ class CoTrackerProcessor:
 
             pred_tracks, pred_visibility = self.process_step(
                 window_frames[-(i % self.model.step) - self.model.step - 1:],
-                is_first_step, grid_size, grid_query_frame)
+                is_first_step, grid_size, grid_query_frame
+            )
         else:
-            pred_tracks, pred_visibility, video = self._process_video_bidrection()
+            pred_tracks, pred_visibility, video = self._process_video_bidrection(
+                start_frame, end_frame)
 
         logger.info("Tracks are computed")
         message = self.extract_frame_points(
-            pred_tracks, pred_visibility, query_frame=0)
+            pred_tracks, pred_visibility, start_frame=start_frame)
 
         if need_visualize:
             vis_video_name = f'{self.video_result_folder.name}_tracked'
@@ -152,30 +147,22 @@ class CoTrackerProcessor:
                 tracks_leave_trace=-1
             )
             if self.is_online:
-                video = torch.tensor(np.stack(window_frames),
-                                     device=self.device).permute(0, 3, 1, 2)[None]
+                video = torch.tensor(
+                    np.stack(window_frames), device=self.device).permute(0, 3, 1, 2)[None]
                 vis.visualize(video, pred_tracks, pred_visibility,
-                              query_frame=grid_query_frame,
-                              filename=vis_video_name
-                              )
-
+                              query_frame=grid_query_frame, filename=vis_video_name)
             else:
-                vis.visualize(
-                    video=video,
-                    tracks=pred_tracks,
-                    visibility=pred_visibility,
-                    filename=vis_video_name
-                )
+                vis.visualize(video=video, tracks=pred_tracks,
+                              visibility=pred_visibility, filename=vis_video_name)
         return message
 
-    def _process_video_bidrection(self,
-                                  grid_size=10,
+    def _process_video_bidrection(self, start_frame=0,
+                                  end_frame=60, grid_size=10,
                                   grid_query_frame=0):
         logger.info(
-            f"grid_size: {grid_size}, grid_query_frame:\
-              {grid_query_frame}, mask label: {self.mask_label}")
+            f"grid_size: {grid_size}, grid_query_frame: {grid_query_frame}, mask label: {self.mask_label}")
 
-        video = read_video_from_path(self.video_path)
+        video = self.video_loader.get_frames_between(start_frame, end_frame)
         video = torch.from_numpy(video).permute(0, 3, 1, 2)[
             None].float().to(self.device)
         pred_tracks, pred_visibility = self.model(
@@ -189,8 +176,7 @@ class CoTrackerProcessor:
 
     def save_current_frame_tracked_points_to_json(self, frame_number, points):
         json_file_path = self.video_result_folder / \
-            (self.video_result_folder.name +
-             f"_{frame_number:0>{9}}.json")
+            (self.video_result_folder.name + f"_{frame_number:0>{9}}.json")
         label_list = []
         for label, _point in zip(self.point_labels, points):
             _point, visible = _point
@@ -209,17 +195,11 @@ class CoTrackerProcessor:
         if frame_number % 100 == 0:
             logger.info(f"Saved {json_file_path}")
 
-    def extract_frame_points(
-        self,
-        tracks: torch.Tensor,  # (B,T,N,2)
-        visibility: torch.Tensor = None,  # (B, T, N, 1) bool
-        query_frame: int = 0,
-    ):
-        # Prepare the dictionary to hold frame points and their visibility
-        # frame_point_dict = defaultdict(list)
-        tracks = tracks[0].long().detach().cpu().numpy()  # S, N, 2
-
-        # Iterate over each frame
+    def extract_frame_points(self, tracks: torch.Tensor,
+                             visibility: torch.Tensor = None,
+                             query_frame: int = 0,
+                             start_frame: int = 0):
+        tracks = tracks[0].long().detach().cpu().numpy()
         for t in range(query_frame, tracks.shape[0]):
             _points = []
             for i in range(tracks.shape[1]):
@@ -229,7 +209,8 @@ class CoTrackerProcessor:
                 if visibility is not None:
                     visible = visibility[0, t, i].item()
                 _points.append((coord, visible))
-            self.save_current_frame_tracked_points_to_json(t, _points)
+            self.save_current_frame_tracked_points_to_json(
+                t + start_frame, _points)
         message = f"Saved all json file #{tracks.shape[0]}"
         logger.info(message)
         return message
@@ -245,8 +226,13 @@ if __name__ == "__main__":
                         default=10, help="Regular grid size")
     parser.add_argument("--grid_query_frame", type=int, default=0,
                         help="Compute dense and grid tracks starting from this frame")
+    parser.add_argument("--start_frame", type=int,
+                        default=0, help="Regular grid size")
+    parser.add_argument("--end_frame", type=int, default=60,
+                        help="Compute dense and grid tracks starting from this frame")
     args = parser.parse_args()
 
     tracker_processor = CoTrackerProcessor(
         args.video_path, args.json_path, is_online=False)
-    tracker_processor.process_video(args.grid_size, args.grid_query_frame)
+    tracker_processor.process_video(
+        args.start_frame, args.end_frame, args.grid_size, args.grid_query_frame)

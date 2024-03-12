@@ -1023,6 +1023,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         return QtCore.QPointF(x, y)
 
     def outOfPixmap(self, p):
+        if self.pixmap is None:
+            return True
         w, h = self.pixmap.width(), self.pixmap.height()
         return not (0 <= p.x() <= w - 1 and 0 <= p.y() <= h - 1)
 
