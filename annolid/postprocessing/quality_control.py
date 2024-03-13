@@ -63,7 +63,8 @@ def pred_dict_to_labelme(pred_row,
 
                 shape = Shape(label=label_name,
                               shape_type='polygon',
-                              flags={}
+                              flags={},
+                              visible=True,
                               )
                 all_points = np.array(
                     list(zip(polys[0::2], polys[1::2])))
@@ -71,6 +72,8 @@ def pred_dict_to_labelme(pred_row,
                     # do not add 0,0 to the list
                     if x >= 1 and y >= 1:
                         shape.addPoint((x, y))
+                # To close the polygon
+                shape.points.append(shape.points[0])
                 label_list.append(shape)
             except IndexError:
                 pass
@@ -311,7 +314,7 @@ class TracksResults():
                 if (ci['frame_number'] == oi['frame_number']
                         and int(ci['cx']) == int(oi['cx'])
                         and int(ci['cy']) == int(oi['cy'])
-                        ):
+                    ):
                     continue
                 dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
                                (ci['cy']-oi['cy']) ** 2)
