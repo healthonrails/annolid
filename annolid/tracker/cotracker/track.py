@@ -103,7 +103,8 @@ class CoTrackerProcessor:
             if shape_type == 'point':
                 processed_queries.append(self._process_point(
                     shape['points'][0], frame_number, label))
-            elif shape_type == 'polygon' and shape["description"] is not None:
+            elif (shape_type == 'polygon' and "description" in shape
+                  and shape["description"] is not None):
                 processed_queries.extend(self._process_polygon(
                     shape['points'], frame_number, label))
 

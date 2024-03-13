@@ -8,6 +8,7 @@ from labelme.logger import logger
 import labelme.utils
 import skimage.measure
 from shapely.geometry import Polygon
+from shapely.validation import explain_validity
 
 
 # TODO(unknown):
@@ -428,6 +429,12 @@ class Shape(object):
         # Convert the vertices to Shapely Polygon objects
         poly1 = Polygon([(p.x(), p.y()) for p in self.points])
         poly2 = Polygon([(p.x(), p.y()) for p in other.points])
+        # Check if the polygons are valid
+        if not poly1.is_valid:
+            poly1 = poly1.buffer(0)  # Attempt to fix self-intersections
+
+        if not poly2.is_valid:
+            poly2 = poly2.buffer(0)  # Attempt to fix self-intersections
 
         # Calculate intersection area
         intersection_area = poly1.intersection(poly2).area
