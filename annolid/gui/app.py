@@ -535,7 +535,7 @@ class AnnolidWindow(MainWindow):
 
         self._selectAiModelComboBox.clear()
         self.custom_ai_model_names = [
-            'SAM_HQ', 'Cutie_VOS', "EfficientVit_SAM", "CoTracker"]
+            'SAM_HQ', 'segmenation', "EfficientVit_SAM", "keypoints"]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
@@ -627,7 +627,12 @@ class AnnolidWindow(MainWindow):
         if self.isPlaying:
             self.timer = QtCore.QTimer()
             self.timer.timeout.connect(self.openNextImg)
-            self.timer.start(10)
+            if self.fps is not None:
+                self.timer.start(int(1000/self.fps))
+            else:
+                # 10 to 50 milliseconds are normal real time
+                # playback
+                self.timer.start(20)
         else:
             self.timer.stop()
 
@@ -939,8 +944,8 @@ class AnnolidWindow(MainWindow):
         model_names = {
             "SAM_HQ": "sam_hq",
             "EfficientVit_SAM": "efficientvit_sam",
-            "Cutie_VOS": "Cutie_VOS",
-            "CoTracker": "CoTracker"
+            "segmenation": "segmenation",
+            "keypoints": "keypoints"
         }
         default_model_name = "Segment-Anything (Edge)"
 
@@ -996,9 +1001,9 @@ class AnnolidWindow(MainWindow):
                     start_frame=self.frame_number+1,
                     end_frame=end_frame,
                     step=self.step_size,
-                    is_cutie=False if model_name == "CoTracker" else True,
+                    is_cutie=False if model_name == "keypoints" else True,
                     mem_every=self.step_size,
-                    point_tracking=model_name == "CoTracker"
+                    point_tracking=model_name == "keypoints"
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.frame_number += 1
@@ -1047,7 +1052,7 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.information(
                 self, "Stop early",
                 messege
-            ) 
+            )
         else:
             if self.video_loader is not None:
                 num_json_files = count_json_files(self.video_results_folder)
@@ -1059,6 +1064,8 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.information(
                 self, "Prediction Ready",
                 "Predictions for the video frames have been generated!")
+        # Go back to the first frame
+        self.set_frame_number(0)
 
     def saveLabels(self, filename):
         lf = LabelFile()
@@ -1277,6 +1284,9 @@ class AnnolidWindow(MainWindow):
             label_file = self.getLabelFile()
             if osp.exists(label_file):
                 os.remove(label_file)
+                img_file = label_file.replace('.json', '.png')
+                if osp.exists(img_file):
+                    os.remove(img_file)
                 logger.info("Label file is removed: {}".format(label_file))
 
                 item = self.fileListWidget.currentItem()
