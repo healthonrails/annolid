@@ -2100,6 +2100,12 @@ class AnnolidWindow(MainWindow):
             return
 
         if self.video_loader is not None:
+            # If the current cursor is at the end of the video,
+            # reset it to start from the beginning.
+            if self.frame_number >= self.num_frames:
+                self.frame_number = 0
+                self.set_frame_number(self.frame_number)
+
             if self.frame_number < self.num_frames:
                 if self.step_size + self.frame_number <= self.num_frames:
                     self.frame_number += self.step_size
