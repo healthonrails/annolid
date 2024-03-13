@@ -16,7 +16,8 @@ def format_shape(shape):
         'group_id': shape.group_id,
         'shape_type': shape.shape_type,
         'flags': shape.flags,
-        'visible': shape.visible
+        'visible': shape.visible,
+        'description': shape.description,
     })
     return data
 
@@ -26,6 +27,21 @@ def load_existing_shapes(filename):
         with open(filename, 'r') as file:
             return json.load(file).get('shapes', [])
     return []
+
+
+def merge_shapes(new_shapes, existing_shapes):
+    # Make a copy of existing shapes to retain original
+    merged_shapes = existing_shapes.copy()
+
+    for new_shape in new_shapes:
+        if new_shape not in merged_shapes:
+            merged_shapes.append(new_shape)
+        else:
+            logger.info(f"Skipping duplicate shape: {new_shape}.\
+                        This shape already exists in the list and will not be saved."
+                        )
+
+    return merged_shapes
 
 
 def save_labels(filename, imagePath,
@@ -62,7 +78,9 @@ def save_labels(filename, imagePath,
 
     # Load existing shapes from the JSON file and merge with new shapes
     existing_shapes = load_existing_shapes(filename)
-    shapes.extend(existing_shapes)
+
+    # shapes.extend(existing_shapes)
+    shapes = merge_shapes(shapes, existing_shapes)
 
     # Load image data if necessary
     if imageData is None and save_image_to_json:

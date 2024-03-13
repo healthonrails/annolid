@@ -105,13 +105,14 @@ def extract_flow_points_in_mask(mask, flow, num_points=8):
     return medoids_locations
 
 
-def sample_grid_in_polygon(polygon_points, grid_size=5):
+def sample_grid_in_polygon(polygon_points, grid_size=None):
     """
-    Samples a grid with the given grid size inside a polygon's bounding box.
+    Samples a grid with approximately the given number of points inside a polygon's bounding box.
 
     Args:
         polygon_points (list of tuples): List of (x, y) points defining the polygon.
-        grid_size (float): Size of the grid cells. Default is 1.
+        grid_size (float or None): Size of the grid cells. If None, the grid size will be adjusted
+                                   to produce an 8x8 points grid. Default is None.
 
     Returns:
         numpy.ndarray: An array of (x, y) pairs representing 
@@ -122,6 +123,17 @@ def sample_grid_in_polygon(polygon_points, grid_size=5):
 
     # Get the bounding box of the polygon
     min_x, min_y, max_x, max_y = polygon.bounds
+
+    # Calculate the size of the bounding box
+    bbox_width = max_x - min_x
+    bbox_height = max_y - min_y
+
+    # If grid_size is not specified, adjust it to produce an 8x8 points grid
+    if grid_size is None:
+        # Calculate the number of points per unit length to achieve approximately 8x8 grid
+        points_per_unit_length = np.sqrt(64 / (bbox_width * bbox_height))
+        # Calculate the grid size based on the number of points per unit length
+        grid_size = 1 / points_per_unit_length
 
     # Generate grid points within the bounding box
     x_points = np.arange(np.ceil(min_x), np.floor(max_x) + 1, grid_size)

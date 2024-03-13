@@ -230,7 +230,9 @@ class CutieVideoProcessor:
         # Get the total number of frames
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if frame_number == total_frames - 1:
-            return
+            message = f"Please edit a frame and restart.\
+            The last frame prediction already exists:#{frame_number}"
+            return message
 
         # Get the frames per second (fps) of the video
         fps = cap.get(cv2.CAP_PROP_FPS)

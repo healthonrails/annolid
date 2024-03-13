@@ -75,7 +75,10 @@ class CoTrackerProcessor:
                 data = json.load(file)
 
             frame_number = get_frame_number_from_json(json_path)
-            if self.end_frame > 0 and frame_number <= self.end_frame:
+            if not self.is_online and self.end_frame > 0 and frame_number <= self.end_frame:
+                queries.extend(self._process_shapes(
+                    data['shapes'], frame_number))
+            else:
                 queries.extend(self._process_shapes(
                     data['shapes'], frame_number))
 
@@ -94,14 +97,13 @@ class CoTrackerProcessor:
             list: List of extracted queries.
         """
         processed_queries = []
-
         for shape in shapes:
             label = shape['label']
             shape_type = shape['shape_type']
             if shape_type == 'point':
                 processed_queries.append(self._process_point(
                     shape['points'][0], frame_number, label))
-            elif shape_type == 'polygon':
+            elif shape_type == 'polygon' and shape["description"] is not None:
                 processed_queries.extend(self._process_polygon(
                     shape['points'], frame_number, label))
 

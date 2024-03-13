@@ -7,6 +7,8 @@ from qtpy import QtGui
 from labelme.logger import logger
 import labelme.utils
 import skimage.measure
+from shapely.geometry import Polygon
+
 
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
@@ -403,6 +405,96 @@ class Shape(object):
 
     def __setitem__(self, key, value):
         self.points[key] = value
+
+    def __hash__(self):
+        # Hash based on label, shape_type, and points
+        return hash((self.label, self.shape_type,
+                     tuple((p.x(), p.y()) for p in self.points)))
+
+    def calculate_iou(self, other):
+        """
+        Calculate the Intersection over Union (IoU) between two polygons.
+
+        Args:
+            other (Shape): The other shape to compare with.
+
+        Returns:
+            float: IoU value between the two polygons.
+        """
+        # Check if the shapes are polygons
+        if self.shape_type != 'polygon' or other.shape_type != 'polygon':
+            raise ValueError("Both shapes must be polygons to calculate IoU.")
+
+        # Convert the vertices to Shapely Polygon objects
+        poly1 = Polygon([(p.x(), p.y()) for p in self.points])
+        poly2 = Polygon([(p.x(), p.y()) for p in other.points])
+
+        # Calculate intersection area
+        intersection_area = poly1.intersection(poly2).area
+
+        # Calculate union area
+        union_area = poly1.union(poly2).area
+
+        # Calculate IoU
+        iou = intersection_area / union_area
+
+        return iou
+
+    def __eq__(self, other, epsilon=1e-1,
+               iou_threshold=0.90):
+        """
+        Test if two shapes are equal or similar.
+
+        Args:
+            other (Shape): The other shape to compare with.
+            epsilon (float): Tolerance for comparing point coordinates.
+            iou_threshold (float): Threshold for considering IoU as a match.
+
+        Returns:
+            bool: True if the shapes are equal or similar, False otherwise.
+        """
+        # Check if the other object is None
+        if other is None:
+            return False
+
+        # Check if the other object is not an instance of the Shape class
+        if not isinstance(other, Shape):
+            return False
+
+        # Check if the shapes have the same type
+        if self.shape_type != other.shape_type:
+            return False
+
+        # If shapes are polygons, check IoU
+        if self.shape_type == "polygon":
+            iou = self.calculate_iou(other)
+            if iou < iou_threshold:
+                return False
+
+        # Check if the number of points are the same
+        if len(self.points) != len(other.points):
+            return False
+
+        # Check if other properties such as label, fill, etc. are equal
+        if (self.label != other.label or self._closed != other._closed):
+            return False
+
+        # Check if each pair of points are similar within the epsilon tolerance
+        for point_self, point_other in zip(self.points, other.points):
+            # Extract coordinates of points
+            x_self, y_self = point_self.x(), point_self.y()
+            x_other, y_other = point_other.x(), point_other.y()
+
+            # Calculate distance between points
+            distance = ((x_self - x_other) ** 2 +
+                        (y_self - y_other) ** 2) ** 0.5
+
+            # Check if distance is within epsilon tolerance
+            if distance > epsilon:
+                return False
+
+        # If all checks passed, return True
+        return True
 
 
 class MultipoinstShape(Shape):

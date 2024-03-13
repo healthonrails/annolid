@@ -55,7 +55,6 @@ import qimage2ndarray
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
-from annolid.annotation.keypoints import save_labels
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.annotation import labelme2csv
@@ -70,7 +69,7 @@ LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
 class FlexibleWorker(QtCore.QObject):
     start = QtCore.Signal()
-    finished = QtCore.Signal()
+    finished = QtCore.Signal(object)
     return_value = QtCore.Signal(object)
     stop_signal = QtCore.Signal()
     progress_changed = QtCore.Signal(int)
@@ -89,7 +88,7 @@ class FlexibleWorker(QtCore.QObject):
         self.stopped = False
         result = self.function(*self.args, **self.kwargs)
         self.return_value.emit(result)
-        self.finished.emit()
+        self.finished.emit(result)
 
     def stop(self):
         self.stopped = True
@@ -1037,23 +1036,29 @@ class AnnolidWindow(MainWindow):
         self.set_frame_number(current_frame_index)
         self.stop_prediction_flag = False
 
-    def predict_is_ready(self):
+    def predict_is_ready(self, messege):
         self.stepSizeWidget.predict_button.setText(
             "Pred")  # Change button text
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;")
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
-        if self.video_loader is not None:
-            num_json_files = count_json_files(self.video_results_folder)
-            logger.info(
-                f"Number of predicted frames: {num_json_files} in total {self.num_frames}")
-            if num_json_files == self.num_frames:
-                # convert json labels to csv file
-                self.convert_json_to_tracked_csv()
-        QtWidgets.QMessageBox.information(
-            self, "Prediction Ready",
-            "Predictions for the video frames have been generated!")
+        if messege is not None and "last frame" in messege:
+            QtWidgets.QMessageBox.information(
+                self, "Stop early",
+                messege
+            ) 
+        else:
+            if self.video_loader is not None:
+                num_json_files = count_json_files(self.video_results_folder)
+                logger.info(
+                    f"Number of predicted frames: {num_json_files} in total {self.num_frames}")
+                if num_json_files == self.num_frames:
+                    # convert json labels to csv file
+                    self.convert_json_to_tracked_csv()
+            QtWidgets.QMessageBox.information(
+                self, "Prediction Ready",
+                "Predictions for the video frames have been generated!")
 
     def saveLabels(self, filename):
         lf = LabelFile()
@@ -1073,6 +1078,7 @@ class AnnolidWindow(MainWindow):
                     if s.mask is None
                     else utils.img_arr_to_b64(s.mask),
                     visible=s.visible,
+                    description=s.description
                 )
             )
             return data
