@@ -2,7 +2,7 @@ import pandas as pd
 import os
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.masks import mask_to_polygons
-from labelme.shape import Shape
+from annolid.gui.shape import Shape
 from pathlib import Path
 import cv2
 import decord as de

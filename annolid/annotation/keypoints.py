@@ -2,60 +2,77 @@ import os
 import cv2
 import numpy as np
 import pandas as pd
-from annolid.gui import label_file
-from labelme.shape import Shape
+from annolid.gui.label_file import LabelFile
+from annolid.gui.shape import Shape
+from annolid.utils.logger import logger
+import json
 
 
-def save_labels(filename,
-                imagePath,
+def format_shape(shape):
+    data = shape.other_data.copy()
+    data.update({
+        'label': shape.label,
+        'points': shape.points,
+        'group_id': shape.group_id,
+        'shape_type': shape.shape_type,
+        'flags': shape.flags,
+        'visible': shape.visible
+    })
+    return data
+
+
+def load_existing_shapes(filename):
+    if os.path.exists(filename):
+        with open(filename, 'r') as file:
+            return json.load(file).get('shapes', [])
+    return []
+
+
+def save_labels(filename, imagePath,
                 label_list,
                 height,
                 width,
                 imageData=None,
                 otherData=None,
-                save_image_to_json=False
-                ):
-    """Save the a list of labeled shapes to a json file
+                save_image_to_json=False):
+    """Save a list of labeled shapes to a JSON file.
 
     Args:
-        filename (str): json file name
-        imagePath (str): image file path
-        label_list ([Shape]): a list with labeled shapes
-        height (int): image height
-        width (width): image height
-        imageData (optional):  Defaults to None.
-        otherData (optional):  Defaults to None.
-        save_image_to_json (bool, optional): Defaults to False.
-
-    Returns:
-        None: save the file to local device
+        filename (str): JSON file name.
+        imagePath (str): Image file path.
+        label_list (list): List of labeled shapes.
+        height (int): Image height.
+        width (int): Image width.
+        imageData (optional): Image data. Defaults to None.
+        otherData (optional): Other data. Defaults to None.
+        save_image_to_json (bool, optional): 
+        Whether to save image data to JSON. Defaults to False.
     """
-    lf = label_file.LabelFile()
-
-    def format_shape(s):
-        data = s.other_data.copy()
-        data.update(
-            dict(
-                label=s.label,
-                points=s.points,
-                group_id=s.group_id,
-                shape_type=s.shape_type,
-                flags=s.flags,
-                visible=s.visible
-            )
-        )
-        return data
-
-    shapes = [format_shape(item) for item in label_list]
+    # Check if a PNG file exists with the same name
+    png_filename = os.path.splitext(filename)[0] + ".png"
+    if os.path.exists(png_filename):
+        logger.info(
+            """A corresponding PNG file was found. 
+            We assume the frame has been manually labeled.
+            No changes are needed for the JSON file.""")
+        return
+    lf = LabelFile()
+    shapes = [format_shape(shape) for shape in label_list]
     flags = {}
 
-    if imageData is None and save_image_to_json:
-        imageData = label_file.LabelFile.load_image_file(
-            imagePath)
+    # Load existing shapes from the JSON file and merge with new shapes
+    existing_shapes = load_existing_shapes(filename)
+    shapes.extend(existing_shapes)
 
+    # Load image data if necessary
+    if imageData is None and save_image_to_json:
+        imageData = LabelFile.load_image_file(imagePath)
+
+    # Set default value for otherData
     if otherData is None:
         otherData = {}
 
+    # Save data to JSON file
     lf.save(
         filename=filename,
         shapes=shapes,
@@ -64,7 +81,7 @@ def save_labels(filename,
         imageHeight=height,
         imageWidth=width,
         otherData=otherData,
-        flags=flags,
+        flags=flags
     )
 
 

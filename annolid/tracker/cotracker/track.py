@@ -170,7 +170,7 @@ class CoTrackerProcessor:
 
     def process_video(self,
                       start_frame=0,
-                      end_frame=60,
+                      end_frame=-1,
                       grid_size=10,
                       grid_query_frame=0,
                       need_visualize=False):
