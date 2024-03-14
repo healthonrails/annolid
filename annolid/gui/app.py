@@ -1820,6 +1820,22 @@ class AnnolidWindow(MainWindow):
         Args:
             _value (bool, optional):  Defaults to False.
         """
+        if self.dirty or self.video_loader is not None:
+            message_box = QtWidgets.QMessageBox()
+            message_box.setWindowTitle(
+                "Unsaved Changes or Closing the Existing Video")
+            message_box.setText("The existing video will be closed,\n"
+                                "and any unsaved changes may be lost.\n"
+                                "Do you want to continue and open the new video?")
+            message_box.setStandardButtons(
+                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+            choice = message_box.exec()
+
+            if choice == QtWidgets.QMessageBox.Ok:
+                self.closeFile()
+            elif choice == QtWidgets.QMessageBox.Cancel:
+                return  # Cancel operation
+
         video_path = Path(self.filename).parent if self.filename else "."
         formats = ["*.*"]
         filters = self.tr(f"Video files {formats[0]}")
