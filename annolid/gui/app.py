@@ -101,24 +101,21 @@ class FlexibleWorker(QtCore.QObject):
 
 
 class LoadFrameThread(QtCore.QObject):
-    """Thread for loading video frames. 
+    """
+    Thread for loading video frames.
     """
     res_frame = QtCore.Signal(QtGui.QImage)
     process = QtCore.Signal()
-
-    frame_queue = []
-    request_waiting_time = 1
-    reload_times = None
-    previous_process_time = 0
     video_loader = None
 
-    def __init__(self, *args, **kwargs):
-        super(LoadFrameThread, self).__init__(*args, **kwargs)
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.working_lock = QtCore.QMutex()
+        self.frame_queue = deque()
         self.current_load_times = deque(maxlen=5)
-
-        self.process.connect(self.load)
-        self.timer = QtCore.QTimer()
+        self.previous_process_time = time.time()
+        self.request_waiting_time = 1
+        self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.load)
         self.timer.start(20)
 
@@ -129,28 +126,29 @@ class LoadFrameThread(QtCore.QObject):
 
         self.working_lock.lock()
         if not self.frame_queue:
+            self.working_lock.unlock()
             return
 
-        frame_number = self.frame_queue[-1]
-        self.frame_queue = []
+        frame_number = self.frame_queue.pop()
+        self.working_lock.unlock()
 
         try:
             t_start = time.time()
             frame = self.video_loader.load_frame(frame_number)
             self.current_load_times.append(time.time() - t_start)
-            average_load_time = sum(self.current_load_times) / \
-                len(self.current_load_times)
-            self.request_waiting_time = average_load_time
-        except Exception:
-            frame = None
+            self.request_waiting_time = sum(
+                self.current_load_times) / len(self.current_load_times)
+        except Exception as e:
+            logger.info("Error loading frame:", e)
+            return
 
-        self.working_lock.unlock()
-        if frame is not None:
-            qimage = qimage2ndarray.array2qimage(frame)
-            self.res_frame.emit(qimage)
+        qimage = qimage2ndarray.array2qimage(frame)
+        self.res_frame.emit(qimage)
 
     def request(self, frame_number):
-        self.frame_queue.append(frame_number)
+        self.working_lock.lock()
+        self.frame_queue.appendleft(frame_number)
+        self.working_lock.unlock()
 
         t_last = time.time() - self.previous_process_time
 

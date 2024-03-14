@@ -443,7 +443,10 @@ class Shape(object):
         union_area = poly1.union(poly2).area
 
         # Calculate IoU
-        iou = intersection_area / union_area
+        if union_area == 0:
+            iou = 0  # Set the IOU to 0 if the union area is zero
+        else:
+            iou = intersection_area / union_area
 
         return iou
 
