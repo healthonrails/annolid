@@ -1758,6 +1758,8 @@ class AnnolidWindow(MainWindow):
             self.playButton.setText("Pause")
 
     def set_frame_number(self, frame_number):
+        if frame_number >= self.num_frames or frame_number < 0:
+            return
         self.frame_number = frame_number
         self.filename = self.video_results_folder / \
             f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
