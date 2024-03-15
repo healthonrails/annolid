@@ -1,5 +1,4 @@
 import os
-import matplotlib.pyplot as plt
 import cv2
 import torch
 import gdown
@@ -327,7 +326,7 @@ class CutieVideoProcessor:
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if len(mask_dict) < self.num_tracking_instances:
                                 if (not has_occlusion or
-                                        len(num_instances_in_current_frame) < self.num_tracking_instances / 2
+                                            len(num_instances_in_current_frame) < self.num_tracking_instances / 2
                                         ):
                                     pred_worker.stop_signal.emit()
                                     # Release the video capture object
@@ -361,11 +360,12 @@ class CutieVideoProcessor:
 
                         if self.debug and current_frame_index % visualize_every == 0:
                             visualization = overlay_davis(frame, prediction)
-                            plt.imshow(
-                                cv2.cvtColor(visualization, cv2.COLOR_BGR2RGB))
-                            plt.title(str(current_frame_index))
-                            plt.axis('off')
-                            plt.show()
+                            # Convert BGR to RGB
+                            visualization_rgb = cv2.cvtColor(
+                                visualization, cv2.COLOR_BGR2RGB)
+                            # Show the image
+                            cv2.imwrite(str(filename).replace(
+                                '.json', '_mask.png'), visualization_rgb)
                         # Update prev_frame with the current frame
                         prev_frame = frame.copy()
                         current_frame_index += 1
