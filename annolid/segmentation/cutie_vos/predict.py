@@ -262,6 +262,9 @@ class CutieVideoProcessor:
                             break
                         self._frame_number = current_frame_index
                         frame_torch = image_to_torch(frame, device=self.device)
+                        filename = self.video_folder / \
+                            (self.video_folder.name +
+                             f"_{current_frame_index:0>{9}}.json")
                         if (current_frame_index == 0 or
                             (current_frame_index == frame_number == 1) or
                                 (frame_number > 1 and
@@ -271,18 +274,18 @@ class CutieVideoProcessor:
                             prediction = self.processor.step(
                                 frame_torch, mask_torch[1:], idx_mask=False)
                             need_new_segment = False
+                            prediction = torch_prob_to_numpy_mask(prediction)
+                            self.save_color_id_mask(
+                                frame, prediction, filename)
                         else:
                             prediction = self.processor.step(frame_torch)
-                        prediction = torch_prob_to_numpy_mask(prediction)
+                            prediction = torch_prob_to_numpy_mask(prediction)
 
                         if prev_frame is not None:
                             self._flow_hsv, self._flow = compute_optical_flow(
                                 prev_frame, frame)
                             self._mask = prediction > 0
 
-                        filename = self.video_folder / \
-                            (self.video_folder.name +
-                             f"_{current_frame_index:0>{9}}.json")
                         mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
                                      for label_id in np.unique(prediction)[1:]}
 
@@ -359,13 +362,8 @@ class CutieVideoProcessor:
                             self.video_writer.write(visualization)
 
                         if self.debug and current_frame_index % visualize_every == 0:
-                            visualization = overlay_davis(frame, prediction)
-                            # Convert BGR to RGB
-                            visualization_rgb = cv2.cvtColor(
-                                visualization, cv2.COLOR_BGR2RGB)
-                            # Show the image
-                            cv2.imwrite(str(filename).replace(
-                                '.json', '_mask.png'), visualization_rgb)
+                            self.save_color_id_mask(
+                                frame, prediction, filename)
                         # Update prev_frame with the current frame
                         prev_frame = frame.copy()
                         current_frame_index += 1
@@ -388,6 +386,15 @@ class CutieVideoProcessor:
                 if recording:
                     self.video_writer.release()
                 return message
+
+    def save_color_id_mask(self, frame, prediction, filename):
+        visualization = overlay_davis(frame, prediction)
+        # Convert BGR to RGB
+        visualization_rgb = cv2.cvtColor(
+            visualization, cv2.COLOR_BGR2RGB)
+        # Show the image
+        cv2.imwrite(str(filename).replace(
+            '.json', '_mask.png'), visualization_rgb)
 
 
 if __name__ == '__main__':
