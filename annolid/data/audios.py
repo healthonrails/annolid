@@ -87,3 +87,9 @@ class AudioLoader:
 
         # Play the selected audio using sounddevice
         sd.play(selected_audio, self.sample_rate, blocking=True)
+
+    def stop(self):
+        """
+        Stop the currently playing audio.
+        """
+        sd.stop()

@@ -625,7 +625,9 @@ class AnnolidWindow(MainWindow):
         if self.isPlaying:
             self.timer = QtCore.QTimer()
             self.timer.timeout.connect(self.openNextImg)
-            if self.fps is not None:
+            if self.audio_widget is not None and self.audio_widget.audio_loader is not None:
+                self.audio_widget.audio_loader.play()
+            if self.fps is not None and self.fps > 0:
                 self.timer.start(int(1000/self.fps))
             else:
                 # 10 to 50 milliseconds are normal real time
@@ -633,6 +635,9 @@ class AnnolidWindow(MainWindow):
                 self.timer.start(20)
         else:
             self.timer.stop()
+            # Stop audio playback when video playback stops
+            if self.audio_widget is not None and self.audio_widget.audio_loader is not None:
+                self.audio_widget.audio_loader.stop()
 
     def startPlaying(self):
         self.playVideo(isPlaying=True)
@@ -681,6 +686,7 @@ class AnnolidWindow(MainWindow):
         self.num_frames = None
         self.video_file = None
         if self.audio_widget:
+            self.audio_widget.audio_loader = None
             self.audio_widget.close()
         self.audio_widget = None
         if self.audio_dock:
