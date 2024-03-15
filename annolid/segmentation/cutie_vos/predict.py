@@ -128,7 +128,7 @@ class CutieVideoProcessor:
     def _save_bbox(self, points, frame_area, label):
         # A linearring requires at least 4 coordinates.
         # good quality polygon
-        if len(points) >= 10:
+        if len(points) >= 4:
             # Create a Shapely Polygon object from the list of points
             polygon = Polygon(points)
             # Get the bounding box coordinates (minx, miny, maxx, maxy)
@@ -136,7 +136,7 @@ class CutieVideoProcessor:
             # Calculate the area of the bounding box
             bbox_area = (_bbox[2] - _bbox[0]) * (_bbox[3] - _bbox[1])
             # bbox area should bigger enough
-            if bbox_area <= (frame_area * 0.10) and bbox_area >= (frame_area * 0.02):
+            if bbox_area <= (frame_area * 0.50) and bbox_area >= (frame_area * 0.0002):
                 self.cache.add_bbox(label, _bbox)
 
     def _save_results(self, label, mask):
