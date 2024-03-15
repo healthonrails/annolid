@@ -1062,8 +1062,6 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.information(
                 self, "Prediction Ready",
                 "Predictions for the video frames have been generated!")
-        # Go back to the first frame
-        self.set_frame_number(0)
 
     def saveLabels(self, filename):
         lf = LabelFile()
