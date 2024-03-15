@@ -10,7 +10,8 @@ from annolid.segmentation.cutie_vos.interactive_utils import (
     image_to_torch,
     torch_prob_to_numpy_mask,
     index_numpy_to_one_hot_torch,
-    overlay_davis
+    overlay_davis,
+    color_id_mask,
 )
 from shapely.geometry import Polygon
 from omegaconf import open_dict
@@ -329,8 +330,8 @@ class CutieVideoProcessor:
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if len(mask_dict) < self.num_tracking_instances:
                                 if (not has_occlusion or
-                                            len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                        ):
+                                    len(num_instances_in_current_frame) < self.num_tracking_instances / 2
+                                    ):
                                     pred_worker.stop_signal.emit()
                                     # Release the video capture object
                                     cap.release()
@@ -388,13 +389,16 @@ class CutieVideoProcessor:
                 return message
 
     def save_color_id_mask(self, frame, prediction, filename):
+        _id_mask = color_id_mask(prediction)
         visualization = overlay_davis(frame, prediction)
         # Convert BGR to RGB
         visualization_rgb = cv2.cvtColor(
             visualization, cv2.COLOR_BGR2RGB)
         # Show the image
         cv2.imwrite(str(filename).replace(
-            '.json', '_mask.png'), visualization_rgb)
+            '.json', '_mask_frame.png'), visualization_rgb)
+        cv2.imwrite(str(filename).replace(
+            '.json', '_mask.png'), _id_mask)
 
 
 if __name__ == '__main__':

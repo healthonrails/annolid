@@ -117,6 +117,11 @@ def overlay_davis(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5, fade:
     return im_overlay.astype(image.dtype)
 
 
+def color_id_mask(mask: np.ndarray):
+    """Generate color ID mask from segmentation mask."""
+    return color_map_np[mask]
+
+
 def overlay_popup(image: np.ndarray, mask: np.ndarray, target_objects: List[int]):
     # Keep foreground colored. Convert background to grayscale.
     im_overlay = image.copy()
