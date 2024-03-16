@@ -477,9 +477,10 @@ class Shape(object):
 
         # If shapes are polygons, check IoU
         if self.shape_type == "polygon":
-            iou = self.calculate_iou(other)
-            if iou < iou_threshold:
-                return False
+            if len(self.points) >= 4 and len(other.points) >= 4:
+                iou = self.calculate_iou(other)
+                if iou < iou_threshold:
+                    return False
 
         # Check if the number of points are the same
         if len(self.points) != len(other.points):

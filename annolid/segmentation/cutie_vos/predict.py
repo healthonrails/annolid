@@ -178,7 +178,10 @@ class CutieVideoProcessor:
                                       flags={},
                                       description='grounding_sam')
             current_shape.mask = mask
-            current_shape = current_shape.toPolygons()[0]
+            _shapes = current_shape.toPolygons()
+            if len(_shapes) < 0:
+                continue
+            current_shape = _shapes[0]
             points = [[point.x(), point.y()] for point in current_shape.points]
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
@@ -199,7 +202,7 @@ class CutieVideoProcessor:
                 fpoint_shape.points = [fpoint]
                 label_list.append(fpoint_shape)
 
-    def segement_with_bbox(self, instance_names, cur_frame, score_threshold=0.88):
+    def segement_with_bbox(self, instance_names, cur_frame, score_threshold=0.60):
         label_mask_dict = {}
         for instance_name in instance_names:
             _bboxes = self.cache.get_most_recent_bbox(instance_name)
