@@ -58,13 +58,17 @@ class CutieVideoProcessor:
     _REMOTE_MODEL_URL = "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
     _MD5 = "a6071de6136982e396851903ab4c083a"
 
-    def __init__(self, video_name, mem_every=5, debug=False):
+    def __init__(self, video_name,
+                 mem_every=5,
+                 debug=False,
+                 max_mem_frames=10):
         self.video_name = video_name
         self.video_folder = Path(video_name).with_suffix("")
         self.mem_every = mem_every
         self.debug = debug
         self.processor = None
         self.num_tracking_instances = 0
+        self.max_mem_frames = max_mem_frames
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
         self.device = get_device()
@@ -116,9 +120,11 @@ class CutieVideoProcessor:
                                       )
             with open_dict(cfg):
                 cfg['weights'] = model_path
+                cfg['max_mem_frames'] = self.max_mem_frames
             cfg['mem_every'] = self.mem_every
             logger.info(
                 f"Saving into working memeory for every: {self.mem_every}.")
+            logger.info(f"Tmax: max_mem_frames: {self.max_mem_frames}")
             cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
                 cfg.weights, map_location=self.device)
@@ -330,7 +336,7 @@ class CutieVideoProcessor:
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if len(mask_dict) < self.num_tracking_instances:
                                 if (not has_occlusion or
-                                    len(num_instances_in_current_frame) < self.num_tracking_instances / 2
+                                        len(num_instances_in_current_frame) < self.num_tracking_instances / 2
                                     ):
                                     pred_worker.stop_signal.emit()
                                     # Release the video capture object
