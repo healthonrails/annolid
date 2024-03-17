@@ -1399,7 +1399,7 @@ class AnnolidWindow(MainWindow):
         if self.video_file is not None:
             video_file = self.video_file
             out_folder = Path(video_file).with_suffix('')
-        if not out_folder.exists():
+        if out_folder is None or not out_folder.exists():
             QtWidgets.QMessageBox.about(self,
                                         "No predictions",
                                         "Help Annolid achieve precise predictions by labeling a frame.\
@@ -1470,6 +1470,8 @@ class AnnolidWindow(MainWindow):
             return
         # Convert annolid predicted json files to a single tracked csv file
         if algo == 'Predictions':
+            if self.video_file is None:
+                self.video_file = video_file
             self.convert_json_to_tracked_csv()
 
         if algo == 'Detectron2':
