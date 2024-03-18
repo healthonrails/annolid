@@ -250,7 +250,6 @@ class CutieVideoProcessor:
         end_frame_number = frame_number + frames_to_propagate
         current_frame_index = frame_number
         prev_frame = None
-        need_new_segment = False
         delimiter = '#'
 
         if recording:
@@ -278,12 +277,11 @@ class CutieVideoProcessor:
                         if (current_frame_index == 0 or
                             (current_frame_index == frame_number == 1) or
                                 (frame_number > 1 and
-                                 current_frame_index % frame_number == 0)) or need_new_segment:
+                                 current_frame_index % frame_number == 0)):
                             mask_torch = index_numpy_to_one_hot_torch(
                                 mask, num_objects + 1).to(self.device)
                             prediction = self.processor.step(
                                 frame_torch, mask_torch[1:], idx_mask=False)
-                            need_new_segment = False
                             prediction = torch_prob_to_numpy_mask(prediction)
                             self.save_color_id_mask(
                                 frame, prediction, filename)
@@ -319,22 +317,12 @@ class CutieVideoProcessor:
                             segemented_instances = self.segement_with_bbox(
                                 missing_instances, frame)
                             if len(segemented_instances) < 1:
-                                has_occlusion = True
-                                self.num_tracking_instances = len(
-                                    mask_dict.keys())
-                            else:
                                 logger.info(
                                     f"Recovered: {segemented_instances.keys()}")
                                 mask_dict.update(segemented_instances)
                                 logger.info(f"After merge: {mask_dict.keys()}")
                                 _saved_shapes = self._save_annotation(
                                     filename, mask_dict, frame.shape)
-                                # commit the new segments to memeory
-                                need_new_segment = True
-                                self.num_tracking_instances = len(
-                                    mask_dict.keys())
-                                mask, _ = shapes_to_label(
-                                    frame.shape, _saved_shapes, labels_dict)
                             # Stop the prediction if more than half of the instances are missing,
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if len(mask_dict) < self.num_tracking_instances:
