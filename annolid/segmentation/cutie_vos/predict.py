@@ -319,6 +319,7 @@ class CutieVideoProcessor:
                             if len(segemented_instances) < 1:
                                 logger.info(
                                     f"Recovered: {segemented_instances.keys()}")
+                            else:
                                 mask_dict.update(segemented_instances)
                                 logger.info(f"After merge: {mask_dict.keys()}")
                                 _saved_shapes = self._save_annotation(
