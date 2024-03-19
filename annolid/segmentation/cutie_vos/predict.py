@@ -296,7 +296,8 @@ class CutieVideoProcessor:
 
                         mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
                                      for label_id in np.unique(prediction)[1:]}
-
+                        # Save predictions and merge them upon recovery
+                        self._save_annotation(filename, mask_dict, frame.shape)
                         # if we lost tracking one of the instances, return the current frame number
                         num_instances_in_current_frame = mask_dict.keys()
                         if len(num_instances_in_current_frame) < self.num_tracking_instances:
@@ -316,10 +317,9 @@ class CutieVideoProcessor:
 
                             segemented_instances = self.segement_with_bbox(
                                 missing_instances, frame)
-                            if len(segemented_instances) < 1:
+                            if len(segemented_instances) >= 1:
                                 logger.info(
                                     f"Recovered: {segemented_instances.keys()}")
-                            else:
                                 mask_dict.update(segemented_instances)
                                 logger.info(f"After merge: {mask_dict.keys()}")
                                 _saved_shapes = self._save_annotation(
