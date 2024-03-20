@@ -252,6 +252,9 @@ class CutieVideoProcessor:
         prev_frame = None
         delimiter = '#'
 
+        logger.info(
+            f"This video has {'occlusion.' if has_occlusion else 'no occlusion.'} ")
+
         if recording:
             if output_video_path is None:
                 output_video_path = self.output_tracking_csvpath.replace(
@@ -328,8 +331,8 @@ class CutieVideoProcessor:
                             # or when there is no occlusion in the video and one instance loses tracking.
                             if len(mask_dict) < self.num_tracking_instances:
                                 if (not has_occlusion or
-                                        len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                    ):
+                                            len(num_instances_in_current_frame) < self.num_tracking_instances / 2
+                                        ):
                                     pred_worker.stop_signal.emit()
                                     # Release the video capture object
                                     cap.release()

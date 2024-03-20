@@ -17,6 +17,11 @@ class StepSizeWidget(QtWidgets.QWidget):
         self.step_size_spin_box.setStatusTip(self.step_size_spin_box.toolTip())
         self.step_size_spin_box.setAlignment(QtCore.Qt.AlignCenter)
 
+        # Checkbox for indicating occlusion
+        self.occclusion_checkbox = QtWidgets.QCheckBox("Occluded")
+        # Default value is False
+        self.occclusion_checkbox.setChecked(False)
+
         # Predict Button
         self.predict_button = QtWidgets.QPushButton("Pred")
         self.predict_button.setStyleSheet(
@@ -27,8 +32,9 @@ class StepSizeWidget(QtWidgets.QWidget):
 
         # Layout
         layout = QtWidgets.QVBoxLayout()  # Vertical layout
+        layout.addWidget(self.occclusion_checkbox)  # Checkbox above spin box
         layout.addWidget(self.step_size_spin_box)
-        layout.addWidget(self.predict_button)  # Predict button below spin box
+        layout.addWidget(self.predict_button)  # Predict button below checkbox
         self.setLayout(layout)
         # Set the width of the prediction button to match the width of the spin box
         self.predict_button.setFixedWidth(

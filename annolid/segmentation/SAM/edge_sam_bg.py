@@ -198,7 +198,8 @@ class VideoProcessor:
         return shapes
 
     def process_video_with_cutite(self, frames_to_propagate=100,
-                                  mem_every=5
+                                  mem_every=5,
+                                  has_occlusion=False,
                                   ):
         self.most_recent_file = self.get_most_recent_file()
         if self.most_recent_file is None:
@@ -236,7 +237,8 @@ class VideoProcessor:
                                                                          frames_to_propagate=frames_to_propagate,
                                                                          visualize_every=20,
                                                                          labels_dict=label_name_to_value,
-                                                                         pred_worker=self.pred_worker
+                                                                         pred_worker=self.pred_worker,
+                                                                         has_occlusion=has_occlusion,
                                                                          )
         return message
 
@@ -435,6 +437,7 @@ class VideoProcessor:
                              is_cutie=True,
                              mem_every=5,
                              point_tracking=False,
+                             has_occlusion=False,
                              ):
         """
         Process multiple frames of the video.
@@ -450,7 +453,8 @@ class VideoProcessor:
                 end_frame = self.num_frames
                 message = self.process_video_with_cutite(
                     frames_to_propagate=end_frame,
-                    mem_every=mem_every
+                    mem_every=mem_every,
+                    has_occlusion=has_occlusion,
                 )
                 return message
             elif point_tracking:

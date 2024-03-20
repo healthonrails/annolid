@@ -1007,7 +1007,8 @@ class AnnolidWindow(MainWindow):
                     step=self.step_size,
                     is_cutie=False if model_name == "keypoints" else True,
                     mem_every=self.step_size,
-                    point_tracking=model_name == "keypoints"
+                    point_tracking=model_name == "keypoints",
+                    has_occlusion=self.stepSizeWidget.occclusion_checkbox.isChecked()
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.frame_number += 1
