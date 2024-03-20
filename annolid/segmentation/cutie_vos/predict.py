@@ -329,10 +329,9 @@ class CutieVideoProcessor:
                                     filename, mask_dict, frame.shape)
                             # Stop the prediction if more than half of the instances are missing,
                             # or when there is no occlusion in the video and one instance loses tracking.
+                            # change parameter for how many instances are missing to stop
                             if len(mask_dict) < self.num_tracking_instances:
-                                if (not has_occlusion or
-                                            len(num_instances_in_current_frame) < self.num_tracking_instances / 2
-                                        ):
+                                if (not has_occlusion):
                                     pred_worker.stop_signal.emit()
                                     # Release the video capture object
                                     cap.release()

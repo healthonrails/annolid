@@ -821,7 +821,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         try:
             point = shape[index]
         except IndexError as e:
-            logger.inf(e)
+            logger.info(e)
             return
         if self.outOfPixmap(pos):
             pos = self.intersectionPoint(point, pos)
