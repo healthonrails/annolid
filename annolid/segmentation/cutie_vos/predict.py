@@ -61,7 +61,9 @@ class CutieVideoProcessor:
     def __init__(self, video_name,
                  mem_every=5,
                  debug=False,
-                 max_mem_frames=10):
+                 max_mem_frames=10,
+                 epsilon_for_polygon=2.0,
+                 ):
         self.video_name = video_name
         self.video_folder = Path(video_name).with_suffix("")
         self.mem_every = mem_every
@@ -73,6 +75,9 @@ class CutieVideoProcessor:
         self.current_folder = os.path.dirname(current_file_path)
         self.device = get_device()
         self.cutie, self.cfg = self._initialize_model()
+        self.epsilon_for_polygon = epsilon_for_polygon
+        logger.info(
+            f"Using epsilon: {self.epsilon_for_polygon} for polygon approximation.")
 
         self._frame_numbers = []
         self._instance_names = []
@@ -178,7 +183,8 @@ class CutieVideoProcessor:
                                       flags={},
                                       description='grounding_sam')
             current_shape.mask = mask
-            _shapes = current_shape.toPolygons()
+            _shapes = current_shape.toPolygons(
+                epsilon=self.epsilon_for_polygon)
             if len(_shapes) < 0:
                 continue
             current_shape = _shapes[0]

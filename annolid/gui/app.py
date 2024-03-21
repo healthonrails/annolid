@@ -58,6 +58,7 @@ from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.annotation import labelme2csv
+from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 
 from labelme.ai import MODELS
 __appname__ = 'Annolid'
@@ -232,6 +233,7 @@ class AnnolidWindow(MainWindow):
         self.video_processor = None
         # Initialize a flag to control thread termination
         self.stop_prediction_flag = False
+        self.epsilon_for_polygon = 2.0
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -304,6 +306,14 @@ class AnnolidWindow(MainWindow):
             None,
             "Open Video",
             self.tr("Open video")
+        )
+
+        advance_params = action(
+            self.tr("&Advanced Parameters"),
+            self.set_advanced_params,
+            None,
+            "Advanced Parameters",
+            self.tr("Advanced Parameters")
         )
         open_video.setIcon(QtGui.QIcon(
             str(
@@ -433,48 +443,8 @@ class AnnolidWindow(MainWindow):
         shortcuts = self._config["shortcuts"]
         self.shortcuts = shortcuts
 
-        delete = action(
-            self.tr("Delete Polygons"),
-            self.deleteSelectedShape,
-            shortcuts["delete_polygon"],
-            "cancel",
-            self.tr("Delete the selected polygons"),
-            enabled=False,
-        )
-
-        edit = action(
-            self.tr("&Edit Label"),
-            self.editLabel,
-            shortcuts["edit_label"],
-            "edit",
-            self.tr("Modify the label of the selected polygon"),
-            enabled=False,
-        )
-        # Lavel list context menu.
-        labelMenu = QtWidgets.QMenu()
-        utils.addActions(labelMenu, (edit, delete))
-
         visualization.setIcon(QtGui.QIcon(str(
             self.here / "icons/visualization.png")))
-
-        self.menus = utils.struct(
-            file=self.menu(self.tr("&File")),
-            edit=self.menu(self.tr("&Edit")),
-            view=self.menu(self.tr("&View")),
-            help=self.menu(self.tr("&Help")),
-            labelList=labelMenu,
-            recentFiles=QtWidgets.QMenu(self.tr("Open &Recent")),
-            frames=self.menu(self.tr("&Extract Frames")),
-            open_video=self.menu(self.tr("&Open Video")),
-            coco=self.menu(self.tr("&COCO")),
-            models=self.menu(self.tr("&Train models")),
-            visualization=self.menu(self.tr("&Visualization")),
-            tracks=self.menu(self.tr("&Track Animals")),
-            glitter2=self.menu(self.tr("&Glitter2")),
-            save_labels=self.menu(self.tr("&Save Labels")),
-            quality_control=self.menu(self.tr("&Quality Control")),
-            colab=self.menu(self.tr("&Open in Colab")),
-        )
 
         self.aiRectangle = AiRectangleWidget()
         self.aiRectangle._aiRectanglePrompt.returnPressed.connect(
@@ -500,16 +470,19 @@ class AnnolidWindow(MainWindow):
         self.tools.clear()
 
         utils.addActions(self.tools, self.actions.tool)
-        utils.addActions(self.menus.frames, (frames,))
-        utils.addActions(self.menus.open_video, (open_video, open_audio))
-        utils.addActions(self.menus.coco, (coco,))
-        utils.addActions(self.menus.models, (models,))
-        utils.addActions(self.menus.visualization, (visualization,))
-        utils.addActions(self.menus.tracks, (tracks,))
-        utils.addActions(self.menus.glitter2, (glitter2,))
-        utils.addActions(self.menus.save_labels, (save_labeles,))
-        utils.addActions(self.menus.quality_control, (quality_control,))
-        utils.addActions(self.menus.colab, (colab,))
+        utils.addActions(self.menus.file, (open_video,))
+        utils.addActions(self.menus.file, (open_audio,))
+        utils.addActions(self.menus.file, (colab,))
+        utils.addActions(self.menus.file, (save_labeles,))
+        utils.addActions(self.menus.file, (coco,))
+        utils.addActions(self.menus.file, (frames,))
+        utils.addActions(self.menus.file, (models,))
+        utils.addActions(self.menus.file, (tracks,))
+        utils.addActions(self.menus.file, (quality_control,))
+        utils.addActions(self.menus.file, (advance_params,))
+
+        utils.addActions(self.menus.view, (glitter2,))
+        utils.addActions(self.menus.view, (visualization,))
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -577,6 +550,14 @@ class AnnolidWindow(MainWindow):
             self.audio_dock.setObjectName("Audio")
             self.audio_dock.setWidget(self.audio_widget)
             self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+
+    def set_advanced_params(self):
+        advanced_params_dialog = AdvancedParametersDialog(self)
+        advanced_params_dialog.exec_()
+        advanced_params_dialog.apply_parameters()
+        self.epsilon_for_polygon = advanced_params_dialog.get_epsilon_value()
+        logger.info(
+            f"Set eplision for polygon to : {self.epsilon_for_polygon}")
 
     def segmentAnything(self,):
         try:
@@ -987,7 +968,8 @@ class AnnolidWindow(MainWindow):
                 self.video_processor = VideoProcessor(
                     self.video_file,
                     model_name=model_name,
-                    save_image_to_disk=False
+                    save_image_to_disk=False,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
                 )
                 if not self.seg_pred_thread.isRunning():
                     self.seg_pred_thread = QtCore.QThread()

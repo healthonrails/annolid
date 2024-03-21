@@ -160,7 +160,8 @@ class VideoProcessor:
                  video_path,
                  num_center_points=3,
                  model_name="Segment-Anything (Edge)",
-                 save_image_to_disk=True
+                 save_image_to_disk=True,
+                 epsilon_for_polygon=2.0,
                  ):
         """
         Initialize the VideoProcessor.
@@ -187,6 +188,7 @@ class VideoProcessor:
         self.center_points_dict = defaultdict()
         self.save_image_to_disk = save_image_to_disk
         self.pred_worker = None
+        self.epsilon_for_polygon = epsilon_for_polygon
 
     def set_pred_worker(self, pred_worker):
         self.pred_worker = pred_worker
@@ -230,7 +232,8 @@ class VideoProcessor:
             VideoProcessor.sam_hq = SamHQSegmenter()
         if VideoProcessor.cutie_processor is None:
             VideoProcessor.cutie_processor = CutieVideoProcessor(
-                self.video_path, mem_every=mem_every, debug=False)
+                self.video_path, mem_every=mem_every, debug=False,
+                epsilon_for_polygon=self.epsilon_for_polygon)
         VideoProcessor.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
         message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
                                                                          mask,

@@ -36,11 +36,6 @@ def merge_shapes(new_shapes, existing_shapes):
     for new_shape in new_shapes:
         if new_shape not in merged_shapes:
             merged_shapes.append(new_shape)
-        else:
-            logger.info(f"Skipping duplicate shape: {new_shape}.\
-                        This shape already exists in the list and will not be saved."
-                        )
-
     return merged_shapes
 
 

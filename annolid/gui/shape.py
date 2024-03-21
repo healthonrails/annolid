@@ -657,7 +657,6 @@ class MaskShape(MultipoinstShape):
             largest_contour = max(contours, key=cv2.contourArea)
 
             # Approximate the largest contour using Douglas-Peucker algorithm
-            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
             approximated_contour = cv2.approxPolyDP(
                 largest_contour, epsilon, True)
 
