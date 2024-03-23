@@ -156,13 +156,7 @@ class VideoProcessor:
     sam_hq = None
     cutie_processor = None
 
-    def __init__(self,
-                 video_path,
-                 num_center_points=3,
-                 model_name="Segment-Anything (Edge)",
-                 save_image_to_disk=True,
-                 epsilon_for_polygon=2.0,
-                 ):
+    def __init__(self, video_path, *args, **kwargs):
         """
         Initialize the VideoProcessor.
 
@@ -174,21 +168,21 @@ class VideoProcessor:
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
         self.first_frame = self.video_loader.get_first_frame()
-        self.sam_name = model_name
-        if model_name == 'sam_hq' and VideoProcessor.sam_hq is None:
+        self.sam_name = kwargs.get('model_name', "Segment-Anything (Edge)")
+        if self.sam_name == 'sam_hq' and VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
-        elif model_name == "Segment-Anything (Edge)":
+        elif self.sam_name == "Segment-Anything (Edge)":
             self.edge_sam = self.get_model()
-        elif model_name == "efficientvit_sam":
+        elif self.sam_name == "efficientvit_sam":
             self.edge_sam = EfficientViTSAM()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
-        self.num_points_inside_edges = num_center_points
-        self.num_center_points = num_center_points
+        self.num_points_inside_edges = kwargs.get('num_center_points', 3)
+        self.num_center_points = self.num_points_inside_edges
         self.center_points_dict = defaultdict()
-        self.save_image_to_disk = save_image_to_disk
+        self.save_image_to_disk = kwargs.get('save_image_to_disk', True)
         self.pred_worker = None
-        self.epsilon_for_polygon = epsilon_for_polygon
+        self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
 
     def set_pred_worker(self, pred_worker):
         self.pred_worker = pred_worker
