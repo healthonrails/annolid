@@ -58,24 +58,20 @@ class CutieVideoProcessor:
     _REMOTE_MODEL_URL = "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
     _MD5 = "a6071de6136982e396851903ab4c083a"
 
-    def __init__(self, video_name,
-                 mem_every=5,
-                 debug=False,
-                 max_mem_frames=10,
-                 epsilon_for_polygon=2.0,
-                 ):
+    def __init__(self, video_name, *args, **kwargs):
         self.video_name = video_name
         self.video_folder = Path(video_name).with_suffix("")
-        self.mem_every = mem_every
-        self.debug = debug
+        self.mem_every = kwargs.get('mem_every', 5)
+        self.debug = kwargs.get('debug', False)
+        # T_max parameter default 5
+        self.max_mem_frames = kwargs.get('max_mem_frames', 5)
+        self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
         self.processor = None
         self.num_tracking_instances = 0
-        self.max_mem_frames = max_mem_frames
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
         self.device = get_device()
         self.cutie, self.cfg = self._initialize_model()
-        self.epsilon_for_polygon = epsilon_for_polygon
         logger.info(
             f"Using epsilon: {self.epsilon_for_polygon} for polygon approximation.")
 
@@ -91,7 +87,7 @@ class CutieVideoProcessor:
         self._flow = None
         self._flow_hsv = None
         self._mask = None
-        self.cache = BboxCache(max_size=mem_every * 10)
+        self.cache = BboxCache(max_size=self.mem_every * 10)
         self.sam_hq = None
         self.output_tracking_csvpath = str(
             self.video_folder) + f"_tracked.csv"
