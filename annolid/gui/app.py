@@ -235,6 +235,7 @@ class AnnolidWindow(MainWindow):
         self.stop_prediction_flag = False
         self.epsilon_for_polygon = 2.0
         self.automatic_pause_enabled = False
+        self.t_max_value = 5
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -558,6 +559,7 @@ class AnnolidWindow(MainWindow):
         advanced_params_dialog.apply_parameters()
         self.epsilon_for_polygon = advanced_params_dialog.get_epsilon_value()
         self.automatic_pause_enabled = advanced_params_dialog.is_automatic_pause_enabled()
+        self.t_max_value = advanced_params_dialog.get_t_max_value()
         logger.info(
             f"Set eplision for polygon to : {self.epsilon_for_polygon}")
 
@@ -972,6 +974,7 @@ class AnnolidWindow(MainWindow):
                     model_name=model_name,
                     save_image_to_disk=False,
                     epsilon_for_polygon=self.epsilon_for_polygon,
+                    t_max_value=self.t_max_value,
                 )
                 if not self.seg_pred_thread.isRunning():
                     self.seg_pred_thread = QtCore.QThread()
@@ -994,7 +997,7 @@ class AnnolidWindow(MainWindow):
                     is_cutie=False if model_name == "keypoints" else True,
                     mem_every=self.step_size,
                     point_tracking=model_name == "keypoints",
-                    has_occlusion=stop_when_lost_tracking_instance
+                    has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.frame_number += 1

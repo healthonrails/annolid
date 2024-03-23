@@ -168,6 +168,7 @@ class VideoProcessor:
         self.video_folder = Path(video_path).with_suffix("")
         self.video_loader = CV2Video(video_path)
         self.first_frame = self.video_loader.get_first_frame()
+        self.t_max_value = kwargs.get("t_max_value", 5)
         self.sam_name = kwargs.get('model_name', "Segment-Anything (Edge)")
         if self.sam_name == 'sam_hq' and VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
@@ -227,7 +228,7 @@ class VideoProcessor:
         if VideoProcessor.cutie_processor is None:
             VideoProcessor.cutie_processor = CutieVideoProcessor(
                 self.video_path, mem_every=mem_every, debug=False,
-                epsilon_for_polygon=self.epsilon_for_polygon)
+                epsilon_for_polygon=self.epsilon_for_polygon, t_max_value=self.t_max_value)
         VideoProcessor.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
         message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
                                                                          mask,
@@ -427,15 +428,7 @@ class VideoProcessor:
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
                     height=height, width=width, save_image_to_json=False)
 
-    def process_video_frames(self,
-                             start_frame=0,
-                             end_frame=None,
-                             step=10,
-                             is_cutie=True,
-                             mem_every=5,
-                             point_tracking=False,
-                             has_occlusion=False,
-                             ):
+    def process_video_frames(self, *args, **kwargs):
         """
         Process multiple frames of the video.
 
@@ -443,7 +436,20 @@ class VideoProcessor:
         - start_frame (int): Starting frame number.
         - end_frame (int): Ending frame number.
         - step (int): Step between frames.
+        - is_cutie (bool): Whether to use cutie processing.
+        - mem_every (int): Memory usage frequency.
+        - point_tracking (bool): Whether to use point tracking.
+        - has_occlusion (bool): Whether occlusion is present.
         """
+        start_frame = kwargs.get('start_frame', 0)
+        end_frame = kwargs.get('end_frame', None)
+        step = kwargs.get('step', 10)
+        is_cutie = kwargs.get('is_cutie', True)
+        mem_every = kwargs.get('mem_every', 5)
+        point_tracking = kwargs.get('point_tracking', False)
+        has_occlusion = kwargs.get('has_occlusion', False)
+        t_max_value = kwargs.get('t_max_value', 5)
+
         while not self.pred_worker.is_stopped():
             if is_cutie:
                 # always predict to the end of the video
@@ -466,8 +472,8 @@ class VideoProcessor:
                 for i in range(start_frame, end_frame + 1, step):
                     self.process_frame(i)
             else:
-                self.pred_worker.stop_singal.emit()
-                return f"Not implemented#404"
+                self.pred_worker.stop_signal.emit()
+                return "Not implemented#404"
 
     def get_most_recent_file(self):
         """

@@ -64,7 +64,7 @@ class CutieVideoProcessor:
         self.mem_every = kwargs.get('mem_every', 5)
         self.debug = kwargs.get('debug', False)
         # T_max parameter default 5
-        self.max_mem_frames = kwargs.get('max_mem_frames', 5)
+        self.max_mem_frames = kwargs.get('t_max_value', 5)
         self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
         self.processor = None
         self.num_tracking_instances = 0
