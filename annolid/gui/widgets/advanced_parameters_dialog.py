@@ -10,11 +10,14 @@ class AdvancedParametersDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Advanced Parameters")
 
-        # Initialize epsilon value, T_max value, automatic pause flag, and CPU only flag
+        # Initialize epsilon value, T_max value, automatic pause flag, CPU only flag,
+        # save video with color mask flag, and auto recovery of missing instances flag
         self.epsilon_value = 2.0
         self.t_max_value = 5
         self.automatic_pause_enabled = False
         self.cpu_only_enabled = False
+        self.save_video_with_color_mask = False
+        self.auto_recovery_missing_instances = False
 
         # Create layout
         layout = QVBoxLayout()
@@ -51,6 +54,20 @@ class AdvancedParametersDialog(QDialog):
         self.cpu_only_checkbox.setChecked(self.cpu_only_enabled)
         layout.addWidget(self.cpu_only_checkbox)
 
+        # Add checkbox for saving video with color mask
+        self.save_video_with_color_mask_checkbox = QCheckBox(
+            "Save Video with Color Mask")
+        self.save_video_with_color_mask_checkbox.setChecked(
+            self.save_video_with_color_mask)
+        layout.addWidget(self.save_video_with_color_mask_checkbox)
+
+        # Add checkbox for auto recovery of missing instances
+        self.auto_recovery_missing_instances_checkbox = QCheckBox(
+            "Auto Recovery of Missing Instances")
+        self.auto_recovery_missing_instances_checkbox.setChecked(
+            self.auto_recovery_missing_instances)
+        layout.addWidget(self.auto_recovery_missing_instances_checkbox)
+
         # Add button to apply parameters
         apply_button = QPushButton("Apply")
         apply_button.clicked.connect(self.apply_parameters)
@@ -68,6 +85,10 @@ class AdvancedParametersDialog(QDialog):
         self.automatic_pause_enabled = self.automatic_pause_checkbox.isChecked()
         # Get CPU only usage setting
         self.cpu_only_enabled = self.cpu_only_checkbox.isChecked()
+        # Get save video with color mask setting
+        self.save_video_with_color_mask = self.save_video_with_color_mask_checkbox.isChecked()
+        # Get auto recovery of missing instances setting
+        self.auto_recovery_missing_instances = self.auto_recovery_missing_instances_checkbox.isChecked()
         # Close the dialog
         self.close()
 
@@ -82,3 +103,9 @@ class AdvancedParametersDialog(QDialog):
 
     def is_cpu_only_enabled(self):
         return self.cpu_only_enabled
+
+    def is_save_video_with_color_mask_enabled(self):
+        return self.save_video_with_color_mask
+
+    def is_auto_recovery_missing_instances_enabled(self):
+        return self.auto_recovery_missing_instances

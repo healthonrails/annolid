@@ -237,6 +237,8 @@ class AnnolidWindow(MainWindow):
         self.automatic_pause_enabled = False
         self.t_max_value = 5
         self.use_cpu_only = False
+        self.save_video_with_color_mask = False
+        self.auto_recovery_missing_instances = False
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -562,6 +564,8 @@ class AnnolidWindow(MainWindow):
         self.automatic_pause_enabled = advanced_params_dialog.is_automatic_pause_enabled()
         self.t_max_value = advanced_params_dialog.get_t_max_value()
         self.use_cpu_only = advanced_params_dialog.is_cpu_only_enabled()
+        self.save_video_with_color_mask = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
+        self.auto_recovery_missing_instances = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
         logger.info(
             f"Set eplision for polygon to : {self.epsilon_for_polygon}")
 
@@ -978,6 +982,8 @@ class AnnolidWindow(MainWindow):
                     epsilon_for_polygon=self.epsilon_for_polygon,
                     t_max_value=self.t_max_value,
                     use_cpu_only=self.use_cpu_only,
+                    auto_recovery_missing_instances=self.auto_recovery_missing_instances,
+                    save_video_with_color_mask=self.save_video_with_color_mask,
                 )
                 if not self.seg_pred_thread.isRunning():
                     self.seg_pred_thread = QtCore.QThread()

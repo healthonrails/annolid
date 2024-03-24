@@ -185,6 +185,8 @@ class VideoProcessor:
         self.save_image_to_disk = kwargs.get('save_image_to_disk', True)
         self.pred_worker = None
         self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
+        self.save_video_with_color_mask = kwargs.get(
+            'save_video_with_color_mask', False)
 
     def set_pred_worker(self, pred_worker):
         self.pred_worker = pred_worker
@@ -240,6 +242,7 @@ class VideoProcessor:
                                                                          visualize_every=20,
                                                                          labels_dict=label_name_to_value,
                                                                          pred_worker=self.pred_worker,
+                                                                         recording=self.save_video_with_color_mask,
                                                                          has_occlusion=has_occlusion,
                                                                          )
         return message
@@ -452,7 +455,8 @@ class VideoProcessor:
         mem_every = kwargs.get('mem_every', 5)
         point_tracking = kwargs.get('point_tracking', False)
         has_occlusion = kwargs.get('has_occlusion', False)
-        t_max_value = kwargs.get('t_max_value', 5)
+        save_video_with_color_mask = kwargs.get(
+            'save_video_with_color_mask', False)
 
         while not self.pred_worker.is_stopped():
             if is_cutie:

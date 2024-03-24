@@ -94,6 +94,10 @@ class CutieVideoProcessor:
         self.output_tracking_csvpath = str(
             self.video_folder) + f"_tracked.csv"
         self.showing_KMedoids_in_mask = False
+        self.auto_missing_instance_recovery = kwargs.get(
+            "auto_missing_instance_recovery", False)
+        logger.info(
+            f"Auto missing instance recovery is set to {self.auto_missing_instance_recovery}.")
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -267,6 +271,7 @@ class CutieVideoProcessor:
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.initialize_video_writer(
                 output_video_path, frame_width, frame_height, fps)
+            logger.info(f"Saving the color masks to video {output_video_path}")
 
         with torch.inference_mode():
             with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
@@ -322,15 +327,17 @@ class CutieVideoProcessor:
                                 delimiter + str(current_frame_index)
                             logger.info(message)
 
-                            segemented_instances = self.segement_with_bbox(
-                                missing_instances, frame)
-                            if len(segemented_instances) >= 1:
-                                logger.info(
-                                    f"Recovered: {segemented_instances.keys()}")
-                                mask_dict.update(segemented_instances)
-                                logger.info(f"After merge: {mask_dict.keys()}")
-                                _saved_shapes = self._save_annotation(
-                                    filename, mask_dict, frame.shape)
+                            if self.auto_missing_instance_recovery:
+                                segemented_instances = self.segement_with_bbox(
+                                    missing_instances, frame)
+                                if len(segemented_instances) >= 1:
+                                    logger.info(
+                                        f"Recovered: {segemented_instances.keys()}")
+                                    mask_dict.update(segemented_instances)
+                                    logger.info(
+                                        f"After merge: {mask_dict.keys()}")
+                                    _saved_shapes = self._save_annotation(
+                                        filename, mask_dict, frame.shape)
                             # Stop the prediction if more than half of the instances are missing,
                             # or when there is no occlusion in the video and one instance loses tracking.
                             # change parameter for how many instances are missing to stop
