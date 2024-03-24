@@ -169,6 +169,7 @@ class VideoProcessor:
         self.video_loader = CV2Video(video_path)
         self.first_frame = self.video_loader.get_first_frame()
         self.t_max_value = kwargs.get("t_max_value", 5)
+        self.use_cpu_only = kwargs.get("use_cpu_only", False)
         self.sam_name = kwargs.get('model_name', "Segment-Anything (Edge)")
         if self.sam_name == 'sam_hq' and VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
@@ -228,7 +229,10 @@ class VideoProcessor:
         if VideoProcessor.cutie_processor is None:
             VideoProcessor.cutie_processor = CutieVideoProcessor(
                 self.video_path, mem_every=mem_every, debug=False,
-                epsilon_for_polygon=self.epsilon_for_polygon, t_max_value=self.t_max_value)
+                epsilon_for_polygon=self.epsilon_for_polygon,
+                t_max_value=self.t_max_value,
+                use_cpu_only=self.use_cpu_only,
+            )
         VideoProcessor.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
         message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
                                                                          mask,

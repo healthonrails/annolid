@@ -1,8 +1,8 @@
-from qtpy.QtWidgets import QDialog, QVBoxLayout, QLabel, QDoubleSpinBox, QPushButton, QCheckBox
-
-
-from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QDoubleSpinBox, QCheckBox, QPushButton, QSpinBox)
+from qtpy.QtWidgets import (QDialog, QVBoxLayout,
+                            QLabel, QDoubleSpinBox,
+                            QPushButton, QCheckBox,
+                            QSpinBox,
+                            )
 
 
 class AdvancedParametersDialog(QDialog):
@@ -10,10 +10,11 @@ class AdvancedParametersDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Advanced Parameters")
 
-        # Initialize epsilon value, T_max value, and automatic pause flag
+        # Initialize epsilon value, T_max value, automatic pause flag, and CPU only flag
         self.epsilon_value = 2.0
         self.t_max_value = 5
         self.automatic_pause_enabled = False
+        self.cpu_only_enabled = False
 
         # Create layout
         layout = QVBoxLayout()
@@ -44,6 +45,12 @@ class AdvancedParametersDialog(QDialog):
         self.automatic_pause_checkbox.setChecked(self.automatic_pause_enabled)
         layout.addWidget(self.automatic_pause_checkbox)
 
+        # Add checkbox for CPU only usage
+        self.cpu_only_checkbox = QCheckBox(
+            "Use CPU Only")
+        self.cpu_only_checkbox.setChecked(self.cpu_only_enabled)
+        layout.addWidget(self.cpu_only_checkbox)
+
         # Add button to apply parameters
         apply_button = QPushButton("Apply")
         apply_button.clicked.connect(self.apply_parameters)
@@ -59,6 +66,8 @@ class AdvancedParametersDialog(QDialog):
         self.t_max_value = self.t_max_spinbox.value()
         # Get automatic pause setting
         self.automatic_pause_enabled = self.automatic_pause_checkbox.isChecked()
+        # Get CPU only usage setting
+        self.cpu_only_enabled = self.cpu_only_checkbox.isChecked()
         # Close the dialog
         self.close()
 
@@ -70,3 +79,6 @@ class AdvancedParametersDialog(QDialog):
 
     def is_automatic_pause_enabled(self):
         return self.automatic_pause_enabled
+
+    def is_cpu_only_enabled(self):
+        return self.cpu_only_enabled

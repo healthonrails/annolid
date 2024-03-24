@@ -236,6 +236,7 @@ class AnnolidWindow(MainWindow):
         self.epsilon_for_polygon = 2.0
         self.automatic_pause_enabled = False
         self.t_max_value = 5
+        self.use_cpu_only = False
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -560,6 +561,7 @@ class AnnolidWindow(MainWindow):
         self.epsilon_for_polygon = advanced_params_dialog.get_epsilon_value()
         self.automatic_pause_enabled = advanced_params_dialog.is_automatic_pause_enabled()
         self.t_max_value = advanced_params_dialog.get_t_max_value()
+        self.use_cpu_only = advanced_params_dialog.is_cpu_only_enabled()
         logger.info(
             f"Set eplision for polygon to : {self.epsilon_for_polygon}")
 
@@ -975,6 +977,7 @@ class AnnolidWindow(MainWindow):
                     save_image_to_disk=False,
                     epsilon_for_polygon=self.epsilon_for_polygon,
                     t_max_value=self.t_max_value,
+                    use_cpu_only=self.use_cpu_only,
                 )
                 if not self.seg_pred_thread.isRunning():
                     self.seg_pred_thread = QtCore.QThread()

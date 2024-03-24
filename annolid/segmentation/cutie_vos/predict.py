@@ -65,12 +65,14 @@ class CutieVideoProcessor:
         self.debug = kwargs.get('debug', False)
         # T_max parameter default 5
         self.max_mem_frames = kwargs.get('t_max_value', 5)
+        self.use_cpu_only = kwargs.get('use_cpu_only', False)
         self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
         self.processor = None
         self.num_tracking_instances = 0
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
-        self.device = get_device()
+        self.device = 'cpu' if self.use_cpu_only else get_device()
+        logger.info(f"Running device: {self.device}.")
         self.cutie, self.cfg = self._initialize_model()
         logger.info(
             f"Using epsilon: {self.epsilon_for_polygon} for polygon approximation.")
