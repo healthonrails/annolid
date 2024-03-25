@@ -53,14 +53,14 @@ jobs:
       - uses: conda-incubator/setup-miniconda@v2
         with:
           auto-update-conda: true
-          python-version: '3.7'
+          python-version: '3.11'
 
       - name: Install main
         shell: bash -l {0}
         run: |
           pip install .
 
-      - name: Run pyinstaller without PyTorch
+      - name: Run pyinstaller
         shell: bash -l {0}
         run: |
           pip install pyinstaller
@@ -76,13 +76,58 @@ jobs:
         run: |
           echo "::set-output name=upload_url::$(cat release_url/release_url.txt)"
 
-      - name: Upload release assets
-        id: upload_release_assets
+      - name: Upload release executable on macOS & Linux
+        id: upload_release_executable_macos_linux
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.get_release_info.outputs.upload_url }}
-          asset_path: ./dist
+          asset_path: ./dist/annolid
           asset_name: annolid-${{ runner.os }}
           asset_content_type: application/octet-stream
+        if: runner.os != 'Windows'
+
+      - name: Upload release executable on Windows
+        id: upload_release_executable_windows
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          asset_path: ./dist/annolid.exe
+          asset_name: Annolid.exe
+          asset_content_type: application/octet-stream
+        if: runner.os == 'Windows'
+
+      - name: Create dmg for macOS
+        run: |
+          npm install -g create-dmg
+          cd dist
+          create-dmg Annolid.app || test -f Annolid\ 0.0.0.dmg
+          mv Annolid\ 0.0.0.dmg Annolid.dmg
+        if: runner.os == 'macOS'
+
+      - name: Upload release app on macOS
+        id: upload_release_app_macos
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          asset_path: ./dist/Annolid.dmg
+          asset_name: Annolid.dmg
+          asset_content_type: application/octet-stream
+        if: runner.os == 'macOS'
+
+      - name: Upload release executable on Windows
+        id: upload_release_executable_windows
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          asset_path: ./dist/annolid.exe
+          asset_name: Annolid.exe
+          asset_content_type: application/octet-stream
+        if: runner.os == 'Windows'
