@@ -64,7 +64,7 @@ jobs:
         shell: bash -l {0}
         run: |
           pip install pyinstaller
-          pyinstaller --exclude-module=torch  annolid.spec
+          pyinstaller annolid.spec
 
       - name: Load release url file from release job
         uses: actions/download-artifact@v1
