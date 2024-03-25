@@ -261,3 +261,6 @@ To request a new feature or report bugs, please use the link https://github.com/
 # Annolid Google groups
 [annolid@googlegroups.com](https://groups.google.com/g/annolid)
 
+### Videos
+
+* [YouTube Channel](https://www.youtube.com/@annolid)
