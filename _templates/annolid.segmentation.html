@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>annolid.segmentation package &mdash; annolid v1.0.1 documentation</title><link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+
+  
+  <!--[if lt IE 9]>
+    <script src="../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  <script id="documentation_options" data-url_root="../" src="../_static/documentation_options.js"></script>
+        <script src="../_static/jquery.js"></script>
+        <script src="../_static/underscore.js"></script>
+        <script src="../_static/doctools.js"></script>
+        <script src="../_static/language_data.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="../guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../install.html#install-detectron2-locally">Install Detectron2 locally</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../install.html#install-detectron2-on-google-colab">Install Detectron2 on Google Colab</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../install.html#optional-install-older-version-of-pytorch-for-yolact">Optional: Install older version of Pytorch for YOLACT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../extract_frames.html">Extract desired number of frames from a video based on optical flow</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../extract_frames.html#display-optical-flow-while-extracting-frames-with-show-flow-true">Display optical flow while extracting frames with <strong>–show_flow=True</strong></a></li>
+<li class="toctree-l1"><a class="reference internal" href="../extract_frames.html#save-all-the-frames-as-images">Save all the frames as images</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../extract_frames.html#select-frames-randomly-by-reservoir-sampling">Select frames randomly by reservoir sampling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../extract_frames.html#extract-all-the-key-frames-from-a-video-used-by-the-compression-methods">Extract all the key frames from a video used by the compression methods</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html">Threshold based object segmenation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#convert-wmv-format-to-mp4-format-using-ffmpeg">Convert WMV format to mp4 format using ffmpeg</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#save-the-extracted-frames-to-a-user-selected-output-directory">Save the extracted frames to a user selected output directory</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-track-multiple-objects-in-the-video">How to track multiple objects in the video?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-convert-coco-annonation-format-to-yolov5-format">How to convert coco annonation format to YOLOV5 format?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-train-a-custom-yolov5-model">How to train a custom YOLOV5 model?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-track-objects-in-a-video-with-the-trained-model">How to track objects in a video with the trained model?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-convert-labelme-labeled-dataset-to-coco-format">How to convert labelme labeled dataset to COCO format?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-train-a-yolact-model-with-a-custom-dataset">How to train a YOLACT model with a custom dataset?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#how-to-evaluate-a-video-based-on-a-trained-model">How to evaluate a video based on a trained model?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#convert-the-tracking-results-csv-file-to-glitter2-csv-format">Convert the tracking results csv file to Glitter2 csv format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../faqs.html#convert-the-keypoint-annotations-to-labelme-format">Convert the keypoint annotations to labelme format</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">annolid.segmentation package</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/_templates/annolid.segmentation.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <div class="section" id="annolid-segmentation-package">
+<h1>annolid.segmentation package<a class="headerlink" href="#annolid-segmentation-package" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="subpackages">
+<h2>Subpackages<a class="headerlink" href="#subpackages" title="Permalink to this headline">¶</a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="annolid.segmentation.yolact.html">annolid.segmentation.yolact package</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#subpackages">Subpackages</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="annolid.segmentation.yolact.data.html">annolid.segmentation.yolact.data package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.data.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.data.html#annolid-segmentation-yolact-data-coco-module">annolid.segmentation.yolact.data.coco module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.data.html#annolid-segmentation-yolact-data-config-module">annolid.segmentation.yolact.data.config module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.data.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="annolid.segmentation.yolact.deep_sort.html">annolid.segmentation.yolact.deep_sort package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.deep_sort.html#subpackages">Subpackages</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.deep_sort.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.deep_sort.html#annolid-segmentation-yolact-deep-sort-deep-sort-module">annolid.segmentation.yolact.deep_sort.deep_sort module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.deep_sort.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="annolid.segmentation.yolact.layers.html">annolid.segmentation.yolact.layers package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.layers.html#subpackages">Subpackages</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.layers.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.layers.html#annolid-segmentation-yolact-layers-box-utils-module">annolid.segmentation.yolact.layers.box_utils module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.layers.html#annolid-segmentation-yolact-layers-interpolate-module">annolid.segmentation.yolact.layers.interpolate module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.layers.html#annolid-segmentation-yolact-layers-output-utils-module">annolid.segmentation.yolact.layers.output_utils module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.layers.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="annolid.segmentation.yolact.utils.html">annolid.segmentation.yolact.utils package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-augmentations-module">annolid.segmentation.yolact.utils.augmentations module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-cython-nms-module">annolid.segmentation.yolact.utils.cython_nms module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-functions-module">annolid.segmentation.yolact.utils.functions module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-logger-module">annolid.segmentation.yolact.utils.logger module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-nvinfo-module">annolid.segmentation.yolact.utils.nvinfo module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-parser-module">annolid.segmentation.yolact.utils.parser module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#annolid-segmentation-yolact-utils-timer-module">annolid.segmentation.yolact.utils.timer module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="annolid.segmentation.yolact.utils.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#annolid-segmentation-yolact-backbone-module">annolid.segmentation.yolact.backbone module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#annolid-segmentation-yolact-eval-module">annolid.segmentation.yolact.eval module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#annolid-segmentation-yolact-run-coco-eval-module">annolid.segmentation.yolact.run_coco_eval module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#annolid-segmentation-yolact-train-module">annolid.segmentation.yolact.train module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#annolid-segmentation-yolact-yolact-module">annolid.segmentation.yolact.yolact module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="annolid.segmentation.yolact.html#module-annolid.segmentation.yolact">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div class="section" id="submodules">
+<h2>Submodules<a class="headerlink" href="#submodules" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="annolid-segmentation-threshold-module">
+<h2>annolid.segmentation.threshold module<a class="headerlink" href="#annolid-segmentation-threshold-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="module-annolid.segmentation">
+<span id="module-contents"></span><h2>Module contents<a class="headerlink" href="#module-annolid.segmentation" title="Permalink to this headline">¶</a></h2>
+</div>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
