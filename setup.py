@@ -4,7 +4,7 @@ import setuptools
 
 setuptools.setup(
     name="annolid",
-    version="1.1.3",
+    version="1.2.0",
     author="Chen Yang",
     author_email="healthonrails@gmail.com",
     description="An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.",

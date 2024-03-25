@@ -62,7 +62,7 @@ from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDia
 
 from labelme.ai import MODELS
 __appname__ = 'Annolid'
-__version__ = "1.1.3"
+__version__ = "1.2.0"
 
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
