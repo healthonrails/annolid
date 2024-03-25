@@ -121,7 +121,7 @@ jobs:
         if: runner.os == 'macOS'
 
       - name: Upload release executable on Windows
-        id: upload_release_executable_windows
+        id: upload_release_executable_windows_2
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
