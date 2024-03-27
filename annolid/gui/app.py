@@ -511,7 +511,7 @@ class AnnolidWindow(MainWindow):
 
         self._selectAiModelComboBox.clear()
         self.custom_ai_model_names = [
-            'SAM_HQ', 'segmenation', "EfficientVit_SAM", "keypoints"]
+            'SAM_HQ', 'Cutie', "EfficientVit_SAM", "CoTracker"]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
@@ -939,8 +939,8 @@ class AnnolidWindow(MainWindow):
         model_names = {
             "SAM_HQ": "sam_hq",
             "EfficientVit_SAM": "efficientvit_sam",
-            "segmenation": "segmenation",
-            "keypoints": "keypoints"
+            "Cutie": "Cutie",
+            "CoTracker": "CoTracker"
         }
         default_model_name = "Segment-Anything (Edge)"
 
@@ -1003,9 +1003,9 @@ class AnnolidWindow(MainWindow):
                     start_frame=self.frame_number+1,
                     end_frame=end_frame,
                     step=self.step_size,
-                    is_cutie=False if model_name == "keypoints" else True,
+                    is_cutie=False if model_name == "CoTracker" else True,
                     mem_every=self.step_size,
-                    point_tracking=model_name == "keypoints",
+                    point_tracking=model_name == "CoTracker",
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)

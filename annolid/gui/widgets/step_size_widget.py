@@ -18,9 +18,9 @@ class StepSizeWidget(QtWidgets.QWidget):
         self.step_size_spin_box.setAlignment(QtCore.Qt.AlignCenter)
 
         # Checkbox for indicating occlusion
-        self.occclusion_checkbox = QtWidgets.QCheckBox("Occluded")
+        self.occclusion_checkbox = QtWidgets.QCheckBox("Auto")
         # Default value is False
-        self.occclusion_checkbox.setChecked(False)
+        self.occclusion_checkbox.setChecked(True)
 
         # Predict Button
         self.predict_button = QtWidgets.QPushButton("Pred")
