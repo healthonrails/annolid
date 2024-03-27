@@ -684,10 +684,13 @@ class AnnolidWindow(MainWindow):
             self.audio_dock.close()
         self.audio_dock = None
         self.annotation_dir = None
-        self.statusBar().removeWidget(self.seekbar)
-        self.statusBar().removeWidget(self.saveButton)
-        self.statusBar().removeWidget(self.playButton)
-        self.seekbar = None
+        if self.seekbar is not None:
+            self.statusBar().removeWidget(self.seekbar)
+            if self.saveButton is not None:
+                self.statusBar().removeWidget(self.saveButton)
+            if self.playButton is not None:
+                self.statusBar().removeWidget(self.playButton)
+            self.seekbar = None
         self._df = None
         self.label_stats = {}
         self.shape_hash_ids = {}
