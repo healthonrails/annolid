@@ -3,7 +3,7 @@ import cv2
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from segment_anything import sam_model_registry, SamPredictor
+from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
 from annolid.utils.devices import has_gpu
 
 
@@ -97,6 +97,44 @@ class SamHQSegmenter:
             print(e)
             return [], [], []
         return masks, scores, input_box
+
+    def segment_everything(self,
+                           image,
+                           points_per_side=32):
+        """
+        Segment objects in the given image using SamAutomaticMaskGenerator.
+
+        Args:
+            image (numpy.ndarray): The input image for segmentation.
+            points_per_side (int or None): The number of points to be sampled
+            along one side of the image. The total number of points is
+            points_per_side**2. If None, 'point_grids' must provide explicit
+            point sampling.
+
+        Returns:
+            list: A list of segmentation annotations.
+
+        Raises:
+            RuntimeError: If there is an error during segmentation.
+
+        """
+        # Instantiate the SamAutomaticMaskGenerator
+        mask_generator = SamAutomaticMaskGenerator(self.sam,
+                                                   points_per_side=points_per_side,
+                                                   pred_iou_thresh=0.80,
+                                                   stability_score_thresh=0.90,
+                                                   )
+
+        try:
+            # Generate segmentation annotations
+            anns = mask_generator.generate(image)
+        except RuntimeError as e:
+            # Handle runtime error and return an empty list
+            print("Error during segmentation:", e)
+            return []
+
+        # Return the segmentation annotations
+        return anns
 
     @staticmethod
     def show_mask(mask, ax, random_color=False):

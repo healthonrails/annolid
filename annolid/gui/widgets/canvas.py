@@ -3,16 +3,15 @@ from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
 from labelme import QT5
-
-
 import numpy as np
 import cv2
 import os
 import imgviz
 import labelme.ai
-from labelme.logger import logger
+from annolid.utils.logger import logger
 import labelme.utils
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
+from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
 from annolid.detector.grounding_dino import GroundingDINO
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
@@ -183,31 +182,130 @@ class Canvas(QtWidgets.QWidget):
             image=labelme.utils.img_qt_to_arr(self.pixmap.toImage())
         )
 
+    def auto_mask_generator(self,
+                            image_data,
+                            label,
+                            points_per_side=32,
+                            is_polygon_output=True):
+        """
+        Generate masks or polygons from segmentation annotations.
+
+        Args:
+            image_data (numpy.ndarray): The input image data for segmentation.
+            label (str): The label to be assigned to generated shapes.
+            points_per_side (int or None): The number of points to be sampled
+            along one side of the image. The total number of points is
+            points_per_side**2. If None, 'point_grids' must provide explicit
+            point sampling.
+            is_polygon_output (bool, optional):
+              Whether to output polygons (True) or masks (False).
+                Defaults to True.
+
+        Returns:
+            None
+
+        """
+        # Segment everything in the image using the SamAutomaticMaskGenerator
+        anns = self.sam_hq_model.segment_everything(image_data,
+                                                    points_per_side=points_per_side)
+
+        # Iterate over each segmentation annotation
+        for i, ann in enumerate(anns):
+            # Check if the output format is polygons
+            if is_polygon_output:
+                # Convert segmentation to polygons
+                self.current = MaskShape(label=f"{label}_{i}",
+                                         flags={},
+                                         description='grounding_sam')
+                self.current.mask = ann['segmentation']
+                self.current = self.current.toPolygons()[0]
+            else:
+                # Extract bounding box coordinates
+                x1, y1, x2, y2 = ann['bbox']
+                # Create shape object with refined shape
+                self.current = Shape(label=f"{label}_{i}",
+                                     flags={},
+                                     description='grounding_sam')
+                self.current.setShapeRefined(
+                    shape_type="mask",
+                    points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
+                    point_labels=[1, 1],
+                    mask=ann['segmentation'][int(y1):int(y2), int(x1):int(x2)],
+                )
+            # Add stability score as other data
+            self.current.other_data['score'] = str(ann['stability_score'])
+
+            # Finalize the process
+            self.finalise()
+
     def predictAiRectangle(self, prompt, is_polygon_output=True):
+        """
+        Predict bounding boxes and then polygons based on the given prompt.
+
+        Args:
+            prompt (str): The prompt for prediction.
+            is_polygon_output (bool, optional): 
+            Whether to output polygons (True).
+                Defaults to True.
+
+        Returns:
+            None
+
+        """
+        # Check if the pixmap is set
         if self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
             return
-        if self._ai_model_rect == None:
-            self._ai_model_rect = GroundingDINO()
-        if self.sam_hq_model is None:
-            self.sam_hq_model = SamHQSegmenter()
+
+        # Convert Qt image to RGB OpenCV image
         qt_image = self.pixmap.toImage()
         image_data = convert_qt_image_to_rgb_cv_image(qt_image)
+
+        # Initialize SAM HQ model if not already initialized
+        if self.sam_hq_model is None:
+            self.sam_hq_model = SamHQSegmenter()
+
+        # If the prompt contains 'every', segment everything
+        if 'every' in prompt.lower():
+            points_per_side, prompt = extract_number_and_remove_digits(prompt)
+            if points_per_side < 1 or points_per_side > 100:
+                points_per_side = 32
+
+            label = prompt.replace('every', '').strip()
+            logger.info(
+                f"{points_per_side} points to be sampled along one side of the image")
+            self.auto_mask_generator(image_data,
+                                     label,
+                                     points_per_side=points_per_side,
+                                     is_polygon_output=is_polygon_output)
+            return
+
+        # Initialize AI model if not already initialized
+        if self._ai_model_rect is None:
+            self._ai_model_rect = GroundingDINO()
+
+        # Predict bounding boxes using the AI model
         bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
         _bboxes = [list(box) for box, _ in bboxes]
-        masks, scores, _bboxes = self.sam_hq_model.segment_objects(
-            image_data, _bboxes
-        )
-        for i, (box, label) in enumerate(bboxes):
 
+        # Segment objects using SAM HQ model with predicted bounding boxes
+        masks, scores, _bboxes = self.sam_hq_model.segment_objects(
+            image_data, _bboxes)
+
+        # Iterate over each predicted bounding box
+        for i, (box, label) in enumerate(bboxes):
+            # Check if the output format is polygons
             if is_polygon_output:
+                # Convert segmentation mask to polygons
                 self.current = MaskShape(label=f"{label}_{i}",
                                          flags={},
                                          description='grounding_sam')
                 self.current.mask = masks[i]
                 self.current = self.current.toPolygons()[0]
             else:
+                # Extract bounding box coordinates
                 x1, y1, x2, y2 = box
+                # Create shape object with refined shape
                 self.current = Shape(label=f"{label}_{i}",
                                      flags={},
                                      description='grounding_sam')
@@ -217,7 +315,10 @@ class Canvas(QtWidgets.QWidget):
                     point_labels=[1, 1],
                     mask=masks[i][int(y1):int(y2), int(x1):int(x2)],
                 )
+            # Add stability score as other data
             self.current.other_data['score'] = str(scores[i])
+
+            # Finalize the process
             self.finalise()
 
     def loadSamPredictor(self,):
