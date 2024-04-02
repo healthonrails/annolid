@@ -61,7 +61,8 @@ def save_labels(filename, imagePath,
     """
     # Check if a PNG file exists with the same name
     png_filename = os.path.splitext(filename)[0] + ".png"
-    if os.path.exists(png_filename):
+    json_filename = png_filename.replace('.png', '.json')
+    if os.path.exists(png_filename) and os.path.exists(json_filename):
         logger.info(
             """A corresponding PNG file was found. 
             We assume the frame has been manually labeled.

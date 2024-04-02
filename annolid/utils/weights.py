@@ -17,8 +17,9 @@ class WeightDownloader:
         weight_file_path = os.path.join(self.weights_dir, weight_file_name)
 
         # Download weights with gdown and display progress bar
-        gdown.cached_download(
-            weight_url, weight_file_path, md5=expected_checksum)
+        if not os.path.exists(weight_file_path):
+            gdown.cached_download(
+                weight_url, weight_file_path, md5=expected_checksum)
 
         # Check if the file exists and has been downloaded successfully
         if os.path.exists(weight_file_path):
