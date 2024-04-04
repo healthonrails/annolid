@@ -49,7 +49,7 @@ def masks_to_bboxes(masks):
         where = np.argwhere(mask)
         if where.size > 0:  # Check if where array is not empty
             (y1, x1), (y2, x2) = where.min(0), where.max(0) + 1
-            bboxes.append((y1, x1, y2, x2))
+            bboxes.append((x1, y1, x2, y2))
     bboxes = np.asarray(bboxes, dtype=np.float32)
     return bboxes
 
