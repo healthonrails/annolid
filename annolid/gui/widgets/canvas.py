@@ -161,8 +161,9 @@ class Canvas(QtWidgets.QWidget):
         self.sam_mask = MaskShape()
         self.current = None
 
-    def initializeAiModel(self, name):
-        if name not in [model.name for model in labelme.ai.MODELS]:
+    def initializeAiModel(self, name, _custom_ai_models=None):
+        if (name not in [model.name for model in labelme.ai.MODELS]
+                and name not in _custom_ai_models):
             logger.warning("Unsupported ai model: %s" % name)
             model = labelme.ai.MODELS[3]
         else:

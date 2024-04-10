@@ -527,7 +527,8 @@ class AnnolidWindow(MainWindow):
         self._selectAiModelComboBox.setCurrentIndex(model_index)
         self._selectAiModelComboBox.currentIndexChanged.connect(
             lambda: self.canvas.initializeAiModel(
-                name=self._selectAiModelComboBox.currentText()
+                name=self._selectAiModelComboBox.currentText(),
+                _custom_ai_models=self.custom_ai_model_names,
             )
             if self.canvas.createMode in ["ai_polygon", "ai_mask"]
             else None
