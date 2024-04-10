@@ -980,8 +980,12 @@ class AnnolidWindow(MainWindow):
 
             if self.filename is not None and self.annotation_dir is None:
                 self.annotation_dir = out_dir_path
-                os.symlink(self.filename, os.path.join(
-                    out_dir_path, os.path.basename(self.filename)))
+                target_link = os.path.join(
+                    out_dir_path, os.path.basename(self.filename))
+                if not os.path.islink(target_link):
+                    os.symlink(self.filename, target_link)
+                else:
+                    logger.info(f"The symlink {target_link} alreay exists.")
             mediar_predictor = MEDIARPredictor(input_path=self.annotation_dir,
                                                output_path=out_dir_path)
             self.worker = FlexibleWorker(

@@ -41,7 +41,7 @@ setuptools.setup(
                       'einops >= 0.6',
                       'omegaconf >= 2.3.0',
                       'hydra-core >= 1.3.2',
-                      'timm >=0.9.7',
+                      'timm >=0.9.2',
                       # 'PyQt5 == 5.15.7',
                       'Pillow>=9.3.0,<=9.5.0',
                       "chardet>=5.2.0",
