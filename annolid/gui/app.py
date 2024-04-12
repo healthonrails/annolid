@@ -538,8 +538,17 @@ class AnnolidWindow(MainWindow):
 
     def _grounding_sam(self):
         self.toggleDrawMode(False, createMode="grounding_sam")
-        self.canvas.predictAiRectangle(
-            self.aiRectangle._aiRectanglePrompt.text())
+        prompt_text = self.aiRectangle._aiRectanglePrompt.text().lower()
+        if len(prompt_text) < 1:
+            logger.info(f"Invalid text prompt {prompt_text}")
+            return
+        if prompt_text.startswith('flags:') and ',' in prompt_text:
+            flags = {k: False for k in prompt_text.replace(
+                'flags:', '').split(',') or []}
+            self.loadFlags(flags)
+        else:
+            self.canvas.predictAiRectangle(
+                self.aiRectangle._aiRectanglePrompt.text())
 
     def update_step_size(self, value):
         self.step_size = value
@@ -548,6 +557,7 @@ class AnnolidWindow(MainWindow):
     def flag_item_clicked(self, item):
         item_text = item.text()
         self.event_type = item_text
+        logger.info(f"Selected event {self.event_type}.")
 
     def openAudio(self):
         if self.video_file:
