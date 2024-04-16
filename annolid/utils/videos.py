@@ -115,7 +115,9 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor):
     for video_file in video_files:
         input_path = os.path.join(input_folder, video_file)
         output_path = os.path.join(output_folder, video_file)
-
+        # Update extension to .mp4
+        root, extension = os.path.splitext(output_path)
+        output_path = root + '.mp4'
         cmd = [
             'ffmpeg', '-i', input_path,
             '-vf', f'scale=iw*{scale_factor}:ih*{scale_factor}',
@@ -176,7 +178,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_csv', type=str,
                         help='Output CSV file path for metadata.')
     parser.add_argument('--scale_factor', type=float,
-                        default=1.0, help='Scale factor for resizing videos.')
+                        default=0.5, help='Scale factor for resizing videos.')
     parser.add_argument('--collect_only', action='store_true',
                         help='Collect metadata only, do not compress and rescale.')
 
