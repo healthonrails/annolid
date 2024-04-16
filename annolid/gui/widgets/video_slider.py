@@ -238,7 +238,30 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.headerSeries = dict()
         self._draw_header()
 
+        # Adding QLineEdit for input value
+        self.input_value = QtWidgets.QLineEdit(str(self.value()), self)
+        self.input_value.setFixedWidth(60)
+        self.input_value.setAlignment(QtCore.Qt.AlignCenter)
+        self.input_value.editingFinished.connect(self.updateValueFromInput)
+        self.input_value.move(2, 2)
+
     # Methods to match API for QSlider
+
+    def updateValueFromInput(self):
+        # Get the input text
+        input_text = self.input_value.text()
+        try:
+            # Try converting the input to float
+            input_val = float(input_text)
+            # Check if the input value is within the range
+            if self._val_min <= input_val <= self._val_max:
+                self.setValue(input_val)
+            else:
+                # Reset the input text if it's out of range
+                self.input_value.setText(str(self._val_main))
+        except ValueError:
+            # Reset the input text if it's not a valid float
+            self.input_value.setText(str(self._val_main))
 
     def value(self) -> float:
         """Returns value of slider."""
@@ -250,6 +273,9 @@ class VideoSlider(QtWidgets.QGraphicsView):
         x = self._toPos(val)
         self.handle.setPos(x, 0)
         self.ensureVisible(x, 0, self._handle_width, 0, 3, 0)
+        if hasattr(self, 'input_value'):
+            # Update input text value with slider's current value
+            self.input_value.setText(str(self._val_main))
 
     def setMinimum(self, min: float) -> float:
         """Sets minimum value for slider."""
@@ -1063,6 +1089,9 @@ class VideoSlider(QtWidgets.QGraphicsView):
         # Emit signal
         self.mouseMoved.emit(scenePos.x(), scenePos.y())
         self.mousePressed.emit(scenePos.x(), scenePos.y())
+
+        # Update input text value with slider's current value
+        self.input_value.setText(str(self._val_main))
 
     def mouseMoveEvent(self, event):
         """Override method to emit mouseMoved signal on drag."""
