@@ -18,7 +18,7 @@ Instance mask area and perimeter can be tracked, as well as keypoints.
 Learning yet another tool for behavior tracking and analysis is tough and takes time. With this in mind we tried to make it as simple as possible for you to evaluate if annolid is the right fit for your research needs.
 
 
-## Exemples
+## Examples
 * keypoint detection based on body parts segmentation:
 
 <figure class="video_container">
