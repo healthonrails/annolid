@@ -101,7 +101,8 @@ class LabelFile(object):
             elif data["imagePath"] is not None and data["imagePath"] != "":
                 # relative path from label file to relative path from cwd
                 imagePath = osp.join(osp.dirname(filename), data["imagePath"])
-                imageData = self.load_image_file(imagePath)
+                if osp.exists(imagePath):
+                    imageData = self.load_image_file(imagePath)
             flags = data.get("flags") or {}
             if self.is_video_frame is None and data["imagePath"] is not None:
                 imagePath = data["imagePath"]
