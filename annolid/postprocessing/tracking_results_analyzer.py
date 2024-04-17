@@ -23,7 +23,7 @@ class TrackingResultsAnalyzer:
         zone_data (dict): Dictionary containing zone information loaded from the zone JSON file.
     """
 
-    def __init__(self, video_name, zone_file):
+    def __init__(self, video_name, zone_file, fps=None):
         """
         Initialize the TrackingResultsAnalyzer.
 
@@ -35,6 +35,7 @@ class TrackingResultsAnalyzer:
         self.tracking_csv = f"{video_name}_tracking.csv"
         self.tracked_csv = f"{video_name}_tracked.csv"
         self.zone_file = zone_file
+        self.fps = fps
 
     def read_csv_files(self):
         """Read tracking and tracked CSV files into DataFrames."""
@@ -113,17 +114,19 @@ class TrackingResultsAnalyzer:
         instance_df = self.merged_df[self.merged_df['instance_name']
                                      == instance_label]
 
-        zone_time_dict = {shape['label']
-            : 0 for shape in self.zone_data['shapes']}
+        zone_shapes = [zone_shape for zone_shape in self.zone_data['shapes']
+                       if 'zone' in zone_shape['description'].lower()]
+        zone_time_dict = {shape['label']: 0 for shape in zone_shapes}
 
-        for shape in self.zone_data['shapes']:
+        for shape in zone_shapes:
             zone_label = shape['label']
             zone_time = 0
             # Check if instance points are within the zone
             for _, row in instance_df.iterrows():
-                if self.is_point_in_polygon([row['cx_tracked'],
-                                             row['cy_tracked']], shape['points']):
-                    zone_time += 1
+                if len(shape['points']) > 3:
+                    if self.is_point_in_polygon([row['cx_tracked'],
+                                                row['cy_tracked']], shape['points']):
+                        zone_time += 1
 
             zone_time_dict[zone_label] = zone_time
 
@@ -158,9 +161,14 @@ class TrackingResultsAnalyzer:
         """
         zone_time_dict = self.determine_time_in_zone(instance_label)
 
-        plt.bar(zone_time_dict.keys(), zone_time_dict.values())
+        if self.fps:
+            plt.bar(zone_time_dict.keys(), [
+                    frames/self.fps for frames in zone_time_dict.values()])
+            plt.ylabel('Time (seconds)')
+        else:
+            plt.bar(zone_time_dict.keys(), zone_time_dict.values())
+            plt.ylabel('Time (frames)')
         plt.xlabel('Zone')
-        plt.ylabel('Time (frames)')
         plt.title(f'Time Spent in Each Zone for {instance_label}')
         plt.show()
 
@@ -173,10 +181,13 @@ if __name__ == '__main__':
     parser.add_argument('video_name', type=str, help='Name of the video')
     parser.add_argument('zone_file', type=str,
                         help='Path to the zone JSON file')
+    parser.add_argument('fps', type=float, default=30,
+                        help='FPS for the video')
     args = parser.parse_args()
 
     # Create and run the analyzer
-    analyzer = TrackingResultsAnalyzer(args.video_name, args.zone_file)
+    analyzer = TrackingResultsAnalyzer(
+        args.video_name, args.zone_file, args.fps)
     analyzer.merge_and_calculate_distance()
     time_in_zone_mouse = analyzer.determine_time_in_zone("mouse_0")
     print("Time in zone for mouse:", time_in_zone_mouse)
