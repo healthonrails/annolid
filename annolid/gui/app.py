@@ -54,6 +54,7 @@ import atexit
 import qimage2ndarray
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
+from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
@@ -348,6 +349,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Open Audio")
         )
 
+        downsample_video = action(
+            self.tr("&Downsample Videos"),
+            self.downsample_videos,
+            None,
+            "Downsample Videos",
+            self.tr("Downsample Videos")
+        )
+
         step_size = QtWidgets.QWidgetAction(self)
         step_size.setIcon(QtGui.QIcon(
             str(
@@ -500,6 +509,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (tracks,))
         utils.addActions(self.menus.file, (quality_control,))
         utils.addActions(self.menus.file, (segment_cells,))
+        utils.addActions(self.menus.file, (downsample_video,))
         utils.addActions(self.menus.file, (advance_params,))
 
         utils.addActions(self.menus.view, (glitter2,))
@@ -543,7 +553,8 @@ class AnnolidWindow(MainWindow):
         self._selectAiModelComboBox.setCurrentIndex(model_index)
         self._selectAiModelComboBox.currentIndexChanged.connect(
             lambda: self.canvas.initializeAiModel(
-                name=self._selectAiModelComboBox.currentText()
+                name=self._selectAiModelComboBox.currentText(),
+                _custom_ai_models=self.custom_ai_model_names,
             )
             if self.canvas.createMode in ["ai_polygon", "ai_mask"]
             else None
@@ -553,8 +564,17 @@ class AnnolidWindow(MainWindow):
 
     def _grounding_sam(self):
         self.toggleDrawMode(False, createMode="grounding_sam")
-        self.canvas.predictAiRectangle(
-            self.aiRectangle._aiRectanglePrompt.text())
+        prompt_text = self.aiRectangle._aiRectanglePrompt.text().lower()
+        if len(prompt_text) < 1:
+            logger.info(f"Invalid text prompt {prompt_text}")
+            return
+        if prompt_text.startswith('flags:') and ',' in prompt_text:
+            flags = {k: False for k in prompt_text.replace(
+                'flags:', '').split(',') or []}
+            self.loadFlags(flags)
+        else:
+            self.canvas.predictAiRectangle(
+                self.aiRectangle._aiRectanglePrompt.text())
 
     def update_step_size(self, value):
         self.step_size = value
@@ -563,6 +583,11 @@ class AnnolidWindow(MainWindow):
     def flag_item_clicked(self, item):
         item_text = item.text()
         self.event_type = item_text
+        logger.info(f"Selected event {self.event_type}.")
+
+    def downsample_videos(self):
+        video_downsample_widget = VideoRescaleWidget()
+        video_downsample_widget.exec_()
 
     def openAudio(self):
         if self.video_file:

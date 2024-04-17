@@ -119,7 +119,7 @@ def tracks2nix(video_file=None,
                        ):
         if animal_mask is not None and zone_mask is not None:
             overlap = mask_util.iou([animal_mask], [zone_mask], [
-                False, False]).flatten()[0]
+                0]).flatten()[0]
             return overlap > threshold
         else:
             return False
@@ -148,7 +148,7 @@ def tracks2nix(video_file=None,
 
         if keypoint_seg and body_seg:
             overlap = mask_util.iou([body_seg], [keypoint_seg], [
-                False, False]).flatten()[0]
+                0]).flatten()[0]
             return overlap > 0
         else:
             return False
@@ -172,7 +172,7 @@ def tracks2nix(video_file=None,
                                         left_instance]['segmentation'].values[0]
             left_instance_seg = ast.literal_eval(left_instance_seg)
             left_interact = mask_util.iou([left_instance_seg], [subject_instance_seg], [
-                False, False]).flatten()[0]
+                0]).flatten()[0]
         except IndexError:
             left_interact = 0.0
         try:
@@ -180,7 +180,7 @@ def tracks2nix(video_file=None,
                                          right_instance]['segmentation'].values[0]
             right_instance_seg = ast.literal_eval(right_instance_seg)
             right_interact = mask_util.iou([right_instance_seg], [subject_instance_seg], [
-                False, False]).flatten()[0]
+                0]).flatten()[0]
         except IndexError:
             right_interact = 0.0
 
