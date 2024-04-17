@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from annolid.gui.shape import Shape
 from annolid.data.videos import CV2Video
+from annolid.utils.shapes import load_zone_json, is_point_in_polygon
 
 
 def fill_missing(Y, kind="linear"):
@@ -186,7 +187,8 @@ def get_frame_info(video_file=None):
     return height, width, num_frames
 
 
-def convert_sleap_h5_to_labelme(h5_file_path):
+def convert_sleap_h5_to_labelme(h5_file_path,
+                                zone_info=None):
     """
     Convert a SLEAP HDF5 file to Labelme JSON files.
 
@@ -208,6 +210,12 @@ def convert_sleap_h5_to_labelme(h5_file_path):
 
     # Determine image information
     video_name = os.path.splitext(os.path.basename(h5_file_path))[0]
+    if zone_info is None:
+        zone_info = os.path.join(output_folder, f"{video_name}_000000000.json")
+    has_zone_info = os.path.exists(zone_info)
+    zone_shapes = load_zone_json(zone_info)['shapes']
+    zone_shapes = [
+        zone_shape for zone_shape in zone_shapes if 'zone' in zone_shape['description'].lower()]
 
     with h5py.File(h5_file_path, 'r') as f:
         # Extract relevant datasets
@@ -227,7 +235,13 @@ def convert_sleap_h5_to_labelme(h5_file_path):
                 for node_idx, node_name in enumerate(node_names):
                     # Extract coordinates
                     x, y = locations[frame_idx, node_idx, :, instance_idx]
-
+                    point_in_zone = []
+                    if has_zone_info:
+                        for zone_shape in zone_shapes:
+                            if not is_point_in_polygon((x, y), zone_shape['points']):
+                                point_in_zone.append(False)
+                    if len(point_in_zone) >= len(zone_shapes):
+                        continue
                     # Create Labelme shape
                     shape = Shape(label=node_name,
                                   shape_type='point',
