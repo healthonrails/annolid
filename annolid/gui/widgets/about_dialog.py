@@ -92,9 +92,13 @@ class SystemInfoDialog(QDialog):
         partitions = psutil.disk_partitions()
         disk_info = ""
         for partition in partitions:
-            usage = psutil.disk_usage(partition.mountpoint)
-            disk_info += f"{partition.device} - Total: {usage.total / (1024 ** 3):.2f} GB"
-            disk_info += f"Used: {usage.used / (1024 ** 3):.2f} GB\n"
+            try:
+                usage = psutil.disk_usage(partition.mountpoint)
+                disk_info += f"{partition.device} - Total: {usage.total / (1024 ** 3):.2f} GB"
+                disk_info += f"Used: {usage.used / (1024 ** 3):.2f} GB\n"
+            except Exception as e:
+                print(
+                    f"Error retrieving disk usage for {partition.mountpoint}: {e}")
         self.disk_label.setText(disk_info)
 
 
