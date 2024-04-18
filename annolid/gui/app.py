@@ -45,6 +45,7 @@ from annolid.gui.widgets import TrainModelDialog
 from annolid.gui.widgets import Glitter2Dialog
 from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import TrackDialog
+from annolid.gui.widgets import SystemInfoDialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
@@ -352,6 +353,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Load SLEAP h5")
         )
 
+        about_annolid = action(
+            self.tr("&About Annolid"),
+            self.about_annolid_and_system_info,
+            None,
+            "About Annolid",
+            self.tr("About Annolid")
+        )
+
         step_size = QtWidgets.QWidgetAction(self)
         step_size.setIcon(QtGui.QIcon(
             str(
@@ -508,6 +517,9 @@ class AnnolidWindow(MainWindow):
 
         utils.addActions(self.menus.view, (glitter2,))
         utils.addActions(self.menus.view, (visualization,))
+
+        utils.addActions(self.menus.help, (about_annolid,))
+
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
@@ -586,6 +598,10 @@ class AnnolidWindow(MainWindow):
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
+
+    def about_annolid_and_system_info(self):
+        about_annolid_dialog = SystemInfoDialog()
+        about_annolid_dialog.exec_()
 
     def openAudio(self):
         if self.video_file:
