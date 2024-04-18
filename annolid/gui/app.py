@@ -55,6 +55,7 @@ import qimage2ndarray
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
+from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
@@ -357,6 +358,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Downsample Videos")
         )
 
+        convert_sleap = action(
+            self.tr("&Load SLEAP h5"),
+            self.convert_sleap_h5_to_labelme,
+            None,
+            "Load SLEAP h5",
+            self.tr("Load SLEAP h5")
+        )
+
         step_size = QtWidgets.QWidgetAction(self)
         step_size.setIcon(QtGui.QIcon(
             str(
@@ -510,6 +519,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (quality_control,))
         utils.addActions(self.menus.file, (segment_cells,))
         utils.addActions(self.menus.file, (downsample_video,))
+        utils.addActions(self.menus.file, (convert_sleap,))
         utils.addActions(self.menus.file, (advance_params,))
 
         utils.addActions(self.menus.view, (glitter2,))
@@ -588,6 +598,10 @@ class AnnolidWindow(MainWindow):
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
         video_downsample_widget.exec_()
+
+    def convert_sleap_h5_to_labelme(self):
+        convert_sleap_h5_widget = ConvertSleapDialog()
+        convert_sleap_h5_widget.exec_()
 
     def openAudio(self):
         if self.video_file:

@@ -3,6 +3,35 @@ import numpy as np
 import uuid
 from shapely.geometry import Polygon, Point
 from sklearn_extra.cluster import KMedoids
+import json
+
+
+def load_zone_json(zone_file):
+    """Load zone information from the JSON file."""
+    with open(zone_file, 'r') as f:
+        zone_data = json.load(f)
+    return zone_data
+
+
+def is_point_in_polygon(point, polygon_points):
+    """
+    Check if a point is inside a polygon.
+
+    Args:
+        point (tuple): The coordinates of the point (x, y).
+        polygon_points (list): List of tuples representing the polygon vertices.
+
+    Returns:
+        bool: True if the point is inside the polygon, False otherwise.
+    """
+    # Create a Shapely Point object
+    point = Point(point[0], point[1])
+
+    # Create a Shapely Polygon object
+    polygon = Polygon(polygon_points)
+
+    # Check if the point is within the polygon
+    return polygon.contains(point)
 
 
 def shapes_to_label(img_shape, shapes, label_name_to_value):
