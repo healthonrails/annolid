@@ -47,7 +47,9 @@ Mouse behavior analysis with instance segmentation based deep learning networks
 create a conda env
 ```
 conda create -n annolid-env python=3.11
-conda activate annolid-env 
+conda activate annolid-env
+conda install git
+conda install ffmpeg 
 ```
 * Clone the code repo and change into the directory
 ```bash
