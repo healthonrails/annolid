@@ -43,6 +43,7 @@ setuptools.setup(
                       'hydra-core >= 1.3.2',
                       'timm >=0.9.7',
                       'h5py >=3.10.0',
+                      'psutil >=5.9.8',
                       # 'PyQt5 == 5.15.7',
                       'Pillow>=9.3.0,<=9.5.0',
                       "chardet>=5.2.0",

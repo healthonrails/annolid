@@ -18,7 +18,7 @@ def get_conda_version():
         result = subprocess.check_output(
             ["conda", "--version"], universal_newlines=True)
         return result.strip()
-    except subprocess.CalledProcessError:
+    except Exception as e:
         return "N/A"
 
 
@@ -30,7 +30,7 @@ def get_conda_env():
         env_lines = result.strip().split('\n')
         current_env_line = [line for line in env_lines if '*' in line][0]
         return current_env_line.split()[1]
-    except (subprocess.CalledProcessError, IndexError):
+    except Exception as e:
         return "N/A"
 
 
