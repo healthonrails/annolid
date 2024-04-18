@@ -524,6 +524,12 @@ class AnnolidWindow(MainWindow):
         self.statusBar().show()
         self.setWindowTitle(__appname__)
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
+        # Restore application settings.
+        self.recentFiles = self.settings.value("recentFiles", []) or []
+        position = self.settings.value("window/position", QtCore.QPoint(0, 0))
+        state = self.settings.value("window/state", QtCore.QByteArray())
+        self.move(position)
+
         self.video_results_folder = None
         self.seekbar = None
         self.audio_widget = None
@@ -2560,6 +2566,7 @@ def main():
         str(Path(__file__).resolve().parent / "icons/icon_annolid.png"))
     app.setWindowIcon(annolid_icon)
     win = AnnolidWindow(config=config)
+    logger.info("Qt config file: %s" % win.settings.fileName())
 
     win.show()
     win.raise_()
