@@ -6,7 +6,14 @@
 [![Downloads](https://pepy.tech/badge/annolid)](https://pepy.tech/project/annolid)
 
 
-An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.
+## An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.
+
+## Annolid: Annotate, Segment, and Track Anything You Need
+Annolid is a deep learning-based software package designed for the segmentation, labeling, and tracking of research targets within video files, focusing primarily on animal behavior analysis. Based on state-of-the-art instance segmentation methods, Annolid now harnesses the Cutie video object segmentation model to achieve resilient, markerless tracking of multiple animals from single annotated frames, even in environments in which they may be partially or entirely concealed by environmental features or by one another. Our integration of Segment Anything and Grounding-DINO strategies additionally enables the automatic masking and segmentation of recognizable animals and objects by text command, removing the need for manual annotation. Annolid's comprehensive approach to object segmentation flexibly accommodates a broad spectrum of behavior analysis applications, enabling the classification of diverse behavioral states such as freezing, digging, pup huddling, and social interactions in addition to the tracking of animals and their body parts.
+
+![Effortless Multiple Instance Tracking using Annolid: Beginner's Tutorial](https://youtu.be/ry9bnaajKCs?si=Y9oVUmRbV2ktp-AB)
+<iframe width="560" height="315" src="https://www.youtube.com/embed/ry9bnaajKCs?si=o_rdLobKeKb4-LWX" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+
 ## Effortless Object Labeling with Minimal Points: Automated Polygon Generation using Segment Anything Models
 
 ![Effortlessly Create Polygon Labels for Objects using Segment Anything Models](docs/imgs/annolid_with_segment_anything.gif)
