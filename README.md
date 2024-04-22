@@ -4,6 +4,7 @@
 [![Annolid Release](https://github.com/healthonrails/annolid/workflows/Upload%20Python%20Package/badge.svg)](https://github.com/healthonrails/annolid/actions)
 [![DOI](https://zenodo.org/badge/290017987.svg)](https://zenodo.org/badge/latestdoi/290017987)
 [![Downloads](https://pepy.tech/badge/annolid)](https://pepy.tech/project/annolid)
+[![Arxiv](https://img.shields.io/badge/cs.CV-2403.18690-b31b1b?logo=arxiv&logoColor=red)](https://arxiv.org/abs/2403.18690) 
 
 
 ## An annotation and instance segmentation-based multiple animal tracking and behavior analysis package.
