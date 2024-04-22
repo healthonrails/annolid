@@ -1,4 +1,7 @@
-# How to label images
+# Labeling Instances
+
+## Effortless Object Labeling with Minimal Points: Automated Polygon Generation using Segment Anything Models
+![](https://github.com/healthonrails/annolid/blob/main/docs/imgs/annolid_with_segment_anything.gif)
 
 ## What should you label ?
 Due to Annolid using an instance segmentation approach, it is very versatile in what you want to label. We use polygons & keypoints to label region of interest (e.g. Vole_1, Mouse_1, Mouse_2, Frog, tail_base, nose...) or to capture interesting behaviors or feature (e.g. rearing, social_interaction, urine_sample ...).

@@ -1,1 +1,1 @@
-# Get in touch
+# Annolid resources

@@ -1,4 +1,4 @@
-# Introduction
+# Introduction with examples
 Annolid stands for:  Annotation + Annelid (segmentation).
 
 Annolid is based on instance segmentation models. Instance segmentation is the task of attributing every pixel of an image to a specific category. It can be used to detect and delineate each distinct object of interest appearing in that image. As such it facilitates the tracking of multiple animals and along with it the flexible state identification (e.g., behavior classification, urine deposition, interactions among objects). Annolid has self-supervised, weakly-supervised, and unsupervised training options. We are striving to incorporate optical flow mechanics to improve performances as well as improving labeling efficiency via autolabeling and iterative model training.

@@ -1,4 +1,4 @@
-# How to install
+# Installation Options
 
 To run Annolid, we suggest using Anaconda package/environment manager for Python. Download and install the [Anaconda](https://www.anaconda.com/products/individual) environment first. Then do the following, using the bash shell in Linux or the conda command line (= Anaconda Prompt) in Windows.
 

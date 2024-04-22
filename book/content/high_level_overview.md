@@ -1,4 +1,4 @@
-# High level overview
+# Technical overview
 
 At a high level Annolid's workflow consists of the following steps:
 

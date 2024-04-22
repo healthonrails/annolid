@@ -9,31 +9,48 @@ parts:
     - file: content/introduction
     - file: content/high_level_overview
     - file: content/how_to_install
+    - file: content/video_preparation
     - file: content/docker_container
     - file: content/gui_or_cli
     - file: content/extract_frames
     - file: content/labelling_images
-    - file: content/save_labels
-    - file: content/create_coco
+    - file: content/labeling_instances_under_the_hood.md
+    - file: content/tracking_with_Cutie.md
+    - file: content/model_training.md
+    #- file: content/save_labels
+    #- file: content/create_coco
     - file: content/tips_and_tricks
 
   - caption: Tutorials
     chapters:
-    - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
-    - file: tutorials/Annolid_on_Detectron2_Tutorial_2_Train_a_Model
-    - file: tutorials/Annolid_on_Detectron2_Tutorial_3_Evaluate_our_model
-    - file: tutorials/Annolid_on_Detectron2_Tutorial_4_Running_inference
-    - file: tutorials/Annolid_on_Detectron2_Tutorial_full
-    - file: tutorials/Annolid_post_processing_distances
+      - file: tutorials/Place_preference.md
+      - file: tutorials/Behavior_classification.md
+      - file: tutorials/Freezing_and motion_assays.md
+      
+    # - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
+    # - file: tutorials/Annolid_on_Detectron2_Tutorial_2_Train_a_Model
+    # - file: tutorials/Annolid_on_Detectron2_Tutorial_3_Evaluate_our_model
+    # - file: tutorials/Annolid_on_Detectron2_Tutorial_4_Running_inference
+    # - file: tutorials/Annolid_on_Detectron2_Tutorial_full
+    # - file: tutorials/Annolid_post_processing_distances
+  - captions: Post hoc analysis methods
+    chapters:
+      - file: tutorials/Calculate_distances_between_instances.md
   
-  - caption: Annolid Zoo
+  - caption: Annolid libraries
     chapters:
     - file: content/annolid_zoo
+
+  - caption: Annolid on Youtube
+    chapters:
+    - url: https://www.youtube.com/@annolid
+
   
   - caption: Community
     chapters:
-    - file: content/contributing
     - file: content/get_in_touch
-    - file: content/licence
     - file: content/cite_annolid
     - file: content/work_based_on_annolid
+    - file: content/contributing
+    - file: content/licence
+    
