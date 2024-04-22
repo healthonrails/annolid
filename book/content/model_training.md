@@ -1,7 +1,7 @@
 
 # Model training
 
-
+To achieve this, install Detectron2 and/or YOLACT. You can find detailed instructions on how to install them in additional pages. Once you've installed these packages, there's no need to repeat the process. Refer to [Install Options](how_to_install.md) for installation options.
 
 # Create your COCO format dataset
 
