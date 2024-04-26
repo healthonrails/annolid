@@ -1,9 +1,11 @@
+import os
 import pandas as pd
 import json
 import itertools
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
+from annolid.utils.files import find_manual_labeled_json_files
 
 
 class TrackingResultsAnalyzer:
@@ -23,7 +25,7 @@ class TrackingResultsAnalyzer:
         zone_data (dict): Dictionary containing zone information loaded from the zone JSON file.
     """
 
-    def __init__(self, video_name, zone_file, fps=None):
+    def __init__(self, video_name, zone_file=None, fps=None):
         """
         Initialize the TrackingResultsAnalyzer.
 
@@ -95,6 +97,11 @@ class TrackingResultsAnalyzer:
 
     def load_zone_json(self):
         """Load zone information from the JSON file."""
+        if not os.path.exists(self.zone_file):
+            json_files = sorted(find_manual_labeled_json_files(
+                self.tracked_csv.replace('_tracking.csv', '')))
+            # assume the first file has the Zone or place info
+            self.zone_file = json_files[0]
         with open(self.zone_file, 'r') as f:
             self.zone_data = json.load(f)
 
@@ -115,7 +122,8 @@ class TrackingResultsAnalyzer:
                                      == instance_label]
 
         zone_shapes = [zone_shape for zone_shape in self.zone_data['shapes']
-                       if 'zone' in zone_shape['description'].lower()]
+                       if 'description' in zone_shape and 'zone' in zone_shape['description'].lower()
+                       or 'zone' in zone_shape['label'].lower()]
         zone_time_dict = {shape['label']: 0 for shape in zone_shapes}
 
         for shape in zone_shapes:
