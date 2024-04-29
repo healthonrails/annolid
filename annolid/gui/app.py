@@ -57,6 +57,7 @@ from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
+from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
@@ -345,6 +346,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Downsample Videos")
         )
 
+        convert_csv = action(
+            self.tr("&Save CSV"),
+            self.convert_labelme_json_to_csv,
+            None,
+            "Save CSV",
+            self.tr("Save CSV")
+        )
+
         convert_sleap = action(
             self.tr("&Load SLEAP h5"),
             self.convert_sleap_h5_to_labelme,
@@ -512,6 +521,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (tracks,))
         utils.addActions(self.menus.file, (quality_control,))
         utils.addActions(self.menus.file, (downsample_video,))
+        utils.addActions(self.menus.file, (convert_csv,))
         utils.addActions(self.menus.file, (convert_sleap,))
         utils.addActions(self.menus.file, (advance_params,))
 
@@ -604,6 +614,10 @@ class AnnolidWindow(MainWindow):
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
+
+    def convert_labelme_json_to_csv(self):
+        convert_labelme_json_to_csv_widget = LabelmeJsonToCsvDialog()
+        convert_labelme_json_to_csv_widget.exec_()
 
     def about_annolid_and_system_info(self):
         about_annolid_dialog = SystemInfoDialog()
