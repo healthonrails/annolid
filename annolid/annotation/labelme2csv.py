@@ -6,6 +6,7 @@ import argparse
 from labelme.utils import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
+from annolid.annotation.keypoints import keypoint_to_polygon_points
 
 
 def read_json_file(file_path):
@@ -88,6 +89,9 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
             for shape in data["shapes"]:
                 instance_name = shape["label"]
                 points = shape["points"]
+                if shape['shape_type'] == 'point':
+                    points = keypoint_to_polygon_points(points)
+                    shape['shape_type'] == 'polygon'
                 if len(points) > 2:
                     mask = convert_shape_to_mask(img_shape, points)
                     bboxs = masks_to_bboxes(mask[None, :, :])

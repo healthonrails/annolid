@@ -6,6 +6,33 @@ from annolid.gui.label_file import LabelFile
 from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
 import json
+import math
+
+
+def keypoint_to_polygon_points(center_point,
+                               radius=10,
+                               num_points=10):
+    """
+    Generate polygon points based on a given point and radius.
+
+    Args:
+    - center_point (list): A list containing the x and y coordinates
+      of the center point, e.g., [[x, y]].
+    - radius (int): The radius of the circle.
+    - num_points (int, optional): The number of points to generate (default is 10).
+˝
+    Returns:
+    - points (list): A list of lists containing the x and y coordinates of
+      the polygon points, e.g., [[x1, y1], [x2, y2], ...].
+    """
+    center_x, center_y = center_point[0]
+    points = []
+    for i in range(num_points):
+        angle = 2 * math.pi * i / num_points
+        x = center_x + radius * math.cos(angle)
+        y = center_y + radius * math.sin(angle)
+        points.append([x, y])
+    return points
 
 
 def format_shape(shape):
