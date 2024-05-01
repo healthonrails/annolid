@@ -1964,6 +1964,7 @@ class AnnolidWindow(MainWindow):
 
             self.num_frames = self.video_loader.total_frames()
             self.seekbar = VideoSlider()
+            self.seekbar.input_value.returnPressed.connect(self.jump_to_frame)
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
             logger.info(f"Working on video:{self.video_file}.")
@@ -2014,6 +2015,34 @@ class AnnolidWindow(MainWindow):
                                               mark_type=mark_type,
                                               init_load=True
                                               )
+
+    def jump_to_frame(self):
+        """
+        Jump to the specified frame number.
+
+        Retrieves the frame number from the input field, validates it, and sets the frame
+        number if it is within the valid range.
+
+        If the entered frame number is not a valid integer or is out of range, it logs
+        an informational message and notifies the user with a warning dialog.
+        """
+        try:
+            input_frame_number = int(self.seekbar.input_value.text())
+            if 0 <= input_frame_number < self.num_frames:
+                self.set_frame_number(input_frame_number)
+            else:
+                logger.info(
+                    f"Frame number {input_frame_number} is out of range.")
+                # Notify the user about the error, for instance:
+                QtWidgets.QMessageBox.warning(self, "Invalid Frame Number",
+                                              f"{input_frame_number} is out of range.")
+        except ValueError:
+            logger.info(
+                f"Invalid input: {self.seekbar.input_value.text()} is not a valid frame number.")
+            QtWidgets.QMessageBox.warning(self, "Invalid Input",
+                                          f"'{self.seekbar.input_value.text()}' is not a valid frame number.")
+        except Exception as e:
+            logger.error(f"Error while jumping to frame: {e}")
 
     def tooltip_callable(self, val):
         if self.highlighted_mark is not None:
