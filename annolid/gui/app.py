@@ -1119,7 +1119,6 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;")
         self.stepSizeWidget.predict_button.setEnabled(True)
-        self.set_frame_number(current_frame_index)
         self.stop_prediction_flag = False
 
     def predict_is_ready(self, messege):
