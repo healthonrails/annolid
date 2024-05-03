@@ -22,7 +22,7 @@ setuptools.setup(
                       'opencv-python-headless>=4.1.2.30',
                       'PyYAML>=5.3',
                       'labelme==5.4.1',
-                      'decord>=0.4.0; platform_system!="Darwin"',  # decord for non-macOS platforms
+                      'decord==0.4.0; platform_system!="Darwin"',  # decord for non-macOS platforms
                       'eva-decord>=0.6.1; sys_platform=="darwin"',  # eva-decord for macOS
                       'sounddevice>=0.4.6',
                       'librosa>=0.10.1',
