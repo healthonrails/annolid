@@ -290,7 +290,10 @@ class CutieVideoProcessor:
                 mask_torch = index_numpy_to_one_hot_torch(
                     mask, num_objects + 1).to(self.device)
                 prediction = self.processor.step(
-                    frame_torch, mask_torch[1:], idx_mask=False)
+                    frame_torch, mask_torch[1:],
+                    idx_mask=False,
+                    force_permanent=True
+                )
                 prediction = torch_prob_to_numpy_mask(prediction)
 
                 logger.info(
@@ -370,7 +373,10 @@ class CutieVideoProcessor:
                             mask_torch = index_numpy_to_one_hot_torch(
                                 mask, num_objects + 1).to(self.device)
                             prediction = self.processor.step(
-                                frame_torch, mask_torch[1:], idx_mask=False)
+                                frame_torch, mask_torch[1:],
+                                idx_mask=False,
+                                force_permanent=True
+                            )
                             prediction = torch_prob_to_numpy_mask(prediction)
                             self.save_color_id_mask(
                                 frame, prediction, filename)
