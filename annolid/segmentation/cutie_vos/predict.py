@@ -2,6 +2,8 @@ import os
 import cv2
 import torch
 import gdown
+import glob
+import json
 import numpy as np
 from PIL import Image
 from annolid.gui.shape import MaskShape, Shape
@@ -19,12 +21,14 @@ from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
 from pathlib import Path
-from annolid.utils.shapes import shapes_to_label, extract_flow_points_in_mask
+from labelme.utils.shape import shapes_to_label
+from annolid.utils.shapes import extract_flow_points_in_mask
 from annolid.utils.devices import get_device
 from annolid.utils.logger import logger
 from annolid.motion.optical_flow import compute_optical_flow
 from annolid.utils import draw
 from annolid.utils.files import create_tracking_csv_file
+from annolid.utils.files import get_frame_number_from_json
 from annolid.utils.lru_cache import BboxCache
 
 """
@@ -224,6 +228,76 @@ class CutieVideoProcessor:
                     label_mask_dict[instance_name] = masks[0]
         return label_mask_dict
 
+    def shapes_to_mask(self, label_json_file, image_size):
+        """
+        Convert label JSON file containing shapes to a binary mask.
+
+        Args:
+            label_json_file (str): Path to the label JSON file.
+            image_size (tuple): Size of the image.
+
+        Returns:
+            tuple: Tuple containing the binary mask and the 
+            dictionary mapping label names to their values.
+        """
+        label_name_to_value = {"_background_": 0}
+        with open(label_json_file, 'r') as json_file:
+            data = json.load(json_file)
+        shapes = [shape for shape in data.get(
+            'shapes', []) if len(shape["points"]) >= 3]
+
+        for shape in sorted(shapes, key=lambda x: x["label"]):
+            label_name = shape["label"]
+            if label_name not in label_name_to_value:
+                label_value = len(label_name_to_value)
+                label_name_to_value[label_name] = label_value
+
+        mask, _ = shapes_to_label(image_size, shapes, label_name_to_value)
+        return mask, label_name_to_value
+
+    def commit_masks_into_permanent_memory(self, frame_number, labels_dict):
+        """
+        Commit masks into permanent memory for inference.
+
+        Args:
+            frame_number (int): Frame number.
+            labels_dict (dict): Dictionary mapping label names to their values.
+
+        Returns:
+            dict: Updated labels dictionary.
+        """
+        png_file_paths = glob.glob(
+            f"{self.video_folder}/{self.video_folder.name}_0*.png")
+        png_file_paths = [p for p in png_file_paths if 'mask' not in p]
+
+        for png_path in png_file_paths:
+            cur_frame_number = get_frame_number_from_json(png_path)
+
+            if frame_number != cur_frame_number:
+                frame = cv2.imread(str(png_path))
+                json_file_path = png_path.replace('.png', '.json')
+                image_size = frame.shape[:2]
+
+                mask, label_name_to_value = self.shapes_to_mask(
+                    json_file_path, image_size)
+                num_objects = len(np.unique(mask)) - 1
+                labels_dict.update(label_name_to_value)
+
+                if mask is None or frame is None:
+                    continue
+
+                frame_torch = image_to_torch(frame, device=self.device)
+                mask_torch = index_numpy_to_one_hot_torch(
+                    mask, num_objects + 1).to(self.device)
+                prediction = self.processor.step(
+                    frame_torch, mask_torch[1:], idx_mask=False)
+                prediction = torch_prob_to_numpy_mask(prediction)
+
+                logger.info(
+                    f"Committing {num_objects} instances from {cur_frame_number} into permanent_memory.")
+
+        return labels_dict
+
     def process_video_with_mask(self, frame_number=0,
                                 mask=None,
                                 frames_to_propagate=60,
@@ -234,10 +308,13 @@ class CutieVideoProcessor:
                                 output_video_path=None,
                                 has_occlusion=False,
                                 ):
+        self.processor = InferenceCore(self.cutie, cfg=self.cfg)
+        _labels_dict = self.commit_masks_into_permanent_memory(
+            frame_number, labels_dict)
+        labels_dict.update(_labels_dict)
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
             self.num_tracking_instances = num_objects
-        self.processor = InferenceCore(self.cutie, cfg=self.cfg)
         cap = cv2.VideoCapture(self.video_name)
         value_to_label_names = {
             v: k for k, v in labels_dict.items()} if labels_dict else {}

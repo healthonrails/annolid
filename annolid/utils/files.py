@@ -7,6 +7,38 @@ import platform
 import shutil
 import glob
 import pandas as pd
+from datetime import datetime, timedelta
+
+
+def count_recent_json_files(folder_path, last_minute=1):
+    """
+    Count the number of JSON files saved in the last minute within a folder.
+
+    Args:
+        folder_path (str): Path to the folder containing JSON files.
+        last_minute (int, optional): Number of minutes to consider as "recent". Defaults to 1.
+
+    Returns:
+        int: The number of JSON files saved in the last minute.
+    """
+    # Get the current time
+    current_time = datetime.now()
+    # Define the threshold for "recent" files based on last_minute
+    recent_threshold = current_time - timedelta(minutes=last_minute)
+
+    # Use os.scandir for potentially faster directory iteration
+    recent_json_count = 0
+    with os.scandir(folder_path) as entries:
+        for entry in entries:
+            # Check for regular files only (avoid directories and special files)
+            if entry.is_file() and entry.name.endswith(".json"):
+                # Get file modification time without full path construction
+                file_mtime = datetime.fromtimestamp(entry.stat().st_mtime)
+                # Check for recent files
+                if file_mtime >= recent_threshold:
+                    recent_json_count += 1
+
+    return recent_json_count
 
 
 def find_manual_labeled_json_files(folder_path):
