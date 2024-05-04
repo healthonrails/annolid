@@ -294,8 +294,6 @@ class CutieVideoProcessor:
                     idx_mask=False,
                     force_permanent=True
                 )
-                prediction = torch_prob_to_numpy_mask(prediction)
-
                 logger.info(
                     f"Committing {num_objects} instances from {cur_frame_number} into permanent_memory.")
 
