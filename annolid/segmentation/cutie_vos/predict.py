@@ -266,38 +266,40 @@ class CutieVideoProcessor:
         Returns:
             dict: Updated labels dictionary.
         """
-        png_file_paths = glob.glob(
-            f"{self.video_folder}/{self.video_folder.name}_0*.png")
-        png_file_paths = [p for p in png_file_paths if 'mask' not in p]
+        with torch.inference_mode():
+            with torch.cuda.amp.autocast(enabled=self.cfg.amp and self.device == 'cuda'):
+                png_file_paths = glob.glob(
+                    f"{self.video_folder}/{self.video_folder.name}_0*.png")
+                png_file_paths = [p for p in png_file_paths if 'mask' not in p]
 
-        for png_path in png_file_paths:
-            cur_frame_number = get_frame_number_from_json(png_path)
+                for png_path in png_file_paths:
+                    cur_frame_number = get_frame_number_from_json(png_path)
 
-            if frame_number != cur_frame_number:
-                frame = cv2.imread(str(png_path))
-                json_file_path = png_path.replace('.png', '.json')
-                image_size = frame.shape[:2]
+                    if frame_number != cur_frame_number:
+                        frame = cv2.imread(str(png_path))
+                        json_file_path = png_path.replace('.png', '.json')
+                        image_size = frame.shape[:2]
 
-                mask, label_name_to_value = self.shapes_to_mask(
-                    json_file_path, image_size)
-                num_objects = len(np.unique(mask)) - 1
-                labels_dict.update(label_name_to_value)
+                        mask, label_name_to_value = self.shapes_to_mask(
+                            json_file_path, image_size)
+                        num_objects = len(np.unique(mask)) - 1
+                        labels_dict.update(label_name_to_value)
 
-                if mask is None or frame is None:
-                    continue
+                        if mask is None or frame is None:
+                            continue
 
-                frame_torch = image_to_torch(frame, device=self.device)
-                mask_torch = index_numpy_to_one_hot_torch(
-                    mask, num_objects + 1).to(self.device)
-                prediction = self.processor.step(
-                    frame_torch, mask_torch[1:],
-                    idx_mask=False,
-                    force_permanent=True
-                )
-                logger.info(
-                    f"Committing {num_objects} instances from {cur_frame_number} into permanent_memory.")
+                        frame_torch = image_to_torch(frame, device=self.device)
+                        mask_torch = index_numpy_to_one_hot_torch(
+                            mask, num_objects + 1).to(self.device)
+                        prediction = self.processor.step(
+                            frame_torch, mask_torch[1:],
+                            idx_mask=False,
+                            force_permanent=True
+                        )
+                        logger.info(
+                            f"Committing {num_objects} instances from {cur_frame_number} into permanent_memory.")
 
-        return labels_dict
+                return labels_dict
 
     def process_video_with_mask(self, frame_number=0,
                                 mask=None,
@@ -352,7 +354,7 @@ class CutieVideoProcessor:
             logger.info(f"Saving the color masks to video {output_video_path}")
 
         with torch.inference_mode():
-            with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
+            with torch.cuda.amp.autocast(enabled=self.cfg.amp and self.device == 'cuda'):
                 while cap.isOpened():
                     while not pred_worker.is_stopped():
                         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
