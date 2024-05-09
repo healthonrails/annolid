@@ -339,6 +339,13 @@ class InferenceCore:
 
         return output_prob
 
+    def delete_objects(self, objects: List[int]) -> None:
+        """
+        Delete the given objects from the memory.
+        """
+        self.object_manager.delete_objects(objects)
+        self.memory.purge_except(self.object_manager.all_obj_ids)
+
     def get_aux_outputs(self, image: torch.Tensor) -> Dict[str, torch.Tensor]:
         image, pads = pad_divide_by(image, 16)
         image = image.unsqueeze(0)  # add the batch dimension
