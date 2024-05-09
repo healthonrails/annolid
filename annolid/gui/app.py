@@ -243,6 +243,7 @@ class AnnolidWindow(MainWindow):
         self.use_cpu_only = False
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
+        self.compute_optical_flow = True
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -641,6 +642,8 @@ class AnnolidWindow(MainWindow):
         self.use_cpu_only = advanced_params_dialog.is_cpu_only_enabled()
         self.save_video_with_color_mask = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
         self.auto_recovery_missing_instances = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
+        self.compute_optical_flow = advanced_params_dialog.is_compute_optiocal_flow_enabled()
+        logger.info(f"Computing optical flow is {self.compute_optical_flow} .")
         logger.info(
             f"Set eplision for polygon to : {self.epsilon_for_polygon}")
 
@@ -1062,6 +1065,7 @@ class AnnolidWindow(MainWindow):
                     use_cpu_only=self.use_cpu_only,
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
                     save_video_with_color_mask=self.save_video_with_color_mask,
+                    compute_optical_flow=self.compute_optical_flow,
                 )
                 if not self.seg_pred_thread.isRunning():
                     self.seg_pred_thread = QtCore.QThread()

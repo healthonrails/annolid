@@ -187,6 +187,7 @@ class VideoProcessor:
         self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
         self.save_video_with_color_mask = kwargs.get(
             'save_video_with_color_mask', False)
+        self.compute_optical_flow = kwargs.get('compute_optical_flow', False)
 
     def set_pred_worker(self, pred_worker):
         self.pred_worker = pred_worker
@@ -234,6 +235,7 @@ class VideoProcessor:
                 epsilon_for_polygon=self.epsilon_for_polygon,
                 t_max_value=self.t_max_value,
                 use_cpu_only=self.use_cpu_only,
+                compute_optical_flow=self.compute_optical_flow,
             )
         VideoProcessor.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
         message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,

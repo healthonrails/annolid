@@ -98,6 +98,7 @@ class CutieVideoProcessor:
         self.output_tracking_csvpath = str(
             self.video_folder) + f"_tracked.csv"
         self.showing_KMedoids_in_mask = False
+        self.compute_optical_flow = kwargs.get('compute_optical_flow', False)
         self.auto_missing_instance_recovery = kwargs.get(
             "auto_missing_instance_recovery", False)
         logger.info(
@@ -384,10 +385,9 @@ class CutieVideoProcessor:
                             prediction = self.processor.step(frame_torch)
                             prediction = torch_prob_to_numpy_mask(prediction)
 
-                        if prev_frame is not None:
+                        if self.compute_optical_flow and prev_frame is not None:
                             self._flow_hsv, self._flow = compute_optical_flow(
                                 prev_frame, frame)
-                            self._mask = prediction > 0
 
                         mask_dict = {value_to_label_names.get(label_id, str(label_id)): (prediction == label_id)
                                      for label_id in np.unique(prediction)[1:]}
@@ -437,6 +437,7 @@ class CutieVideoProcessor:
                         self._save_annotation(filename, mask_dict, frame.shape)
 
                         if recording:
+                            self._mask = prediction > 0
                             visualization = overlay_davis(frame, prediction)
                             if self._flow_hsv is not None:
                                 flow_bgr = cv2.cvtColor(

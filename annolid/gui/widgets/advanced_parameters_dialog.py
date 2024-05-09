@@ -18,6 +18,7 @@ class AdvancedParametersDialog(QDialog):
         self.cpu_only_enabled = False
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
+        self.compute_optical_flow = True
 
         # Create layout
         layout = QVBoxLayout()
@@ -68,6 +69,13 @@ class AdvancedParametersDialog(QDialog):
             self.auto_recovery_missing_instances)
         layout.addWidget(self.auto_recovery_missing_instances_checkbox)
 
+        self.compute_optical_flow_checkbox = QCheckBox(
+            "Compute Motion Index based on optical flow over instance mask"
+        )
+        self.compute_optical_flow_checkbox.setChecked(
+            self.compute_optical_flow
+        )
+        layout.addWidget(self.compute_optical_flow_checkbox)
         # Add button to apply parameters
         apply_button = QPushButton("Apply")
         apply_button.clicked.connect(self.apply_parameters)
@@ -89,6 +97,7 @@ class AdvancedParametersDialog(QDialog):
         self.save_video_with_color_mask = self.save_video_with_color_mask_checkbox.isChecked()
         # Get auto recovery of missing instances setting
         self.auto_recovery_missing_instances = self.auto_recovery_missing_instances_checkbox.isChecked()
+        self.compute_optical_flow = self.compute_optical_flow_checkbox.isChecked()
         # Close the dialog
         self.close()
 
@@ -109,3 +118,6 @@ class AdvancedParametersDialog(QDialog):
 
     def is_auto_recovery_missing_instances_enabled(self):
         return self.auto_recovery_missing_instances
+
+    def is_compute_optiocal_flow_enabled(self):
+        return self.compute_optical_flow
