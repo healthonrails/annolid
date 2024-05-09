@@ -279,7 +279,7 @@ class InferenceCore:
                 if idx_mask:
                     pred_prob_no_bg[:, mask > 0] = 0
                 else:
-                    pred_prob_no_bg[:, mask.max(0) > 0.5] = 0
+                    pred_prob_no_bg[:, mask.max(0).values > 0.5] = 0
 
                 new_masks = []
                 for mask_id, tmp_id in enumerate(corresponding_tmp_ids):

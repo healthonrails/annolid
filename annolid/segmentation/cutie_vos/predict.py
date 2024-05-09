@@ -313,9 +313,12 @@ class CutieVideoProcessor:
                                 has_occlusion=False,
                                 ):
         self.processor = InferenceCore(self.cutie, cfg=self.cfg)
-        _labels_dict = self.commit_masks_into_permanent_memory(
-            frame_number, labels_dict)
-        labels_dict.update(_labels_dict)
+        try:
+            _labels_dict = self.commit_masks_into_permanent_memory(
+                frame_number, labels_dict)
+            labels_dict.update(_labels_dict)
+        except Exception as e:
+            logger.info(e)
         if mask is not None:
             num_objects = len(np.unique(mask)) - 1
             self.num_tracking_instances = num_objects
@@ -373,11 +376,14 @@ class CutieVideoProcessor:
                                  current_frame_index % frame_number == 0)):
                             mask_torch = index_numpy_to_one_hot_torch(
                                 mask, num_objects + 1).to(self.device)
-                            prediction = self.processor.step(
-                                frame_torch, mask_torch[1:],
-                                idx_mask=False,
-                                force_permanent=True
-                            )
+                            try:
+                                prediction = self.processor.step(
+                                    frame_torch, mask_torch[1:],
+                                    idx_mask=False,
+                                    force_permanent=True
+                                )
+                            except Exception as e:
+                                logger.info(e)
                             prediction = torch_prob_to_numpy_mask(prediction)
                             self.save_color_id_mask(
                                 frame, prediction, filename)
