@@ -180,6 +180,35 @@ class TrackingResultsAnalyzer:
         plt.title(f'Time Spent in Each Zone for {instance_label}')
         plt.show()
 
+    def save_all_instances_zone_time_to_csv(self, output_csv=None):
+        """
+        Calculate and save the time spent by each instance in each zone to a CSV file.
+
+        Args:
+            output_csv (str): The path to the output CSV file.
+        """
+        if output_csv is None:
+            output_csv = self.tracking_csv.replace(
+                '_tracking', '_place_preference')
+
+        # Initialize dictionary to store zone time results for all instances
+        all_instances_zone_time = {}
+
+        # Iterate over all instances in the tracking dataframe
+        for instance_label in self.tracking_df['instance_name'].unique():
+            zone_time_dict = self.determine_time_in_zone(instance_label)
+            # Convert time from frames to seconds
+            if self.fps:
+                zone_time_dict = {
+                    zone_label: frames/self.fps for zone_label, frames in zone_time_dict.items()}
+            all_instances_zone_time[instance_label] = zone_time_dict
+
+        # Convert the dictionary to a DataFrame
+        instances_zone_time_df = pd.DataFrame(all_instances_zone_time).T
+
+        # Save the DataFrame to a CSV file
+        instances_zone_time_df.to_csv(output_csv)
+
 
 if __name__ == '__main__':
     import argparse
@@ -187,7 +216,7 @@ if __name__ == '__main__':
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Track results analyzer')
     parser.add_argument('video_name', type=str, help='Name of the video')
-    parser.add_argument('zone_file', type=str,
+    parser.add_argument('zone_file', type=str, default=None,
                         help='Path to the zone JSON file')
     parser.add_argument('fps', type=float, default=30,
                         help='FPS for the video')
@@ -195,8 +224,9 @@ if __name__ == '__main__':
 
     # Create and run the analyzer
     analyzer = TrackingResultsAnalyzer(
-        args.video_name, args.zone_file, args.fps)
+        args.video_name, zone_file=args.zone_file, fps=args.fps)
     analyzer.merge_and_calculate_distance()
-    time_in_zone_mouse = analyzer.determine_time_in_zone("mouse_0")
+    time_in_zone_mouse = analyzer.determine_time_in_zone("mouse")
     print("Time in zone for mouse:", time_in_zone_mouse)
-    analyzer.plot_time_in_zones("mouse_0")
+    analyzer.plot_time_in_zones("mouse")
+    analyzer.save_all_instances_zone_time_to_csv()
