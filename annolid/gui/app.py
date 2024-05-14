@@ -63,6 +63,7 @@ from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.annotation import labelme2csv
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
+from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 
 from labelme.ai import MODELS
 __appname__ = 'Annolid'
@@ -362,6 +363,13 @@ class AnnolidWindow(MainWindow):
             "Load SLEAP h5",
             self.tr("Load SLEAP h5")
         )
+        place_perference = action(
+            self.tr("&Place Perference"),
+            self.place_perference_analyze,
+            None,
+            "Place Perference",
+            self.tr("Place Perference")
+        )
 
         about_annolid = action(
             self.tr("&About Annolid"),
@@ -524,6 +532,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (downsample_video,))
         utils.addActions(self.menus.file, (convert_csv,))
         utils.addActions(self.menus.file, (convert_sleap,))
+        utils.addActions(self.menus.file, (place_perference,))
         utils.addActions(self.menus.file, (advance_params,))
 
         utils.addActions(self.menus.view, (glitter2,))
@@ -615,6 +624,10 @@ class AnnolidWindow(MainWindow):
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
+
+    def place_perference_analyze(self):
+        place_perference_analyze_widget = TrackingAnalyzerDialog()
+        place_perference_analyze_widget.exec_()
 
     def convert_labelme_json_to_csv(self):
         convert_labelme_json_to_csv_widget = LabelmeJsonToCsvDialog()

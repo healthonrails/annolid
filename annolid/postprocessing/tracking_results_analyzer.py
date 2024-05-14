@@ -2,10 +2,13 @@ import os
 import pandas as pd
 import json
 import itertools
+from pathlib import Path
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 from annolid.utils.files import find_manual_labeled_json_files
+from annolid.data.videos import CV2Video
+from annolid.utils.logger import logger
 
 
 class TrackingResultsAnalyzer:
@@ -14,7 +17,7 @@ class TrackingResultsAnalyzer:
       and visualize time spent in zones for instances.
 
     Attributes:
-        video_name (str): The name of the video.
+        video_path (str): The path of the video file.
         zone_file (str): The path to the JSON file containing zone information.
         tracking_csv (str): The path to the tracking CSV file.
         tracked_csv (str): The path to the tracked CSV file.
@@ -25,7 +28,7 @@ class TrackingResultsAnalyzer:
         zone_data (dict): Dictionary containing zone information loaded from the zone JSON file.
     """
 
-    def __init__(self, video_name, zone_file=None, fps=None):
+    def __init__(self, video_path, zone_file=None, fps=None):
         """
         Initialize the TrackingResultsAnalyzer.
 
@@ -33,11 +36,16 @@ class TrackingResultsAnalyzer:
             video_name (str): The name of the video.
             zone_file (str): The path to the JSON file containing zone information.
         """
-        self.video_name = video_name
-        self.tracking_csv = f"{video_name}_tracking.csv"
-        self.tracked_csv = f"{video_name}_tracked.csv"
+        self.video_path = Path(video_path)
+        self.tracking_csv = self.video_path.parent / \
+            f"{self.video_path.stem}_tracking.csv"
+        self.tracked_csv = self.video_path.parent / \
+            f"{self.video_path.stem}_tracked.csv"
         self.zone_file = zone_file
         self.fps = fps
+        if fps is None:
+            self.fps = CV2Video(self.video_path).get_fps()
+        self.load_zone_json()
 
     def read_csv_files(self):
         """Read tracking and tracked CSV files into DataFrames."""
@@ -99,11 +107,12 @@ class TrackingResultsAnalyzer:
         """Load zone information from the JSON file."""
         if not os.path.exists(self.zone_file):
             json_files = sorted(find_manual_labeled_json_files(
-                self.tracked_csv.replace('_tracking.csv', '')))
+                str(self.tracking_csv).replace('_tracking.csv', '')))
             # assume the first file has the Zone or place info
             self.zone_file = json_files[0]
         with open(self.zone_file, 'r') as f:
             self.zone_data = json.load(f)
+        logger.info(f"Loading zones from {self.zone_file}")
 
     def determine_time_in_zone(self, instance_label):
         """
@@ -115,8 +124,6 @@ class TrackingResultsAnalyzer:
         Returns:
             dict: A dictionary containing the time spent by the instance in each zone.
         """
-        self.load_zone_json()
-
         # Filter merged DataFrame for given instance
         instance_df = self.merged_df[self.merged_df['instance_name']
                                      == instance_label]
@@ -188,7 +195,7 @@ class TrackingResultsAnalyzer:
             output_csv (str): The path to the output CSV file.
         """
         if output_csv is None:
-            output_csv = self.tracking_csv.replace(
+            output_csv = str(self.tracking_csv).replace(
                 '_tracking', '_place_preference')
 
         # Initialize dictionary to store zone time results for all instances
@@ -208,6 +215,8 @@ class TrackingResultsAnalyzer:
 
         # Save the DataFrame to a CSV file
         instances_zone_time_df.to_csv(output_csv)
+        logger.info(f"Saving place preference data to {output_csv}")
+        return output_csv
 
 
 if __name__ == '__main__':
@@ -215,7 +224,7 @@ if __name__ == '__main__':
 
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Track results analyzer')
-    parser.add_argument('video_name', type=str, help='Name of the video')
+    parser.add_argument('video_path', type=str, help='Name of the video')
     parser.add_argument('zone_file', type=str, default=None,
                         help='Path to the zone JSON file')
     parser.add_argument('fps', type=float, default=30,
@@ -224,7 +233,7 @@ if __name__ == '__main__':
 
     # Create and run the analyzer
     analyzer = TrackingResultsAnalyzer(
-        args.video_name, zone_file=args.zone_file, fps=args.fps)
+        args.video_path, zone_file=args.zone_file, fps=args.fps)
     analyzer.merge_and_calculate_distance()
     time_in_zone_mouse = analyzer.determine_time_in_zone("mouse")
     print("Time in zone for mouse:", time_in_zone_mouse)
