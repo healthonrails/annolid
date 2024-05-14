@@ -49,7 +49,7 @@ class TrackingAnalyzerDialog(QDialog):
 
     def browse_video(self):
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov)")
+            self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mkv *.mov,)")
         if filename:
             self.video_path_edit.setText(filename)
             # Try to extract FPS and find corresponding zone file
@@ -75,8 +75,8 @@ class TrackingAnalyzerDialog(QDialog):
             json_files = find_manual_labeled_json_files(video_dir)
             # assume the zone shapes are in the first frame
             if json_files:
-                zone_file = sorted(json_files)[0]
-        return fps, zone_file
+                zone_file = video_dir / sorted(json_files)[0]
+        return fps, str(zone_file)
 
     def analyze(self):
         video_path = self.video_path_edit.text()
