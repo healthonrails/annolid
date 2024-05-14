@@ -385,11 +385,13 @@ class CutieVideoProcessor:
                                     idx_mask=False,
                                     force_permanent=True
                                 )
+                                prediction = torch_prob_to_numpy_mask(
+                                    prediction)
+                                self.save_color_id_mask(
+                                    frame, prediction, filename)
                             except Exception as e:
                                 logger.info(e)
-                            prediction = torch_prob_to_numpy_mask(prediction)
-                            self.save_color_id_mask(
-                                frame, prediction, filename)
+
                         else:
                             prediction = self.processor.step(frame_torch)
                             prediction = torch_prob_to_numpy_mask(prediction)
