@@ -95,6 +95,16 @@ class TrackingAnalyzerDialog(QDialog):
                 f"Analysis is complete. Result CSV file saved at:\n{output_csv_path}",
                 QMessageBox.Ok)
 
+    def run_analysis_without_gui(self, video_path, zone_path=None, fps=None):
+        self.video_path_edit.setText(video_path)
+        if zone_path is None:
+            fps, zone_path = self.extract_fps_and_find_zone_file(video_path)
+        if zone_path:
+            self.zone_path_edit.setText(zone_path)
+        if fps:
+            self.fps_edit.setText(str(fps))
+        self.analyze()
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

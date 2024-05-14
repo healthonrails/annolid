@@ -245,7 +245,10 @@ class CutieVideoProcessor:
         with open(label_json_file, 'r') as json_file:
             data = json.load(json_file)
         shapes = [shape for shape in data.get(
-            'shapes', []) if len(shape["points"]) >= 3]
+            'shapes', []) if len(shape["points"]) >= 3
+            and 'zone' not in shape['description'].lower()
+            and 'zone' not in shape['label']
+        ]
 
         for shape in sorted(shapes, key=lambda x: x["label"]):
             label_name = shape["label"]

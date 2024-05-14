@@ -45,6 +45,8 @@ class TrackingResultsAnalyzer:
         self.fps = fps
         if fps is None:
             self.fps = CV2Video(self.video_path).get_fps()
+        self.zone_shapes = None
+        self.zone_time_dict = None
         self.load_zone_json()
 
     def read_csv_files(self):
@@ -113,6 +115,10 @@ class TrackingResultsAnalyzer:
         with open(self.zone_file, 'r') as f:
             self.zone_data = json.load(f)
         logger.info(f"Loading zones from {self.zone_file}")
+        self.zone_shapes = [zone_shape for zone_shape in self.zone_data['shapes']
+                            if 'description' in zone_shape and 'zone' in zone_shape['description'].lower()
+                            or 'zone' in zone_shape['label'].lower()]
+        self.zone_time_dict = {shape['label']: 0 for shape in self.zone_shapes}
 
     def determine_time_in_zone(self, instance_label):
         """
@@ -128,12 +134,9 @@ class TrackingResultsAnalyzer:
         instance_df = self.merged_df[self.merged_df['instance_name']
                                      == instance_label]
 
-        zone_shapes = [zone_shape for zone_shape in self.zone_data['shapes']
-                       if 'description' in zone_shape and 'zone' in zone_shape['description'].lower()
-                       or 'zone' in zone_shape['label'].lower()]
-        zone_time_dict = {shape['label']: 0 for shape in zone_shapes}
+        zone_time_dict = {shape['label']: 0 for shape in self.zone_shapes}
 
-        for shape in zone_shapes:
+        for shape in self.zone_shapes:
             zone_label = shape['label']
             zone_time = 0
             # Check if instance points are within the zone
@@ -203,12 +206,13 @@ class TrackingResultsAnalyzer:
 
         # Iterate over all instances in the tracking dataframe
         for instance_label in self.tracking_df['instance_name'].unique():
-            zone_time_dict = self.determine_time_in_zone(instance_label)
-            # Convert time from frames to seconds
-            if self.fps:
-                zone_time_dict = {
-                    zone_label: frames/self.fps for zone_label, frames in zone_time_dict.items()}
-            all_instances_zone_time[instance_label] = zone_time_dict
+            if instance_label not in self.zone_time_dict.keys():
+                zone_time_dict = self.determine_time_in_zone(instance_label)
+                # Convert time from frames to seconds
+                if self.fps:
+                    zone_time_dict = {
+                        zone_label: frames/self.fps for zone_label, frames in zone_time_dict.items()}
+                all_instances_zone_time[instance_label] = zone_time_dict
 
         # Convert the dictionary to a DataFrame
         instances_zone_time_df = pd.DataFrame(all_instances_zone_time).T

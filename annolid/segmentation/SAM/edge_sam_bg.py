@@ -211,7 +211,10 @@ class VideoProcessor:
         frame_number = int(
             Path(self.most_recent_file).stem.split('_')[-1])
         shapes = self.load_shapes(self.most_recent_file)
-        shapes = [shape for shape in shapes if len(shape["points"]) >= 3]
+        shapes = [shape for shape in shapes if len(
+            shape["points"]) >= 3 and 'zone' not in shape['description'].lower()
+            and 'zone' not in shape['label']
+        ]
         if len(shapes) < 1:
             return f"No valid polygon found in this frame; requires a minimum of 3 points #{frame_number} "
         for shape in sorted(shapes, key=lambda x: x["label"]):

@@ -236,6 +236,7 @@ class AnnolidWindow(MainWindow):
         self.prev_shapes = None
         self.pred_worker = None
         self.video_processor = None
+        self.zone_path = None
         # Initialize a flag to control thread termination
         self.stop_prediction_flag = False
         self.epsilon_for_polygon = 2.0
@@ -365,7 +366,7 @@ class AnnolidWindow(MainWindow):
         )
         place_perference = action(
             self.tr("&Place Perference"),
-            self.place_perference_analyze,
+            self.place_preference_analyze,
             None,
             "Place Perference",
             self.tr("Place Perference")
@@ -625,9 +626,15 @@ class AnnolidWindow(MainWindow):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
 
-    def place_perference_analyze(self):
-        place_perference_analyze_widget = TrackingAnalyzerDialog()
-        place_perference_analyze_widget.exec_()
+    def place_preference_analyze(self):
+        place_preference_analyze_widget = TrackingAnalyzerDialog()
+        place_preference_analyze_widget.exec_()
+
+    def place_preference_analyze_auto(self):
+        if self.video_file is not None:
+            analyzer_dialog = TrackingAnalyzerDialog()
+            analyzer_dialog.run_analysis_without_gui(
+                self.video_file, self.zone_path, self.fps)
 
     def convert_labelme_json_to_csv(self):
         convert_labelme_json_to_csv_widget = LabelmeJsonToCsvDialog()
@@ -1164,9 +1171,12 @@ class AnnolidWindow(MainWindow):
 
     def saveLabels(self, filename):
         lf = LabelFile()
+        has_zone_shapes = False
 
         def format_shape(s):
             data = s.other_data.copy()
+            if 'zone' in s.description.lower():
+                has_zone_shapes = True
             if len(s.points) <= 1:
                 s.shape_type = 'point'
             data.update(
@@ -1208,6 +1218,8 @@ class AnnolidWindow(MainWindow):
                 flags=flags,
             )
             logger.info(f"Saved image and label json file: {filename}")
+            if has_zone_shapes:
+                self.zone_path = filename
 
             self.labelFile = lf
             items = self.fileListWidget.findItems(
@@ -1511,6 +1523,7 @@ class AnnolidWindow(MainWindow):
         self.thread = QtCore.QThread()
         self.worker.moveToThread(self.thread)
         self.worker.start.connect(self.worker.run)
+        self.worker.finished.connect(self.place_preference_analyze_auto)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
