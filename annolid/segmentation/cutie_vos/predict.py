@@ -279,7 +279,7 @@ class CutieVideoProcessor:
                 for png_path in png_file_paths:
                     cur_frame_number = get_frame_number_from_json(png_path)
 
-                    if frame_number != cur_frame_number:
+                    if frame_number < cur_frame_number:
                         frame = cv2.imread(str(png_path))
                         json_file_path = png_path.replace('.png', '.json')
                         image_size = frame.shape[:2]
@@ -373,10 +373,8 @@ class CutieVideoProcessor:
                         filename = self.video_folder / \
                             (self.video_folder.name +
                              f"_{current_frame_index:0>{9}}.json")
-                        if (current_frame_index == 0 or
-                            (current_frame_index == frame_number == 1) or
-                                (frame_number > 1 and
-                                 current_frame_index % frame_number == 0)):
+
+                        if current_frame_index == frame_number:
                             mask_torch = index_numpy_to_one_hot_torch(
                                 mask, num_objects + 1).to(self.device)
                             try:
@@ -497,10 +495,12 @@ class CutieVideoProcessor:
     def save_color_id_mask(self, frame, prediction, filename):
         _id_mask = color_id_mask(prediction)
         visualization = overlay_davis(frame, prediction)
-        # Convert BGR to RGB
+        # Convert RGB to BGR
         visualization_rgb = cv2.cvtColor(
-            visualization, cv2.COLOR_BGR2RGB)
+            visualization, cv2.COLOR_RGB2BGR)
         # Show the image
+        cv2.imwrite(str(filename).replace(
+            '.json', '.png'), frame)
         cv2.imwrite(str(filename).replace(
             '.json', '_mask_frame.png'), visualization_rgb)
         cv2.imwrite(str(filename).replace(
