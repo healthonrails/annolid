@@ -236,7 +236,9 @@ def merge_annotation_folders(
 
     for img in imgs:
         label_json = img.replace('png', 'json')
-        assert os.path.exists(label_json)
+        # skip json files predicted by models
+        if not os.path.exists(label_json):
+            continue
         dest_json = os.path.basename(label_json).replace(' ', '_')
         dest_img = os.path.basename(img).replace(' ', '_')
         shutil.copy(img, os.path.join(dest_dir, dest_img))
