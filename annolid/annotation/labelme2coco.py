@@ -18,6 +18,7 @@ import imgviz
 import numpy as np
 from pathlib import Path
 import labelme
+from annolid.gui.label_file import LabelFile
 
 logger = logging.getLogger(__name__)
 
@@ -146,26 +147,31 @@ def convert(input_annotated_dir,
     valid_out_ann_file = osp.join(output_annotated_dir, 'valid',
                                   "annotations.json")
     label_files = glob.glob(osp.join(input_annotated_dir, "*.json"))
+    # By default, only manually labeled frames have png files saved.
+    label_files = [_lf for _lf in label_files if osp.exists(
+        _lf.replace('.json', '.png'))]
     num_label_files = len(label_files)
 
-    training_percentage = 0.7
-    if train_valid_split > 1 and train_valid_split <= num_label_files:
-        training_percentage = train_valid_split / num_label_files
-
-    if train_valid_split > num_label_files:
-        # if the provided number is not valid
-        # e.g. with too many frames
-        # each image has the 0.7 probaility
-        # to be assigned for training
-        train_valid_split = 0.7
+    # Calculate training_percentage based on the train_valid_split parameter
+    if train_valid_split > 1:
+        if train_valid_split <= num_label_files:
+            training_percentage = train_valid_split / num_label_files
+        else:
+            # If the provided train_valid_split is greater than the number of label files,
+            # we assume a default split of 70% for training.
+            training_percentage = 0.7
+    else:
+        # If train_valid_split is a fraction (<=1), it directly represents the training percentage.
+        training_percentage = train_valid_split
 
     _angles = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165,
                180, 195, 210, 225, 240, 255, 270, 285, 300, 315, 330, 345, 360]
 
     for image_id, filename in enumerate(label_files):
-        yield ((image_id + 1) / num_label_files) * 100, filename
+        progress = (image_id + 1) / num_label_files * 100
+        yield int(progress), filename
 
-        label_file = labelme.LabelFile(filename=filename)
+        label_file = LabelFile(filename=filename)
 
         base = osp.splitext(osp.basename(filename))[0]
         train_out_img_file = osp.join(output_annotated_dir, 'train',
@@ -173,6 +179,8 @@ def convert(input_annotated_dir,
         valid_out_img_file = osp.join(output_annotated_dir, 'valid',
                                       "JPEGImages", base + ".jpg")
 
+        if label_file.imageData is None or len(label_file.imageData) < 2:
+            continue
         img = labelme.utils.img_data_to_arr(label_file.imageData)
 
         is_train = 0
@@ -248,7 +256,6 @@ def convert(input_annotated_dir,
             except:
                 logger.warning("Polygon must have points more than 2")
                 continue
-
 
             if instance in masks:
                 masks[instance] = masks[instance] | mask
