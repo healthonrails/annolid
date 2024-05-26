@@ -1,4 +1,5 @@
 import os
+import glob
 import sys
 import heapq
 import cv2
@@ -16,6 +17,26 @@ try:
 except ImportError:
     IS_DECORD_INSTALLED = False
     print("Decord is not installed.")
+
+
+def get_video_files(video_folder):
+    """
+    Retrieves a list of video files from the specified folder.
+
+    Parameters:
+    video_folder (str or Path): Path to the folder containing video files.
+
+    Returns:
+    list: A list of paths to video files found in the specified folder.
+
+    Supported video formats: .mp4, .avi, .mov, .mkv, .flv, .wmv, .mpg, .mpeg
+    """
+    video_extensions = ['*.mp4', '*.avi', '*.mov',
+                        '*.mkv', '*.flv', '*.wmv', '*.mpg', '*.mpeg']
+    video_files = []
+    for ext in video_extensions:
+        video_files.extend(glob.glob(os.path.join(video_folder, ext)))
+    return video_files
 
 
 def frame_from_video(video, num_frames):

@@ -14,7 +14,7 @@ class TrackDialog(QtWidgets.QDialog):
         self.algo = 'Detectron2'
         self.config_file = None
         self.out_dir = None
-        self.video_file = None
+        self.video_folder = None
         self.top_k = 100
         self.trained_model = None
         self.raidoButtons()
@@ -25,7 +25,7 @@ class TrackDialog(QtWidgets.QDialog):
         self.buttonbox.rejected.connect(self.reject)
 
         self.groupBoxModelFiles = QtWidgets.QGroupBox(
-            "Please select a trained pth model file")
+            "Please select a trained .pth model file")
         self.inputModelFileLineEdit = QtWidgets.QLineEdit(self)
         self.inputModelFileButton = QtWidgets.QPushButton('Open', self)
         self.inputModelFileButton.clicked.connect(
@@ -37,11 +37,11 @@ class TrackDialog(QtWidgets.QDialog):
         self.groupBoxModelFiles.setLayout(model_hboxLayOut)
 
         self.groupBoxVideoFiles = QtWidgets.QGroupBox(
-            "Please choose a video file")
+            "Please choose a folder with videos")
         self.inputVideoFileLineEdit = QtWidgets.QLineEdit(self)
         self.inputVideoFileButton = QtWidgets.QPushButton('Open', self)
         self.inputVideoFileButton.clicked.connect(
-            self.onInputVideoFileButtonClicked)
+            self.onInputVideoFolderButtonClicked)
         video_hboxLayOut = QtWidgets.QHBoxLayout()
 
         video_hboxLayOut.addWidget(self.inputVideoFileLineEdit)
@@ -70,9 +70,7 @@ class TrackDialog(QtWidgets.QDialog):
         hboxLayOutDir.addWidget(self.outDirButton)
         self.groupBoxOutDir.setLayout(hboxLayOutDir)
 
-        self.label2 = QtWidgets.QLabel(
-            "Please select tok k segmentations"
-        )
+        self.label2 = QtWidgets.QLabel("Please select top k segmentations")
         self.top_k_slider.hide()
         self.label2.hide()
 
@@ -109,7 +107,7 @@ class TrackDialog(QtWidgets.QDialog):
         self.groupBox.setLayout(hboxLayOut)
 
     def onInputModelFileButtonClicked(self):
-        self.trained_model, fiter = QtWidgets.QFileDialog.getOpenFileName(
+        self.trained_model, filter = QtWidgets.QFileDialog.getOpenFileName(
             parent=self,
             caption="Open trained model file",
             directory=str(Path()),
@@ -118,16 +116,14 @@ class TrackDialog(QtWidgets.QDialog):
         if self.trained_model is not None:
             self.inputModelFileLineEdit.setText(self.trained_model)
 
-    def onInputVideoFileButtonClicked(self):
-        self.video_file, filter = QtWidgets.QFileDialog.getOpenFileName(
+    def onInputVideoFolderButtonClicked(self):
+        self.video_folder = QtWidgets.QFileDialog.getExistingDirectory(
             parent=self,
-            caption="Open video file",
-            directory=str(Path()),
-            filter='*'
-
+            caption="Open video folder",
+            directory=str(Path())
         )
-        if self.video_file is not None:
-            self.inputVideoFileLineEdit.setText(self.video_file)
+        if self.video_folder is not None:
+            self.inputVideoFileLineEdit.setText(self.video_folder)
 
     def onInputFileButtonClicked(self):
         self.config_file, filter = QtWidgets.QFileDialog.getOpenFileName(
@@ -135,14 +131,13 @@ class TrackDialog(QtWidgets.QDialog):
             caption="Open config file",
             directory=str(Path()),
             filter='*'
-
         )
         if self.config_file is not None:
             self.inputFileLineEdit.setText(self.config_file)
 
     def onOutDirButtonClicked(self):
-        self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(self,
-                                                                  "Select Directory")
+        self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Directory")
         if self.out_dir is not None:
             self.outFileDirEdit.setText(self.out_dir)
 
@@ -185,8 +180,7 @@ class TrackDialog(QtWidgets.QDialog):
     def onTopKSliderChange(self):
         self.top_k = self.top_k_slider.value()
         self.label2.setText(
-            f"You selected top {str(self.top_k)} segmentations"
-        )
+            f"You selected top {str(self.top_k)} segmentations")
 
     def onSliderChange(self):
         self.score_threshold = self.slider.value() / 100

@@ -122,6 +122,18 @@ pip install -e .
 annolid
 ```
 
+Note: To train instance segmentation models, please install Detectron2 in your Annolid environment by following these steps:
+
+Activate your Annolid environment (if not already activated):
+
+```sh
+conda activate annolid-env
+
+```
+Install Detectron2:
+```sh
+python -m pip install --user 'git+https://github.com/facebookresearch/detectron2.git'
+```
 Note: if you got this error:
 `ERROR: Could not find a version that satisfies the requirement decord>=0.4.0`
 try to install [ffmpeg](https://ffmpeg.org/) or you can install it in conda with `conda install -c conda-forge ffmpeg`.

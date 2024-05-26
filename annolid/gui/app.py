@@ -64,7 +64,7 @@ from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.annotation import labelme2csv
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
-
+from annolid.data.videos import get_video_files
 from labelme.ai import MODELS
 __appname__ = 'Annolid'
 __version__ = "1.2.1"
@@ -1539,8 +1539,8 @@ class AnnolidWindow(MainWindow):
 
     def tracks(self):
         """
-        Track animals using the train models for a video
-        The tracking results CSV file will be saved on the disk.
+        Track animals using the trained models for videos in a folder.
+        The tracking results CSV files will be saved on the disk.
         """
 
         dlg = TrackDialog()
@@ -1548,111 +1548,116 @@ class AnnolidWindow(MainWindow):
         out_dir = None
         score_threshold = 0.15
         algo = None
-        video_file = None
+        video_folder = None
         model_path = None
         top_k = 100
         video_multiframe = 1
         display_mask = False
-        out_video_file = None
 
         if self.video_file is not None:
-            dlg.inputVideoFileLineEdit.setText(self.video_file)
+            self.video_folder = str(Path(self.video_file).parent)
+            dlg.inputVideoFileLineEdit.setText(self.video_folder)
 
         if dlg.exec_():
             config_file = dlg.config_file
-            score_threshold = 0.15
+            score_threshold = dlg.score_threshold
             algo = dlg.algo
             out_dir = dlg.out_dir
-            video_file = dlg.video_file if self.video_file is None else self.video_file
+            video_folder = dlg.video_folder
             model_path = dlg.trained_model
 
-        if video_file is None:
+        if video_folder is None:
             return
 
-        out_video_file = str(Path(video_file).name)
-        out_video_file = f"tracked_{out_video_file}"
+        # Get all video files in the folder
+        video_files = get_video_files(video_folder)
 
-        if config_file is None and algo != "Predictions":
+        if not video_files:
+            QtWidgets.QMessageBox.about(
+                self, "No videos found", "No video files found in the specified folder.")
             return
-        # Convert annolid predicted json files to a single tracked csv file
-        if algo == 'Predictions':
-            if self.video_file is None:
-                self.video_file = video_file
-            self.convert_json_to_tracked_csv()
 
-        if algo == 'Detectron2':
-            try:
-                import detectron2
-            except ImportError:
-                QtWidgets.QMessageBox.about(self,
-                                            "Detectron2 is not installed",
-                                            "Please check the docs and install it.")
+        from annolid.inference.predict import Segmentor
+        dataset_dir = str(Path(config_file).parent)
+        segmentor = Segmentor(dataset_dir, model_path, score_threshold)
+
+        for video_file in video_files:
+            out_video_file = f"tracked_{Path(video_file).name}"
+
+            if config_file is None and algo != "Predictions":
                 return
-            out_folder = Path(video_file).with_suffix('')
-            if out_folder.exists():
-                QtWidgets.QMessageBox.about(self,
-                                            f"You folder {str(out_folder)} is not empty.",
-                                            "Please backup your data or rename it.")
 
-            from annolid.inference.predict import Segmentor
-            dataset_dir = str(Path(config_file).parent)
-            segmentor = Segmentor(
-                dataset_dir,
-                model_path,
-                score_threshold)
+            # Convert annolid predicted json files to a single tracked csv file
+            if algo == 'Predictions':
+                self.video_folder = video_folder
+                self.convert_json_to_tracked_csv()
 
-            try:
-                self.seg_pred_thread.start()
-                self.pred_worker = FlexibleWorker(
-                    function=segmentor.on_video, video_path=video_file)
-                self.pred_worker.moveToThread(self.seg_pred_thread)
-                self.pred_worker.start.connect(self.pred_worker.run)
-                self.pred_worker.start.emit()
-                out_result_dir = Path(video_file).with_suffix('')
-            except AttributeError:
+            if algo == 'Detectron2':
+                try:
+                    import detectron2
+                except ImportError:
+                    QtWidgets.QMessageBox.about(
+                        self, "Detectron2 is not installed", "Please check the docs and install it.")
+                    return
+                out_folder = Path(video_file).with_suffix('')
+                if out_folder.exists():
+                    QtWidgets.QMessageBox.about(
+                        self, f"Your folder {str(out_folder)} is not empty.", "Please backup your data or rename it.")
+                # TODO: What's the best way to run multiple videos on different CPU, GPU, and MPS devices?
+
+                # try:
+                #     self.pred_worker = FlexibleWorker(
+                #         function=segmentor.on_video, video_path=video_file)
+                #     self.pred_worker.moveToThread(self.seg_pred_thread)
+                #     self.pred_worker.start.connect(self.pred_worker.run)
+                #     self.pred_worker.start.emit()
+                #     self.pred_worker.finished.connect(
+                #         self.seg_pred_thread.quit)
+                #     logger.info(f"Start segmenting video {video_file}")
+                #     out_result_dir = Path(video_file).with_suffix('')
+                # except Exception as e:
+                #     logger.info(e)
+                logger.info(f"Start segmenting video {video_file}")
                 out_result_dir = segmentor.on_video(video_file)
-            QtWidgets.QMessageBox.about(self,
-                                        "Running",
-                                        f"Results will be saved to folder: \
-                                         {out_result_dir} \
-                                        Please do not close Annolid GUI"
-                                        )
-            self.importDirImages(out_result_dir)
-            self.statusBar().showMessage(
-                self.tr(f"Tracking..."))
+                # QtWidgets.QMessageBox.about(
+                #     self, "Running", f"Results will be saved to folder: {out_result_dir} Please do not close Annolid GUI")
+                self.importDirImages(out_result_dir)
+                self.statusBar().showMessage(self.tr(f"Tracking..."))
 
-        if algo == 'YOLACT':
-            if not torch.cuda.is_available():
-                QtWidgets.QMessageBox.about(self,
-                                            "Not GPU available",
-                                            "At least one GPU  is required to train models.")
-                return
+            if algo == 'YOLACT':
+                if not torch.cuda.is_available():
+                    QtWidgets.QMessageBox.about(
+                        self, "No GPU available", "At least one GPU is required to train models.")
+                    return
 
-            subprocess.Popen(['annolid-track',
-                              f'--trained_model={model_path}',
-                              f'--config={config_file}',
-                              f'--score_threshold={score_threshold}',
-                              f'--top_k={top_k}',
-                              f'--video_multiframe={video_multiframe}',
-                              f'--video={video_file}|{out_video_file}',
-                              f'--mot',
-                              f'--display_mask={display_mask}'
-                              ]
-                             )
+                subprocess.Popen([
+                    'annolid-track',
+                    f'--trained_model={model_path}',
+                    f'--config={config_file}',
+                    f'--score_threshold={score_threshold}',
+                    f'--top_k={top_k}',
+                    f'--video_multiframe={video_multiframe}',
+                    f'--video={video_file}|{out_video_file}',
+                    '--mot',
+                    f'--display_mask={display_mask}'
+                ])
 
-            if out_dir is None:
-                out_runs_dir = Path(__file__).parent.parent / 'runs'
-            else:
-                out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
+                if out_dir is None:
+                    out_runs_dir = Path(__file__).parent.parent / 'runs'
+                else:
+                    out_runs_dir = Path(out_dir) / \
+                        Path(config_file).name / 'runs'
 
-            out_runs_dir.mkdir(exist_ok=True, parents=True)
+                out_runs_dir.mkdir(exist_ok=True, parents=True)
 
-            QtWidgets.QMessageBox.about(self,
-                                        "Started",
-                                        f"Results are in folder: \
-                                            {str(out_runs_dir)}")
-            self.statusBar().showMessage(
-                self.tr(f"Tracking..."))
+                QtWidgets.QMessageBox.about(
+                    self, "Started", f"Results are in folder: {str(out_runs_dir)}")
+                self.statusBar().showMessage(self.tr(f"Tracking..."))
+
+        QtWidgets.QMessageBox.about(
+            self, "Completed", "Batch processing of videos is complete.")
+        self.statusBar().showMessage(
+            self.tr(f"Tracking completed for all videos in the folder."))
 
     def models(self):
         """

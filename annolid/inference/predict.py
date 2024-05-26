@@ -390,51 +390,47 @@ class Segmentor():
             self.on_image_folder(out_img_dir)
         tracking_results = []
 
-        if num_frames <= 1000 or torch.cuda.is_available():
-            frame_number = 0
-            for frame in videos.frame_from_video(self.cap, num_frames):
-                if frame_number % skip_frames == 0:
-                    outputs = self.predictor(frame)
+        frame_number = 0
+        for frame in videos.frame_from_video(self.cap, num_frames):
+            if frame_number % skip_frames == 0:
+                outputs = self.predictor(frame)
+                out_dict = {}
+                instances = outputs["instances"].to("cpu")
+                if tracker:
+                    instances = tracker.update(instances)
+                num_instance = len(instances)
+                if num_instance == 0:
+                    out_dict['frame_number'] = frame_number
+                    out_dict['x1'] = None
+                    out_dict['y1'] = None
+                    out_dict['x2'] = None
+                    out_dict['y2'] = None
+                    out_dict['instance_name'] = None
+                    out_dict['class_score'] = None
+                    out_dict['segmentation'] = None
+                    out_dict['tracking_id'] = None
+                    tracking_results.append(out_dict)
                     out_dict = {}
-                    instances = outputs["instances"].to("cpu")
-                    if tracker:
-                        instances = tracker.update(instances)
-                    num_instance = len(instances)
-                    if num_instance == 0:
-                        out_dict['frame_number'] = frame_number
-                        out_dict['x1'] = None
-                        out_dict['y1'] = None
-                        out_dict['x2'] = None
-                        out_dict['y2'] = None
-                        out_dict['instance_name'] = None
-                        out_dict['class_score'] = None
-                        out_dict['segmentation'] = None
-                        out_dict['tracking_id'] = None
-                        tracking_results.append(out_dict)
-                        out_dict = {}
-                    else:
-                        _res = self._process_instances(
-                            instances, frame_number, width)
-                        tracking_results += _res
-                frame_number += 1
-                if frame_number % 100 == 0:
-                    print("Processing frame number: ", frame_number)
+                else:
+                    _res = self._process_instances(
+                        instances, frame_number, width)
+                    tracking_results += _res
+            frame_number += 1
+            if frame_number % 100 == 0:
+                print("Processing frame number: ", frame_number)
 
             df = pd.DataFrame(tracking_results)
             df_top = df.groupby(
                 ['frame_number', 'instance_name'], sort=False).head(self.num_instances_per_class)
-            tracking_results_dir = Path(self.dataset_dir).parent
-            tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
-            tracking_results_csv += f"_{str(Path(video_path).stem)}"
+            # tracking_results_dir = Path(self.dataset_dir).parent
+            # tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
+            tracking_results_csv = f"{str(Path(video_path).with_suffix(''))}"
             tracking_results_csv += "_mask_rcnn_tracking_results_with_segmentation.csv"
-            df_top.to_csv(str(tracking_results_dir / tracking_results_csv))
+            df_top.to_csv(tracking_results_csv)
         if on_keyframes:
             print(f"Done. Please check you results in folder: {out_img_dir}")
             return out_img_dir
-        elif not torch.cuda.is_available():
-            print("Exit. No GPU is available on this device")
-        else:
-            print(f"Done!")
+        print(f"Done!")
 
     def extract_mask_roi_features(self, frame):
         """extract mask ROI features from the given video frame
