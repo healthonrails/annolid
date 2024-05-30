@@ -619,10 +619,15 @@ class AnnolidWindow(MainWindow):
             return
 
         # Check if the prompt starts with 'flags:' and contains flags separated by commas
-        if prompt_text.startswith('flags:') and ',' in prompt_text:
+        if prompt_text.startswith('flags:'):
             flags = {k.strip(): False for k in prompt_text.replace(
-                'flags:', '').split(',')}
-            self.loadFlags(flags)
+                'flags:', '').split(',') if len(k.strip()) > 0}
+            if len(flags.keys()) > 0:
+                self.loadFlags(flags)
+            else:
+                # # If there is no string after 'flags'
+                # in the text prompt, clear the flag widget
+                self.flag_widget.clear()
         else:
             self.canvas.predictAiRectangle(prompt_text)
 
@@ -1185,6 +1190,13 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.information(
                 self, "Prediction Ready",
                 "Predictions for the video frames have been generated!")
+
+    def loadFlags(self, flags):
+        for key, flag in flags.items():
+            item = QtWidgets.QListWidgetItem(key)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if flag else Qt.Unchecked)
+            self.flag_widget.addItem(item)
 
     def saveLabels(self, filename):
         lf = LabelFile()
