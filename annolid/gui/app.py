@@ -596,18 +596,35 @@ class AnnolidWindow(MainWindow):
         self.populateModeActions()
 
     def _grounding_sam(self):
+        """
+        Handles the text prompt inputs for grouding DINO SAM. 
+        The function:
+        1. Toggles the drawing mode to 'grounding_sam'.
+        2. Processes the text prompt to determine if it contains flags or other commands.
+        3. Loads flags if specified in the prompt.
+        4. Initiates an AI-based prediction for the rectangle on the canvas if no flags are found.
+
+        The expected format for flags in the prompt is 'flags:flag1,flag2,...'.
+        If the prompt is empty or invalid, an informational log is recorded.
+
+        Returns:
+            None
+        """
         self.toggleDrawMode(False, createMode="grounding_sam")
         prompt_text = self.aiRectangle._aiRectanglePrompt.text().lower()
+
+        # Check if the prompt text is empty or too short
         if len(prompt_text) < 1:
-            logger.info(f"Invalid text prompt {prompt_text}")
+            logger.info(f"Invalid text prompt '{prompt_text}'")
             return
+
+        # Check if the prompt starts with 'flags:' and contains flags separated by commas
         if prompt_text.startswith('flags:') and ',' in prompt_text:
-            flags = {k: False for k in prompt_text.replace(
-                'flags:', '').split(',') or []}
+            flags = {k.strip(): False for k in prompt_text.replace(
+                'flags:', '').split(',')}
             self.loadFlags(flags)
         else:
-            self.canvas.predictAiRectangle(
-                self.aiRectangle._aiRectanglePrompt.text())
+            self.canvas.predictAiRectangle(prompt_text)
 
     def update_step_size(self, value):
         self.step_size = value
