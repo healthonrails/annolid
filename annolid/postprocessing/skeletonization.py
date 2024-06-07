@@ -5,6 +5,7 @@ from skimage.morphology import medial_axis
 from skimage.draw import polygon_perimeter
 from annolid.annotation.labelme2binarymasks import LabelMeProcessor
 from skimage.morphology import skeletonize
+from sklearn.decomposition import PCA
 
 
 class ShapeProcessor:
@@ -16,6 +17,7 @@ class ShapeProcessor:
         binary_mask (ndarray): A binary mask representing the shape.
         """
         self.binary_mask = binary_mask
+        self.skeleton = skeletonize(self.binary_mask)
         self.medial_axis, self.dist_transform = medial_axis(
             self.binary_mask, return_distance=True)
         self.centroid = self.calculate_centroid()
@@ -121,6 +123,7 @@ class ShapeProcessor:
         Returns:
         dict: A dictionary with labeled points.
         """
+        # Calculate distances to centroid
         distances = {k: self.distance_to_centroid(
             v) for k, v in self.extreme_points.items()}
 
@@ -134,10 +137,21 @@ class ShapeProcessor:
         remaining_points = {k: v for k, v in self.extreme_points.items(
         ) if k not in [closest_point_label, farthest_point_label]}
 
-        edge_distances = {k: self.calculate_distance(
+        # Calculate distances from head to other points
+        head_distances = {k: self.calculate_distance(
             v, labels['head']) for k, v in remaining_points.items()}
-        tailbase_point_label = max(edge_distances, key=edge_distances.get)
-        nose_point_label = min(edge_distances, key=edge_distances.get)
+
+        # Use PCA to determine the primary axis of the shape
+        y_coords, x_coords = np.nonzero(self.medial_axis)
+        pca = PCA(n_components=2)
+        pca.fit(np.column_stack((x_coords, y_coords)))
+        primary_axis = pca.components_[0]
+
+        # Find the point closest and farthest to the primary axis
+        projected_points = {k: np.dot(primary_axis, np.array(
+            v) - np.array(labels['head'])) for k, v in remaining_points.items()}
+        nose_point_label = min(projected_points, key=projected_points.get)
+        tailbase_point_label = max(projected_points, key=projected_points.get)
 
         labels["nose"] = remaining_points[nose_point_label]
         labels["tailbase"] = remaining_points[tailbase_point_label]
