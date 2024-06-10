@@ -41,6 +41,18 @@ Resize to a specific aspect ratio
 ffmpeg -i input.mp4 -filter:v scale=w=1280:h=-1 output.mp4
 ```
 
+## Compress Videos with Annolid GUI
+
+1. **Click `File -> Downsample Videos`.**
+2. **Select the folder** containing your original videos.
+3. **Select an output folder** to save all the compressed videos.
+4. **Set the scale factor**:
+    - For example, selecting `0.5` will reduce the size of the video by half.
+5. **Check the `Rescale Video` checkbox**.
+6. **Click the `Run Scaling` button**.
+
+This will compress and downsample all the files in the selected folder.
+
 ## Additional Tips
 Utilize the -preset option to adjust encoding speed (e.g., -preset fast for faster encoding)
 Specify the audio codec with -c:a (e.g., -c:a aac for AAC audio)
