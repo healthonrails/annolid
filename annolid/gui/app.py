@@ -57,6 +57,7 @@ from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
+from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
@@ -357,6 +358,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Save CSV")
         )
 
+        extract_shape_keypoints = action(
+            self.tr("&Extract Shape Keypoints"),
+            self.extract_and_save_shape_keypoints,
+            None,
+            "Extract Shape Keypoints",
+            self.tr("Extract Shape Keypoints")
+        )
+
         convert_sleap = action(
             self.tr("&Load SLEAP h5"),
             self.convert_sleap_h5_to_labelme,
@@ -532,6 +541,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (quality_control,))
         utils.addActions(self.menus.file, (downsample_video,))
         utils.addActions(self.menus.file, (convert_csv,))
+        utils.addActions(self.menus.file, (extract_shape_keypoints,))
         utils.addActions(self.menus.file, (convert_sleap,))
         utils.addActions(self.menus.file, (place_perference,))
         utils.addActions(self.menus.file, (advance_params,))
@@ -647,6 +657,10 @@ class AnnolidWindow(MainWindow):
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
+
+    def extract_and_save_shape_keypoints(self):
+        extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog()
+        extract_shape_keypoints_dialog.exec_()
 
     def place_preference_analyze(self):
         place_preference_analyze_widget = TrackingAnalyzerDialog()
