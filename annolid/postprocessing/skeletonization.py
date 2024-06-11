@@ -1,4 +1,7 @@
+import os
 import json
+import argparse
+import glob
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import distance_transform_edt, label
@@ -284,15 +287,32 @@ def add_key_points_to_labelme_json(json_path, instance_names, is_vis=False):
         json.dump(data, f, indent=4)
 
 
-def main():
+def main(input_folder, instance_names):
     """
     Main function to process annotations and visualize results.
+
+    Parameters:
+    - input_folder (str): Path to the folder containing JSON files.
+    - instance_names (list): List of instance names.
     """
-    json_path = 'R2311_P4S1_reencoded_000000875.json'
-    # Update with the desired instance names
-    instance_names = ['rat', 'mouse']
-    add_key_points_to_labelme_json(json_path, instance_names)
+    # Get all JSON files recursively in the input folder
+    json_files = glob.glob(os.path.join(
+        input_folder, '**/*.json'), recursive=True)
+
+    # Iterate through each JSON file
+    for i, json_file in enumerate(json_files):
+        if i % 1000 == 0:
+            print('Finding keypoints in ', json_file)
+        add_key_points_to_labelme_json(json_file, instance_names)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Add key points to LabelMe JSON files.")
+    parser.add_argument(
+        "input_folder", help="Path to the folder containing JSON files.")
+    parser.add_argument("instance_names", nargs="+",
+                        help="List of instance names.")
+    args = parser.parse_args()
+
+    main(args.input_folder, args.instance_names)
