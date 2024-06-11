@@ -1,10 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.ndimage import distance_transform_edt
-from skimage.morphology import medial_axis
-from skimage.draw import polygon_perimeter
+from scipy.ndimage import distance_transform_edt, label
+from skimage.morphology import medial_axis, skeletonize
 from annolid.annotation.labelme2binarymasks import LabelMeProcessor
-from skimage.morphology import skeletonize
 from sklearn.decomposition import PCA
 
 
@@ -20,9 +18,28 @@ class ShapeProcessor:
         self.skeleton = skeletonize(self.binary_mask)
         self.medial_axis, self.dist_transform = medial_axis(
             self.binary_mask, return_distance=True)
+        self.medial_axis = self.prune_medial_axis(threshold_length=2)
         self.centroid = self.calculate_centroid()
         self.extreme_points = self.calculate_extreme_points_on_medial_axis()
         self.labeled_points = self.label_extreme_points()
+        self.ensure_tail_is_farthest()
+
+    def prune_medial_axis(self, threshold_length):
+        """
+        Prune small branches in the medial axis.
+
+        Parameters:
+        threshold_length (int): The length threshold for pruning branches.
+
+        Returns:
+        ndarray: The pruned medial axis.
+        """
+        labeled_skeleton, num_features = label(self.medial_axis)
+        sizes = np.bincount(labeled_skeleton.ravel())
+        mask_sizes = sizes >= threshold_length
+        mask_sizes[0] = 0
+        cleaned_skeleton = mask_sizes[labeled_skeleton]
+        return cleaned_skeleton
 
     def calculate_centroid(self):
         """
@@ -141,6 +158,15 @@ class ShapeProcessor:
         head_distances = {k: self.calculate_distance(
             v, labels['head']) for k, v in remaining_points.items()}
 
+        # Ensure the "nose" point is near the "head" and close to the border
+        min_distance_to_head = min(head_distances.values())
+        nose_candidates = [
+            point for point, dist in head_distances.items() if dist == min_distance_to_head]
+        nose_candidates_dist_to_edge = {point: self.distance_to_polygon_edge(
+            self.extreme_points[point]) for point in nose_candidates}
+        nose_point_label = min(nose_candidates_dist_to_edge,
+                               key=nose_candidates_dist_to_edge.get)
+
         # Use PCA to determine the primary axis of the shape
         y_coords, x_coords = np.nonzero(self.medial_axis)
         pca = PCA(n_components=2)
@@ -150,14 +176,30 @@ class ShapeProcessor:
         # Find the point closest and farthest to the primary axis
         projected_points = {k: np.dot(primary_axis, np.array(
             v) - np.array(labels['head'])) for k, v in remaining_points.items()}
-        nose_point_label = min(projected_points, key=projected_points.get)
         tailbase_point_label = max(projected_points, key=projected_points.get)
 
-        labels["nose"] = remaining_points[nose_point_label]
+        labels["nose"] = self.extreme_points[nose_point_label]
         labels["tailbase"] = remaining_points[tailbase_point_label]
         labels["body_center"] = self.centroid
 
         return labels
+
+    def ensure_tail_is_farthest(self):
+        """
+        Ensure that the labeled tail point is the farthest from the head point.
+        """
+        head_point = self.labeled_points["head"]
+        tail_point = self.labeled_points["tail"]
+        tail_distance = self.calculate_distance(head_point, tail_point)
+
+        # Re-evaluate the points to find the actual farthest point if necessary
+        for label, point in self.labeled_points.items():
+            if label not in ["head", "tail"]:
+                distance = self.calculate_distance(head_point, point)
+                if distance > tail_distance:
+                    # Update the tail point and the label
+                    tail_distance = distance
+                    self.labeled_points["tail"] = point
 
     def visualize(self):
         """
