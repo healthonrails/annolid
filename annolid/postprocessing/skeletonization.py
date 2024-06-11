@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import distance_transform_edt, label
@@ -246,34 +247,51 @@ def extract_medial_axis(binary_image):
     return medial_axis_result
 
 
-def process_annotation(json_path, instance_names):
+def add_key_points_to_labelme_json(json_path, instance_names, is_vis=False):
     """
-    Process annotations from a LabelMe JSON file and visualize the shape processing.
+    Processes annotations from a LabelMe JSON file, extracts key points, and adds them as annotations.
 
-    Parameters:
-    json_path (str): Path to the LabelMe JSON file.
-    instance_names (list): List of instance names to process.
+    Args:
+        json_path (str): Path to the LabelMe JSON file.
+        instance_names (list): List of instance names to process.
+
+    Returns:
+        None: The function directly modifies the JSON file in place.
     """
+
+    # Load the existing JSON data
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
     mask_converter = LabelMeProcessor(json_path)
     binary_masks = mask_converter.get_all_masks()
 
     for bm, label in binary_masks:
         if label in instance_names:
             processor = ShapeProcessor(bm)
-            processor.visualize()
-            print("Instance:", label)
-            print("Centroid:", processor.centroid)
-            print("Labeled Points on Medial Axis:", processor.labeled_points)
+            if is_vis:
+                processor.visualize()
+            # Add key point annotations to the JSON data
+            for point_label, point in processor.labeled_points.items():
+                data['shapes'].append({
+                    "label": f"{label}_{point_label}",
+                    "points": [[int(point[0]), int(point[1])]],
+                    "shape_type": "point"
+                })
+
+    # Save the updated JSON data
+    with open(json_path, 'w') as f:
+        json.dump(data, f, indent=4)
 
 
 def main():
     """
     Main function to process annotations and visualize results.
     """
-    json_path = 'mouse_000000000.json'
+    json_path = 'R2311_P4S1_reencoded_000000875.json'
     # Update with the desired instance names
     instance_names = ['rat', 'mouse']
-    process_annotation(json_path, instance_names)
+    add_key_points_to_labelme_json(json_path, instance_names)
 
 
 if __name__ == "__main__":
