@@ -279,7 +279,8 @@ def add_key_points_to_labelme_json(json_path, instance_names, is_vis=False):
                 data['shapes'].append({
                     "label": f"{label}_{point_label}",
                     "points": [[int(point[0]), int(point[1])]],
-                    "shape_type": "point"
+                    "shape_type": "point",
+                    "visible": True,
                 })
 
     # Save the updated JSON data
