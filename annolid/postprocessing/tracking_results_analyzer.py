@@ -141,6 +141,18 @@ class TrackingResultsAnalyzer:
             zone_time = 0
             # Check if instance points are within the zone
             for _, row in instance_df.iterrows():
+                if shape['shape_type'] == 'rectangle':
+                    # Extract the given points
+                    top_left = shape["points"][0]
+                    bottom_right = shape["points"][1]
+
+                    # Calculate the other two points
+                    top_right = [bottom_right[0], top_left[1]]
+                    bottom_left = [top_left[0], bottom_right[1]]
+
+                    # Create the four-point representation
+                    shape['points'] = [top_left, top_right, bottom_right,
+                                       bottom_left, top_left]  # Closing the polygon
                 if len(shape['points']) > 3:
                     if self.is_point_in_polygon([row['cx_tracked'],
                                                 row['cy_tracked']], shape['points']):
