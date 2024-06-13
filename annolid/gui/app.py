@@ -7,6 +7,7 @@ import time
 import html
 import shutil
 import pandas as pd
+import numpy as np
 from collections import deque
 import torch
 import codecs
@@ -1218,7 +1219,7 @@ class AnnolidWindow(MainWindow):
 
         def format_shape(s):
             data = s.other_data.copy()
-            if 'zone' in s.description.lower():
+            if s.description and 'zone' in s.description.lower():
                 has_zone_shapes = True
             if len(s.points) <= 1:
                 s.shape_type = 'point'
@@ -1231,7 +1232,7 @@ class AnnolidWindow(MainWindow):
                     flags=s.flags,
                     mask=None
                     if s.mask is None
-                    else utils.img_arr_to_b64(s.mask),
+                    else utils.img_arr_to_b64(s.mask.astype(np.uint8)),
                     visible=s.visible,
                     description=s.description
                 )
