@@ -21,7 +21,7 @@ setuptools.setup(
                       'opencv-contrib-python>=4.1.2.30',
                       'opencv-python-headless>=4.1.2.30',
                       'PyYAML>=5.3',
-                      'labelme==5.4.1',
+                      'labelme==5.5.0',
                       'decord==0.4.0; platform_system!="Darwin"',  # decord for non-macOS platforms
                       'eva-decord>=0.6.1; sys_platform=="darwin"',  # eva-decord for macOS
                       'sounddevice>=0.4.6',
