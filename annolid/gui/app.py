@@ -375,11 +375,11 @@ class AnnolidWindow(MainWindow):
             self.tr("Load SLEAP h5")
         )
         place_perference = action(
-            self.tr("&Place Perference"),
+            self.tr("&Place Preference"),
             self.place_preference_analyze,
             None,
-            "Place Perference",
-            self.tr("Place Perference")
+            "Place Preference",
+            self.tr("Place Preference")
         )
 
         about_annolid = action(
