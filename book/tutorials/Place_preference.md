@@ -1,6 +1,22 @@
 # Place preference
 
-# Converting and Featuring SLEAP Keypoint Predictions with Annolid
+## Labeling Places of Preference or Zones
+
+We recommend labeling only the first frame of your video for the zones. Draw polygons around the zones of interest and include the keyword "zone" in the label description field, as shown in the image below.
+![Labeling Zones](../images/place_preference_zone.png)
+
+## Running Place Preference Analysis 
+
+1. Go to the File menu and click on "Place Preference" as shown in the image below.
+![Place Preference Menu](../images/place_preference_menu.png)
+
+2. In the pop-up dialog, select the tracked video file. An example is shown below.
+![Place Preference Dialog](../images/place_preference_dialog.png)
+
+3. Click the "Analyze" button. The analysis will calculate the duration, in seconds, that the instances specified remain within the defined zones.
+
+
+## Converting and Featuring SLEAP Keypoint Predictions with Annolid
 [[](https://i9.ytimg.com/vi_webp/tvLHj-Nwu-Y/mq2.webp?sqp=COCIxbEG-oaymwEmCMACELQB8quKqQMa8AEB-AH-CYAC0AWKAgwIABABGGUgZShlMA8=&rs=AOn4CLA8dAP3_nEJsDAFYf02EJ9ct147UQ)](https://youtu.be/tvLHj-Nwu-Y?si=G7gXjQM4Oh9Ob5ix)
 <iframe width="560" height="315" src="https://www.youtube.com/embed/tvLHj-Nwu-Y?si=ddyWwA2Wedypnoim" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
