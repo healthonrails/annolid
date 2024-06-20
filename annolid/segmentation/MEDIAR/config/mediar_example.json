@@ -1,0 +1,72 @@
+{
+    "data_setups":{
+        "labeled":{
+            "root": "/home/gihun/data/CellSeg/",
+            "mapping_file": "./train_tools/data_utils/mapping_labeled.json",
+            "amplified": false,
+            "batch_size": 8, 
+            "valid_portion": 0.1
+        },
+        "public":{
+            "enabled": true,
+            "params":{
+                "root": "/home/gihun/data/CellSeg/",
+                "mapping_file": "./train_tools/data_utils/mapping_public.json",
+                "batch_size": 1
+            }
+        },
+        "unlabeled":{
+            "enabled": false
+        }        
+    },
+    "train_setups":{
+        "model":{
+            "name": "mediar-former",
+            "params": {
+                "encoder_name": "mit_b5",
+                "encoder_weights": "imagenet",
+                "decoder_channels": [1024, 512, 256, 128, 64],
+                "decoder_pab_channels": 256,
+                "in_channels": 3,
+                "classes": 3
+            },
+            "pretrained":{
+                "enabled": false,
+                "weights": "./weights/pretrained/phase2.pth",
+                "strict": false
+            }
+        },
+        "trainer": {
+            "name": "mediar",
+            "params": {            
+                "num_epochs": 200,
+                "valid_frequency": 1,
+                "device": "cuda:0",
+                "amp": true,
+                "algo_params": {"with_public": false}
+            }
+        },
+        "optimizer":{
+            "name": "adamw",
+            "params": {"lr": 5e-5}
+        },
+        "scheduler":{
+            "enabled": true,
+            "name": "cosine",
+            "params": {"T_max": 100, "eta_min": 1e-7}
+        },
+        "seed": 19940817
+    },
+    "pred_setups":{
+        "input_path":"/home/gihun/data/CellSeg/Official/TuningSet",
+        "output_path": "./mediar_example",
+        "make_submission": true,
+        "exp_name": "mediar_example",
+        "algo_params": {"use_tta": false}
+    },
+    "wandb_setups":{
+        "project": "CellSeg",
+        "group": "MEDIAR",
+        "name": "mediar_example"
+    }
+}
