@@ -1037,9 +1037,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         Shape.scale = self.scale
         MultipoinstShape.scale = self.scale
         for shape in self.shapes:
-            if (shape.selected or not self._hideBackround) and self.isVisible(
-                shape
-            ):
+            if (shape.selected or not self._hideBackround) and self.isVisible(shape):
                 shape.fill = shape.selected or shape == self.hShape
                 try:
                     shape.paint(p)
@@ -1052,61 +1050,77 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             for s in self.selectedShapesCopy:
                 s.paint(p)
 
-        if (
-            self.fillDrawing()
-            and self.createMode == "polygon"
-            and self.current is not None
-            and len(self.current.points) >= 2
-        ):
-            drawing_shape = self.current.copy()
-            drawing_shape.addPoint(self.line[1])
-            drawing_shape.fill = True
-            drawing_shape.paint(p)
-        elif self.createMode == "ai_polygon" and self.current is not None:
-            drawing_shape = self.current.copy()
-            drawing_shape.addPoint(
-                point=self.line.points[1],
-                label=self.line.point_labels[1],
-            )
-            points = self._ai_model.predict_polygon_from_points(
-                points=[
-                    [point.x(), point.y()] for point in drawing_shape.points
-                ],
-                point_labels=drawing_shape.point_labels,
-            )
-            if len(points) > 2:
-                drawing_shape.setShapeRefined(
-                    shape_type="polygon",
-                    points=[
-                        QtCore.QPointF(point[0], point[1]) for point in points
-                    ],
-                    point_labels=[1] * len(points),
-                )
-                drawing_shape.fill = self.fillDrawing()
+        try:
+            if (
+                self.fillDrawing()
+                and self.createMode == "polygon"
+                and self.current is not None
+                and len(self.current.points) >= 2
+            ):
+                drawing_shape = self.current.copy()
+                drawing_shape.addPoint(self.line[1])
+                drawing_shape.fill = True
                 drawing_shape.paint(p)
-        elif self.createMode == "ai_mask" and self.current is not None:
-            drawing_shape = self.current.copy()
-            drawing_shape.addPoint(
-                point=self.line.points[1],
-                label=self.line.point_labels[1],
-            )
-            mask = self._ai_model.predict_mask_from_points(
-                points=[
-                    [point.x(), point.y()] for point in drawing_shape.points
-                ],
-                point_labels=drawing_shape.point_labels,
-            )
-            y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[0].astype(
-                int
-            )
-            drawing_shape.setShapeRefined(
-                shape_type="mask",
-                points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
-                point_labels=[1, 1],
-                mask=mask[y1:y2, x1:x2],
-            )
-            drawing_shape.selected = True
-            drawing_shape.paint(p)
+            elif self.createMode == "ai_polygon" and self.current is not None:
+                drawing_shape = self.current.copy()
+                drawing_shape.addPoint(
+                    point=self.line.points[1],
+                    label=self.line.point_labels[1],
+                )
+                try:
+                    points = self._ai_model.predict_polygon_from_points(
+                        points=[
+                            [point.x(), point.y()] for point in drawing_shape.points
+                        ],
+                        point_labels=drawing_shape.point_labels,
+                    )
+                    if len(points) > 2:
+                        drawing_shape.setShapeRefined(
+                            shape_type="polygon",
+                            points=[
+                                QtCore.QPointF(point[0], point[1]) for point in points
+                            ],
+                            point_labels=[1] * len(points),
+                        )
+                        drawing_shape.fill = self.fillDrawing()
+                        drawing_shape.paint(p)
+                except Exception as e:
+                    logger.error(
+                        f"An error occurred during AI polygon prediction: {e}")
+
+            elif self.createMode == "ai_mask" and self.current is not None:
+                drawing_shape = self.current.copy()
+                drawing_shape.addPoint(
+                    point=self.line.points[1],
+                    label=self.line.point_labels[1],
+                )
+                try:
+                    mask = self._ai_model.predict_mask_from_points(
+                        points=[
+                            [point.x(), point.y()] for point in drawing_shape.points
+                        ],
+                        point_labels=drawing_shape.point_labels,
+                    )
+                    y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[0].astype(
+                        int
+                    )
+                    drawing_shape.setShapeRefined(
+                        shape_type="mask",
+                        points=[QtCore.QPointF(
+                            x1, y1), QtCore.QPointF(x2, y2)],
+                        point_labels=[1, 1],
+                        mask=mask[y1:y2, x1:x2],
+                    )
+                    drawing_shape.selected = True
+                    drawing_shape.paint(p)
+                except Exception as e:
+                    logger.error(
+                        f"An error occurred during AI mask prediction: {e}")
+
+        except Exception as e:
+            # General error handling for the entire block
+            logger.error(f"An error occurred in paintEvent: {e}")
+
         p.end()
 
     def transformPos(self, point):
