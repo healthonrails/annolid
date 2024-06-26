@@ -288,6 +288,28 @@ def add_key_points_to_labelme_json(json_path, instance_names, is_vis=False):
         json.dump(data, f, indent=4)
 
 
+def extract_ground_truth_keypoints(json_path):
+    """
+    Extract ground truth keypoints from a LabelMe JSON file.
+
+    Parameters:
+    json_path (str): Path to the LabelMe JSON file containing ground truth keypoints.
+
+    Returns:
+    dict: A dictionary where keys are labels of keypoints and 
+    values are the coordinates of those keypoints.
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    ground_truth_keypoints = {
+        shape['label']: shape['points'][0]
+        for shape in data['shapes']
+    }
+
+    return ground_truth_keypoints
+
+
 def main(input_folder, instance_names):
     """
     Main function to process annotations and visualize results.
