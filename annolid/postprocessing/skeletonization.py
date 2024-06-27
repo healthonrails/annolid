@@ -304,10 +304,8 @@ def extract_ground_truth_keypoints(json_path):
 
     ground_truth_keypoints = {}
     for shape in data['shapes']:
-        if shape['shape_type'] == 'point':
+        if shape['shape_type'] == 'point' and '_' not in shape['label']:
             ground_truth_keypoints[shape['label']] = shape['points'][0]
-
-    return ground_truth_keypoints
 
     return ground_truth_keypoints
 
@@ -320,15 +318,18 @@ def main(input_folder, instance_names):
     - input_folder (str): Path to the folder containing JSON files.
     - instance_names (list): List of instance names.
     """
+    ground_truth_keypoints = None
     # Get all JSON files recursively in the input folder
     json_files = glob.glob(os.path.join(
         input_folder, '**/*.json'), recursive=True)
 
     # Iterate through each JSON file
     for i, json_file in enumerate(json_files):
-        if i % 1000 == 0:
-            print('Finding keypoints in ', json_file)
-        add_key_points_to_labelme_json(json_file, instance_names)
+        if '00000000.json' in json_file:
+            ground_truth_keypoints = extract_ground_truth_keypoints(json_file)
+            print(ground_truth_keypoints)
+        else:
+            add_key_points_to_labelme_json(json_file, instance_names)
 
 
 if __name__ == "__main__":
