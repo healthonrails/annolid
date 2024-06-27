@@ -302,10 +302,12 @@ def extract_ground_truth_keypoints(json_path):
     with open(json_path, 'r') as f:
         data = json.load(f)
 
-    ground_truth_keypoints = {
-        shape['label']: shape['points'][0]
-        for shape in data['shapes']
-    }
+    ground_truth_keypoints = {}
+    for shape in data['shapes']:
+        if shape['shape_type'] == 'point':
+            ground_truth_keypoints[shape['label']] = shape['points'][0]
+
+    return ground_truth_keypoints
 
     return ground_truth_keypoints
 
