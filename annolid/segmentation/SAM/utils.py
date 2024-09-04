@@ -1,8 +1,10 @@
+import os
 import numpy as np
 import cv2
 import torch
 import pycocotools.mask as mask_util
 from PIL import Image
+from tqdm import tqdm
 
 
 def get_mask_features(image, mask, model, preprocess=None):
@@ -212,3 +214,60 @@ def process_video_and_save_tracking_results(video_file, mask_generator, model=No
     dataframe = pd.DataFrame(tracking_results)
     output_file = f"{video_file.split('.')[0]}_mask_tracking_results_with_segmentation.csv"
     dataframe.to_csv(output_file)
+
+
+def stream_video_frames(
+    video_path,
+    image_size,
+    offload_video_to_cpu,
+    img_mean=(0.485, 0.456, 0.406),
+    img_std=(0.229, 0.224, 0.225),
+    batch_size=16,
+    compute_device=torch.device("cuda"),
+):
+    """
+    Stream video frames directly from a video file using OpenCV with a generator approach.
+
+    The frames are resized to image_size x image_size and are loaded to GPU if
+    `offload_video_to_cpu` is `False` and to CPU if `offload_video_to_cpu` is `True`.
+
+    Frames are processed in batches to handle long videos efficiently.
+    """
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Video file {video_path} not found.")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video file {video_path}")
+
+    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+    img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+
+    def frame_generator():
+        while True:
+            batch = []
+            for _ in range(batch_size):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame = cv2.resize(frame, (image_size, image_size))
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = torch.tensor(
+                    frame, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                batch.append((frame - img_mean) / img_std)
+
+            # Yield the batch if it's not empty
+            if batch:
+                # Stack the batch into a single tensor
+                images = torch.stack(batch)
+                if not offload_video_to_cpu:
+                    images = images.to(compute_device)
+                yield images
+            else:
+                break
+
+        cap.release()
+
+    return frame_generator(), video_height, video_width
