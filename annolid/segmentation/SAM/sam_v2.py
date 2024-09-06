@@ -1,15 +1,13 @@
+from annolid.gui.shape import MaskShape
+from annolid.annotation.keypoints import save_labels
+from annolid.utils.devices import get_device
+from sam2.build_sam import build_sam2_video_predictor
+import torch
+import numpy as np
+import cv2
 import os
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-
-
-import cv2
-import numpy as np
-import torch
-from sam2.build_sam import build_sam2_video_predictor
-from annolid.utils.devices import get_device
-from annolid.annotation.keypoints import save_labels
-from annolid.gui.shape import MaskShape
 
 
 class SAM2VideoProcessor:
@@ -109,7 +107,12 @@ class SAM2VideoProcessor:
 
     def _add_box(self, inference_state, frame_idx, obj_id, box):
         """Handles the addition of box annotations."""
-        pass
+        self.predictor.add_new_points_or_box(
+            inference_state=inference_state,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            box=box,
+        )
 
     def _save_annotation(self, filename, mask_dict, frame_shape):
         height, width, _ = frame_shape
