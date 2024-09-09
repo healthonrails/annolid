@@ -2215,7 +2215,10 @@ class AnnolidWindow(MainWindow):
             group_id = shape["group_id"]
             description = shape.get("description", "")
             other_data = shape["other_data"]
-            visible = shape["visible"]
+            if "visible" in shape:
+                visible = shape["visible"]
+            else:
+                visible = True
 
             if not points:
                 # skip point-empty shape
