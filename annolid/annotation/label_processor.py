@@ -60,10 +60,10 @@ class LabelProcessor:
         """Extract image size (height, width) from the JSON data."""
         return data.get('imageHeight', 0), data.get('imageWidth', 0)
 
-    def get_mask(self) -> Any:
+    def get_mask(self, shape) -> Any:
         """Generate and return the binary mask using the stored shapes and label mapping."""
         mask, _ = shapes_to_label(
-            self.image_size, self.shapes, self.label_name_to_value)
+            self.image_size, [shape], self.label_name_to_value)
         return mask
 
     def get_label_mapping(self) -> Dict[str, int]:
@@ -94,10 +94,13 @@ class LabelProcessor:
             if shape_type == 'rectangle':
                 points = self.convert_rectangle_to_points(points)
                 shape_type = 'box'
+            elif shape_type == 'polygon':
+                _mask = self.get_mask(shape)
+                shape_type = 'mask'
 
             annotation = {
                 'type': shape_type,
-                shape_type: points,
+                shape_type: _mask if shape_type == 'mask' else points,
                 'labels': [label_value] * len(points) if shape_type == 'points' else [label_value],
                 'obj_id': obj_id
             }

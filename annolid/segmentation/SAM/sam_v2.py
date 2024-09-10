@@ -2,15 +2,14 @@ import os
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
-
-import cv2
-import numpy as np
 import torch
-from sam2.build_sam import build_sam2_video_predictor
-from annolid.utils.devices import get_device
-from annolid.annotation.keypoints import save_labels
-from annolid.gui.shape import MaskShape
+import numpy as np
+import cv2
 from annolid.annotation.label_processor import LabelProcessor
+from annolid.gui.shape import MaskShape
+from annolid.annotation.keypoints import save_labels
+from annolid.utils.devices import get_device
+from sam2.build_sam import build_sam2_video_predictor
 
 class SAM2VideoProcessor:
     def __init__(self, video_dir, id_to_labels,
@@ -107,6 +106,9 @@ class SAM2VideoProcessor:
             elif annot_type == 'box':
                 self._add_box(inference_state, frame_idx,
                               obj_id, annotation['box'])
+            elif annot_type == 'mask':
+                self._add_mask(inference_state, frame_idx,
+                               obj_id, annotation['mask'])
             else:
                 print(f"Unknown annotation type: {annot_type}")
 
@@ -127,6 +129,15 @@ class SAM2VideoProcessor:
             frame_idx=frame_idx,
             obj_id=obj_id,
             box=box,
+        )
+
+    def _add_mask(self, inference_state, frame_idx, obj_id, mask):
+        """Handles the addition of mask annotations."""
+        self.predictor.add_new_mask(
+            inference_state=inference_state,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            mask=mask,
         )
 
     def _save_annotations(self, filename, mask_dict, frame_shape):
@@ -202,7 +213,8 @@ if __name__ == "__main__":
     id_to_labels = label_processor.get_id_to_labels()
     # Initialize the analyzer
     analyzer = SAM2VideoProcessor(
-        video_dir=video_dir, id_to_labels=id_to_labels)
+        video_dir,
+        id_to_labels)
     frame_idx = 0  # Start from the first frame
 
     # Run the analysis with provided parameters
