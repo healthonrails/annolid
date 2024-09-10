@@ -1,15 +1,18 @@
 import os
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-
-import torch
-import numpy as np
 import cv2
-from annolid.annotation.label_processor import LabelProcessor
-from annolid.gui.shape import MaskShape
-from annolid.annotation.keypoints import save_labels
-from annolid.utils.devices import get_device
+import numpy as np
+import torch
+import glob
+
 from sam2.build_sam import build_sam2_video_predictor
+from annolid.utils.videos import extract_frames_with_opencv
+from annolid.utils.devices import get_device
+from annolid.annotation.keypoints import save_labels
+from annolid.gui.shape import MaskShape
+from annolid.annotation.label_processor import LabelProcessor
+
 
 class SAM2VideoProcessor:
     def __init__(self, video_dir, id_to_labels,
@@ -72,7 +75,7 @@ class SAM2VideoProcessor:
                 p for p in os.listdir(self.video_dir)
                 if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg"]
             ]
-            frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+            frame_names.sort(key=lambda p: (os.path.splitext(p)[0]))
             return frame_names
         except FileNotFoundError as e:
             print(f"Error loading frames: {e}")
@@ -167,7 +170,7 @@ class SAM2VideoProcessor:
         """Runs mask propagation and visualizes the results every few frames."""
         for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
             mask_dict = {}
-            filename = os.path.join(self.video_dir, f'{out_frame_idx:05}.json')
+            filename = os.path.join(self.video_dir, f'{out_frame_idx:09}.json')
             for i, out_obj_id in enumerate(out_obj_ids):
                 _obj_mask = (out_mask_logits[i] > 0.0).cpu().numpy().squeeze()
                 mask_dict[str(out_obj_id)] = _obj_mask
@@ -196,10 +199,14 @@ class SAM2VideoProcessor:
 
 # Example usage
 if __name__ == "__main__":
-    video_dir = os.path.expanduser(
-        "~/Downloads/mouse")  # Expand user directory
 
-    label_json_file = os.path.join(video_dir, '00000.json')
+    video_path = os.path.expanduser(
+        "~/Downloads/mouse.mp4")
+    video_dir = extract_frames_with_opencv(video_path)
+    anno_jsons = glob.glob("*.json", root_dir=video_dir)
+    anno_json = os.path.join(video_dir, anno_jsons[0])
+
+    label_json_file = os.path.join(video_dir, anno_json)
     # Create an instance of the LabelProcessor class with the JSON file
     label_processor = LabelProcessor(label_json_file)
     # Convert shapes to the custom annotations format

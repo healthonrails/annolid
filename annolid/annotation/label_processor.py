@@ -41,7 +41,7 @@ class LabelProcessor:
         """Filter out shapes with excluded keywords in their labels or descriptions."""
         return [
             shape for shape in shapes
-            if not any(keyword in shape['description'].lower() or keyword in shape['label'].lower()
+            if not any(shape['description'] and keyword in shape['description'].lower() or keyword in shape['label'].lower()
                        for keyword in LabelProcessor.EXCLUDED_LABEL_KEYWORDS)
         ]
 
