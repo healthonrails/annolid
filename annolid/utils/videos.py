@@ -5,6 +5,83 @@ import csv
 import argparse
 
 
+def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, quality=95):
+    """
+    Extract frames from a video file and save them as high-quality JPEG images using OpenCV.
+    The saved file names start with the video name followed by an underscore and a 9-digit number.
+
+    If the output directory already contains the same or more frames than the video, extraction is skipped.
+
+    Args:
+        video_path (str): Path to the input video file.
+        output_dir (str, optional): Directory where the extracted frames will be saved. 
+                                    Defaults to the video path without its file extension.
+        start_number (int): Starting number for naming the output JPEG files.
+        quality (int): JPEG quality factor (0 to 100, where 100 is the best quality).
+
+    Returns:
+        str: The output directory path where frames are saved.
+
+    Raises:
+        FileNotFoundError: If the video file does not exist.
+        RuntimeError: If the video file cannot be opened.
+    """
+    # Check if the video file exists
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    # Set the default output directory to be the video path without the file extension
+    if output_dir is None:
+        output_dir = os.path.splitext(video_path)[0]
+
+    # Create the output directory if it does not exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Extract the base name of the video file without extension
+    video_name = os.path.basename(output_dir)
+
+    # Open the video file
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video file: {video_path}")
+
+    # Get the total number of frames in the video
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    # Count existing JPEG files in the output directory
+    existing_frames = len(
+        [f for f in os.listdir(output_dir) if f.endswith(".jpg")])
+
+    # Check if the output directory already has the required number of frames
+    if existing_frames >= total_frames:
+        print(
+            f"Output directory already contains {existing_frames} frames, skipping extraction.")
+        cap.release()
+        return output_dir
+
+    # Extract frames
+    frame_number = start_number
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break  # Exit loop if no frame is returned (end of video)
+
+        # Construct the output file path with the video name and a 9-digit zero-padded numbering
+        output_filename = os.path.join(output_dir, f"{frame_number:09d}.jpg")
+
+        # Save the frame as a JPEG image with specified quality
+        cv2.imwrite(output_filename, frame, [
+                    cv2.IMWRITE_JPEG_QUALITY, quality])
+
+        frame_number += 1
+
+    # Release the video capture object
+    cap.release()
+
+    print(f"Frames extracted and saved in: {output_dir}")
+    return output_dir
+
+
 def frame_to_timestamp(frames, fps):
     timestamps = []
     for frame in frames:
