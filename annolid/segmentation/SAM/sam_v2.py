@@ -1,6 +1,7 @@
 import os
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 import cv2
 import numpy as np
 import torch
@@ -16,7 +17,7 @@ from annolid.annotation.label_processor import LabelProcessor
 
 class SAM2VideoProcessor:
     def __init__(self, video_dir, id_to_labels,
-                 checkpoint_path="segment-anything-2/checkpoints/sam2_hiera_large.pt",
+                 checkpoint_path=None,
                  model_config="sam2_hiera_l.yaml",
                  epsilon_for_polygon=2.0):
         """
@@ -25,10 +26,18 @@ class SAM2VideoProcessor:
         Args:
             video_dir (str): Directory containing video frames.
             id_to_labels (dict): Mapping of object IDs to labels.
-            checkpoint_path (str): Path to the model checkpoint.
+            checkpoint_path (str, optional): Path to the model checkpoint.
             model_config (str): Path to the model configuration file.
             epsilon_for_polygon (float): Epsilon value for polygon approximation.
         """
+        # Set default checkpoint path if not provided
+        if checkpoint_path is None:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            checkpoint_path = os.path.join(current_dir,
+                                           "segment-anything-2",
+                                           "checkpoints",
+                                           "sam2_hiera_large.pt")
+
         self.video_dir = video_dir
         self.checkpoint_path = checkpoint_path
         self.model_config = model_config
@@ -197,32 +206,54 @@ class SAM2VideoProcessor:
         self._propagate(inference_state)
 
 
+def process_video(video_path,
+                  frame_idx=0,
+                  checkpoint_path=None,
+                  model_config="sam2_hiera_l.yaml",
+                  epsilon_for_polygon=2.0):
+    """
+    Processes a video by extracting frames, loading annotations, and running analysis.
+
+    Args:
+        video_path (str): Path to the video file.
+        frame_idx (int): Start from the first frame.
+        checkpoint_path (str, optional): Path to the model checkpoint.
+        model_config (str, optional): Path to the model configuration file.
+        epsilon_for_polygon (float, optional): Epsilon value for polygon approximation.
+    """
+    # Extract frames from the video
+    video_dir = extract_frames_with_opencv(video_path)
+
+    # Find the first JSON annotation file in the directory
+    anno_jsons = glob.glob(os.path.join(video_dir, "*.json"))
+    if not anno_jsons:
+        raise FileNotFoundError(
+            "No JSON annotation files found in the video directory.")
+    anno_json = anno_jsons[0]
+
+    # Initialize the LabelProcessor with the JSON file
+    label_json_file = os.path.join(video_dir, anno_json)
+    label_processor = LabelProcessor(label_json_file)
+
+    # Convert shapes to the custom annotations format
+    annotations = label_processor.convert_shapes_to_annotations()
+    id_to_labels = label_processor.get_id_to_labels()
+
+    # Initialize the analyzer
+    analyzer = SAM2VideoProcessor(
+        video_dir=video_dir,
+        id_to_labels=id_to_labels,
+        checkpoint_path=checkpoint_path,
+        model_config=model_config,
+        epsilon_for_polygon=epsilon_for_polygon
+    )
+    # Run the analysis with provided parameters
+    analyzer.run(annotations, frame_idx)
+
+
 # Example usage
 if __name__ == "__main__":
 
     video_path = os.path.expanduser(
         "~/Downloads/mouse.mp4")
-    video_dir = extract_frames_with_opencv(video_path)
-    anno_jsons = glob.glob("*.json", root_dir=video_dir)
-    anno_json = os.path.join(video_dir, anno_jsons[0])
-
-    label_json_file = os.path.join(video_dir, anno_json)
-    # Create an instance of the LabelProcessor class with the JSON file
-    label_processor = LabelProcessor(label_json_file)
-    # Convert shapes to the custom annotations format
-    # # Example annotations and frame index
-    # annotations = [
-    #     {'type': 'points', 'points': [[210, 350]], 'labels': [1], 'obj_id': 1},
-    #     {'type': 'points', 'points': [[210, 350], [
-    #         340, 160]], 'labels': [1, 1], 'obj_id': 1}
-    # ]
-    annotations = label_processor.convert_shapes_to_annotations()
-    id_to_labels = label_processor.get_id_to_labels()
-    # Initialize the analyzer
-    analyzer = SAM2VideoProcessor(
-        video_dir,
-        id_to_labels)
-    frame_idx = 0  # Start from the first frame
-
-    # Run the analysis with provided parameters
-    analyzer.run(annotations, frame_idx)
+    process_video(video_path)
