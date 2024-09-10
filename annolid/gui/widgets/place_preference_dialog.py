@@ -85,8 +85,11 @@ class TrackingAnalyzerDialog(QDialog):
 
         analyzer = TrackingResultsAnalyzer(
             video_path, zone_file=zone_path, fps=fps)
-        analyzer.merge_and_calculate_distance()
-        output_csv_path = analyzer.save_all_instances_zone_time_to_csv()
+        try:
+            analyzer.merge_and_calculate_distance()
+            output_csv_path = analyzer.save_all_instances_zone_time_to_csv()
+        except:
+            output_csv_path = None
 
         # Notify the user with the path of the result CSV file
         if output_csv_path:

@@ -1,5 +1,7 @@
 import sys
 import os
+# Enable CPU fallback for unsupported MPS ops
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import re
 import csv
 import os.path as osp
@@ -581,7 +583,7 @@ class AnnolidWindow(MainWindow):
 
         self._selectAiModelComboBox.clear()
         self.custom_ai_model_names = [
-            'SAM_HQ', 'Cutie', "EfficientVit_SAM", "CoTracker"]
+            'SAM_HQ', 'Cutie', "EfficientVit_SAM", "CoTracker", "SAM2"]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
@@ -1078,7 +1080,8 @@ class AnnolidWindow(MainWindow):
             "SAM_HQ": "sam_hq",
             "EfficientVit_SAM": "efficientvit_sam",
             "Cutie": "Cutie",
-            "CoTracker": "CoTracker"
+            "CoTracker": "CoTracker",
+            "SAM2": "SAM2",
         }
         default_model_name = "Segment-Anything (Edge)"
 
@@ -1113,17 +1116,21 @@ class AnnolidWindow(MainWindow):
         else:
             model_name = self._select_sam_model_name()
             if self.video_file:
-                self.video_processor = VideoProcessor(
-                    self.video_file,
-                    model_name=model_name,
-                    save_image_to_disk=False,
-                    epsilon_for_polygon=self.epsilon_for_polygon,
-                    t_max_value=self.t_max_value,
-                    use_cpu_only=self.use_cpu_only,
-                    auto_recovery_missing_instances=self.auto_recovery_missing_instances,
-                    save_video_with_color_mask=self.save_video_with_color_mask,
-                    compute_optical_flow=self.compute_optical_flow,
-                )
+                if model_name == 'SAM2':
+                    from annolid.segmentation.SAM.sam_v2 import process_video
+                    self.video_processor = process_video
+                else:
+                    self.video_processor = VideoProcessor(
+                        self.video_file,
+                        model_name=model_name,
+                        save_image_to_disk=False,
+                        epsilon_for_polygon=self.epsilon_for_polygon,
+                        t_max_value=self.t_max_value,
+                        use_cpu_only=self.use_cpu_only,
+                        auto_recovery_missing_instances=self.auto_recovery_missing_instances,
+                        save_video_with_color_mask=self.save_video_with_color_mask,
+                        compute_optical_flow=self.compute_optical_flow,
+                    )
                 if not self.seg_pred_thread.isRunning():
                     self.seg_pred_thread = QtCore.QThread()
                 self.seg_pred_thread.start()
@@ -1137,17 +1144,24 @@ class AnnolidWindow(MainWindow):
                     self.step_size = -self.step_size
                 stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                     or self.automatic_pause_enabled)
-                self.pred_worker = FlexibleWorker(
-                    function=self.video_processor.process_video_frames,
-                    start_frame=self.frame_number+1,
-                    end_frame=end_frame,
-                    step=self.step_size,
-                    is_cutie=False if model_name == "CoTracker" else True,
-                    mem_every=self.step_size,
-                    point_tracking=model_name == "CoTracker",
-                    has_occlusion=stop_when_lost_tracking_instance,
-                )
-                self.video_processor.set_pred_worker(self.pred_worker)
+                if model_name == "SAM2":
+                    self.pred_worker = FlexibleWorker(
+                        function=process_video,
+                        video_path=self.video_file,
+                        frame_idx=self.frame_number,
+                    )
+                else:
+                    self.pred_worker = FlexibleWorker(
+                        function=self.video_processor.process_video_frames,
+                        start_frame=self.frame_number+1,
+                        end_frame=end_frame,
+                        step=self.step_size,
+                        is_cutie=False if model_name == "CoTracker" else True,
+                        mem_every=self.step_size,
+                        point_tracking=model_name == "CoTracker",
+                        has_occlusion=stop_when_lost_tracking_instance,
+                    )
+                    self.video_processor.set_pred_worker(self.pred_worker)
                 self.frame_number += 1
                 logger.info(
                     f"Prediction started from frame number: {self.frame_number}.")
@@ -1199,7 +1213,7 @@ class AnnolidWindow(MainWindow):
                 num_json_files = count_json_files(self.video_results_folder)
                 logger.info(
                     f"Number of predicted frames: {num_json_files} in total {self.num_frames}")
-                if num_json_files == self.num_frames:
+                if num_json_files >= self.num_frames:
                     # convert json labels to csv file
                     self.convert_json_to_tracked_csv()
             QtWidgets.QMessageBox.information(
@@ -2264,6 +2278,10 @@ class AnnolidWindow(MainWindow):
     def loadPredictShapes(self, frame_number, filename):
 
         label_json_file = str(filename).replace(".png", ".json")
+        #try to load json files generated by SAM2 like 000000000.json
+        if not Path(label_json_file).exists():
+            label_json_file = os.path.join(os.path.dirname(label_json_file),
+                                           os.path.basename(label_json_file).split('_')[-1])
         if self._df is not None and not Path(filename).exists():
             df_cur = self._df[self._df.frame_number == frame_number]
             frame_label_list = []

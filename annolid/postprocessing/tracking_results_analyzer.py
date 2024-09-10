@@ -210,6 +210,9 @@ class TrackingResultsAnalyzer:
             output_csv (str): The path to the output CSV file.
         """
         if output_csv is None:
+            if self.tracked_csv is None:
+                self.tracked_csv = self.video_path.parent / \
+                    f"{self.video_path.stem}_tracking.csv"
             output_csv = str(self.tracking_csv).replace(
                 '_tracking', '_place_preference')
 
