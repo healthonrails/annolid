@@ -193,7 +193,10 @@ class SAM2VideoProcessor:
             annotations (list): List of annotation dictionaries, each with 'type', 'points', and 'labels'.
             frame_idx (int): Index of the frame to start the analysis.
         """
-        inference_state = self.predictor.init_state(video_path=self.video_dir)
+        inference_state = self.predictor.init_state(
+            video_path=self.video_dir,
+            async_loading_frames=True,
+            )
         self.predictor.reset_state(inference_state)
         self.frame_shape = self.get_frame_shape()
 
