@@ -18,3 +18,7 @@
 [submodule "annolid/detector/yolov7"]
 	path = annolid/detector/yolov7
 	url = https://github.com/healthonrails/yolov7.git
+
+[submodule "annolid/segmentation/SAM/segment-anything-2"]
+	path = annolid/segmentation/SAM/segment-anything-2
+	url = https://github.com/facebookresearch/segment-anything-2.git
