@@ -2,17 +2,17 @@ import os
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
-import cv2
-import numpy as np
-import torch
 import glob
+import torch
+import numpy as np
+import cv2
 
-from sam2.build_sam import build_sam2_video_predictor
-from annolid.utils.videos import extract_frames_with_opencv
-from annolid.utils.devices import get_device
-from annolid.annotation.keypoints import save_labels
-from annolid.gui.shape import MaskShape
+from annolid.utils.files import download_file
 from annolid.annotation.label_processor import LabelProcessor
+from annolid.gui.shape import MaskShape
+from annolid.annotation.keypoints import save_labels
+from annolid.utils.devices import get_device
+from annolid.utils.videos import extract_frames_with_opencv
 
 
 class SAM2VideoProcessor:
@@ -38,6 +38,8 @@ class SAM2VideoProcessor:
                                            "checkpoints",
                                            "sam2_hiera_large.pt")
 
+        self.BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/"
+
         self.video_dir = video_dir
         self.checkpoint_path = checkpoint_path
         self.model_config = model_config
@@ -46,11 +48,16 @@ class SAM2VideoProcessor:
         self.epsilon_for_polygon = epsilon_for_polygon
         self.frame_names = self._load_frame_names()
         self.predictor = self._initialize_predictor()
-
+        
         self._handle_device_specific_settings()
 
     def _initialize_predictor(self):
         """Initializes the SAM2 video predictor."""
+        from sam2.build_sam import build_sam2_video_predictor
+        if not os.path.exists(self.checkpoint_path):
+            sam2_checkpoint_url = f"{self.BASE_URL}{os.path.basename(self.checkpoint_path)}"
+            download_file(sam2_checkpoint_url, self.checkpoint_path)
+
         return build_sam2_video_predictor(self.model_config,
                                           self.checkpoint_path,
                                           device=self.device)
@@ -196,7 +203,7 @@ class SAM2VideoProcessor:
         inference_state = self.predictor.init_state(
             video_path=self.video_dir,
             async_loading_frames=True,
-            )
+        )
         self.predictor.reset_state(inference_state)
         self.frame_shape = self.get_frame_shape()
 
