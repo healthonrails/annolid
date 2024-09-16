@@ -222,7 +222,7 @@ def process_video(video_path,
                   model_config="sam2_hiera_l.yaml",
                   epsilon_for_polygon=2.0):
     """
-    Processes a video by extracting frames, loading annotations, and running analysis.
+    Processes a video by extracting frames, loading annotations from multiple JSON files, and running analysis.
 
     Args:
         video_path (str): Path to the video file.
@@ -234,20 +234,26 @@ def process_video(video_path,
     # Extract frames from the video
     video_dir = extract_frames_with_opencv(video_path)
 
-    # Find the first JSON annotation file in the directory
+    # Find all JSON annotation files in the directory
     anno_jsons = glob.glob(os.path.join(video_dir, "*.json"))
     if not anno_jsons:
         raise FileNotFoundError(
             "No JSON annotation files found in the video directory.")
-    anno_json = anno_jsons[0]
 
-    # Initialize the LabelProcessor with the JSON file
-    label_json_file = os.path.join(video_dir, anno_json)
-    label_processor = LabelProcessor(label_json_file)
+    id_to_labels = {}
+    all_annotations = []
 
-    # Convert shapes to the custom annotations format
-    annotations = label_processor.convert_shapes_to_annotations()
-    id_to_labels = label_processor.get_id_to_labels()
+    # Loop through all the JSON annotation files
+    for anno_json in anno_jsons:
+        # Initialize the LabelProcessor with each JSON file
+        label_processor = LabelProcessor(anno_json)
+
+        # Convert shapes to the custom annotations format
+        annotations = label_processor.convert_shapes_to_annotations()
+        all_annotations.extend(annotations)
+
+        # Update the mapping of object IDs to labels
+        id_to_labels.update(label_processor.get_id_to_labels())
 
     # Initialize the analyzer
     analyzer = SAM2VideoProcessor(
@@ -257,8 +263,9 @@ def process_video(video_path,
         model_config=model_config,
         epsilon_for_polygon=epsilon_for_polygon
     )
-    # Run the analysis with provided parameters
-    analyzer.run(annotations, frame_idx)
+
+    # Run the analysis with the combined annotations
+    analyzer.run(all_annotations, frame_idx)
 
 
 # Example usage
