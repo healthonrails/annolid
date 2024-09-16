@@ -74,7 +74,7 @@ class LabelProcessor:
         """Return the ID to label name mapping."""
         return self.id_to_label_mapping
 
-    def convert_shapes_to_annotations(self) -> List[Dict[str, Any]]:
+    def convert_shapes_to_annotations(self,ann_frame_idx=0) -> List[Dict[str, Any]]:
         """
         Convert LabelMe shapes to a custom annotations format.
 
@@ -102,7 +102,8 @@ class LabelProcessor:
                 'type': shape_type,
                 shape_type: _mask if shape_type == 'mask' else points,
                 'labels': [label_value] * len(points) if shape_type == 'points' else [label_value],
-                'obj_id': obj_id
+                'obj_id': obj_id,
+                'ann_frame_idx': ann_frame_idx,
             }
             annotations.append(annotation)
             obj_id += 1  # Increment obj_id for each shape

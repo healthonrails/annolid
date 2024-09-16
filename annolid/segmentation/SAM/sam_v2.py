@@ -209,6 +209,7 @@ class SAM2VideoProcessor:
 
         # Add annotations and display results
         for annotation in annotations:
+            frame_idx = annotation['ann_frame_idx'] if 'ann_frame_idx' in annotation else frame_idx
             self.add_annotations(inference_state, frame_idx,
                                  annotation.get('obj_id', 1), [annotation])
 
@@ -246,10 +247,17 @@ def process_video(video_path,
     # Loop through all the JSON annotation files
     for anno_json in anno_jsons:
         # Initialize the LabelProcessor with each JSON file
+        ann_frame_idx = os.path.splitext(os.path.basename(anno_json))[0]
+        if '_' in ann_frame_idx:
+            ann_frame_idx = ann_frame_idx.split('_')[-1]
+        try:
+            ann_frame_idx = int(ann_frame_idx)
+        except ValueError:
+            ann_frame_idx = 0
         label_processor = LabelProcessor(anno_json)
 
         # Convert shapes to the custom annotations format
-        annotations = label_processor.convert_shapes_to_annotations()
+        annotations = label_processor.convert_shapes_to_annotations(ann_frame_idx)
         all_annotations.extend(annotations)
 
         # Update the mapping of object IDs to labels
