@@ -53,7 +53,14 @@ class SAM2VideoProcessor:
 
     def _initialize_predictor(self):
         """Initializes the SAM2 video predictor."""
-        from sam2.build_sam import build_sam2_video_predictor
+        try:
+            from sam2.build_sam import build_sam2_video_predictor
+        except ImportError:
+            print("The segment-anything-2 package is not installed. \
+                  Please install it with the following commands:")
+            print("cd /path/to/annolid/annolid/segmentation/SAM/segment-anything-2")
+            print("pip install -e .")
+            raise
         if not os.path.exists(self.checkpoint_path):
             sam2_checkpoint_url = f"{self.BASE_URL}{os.path.basename(self.checkpoint_path)}"
             download_file(sam2_checkpoint_url, self.checkpoint_path)
