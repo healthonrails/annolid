@@ -1,7 +1,6 @@
 import os
 import cv2
 import torch
-from threading import Thread
 from tqdm import tqdm
 from collections import deque
 
@@ -51,17 +50,6 @@ class AsyncVideoFrameLoaderFromVideo:
         # Load the first frame synchronously to get dimensions
         self.__getitem__(0)
 
-        # Start loading frames asynchronously
-        def _load_frames():
-            try:
-                for index in tqdm(range(1, self.num_frames), desc="frame loading (video)"):
-                    self.__getitem__(index)
-            except Exception as e:
-                self.exception = e
-
-        self.thread = Thread(target=_load_frames, daemon=True)
-        self.thread.start()
-
     def _load_frame(self, index):
         """
         Load a frame from the video and preprocess it.
@@ -79,6 +67,10 @@ class AsyncVideoFrameLoaderFromVideo:
         # Normalize by mean and std
         img = (img - self.img_mean) / self.img_std
         if not self.offload_video_to_cpu:
+
+            if img.dtype == torch.float64:
+                img = img.float()  # Convert to float32 if necessary
+
             img = img.to(self.compute_device, non_blocking=True)
 
         return img
