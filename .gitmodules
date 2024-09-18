@@ -21,4 +21,4 @@
 
 [submodule "annolid/segmentation/SAM/segment-anything-2"]
 	path = annolid/segmentation/SAM/segment-anything-2
-	url = https://github.com/facebookresearch/segment-anything-2.git
+	url = https://github.com/healthonrails/segment-anything-2.git
