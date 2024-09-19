@@ -17,7 +17,7 @@ from annolid.utils.files import download_file
 class SAM2VideoProcessor:
     def __init__(self, video_dir, id_to_labels,
                  checkpoint_path=None,
-                 model_config="sam2_hiera_l.yaml",
+                 model_config="sam2_hiera_s.yaml",
                  epsilon_for_polygon=2.0):
         """
         Initializes the SAM2VideoProcessor with the given parameters.
@@ -32,10 +32,12 @@ class SAM2VideoProcessor:
         # Set default checkpoint path if not provided
         if checkpoint_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
+            checkpoint = "sam2_hiera_small.pt" if 'hiera_s' in model_config else "sam2_hiera_large.pt"
             checkpoint_path = os.path.join(current_dir,
                                            "segment-anything-2",
                                            "checkpoints",
-                                           "sam2_hiera_large.pt")
+                                           checkpoint
+                                           )
 
         self.BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/"
 
@@ -109,7 +111,6 @@ class SAM2VideoProcessor:
             return path
         else:
             raise ValueError(f"Invalid path: {path}")
-
 
     def _load_frame_names(self):
         """Loads and sorts JPEG frame names from the specified directory."""
@@ -250,7 +251,7 @@ class SAM2VideoProcessor:
 def process_video(video_path,
                   frame_idx=0,
                   checkpoint_path=None,
-                  model_config="sam2_hiera_l.yaml",
+                  model_config="sam2_hiera_s.yaml",
                   epsilon_for_polygon=2.0):
     """
     Processes a video by extracting frames, loading annotations from multiple JSON files, and running analysis.
