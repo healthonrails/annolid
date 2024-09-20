@@ -583,7 +583,11 @@ class AnnolidWindow(MainWindow):
 
         self._selectAiModelComboBox.clear()
         self.custom_ai_model_names = [
-            'SAM_HQ', 'Cutie', "EfficientVit_SAM", "CoTracker", "SAM2"]
+            'SAM_HQ', 'Cutie', "EfficientVit_SAM",
+              "CoTracker", 
+              "sam2_hiera_s",
+              "sam2_hiera_l",
+              ]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
@@ -1081,7 +1085,8 @@ class AnnolidWindow(MainWindow):
             "EfficientVit_SAM": "efficientvit_sam",
             "Cutie": "Cutie",
             "CoTracker": "CoTracker",
-            "SAM2": "SAM2",
+            "sam2_hiera_s": "sam2_hiera_s",
+            "sam2_hiera_l": "sam2_hiera_l",
         }
         default_model_name = "Segment-Anything (Edge)"
 
@@ -1116,7 +1121,7 @@ class AnnolidWindow(MainWindow):
         else:
             model_name = self._select_sam_model_name()
             if self.video_file:
-                if model_name == 'SAM2':
+                if "sam2_hiera" in model_name:
                     from annolid.segmentation.SAM.sam_v2 import process_video
                     self.video_processor = process_video
                 else:
@@ -1144,11 +1149,12 @@ class AnnolidWindow(MainWindow):
                     self.step_size = -self.step_size
                 stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                     or self.automatic_pause_enabled)
-                if model_name == "SAM2":
+                if "sam2_hiera" in model_name:
                     self.pred_worker = FlexibleWorker(
                         function=process_video,
                         video_path=self.video_file,
                         frame_idx=self.frame_number,
+                        model_config='sam2_hiera_l.yaml' if 'hiera_l' in model_name else "sam2_hiera_s.yaml",
                     )
                 else:
                     self.pred_worker = FlexibleWorker(
