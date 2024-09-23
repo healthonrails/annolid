@@ -6,7 +6,7 @@ from annolid.utils.logger import logger
 
 
 class LabelProcessor:
-    EXCLUDED_LABEL_KEYWORDS = {'zone', 'sam'}
+    EXCLUDED_LABEL_KEYWORDS = {'zone'}
 
     def __init__(self, label_json_file: str):
         """

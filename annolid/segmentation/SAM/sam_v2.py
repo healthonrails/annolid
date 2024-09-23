@@ -304,7 +304,10 @@ def process_video(video_path,
     )
 
     # Run the analysis with the combined annotations
-    analyzer.run(all_annotations, frame_idx)
+    try:
+        analyzer.run(all_annotations, frame_idx)
+    except RuntimeError as e:
+        print(e)
 
 
 # Example usage
