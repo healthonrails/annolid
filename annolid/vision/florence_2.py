@@ -9,7 +9,7 @@ from transformers import AutoProcessor, AutoModelForCausalLM
 
 def get_device_and_dtype():
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    torch_dtype = torch.float32
     return device, torch_dtype
 
 # Load the model and processor
