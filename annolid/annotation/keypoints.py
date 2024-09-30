@@ -72,7 +72,10 @@ def save_labels(filename, imagePath,
                 width,
                 imageData=None,
                 otherData=None,
-                save_image_to_json=False):
+                save_image_to_json=False,
+                flags=None,
+                caption=None,
+                ):
     """Save a list of labeled shapes to a JSON file.
 
     Args:
@@ -97,8 +100,8 @@ def save_labels(filename, imagePath,
         return
     lf = LabelFile()
     shapes = [format_shape(shape) for shape in label_list]
-    flags = {}
-
+    
+    
     # Load existing shapes from the JSON file and merge with new shapes
     existing_shapes = load_existing_shapes(filename)
 
@@ -112,6 +115,13 @@ def save_labels(filename, imagePath,
     # Set default value for otherData
     if otherData is None:
         otherData = {}
+    if caption is not None:   
+        otherData['caption'] = caption
+
+    if flags is not None:
+        flags = flags
+    else:
+        flags = {}
 
     # Save data to JSON file
     lf.save(
