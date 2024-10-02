@@ -41,6 +41,7 @@ class LabelFile(object):
         self.imagePath = None
         self.imageData = None
         self.is_video_frame = is_video_frame
+        self.caption = None
         if filename is not None:
             self.load(filename)
         self.filename = filename
@@ -77,6 +78,7 @@ class LabelFile(object):
             "flags",  # image level flags
             "imageHeight",
             "imageWidth",
+            "caption",
         ]
         shape_keys = [
             "label",
@@ -93,6 +95,10 @@ class LabelFile(object):
                 data = json.load(f)
             imageData = None
             imagePath = None
+            caption = None
+
+            if data['caption'] is not None:
+                caption = data['caption']
 
             if data["imageData"] is not None:
                 imageData = base64.b64decode(data["imageData"])
@@ -142,6 +148,10 @@ class LabelFile(object):
         self.imageData = imageData
         self.filename = filename
         self.otherData = otherData
+        self.caption = caption
+
+    def get_caption(self):
+        return self.caption
 
     @staticmethod
     def _check_image_height_and_width(imageData, imageHeight, imageWidth):
@@ -170,6 +180,7 @@ class LabelFile(object):
         imageData=None,
         otherData=None,
         flags=None,
+        caption=None,
     ):
         if imageData is not None:
             imageData = base64.b64encode(imageData).decode("utf-8")
@@ -188,6 +199,7 @@ class LabelFile(object):
             imageData=imageData,
             imageHeight=imageHeight,
             imageWidth=imageWidth,
+            caption=caption,
         )
         for key, value in otherData.items():
             assert key not in data

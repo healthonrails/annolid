@@ -54,6 +54,7 @@ class Canvas(QtWidgets.QWidget):
                     self.double_click
                 )
             )
+        self.caption_label = QtWidgets.QTextEdit()
         self.num_backups = kwargs.pop("num_backups", 10)
         self._crosshair = kwargs.pop(
             "crosshair",
@@ -137,6 +138,12 @@ class Canvas(QtWidgets.QWidget):
 
     def setFillDrawing(self, value):
         self._fill_drawing = value
+
+    def setCaption(self, text):
+        self.caption_label.setText(text)
+
+    def getCaption(self):
+        return self.caption_label.toPlainText()
 
     @property
     def createMode(self):
@@ -1012,6 +1019,34 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
         p.drawPixmap(0, 0, self.pixmap)
         self.sam_mask.paint(p)
+
+        # Draw text from the label at the desired position
+        if self.caption_label.toPlainText():
+            text = self.caption_label.toPlainText()
+
+            # Define a bounding rectangle for the text (adjust the position and size as needed)
+            rect = QtCore.QRect(5, 3, 500, 55)  # x, y, width, height
+
+            # Set the background color (optional)
+            background_color = QtGui.QColor(
+                255, 255, 255, 128)  # White background
+            # Fill the rectangle with the background color
+            p.fillRect(rect, background_color)
+
+            # Set the font for the text
+            # Change to your preferred font and size
+            font = QtGui.QFont("Arial", 8)
+            p.setFont(font)
+
+            # Set text color
+            text_color = QtGui.QColor(0, 0, 0)  # Black text color
+            p.setPen(text_color)
+
+            # Set text alignment and enable word wrapping
+            alignment = QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop  # Adjust alignment as needed
+
+            # Draw the text within the rectangle with word wrapping
+            p.drawText(rect, alignment | QtCore.Qt.TextWordWrap, text)
 
         # draw crosshair
         if ((not self.createMode == 'grounding_sam')

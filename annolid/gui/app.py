@@ -1280,6 +1280,7 @@ class AnnolidWindow(MainWindow):
                 imageWidth=self.image.width(),
                 otherData=self.otherData,
                 flags=flags,
+                caption=self.canvas.getCaption(),
             )
             logger.info(f"Saved image and label json file: {filename}")
             if has_zone_shapes:
@@ -2321,6 +2322,8 @@ class AnnolidWindow(MainWindow):
                                            is_video_frame=True)
                 if self.labelFile:
                     self.loadLabels(self.labelFile.shapes)
+                    caption = self.labelFile.get_caption()
+                    self.canvas.setCaption(caption)
             except Exception as e:
                 print(e)
 
