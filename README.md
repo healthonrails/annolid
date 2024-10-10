@@ -67,11 +67,6 @@ git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
 ```
 
-* Install the package with pip
-```bash
-pip install git+https://github.com/facebookresearch/segment-anything.git
-pip install -e .
-```
 The pip install command will attempt to determine your computer's resources (like a GPU) automatically.  To control this directly, you alternatively can use the conda env command and the appropriate environment file (.yml).
 For alternative installation methods, see the Annolid documentation ([https://cplab.science/annolid or https://annolid.com](https://cplab.science/annolid)).
 
