@@ -52,7 +52,6 @@ from annolid.gui.widgets import SystemInfoDialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
-from annolid.gui.widgets.audio import AudioWidget
 import webbrowser
 import atexit
 import qimage2ndarray
@@ -688,6 +687,7 @@ class AnnolidWindow(MainWindow):
         about_annolid_dialog.exec_()
 
     def openAudio(self):
+        from annolid.gui.widgets.audio import AudioWidget
         if self.video_file:
             self.audio_widget = AudioWidget(self.video_file)
             self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
