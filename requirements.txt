@@ -1,9 +1,9 @@
 pyyaml>=5.3
 easydict>=1.9
 --find-links https://download.pytorch.org/whl/torch_stable.html
-torch==2.4.0+cpu
+torch>=2.4.0
 --find-links https://download.pytorch.org/whl/torch_stable.html
-torchvision==0.19.0+cpu
+torchvision>=0.19.0
 decord>=0.4.0
 opencv-python>=4.1.2.30
 opencv-contrib-python>=4.1.2.30
