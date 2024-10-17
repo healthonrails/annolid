@@ -97,7 +97,7 @@ class LabelFile(object):
             imagePath = None
             caption = None
 
-            if data['caption'] is not None:
+            if 'caption' in data and data['caption'] is not None:
                 caption = data['caption']
 
             if data["imageData"] is not None:
