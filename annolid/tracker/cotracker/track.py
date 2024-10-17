@@ -24,6 +24,14 @@ from annolid.utils.shapes import sample_grid_in_polygon
   journal={arXiv:2307.07635},
   year={2023}
 }
+
+@inproceedings{karaev24cotracker3,
+  title     = {CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos},
+  author    = {Nikita Karaev and Iurii Makarov and Jianyuan Wang and Natalia Neverova and Andrea Vedaldi and Christian Rupprecht},
+  booktitle = {Proc. {arXiv:2410.11831}},
+  year      = {2024}
+}
+
 """
 
 
@@ -53,8 +61,10 @@ class CoTrackerProcessor:
             self.video_result_folder.mkdir(exist_ok=True)
 
     def load_model(self):
-        model_name = "cotracker2_online" if self.is_online else "cotracker2"
-        return torch.hub.load("facebookresearch/co-tracker", model_name).to(self.device)
+        model_name = "cotracker3_online" if self.is_online else "cotracker3_offline"
+        cotracker = torch.hub.load(
+            "facebookresearch/co-tracker:release_cotracker3", model_name).to(self.device)
+        return cotracker
 
     def load_queries(self):
         """
