@@ -583,10 +583,10 @@ class AnnolidWindow(MainWindow):
         self._selectAiModelComboBox.clear()
         self.custom_ai_model_names = [
             'SAM_HQ', 'Cutie', "EfficientVit_SAM",
-              "CoTracker", 
-              "sam2_hiera_s",
-              "sam2_hiera_l",
-              ]
+            "CoTracker",
+            "sam2_hiera_s",
+            "sam2_hiera_l",
+        ]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
@@ -1821,8 +1821,9 @@ class AnnolidWindow(MainWindow):
         if init_load or (val, mark_type) not in self.timestamp_dict:
             highlighted_mark = VideoSliderMark(mark_type=mark_type,
                                                val=val, _color=color)
-            self.timestamp_dict[(val, mark_type)
-                                ] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
+            if (val, mark_type) not in self.timestamp_dict:
+                self.timestamp_dict[(val, mark_type)
+                                    ] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
             self.seekbar.addMark(highlighted_mark)
             return highlighted_mark
 
@@ -1961,6 +1962,8 @@ class AnnolidWindow(MainWindow):
 
             if 'timestamp' in tr.name and video_name in tr.name:
                 self._load_timestamps(tr)
+            if tr.name.endswith(f"{video_name}.csv"):
+                self._load_behavior(tr)
 
             if 'tracking' in tr.name and video_name in tr.name and '_nix' not in tr.name:
                 tracking_csv_file = tr
@@ -1990,6 +1993,34 @@ class AnnolidWindow(MainWindow):
                 frame_number, mark_type = eval(frame_time)
 
             self.timestamp_dict[(frame_number, mark_type)] = timestamp
+
+    def _load_behavior(self, behavior_csv_file: str) -> None:
+        """Loads behavior data from a CSV file and stores it in timestamp_dict.
+
+        Args:
+            behavior_csv_file (str): Path to the CSV file containing behavior data.
+        """
+        # Load the CSV file into a DataFrame
+        df_behaviors = pd.read_csv(behavior_csv_file)
+
+        # Iterate through each row of the DataFrame
+        for _, row in df_behaviors.iterrows():
+            timestamp: float = row["Recording time"]
+            event: str = row["Event"]
+
+            # Calculate the frame number based on timestamp and fps
+            frame_number: int = int(float(timestamp) * self.fps)
+
+            # Determine the type of event (start or end)
+            mark_type: str = 'event_start' if 'start' in event.lower() else 'event_end'
+
+            # Store the relevant data in the timestamp_dict
+            self.timestamp_dict[(frame_number, mark_type)] = (
+                timestamp,
+                row['Behavior'],
+                row["Subject"],
+                row["Trial time"]
+            )
 
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
@@ -2037,11 +2068,6 @@ class AnnolidWindow(MainWindow):
 
         if video_filename:
             cur_video_folder = Path(video_filename).parent
-            # go over all the tracking csv files
-            # use the first matched file with video name
-            # and segmentation
-            self.load_tracking_results(cur_video_folder, video_filename)
-
             self.video_results_folder = Path(video_filename).with_suffix('')
 
             self.video_results_folder.mkdir(
@@ -2108,6 +2134,11 @@ class AnnolidWindow(MainWindow):
             self.statusBar().addWidget(self.playButton)
             self.statusBar().addWidget(self.seekbar, stretch=1)
             self.statusBar().addWidget(self.saveButton)
+            # go over all the tracking csv files
+            # use the first matched file with video name
+            # and segmentation
+            self.load_tracking_results(cur_video_folder, video_filename)
+
             if self.timestamp_dict:
                 for frame_number, mark_type in self.timestamp_dict.keys():
                     self.add_highlighted_mark(val=frame_number,
@@ -2164,6 +2195,17 @@ class AnnolidWindow(MainWindow):
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
         flags = {k: False for k in self._config["flags"] or []}
+        _event_key = (frame_number, 'event_start')
+        if _event_key not in self.timestamp_dict:
+            _event_key = (frame_number, 'event_end')
+        if _event_key in self.timestamp_dict:
+            try:
+                timestamp, behaivor, subject, trial_time = self.timestamp_dict[_event_key]
+                flags[behaivor] = True
+            except:
+                print(self.timestamp_dict[_event_key])
+
+        self.flag_widget.clear()
         self.loadFlags(flags)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
@@ -2285,7 +2327,7 @@ class AnnolidWindow(MainWindow):
     def loadPredictShapes(self, frame_number, filename):
 
         label_json_file = str(filename).replace(".png", ".json")
-        #try to load json files generated by SAM2 like 000000000.json
+        # try to load json files generated by SAM2 like 000000000.json
         if not Path(label_json_file).exists():
             label_json_file = os.path.join(os.path.dirname(label_json_file),
                                            os.path.basename(label_json_file).split('_')[-1])
