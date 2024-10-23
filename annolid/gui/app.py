@@ -72,7 +72,6 @@ from labelme.ai import MODELS
 __appname__ = 'Annolid'
 __version__ = "1.2.1"
 
-
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
 
@@ -1994,6 +1993,18 @@ class AnnolidWindow(MainWindow):
 
             self.timestamp_dict[(frame_number, mark_type)] = timestamp
 
+    def is_behavior_active(self, frame_number, behavior):
+        """Checks if a behavior is active at a given frame."""
+        if behavior not in self.behavior_ranges:
+            return False  # Behavior not found
+
+        for start, end in self.behavior_ranges[behavior]:
+            if end is None:  # Handles case where there is no 'end' event yet for a given behavior
+                end = float('inf')
+            if start <= frame_number <= end:
+                return True
+        return False
+
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Loads behavior data from a CSV file and stores it in timestamp_dict.
 
@@ -2003,21 +2014,38 @@ class AnnolidWindow(MainWindow):
         # Load the CSV file into a DataFrame
         df_behaviors = pd.read_csv(behavior_csv_file)
 
+        self.behavior_ranges = {}
+        self.behaviors = set()
+
         # Iterate through each row of the DataFrame
         for _, row in df_behaviors.iterrows():
             timestamp: float = row["Recording time"]
             event: str = row["Event"]
-
+            behavior = row["Behavior"]
+            self.behaviors.add(behavior)
             # Calculate the frame number based on timestamp and fps
             frame_number: int = int(float(timestamp) * self.fps)
 
             # Determine the type of event (start or end)
             mark_type: str = 'event_start' if 'start' in event.lower() else 'event_end'
 
+            if behavior not in self.behavior_ranges:
+                self.behavior_ranges[behavior] = []
+
+            if mark_type == 'event_start':
+                # Start range, end is None initially
+                self.behavior_ranges[behavior].append((frame_number, None))
+            elif mark_type == 'event_end':
+                # Check if a corresponding start exists
+                if self.behavior_ranges[behavior]:
+                    last_start, _ = self.behavior_ranges[behavior].pop()
+                    self.behavior_ranges[behavior].append(
+                        (last_start, frame_number))
+
             # Store the relevant data in the timestamp_dict
             self.timestamp_dict[(frame_number, mark_type)] = (
                 timestamp,
-                row['Behavior'],
+                behavior,
                 row["Subject"],
                 row["Trial time"]
             )
@@ -2198,12 +2226,19 @@ class AnnolidWindow(MainWindow):
         _event_key = (frame_number, 'event_start')
         if _event_key not in self.timestamp_dict:
             _event_key = (frame_number, 'event_end')
+        _, _state = _event_key
         if _event_key in self.timestamp_dict:
-            try:
-                timestamp, behaivor, subject, trial_time = self.timestamp_dict[_event_key]
+            timestamp, behaivor, subject, trial_time = self.timestamp_dict[_event_key]
+            if _state != 'event_end':
                 flags[behaivor] = True
-            except:
-                print(self.timestamp_dict[_event_key])
+            else:
+                if behaivor in flags:
+                    del flags[behaivor]
+        else:
+            for behavior in self.behaviors:
+                if self.is_behavior_active(self.frame_number, behavior):
+                    flags[behavior] = True
+                    _state = 'continue'
 
         self.flag_widget.clear()
         self.loadFlags(flags)
