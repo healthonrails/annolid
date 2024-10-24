@@ -248,6 +248,7 @@ class AnnolidWindow(MainWindow):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
+        self.behaviors = None
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -2234,7 +2235,7 @@ class AnnolidWindow(MainWindow):
             else:
                 if behaivor in flags:
                     del flags[behaivor]
-        else:
+        elif self.behaviors is not None:
             for behavior in self.behaviors:
                 if self.is_behavior_active(self.frame_number, behavior):
                     flags[behavior] = True
