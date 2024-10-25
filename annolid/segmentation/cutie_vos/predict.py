@@ -271,7 +271,7 @@ class CutieVideoProcessor:
             dict: Updated labels dictionary.
         """
         with torch.inference_mode():
-            with torch.cuda.amp.autocast(enabled=self.cfg.amp and self.device == 'cuda'):
+            with torch.amp.autocast('cuda',enabled=self.cfg.amp and self.device == 'cuda'):
                 png_file_paths = glob.glob(
                     f"{self.video_folder}/{self.video_folder.name}_0*.png")
                 png_file_paths = [p for p in png_file_paths if 'mask' not in p]
@@ -361,7 +361,7 @@ class CutieVideoProcessor:
             logger.info(f"Saving the color masks to video {output_video_path}")
 
         with torch.inference_mode():
-            with torch.cuda.amp.autocast(enabled=self.cfg.amp and self.device == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.cfg.amp and self.device == 'cuda'):
                 while cap.isOpened():
                     while not pred_worker.is_stopped():
                         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
