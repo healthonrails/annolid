@@ -33,6 +33,8 @@ def create_annotation_entry(behavior, video_segment_path):
 def process_csv_and_extract_segments(csv_path, video_file_path):
     """Processes a CSV file, extracts video segments, and returns annotation entries."""
     entries = []
+    video_name = os.path.splitext(os.path.basename(video_file_path))[0]
+    video_name = video_name.replace(" ", "_")
     with open(csv_path, 'r') as csv_file:
         reader = csv.DictReader(csv_file)
         start_events = []
@@ -40,7 +42,8 @@ def process_csv_and_extract_segments(csv_path, video_file_path):
 
         for row in reader:
             recording_time = float(row["Recording time"])
-            behavior = row["Behavior"]
+            # Replace spaces in behavior with underscores
+            behavior = row["Behavior"].replace(" ", "_")
             event = row["Event"]
 
             if event == "state start":
@@ -62,7 +65,8 @@ def process_csv_and_extract_segments(csv_path, video_file_path):
                 # Avoid reusing stop events
                 stop_events.remove(matching_stop_event)
 
-                video_segment_path = f"{OUTPUT_VIDEO_FOLDER}/{behavior}_{start_time}-{end_time}.mp4"
+                # Add video name and behavior with underscores in the segment path
+                video_segment_path = f"{OUTPUT_VIDEO_FOLDER}/{video_name}_{behavior}_{start_time}-{end_time}.mp4"
                 extract_video_segment(
                     video_file_path, start_time, end_time, video_segment_path)
                 entries.append(create_annotation_entry(
