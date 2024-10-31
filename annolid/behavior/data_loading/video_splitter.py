@@ -43,7 +43,7 @@ def process_csv_and_extract_segments(csv_path, video_file_path):
         for row in reader:
             recording_time = float(row["Recording time"])
             # Replace spaces in behavior with underscores
-            behavior = row["Behavior"].replace(" ", "_")
+            behavior = row["Behavior"]
             event = row["Event"]
 
             if event == "state start":
@@ -66,7 +66,7 @@ def process_csv_and_extract_segments(csv_path, video_file_path):
                 stop_events.remove(matching_stop_event)
 
                 # Add video name and behavior with underscores in the segment path
-                video_segment_path = f"{OUTPUT_VIDEO_FOLDER}/{video_name}_{behavior}_{start_time}-{end_time}.mp4"
+                video_segment_path = f"{OUTPUT_VIDEO_FOLDER}/{video_name}_{behavior.replace(" ","_")}_{start_time}-{end_time}.mp4"
                 extract_video_segment(
                     video_file_path, start_time, end_time, video_segment_path)
                 entries.append(create_annotation_entry(
