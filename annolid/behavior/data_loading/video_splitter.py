@@ -24,7 +24,7 @@ def extract_video_segment(video_file_path, start_time, end_time, output_path):
 def create_annotation_entry(behavior, video_segment_path):
     """Creates a JSONL entry for a video segment."""
     return {
-        "query": "What is the behavior in the video?",
+        "query": "<video> What is the behavior in the video?",
         "response": behavior,
         "videos": [video_segment_path]
     }
