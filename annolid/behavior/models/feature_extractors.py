@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torchvision.models as models
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,34 +9,28 @@ logger = logging.getLogger(__name__)
 class ResNetFeatureExtractor(nn.Module):
     """
     Extracts features from images using a ResNet backbone.
-
-    Args:
-        pretrained (bool, optional): Whether to use a pre-trained ResNet model. Defaults to True.
-        feature_dim (int, optional): The desired dimension of the output features. Defaults to 512.
     """
 
     def __init__(self, pretrained: bool = True, feature_dim: int = 512):
         super().__init__()
-        self.resnet = torch.hub.load(
-            'pytorch/vision:v0.10.0', 'resnet18', pretrained=pretrained)
-        self.resnet_in_features = self.resnet.fc.in_features  # Store the in_features
-        self.resnet.fc = nn.Identity()
+        # Use torchvision.models directly for easier weight handling
+        if pretrained:
+            # or .IMAGENET1K_V1 if you specifically need that
+            self.resnet = models.resnet18(
+                weights=models.ResNet18_Weights.DEFAULT)
+        else:
+            # Explicitly set weights to None if not pretrained
+            self.resnet = models.resnet18(weights=None)
 
-        # Use self.resnet_in_features  for the projection layer
+        self.resnet_in_features = self.resnet.fc.in_features
+        self.resnet.fc = nn.Identity()  # Remove the classification head
+
         self.project_layer = nn.Linear(
             self.resnet_in_features, feature_dim) if feature_dim != self.resnet_in_features else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the feature extractor.
-
-        Args:
-            x (torch.Tensor): The input image tensor.
-
-        Returns:
-            torch.Tensor: The extracted feature tensor.
-        """
+        """Forward pass."""
         features = self.resnet(x)
-        if self.project_layer:  # Apply projection if feature_dim is different
+        if self.project_layer:
             features = self.project_layer(features)
         return features

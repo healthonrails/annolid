@@ -65,7 +65,7 @@ class BehaviorClassifier(nn.Module):
         self.feature_extractor = feature_extractor
         self.positional_encoding = PositionalEncoding(d_model)
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model, nhead, dim_feedforward, dropout)
+            d_model, nhead, dim_feedforward, dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer, num_layers)
         self.classifier = nn.Linear(d_model, num_classes)
@@ -86,11 +86,11 @@ class BehaviorClassifier(nn.Module):
 
         # Reshape and transpose
         # (frames, batch_size, feature_dim)
-        features = features.view(batch_size, frames, -1).transpose(0, 1)
+        features = features.view(batch_size, frames, -1)
 
         features = self.positional_encoding(features)
         encoded_features = self.transformer_encoder(features)
         pooled_features = encoded_features.mean(
-            dim=0)  # Global average pooling
+            dim=1)  # Global average pooling
         output = self.classifier(pooled_features)
         return output
