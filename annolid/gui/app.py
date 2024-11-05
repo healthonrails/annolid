@@ -68,7 +68,9 @@ from annolid.annotation import labelme2csv
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
+from annolid.gui.widgets.caption import CaptionWidget
 from labelme.ai import MODELS
+
 __appname__ = 'Annolid'
 __version__ = "1.2.1"
 
@@ -344,6 +346,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Open Audio")
         )
 
+        open_caption = action(
+            self.tr("&Open Caption"),
+            self.openCaption,
+            None,
+            "Open Caption",
+            self.tr("Open Caption")
+        )
+
         downsample_video = action(
             self.tr("&Downsample Videos"),
             self.downsample_videos,
@@ -534,6 +544,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.tools, self.actions.tool)
         utils.addActions(self.menus.file, (open_video,))
         utils.addActions(self.menus.file, (open_audio,))
+        utils.addActions(self.menus.file, (open_caption,))
         utils.addActions(self.menus.file, (colab,))
         utils.addActions(self.menus.file, (save_labeles,))
         utils.addActions(self.menus.file, (coco,))
@@ -567,6 +578,7 @@ class AnnolidWindow(MainWindow):
         self.seekbar = None
         self.audio_widget = None
         self.audio_dock = None
+        self.caption_widget = None
 
         self.frame_worker = QtCore.QThread()
         self.frame_loader = LoadFrameThread()
@@ -694,6 +706,21 @@ class AnnolidWindow(MainWindow):
             self.audio_dock.setObjectName("Audio")
             self.audio_dock.setWidget(self.audio_widget)
             self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+
+    def openCaption(self):
+        # Caption dock (created but initially hidden)
+        self.caption_dock = QtWidgets.QDockWidget(self.tr("Caption"), self)
+        self.caption_dock.setObjectName("Caption")
+        self.caption_widget = CaptionWidget()
+        self.caption_dock.setWidget(self.caption_widget)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.caption_dock)
+
+        self.caption_widget.charInserted.connect(
+            self.setDirty)      # Mark as dirty
+        self.caption_widget.charDeleted.connect(
+            self.setDirty)      # Mark as dirty
+        self.caption_widget.captionChanged.connect(
+            self.canvas.setCaption)  # Update canvas
 
     def set_advanced_params(self):
         advanced_params_dialog = AdvancedParametersDialog(self)
@@ -1375,6 +1402,9 @@ class AnnolidWindow(MainWindow):
                 if item.checkState() == Qt.Checked:
                     _event = item.text()  # Get the text of the checked item
                     self.event_type = _event
+        if self.dirty and self.filename:
+            # Save immediately if auto-save
+            self.saveLabels(self._getLabelFile(self.filename))
 
     def getTitle(self, clean=True):
         title = __appname__
@@ -2359,6 +2389,12 @@ class AnnolidWindow(MainWindow):
         self.labelList.clearSelection()
         self._noSelectionSlot = False
         self.canvas.loadShapes(shapes, replace=replace)
+        caption = self.labelFile.get_caption() if self.labelFile else None
+        if caption is not None:
+            if self.caption_widget is None:
+                self.openCaption()
+                self.caption_widget.set_caption(
+                    caption)  # Update caption widget
 
     def loadPredictShapes(self, frame_number, filename):
 
@@ -2402,7 +2438,9 @@ class AnnolidWindow(MainWindow):
                     self.loadLabels(self.labelFile.shapes)
                     caption = self.labelFile.get_caption()
                     if caption is not None:
-                        self.canvas.setCaption(caption)
+                        # self.canvas.setCaption(caption)
+                        if self.caption_widget is not None:
+                            self.caption_widget.set_caption(caption)
             except Exception as e:
                 print(e)
 
