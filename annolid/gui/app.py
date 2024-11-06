@@ -2438,9 +2438,9 @@ class AnnolidWindow(MainWindow):
                     self.loadLabels(self.labelFile.shapes)
                     caption = self.labelFile.get_caption()
                     if caption is not None:
-                        # self.canvas.setCaption(caption)
-                        if self.caption_widget is not None:
-                            self.caption_widget.set_caption(caption)
+                        if self.caption_widget is None:
+                            self.openCaption()
+                        self.caption_widget.set_caption(caption)
             except Exception as e:
                 print(e)
 

@@ -115,8 +115,10 @@ class TrackingResultsAnalyzer:
         with open(self.zone_file, 'r') as f:
             self.zone_data = json.load(f)
         logger.info(f"Loading zones from {self.zone_file}")
+        
         self.zone_shapes = [zone_shape for zone_shape in self.zone_data['shapes']
-                            if 'description' in zone_shape and 'zone' in zone_shape['description'].lower()
+                            if 'description' in zone_shape and zone_shape['description'] and 
+                             'zone' in zone_shape['description'].lower()
                             or 'zone' in zone_shape['label'].lower()]
         self.zone_time_dict = {shape['label']: 0 for shape in self.zone_shapes}
 
