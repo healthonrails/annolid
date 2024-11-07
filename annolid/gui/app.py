@@ -251,6 +251,7 @@ class AnnolidWindow(MainWindow):
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
         self.behaviors = None
+        self.pinned_flags = None
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -651,6 +652,7 @@ class AnnolidWindow(MainWindow):
             flags = {k.strip(): False for k in prompt_text.replace(
                 'flags:', '').split(',') if len(k.strip()) > 0}
             if len(flags.keys()) > 0:
+                self.pinned_flags = flags
                 self.loadFlags(flags)
             else:
                 # # If there is no string after 'flags'
@@ -2273,6 +2275,8 @@ class AnnolidWindow(MainWindow):
 
         self.flag_widget.clear()
         self.loadFlags(flags)
+        if self.pinned_flags is not None:
+            self.loadFlags(self.pinned_flags)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
