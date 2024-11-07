@@ -8,6 +8,36 @@ import shutil
 import glob
 import pandas as pd
 from datetime import datetime, timedelta
+from pathlib import Path
+
+
+def construct_filename(results_folder,
+                       frame_number,
+                       extension="png",
+                       padding=9):
+    """
+    Constructs a filename for saving video frame results.
+
+    Args:
+        results_folder (Path or str): The folder where video results are stored.
+        frame_number (int): The current frame number.
+        extension (str): The file extension for the output file (default is "png").
+        padding (int): The number of digits to pad the frame number with (default is 9).
+
+    Returns:
+        Path: The constructed filename as a Path object.
+
+    Raises:
+        TypeError: If results_folder is not a Path or a valid string.
+    """
+    if not isinstance(results_folder, Path):
+        if isinstance(results_folder, str):
+            results_folder = Path(results_folder)
+        else:
+            raise TypeError(
+                "results_folder must be a Path object or a string representing a path.")
+
+    return results_folder / f"{str(results_folder.name)}_{frame_number:0{padding}}.{extension}"
 
 
 def count_recent_json_files(folder_path, last_minute=1):

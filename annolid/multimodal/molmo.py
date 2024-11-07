@@ -4,6 +4,7 @@ from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
 from PIL import Image
 import torch
 from annolid.annotation.keypoints import save_labels
+from annolid.utils.files import construct_filename
 # Define constants
 MODEL_NAME = 'allenai/Molmo-7B-D-0924'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -87,7 +88,8 @@ def process_video(video_path, sample_rate=1):  # Reduced default sample rate for
 
             frame = vr[i].asnumpy()
             frame_shape = frame.shape
-            filename = os.path.join(video_dir, f'{i:09}.json')
+            filename = construct_filename(
+                video_dir, i, extension='.json', padding=9)
             pil_image = Image.fromarray(frame)
             description = describe_image(pil_image)
             save_caption(filename, frame_shape, description)
