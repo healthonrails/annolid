@@ -1,75 +1,75 @@
+from labelme.ai import MODELS
+from annolid.gui.widgets.caption import CaptionWidget
+from annolid.data.videos import get_video_files
+from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
+from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
+from annolid.annotation import labelme2csv
+from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+from annolid.annotation.timestamps import convert_frame_number_to_time
+from annolid.postprocessing.quality_control import pred_dict_to_labelme
+from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
+from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
+from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
+from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
+from annolid.gui.widgets.step_size_widget import StepSizeWidget
+from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
+import qimage2ndarray
+import atexit
+import webbrowser
+from annolid.gui.widgets import ProgressingWindow
+from annolid.postprocessing.quality_control import TracksResults
+from annolid.postprocessing.glitter import tracks2nix
+from annolid.gui.widgets import SystemInfoDialog
+from annolid.gui.widgets import TrackDialog
+from annolid.gui.widgets import QualityControlDialog
+from annolid.gui.widgets import Glitter2Dialog
+from annolid.gui.widgets import TrainModelDialog
+from annolid.gui.widgets import ConvertCOODialog
+from annolid.gui.widgets import ExtractFrameDialog
+from annolid.data import videos
+from annolid.annotation import labelme2coco
+from annolid.gui.widgets.text_prompt import AiRectangleWidget
+from annolid.gui.widgets.canvas import Canvas
+from annolid.configs import get_config
+from annolid.gui.label_file import LabelFile
+from annolid.gui.label_file import LabelFileError
+from labelme.widgets import ToolBar
+from annolid.utils.files import count_json_files
+from annolid.utils.logger import logger
+from labelme import utils
+from labelme.widgets import LabelListWidgetItem
+from labelme.widgets import BrightnessContrastDialog
+from labelme.utils import newAction
+from labelme.app import MainWindow
+from annolid.gui.shape import Shape
+import subprocess
+import requests
+from PIL import ImageQt
+from labelme import QT5
+from labelme import PY2
+from qtpy import QtGui
+from qtpy import QtWidgets
+from qtpy.QtCore import Qt
+from qtpy import QtCore
+import functools
+from pathlib import Path
+import argparse
+import imgviz
+import codecs
+import torch
+from collections import deque
+import numpy as np
+import pandas as pd
+import shutil
+import html
+import time
+import os.path as osp
+import csv
+import re
 import sys
 import os
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-import re
-import csv
-import os.path as osp
-import time
-import html
-import shutil
-import pandas as pd
-import numpy as np
-from collections import deque
-import torch
-import codecs
-import imgviz
-import argparse
-from pathlib import Path
-import functools
-from qtpy import QtCore
-from qtpy.QtCore import Qt
-from qtpy import QtWidgets
-from qtpy import QtGui
-from labelme import PY2
-from labelme import QT5
-from PIL import ImageQt
-import requests
-import subprocess
-from annolid.gui.shape import Shape
-from labelme.app import MainWindow
-from labelme.utils import newAction
-from labelme.widgets import BrightnessContrastDialog
-from labelme.widgets import LabelListWidgetItem
-from labelme import utils
-from annolid.utils.logger import logger
-from annolid.utils.files import count_json_files
-from labelme.widgets import ToolBar
-from annolid.gui.label_file import LabelFileError
-from annolid.gui.label_file import LabelFile
-from annolid.configs import get_config
-from annolid.gui.widgets.canvas import Canvas
-from annolid.gui.widgets.text_prompt import AiRectangleWidget
-from annolid.annotation import labelme2coco
-from annolid.data import videos
-from annolid.gui.widgets import ExtractFrameDialog
-from annolid.gui.widgets import ConvertCOODialog
-from annolid.gui.widgets import TrainModelDialog
-from annolid.gui.widgets import Glitter2Dialog
-from annolid.gui.widgets import QualityControlDialog
-from annolid.gui.widgets import TrackDialog
-from annolid.gui.widgets import SystemInfoDialog
-from annolid.postprocessing.glitter import tracks2nix
-from annolid.postprocessing.quality_control import TracksResults
-from annolid.gui.widgets import ProgressingWindow
-import webbrowser
-import atexit
-import qimage2ndarray
-from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
-from annolid.gui.widgets.step_size_widget import StepSizeWidget
-from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
-from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
-from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
-from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
-from annolid.postprocessing.quality_control import pred_dict_to_labelme
-from annolid.annotation.timestamps import convert_frame_number_to_time
-from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
-from annolid.annotation import labelme2csv
-from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
-from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
-from annolid.data.videos import get_video_files
-from annolid.gui.widgets.caption import CaptionWidget
-from labelme.ai import MODELS
 
 __appname__ = 'Annolid'
 __version__ = "1.2.1"
@@ -1980,6 +1980,8 @@ class AnnolidWindow(MainWindow):
             f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
         self.current_frame_time_stamp = self.video_loader.get_time_stamp()
         self.frame_loader.request(frame_number)
+        if self.caption_widget is not None:
+            self.caption_widget.set_image_path(self.filename)
 
     def load_tracking_results(self, cur_video_folder, video_filename):
         """Load tracking results from CSV files in the given folder that match the video filename."""
@@ -2261,7 +2263,10 @@ class AnnolidWindow(MainWindow):
             _event_key = (frame_number, 'event_end')
         _, _state = _event_key
         if _event_key in self.timestamp_dict:
-            timestamp, behaivor, subject, trial_time = self.timestamp_dict[_event_key]
+            try:
+                timestamp, behaivor, subject, trial_time = self.timestamp_dict[_event_key]
+            except ValueError:
+                behaivor = "Others"
             if _state != 'event_end':
                 flags[behaivor] = True
             else:
@@ -2401,6 +2406,8 @@ class AnnolidWindow(MainWindow):
                     caption)  # Update caption widget
 
     def loadPredictShapes(self, frame_number, filename):
+        if self.caption_widget is not None:
+            self.caption_widget.set_image_path(filename)
 
         label_json_file = str(filename).replace(".png", ".json")
         # try to load json files generated by SAM2 like 000000000.json
