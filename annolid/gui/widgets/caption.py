@@ -98,11 +98,29 @@ class CaptionWidget(QtWidgets.QWidget):
         read_button_layout.addWidget(
             self.read_label, alignment=Qt.AlignCenter)
 
+        # Add the improve caption button
+        self.improve_button = self.create_button(
+            icon_name="draw-arrow-forward",  # Example icon, adjust as needed
+            color="#ccccff",
+            hover_color="#9999ff"
+        )
+        self.improve_label = QLabel("Improve Caption")
+        self.improve_label.setAlignment(Qt.AlignCenter)
+        improve_button_layout = QVBoxLayout()
+        improve_button_layout.addWidget(
+            self.improve_button, alignment=Qt.AlignCenter)
+        improve_button_layout.addWidget(
+            self.improve_label, alignment=Qt.AlignCenter)
+
+        # Connect improve button
+        self.improve_button.clicked.connect(self.improve_caption_async)
+
         # Connect read button to the read_caption_async method
         self.read_button.clicked.connect(self.read_caption_async)
 
         # Add both button layouts to the horizontal layout
         button_layout.addLayout(record_button_layout)
+        button_layout.addLayout(improve_button_layout)
         button_layout.addLayout(describe_button_layout)
         button_layout.addLayout(read_button_layout)
         # (Add read button layout to the main button layout)
@@ -348,6 +366,75 @@ class CaptionWidget(QtWidgets.QWidget):
                     }
                 """)
                 self.record_label.setText("Tap to record")
+
+    def improve_caption_async(self):
+        """Improves the caption using Ollama in a background thread."""
+        current_caption = self.text_edit.toPlainText()
+        if not current_caption:
+            print("Caption is empty. Nothing to improve.")
+            return
+
+        self.improve_label.setText("Improving...")
+        self.improve_button.setEnabled(False)
+
+        if self.image_path:
+            task = ImproveCaptionTask(self.image_path, current_caption, self)
+            self.thread_pool.start(task)
+        else:
+            self.update_improve_status(
+                "No image selected for caption improvement.", True)
+
+    @QtCore.Slot(str, bool)
+    def update_improve_status(self, message, is_error):
+        """Updates the improve caption status in the UI."""
+        if is_error:
+            self.improve_label.setText("Improvement failed.")
+        else:
+            # Append improved version
+            self.text_edit.append("\n\nImproved Version:\n" + message)
+            self.improve_label.setText("Improve Caption")
+
+        self.improve_button.setEnabled(True)
+
+
+class ImproveCaptionTask(QRunnable):
+    def __init__(self, image_path, current_caption, widget):
+        super().__init__()
+        self.image_path = image_path
+        self.current_caption = current_caption
+        self.widget = widget
+
+    def run(self):
+        try:
+            import ollama
+
+            prompt = f"Improve or rewrite the following caption, considering the image:\n\n{self.current_caption}"
+            response = ollama.chat(
+                model='llama3.2-vision',
+                messages=[{
+                    'role': 'user',
+                    'content': prompt,
+                    'images': [self.image_path]
+                }]
+            )
+
+            if "message" in response and "content" in response["message"]:
+                improved_caption = response["message"]["content"]
+                QMetaObject.invokeMethod(
+                    self.widget, "update_improve_status", Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, improved_caption), QtCore.Q_ARG(
+                        bool, False)
+                )
+
+            else:
+                raise ValueError("Unexpected response format from Ollama.")
+
+        except Exception as e:
+            error_message = f"Error improving caption: {e}"
+            QMetaObject.invokeMethod(
+                self.widget, "update_improve_status", Qt.QueuedConnection,
+                QtCore.Q_ARG(str, error_message), QtCore.Q_ARG(bool, True)
+            )
 
 
 class DescribeImageTask(QRunnable):
