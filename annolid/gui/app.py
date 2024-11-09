@@ -1311,7 +1311,6 @@ class AnnolidWindow(MainWindow):
                 flags=flags,
                 caption=self.canvas.getCaption(),
             )
-            logger.info(f"Saved image and label json file: {filename}")
             if has_zone_shapes:
                 self.zone_path = filename
 
@@ -1356,6 +1355,10 @@ class AnnolidWindow(MainWindow):
             self.addRecentFile(filename)
             label_file = self._getLabelFile(filename)
             self._addItem(image_filename, label_file)
+
+            if self.caption_widget is not None:
+                self.caption_widget.set_image_path(image_filename)
+
             self.setClean()
 
     def getLabelFile(self):
@@ -1410,6 +1413,9 @@ class AnnolidWindow(MainWindow):
 
     def getTitle(self, clean=True):
         title = __appname__
+        if self.caption_widget is None:
+            self.openCaption()
+        self.caption_widget.set_image_path(self.filename)
         _filename = os.path.basename(self.filename)
         if self.video_loader:
             if self.frame_number:
@@ -2398,12 +2404,16 @@ class AnnolidWindow(MainWindow):
         self.labelList.clearSelection()
         self._noSelectionSlot = False
         self.canvas.loadShapes(shapes, replace=replace)
-        caption = self.labelFile.get_caption() if self.labelFile else None
+        try:
+            caption = self.labelFile.get_caption() if self.labelFile else None
+        except AttributeError:
+            caption = None
         if caption is not None:
             if self.caption_widget is None:
                 self.openCaption()
-                self.caption_widget.set_caption(
-                    caption)  # Update caption widget
+            self.caption_widget.set_caption(
+                caption)  # Update caption widget
+            self.caption_widget.set_image_path(self.filename)
 
     def loadPredictShapes(self, frame_number, filename):
         if self.caption_widget is not None:
@@ -2500,6 +2510,8 @@ class AnnolidWindow(MainWindow):
 
             if self.filename and load:
                 self.loadFile(self.filename)
+                if self.caption_widget is not None:
+                    self.caption_widget.set_image_path(self.filename)
 
         self._config["keep_prev"] = keep_prev
 
@@ -2533,6 +2545,8 @@ class AnnolidWindow(MainWindow):
                 filename = self.imageList[currIndex - 1]
                 if filename:
                     self.loadFile(filename)
+                    if self.caption_widget is not None:
+                        self.caption_widget.set_image_path(self.filename)
 
         self._config["keep_prev"] = keep_prev
 
