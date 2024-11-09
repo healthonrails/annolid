@@ -1,7 +1,9 @@
 from qtpy import QtWidgets, QtGui, QtCore
 from qtpy.QtWidgets import QVBoxLayout, QTextEdit, QPushButton, QLabel, QHBoxLayout
-from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool
+from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject
 import threading
+import os
+import tempfile
 
 
 class CaptionWidget(QtWidgets.QWidget):
@@ -9,6 +11,7 @@ class CaptionWidget(QtWidgets.QWidget):
     captionChanged = Signal(str)  # Signal emitted when caption changes
     charInserted = Signal(str)    # Signal emitted when a character is inserted
     charDeleted = Signal(str)     # Signal emitted when a character is deleted
+    readCaptionFinished = Signal()  # Define a custom signal
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,10 +84,28 @@ class CaptionWidget(QtWidgets.QWidget):
         # Connect the buttons to their respective methods
         self.clear_button.clicked.connect(self.clear_caption)
 
+        # Add the read caption button
+        self.read_button = self.create_button(
+            icon_name="media-playback-start",  # Adjust icon as needed
+            color="#99ff99",
+            hover_color="#66ff66"
+        )
+        self.read_label = QLabel("Read caption")
+        self.read_label.setAlignment(Qt.AlignCenter)
+        read_button_layout = QVBoxLayout()
+        read_button_layout.addWidget(
+            self.read_button, alignment=Qt.AlignCenter)
+        read_button_layout.addWidget(
+            self.read_label, alignment=Qt.AlignCenter)
+
+        # Connect read button to the read_caption_async method
+        self.read_button.clicked.connect(self.read_caption_async)
+
         # Add both button layouts to the horizontal layout
         button_layout.addLayout(record_button_layout)
         button_layout.addLayout(describe_button_layout)
-        # Add the new button layouts to the main button layout
+        button_layout.addLayout(read_button_layout)
+        # (Add read button layout to the main button layout)
         button_layout.addLayout(clear_button_layout)
 
         # Add the button layout to the main layout
@@ -97,6 +118,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self.text_edit.textChanged.connect(self.emit_caption_changed)
         self.text_edit.textChanged.connect(self.monitor_text_change)
         self.record_button.clicked.connect(self.toggle_recording)
+        # Connect the signal to the slot
+        self.readCaptionFinished.connect(self.on_read_caption_finished)
 
         self.setLayout(self.layout)
 
@@ -144,7 +167,6 @@ class CaptionWidget(QtWidgets.QWidget):
         """Clears the caption."""
         self.set_caption("")
         self.clear_label.setText("Clear caption")
-        self.clear_label.setStyleSheet("color: red;")
 
     def set_image_path(self, image_path):
         """Sets the image path."""
@@ -154,12 +176,60 @@ class CaptionWidget(QtWidgets.QWidget):
         """Returns the image path."""
         return self.image_path
 
+    def read_caption_async(self):
+        """Reads the caption in a background thread."""
+        self.read_label.setText("Reading...")
+        self.read_button.setEnabled(False)  # Disable button
+        self.thread_pool.start(ReadCaptionTask(self))
+
+    @QtCore.Slot()
+    def on_read_caption_finished(self):
+        """Slot connected to the readCaptionFinished signal."""
+        self.read_label.setText("Read Caption")
+        self.read_button.setEnabled(True)  # Re-enable button
+
+    def read_caption(self):  # This method is now used by the background task
+        """Reads the current caption using gTTS and plays it."""
+        from gtts import gTTS
+        import sounddevice as sd
+        from pydub import AudioSegment
+        import numpy as np
+        try:
+            current_text = self.text_edit.toPlainText()
+            if not current_text:
+                print("Caption is empty. Nothing to read.")
+                return
+
+            tts = gTTS(text=current_text, lang='en')
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                temp_file_path = os.path.join(
+                    tmpdir, "temp_caption.mp3")  # mp3 file inside temp dir
+                tts.save(temp_file_path)
+
+                try:
+                    audio = AudioSegment.from_file(
+                        temp_file_path, format="mp3")
+                    samples = np.array(audio.get_array_of_samples())
+                    if audio.channels == 2:
+                        samples = samples.reshape((-1, 2))
+                    sd.play(samples, samplerate=audio.frame_rate)
+                    sd.wait()
+
+                except Exception as e:
+                    # More specific error message
+                    print(f"Error playing MP3: {e}")
+
+        except Exception as e:
+            print(f"Error in gTTS: {e}")
+        finally:
+            self.readCaptionFinished.emit()
+
     def on_describe_clicked(self):
         """Handles the Describe button click and starts the background task."""
         image_path = self.get_image_path()
         if image_path:
             self.describe_label.setText("Describing image...")
-            self.describe_label.setStyleSheet("color: blue;")
             task = DescribeImageTask(image_path, self)
             self.thread_pool.start(task)
         else:
@@ -171,11 +241,9 @@ class CaptionWidget(QtWidgets.QWidget):
         if is_error:
             self.text_edit.setPlainText(message)
             self.describe_label.setText("Description failed.")
-            self.describe_label.setStyleSheet("color: red;")
         else:
             self.text_edit.setPlainText(message)
             self.describe_label.setText("Describe the image")
-            self.describe_label.setStyleSheet("color: green;")
 
     def emit_caption_changed(self):
         """Emits the captionChanged signal with the current caption."""
@@ -203,14 +271,12 @@ class CaptionWidget(QtWidgets.QWidget):
             }
         """)
         self.record_label.setText("Recording...")
-        self.record_label.setStyleSheet("color: red; font-size: 16px;")
         threading.Thread(target=self.record_voice, daemon=True).start()
 
     def stop_recording(self):
         """Stops recording and displays conversion status."""
         self.is_recording = False
         self.record_label.setText("Converting speech to text...")
-        self.record_label.setStyleSheet("color: blue; font-size: 16px;")
 
     def stop_recording_ui_reset(self):
         """Resets the UI after recording ends."""
@@ -222,7 +288,6 @@ class CaptionWidget(QtWidgets.QWidget):
             }
         """)
         self.record_label.setText("Tap to record")
-        self.record_label.setStyleSheet("color: black;")
 
     def record_voice(self):
         """Records voice input and converts it to text continuously until stopped."""
@@ -270,10 +335,8 @@ class CaptionWidget(QtWidgets.QWidget):
 
             except sr.UnknownValueError:
                 self.record_label.setText("Could not understand audio.")
-                self.record_label.setStyleSheet("color: orange;")
             except sr.RequestError:
                 self.record_label.setText("Recognition service error.")
-                self.record_label.setStyleSheet("color: orange;")
             finally:
                 # Reset the button and label after transcription or error
                 self.is_recording = False
@@ -285,16 +348,19 @@ class CaptionWidget(QtWidgets.QWidget):
                     }
                 """)
                 self.record_label.setText("Tap to record")
-                self.record_label.setStyleSheet("color: black;")
 
 
 class DescribeImageTask(QRunnable):
     """A task to describe an image in the background."""
 
-    def __init__(self, image_path, widget):
+    def __init__(self, image_path,
+                 widget,
+                 prompt='Describe this image in detail.'
+                 ):
         super().__init__()
         self.image_path = image_path
         self.widget = widget
+        self.prompt = prompt
 
     def run(self):
         """Runs the task in the background."""
@@ -304,7 +370,7 @@ class DescribeImageTask(QRunnable):
                 model='llama3.2-vision',
                 messages=[{
                     'role': 'user',
-                    'content': 'Describe this image in detail.',
+                    'content': self.prompt,
                     'images': [self.image_path]
                 }]
             )
@@ -328,3 +394,15 @@ class DescribeImageTask(QRunnable):
                 QtCore.Q_ARG(str, error_message),
                 QtCore.Q_ARG(bool, True)
             )
+
+
+class ReadCaptionTask(QRunnable):
+    """A task to read the caption in the background."""
+
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+
+    def run(self):
+        """Runs the read_caption method in the background."""
+        self.widget.read_caption()
