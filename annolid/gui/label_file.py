@@ -202,8 +202,8 @@ class LabelFile(object):
             caption=caption,
         )
         for key, value in otherData.items():
-            assert key not in data
-            data[key] = value
+            if key not in data:
+                data[key] = value
         try:
             with open(filename, "w") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)

@@ -42,6 +42,7 @@ from labelme.widgets import BrightnessContrastDialog
 from labelme.utils import newAction
 from labelme.app import MainWindow
 from annolid.gui.shape import Shape
+from annolid.gui.workers import FlexibleWorker
 import subprocess
 import requests
 from PIL import ImageQt
@@ -75,39 +76,6 @@ __appname__ = 'Annolid'
 __version__ = "1.2.1"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
-
-
-class FlexibleWorker(QtCore.QObject):
-    start = QtCore.Signal()
-    finished = QtCore.Signal(object)
-    return_value = QtCore.Signal(object)
-    stop_signal = QtCore.Signal()
-    progress_changed = QtCore.Signal(int)
-
-    def __init__(self, function, *args, **kwargs):
-        super(FlexibleWorker, self).__init__()
-
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.stopped = False
-
-        self.stop_signal.connect(self.stop)
-
-    def run(self):
-        self.stopped = False
-        result = self.function(*self.args, **self.kwargs)
-        self.return_value.emit(result)
-        self.finished.emit(result)
-
-    def stop(self):
-        self.stopped = True
-
-    def is_stopped(self):
-        return self.stopped
-
-    def progress_callback(self, progress):
-        self.progress_changed.emit(progress)
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -1180,14 +1148,14 @@ class AnnolidWindow(MainWindow):
                                                     or self.automatic_pause_enabled)
                 if "sam2_hiera" in model_name:
                     self.pred_worker = FlexibleWorker(
-                        function=process_video,
+                        task_function=process_video,
                         video_path=self.video_file,
                         frame_idx=self.frame_number,
                         model_config='sam2_hiera_l.yaml' if 'hiera_l' in model_name else "sam2_hiera_s.yaml",
                     )
                 else:
                     self.pred_worker = FlexibleWorker(
-                        function=self.video_processor.process_video_frames,
+                        task_function=self.video_processor.process_video_frames,
                         start_frame=self.frame_number+1,
                         end_frame=end_frame,
                         step=self.step_size,
@@ -1206,13 +1174,13 @@ class AnnolidWindow(MainWindow):
                     "background-color: red; color: white;")
                 self.stop_prediction_flag = True
                 self.pred_worker.moveToThread(self.seg_pred_thread)
-                self.pred_worker.start.connect(self.pred_worker.run)
-                self.pred_worker.return_value.connect(
+                self.pred_worker.start_signal.connect(self.pred_worker.run)
+                self.pred_worker.result_signal.connect(
                     self.lost_tracking_instance)
-                self.pred_worker.finished.connect(self.predict_is_ready)
+                self.pred_worker.finished_signal.connect(self.predict_is_ready)
                 self.seg_pred_thread.finished.connect(
                     self.seg_pred_thread.quit)
-                self.pred_worker.start.emit()
+                self.pred_worker.start_signal.emit()
 
     def lost_tracking_instance(self, message):
         if message is None:
@@ -1604,41 +1572,78 @@ class AnnolidWindow(MainWindow):
         self.importDirImages(out_frames_dir)
 
     def convert_json_to_tracked_csv(self):
-        if self.video_file is not None:
-            video_file = self.video_file
-            out_folder = Path(video_file).with_suffix('')
-        if out_folder is None or not out_folder.exists():
-            QtWidgets.QMessageBox.about(self,
-                                        "No predictions",
-                                        "Help Annolid achieve precise predictions by labeling a frame.\
-                                            Your input is valuable!")
-
+        """
+        Convert JSON annotations to a tracked CSV file and handle the progress using a separate thread.
+        """
+        if not self.video_file:
+            QtWidgets.QMessageBox.warning(
+                self, "Missing Video File", "No video file selected.")
             return
 
-        def update_progress(progress):
-            self.progress_bar.setValue(progress)
+        video_file = self.video_file
+        out_folder = Path(video_file).with_suffix('')
 
+        if not out_folder or not out_folder.exists():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Predictions Found",
+                "Help Annolid achieve precise predictions by labeling a frame. Your input is valuable!"
+            )
+            return
+
+        self._initialize_progress_bar()
+
+        try:
+            self.worker = FlexibleWorker(
+                task_function=labelme2csv.convert_json_to_csv,
+                json_folder=str(out_folder),
+                progress_callback=self._update_progress_bar
+            )
+            self.thread = QtCore.QThread()
+
+            # Move the worker to the thread and connect signals
+            self.worker.moveToThread(self.thread)
+            self._connect_worker_signals()
+
+            # Safely start the thread and worker signal
+            self.thread.start()
+            # Emit in a thread-safe way
+            QtCore.QTimer.singleShot(
+                0, lambda: self.worker.start_signal.emit())
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"An unexpected error occurred: {str(e)}")
+        finally:
+            self.statusBar().removeWidget(self.progress_bar)
+
+    def _initialize_progress_bar(self):
+        """Initialize the progress bar and add it to the status bar."""
+        self.progress_bar.setValue(0)
         self.statusBar().addWidget(self.progress_bar)
 
-        self.worker = FlexibleWorker(
-            labelme2csv.convert_json_to_csv, str(out_folder),
-            progress_callback=update_progress)
-        self.thread = QtCore.QThread()
-        self.worker.moveToThread(self.thread)
-        self.worker.start.connect(self.worker.run)
-        self.worker.finished.connect(self.place_preference_analyze_auto)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.worker.finished.connect(lambda:
-                                     QtWidgets.QMessageBox.about(self,
-                                                                 "Tracking results are ready.",
-                                                                 f"Kindly review the file here: {str(out_folder) + '.csv'}."))
-        self.worker.progress_changed.connect(update_progress)
+    def _update_progress_bar(self, progress):
+        """Update the progress bar's value."""
+        self.progress_bar.setValue(progress)
 
-        self.thread.start()
-        self.worker.start.emit()
-        self.statusBar().removeWidget(self.progress_bar)
+    def _connect_worker_signals(self):
+        """Connect worker signals to their respective slots safely."""
+        self.worker.start_signal.connect(self.worker.run)
+        self.worker.finished_signal.connect(self.place_preference_analyze_auto)
+
+        # Ensure cleanup happens in the right thread
+        self.worker.finished_signal.connect(self.thread.quit)
+        self.worker.finished_signal.connect(lambda: self.worker.deleteLater())
+        self.thread.finished.connect(lambda: self.thread.deleteLater())
+
+        self.worker.finished_signal.connect(
+            lambda: QtWidgets.QMessageBox.information(
+                self,
+                "Tracking Complete",
+                f"Kindly review the file here: {Path(self.video_file).with_suffix('.csv')}"
+            )
+        )
+        self.worker.progress_signal.connect(self._update_progress_bar)
 
     def tracks(self):
         """
@@ -1821,10 +1826,10 @@ class AnnolidWindow(MainWindow):
             process = start_tensorboard(log_dir=out_runs_dir)
             try:
                 self.seg_train_thread.start()
-                train_worker = FlexibleWorker(function=segmentor.train)
+                train_worker = FlexibleWorker(task_function=segmentor.train)
                 train_worker.moveToThread(self.seg_train_thread)
-                train_worker.start.connect(train_worker.run)
-                train_worker.start.emit()
+                train_worker.start_signal.connect(train_worker.run)
+                train_worker.start_signal.emit()
             except Exception:
                 segmentor.train()
 

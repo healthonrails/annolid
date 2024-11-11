@@ -12,6 +12,7 @@ class CaptionWidget(QtWidgets.QWidget):
     charInserted = Signal(str)    # Signal emitted when a character is inserted
     charDeleted = Signal(str)     # Signal emitted when a character is deleted
     readCaptionFinished = Signal()  # Define a custom signal
+    imageNotFound = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)

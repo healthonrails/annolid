@@ -139,7 +139,7 @@ class CutieVideoProcessor:
             logger.info(f"Tmax: max_mem_frames: {self.max_mem_frames}")
             cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
-                cfg.weights, map_location=self.device)
+                cfg.weights, map_location=self.device, weights_only=True)
             cutie_model.load_weights(model_weights)
         return cutie_model, cfg
 
@@ -271,7 +271,7 @@ class CutieVideoProcessor:
             dict: Updated labels dictionary.
         """
         with torch.inference_mode():
-            with torch.amp.autocast('cuda',enabled=self.cfg.amp and self.device == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.cfg.amp and self.device == 'cuda'):
                 png_file_paths = glob.glob(
                     f"{self.video_folder}/{self.video_folder.name}_0*.png")
                 png_file_paths = [p for p in png_file_paths if 'mask' not in p]
