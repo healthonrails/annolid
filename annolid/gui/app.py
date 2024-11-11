@@ -1,3 +1,28 @@
+import sys
+import os
+import shutil
+import html
+import time
+import os.path as osp
+import csv
+import re
+import subprocess
+import requests
+import functools
+from pathlib import Path
+import argparse
+import imgviz
+import codecs
+import torch
+import numpy as np
+import pandas as pd
+from PIL import ImageQt
+from labelme import QT5
+from labelme import PY2
+from qtpy import QtGui
+from qtpy import QtWidgets
+from qtpy.QtCore import Qt
+from qtpy import QtCore
 from labelme.ai import MODELS
 from annolid.gui.widgets.caption import CaptionWidget
 from annolid.data.videos import get_video_files
@@ -13,7 +38,6 @@ from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
-import qimage2ndarray
 import atexit
 import webbrowser
 from annolid.gui.widgets import ProgressingWindow
@@ -42,33 +66,8 @@ from labelme.widgets import BrightnessContrastDialog
 from labelme.utils import newAction
 from labelme.app import MainWindow
 from annolid.gui.shape import Shape
-from annolid.gui.workers import FlexibleWorker
-import subprocess
-import requests
-from PIL import ImageQt
-from labelme import QT5
-from labelme import PY2
-from qtpy import QtGui
-from qtpy import QtWidgets
-from qtpy.QtCore import Qt
-from qtpy import QtCore
-import functools
-from pathlib import Path
-import argparse
-import imgviz
-import codecs
-import torch
-from collections import deque
-import numpy as np
-import pandas as pd
-import shutil
-import html
-import time
-import os.path as osp
-import csv
-import re
-import sys
-import os
+from annolid.gui.workers import FlexibleWorker, LoadFrameThread
+
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -76,63 +75,6 @@ __appname__ = 'Annolid'
 __version__ = "1.2.1"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
-
-
-class LoadFrameThread(QtCore.QObject):
-    """
-    Thread for loading video frames.
-    """
-    res_frame = QtCore.Signal(QtGui.QImage)
-    process = QtCore.Signal()
-    video_loader = None
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.working_lock = QtCore.QMutex()
-        self.frame_queue = deque()
-        self.current_load_times = deque(maxlen=5)
-        self.previous_process_time = time.time()
-        self.request_waiting_time = 1
-        self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.load)
-        self.timer.start(20)
-
-    def load(self):
-        self.previous_process_time = time.time()
-        if not self.frame_queue:
-            return
-
-        self.working_lock.lock()
-        if not self.frame_queue:
-            self.working_lock.unlock()
-            return
-
-        frame_number = self.frame_queue.pop()
-        self.working_lock.unlock()
-
-        try:
-            t_start = time.time()
-            frame = self.video_loader.load_frame(frame_number)
-            self.current_load_times.append(time.time() - t_start)
-            self.request_waiting_time = sum(
-                self.current_load_times) / len(self.current_load_times)
-        except Exception as e:
-            logger.info("Error loading frame:", e)
-            return
-
-        qimage = qimage2ndarray.array2qimage(frame)
-        self.res_frame.emit(qimage)
-
-    def request(self, frame_number):
-        self.working_lock.lock()
-        self.frame_queue.appendleft(frame_number)
-        self.working_lock.unlock()
-
-        t_last = time.time() - self.previous_process_time
-
-        if t_last > self.request_waiting_time:
-            self.previous_process_time = time.time()
-            self.process.emit()
 
 
 def start_tensorboard(log_dir=None,

@@ -1,4 +1,128 @@
-from qtpy import QtCore
+from qtpy import QtCore, QtGui
+from threading import Lock
+from collections import deque
+import time
+import qimage2ndarray
+import numpy as np
+from annolid.utils.logger import logger
+
+
+class LoadFrameThread(QtCore.QObject):
+    """
+    Thread for loading video frames with optimized performance.
+    """
+    res_frame = QtCore.Signal(QtGui.QImage)
+    process = QtCore.Signal()
+    video_loader = None
+
+    def __init__(self, parent=None):
+        """Initialize the frame loader while maintaining original interface."""
+        super().__init__(parent)
+
+        # Replace QMutex with threading.Lock for better performance
+        self.working_lock = Lock()
+
+        # Maintain same queue structure but with optimized settings
+        # Limit queue size to prevent memory issues
+        self.frame_queue = deque(maxlen=30)
+        # Increased sample size for better averaging
+        self.current_load_times = deque(maxlen=10)
+
+        # Timing management
+        self.previous_process_time = time.time()
+        self.request_waiting_time = 0.033  # Default to ~30fps for better responsiveness
+
+        # Simple frame cache to avoid reloading recent frames
+        self._frame_cache = {}
+        self._cache_size = 5
+        self._last_frame = None  # Keep last frame for error recovery
+
+        # Timer optimization
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._optimized_load)
+        self.timer.start(16)  # ~60fps for smoother playback
+
+    def _optimized_load(self):
+        """Optimized version of load() with better error handling and caching."""
+        current_time = time.time()
+        self.previous_process_time = current_time
+
+        # Quick check without lock
+        if not self.frame_queue:
+            return
+
+        # Use context manager for automatic lock release
+        with self.working_lock:
+            if not self.frame_queue:
+                return
+            frame_number = self.frame_queue.pop()
+
+        # Check cache first
+        cached_frame = self._frame_cache.get(frame_number)
+        if cached_frame is not None:
+            self.res_frame.emit(cached_frame)
+            return
+
+        try:
+            # Load and time the frame
+            t_start = time.time()
+            frame = self.video_loader.load_frame(frame_number)
+
+            # Update timing metrics
+            load_time = time.time() - t_start
+            self.current_load_times.append(load_time)
+
+            # Use numpy for faster average calculation
+            self.request_waiting_time = np.mean(self.current_load_times)
+
+            # Convert frame to QImage
+            qimage = qimage2ndarray.array2qimage(frame)
+
+            # Update cache
+            self._update_cache(frame_number, qimage)
+
+            # Keep last successful frame
+            self._last_frame = qimage
+
+            # Emit the frame
+            self.res_frame.emit(qimage)
+
+        except KeyError as e:
+            logger.error(f"Error loading frame {frame_number}: {e}")
+            self._handle_error(frame_number)
+        except Exception as e:
+            logger.error(f"Unexpected error loading frame {frame_number}: {e}")
+            self._handle_error(frame_number)
+
+    def _update_cache(self, frame_number: int, qimage: QtGui.QImage):
+        """Update frame cache with size management."""
+        self._frame_cache[frame_number] = qimage
+        if len(self._frame_cache) > self._cache_size:
+            # Remove oldest frame
+            oldest = min(self._frame_cache.keys())
+            del self._frame_cache[oldest]
+
+    def _handle_error(self, frame_number: int):
+        """Handle frame loading errors with fallback."""
+        if self._last_frame is not None:
+            # Use last successful frame as fallback
+            self.res_frame.emit(self._last_frame)
+
+    def request(self, frame_number):
+        """Optimized request method with better queue management."""
+        with self.working_lock:
+            # Clear queue if too many pending requests to prevent lag
+            if len(self.frame_queue) > 5:
+                self.frame_queue.clear()
+            self.frame_queue.appendleft(frame_number)
+
+        t_last = time.time() - self.previous_process_time
+        if t_last > self.request_waiting_time:
+            self.previous_process_time = time.time()
+            self.process.emit()
+
+    # Maintain original interface name for compatibility
+    load = _optimized_load
 
 
 class FlexibleWorker(QtCore.QObject):
