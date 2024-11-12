@@ -2,9 +2,40 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import logging
+from transformers import CLIPModel, CLIPProcessor
 
 logger = logging.getLogger(__name__)
 
+
+class CLIPFeatureExtractor(nn.Module):
+    """
+    A class to extract features from images using the CLIP vision encoder.
+
+    Args:
+        model_name (str): The name of the pre-trained CLIP model (e.g., 'openai/clip-vit-base-patch32').
+    """
+
+    def __init__(self, model_name: str = 'openai/clip-vit-base-patch32'):
+        super().__init__()
+        self.clip_model = CLIPModel.from_pretrained(model_name)
+        self.vision_encoder = self.clip_model.vision_model
+        self.processor = CLIPProcessor.from_pretrained(model_name)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        Extract features from input images.
+
+        Args:
+            images (torch.Tensor): Input tensor of shape (batch_size, channels, height, width).
+
+        Returns:
+            torch.Tensor: Extracted features of shape (batch_size, feature_dim).
+        """
+        # Process the images using CLIP's vision encoder
+        with torch.no_grad():  # Optional: Avoid backpropagation during feature extraction
+            features = self.vision_encoder(pixel_values=images).pooler_output
+        
+        return features  # Output shape: (batch_size, feature_dim)
 
 class ResNetFeatureExtractor(nn.Module):
     """

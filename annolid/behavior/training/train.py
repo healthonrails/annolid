@@ -7,14 +7,14 @@ import argparse
 from annolid.behavior.data_loading.datasets import BehaviorDataset
 from annolid.behavior.data_loading.transforms import ResizeCenterCropNormalize
 from annolid.behavior.models.classifier import BehaviorClassifier
-from annolid.behavior.models.feature_extractors import ResNetFeatureExtractor
+from annolid.behavior.models.feature_extractors import ResNetFeatureExtractor,CLIPFeatureExtractor
 
 # Configuration (Best practice: Move these to a separate configuration file or use command-line arguments)
 BATCH_SIZE = 1
 NUM_EPOCHS = 10
 LEARNING_RATE = 0.001
 # Replace with your video folder
-VIDEO_FOLDER = "behaivor_videos/"
+VIDEO_FOLDER = "behaivor_videos"  # Replace with your actual path
 CHECKPOINT_DIR = "checkpoints"  # Directory to save checkpoints
 VALIDATION_SPLIT = 0.2  # Proportion of the dataset to use for validation
 
@@ -22,19 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, criterion, checkpoint_dir):
-    """
-    Trains the behavior classification model and evaluates it on a validation set.
-
-    Args:
-        model: The model to train.
-        train_loader: DataLoader for the training data.
-        val_loader: DataLoader for the validation data.
-        num_epochs: The number of training epochs.
-        device: The device to use for training (e.g., "cuda" or "cpu").
-        optimizer: The optimizer.
-        criterion: The loss function.
-        checkpoint_dir: The directory to save model checkpoints.
-    """
+    """Trains the model and evaluates it on a validation set."""
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     best_val_loss = float("inf")
@@ -44,7 +32,6 @@ def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, 
         for i, batch in enumerate(train_loader):
             try:
                 inputs, labels, _ = batch
-                print(inputs, labels)
                 inputs, labels = inputs.to(device), labels.to(device)
             except Exception as e:
                 logger.error(f"Error processing batch: {e}. Skipping batch.")
@@ -56,15 +43,17 @@ def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, 
             loss.backward()
             optimizer.step()
 
-            if (i + 1) % 10 == 0:
-                logger.info(
-                    f"Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{len(train_loader)}], Loss: {loss.item():.4f}"
-                )
+            progress_info = f"Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{len(train_loader)}], Loss: {loss.item():.4f}"
+            print(progress_info)
+
+            if (i + 1) % 10 == 0:  # Log every 10 steps
+                logger.info(progress_info)
 
         # Validation after each epoch
-        val_loss = validate_model(model, val_loader, criterion, device)
+        val_loss, val_accuracy = validate_model(
+            model, val_loader, criterion, device)
         logger.info(
-            f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}")
+            f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
 
         # Save checkpoint if validation loss improves
         if val_loss < best_val_loss:
@@ -77,20 +66,11 @@ def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, 
 
 
 def validate_model(model, val_loader, criterion, device):
-    """
-    Evaluates the model on the validation set.
-
-    Args:
-        model: The model to evaluate.
-        val_loader: DataLoader for the validation data.
-        criterion: The loss function.
-        device: The device to use for evaluation.
-
-    Returns:
-        The average validation loss.
-    """
+    """Evaluates the model on the validation set and calculates accuracy."""
     model.eval()
     val_loss = 0
+    correct = 0
+    total = 0
     with torch.no_grad():
         for inputs, labels, _ in val_loader:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -98,7 +78,13 @@ def validate_model(model, val_loader, criterion, device):
             loss = criterion(outputs, labels)
             val_loss += loss.item()
 
-    return val_loss / len(val_loader)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    accuracy = 100 * correct / total
+    avg_val_loss = val_loss / len(val_loader)
+    return avg_val_loss, accuracy
 
 
 def main():
@@ -149,15 +135,24 @@ def main():
     val_loader = DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    feature_extractor = ResNetFeatureExtractor().to(device)
+    feature_extractor = CLIPFeatureExtractor().to(device)
     model = BehaviorClassifier(
         feature_extractor, num_classes=num_of_classes).to(device)
+    print(model)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()
 
     train_model(model, train_loader, val_loader, args.num_epochs,
                 device, optimizer, criterion, args.checkpoint_dir)
+
+    # Load best model for final evaluation
+    best_model_path = os.path.join(args.checkpoint_dir, "best_model.pth")
+    model.load_state_dict(torch.load(best_model_path))
+    final_val_loss, final_val_accuracy = validate_model(
+        model, val_loader, criterion, device)
+    logger.info(
+        f"Final Validation Loss: {final_val_loss:.4f}, Final Validation Accuracy: {final_val_accuracy:.2f}%")
 
     logger.info("Training and validation completed.")
 

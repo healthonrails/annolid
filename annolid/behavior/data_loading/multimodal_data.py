@@ -93,8 +93,8 @@ def main(input_path: str, output_path: str) -> None:
 
 if __name__ == '__main__':
     # Paths to input and output files
-    input_path = '/data/test_video_annotations.jsonl'
-    output_path = '/data/transformed_video_annotations.json'
+    input_path = 'train_video_annotations.jsonl'
+    output_path = 'transformed_train_video_annotations.json'
 
     # Run the main process
     main(input_path, output_path)
