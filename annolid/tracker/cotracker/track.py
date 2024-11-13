@@ -213,6 +213,8 @@ class CoTrackerProcessor:
                             f"Tracking frame {i}, {pred_tracks.shape}, {pred_visibility.shape}")
                     is_first_step = False
                 window_frames.append(frame)
+                if len(window_frames) > self.model.step * 2:
+                    window_frames = window_frames[-self.model.step * 2:]
 
             pred_tracks, pred_visibility = self.process_step(
                 window_frames[-(i % self.model.step) - self.model.step - 1:],
