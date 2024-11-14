@@ -454,13 +454,21 @@ class ImproveCaptionTask(QRunnable):
             import ollama
 
             prompt = f"Improve or rewrite the following caption, considering the image:\n\n{self.current_caption}"
-            response = ollama.chat(
-                model='llama3.2-vision',
-                messages=[{
+            if self.image_path and os.path.exists(self.image_path):
+                messages = [{
                     'role': 'user',
                     'content': prompt,
                     'images': [self.image_path]
                 }]
+            else:
+                messages = [{
+                    'role': 'user',
+                    'content': prompt,
+                }]
+
+            response = ollama.chat(
+                model='llama3.2-vision',
+                messages=messages
             )
 
             if "message" in response and "content" in response["message"]:
@@ -556,7 +564,7 @@ class ChatWithOllamaTask(QRunnable):
             import ollama
 
             messages = [{'role': 'user', 'content': self.prompt}]
-            if self.image_path:
+            if self.image_path and os.path.exists(self.image_path):
                 # Attach the image if provided
                 messages[0]['images'] = [self.image_path]
 
