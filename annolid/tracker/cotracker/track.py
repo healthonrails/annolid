@@ -209,8 +209,15 @@ class CoTrackerProcessor:
                     pred_tracks, pred_visibility = self.process_step(
                         window_frames, is_first_step, grid_size, grid_query_frame)
                     if pred_tracks is not None:
-                        logger.info(
-                            f"Tracking frame {i}, {pred_tracks.shape}, {pred_visibility.shape}")
+                        if i % 100 == 0:
+                            logger.info(
+                                f"Tracking frame {i}, {pred_tracks.shape}, {pred_visibility.shape}")
+                        if is_first_step:
+                            batch_size = self.model.step * 2
+                        else:
+                            batch_size = self.model.step
+                        self.extract_frame_points(
+                            pred_tracks, pred_visibility, batch_size, i)
                     is_first_step = False
                 window_frames.append(frame)
                 if len(window_frames) > self.model.step * 2:
@@ -288,9 +295,11 @@ class CoTrackerProcessor:
     def extract_frame_points(self, tracks: torch.Tensor,
                              visibility: torch.Tensor = None,
                              query_frame: int = 0,
-                             start_frame: int = 0):
+                             start_frame: int = 0
+                             ):
         tracks = tracks[0].long().detach().cpu().numpy()
-        for t in range(query_frame, tracks.shape[0]):
+        batch_start = start_frame-query_frame
+        for t in range(batch_start, tracks.shape[0]):
             _points = []
             for i in range(tracks.shape[1]):
                 coord = (tracks[t, i, 0], tracks[t, i, 1])
@@ -300,7 +309,7 @@ class CoTrackerProcessor:
                     visible = visibility[0, t, i].item()
                 _points.append((coord, visible))
             self.save_current_frame_tracked_points_to_json(
-                t + start_frame, _points)
+                t, _points)
         message = f"Saved all json file #{tracks.shape[0]}"
         logger.info(message)
         return message
