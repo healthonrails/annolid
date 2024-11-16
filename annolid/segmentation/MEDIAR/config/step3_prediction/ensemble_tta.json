@@ -1,0 +1,23 @@
+{
+    "pred_setups":{
+        "name": "ensemble_mediar",
+        "input_path":"/home/gihun/MEDIAR/data/Official/Tuning/images",
+        "output_path": "./results/mediar_ensemble_tta",
+        "make_submission": true,
+        "model_path1": "./weights/finetuned/from_phase1.pth",
+        "model_path2": "./weights/finetuned/from_phase2.pth",
+        "device": "cuda:0",
+        "model":{
+            "name": "mediar-former",
+            "params": {
+                    "encoder_name":"mit_b5",        
+                    "decoder_channels": [1024, 512, 256, 128, 64],
+                    "decoder_pab_channels": 256,
+                    "in_channels":3, 
+                    "classes":3
+            }
+        },
+        "exp_name": "mediar_ensemble_tta",
+        "algo_params": {"use_tta": true}
+    }
+}

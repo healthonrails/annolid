@@ -236,6 +236,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Open video")
         )
 
+        segment_cells = action(
+            self.tr("&Segment Cells"),
+            self._segment_cells,
+            None,
+            "Segment Cells",
+            self.tr("Segment Cells")
+        )
+
         advance_params = action(
             self.tr("&Advanced Parameters"),
             self.set_advanced_params,
@@ -246,6 +254,12 @@ class AnnolidWindow(MainWindow):
         open_video.setIcon(QtGui.QIcon(
             str(
                 self.here / "icons/open_video.png"
+            )
+        ))
+
+        segment_cells.setIcon(QtGui.QIcon(
+            str(
+                self.here / "icons/cell_seg.png"
             )
         ))
 
@@ -448,6 +462,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(quality_control)
         _action_tools.append(colab)
         _action_tools.append(visualization)
+        _action_tools.append(segment_cells)
 
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
@@ -463,6 +478,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (models,))
         utils.addActions(self.menus.file, (tracks,))
         utils.addActions(self.menus.file, (quality_control,))
+        utils.addActions(self.menus.file, (segment_cells,))
         utils.addActions(self.menus.file, (downsample_video,))
         utils.addActions(self.menus.file, (convert_csv,))
         utils.addActions(self.menus.file, (extract_shape_keypoints,))
@@ -1034,6 +1050,46 @@ class AnnolidWindow(MainWindow):
 
         return model_name
 
+    def _segment_cells(self):
+        if self.filename or len(self.imageList) > 0:
+            from annolid.segmentation.MEDIAR.predict_ensemble import MEDIARPredictor
+            if self.annotation_dir is not None:
+                out_dir_path = self.annotation_dir + '_masks'
+            elif self.filename:
+                out_dir_path = str(Path(self.filename).with_suffix(''))
+            if not os.path.exists(out_dir_path):
+                os.makedirs(out_dir_path, exist_ok=True)
+
+            if self.filename is not None and self.annotation_dir is None:
+                self.annotation_dir = out_dir_path
+                target_link = os.path.join(
+                    out_dir_path, os.path.basename(self.filename))
+                if not os.path.islink(target_link):
+                    os.symlink(self.filename, target_link)
+                else:
+                    logger.info(f"The symlink {target_link} alreay exists.")
+            mediar_predictor = MEDIARPredictor(input_path=self.annotation_dir,
+                                               output_path=out_dir_path)
+            self.worker = FlexibleWorker(
+                mediar_predictor.conduct_prediction)
+            self.thread = QtCore.QThread()
+            self.worker.moveToThread(self.thread)
+            self.worker.start.connect(self.worker.run)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.worker.finished.connect(lambda:
+                                         QtWidgets.QMessageBox.about(self,
+                                                                     "Cell counting results are ready",
+                                                                     f"Please review your results."))
+            self.worker.return_value.connect(
+                lambda shape_list: self.loadShapes(shape_list))
+
+            self.thread.start()
+            self.worker.start.emit()
+            # shape_list = mediar_predictor.conduct_prediction()
+            # self.loadShapes(shape_list)
+
     def stop_prediction(self):
         # Emit the stop signal to signal the prediction thread to stop
         self.pred_worker.stop_signal.emit()
@@ -1052,7 +1108,7 @@ class AnnolidWindow(MainWindow):
         if self.pred_worker and self.stop_prediction_flag:
             # If prediction is running, stop the prediction
             self.stop_prediction()
-        elif len(self.canvas.shapes) <= 0:
+        elif len(self.canvas.shapes) <= 0 and self.video_file is not None:
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
                                         f"Please label this frame")
