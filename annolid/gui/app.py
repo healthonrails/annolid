@@ -1323,9 +1323,8 @@ class AnnolidWindow(MainWindow):
 
     def getTitle(self, clean=True):
         title = __appname__
-        if self.caption_widget is None:
-            self.openCaption()
-        self.caption_widget.set_image_path(self.filename)
+        if self.caption_widget is not None:
+            self.caption_widget.set_image_path(self.filename)
         _filename = os.path.basename(self.filename)
         if self.video_loader:
             if self.frame_number:
