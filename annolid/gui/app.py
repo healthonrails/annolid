@@ -1368,7 +1368,7 @@ class AnnolidWindow(MainWindow):
             if not prediction_file_path.endswith('.json'):
                 continue
 
-            frame_number = int(prediction_file_path.split(
+            frame_number = int(prediction_file.split(
                 '_')[-1].replace('.json', ''))
             is_future_frames = frame_number > self.frame_number
             is_manually_saved = os.path.exists(
