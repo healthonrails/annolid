@@ -1,5 +1,7 @@
 import sys
 import os
+# Enable CPU fallback for unsupported MPS ops
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import shutil
 import html
 import time
@@ -68,8 +70,6 @@ from labelme.app import MainWindow
 from annolid.gui.shape import Shape
 from annolid.gui.workers import FlexibleWorker, LoadFrameThread
 
-# Enable CPU fallback for unsupported MPS ops
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 __appname__ = 'Annolid'
 __version__ = "1.2.1"
