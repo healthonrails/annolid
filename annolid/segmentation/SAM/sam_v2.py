@@ -17,7 +17,7 @@ from annolid.utils.files import download_file
 class SAM2VideoProcessor:
     def __init__(self, video_dir, id_to_labels,
                  checkpoint_path=None,
-                 model_config="sam2_hiera_s.yaml",
+                 model_config="sam2.1_hiera_s.yaml",
                  epsilon_for_polygon=2.0):
         """
         Initializes the SAM2VideoProcessor with the given parameters.
@@ -32,14 +32,14 @@ class SAM2VideoProcessor:
         # Set default checkpoint path if not provided
         if checkpoint_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            checkpoint = "sam2_hiera_small.pt" if 'hiera_s' in model_config else "sam2_hiera_large.pt"
+            checkpoint = "sam2.1_hiera_small.pt" if 'hiera_s' in model_config else "sam2.1_hiera_large.pt"
             checkpoint_path = os.path.join(current_dir,
                                            "segment-anything-2",
                                            "checkpoints",
                                            checkpoint
                                            )
 
-        self.BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/072824/"
+        self.BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
 
         self.video_dir = video_dir
         self.checkpoint_path = checkpoint_path
@@ -66,6 +66,7 @@ class SAM2VideoProcessor:
             sam2_checkpoint_url = f"{self.BASE_URL}{os.path.basename(self.checkpoint_path)}"
             download_file(sam2_checkpoint_url, self.checkpoint_path)
 
+        print(self.model_config, self.checkpoint_path)
         return build_sam2_video_predictor(self.model_config,
                                           self.checkpoint_path,
                                           device=self.device)
@@ -251,7 +252,7 @@ class SAM2VideoProcessor:
 def process_video(video_path,
                   frame_idx=0,
                   checkpoint_path=None,
-                  model_config="sam2_hiera_s.yaml",
+                  model_config="sam2.1_hiera_s.yaml",
                   epsilon_for_polygon=2.0):
     """
     Processes a video by extracting frames, loading annotations from multiple JSON files, and running analysis.

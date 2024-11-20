@@ -1093,7 +1093,7 @@ class AnnolidWindow(MainWindow):
                         task_function=process_video,
                         video_path=self.video_file,
                         frame_idx=self.frame_number,
-                        model_config='sam2_hiera_l.yaml' if 'hiera_l' in model_name else "sam2_hiera_s.yaml",
+                        model_config='sam2.1_hiera_l.yaml' if 'hiera_l' in model_name else "sam2.1_hiera_s.yaml",
                     )
                 else:
                     self.pred_worker = FlexibleWorker(
