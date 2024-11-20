@@ -110,6 +110,8 @@ class TrackingResultsAnalyzer:
         if not os.path.exists(self.zone_file):
             json_files = sorted(find_manual_labeled_json_files(
                 str(self.tracking_csv).replace('_tracking.csv', '')))
+            if len(json_files) < 1:
+                return
             # assume the first file has the Zone or place info
             self.zone_file = json_files[0]
         with open(self.zone_file, 'r') as f:

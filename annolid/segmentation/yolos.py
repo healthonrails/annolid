@@ -63,6 +63,7 @@ class InferenceProcessor:
             self.save_yolo_to_labelme(
                 yolo_results, id_to_labels, frame_shape, output_directory
             )
+        return f"Done#{self.frame_count}"
 
     def extract_yolo_results(self, result):
         """
@@ -140,9 +141,9 @@ class InferenceProcessor:
 
 # Example usage
 if __name__ == "__main__":
-    video_path = "~/Downloads/mouse.mp4"
+    video_path = os.path.expanduser("~/Downloads/IMG_0769.MOV")
 
     yolo_processor = InferenceProcessor(
-        "yolo11n.pt", model_type="yolo", class_names=["mouse", "teaball"]
+        "yolo11n.pt", model_type="yolo"
     )
     yolo_processor.run_inference(video_path)
