@@ -49,6 +49,7 @@ setuptools.setup(
                       "chardet>=5.2.0",
                       "transformers>=4.45.1",
                       "scikit-learn-extra >= 0.3.0",
+                      'ultralytics>=8.3.34',
                       # "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
                       "segment-anything @ git+https://github.com/SysCV/sam-hq.git",
                       ],
