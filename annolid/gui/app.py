@@ -509,7 +509,8 @@ class AnnolidWindow(MainWindow):
             "CoTracker",
             "sam2_hiera_s",
             "sam2_hiera_l",
-            "YOLO",
+            "YOLO11n",
+            "YOLO11x",
         ]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
@@ -1027,7 +1028,8 @@ class AnnolidWindow(MainWindow):
             "CoTracker": "CoTracker",
             "sam2_hiera_s": "sam2_hiera_s",
             "sam2_hiera_l": "sam2_hiera_l",
-            "YOLO": "YOLO",
+            "YOLO11n": "yolo11n.pt",
+            "YOLO11x": "yolo11x.pt",
         }
         default_model_name = "Segment-Anything (Edge)"
 
@@ -1055,7 +1057,7 @@ class AnnolidWindow(MainWindow):
         if self.pred_worker and self.stop_prediction_flag:
             # If prediction is running, stop the prediction
             self.stop_prediction()
-        elif len(self.canvas.shapes) <= 0 and not "YOLO" in model_name:
+        elif len(self.canvas.shapes) <= 0 and not "yolo" in model_name:
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
                                         f"Please label this frame")
@@ -1065,9 +1067,9 @@ class AnnolidWindow(MainWindow):
                 if "sam2_hiera" in model_name:
                     from annolid.segmentation.SAM.sam_v2 import process_video
                     self.video_processor = process_video
-                elif "YOLO" in model_name:
+                elif "yolo" in model_name:
                     from annolid.segmentation.yolos import InferenceProcessor
-                    self.video_processor = InferenceProcessor(model_name="yolo11n.pt",
+                    self.video_processor = InferenceProcessor(model_name=model_name,
                                                               model_type="yolo"
                                                               )
                 else:
@@ -1102,7 +1104,7 @@ class AnnolidWindow(MainWindow):
                         frame_idx=self.frame_number,
                         model_config='sam2.1_hiera_l.yaml' if 'hiera_l' in model_name else "sam2.1_hiera_s.yaml",
                     )
-                elif 'YOLO' in model_name:
+                elif 'yolo' in model_name:
                     self.pred_worker = FlexibleWorker(
                         task_function=self.video_processor.run_inference,
                         source=self.video_file
