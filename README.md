@@ -252,7 +252,8 @@ If you use Annolid in your research, please use the following BibTeX entry.
 }
 ```
 
-# Other open-access pre-prints related to Annolid
+# Other research papers or open-access preprints utilizing Annolid.
+
 ```
 @article{pranic2022rates,
   title={Rates but not acoustic features of ultrasonic vocalizations are related to non-vocal behaviors in mouse pups},
@@ -261,6 +262,16 @@ If you use Annolid in your research, please use the following BibTeX entry.
   year={2022},
   publisher={Cold Spring Harbor Laboratory}
 }
+
+@article{pattison2022digging,
+  title={Digging deeper into pain: an ethological behavior assay correlating well-being in mice with human pain experience},
+  author={Pattison, Luke A and Cloake, Alexander and Chakrabarti, Sampurna and Hilton, Helen and Rickman, Rebecca H and Higham, James P and Meng, Michelle Y and Paine, Luke W and Dannawi, Maya and Qiu, Lanhui and others},
+  journal={Pain},
+  pages={10--1097},
+  year={2022},
+  publisher={LWW}
+}
+
 ```
 
 [For more information:](https://cplab.science/annolid) https://cplab.science/annolid
