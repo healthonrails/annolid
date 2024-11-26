@@ -1162,22 +1162,26 @@ class AnnolidWindow(MainWindow):
             "background-color: green; color: white;")
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
-        if messege is not None and "last frame" in messege:
-            QtWidgets.QMessageBox.information(
-                self, "Stop early",
-                messege
-            )
-        else:
-            if self.video_loader is not None:
-                num_json_files = count_json_files(self.video_results_folder)
-                logger.info(
-                    f"Number of predicted frames: {num_json_files} in total {self.num_frames}")
-                if num_json_files >= self.num_frames:
-                    # convert json labels to csv file
-                    self.convert_json_to_tracked_csv()
-            QtWidgets.QMessageBox.information(
-                self, "Prediction Ready",
-                "Predictions for the video frames have been generated!")
+        try:
+            if messege is not None and "last frame" in str(messege):
+                QtWidgets.QMessageBox.information(
+                    self, "Stop early",
+                    messege
+                )
+            else:
+                if self.video_loader is not None:
+                    num_json_files = count_json_files(
+                        self.video_results_folder)
+                    logger.info(
+                        f"Number of predicted frames: {num_json_files} in total {self.num_frames}")
+                    if num_json_files >= self.num_frames:
+                        # convert json labels to csv file
+                        self.convert_json_to_tracked_csv()
+                QtWidgets.QMessageBox.information(
+                    self, "Prediction Ready",
+                    "Predictions for the video frames have been generated!")
+        except RuntimeError as e:
+            print(f"RuntimeError occurred: {e}")
 
     def loadFlags(self, flags):
         for key, flag in flags.items():
