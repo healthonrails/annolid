@@ -101,7 +101,7 @@ class Labelme2YOLO:
 
     def __init__(self,
                  json_dir,
-                 yolo_dataset_name="YOLOV8_dataset"
+                 yolo_dataset_name="YOLO_dataset"
                  ):
         self.json_file_dir = json_dir
         self.label_to_id_dict = self.map_label_to_id(self.json_file_dir)

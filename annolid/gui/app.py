@@ -296,6 +296,15 @@ class AnnolidWindow(MainWindow):
             "Load SLEAP h5",
             self.tr("Load SLEAP h5")
         )
+
+        convert_labelme2yolo_format = action(
+            self.tr("&Convert Labelme to YOLO format"),
+            self.convert_labelme2yolo_format,
+            None,
+            "Convert Labelme to YOLO format",
+            self.tr("Convert Labelme to YOLO format")
+        )
+
         place_perference = action(
             self.tr("&Place Preference"),
             self.place_preference_analyze,
@@ -467,6 +476,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (convert_csv,))
         utils.addActions(self.menus.file, (extract_shape_keypoints,))
         utils.addActions(self.menus.file, (convert_sleap,))
+        utils.addActions(self.menus.file, (convert_labelme2yolo_format,))
         utils.addActions(self.menus.file, (place_perference,))
         utils.addActions(self.menus.file, (advance_params,))
 
@@ -589,6 +599,11 @@ class AnnolidWindow(MainWindow):
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
+
+    def convert_labelme2yolo_format(self):
+        from annolid.gui.widgets import convert_labelme2yolo
+        convert_labelme2yolo_widget = convert_labelme2yolo.YOLOConverterWidget()
+        convert_labelme2yolo_widget.exec_()
 
     def extract_and_save_shape_keypoints(self):
         extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog()
