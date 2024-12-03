@@ -3,7 +3,6 @@
 import json
 import math
 import os
-import cv2
 import numpy as np
 import PIL.Image
 import shutil
