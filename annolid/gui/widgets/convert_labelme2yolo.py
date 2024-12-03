@@ -2,8 +2,34 @@ import os
 from qtpy.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressBar
 )
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QThread, Signal
 from annolid.annotation.labelme2yolo import Labelme2YOLO
+
+
+class YOLOConverterWorker(QThread):
+    finished = Signal()
+    progress = Signal(int)
+    message = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, json_dir, val_size, test_size):
+        super().__init__()
+        self.json_dir = json_dir
+        self.val_size = val_size
+        self.test_size = test_size
+
+    def run(self):
+        try:
+            self.progress.emit(10)
+            self.message.emit("Starting conversion...")
+            converter = Labelme2YOLO(self.json_dir)
+            converter.convert(val_size=self.val_size, test_size=self.test_size)
+            self.progress.emit(100)
+            self.message.emit("Conversion successful!")
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+            self.finished.emit()  # Emit finished even on error
 
 
 class YOLOConverterWidget(QDialog):
@@ -83,17 +109,24 @@ class YOLOConverterWidget(QDialog):
                 self, "Error", "Please enter valid numbers for validation and test sizes.")
             return
 
-        self.progress_bar.setValue(10)
-        self.message_label.setText("Starting conversion...")
+        self.convert_button.setEnabled(False)  # Disable the button
 
-        try:
-            converter = Labelme2YOLO(json_dir)
-            converter.convert(val_size=val_size, test_size=test_size)
-            self.progress_bar.setValue(100)
-            self.message_label.setText("Conversion successful!")
-            QMessageBox.information(
-                self, "Success", "YOLO dataset created successfully.")
-        except Exception as e:
-            self.progress_bar.setValue(0)
-            self.message_label.setText(f"Error: {str(e)}")
-            QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+        self.worker = YOLOConverterWorker(json_dir, val_size, test_size)
+        self.worker.finished.connect(self.on_conversion_finished)
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.message.connect(self.message_label.setText)
+        self.worker.error.connect(self.on_conversion_error)
+        self.worker.start()
+
+    def on_conversion_finished(self):
+        self.convert_button.setEnabled(True)  # Re-enable the button
+        QMessageBox.information(
+            self, "Success", "YOLO dataset created successfully.")
+        self.close()  # Close the dialog
+
+    def on_conversion_error(self, error_message):
+        self.convert_button.setEnabled(True)  # Re-enable the button
+        self.progress_bar.setValue(0)
+        self.message_label.setText(f"Error: {error_message}")
+        QMessageBox.critical(
+            self, "Error", f"An error occurred: {error_message}")
