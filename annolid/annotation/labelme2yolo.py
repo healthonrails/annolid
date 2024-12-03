@@ -81,8 +81,8 @@ def find_bbox_from_shape(shape):
     cy = (min_y + max_y) / 2
 
     # Calculate width and height
-    width = max_x - min_x
-    height = max_y - min_y
+    width = abs(max_x - min_x)
+    height = abs(max_y - min_y)
 
     return cx, cy, width, height
 
@@ -269,8 +269,9 @@ class Labelme2YOLO:
         """
 
         yolo_objects = []
-        # Get the height, width, and channels of the image
-        image_height, image_width, c = cv2.imread(img_path).shape
+        # Get the height, width of the image
+        image_height = json_data['imageHeight']
+        image_width = json_data['imageWidth']
 
         # Iterate through each shape in the annotation file
         for shape in json_data["shapes"]:
@@ -314,13 +315,20 @@ class Labelme2YOLO:
         self.save_yolo_txt_label_file(json_name, self.label_folder,
                                       target_dir, yolo_objects)
 
-    def scale_points(self, labelme_shape, image_height, image_width):
+    def scale_points(self,
+                     labelme_shape,
+                     image_height,
+                     image_width,
+                     output_fromat='polygon',
+                     ):
         """
         Returns the label_id and scaled points of the given shape object in YOLO format.
         """
         cx, cy, w, h = find_bbox_from_shape(labelme_shape)
-        scaled_cxcywh = [cx/image_width, cy /
-                         image_height, w/image_width, h/image_height]
+        scaled_cxcywh = [cx/image_width,
+                         cy/image_height,
+                         w/image_width,
+                         h/image_height]
         # Extract the points from the shape object
         point_list = labelme_shape['points']
         # Create an array of zeros with length 2 * len(point_list)
@@ -330,12 +338,15 @@ class Labelme2YOLO:
         points[1::2] = [float(point[1]) / image_height for point in point_list]
         if len(points) == 4:
             points = point_list_to_numpy_array(points)
-        # Close the polygon by appending the first point to the end
-        points = np.append(points, [points[0], points[1]])
+        # # Close the polygon by appending the first point to the end
+        # points = np.append(points, [points[0], points[1]])
         # Map the label of the shape to a label_id
         label_id = self.label_to_id_dict[labelme_shape['label']]
         # Return the label_id and points as a list
-        return label_id,  scaled_cxcywh + points.tolist()
+        if output_fromat == 'bbox':
+            return label_id, scaled_cxcywh
+        else:
+            return label_id,  points.tolist()
 
     def circle_shape_to_yolo(self, labelme_shape, image_height, image_width):
         """
@@ -401,29 +412,26 @@ class Labelme2YOLO:
         return img_path
 
     def save_data_yaml(self):
-        """Save the dataset information as a YAML file."""
+        """Save the dataset information as a YAML file in the new format."""
         # Set the path for the YAML file
         yaml_path = os.path.join(
             self.json_file_dir, f'{self.yolo_dataset_name}/', 'data.yaml')
 
-        # Write the train, validation, and test paths to the YAML file
+        # Construct the names section
+        names_section = "names:\n"
+        for label, label_id in self.label_to_id_dict.items():
+            names_section += f"  {label_id}: {label}\n"
+
+        # Write the YAML file content
         with open(yaml_path, 'w+') as yaml_file:
-            yaml_file.write('train: %s\n' %
-                            os.path.join(self.image_folder, 'train/'))
-            yaml_file.write('val: %s\n' %
-                            os.path.join(self.image_folder, 'val/'))
-            yaml_file.write('test: %s\n' %
-                            os.path.join(self.image_folder, 'test/'))
-
-            # Write the number of classes to the YAML file
-            yaml_file.write('nc: %i\n' % len(self.label_to_id_dict))
-
-            # Write the names of the classes to the YAML file
-            names_str = ''
-            for label, _ in self.label_to_id_dict.items():
-                names_str += "'%s', " % label
-            names_str = names_str.rstrip(", ")
-            yaml_file.write("names: [%s]" % names_str)
+            # Relative path to the dataset
+            yaml_file.write(f"path: ../{self.yolo_dataset_name}\n")
+            yaml_file.write(f"train: images/train\n")
+            yaml_file.write(f"val: images/val\n")
+            # Include test set in the YAML
+            yaml_file.write(f"test: images/test\n")
+            yaml_file.write("\n")  # Add an empty line for better readability
+            yaml_file.write(names_section)
 
     @staticmethod
     def save_yolo_txt_label_file(json_name: str, label_folder_path: str,
