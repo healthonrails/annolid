@@ -330,6 +330,8 @@ class Labelme2YOLO:
         points[1::2] = [float(point[1]) / image_height for point in point_list]
         if len(points) == 4:
             points = point_list_to_numpy_array(points)
+        # Close the polygon by appending the first point to the end
+        points = np.append(points, [points[0], points[1]])
         # Map the label of the shape to a label_id
         label_id = self.label_to_id_dict[labelme_shape['label']]
         # Return the label_id and points as a list
