@@ -1043,8 +1043,8 @@ class AnnolidWindow(MainWindow):
             "CoTracker": "CoTracker",
             "sam2_hiera_s": "sam2_hiera_s",
             "sam2_hiera_l": "sam2_hiera_l",
-            "YOLO11n": "yolo11n.pt",
-            "YOLO11x": "yolo11x.pt",
+            "YOLO11n": "yolo11n-seg.pt",
+            "YOLO11x": "yolo11x-seg.pt",
         }
         default_model_name = "Segment-Anything (Edge)"
 
