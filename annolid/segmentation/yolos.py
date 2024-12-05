@@ -4,7 +4,7 @@ from ultralytics import YOLO, SAM
 from annolid.gui.shape import Shape
 from annolid.annotation.keypoints import save_labels
 from collections import defaultdict
-
+from annolid.annotation.polygons import simplify_polygons
 
 class InferenceProcessor:
     def __init__(self, model_name, model_type, class_names=None):
@@ -111,7 +111,7 @@ class InferenceProcessor:
 
             if mask is not None:
                 try:
-                    polygons = mask.xy
+                    polygons = simplify_polygons(mask.xy)
                     for polygon in polygons:
                         contour_points = polygon.tolist()
                         if len(contour_points) > 2:
