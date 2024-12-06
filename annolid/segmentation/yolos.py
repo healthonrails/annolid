@@ -16,14 +16,35 @@ class InferenceProcessor:
             model_name (str): Path or identifier for the model file.
             model_type (str): Type of model ('yolo' or 'sam').
             class_names (list, optional): List of class names for YOLO. 
-                                          Defaults to None.  Only provide 
+                                          Defaults to None. Only provide 
                                           if the model doesn't have classes
                                           built-in and you need to set them.
         """
         self.model_type = model_type
+        model_name = self._find_best_model(model_name)
         self.model = self._load_model(model_name, class_names)
         self.frame_count = 0
         self.track_history = defaultdict(lambda: [])
+
+    def _find_best_model(self, model_name):
+        """
+        Searches for 'best.pt' in potential directories and returns its path.
+        If not found, uses a default model.
+        """
+        search_paths = [
+            os.path.expanduser("~/Downloads/best.pt"),
+            os.path.expanduser(
+                "~/Downloads/runs/segment/train/weights/best.pt"),
+            os.path.expanduser("~/Downloads/segment/train/weights/best.pt"),
+            "runs/segment/train/weights/best.pt",
+            "segment/train/weights/best.pt"
+        ]
+        for path in search_paths:
+            if os.path.isfile(path):
+                print(f"Found model: {path}")
+                return path
+        print("best.pt not found, using default model")
+        return model_name
 
     def _load_model(self, model_name, class_names):
         """Loads the specified model."""
@@ -153,6 +174,6 @@ if __name__ == "__main__":
     # Replace with your video path
     video_path = os.path.expanduser("~/Downloads/IMG_0769.MOV")
 
-    # Using a readily available model
-    yolo_processor = InferenceProcessor("yolo11n-seg.pt", model_type="yolo")
+    # Automatically find best.pt or use default
+    yolo_processor = InferenceProcessor(model_type="yolo")
     yolo_processor.run_inference(video_path)
