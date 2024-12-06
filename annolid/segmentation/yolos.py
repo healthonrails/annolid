@@ -175,5 +175,5 @@ if __name__ == "__main__":
     video_path = os.path.expanduser("~/Downloads/IMG_0769.MOV")
 
     # Automatically find best.pt or use default
-    yolo_processor = InferenceProcessor(model_type="yolo")
+    yolo_processor = InferenceProcessor("yolo11n-seg.pt",model_type="yolo")
     yolo_processor.run_inference(video_path)
