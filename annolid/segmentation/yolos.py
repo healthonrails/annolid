@@ -6,6 +6,7 @@ from annolid.annotation.keypoints import save_labels
 from collections import defaultdict
 from annolid.annotation.polygons import simplify_polygons
 
+
 class InferenceProcessor:
     def __init__(self, model_name, model_type, class_names=None):
         """
@@ -88,7 +89,7 @@ class InferenceProcessor:
             x2, y2 = x + w / 2, y + h / 2
 
             # Include confidence in the label
-            box_label = f"{name}_{track_id} conf:{conf:.2f}"
+            box_label = f"{name}_{track_id}"
             box_points = [[x1, y1], [x2, y2]]
             bbox_shape = Shape(box_label, shape_type='rectangle',
                                description=self.model_type,
@@ -115,8 +116,7 @@ class InferenceProcessor:
                     for polygon in polygons:
                         contour_points = polygon.tolist()
                         if len(contour_points) > 2:
-                            # Include confidence in segmentation label
-                            seg_label = f"{name}_{track_id} conf:{conf:.2f}"
+                            seg_label = f"{name}_{track_id}"
                             segmentation_shape = Shape(
                                 seg_label,
                                 shape_type='polygon',
