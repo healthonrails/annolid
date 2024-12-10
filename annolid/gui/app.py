@@ -135,11 +135,13 @@ class AnnolidWindow(MainWindow):
         self.video_manager_widget.video_selected.connect(self._load_video)
         # Connect the close video signal
         self.video_manager_widget.close_video_requested.connect(self.closeFile)
+        self.video_manager_widget.output_folder_ready.connect(
+            self.handle_extracted_frames)
 
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
         # Set a unique objectName
-        self.video_dock.setObjectName('videoListDock')  
+        self.video_dock.setObjectName('videoListDock')
         self.video_dock.setWidget(self.video_manager_widget)
         self.video_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
                                     QtWidgets.QDockWidget.DockWidgetClosable |
@@ -2099,6 +2101,9 @@ class AnnolidWindow(MainWindow):
         if not video_path:
             return
         self.openVideo(from_video_list=True, video_path=video_path)
+
+    def handle_extracted_frames(self, dirpath):
+        self.importDirImages(dirpath)
 
     def openVideo(self, _value=False,
                   from_video_list=False,

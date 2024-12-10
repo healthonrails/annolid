@@ -583,3 +583,64 @@ def extract_video_metadata(cap):
         'mode': cap.get(cv2.CAP_PROP_MODE)
     }
     return meta_data
+
+
+def extract_frames_from_videos(input_folder, output_folder=None, num_frames=5):
+    """
+    Extract specified number of frames from each video in the folder and save as PNG files.
+
+    Args:
+        input_folder (str): Path to the folder containing video files.
+        output_folder (str): Path to the folder to save extracted frames. Defaults to './extracted_frames'.
+        num_frames (int): Number of frames to extract. Defaults to 5.
+    """
+    # Set default output folder if not provided
+    if output_folder is None:
+        output_folder = os.path.join(os.getcwd(), "extracted_frames")
+
+    # Ensure the output folder exists
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Loop through all video files in the input folder
+    for video_file in os.listdir(input_folder):
+        video_path = os.path.join(input_folder, video_file)
+        if not video_file.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.mpg')):
+            continue  # Skip non-video files
+
+        # Open the video
+        cap = cv2.VideoCapture(video_path)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count < 1:
+            print(f"Skipping {video_file}: Unable to determine frame count.")
+            cap.release()
+            continue
+
+        indices = []
+        if frame_count >= num_frames:
+            indices = [int(i * (frame_count - 1) / (num_frames - 1))
+                       for i in range(num_frames)]
+        elif frame_count > 0:  # Handle edge case for short videos
+            indices = list(range(frame_count))
+        else:
+            print(f"Skipping {video_file}: No frames found.")
+            continue
+
+        # Determine the frame indices to extract
+        if num_frames == 1:
+            indices = [frame_count // 2]
+        else:
+            indices = [int(i * (frame_count - 1) / (num_frames - 1))
+                       for i in range(num_frames)]
+
+        # Extract frames and save as PNG
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if ret:
+                frame_filename = f"{os.path.splitext(video_file)[0]}_frame{idx}.png"
+                frame_path = os.path.join(output_folder, frame_filename)
+                cv2.imwrite(frame_path, frame)
+            else:
+                print(f"Warning: Failed to read frame {idx} from {video_file}")
+
+        cap.release()
