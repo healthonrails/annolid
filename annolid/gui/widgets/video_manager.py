@@ -1,19 +1,21 @@
 import os
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QTableWidget, QTableWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem,
     QFileDialog, QMessageBox, QAbstractItemView
 )
 
 
 class VideoManagerWidget(QWidget):
     video_selected = Signal(str)  # Signal to send the selected video path
+    close_video_requested = Signal()  # Signal to request closing the current video
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         # Layouts
-        self.layout = QVBoxLayout(self)
+        self.main_layout = QVBoxLayout(self)
+        self.button_layout = QHBoxLayout()  # Horizontal layout for buttons
 
         # Set to track imported videos
         self.imported_videos = set()
@@ -21,15 +23,21 @@ class VideoManagerWidget(QWidget):
         # Import Button
         self.import_button = QPushButton("Import Videos")
         self.import_button.clicked.connect(self.import_videos)
-        self.layout.addWidget(self.import_button)
+        self.button_layout.addWidget(self.import_button)
+
+        # Close Video Button
+        self.close_video_button = QPushButton("Close Video")
+        self.close_video_button.clicked.connect(self.request_close_video)
+        self.button_layout.addWidget(self.close_video_button)
+
+        self.main_layout.addLayout(self.button_layout)
 
         # Video Table
-        # Rows: 0, Columns: 4 (Name, Path, Load, Delete)
         self.video_table = QTableWidget(0, 4)
         self.video_table.setHorizontalHeaderLabels(
             ["Name", "Path", "Load", "Delete"])
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.layout.addWidget(self.video_table)
+        self.main_layout.addWidget(self.video_table)
 
     def import_videos(self):
         # Open folder dialog
@@ -90,3 +98,7 @@ class VideoManagerWidget(QWidget):
             self.imported_videos.discard(video_path)
 
             self.video_table.removeRow(row)
+
+    def request_close_video(self):
+        # Emit the signal to request closing the video
+        self.close_video_requested.emit()

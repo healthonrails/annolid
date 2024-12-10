@@ -133,6 +133,8 @@ class AnnolidWindow(MainWindow):
         # Create the Video Manager Widget
         self.video_manager_widget = VideoManagerWidget()
         self.video_manager_widget.video_selected.connect(self._load_video)
+        # Connect the close video signal
+        self.video_manager_widget.close_video_requested.connect(self.closeFile)
 
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
