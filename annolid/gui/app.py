@@ -138,6 +138,8 @@ class AnnolidWindow(MainWindow):
 
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
+        # Set a unique objectName
+        self.video_dock.setObjectName('videoListDock')  
         self.video_dock.setWidget(self.video_manager_widget)
         self.video_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
                                     QtWidgets.QDockWidget.DockWidgetClosable |
