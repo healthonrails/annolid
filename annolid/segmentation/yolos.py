@@ -77,7 +77,9 @@ class InferenceProcessor:
 
         return f"Done#{self.frame_count}"
 
-    def extract_yolo_results(self, result):
+    def extract_yolo_results(self, result,
+                             save_bbox=False,
+                             save_track=False):
         """Extracts YOLO results, emulating boxes if none are found."""
         yolo_results = []
 
@@ -90,37 +92,41 @@ class InferenceProcessor:
                 "" for _ in range(len(boxes))]  # Check for track_ids
             masks = result.masks
             names = result.names
+            cls_ids = [int(_box.cls) for _box in result.boxes]
             confidences = result.boxes.conf.cpu().tolist() if result.boxes.conf is not None else [
                 0.0 for _ in range(len(boxes))]  # Check for confidences
 
-        for box, track_id, mask, name, conf in zip(boxes,
-                                                   track_ids,
-                                                   masks,
-                                                   names, confidences):
+        for box, track_id, mask, cls_id, conf in zip(boxes,
+                                                     track_ids,
+                                                     masks,
+                                                     cls_ids,
+                                                     confidences):
             x, y, w, h = box.tolist()
+            class_name = names[cls_id]
 
-            # Get the track history (will be empty if track_id is "")
-            track = self.track_history[track_id]
-            # Store only if track_id is not empty
-            track.append((float(x), float(y)))
-            if len(track) > 30:
-                track.pop(0)
+            if save_track:
+                # Get the track history (will be empty if track_id is "")
+                track = self.track_history[track_id]
+                # Store only if track_id is not empty
+                track.append((float(x), float(y)))
+                if len(track) > 30:
+                    track.pop(0)
 
-            x1, y1 = x - w / 2, y - h / 2
-            x2, y2 = x + w / 2, y + h / 2
+            if save_bbox:
+                x1, y1 = x - w / 2, y - h / 2
+                x2, y2 = x + w / 2, y + h / 2
 
-            # Include confidence in the label
-            box_label = f"{name}_{track_id}"
-            box_points = [[x1, y1], [x2, y2]]
-            bbox_shape = Shape(box_label, shape_type='rectangle',
-                               description=self.model_type,
-                               flags={},
-                               )
-            bbox_shape.points = box_points
-            yolo_results.append(bbox_shape)
+                box_label = f"{class_name}"
+                box_points = [[x1, y1], [x2, y2]]
+                bbox_shape = Shape(box_label, shape_type='rectangle',
+                                   description=self.model_type,
+                                   flags={},
+                                   )
+                bbox_shape.points = box_points
+                yolo_results.append(bbox_shape)
 
             # Only create track polygon if history exists and track_id is valid.
-            if len(track) > 1 and track_id != "":
+            if save_track and len(track) > 1 and track_id != "":
                 track_points = np.array(track).tolist()
                 shape_track = Shape(f"track_{track_id}",
                                     shape_type="polygon",
@@ -137,7 +143,7 @@ class InferenceProcessor:
                     for polygon in polygons:
                         contour_points = polygon.tolist()
                         if len(contour_points) > 2:
-                            seg_label = f"{name}_{track_id}"
+                            seg_label = f"{class_name}"
                             segmentation_shape = Shape(
                                 seg_label,
                                 shape_type='polygon',
@@ -175,5 +181,5 @@ if __name__ == "__main__":
     video_path = os.path.expanduser("~/Downloads/IMG_0769.MOV")
 
     # Automatically find best.pt or use default
-    yolo_processor = InferenceProcessor("yolo11n-seg.pt",model_type="yolo")
+    yolo_processor = InferenceProcessor("yolo11n-seg.pt", model_type="yolo")
     yolo_processor.run_inference(video_path)
