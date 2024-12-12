@@ -1781,11 +1781,41 @@ class AnnolidWindow(MainWindow):
             out_dir = dlg.out_dir
             max_iterations = dlg.max_iterations
             model_path = dlg.trained_model
+            epochs = dlg.epochs
+            image_size = dlg.image_size
+            yolo_model_file = dlg.yolo_model_file
 
         if config_file is None:
             return
+        if algo == 'YOLO':
+            from ultralytics import YOLO
+            try:
+                model = YOLO(yolo_model_file)  # Load the model from YAML
 
-        if algo == 'YOLACT':
+                if model_path:
+                    try:
+                        model.load(model_path)
+                    except Exception as e:
+                        QtWidgets.QMessageBox.warning(
+                            self, "Error", f"Failed to load trained model: {e}")
+                        return
+
+                results = model.train(
+                    data=config_file,
+                    epochs=epochs,
+                    imgsz=image_size,
+                    project=out_dir if out_dir else None
+                )
+                self.statusBar().showMessage(self.tr(f"Training..."))
+
+                QtWidgets.QMessageBox.information(
+                    self, "Training Completed", "YOLO model training completed successfully!")
+
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self, "Training Error", f"An error occurred during training: {e}")
+
+        elif algo == 'YOLACT':
             # start training models
             if not torch.cuda.is_available():
                 QtWidgets.QMessageBox.about(self,

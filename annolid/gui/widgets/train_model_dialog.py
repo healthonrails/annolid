@@ -1,6 +1,5 @@
 from pathlib import Path
 from qtpy import QtCore, QtWidgets
-from ultralytics import YOLO
 
 
 class TrainModelDialog(QtWidgets.QDialog):
@@ -17,6 +16,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.trained_model = None
         self.image_size = 640
         self.epochs = 100
+        self.yolo_model_file = 'yolo11n-seg.pt'  # Generalized for all models
 
         # UI Components
         self.create_radio_buttons()
@@ -224,8 +224,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.epoch_groupbox.setVisible(yolo_selected)
 
     def accept(self):  # Override accept method for training logic
+        # Validate inputs before accepting
         if self.algo == "YOLO":
-            self.train_yolo_model()
+            if not self.config_file:
+                QtWidgets.QMessageBox.warning(
+                    self, "Error", "Please select a config file.")
+                return
+            super().accept()
+            self.close()
         elif self.algo == "MaskRCNN":
             # Placeholder for Mask R-CNN training
             QtWidgets.QMessageBox.information(self, "Training Info",
@@ -245,34 +251,3 @@ class TrainModelDialog(QtWidgets.QDialog):
                                               f"Trained Model: {self.trained_model}\n"
                                               f"Output Directory: {self.out_dir}")
             super().accept()
-
-    def train_yolo_model(self):
-        if not self.config_file:
-            QtWidgets.QMessageBox.warning(
-                self, "Error", "Please select a config file.")
-            return
-
-        try:
-            model = YOLO("yolo11n-seg.pt")  # Load the model from YAML
-
-            if self.trained_model:
-                try:
-                    model.load(self.trained_model)
-                except Exception as e:
-                    QtWidgets.QMessageBox.warning(
-                        self, "Error", f"Failed to load trained model: {e}")
-                    return
-
-            results = model.train(
-                data=self.config_file,
-                epochs=self.epochs,
-                imgsz=self.image_size,
-                project=self.out_dir if self.out_dir else None
-            )
-
-            QtWidgets.QMessageBox.information(
-                self, "Training Completed", "YOLO model training completed successfully!")
-
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self, "Training Error", f"An error occurred during training: {e}")
