@@ -2,9 +2,14 @@ from qtpy import QtCore, QtGui
 from threading import Lock
 from collections import deque
 import time
+import os
 import qimage2ndarray
 import numpy as np
+from pathlib import Path
 from annolid.utils.logger import logger
+from qtpy.QtCore import Signal, Qt
+from annolid.data.videos import extract_frames_from_videos
+from qtpy.QtCore import QThread
 
 
 class LoadFrameThread(QtCore.QObject):
@@ -189,3 +194,70 @@ class FlexibleWorker(QtCore.QObject):
         :param progress: An integer representing the progress percentage.
         """
         self.progress_signal.emit(progress)
+
+
+class FrameExtractorWorker(QThread):
+    progress = Signal(int)
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, videos, output_folder, num_frames=5):
+        super().__init__()
+        self.videos = videos
+        self.output_folder = output_folder
+        self.num_frames = num_frames
+
+    def run(self):
+        try:
+            for idx, video in enumerate(self.videos, 1):
+                extract_frames_from_videos(
+                    input_folder=os.path.dirname(video),
+                    output_folder=self.output_folder,
+                    num_frames=self.num_frames
+                )
+                progress_value = int((idx / len(self.videos)) * 100)
+                self.progress.emit(progress_value)
+            self.finished.emit(self.output_folder)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class ProcessVideosWorker(QThread):
+    progress = Signal(int)  # Signal to update progress
+    finished = Signal(str)  # Signal when processing is complete
+    error = Signal(str)     # Signal to handle errors
+
+    def __init__(self, videos, agent, parent=None):
+        super().__init__(parent)
+        self.videos = videos
+        self.agent = agent
+
+    def run(self):
+        try:
+            total_videos = len(self.videos)
+            for idx, video_path in enumerate(self.videos, start=1):
+                try:
+                    # Define user prompt
+                    user_prompt = "Describe the main activities in this video."
+
+                    # Process video with the agent
+                    from annolid.agents import behavior_agent
+                    response = behavior_agent.process_video_with_agent(
+                        video_path, user_prompt, self.agent)
+
+                    # Save response to a text file
+                    response_file = Path(video_path).with_suffix('.txt')
+                    with open(response_file, "w") as f:
+                        f.write(response)
+
+                    # Emit progress
+                    progress = int((idx / total_videos) * 100)
+                    self.progress.emit(progress)
+
+                except Exception as e:
+                    self.error.emit(f"Error processing {video_path}: {str(e)}")
+
+            # Notify completion
+            self.finished.emit("Processing complete.")
+        except Exception as e:
+            self.error.emit(str(e))
