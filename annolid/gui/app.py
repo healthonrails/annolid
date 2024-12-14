@@ -2177,8 +2177,6 @@ class AnnolidWindow(MainWindow):
 
         video_filename = str(video_filename)
         self.stepSizeWidget.setEnabled(True)
-        if self.seekbar:
-            self.statusBar().removeWidget(self.seekbar)
 
         if video_filename:
             cur_video_folder = Path(video_filename).parent
@@ -2200,8 +2198,9 @@ class AnnolidWindow(MainWindow):
                 self.video_loader = None
                 return
             self.fps = self.video_loader.get_fps()
-
             self.num_frames = self.video_loader.total_frames()
+            if self.seekbar:
+                self.statusBar().removeWidget(self.seekbar)
             self.seekbar = VideoSlider()
             self.seekbar.input_value.returnPressed.connect(self.jump_to_frame)
             self.seekbar.keyPress.connect(self.keyPressEvent)
@@ -2209,27 +2208,10 @@ class AnnolidWindow(MainWindow):
             logger.info(f"Working on video:{self.video_file}.")
             logger.info(
                 f"FPS: {self.fps}, Total number of frames: {self.num_frames}")
-            # load the first frame
-            self.set_frame_number(self.frame_number)
-
-            self.actions.openNextImg.setEnabled(True)
-
-            self.actions.openPrevImg.setEnabled(True)
 
             self.seekbar.valueChanged.connect(lambda f: self.set_frame_number(
                 self.seekbar.value()
             ))
-
-            self.frame_loader.video_loader = self.video_loader
-
-            self.frame_loader.moveToThread(self.frame_worker)
-
-            self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
-
-            self.frame_loader.res_frame.connect(
-                lambda qimage: self.image_to_canvas(
-                    qimage, self.filename, self.frame_number)
-            )
 
             self.seekbar.setMinimum(0)
             self.seekbar.setMaximum(self.num_frames-1)
@@ -2248,6 +2230,24 @@ class AnnolidWindow(MainWindow):
             self.statusBar().addWidget(self.playButton)
             self.statusBar().addWidget(self.seekbar, stretch=1)
             self.statusBar().addWidget(self.saveButton)
+
+            # load the first frame
+            self.set_frame_number(self.frame_number)
+
+            self.actions.openNextImg.setEnabled(True)
+
+            self.actions.openPrevImg.setEnabled(True)
+
+            self.frame_loader.video_loader = self.video_loader
+
+            self.frame_loader.moveToThread(self.frame_worker)
+
+            self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
+
+            self.frame_loader.res_frame.connect(
+                lambda qimage: self.image_to_canvas(
+                    qimage, self.filename, self.frame_number)
+            )
             # go over all the tracking csv files
             # use the first matched file with video name
             # and segmentation
