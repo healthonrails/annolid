@@ -2001,19 +2001,36 @@ class AnnolidWindow(MainWindow):
             os.path.dirname(self.filename)) + '_timestamps.csv'
         file_dialog = QtWidgets.QFileDialog()
         file_dialog.setDefaultSuffix('.csv')
-        file_path, _ = file_dialog.getSaveFileName(self, "Save Timestamps", default_timestamp_csv_file,
+        file_path, _ = file_dialog.getSaveFileName(self, "Save Timestamps",
+                                                   default_timestamp_csv_file,
                                                    "CSV files (*.csv)")
+
         if file_path:
-            with open(file_path, 'w') as f:
+            with open(file_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Timestamp', 'Frame_number', 'Time_seconds'])
+                # Write the header for the new CSV format
+                writer.writerow(['Trial time', 'Recording time',
+                                'Subject', 'Behavior', 'Event'])
+
+                # Assuming the timestamp_dict keys are (frame_number, behavior) tuples
                 for _key in sorted(self.timestamp_dict.keys()):
                     if self.fps:
-                        time_seconds = int(_key[0]) / self.fps
+                        recording_time = int(_key[0]) / self.fps
                     else:
-                        time_seconds = int(_key[0]) / 29.97
+                        recording_time = int(_key[0]) / 29.97
+
+                    # In this case, trial time is the same as recording time
+                    trial_time = recording_time
+                    subject = "Subject 1"  #
+                    # Assuming the behavior is stored as part of the tuple
+                    behavior = _key[1]
+                    # Assuming event based on behavior
+                    event = "state start" if "start" in behavior else "state stop"
+                    behavior = behavior.split('_')[0]
+
                     writer.writerow(
-                        [self.timestamp_dict[_key], _key, time_seconds])
+                        [trial_time, recording_time, subject, behavior, event])
+
             QtWidgets.QMessageBox.information(
                 self, "Timestamps saved", "Timestamps saved successfully!")
 
@@ -2056,7 +2073,7 @@ class AnnolidWindow(MainWindow):
                 continue
 
             if 'timestamp' in tr.name and video_name in tr.name:
-                self._load_timestamps(tr)
+                self._load_behavior(tr)
             if tr.name.endswith(f"{video_name}.csv"):
                 self._load_behavior(tr)
 
@@ -2073,21 +2090,6 @@ class AnnolidWindow(MainWindow):
                     columns=['Unnamed: 0'], errors='ignore')
             except:
                 logger.info(f"Error loading file {tracking_csv_file}")
-
-    def _load_timestamps(self, timestamp_csv_file):
-        """Load timestamps from the given CSV file and update timestamp_dict."""
-        df_timestamps = pd.read_csv(str(timestamp_csv_file))
-        for _, row in df_timestamps.iterrows():
-            timestamp = row['Timestamp']
-            frame_time = row['Frame_number']
-
-            if isinstance(frame_time, int):
-                frame_number = frame_time
-                mark_type = 'event_start'
-            else:
-                frame_number, mark_type = eval(frame_time)
-
-            self.timestamp_dict[(frame_number, mark_type)] = timestamp
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""
