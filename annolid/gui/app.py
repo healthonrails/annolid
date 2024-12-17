@@ -23,6 +23,7 @@ from annolid.gui.widgets import Glitter2Dialog
 from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import TrackDialog
 from annolid.gui.widgets import SystemInfoDialog
+from annolid.gui.widgets import FlagTableWidget
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
@@ -125,7 +126,9 @@ class AnnolidWindow(MainWindow):
         self.config = config
         super(AnnolidWindow, self).__init__(config=self.config)
 
-        self.flag_dock.setVisible(True)
+        # self.flag_dock.setVisible(True)
+        self.flag_widget.close()
+        self.flag_widget = None
         self.label_dock.setVisible(True)
         self.shape_dock.setVisible(True)
         self.file_dock.setVisible(True)
@@ -212,7 +215,14 @@ class AnnolidWindow(MainWindow):
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
 
-        self.flag_widget.itemClicked.connect(self.flag_item_clicked)
+        self.flag_widget = FlagTableWidget()  # Replace QListWidget with FlagTableWidget
+        self.flag_dock.setWidget(self.flag_widget)  # Set the widget to dock
+        # self.flag_widget.flagsChanged.connect(
+        #     self.setDirty)  # Connect signals for saving
+        self.flag_widget.startButtonClicked.connect(
+            self.handle_flag_start_button)
+        self.flag_widget.endButtonClicked.connect(
+            self.handle_flag_end_button)
 
         self.setCentralWidget(scrollArea)
 
@@ -608,10 +618,18 @@ class AnnolidWindow(MainWindow):
         self.step_size = value
         self.stepSizeWidget.set_value(self.step_size)
 
-    def flag_item_clicked(self, item):
-        item_text = item.text()
-        self.event_type = item_text
-        logger.info(f"Selected event {self.event_type}.")
+    def handle_flag_start_button(self, flag_name):
+
+        if self.seekbar:
+            event_type = flag_name + '_start'
+            self.highlighted_mark = self.add_highlighted_mark(
+                self.frame_number, mark_type=event_type)
+
+    def handle_flag_end_button(self, flag_name):
+        if self.seekbar:
+            event_type = flag_name + '_end'
+            self.highlighted_mark = self.add_highlighted_mark(
+                self.frame_number, mark_type=event_type, color='red')
 
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
@@ -1218,13 +1236,17 @@ class AnnolidWindow(MainWindow):
                     "Predictions for the video frames have been generated!")
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
+        self.reset_predict_button()
+
+    def reset_predict_button(self):
+        """Reset the predict button text and style"""
+        self.stepSizeWidget.predict_button.setText("Pred")
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;")
 
     def loadFlags(self, flags):
-        for key, flag in flags.items():
-            item = QtWidgets.QListWidgetItem(key)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if flag else Qt.Unchecked)
-            self.flag_widget.addItem(item)
+        """ Loads flags using FlagTableWidget's loadFlags method """
+        self.flag_widget.loadFlags(flags)
 
     def saveLabels(self, filename):
         lf = LabelFile()
@@ -1254,11 +1276,18 @@ class AnnolidWindow(MainWindow):
 
         shapes = [format_shape(item.shape()) for item in self.labelList]
         flags = {}
-        for i in range(self.flag_widget.count()):
-            item = self.flag_widget.item(i)
-            key = item.text()
-            flag = item.checkState() == Qt.Checked
-            flags[key] = flag
+        # if self.flag_widget:
+        #     # Check if any flag is set to True in FlagTableWidget
+        #     flags = self.flag_widget.flags  # Retrieve the flags as a dictionary
+        #     for key, flag in flags.items():
+        #         if flag:  # If the flag is True
+        #             row_count = self.flag_widget._table.rowCount()  # Get the row count
+        #             for row in range(row_count):
+        #                 # Get the item in the first column for the current row
+        #                 item = self.flag_widget._table.item(row, 0)
+        #                 if item and item.text() == key:
+        #                     flags[key] = flag
+
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
             imageData = self.imageData if self._config["store_data"] else None
@@ -1359,18 +1388,16 @@ class AnnolidWindow(MainWindow):
             title = self.getTitle(clean=False)
         self.setWindowTitle(title)
 
-        if self.flag_widget:
-            # Iterate over the items in self.flag_widget
-            for index in range(self.flag_widget.count()):
-                # Get the item at the current index
-                item = self.flag_widget.item(index)
+        # if self.flag_widget:
+        #     for row in range(self.flag_widget._table.rowCount()):
+        #         item = self.flag_widget._table.item(row, 0)
+        #         if not self.filename:
+        #             return
+        #         if item:
+        #             flag_name = item.text()
+        #             if self.flag_widget.flags.get(flag_name) == True:
+        #                 self.event_type = flag_name
 
-                if not self.filename:
-                    return
-                # Check if the item is checked
-                if item.checkState() == Qt.Checked:
-                    _event = item.text()  # Get the text of the checked item
-                    self.event_type = _event
         if self.dirty and self.filename:
             # Save immediately if auto-save
             self.saveLabels(self._getLabelFile(self.filename))
@@ -2308,7 +2335,7 @@ class AnnolidWindow(MainWindow):
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
-        flags = {k: False for k in self._config["flags"] or []}
+        flags = {}
         _event_key = (frame_number, 'event_start')
         if _event_key not in self.timestamp_dict:
             _event_key = (frame_number, 'event_end')
@@ -2329,7 +2356,6 @@ class AnnolidWindow(MainWindow):
                     flags[behavior] = True
                     _state = 'continue'
 
-        self.flag_widget.clear()
         self.loadFlags(flags)
         if self.pinned_flags is not None:
             self.loadFlags(self.pinned_flags)
