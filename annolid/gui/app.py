@@ -223,6 +223,8 @@ class AnnolidWindow(MainWindow):
             self.handle_flag_start_button)
         self.flag_widget.endButtonClicked.connect(
             self.handle_flag_end_button)
+        self.flag_widget.flagsSaved.connect(self.handle_flags_saved)
+        self.flag_widget.rowSelected.connect(self.handle_row_selected)
 
         self.setCentralWidget(scrollArea)
 
@@ -576,6 +578,12 @@ class AnnolidWindow(MainWindow):
         )
 
         self.populateModeActions()
+
+    def handle_flags_saved(self, flags):
+        self.loadFlags(flags)
+
+    def handle_row_selected(self, flag_name: str):
+        self.event_type = flag_name
 
     def _grounding_sam(self):
         """
@@ -1387,16 +1395,6 @@ class AnnolidWindow(MainWindow):
         if self.filename is not None:
             title = self.getTitle(clean=False)
         self.setWindowTitle(title)
-
-        # if self.flag_widget:
-        #     for row in range(self.flag_widget._table.rowCount()):
-        #         item = self.flag_widget._table.item(row, 0)
-        #         if not self.filename:
-        #             return
-        #         if item:
-        #             flag_name = item.text()
-        #             if self.flag_widget.flags.get(flag_name) == True:
-        #                 self.event_type = flag_name
 
         if self.dirty and self.filename:
             # Save immediately if auto-save
@@ -2357,8 +2355,6 @@ class AnnolidWindow(MainWindow):
                     _state = 'continue'
 
         self.loadFlags(flags)
-        if self.pinned_flags is not None:
-            self.loadFlags(self.pinned_flags)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
