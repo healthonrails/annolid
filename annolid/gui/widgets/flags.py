@@ -1,6 +1,9 @@
 from qtpy import QtCore, QtWidgets
 from qtpy.QtCore import Qt
+from pathlib import Path
 from typing import Dict
+from qtpy.QtGui import QIcon
+from qtpy.QtWidgets import QCheckBox
 
 
 class FlagTableWidget(QtWidgets.QWidget):
@@ -15,6 +18,8 @@ class FlagTableWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._flags: Dict[str, bool] = {}
+
+        self.here = Path(__file__).resolve().parent.parent
 
         # Table setup
         self._table = QtWidgets.QTableWidget(0, 4)
@@ -37,7 +42,7 @@ class FlagTableWidget(QtWidgets.QWidget):
         self.add_flag_button.clicked.connect(self.add_row)
         buttons_layout.addWidget(self.add_flag_button)
 
-        self.remove_flag_button = QtWidgets.QPushButton("Remove Selected")
+        self.remove_flag_button = QtWidgets.QPushButton("Remove")
         self.remove_flag_button.clicked.connect(self.remove_selected_row)
         buttons_layout.addWidget(self.remove_flag_button)
 
@@ -77,9 +82,8 @@ class FlagTableWidget(QtWidgets.QWidget):
     def add_row(self, name: str = "", value: bool = False):
         """Add a new row if the flag name doesn't already exist."""
         existing_flags = self._get_existing_flag_names()
-        # Ensure name is a string and value is a boolean
-        name = str(name) if name else ""  # Make sure 'name' is a string
-        value = "True" if value else "False"  # Ensure value is "True" or "False"
+        name = str(name) if name else ""
+        # value = "True" if value else "False"  # Ensure value is "True" or "False"
 
         if name and name in existing_flags:
             QtWidgets.QMessageBox.warning(
@@ -95,10 +99,15 @@ class FlagTableWidget(QtWidgets.QWidget):
         name_editor.setPlaceholderText("Enter flag name...")
         self._table.setCellWidget(row, self.COLUMN_NAME, name_editor)
 
-        # Flag Value
-        value_editor = QtWidgets.QLineEdit("True" if value else "False")
-        value_editor.setPlaceholderText("True or False")
-        self._table.setCellWidget(row, self.COLUMN_VALUE, value_editor)
+        # Flag Value with CheckBox and Icons
+        flag_checkbox = QCheckBox()
+        flag_checkbox.setChecked(value)
+        self._update_checkbox_icon(flag_checkbox)  # Set initial icon
+
+        # Change icon when the checkbox toggles
+        flag_checkbox.stateChanged.connect(
+            lambda: self._update_checkbox_icon(flag_checkbox))
+        self._table.setCellWidget(row, self.COLUMN_VALUE, flag_checkbox)
 
         # Start Button
         start_button = QtWidgets.QPushButton("Start")
@@ -110,6 +119,14 @@ class FlagTableWidget(QtWidgets.QWidget):
         end_button.clicked.connect(lambda: self.handle_end_button(row))
         self._table.setCellWidget(row, 3, end_button)
 
+    def _update_checkbox_icon(self, checkbox):
+        """Update checkbox icon based on its state."""
+        if checkbox.isChecked():
+            checkbox.setIcon(QIcon.fromTheme(
+                "emblem-default"))  # Green checkmark
+        else:
+            checkbox.setIcon(QIcon.fromTheme("dialog-error"))  # Red cross
+
     def _get_existing_flag_names(self) -> Dict[str, int]:
         """Retrieve existing flag names in the table."""
         existing_flags = {}
@@ -118,6 +135,10 @@ class FlagTableWidget(QtWidgets.QWidget):
             if isinstance(name_widget, QtWidgets.QLineEdit):
                 name = name_widget.text().strip()
                 if name:
+                    value_widget = self._table.cellWidget(
+                        row, self.COLUMN_VALUE)
+                    value_widget.setChecked(False)
+                    self._update_checkbox_icon(value_widget)
                     existing_flags[name] = row
         return existing_flags
 
