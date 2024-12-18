@@ -2477,7 +2477,7 @@ class AnnolidWindow(MainWindow):
             caption = self.labelFile.get_caption() if self.labelFile else None
         except AttributeError:
             caption = None
-        if caption is not None:
+        if caption is not None and len(caption) > 0:
             if self.caption_widget is None:
                 self.openCaption()
             self.caption_widget.set_caption(
@@ -2527,7 +2527,7 @@ class AnnolidWindow(MainWindow):
                 if self.labelFile:
                     self.loadLabels(self.labelFile.shapes)
                     caption = self.labelFile.get_caption()
-                    if caption is not None:
+                    if caption is not None and len(caption) > 0:
                         if self.caption_widget is None:
                             self.openCaption()
                         self.caption_widget.set_caption(caption)
