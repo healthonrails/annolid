@@ -65,6 +65,7 @@ import re
 import csv
 import os.path as osp
 import time
+import yaml
 import html
 import shutil
 import sys
@@ -185,7 +186,7 @@ class AnnolidWindow(MainWindow):
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
         self.behaviors = None
-        self.pinned_flags = None
+        self.pinned_flags = {}
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -225,6 +226,8 @@ class AnnolidWindow(MainWindow):
             self.handle_flag_end_button)
         self.flag_widget.flagsSaved.connect(self.handle_flags_saved)
         self.flag_widget.rowSelected.connect(self.handle_row_selected)
+
+        self.handle_flags_saved()
 
         self.setCentralWidget(scrollArea)
 
@@ -579,8 +582,30 @@ class AnnolidWindow(MainWindow):
 
         self.populateModeActions()
 
-    def handle_flags_saved(self, flags):
-        self.loadFlags(flags)
+    def handle_flags_saved(self, flags={}):
+        default_config = self.here.parent.resolve() / 'configs' / 'behaviors.yaml'
+
+        # Load the existing configuration from the YAML file
+        try:
+            with open(default_config, 'r') as file:
+                config_data = yaml.safe_load(file) or {}
+        except FileNotFoundError:
+            config_data = {}
+
+        # Append the pinned flags to the existing configuration
+        if 'pinned_flags' not in config_data:
+            config_data['pinned_flags'] = []
+        config_data['pinned_flags'].extend(flags)  # Append the new flags
+        pinned_flags = {
+            pinned_flag: False for pinned_flag in config_data['pinned_flags']}
+
+        # Save the updated configuration back to the YAML file
+        with open(default_config, 'w') as file:
+            yaml.dump(config_data, file, default_flow_style=False)
+
+        # Update the pinned_flags attribute and load the flags
+        self.pinned_flags = pinned_flags
+        self.loadFlags(pinned_flags)
 
     def handle_row_selected(self, flag_name: str):
         self.event_type = flag_name
