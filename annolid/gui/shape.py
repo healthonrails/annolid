@@ -3,6 +3,7 @@ import math
 import numpy as np
 import cv2
 from qtpy import QtCore
+from qtpy.QtCore import Qt
 from qtpy import QtGui
 from labelme.logger import logger
 import labelme.utils
@@ -294,6 +295,29 @@ class Shape(object):
             painter.setPen(pen)
             painter.drawPath(negative_vrtx_path)
             painter.fillPath(negative_vrtx_path, QtGui.QColor(255, 0, 0, 255))
+
+        # Draw the label near the shape
+        if self.label:
+            self._draw_label(painter)
+
+    def _draw_label(self, painter):
+        # Get the bounding box of the shape
+        bounding_rect = self.boundingRect()
+
+        # Calculate label position (top-left corner of bounding box)
+        label_pos = bounding_rect.topLeft()
+
+        # Set label style
+        shape_color = self.line_color if self.line_color else Qt.black
+        painter.setPen(shape_color)
+
+        # Auto-adjust font size based on shape size
+        font_size = int(
+            max(20, min(bounding_rect.width(), bounding_rect.height()) // 5))
+        painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
+
+        # Draw label text without background box
+        painter.drawText(label_pos, self.label)
 
     def drawVertex(self, path, i):
         d = self.point_size / self.scale
