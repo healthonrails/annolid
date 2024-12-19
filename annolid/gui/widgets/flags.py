@@ -239,10 +239,10 @@ class FlagTable(QTableWidget):
 
 
 class FlagTableWidget(QtWidgets.QWidget):
-    flagsSaved = QtCore.Signal(dict)  # Emit all flags at once
-    startButtonClicked = QtCore.Signal(str)  # Emit when "Start" is clicked
-    endButtonClicked = QtCore.Signal(str)  # Emit when "End" is clicked
-    rowSelected = QtCore.Signal(str)  # Emit flag name when a row is selected
+    flagsSaved = QtCore.Signal(dict)
+    startButtonClicked = QtCore.Signal(str)
+    endButtonClicked = QtCore.Signal(str)
+    rowSelected = QtCore.Signal(str)
 
     COLUMN_NAME = 0
     COLUMN_ACTIVE = 1
@@ -251,7 +251,6 @@ class FlagTableWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._flags: Dict[str, bool] = {}
         self.last_selected_row: int | None = None
-        # Table setup
         self._table = FlagTable()
         self._table.setHorizontalHeaderLabels(
             ["Behavior", "Active", "Start", "End"]
@@ -264,26 +263,19 @@ class FlagTableWidget(QtWidgets.QWidget):
         self._table.setSelectionMode(
             QtWidgets.QAbstractItemView.SingleSelection)
         self._table.clicked.connect(self._handle_table_clicked)
-
-        # Buttons Layout
         buttons_layout = QtWidgets.QHBoxLayout()
-
         self.add_flag_button = QtWidgets.QPushButton("Add")
         self.add_flag_button.clicked.connect(self.add_row)
         buttons_layout.addWidget(self.add_flag_button)
-
         self.remove_flag_button = QtWidgets.QPushButton("Remove")
         self.remove_flag_button.clicked.connect(self.remove_selected_row)
         buttons_layout.addWidget(self.remove_flag_button)
-
         self.clear_all_button = QtWidgets.QPushButton("Clear All")
         self.clear_all_button.clicked.connect(self.clear_all_rows)
         buttons_layout.addWidget(self.clear_all_button)
-
         self.save_all_button = QtWidgets.QPushButton("Save All")
         self.save_all_button.clicked.connect(self.save_all_flags)
         buttons_layout.addWidget(self.save_all_button)
-
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self._table)
         layout.addLayout(buttons_layout)
@@ -292,7 +284,6 @@ class FlagTableWidget(QtWidgets.QWidget):
         """Emit the flag name of the selected row."""
         row = index.row()
         self.last_selected_row = row
-
         item_name_widget = self._table.cellWidget(row, self.COLUMN_NAME)
         if isinstance(item_name_widget, QtWidgets.QLineEdit):
             flag_name = item_name_widget.text().strip()
@@ -300,30 +291,19 @@ class FlagTableWidget(QtWidgets.QWidget):
                 self.rowSelected.emit(flag_name)
 
     def loadFlags(self, flags: Dict[str, bool]):
-        """Load flags sorted by behavior name."""
-        # Get existing flags and their values
+        """Load or update flags without adding duplicates."""
         existing_flags = self._get_existing_flag_names()
-
-        # Combine existing and new flags
-        all_flags = {**existing_flags, **flags}
-
-        # Sort flags by name
-        sorted_flags = dict(sorted(all_flags.items()))
-
-        # Clear table
-        self._table.setRowCount(0)
-
-        # Add sorted flags
-        for flag_name, flag_value in sorted_flags.items():
-            self.add_row(flag_name, flag_value)
-
+        for flag_name, flag_value in flags.items():
+            if flag_name not in existing_flags:
+                self.add_row(flag_name, flag_value)
+            else:
+                self._update_row_value(flag_name, flag_value)
         self._table.resizeColumnsToContents()
 
     def add_row(self, name: str = "", value: bool = False):
         """Add a new row if the flag name doesn't already exist."""
         existing_flags = self._get_existing_flag_names()
         name = str(name) if name else ""
-
         if name and not re.match(r"^[a-zA-Z_]", name):
             QtWidgets.QMessageBox.warning(
                 self, "Error", "Behavior must start with a letter or underscore."
@@ -334,41 +314,60 @@ class FlagTableWidget(QtWidgets.QWidget):
                 self, "Duplicate behavior", f"Behavior '{name}' already exists."
             )
             return
-
         row = self._table.rowCount()
         self._table.insertRow(row)
-
         # Flag Name
         name_editor = QtWidgets.QLineEdit(name)
         name_editor.setPlaceholderText("Enter behavior name...")
         self._table.setCellWidget(row, self.COLUMN_NAME, name_editor)
         name_editor.setAccessibleName(f"Behavior name: {name}")
-
         # Flag Value with CheckBox and Icons
         flag_checkbox = QCheckBox()
         flag_checkbox.setChecked(value)
-        self._table._update_checkbox_icon(flag_checkbox, value)
+        self._update_checkbox_icon(flag_checkbox, value)  # Set initial icon
         # Change icon when the checkbox toggles
         flag_checkbox.stateChanged.connect(
-            lambda state: self._table._update_checkbox_icon(flag_checkbox, state == Qt.Checked))
-
+            lambda state: self._update_checkbox_icon(flag_checkbox, state == Qt.Checked))
         self._table.setCellWidget(row, self.COLUMN_ACTIVE, flag_checkbox)
         flag_checkbox.setAccessibleDescription(f"Toggle state for {name}")
-
         # Start Button
         start_button = QtWidgets.QPushButton("Start")
         start_button.clicked.connect(lambda: self.handle_start_button(row))
         self._table.setCellWidget(row, 2, start_button)
         start_button.setAccessibleDescription(f"Start behavior {name}")
-
         # End Button
         end_button = QtWidgets.QPushButton("End")
         end_button.clicked.connect(lambda: self.handle_end_button(row))
         self._table.setCellWidget(row, 3, end_button)
         end_button.setAccessibleDescription(f"End behavior {name}")
-
         self._table._row_order = list(range(self._table.rowCount()))
         self._table._update_row_order()
+
+    def _update_checkbox_icon(self, checkbox, state):
+        if state:
+            checkbox.setIcon(self.style().standardIcon(
+                QStyle.SP_DialogApplyButton))
+            checkbox.setStyleSheet("QCheckBox { background-color: #e8f5e9; }")
+            checkbox.setToolTip("Behavior is active (Click to deactivate)")
+            self._animate_checkbox(checkbox, True)
+        else:
+            checkbox.setIcon(self.style().standardIcon(
+                QStyle.SP_DialogCancelButton))
+            checkbox.setStyleSheet("QCheckBox { background-color: #ffebee; }")
+            checkbox.setToolTip("Behavior is inactive (Click to activate)")
+            self._animate_checkbox(checkbox, False)
+
+    def _animate_checkbox(self, checkbox, state):
+        animation = QPropertyAnimation(checkbox, b"geometry")
+        animation.setDuration(200)
+        current_geo = checkbox.geometry()
+        if state:
+            end_geo = current_geo.adjusted(-2, -2, 2, 2)
+        else:
+            end_geo = current_geo.adjusted(2, 2, -2, -2)
+        animation.setStartValue(current_geo)
+        animation.setEndValue(end_geo)
+        animation.start()
 
     def _get_existing_flag_names(self) -> Dict[str, int]:
         existing_flags = {}
@@ -387,7 +386,7 @@ class FlagTableWidget(QtWidgets.QWidget):
         if row is not None:
             value_widget = self._table.cellWidget(row, self.COLUMN_ACTIVE)
             value_widget.setChecked(value)
-            self._table._update_checkbox_icon(value_widget, value)
+            self._update_checkbox_icon(value_widget, value)
 
     def remove_selected_row(self):
         """Remove the selected row."""

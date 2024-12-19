@@ -1284,18 +1284,10 @@ class AnnolidWindow(MainWindow):
 
         shapes = [format_shape(item.shape()) for item in self.labelList]
         flags = {}
-        # if self.flag_widget:
-        #     # Check if any flag is set to True in FlagTableWidget
-        #     flags = self.flag_widget.flags  # Retrieve the flags as a dictionary
-        #     for key, flag in flags.items():
-        #         if flag:  # If the flag is True
-        #             row_count = self.flag_widget._table.rowCount()  # Get the row count
-        #             for row in range(row_count):
-        #                 # Get the item in the first column for the current row
-        #                 item = self.flag_widget._table.item(row, 0)
-        #                 if item and item.text() == key:
-        #                     flags[key] = flag
-
+        if self.flag_widget:
+            # # Retrieve the flags as a dictionary
+            flags = {_flag: True for _flag in self.flag_widget._get_existing_flag_names(
+            ) if self.is_behavior_active(self.frame_number, _flag)}
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
             imageData = self.imageData if self._config["store_data"] else None
@@ -2347,6 +2339,8 @@ class AnnolidWindow(MainWindow):
                 behaivor = "Others"
             if _state != 'event_end':
                 flags[behaivor] = True
+            elif _state == 'event_end':
+                flags[behaivor] = False
             else:
                 if behaivor in flags:
                     del flags[behaivor]
@@ -2355,6 +2349,8 @@ class AnnolidWindow(MainWindow):
                 if self.is_behavior_active(self.frame_number, behavior):
                     flags[behavior] = True
                     _state = 'continue'
+                else:
+                    flags[behavior] = False
 
         self.loadFlags(flags)
         if self._config["keep_prev"] and self.noShapes():
