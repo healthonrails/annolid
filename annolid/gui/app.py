@@ -610,6 +610,17 @@ class AnnolidWindow(MainWindow):
     def handle_row_selected(self, flag_name: str):
         self.event_type = flag_name
 
+    def get_active_flags(self, flags):
+        active_flags = []
+        for _flag in flags:
+            if flags[_flag]:
+                active_flags.append(_flag)
+        return active_flags
+
+    def get_current_behavior_text(self, flags):
+        active_flags = self.get_active_flags(flags)
+        return ','.join(active_flags)
+
     def _grounding_sam(self):
         """
         Handles the text prompt inputs for grouding DINO SAM. 
@@ -1279,6 +1290,8 @@ class AnnolidWindow(MainWindow):
 
     def loadFlags(self, flags):
         """ Loads flags using FlagTableWidget's loadFlags method """
+        behave_text = self.get_current_behavior_text(flags)
+        self.canvas.setBehaviorText(behave_text)
         self.flag_widget.loadFlags(flags)
 
     def saveLabels(self, filename):
@@ -1310,7 +1323,7 @@ class AnnolidWindow(MainWindow):
         shapes = [format_shape(item.shape()) for item in self.labelList]
         flags = {}
         if self.flag_widget:
-            # # Retrieve the flags as a dictionary
+            # Retrieve the flags as a dictionary
             flags = {_flag: True for _flag in self.flag_widget._get_existing_flag_names(
             ) if self.is_behavior_active(self.frame_number, _flag)}
         try:

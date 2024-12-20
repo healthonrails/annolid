@@ -132,6 +132,10 @@ class Canvas(QtWidgets.QWidget):
         self.sam_predictor = None
         self.sam_hq_model = None
         self.sam_mask = MaskShape()
+        self.behavior_text_position = "top-left"  # Default position
+        self.behavior_text_color = QtGui.QColor(255, 255, 255)
+        self.behavior_text_background = None  # Optional background color
+        self.current_behavior_text = None
 
     def fillDrawing(self):
         return self._fill_drawing
@@ -141,6 +145,9 @@ class Canvas(QtWidgets.QWidget):
 
     def setCaption(self, text):
         self.caption_label.setText(text)
+
+    def setBehaviorText(self, text):
+        self.current_behavior_text = text
 
     def getCaption(self):
         return self.caption_label.toPlainText()
@@ -1005,9 +1012,6 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             self.boundedMoveShapes(shapes, point + offset)
 
     def paintEvent(self, event):
-        if not self.pixmap:
-            return super(Canvas, self).paintEvent(event)
-
         p = self._painter
         p.begin(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
@@ -1020,14 +1024,30 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         p.drawPixmap(0, 0, self.pixmap)
         self.sam_mask.paint(p)
 
+        if self.current_behavior_text and len(self.current_behavior_text) > 0:
+            # Calculate font size based on pixmap size
+            pixmap_size = min(self.pixmap.width(), self.pixmap.height())
+            font_size = max(20, pixmap_size // 40)  # Adjust divisor as needed
+
+            font = QtGui.QFont()
+            font.setPointSize(font_size)
+            font.setBold(True)
+            p.setFont(font)
+            p.setPen(QtGui.QColor(255, 255, 255))  # White text
+
+            # Adjust position based on font size
+            text_x = 10
+            text_y = font_size + 10  # Add some padding
+
+            # Position and text
+            p.drawText(text_x, text_y, self.current_behavior_text)
+
         # draw crosshair
         if ((not self.createMode == 'grounding_sam')
             and (self._crosshair[self._createMode]
-                 and self.drawing()
-                 and self.prevMovePoint
-                 and not self.outOfPixmap(self.prevMovePoint)
-                 )):
-            p.setPen(QtGui.QColor(0, 0, 0))
+                 and self.drawing())):
+            p.setPen(QtGui.QPen(QtGui.QColor(
+                255, 255, 255), 1, QtCore.Qt.DotLine))
             p.drawLine(
                 0,
                 int(self.prevMovePoint.y()),
