@@ -34,6 +34,7 @@ from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
+from annolid.gui.widgets import RecordingWidget
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
@@ -479,6 +480,8 @@ class AnnolidWindow(MainWindow):
             self._grounding_sam
         )
 
+        self.recording_widget = RecordingWidget(self.canvas)
+
         _action_tools = list(self.actions.tool)
         _action_tools.insert(0, frames)
         _action_tools.insert(1, open_video)
@@ -493,6 +496,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(quality_control)
         _action_tools.append(colab)
         _action_tools.append(visualization)
+        _action_tools.append(self.recording_widget.record_action)
 
         self.actions.tool = tuple(_action_tools)
         self.tools.clear()
