@@ -202,7 +202,7 @@ def video_loader(video_file=None):
 class CV2Video:
     def __init__(self, video_file, use_decord=False):
         self.video_file = Path(video_file).resolve()
-        if use_decord and IS_DECORD_INSTALLED:
+        if IS_DECORD_INSTALLED:
             self.reader = de.VideoReader(str(self.video_file))
         else:
             self.reader = None
