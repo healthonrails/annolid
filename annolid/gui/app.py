@@ -187,6 +187,7 @@ class AnnolidWindow(MainWindow):
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
         self.behaviors = None
+        self.behavior_ranges = {}
         self.pinned_flags = {}
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
@@ -2127,7 +2128,7 @@ class AnnolidWindow(MainWindow):
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""
-        if behavior not in self.behavior_ranges:
+        if self.behavior_ranges is not None or behavior not in self.behavior_ranges:
             return False  # Behavior not found
 
         for start, end in self.behavior_ranges[behavior]:

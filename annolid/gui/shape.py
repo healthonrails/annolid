@@ -11,10 +11,8 @@ import skimage.measure
 from shapely.geometry import Polygon
 from shapely.validation import explain_validity
 
-
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
-
 
 DEFAULT_LINE_COLOR = QtGui.QColor(0, 255, 0, 128)  # bf hovering
 DEFAULT_FILL_COLOR = QtGui.QColor(0, 255, 0, 128)  # hovering
@@ -297,27 +295,30 @@ class Shape(object):
             painter.fillPath(negative_vrtx_path, QtGui.QColor(255, 0, 0, 255))
 
         # Draw the label near the shape
-        if self.label:
+        if self.label and (self.shape_type == "polygon"
+                           or self.shape_type == "rectangle"):
             self._draw_label(painter)
 
     def _draw_label(self, painter):
         # Get the bounding box of the shape
         bounding_rect = self.boundingRect()
 
-        # Calculate label position (top-left corner of bounding box)
-        label_pos = bounding_rect.topLeft()
+        # Check if bounding_rect is valid before using it
+        if bounding_rect is not None and bounding_rect.isValid():
+            # Calculate label position (top-left corner of bounding box)
+            label_pos = bounding_rect.topLeft()
 
-        # Set label style
-        shape_color = self.line_color if self.line_color else Qt.black
-        painter.setPen(shape_color)
+            # Set label style
+            shape_color = self.line_color if self.line_color else Qt.black
+            painter.setPen(shape_color)
 
-        # Auto-adjust font size based on shape size
-        font_size = int(
-            max(20, min(bounding_rect.width(), bounding_rect.height()) // 5))
-        painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
+            # Auto-adjust font size based on shape size
+            font_size = int(
+                max(20, min(bounding_rect.width(), bounding_rect.height()) // 5))
+            painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
 
-        # Draw label text without background box
-        painter.drawText(label_pos, self.label)
+            # Draw label text without background box
+            painter.drawText(label_pos, self.label)
 
     def drawVertex(self, path, i):
         d = self.point_size / self.scale
@@ -392,19 +393,26 @@ class Shape(object):
             if len(self.points) == 2:
                 rectangle = self.getRectFromLine(*self.points)
                 path.addRect(rectangle)
+            return path  # Return path even if it's empty
         elif self.shape_type == "circle":
             path = QtGui.QPainterPath()
             if len(self.points) == 2:
                 rectangle = self.getCircleRectFromLine(self.points)
                 path.addEllipse(rectangle)
+            return path  # Return path even if it's empty
         else:
+            if not self.points:
+                return None  # Return None if no points for other shape types
             path = QtGui.QPainterPath(self.points[0])
             for p in self.points[1:]:
                 path.lineTo(p)
             return path
 
     def boundingRect(self):
-        return self.makePath().boundingRect()
+        path = self.makePath()
+        if path:
+            return path.boundingRect()
+        return None
 
     def moveBy(self, offset):
         self.points = [p + offset for p in self.points]
