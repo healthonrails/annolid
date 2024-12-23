@@ -192,7 +192,7 @@ class Shape(object):
         x2, y2 = pt2.x(), pt2.y()
         return QtCore.QRectF(x1, y1, x2 - x1, y2 - y1)
 
-    def paint(self, painter):
+    def paint(self, painter, image_width=None, image_height=None):
         if self.mask is None and not self.points:
             return
 
@@ -297,14 +297,15 @@ class Shape(object):
         # Draw the label near the shape
         if self.label and (self.shape_type == "polygon"
                            or self.shape_type == "rectangle"):
-            self._draw_label(painter)
+            self._draw_label(painter, image_width, image_height)
 
-    def _draw_label(self, painter):
+    def _draw_label(self, painter, image_width, image_height):
         # Get the bounding box of the shape
         bounding_rect = self.boundingRect()
 
         # Check if bounding_rect is valid before using it
-        if bounding_rect is not None and bounding_rect.isValid():
+        if bounding_rect is not None and bounding_rect.isValid() and \
+           self.should_draw_label(image_width, image_height):
             # Calculate label position (top-left corner of bounding box)
             label_pos = bounding_rect.topLeft()
 
@@ -319,6 +320,28 @@ class Shape(object):
 
             # Draw label text without background box
             painter.drawText(label_pos, self.label)
+    
+    def should_draw_label(self, image_width, image_height):
+        """Determine if the shape is large enough to draw its label."""
+        if image_width is None or image_height is None:
+             return False # No image size, don't draw label
+
+        if image_width == 0 or image_height == 0:
+             return False # Avoid division by zero.
+            
+        image_area = image_width * image_height
+        if image_area == 0:
+           return False #avoid division by zero.
+
+        shape_rect = self.boundingRect()
+        if shape_rect is None:
+             return False # no shape, don't draw label
+        shape_area = shape_rect.width() * shape_rect.height()
+
+        # Define a threshold (adjust as needed) for the minimum shape size relative to the image
+        min_area_percentage = 0.02  # Example: 2% of the image area. Adjust this value.
+        min_area = image_area * min_area_percentage
+        return shape_area > min_area
 
     def drawVertex(self, path, i):
         d = self.point_size / self.scale

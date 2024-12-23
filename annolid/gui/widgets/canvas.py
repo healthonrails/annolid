@@ -4,6 +4,7 @@ from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
 from labelme import QT5
 import numpy as np
+from PIL import Image
 import cv2
 import os
 import imgviz
@@ -114,6 +115,8 @@ class Canvas(QtWidgets.QWidget):
         self._painter = QtGui.QPainter()
         self._cursor = CURSOR_DEFAULT
         self.mouse_xy_text = ""
+        # Collect shapes that need prediction
+        self.shapes_to_predict = []
 
         self.label = QLabel(self)
         self.label.setAlignment(QtCore.Qt.AlignCenter)
@@ -253,7 +256,9 @@ class Canvas(QtWidgets.QWidget):
             # Finalize the process
             self.finalise()
 
-    def predictAiRectangle(self, prompt, is_polygon_output=True):
+    def predictAiRectangle(self, prompt,
+                           rectangle_shapes=None,
+                           is_polygon_output=True):
         """
         Predict bounding boxes and then polygons based on the given prompt.
 
@@ -295,20 +300,28 @@ class Canvas(QtWidgets.QWidget):
                                      is_polygon_output=is_polygon_output)
             return
 
+        if rectangle_shapes is None:
+            rectangle_shapes = []
+        _bboxes = self._predict_similar_rectangles(
+            rectangle_shapes=rectangle_shapes, prompt=prompt)
+
+        label = prompt
+
         # Initialize AI model if not already initialized
         if self._ai_model_rect is None:
             self._ai_model_rect = GroundingDINO()
 
-        # Predict bounding boxes using the AI model
+        # # Predict bounding boxes using the AI model
         bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
-        _bboxes = [list(box) for box, _ in bboxes]
+        gd_bboxes = [list(box) for box, _ in bboxes]
+        _bboxes.extend(gd_bboxes)
 
         # Segment objects using SAM HQ model with predicted bounding boxes
         masks, scores, _bboxes = self.sam_hq_model.segment_objects(
             image_data, _bboxes)
 
         # Iterate over each predicted bounding box
-        for i, (box, label) in enumerate(bboxes):
+        for i, box in enumerate(_bboxes):
             # Check if the output format is polygons
             if is_polygon_output:
                 # Convert segmentation mask to polygons
@@ -1021,7 +1034,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         p.scale(self.scale, self.scale)
         p.translate(self.offsetToCenter())
 
-        p.drawPixmap(0, 0, self.pixmap)
+        # Check if pixmap is valid
+        if self.pixmap and not self.pixmap.isNull():
+            p.drawPixmap(0, 0, self.pixmap)
+
         self.sam_mask.paint(p)
 
         if self.current_behavior_text and len(self.current_behavior_text) > 0:
@@ -1063,11 +1079,18 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
         Shape.scale = self.scale
         MultipoinstShape.scale = self.scale
+        if self.pixmap and not self.pixmap.isNull():
+            image_width = self.pixmap.width()
+            image_height = self.pixmap.height()
+        else:
+            image_width = None
+            image_height = None
+
         for shape in self.shapes:
             if (shape.selected or not self._hideBackround) and self.isVisible(shape):
                 shape.fill = shape.selected or shape == self.hShape
                 try:
-                    shape.paint(p)
+                    shape.paint(p, image_width, image_height)
                 except SystemError as e:
                     print(e)
         if self.current:
@@ -1173,6 +1196,25 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
     def finalise(self):
         # assert self.current
+        if self.createMode == "rectangle":
+            self.current.close()
+            rect_shape = self.current
+            self.shapes.append(rect_shape)
+            self.storeShapes()
+            self.current = None
+            self.setHiding(False)
+            self.newShape.emit()
+            self.update()
+
+            # Get the label of the rectangle
+            rect_label = rect_shape.label
+            if rect_shape.description and rect_shape.description.startswith('0'):
+                rect_shape.description = f"used_{rect_shape.description}"
+                self.createMode = "grounding_sam"
+                # Call predictAiRectangle with the rectangle shape and its label
+                self.predictAiRectangle(
+                    rect_label, [rect_shape], is_polygon_output=True)
+            return
         if self.createMode == "ai_polygon":
             # convert points to polygon by an AI model
             if self.current.shape_type != "points":
@@ -1425,6 +1467,43 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             self.samEmbedding()
         self.update()
 
+    def _predict_similar_rectangles(self, rectangle_shapes=None, prompt=None, confidence_threshold=0.23):
+        """Predict more rectangle shapes without modifying self.shapes directly here."""
+        detected_boxes = []
+        if self.pixmap and not self.pixmap.isNull():
+            try:
+                from annolid.detector.countgd.predict import ObjectCounter
+                qt_image = self.pixmap.toImage()
+                image_data = convert_qt_image_to_rgb_cv_image(qt_image)
+                pil_img = Image.fromarray(image_data)
+                object_counter = ObjectCounter()
+                exemplar_boxes = []
+                for rectangle_shape in rectangle_shapes:
+
+                    x1 = int(
+                        min(rectangle_shape.points[0].x(), rectangle_shape.points[1].x()))
+                    y1 = int(
+                        min(rectangle_shape.points[0].y(), rectangle_shape.points[1].y()))
+                    x2 = int(
+                        max(rectangle_shape.points[0].x(), rectangle_shape.points[1].x()))
+                    y2 = int(
+                        max(rectangle_shape.points[0].y(), rectangle_shape.points[1].y()))
+                    exemplar_boxes.append([x1, y1, x2, y2])
+
+                detected_boxes = object_counter.count_objects(
+                    pil_img,
+                    text_prompt=prompt,
+                    exemplar_image=pil_img,
+                    exemplar_boxes=exemplar_boxes,
+                    confidence_threshold=confidence_threshold,
+                )
+
+            except ImportError:
+                logger.warning("...")
+            except Exception as e:
+                logger.error(f"Error in CountGD: {e}")
+        return detected_boxes
+
     def loadShapes(self, shapes, replace=True):
         if replace:
             self.shapes = list(shapes)
@@ -1454,4 +1533,6 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.restoreCursor()
         self.pixmap = None
         self.shapesBackups = []
+        self.shapes = []
+        self.sam_mask = MaskShape()
         self.update()
