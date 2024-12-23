@@ -7,4 +7,4 @@
 from .GroundingDINO import build_groundingdino
 
 def build_model(args):
-    return build(args)
+    return build_groundingdino(args)
