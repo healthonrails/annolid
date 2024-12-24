@@ -1,0 +1,4 @@
+file_paths:
+  output_video_folder: "behavior_video_clips"
+processing:
+  gap_duration: 2.5
