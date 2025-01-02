@@ -1208,6 +1208,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
             # Get the label of the rectangle
             rect_label = rect_shape.label
+            if rect_shape.description is None or len(rect_shape.description) == 0:
+                rect_shape.description = f"0.23"  # default confidence value
             if rect_shape.description and rect_shape.description.startswith('0'):
                 rect_shape.description = f"used_{rect_shape.description}"
                 self.createMode = "grounding_sam"
