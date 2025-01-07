@@ -35,6 +35,7 @@ from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets import RecordingWidget
+from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
@@ -585,7 +586,29 @@ class AnnolidWindow(MainWindow):
             else None
         )
 
+        self.canvas_screenshot_widget = CanvasScreenshotWidget(
+            canvas=self.canvas, here=Path(__file__).resolve().parent)
+        self._setup_canvas_screenshot_action()
+
         self.populateModeActions()
+
+    def _setup_canvas_screenshot_action(self):
+        """Sets up the 'Save Canvas Image' action."""
+        action = functools.partial(newAction, self)
+        self.save_canvas_screenshot_action = action(
+            self.tr("Save Canvas Image"),
+            self._save_canvas_screenshot,
+            'Ctrl+Shift+I',  # Shortcut
+            "Save Canvas Image",
+            self.tr("Save the current canvas as a PNG image."),
+            enabled=True
+        )
+        self.menus.file.addAction(self.save_canvas_screenshot_action)
+
+    def _save_canvas_screenshot(self):
+        """ Calls CanvasScreenshotWidget and passes in the current filename"""
+        self.canvas_screenshot_widget.save_canvas_screenshot(
+            filename=self.filename)
 
     def handle_flags_saved(self, flags={}):
         default_config = self.here.parent.resolve() / 'configs' / 'behaviors.yaml'
