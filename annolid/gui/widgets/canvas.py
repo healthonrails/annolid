@@ -286,7 +286,7 @@ class Canvas(QtWidgets.QWidget):
             self.sam_hq_model = SamHQSegmenter()
 
         # If the prompt contains 'every', segment everything
-        if 'every' in prompt.lower():
+        if prompt and 'every' in prompt.lower():
             points_per_side, prompt = extract_number_and_remove_digits(prompt)
             if points_per_side < 1 or points_per_side > 100:
                 points_per_side = 32
@@ -300,21 +300,22 @@ class Canvas(QtWidgets.QWidget):
                                      is_polygon_output=is_polygon_output)
             return
 
-        if rectangle_shapes is None:
-            rectangle_shapes = []
-        _bboxes = self._predict_similar_rectangles(
-            rectangle_shapes=rectangle_shapes, prompt=prompt)
-
         label = prompt
+        if rectangle_shapes is not None:
+            _bboxes = self._predict_similar_rectangles(
+                rectangle_shapes=rectangle_shapes, prompt=prompt)
+        else:
+            rectangle_shapes = []
+            _bboxes = self._predict_similar_rectangles(
+                rectangle_shapes=rectangle_shapes, prompt=prompt)
+            # Initialize AI model if not already initialized
+            if self._ai_model_rect is None:
+                self._ai_model_rect = GroundingDINO()
 
-        # Initialize AI model if not already initialized
-        if self._ai_model_rect is None:
-            self._ai_model_rect = GroundingDINO()
-
-        # # Predict bounding boxes using the AI model
-        bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
-        gd_bboxes = [list(box) for box, _ in bboxes]
-        _bboxes.extend(gd_bboxes)
+            # # Predict bounding boxes using the AI model
+            bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
+            gd_bboxes = [list(box) for box, _ in bboxes]
+            _bboxes.extend(gd_bboxes)
 
         # Segment objects using SAM HQ model with predicted bounding boxes
         masks, scores, _bboxes = self.sam_hq_model.segment_objects(
