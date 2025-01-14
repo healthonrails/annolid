@@ -1,3 +1,36 @@
+# Enable CPU fallback for unsupported MPS ops
+import os  # noqa
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # noqa
+
+import re
+import csv
+import os.path as osp
+import time
+import yaml
+import html
+import shutil
+import sys
+
+from PIL import ImageQt
+import pandas as pd
+import numpy as np
+import torch
+import codecs
+import imgviz
+import argparse
+from pathlib import Path
+import functools
+import requests
+import subprocess
+
+from labelme.ai import MODELS
+from qtpy import QtCore
+from qtpy.QtCore import Qt
+from qtpy import QtWidgets
+from qtpy import QtGui
+from labelme import PY2
+from labelme import QT5
+
 from annolid.gui.widgets.video_manager import VideoManagerWidget
 from annolid.gui.workers import FlexibleWorker, LoadFrameThread
 from annolid.gui.shape import Shape
@@ -45,35 +78,6 @@ from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDia
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
-from labelme.ai import MODELS
-from qtpy import QtCore
-from qtpy.QtCore import Qt
-from qtpy import QtWidgets
-from qtpy import QtGui
-from labelme import PY2
-from labelme import QT5
-from PIL import ImageQt
-import pandas as pd
-import numpy as np
-import torch
-import codecs
-import imgviz
-import argparse
-from pathlib import Path
-import functools
-import requests
-import subprocess
-import re
-import csv
-import os.path as osp
-import time
-import yaml
-import html
-import shutil
-import sys
-import os
-# Enable CPU fallback for unsupported MPS ops
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 __appname__ = 'Annolid'
 __version__ = "1.2.1"
