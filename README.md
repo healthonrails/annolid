@@ -144,6 +144,21 @@ annolid
 annolid --labels=/path/to/labels_custom.txt
 
 ```
+
+### Optional: Using SAM2 for Object Tracking
+
+If you want to use SAM2 for tracking objects, follow these steps:
+
+1. Navigate to the `segment-anything-2` directory:
+    ```bash
+    cd segmentation/SAM/segment-anything-2
+    ```
+
+2. Install the package in editable mode:
+    ```bash
+    pip install -e .
+    ```
+    
 ![Annolid UI based on labelme](docs/imgs/annolid_ui.png)
 
 If you want to learn more about labelme, please check the following link.
