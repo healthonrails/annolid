@@ -27,11 +27,11 @@ jobs:
         with:
           body: ${{steps.github_release.outputs.CHANGELOG}}
 
-      - name: Create release url file
+      - name: Create release URL file
         run: echo "${{ steps.create_release.outputs.upload_url }}" > release_url.txt
 
-      - name: Save release url file for publish
-        uses: actions/upload-artifact@v1
+      - name: Save release URL file for publish
+        uses: actions/upload-artifact@v4
         with:
           name: release_url
           path: release_url.txt
@@ -66,12 +66,12 @@ jobs:
           pip install pyinstaller
           pyinstaller annolid.spec
 
-      - name: Load release url file from release job
-        uses: actions/download-artifact@v1
+      - name: Load release URL file from release job
+        uses: actions/download-artifact@v4
         with:
           name: release_url
 
-      - name: Get release file name & upload url
+      - name: Get release file name & upload URL
         id: get_release_info
         run: |
           echo "::set-output name=upload_url::$(cat release_url/release_url.txt)"
