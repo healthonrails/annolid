@@ -6,11 +6,6 @@
 	path = annolid/segmentation/yolact
 	url = https://github.com/healthonrails/yolact.git
 
-
-[submodule "annolid/segmentation/yolact"]
-	path = annolid/segmentation/yolact
-	url = https://github.com/healthonrails/yolact.git
-
 [submodule "annolid/segmentation/SCOPS"]
 	path = annolid/segmentation/SCOPS
 	url = https://github.com/healthonrails/SCOPS.git
@@ -18,7 +13,6 @@
 [submodule "annolid/detector/yolov7"]
 	path = annolid/detector/yolov7
 	url = https://github.com/healthonrails/yolov7.git
-
 [submodule "annolid/segmentation/SAM/segment-anything-2"]
 	path = annolid/segmentation/SAM/segment-anything-2
 	url = https://github.com/healthonrails/segment-anything-2.git
