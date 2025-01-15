@@ -80,7 +80,7 @@ from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
 
 __appname__ = 'Annolid'
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
