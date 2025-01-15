@@ -158,7 +158,18 @@ If you want to use SAM2 for tracking objects, follow these steps:
     ```bash
     pip install -e .
     ```
-    
+### Additional Dependencies
+
+If you are installing Annolid using `pip install annolid`, you will also need to install the `segment-anything` package from the GitHub repository. Follow these steps:
+
+1. Install the `segment-anything` package:
+    ```bash
+    pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+    ```
+
+This will install the `segment-anything` package from the specified GitHub repository.
+
+
 ![Annolid UI based on labelme](docs/imgs/annolid_ui.png)
 
 If you want to learn more about labelme, please check the following link.
