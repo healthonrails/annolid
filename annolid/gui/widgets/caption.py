@@ -4,10 +4,13 @@ from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject
 import threading
 import os
 import tempfile
+import matplotlib.pyplot as plt
+import io
+import base64
 
 
 class CaptionWidget(QtWidgets.QWidget):
-    """A widget for editing and displaying image captions."""
+    """A widget for editing and displaying image captions, supporting LaTeX."""
     captionChanged = Signal(str)  # Signal emitted when caption changes
     charInserted = Signal(str)    # Signal emitted when a character is inserted
     charDeleted = Signal(str)     # Signal emitted when a character is deleted
@@ -28,6 +31,14 @@ class CaptionWidget(QtWidgets.QWidget):
 
         # Create a QTextEdit for editing captions
         self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)  # Make it read-only for chat display
+        # Style the QTextEdit to have a light background
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: #f0f0f0; /* Very light gray background */
+                border: 1px solid #c0c0c0; /* Light gray border */
+            }
+        """)
         self.layout.addWidget(self.text_edit)
 
         # Create a horizontal layout for the buttons and labels
@@ -161,7 +172,7 @@ class CaptionWidget(QtWidgets.QWidget):
             return
 
         # Append user's input to the chat history
-        self.append_to_chat_history(f"User: {user_input}")
+        self.append_to_chat_history(f"User: {user_input}", is_user=True)
 
         # Update UI to indicate that a chat is in progress
         self.chat_button.setEnabled(False)
@@ -171,17 +182,45 @@ class CaptionWidget(QtWidgets.QWidget):
         self.thread_pool.start(task)
         self.prompt_text_edit.clear()
 
-    def append_to_chat_history(self, message):
-        """Appends a message to the chat history display."""
-        self.text_edit.append(message + '\n')
+    def append_to_chat_history(self, message, is_user=False):
+        """Appends a message to the chat history display with styling."""
+        if is_user:
+            # User message style (right-aligned, light blue background, dark text)
+            message_html = f"""
+                <div style='text-align: right; margin-left: 30%; background-color: #e6f7ff; color: #000; padding: 10px; border-radius: 10px; margin-bottom: 8px; word-wrap: break-word;'>
+                    {self.escape_html(message)}
+                </div>
+            """
+        else:
+            # Model message style (left-aligned, white background, dark text)
+            message_html = f"""
+                <div style='text-align: left; margin-right: 30%; background-color: #ffffff; color: #000; padding: 10px; border-radius: 10px; margin-bottom: 8px; word-wrap: break-word;'>
+                    {self.escape_html(message)}
+                </div>
+            """
+
+        current_html = self.text_edit.toHtml()
+        # Find the closing body tag and insert before it, or just append if no body tag
+        body_close_tag_index = current_html.lower().rfind("</body>")
+        if body_close_tag_index != -1:
+            new_html = current_html[:body_close_tag_index] + \
+                message_html + current_html[body_close_tag_index:]
+        else:
+            new_html = current_html + message_html
+
+        self.text_edit.setHtml(new_html)
+        # Ensure scrollbar is at the bottom after adding new message
+        self.text_edit.verticalScrollBar().setValue(
+            self.text_edit.verticalScrollBar().maximum())
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message, is_error):
-        """Handles the chat response."""
+        """Handles the chat response and appends to chat history."""
         if is_error:
-            self.text_edit.append("\nError: " + message)
+            # Keep error message simple
+            self.append_to_chat_history("\nError: " + message)
         else:
-            self.text_edit.append("\nOllama: " + message)
+            self.append_to_chat_history("Ollama: " + message)
 
         # Reset UI
         self.chat_button.setEnabled(True)
@@ -220,11 +259,55 @@ class CaptionWidget(QtWidgets.QWidget):
 
         self.previous_text = current_text
 
+    def latex_to_image_base64(self, latex_string, fontsize=12, dpi=100):
+        """Renders LaTeX string to a base64 encoded PNG image."""
+        try:
+            plt.clf()  # Clear previous plots
+            # Adjust figure size as needed
+            fig = plt.figure(figsize=(6, 2), dpi=dpi)
+            # Use r'' for raw string and $..$ for inline math
+            fig.text(0.5, 0.5, rf'${latex_string}$',
+                     fontsize=fontsize, ha='center', va='center')
+            plt.axis('off')
+
+            buf = io.BytesIO()
+            # Save with tight bbox and transparent background
+            plt.savefig(buf, format='png', bbox_inches='tight',
+                        pad_inches=0.1, transparent=True)
+            buf.seek(0)
+            image_base64 = base64.b64encode(buf.read()).decode('utf-8')
+            plt.close(fig)  # Close the figure to free memory
+            return image_base64
+        except Exception as e:
+            print(f"Error rendering LaTeX: {e}")
+            return None
+
     def set_caption(self, caption_text):
-        """Sets the caption text in the QTextEdit without emitting signals."""
+        """Sets the caption text in the QTextEdit, rendering LaTeX formulas as images."""
         self.previous_text = ""
-        self.text_edit.setPlainText(caption_text)
+        html_content = ""
+        parts = caption_text.split("$$")  # Split by LaTeX delimiters
+
+        for i, part in enumerate(parts):
+            if i % 2 == 0:  # Non-LaTeX part
+                # Escape HTML special characters
+                html_content += self.escape_html(part)
+            else:  # LaTeX part
+                base64_data = self.latex_to_image_base64(part)
+                if base64_data:
+                    # vertical-align:middle to align images with text
+                    html_content += f'<img src="data:image/png;base64,{base64_data}" style="vertical-align:middle;"/>'
+                else:
+                    # Display error if rendering fails, escape LaTeX for display
+                    html_content += f'<span style="color:red;">Error rendering LaTeX: $${self.escape_html(part)}$$</span>'
+
+        # Enclose in body for consistent HTML structure
+        self.text_edit.setHtml(f"<body>{html_content}</body>")
         self.previous_text = caption_text
+
+    def escape_html(self, text):
+        """Escapes HTML special characters to prevent rendering issues."""
+        return text.replace('&', '&').replace('<', '<').replace('>', '>')
 
     def clear_caption(self):
         """Clears the caption."""
@@ -252,39 +335,55 @@ class CaptionWidget(QtWidgets.QWidget):
         self.read_button.setEnabled(True)  # Re-enable button
 
     def read_caption(self):  # This method is now used by the background task
-        """Reads the current caption using gTTS and plays it."""
-        from gtts import gTTS
-        import sounddevice as sd
-        from pydub import AudioSegment
-        import numpy as np
+        """Reads the current caption using kokoro or gTTS and plays it."""
         try:
-            current_text = self.text_edit.toPlainText()
-            if not current_text:
+            from annolid.agents.kokoro_tts import text_to_speech
+            from annolid.agents.kokoro_tts import play_audio
+            text = self.text_edit.toPlainText()
+            if not text:
                 print("Caption is empty. Nothing to read.")
                 return
-
-            tts = gTTS(text=current_text, lang='en')
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                temp_file_path = os.path.join(
-                    tmpdir, "temp_caption.mp3")  # mp3 file inside temp dir
-                tts.save(temp_file_path)
-
-                try:
-                    audio = AudioSegment.from_file(
-                        temp_file_path, format="mp3")
-                    samples = np.array(audio.get_array_of_samples())
-                    if audio.channels == 2:
-                        samples = samples.reshape((-1, 2))
-                    sd.play(samples, samplerate=audio.frame_rate)
-                    sd.wait()
-
-                except Exception as e:
-                    # More specific error message
-                    print(f"Error playing MP3: {e}")
-
+            audio_data = text_to_speech(text)
+            if audio_data:
+                samples, sample_rate = audio_data
+                print("\nText-to-speech conversion successful!")
+                # Play the audio using sounddevice
+                play_audio(samples, sample_rate)
+            else:
+                print("\nText-to-speech conversion failed.")
         except Exception as e:
-            print(f"Error in gTTS: {e}")
+            from gtts import gTTS
+            import sounddevice as sd
+            from pydub import AudioSegment
+            import numpy as np
+            try:
+                current_text = self.text_edit.toPlainText()
+                if not current_text:
+                    print("Caption is empty. Nothing to read.")
+                    return
+
+                tts = gTTS(text=current_text, lang='en')
+
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    temp_file_path = os.path.join(
+                        tmpdir, "temp_caption.mp3")  # mp3 file inside temp dir
+                    tts.save(temp_file_path)
+
+                    try:
+                        audio = AudioSegment.from_file(
+                            temp_file_path, format="mp3")
+                        samples = np.array(audio.get_array_of_samples())
+                        if audio.channels == 2:
+                            samples = samples.reshape((-1, 2))
+                        sd.play(samples, samplerate=audio.frame_rate)
+                        sd.wait()
+
+                    except Exception as e:
+                        # More specific error message
+                        print(f"Error playing MP3: {e}")
+
+            except Exception as e:
+                print(f"Error in gTTS: {e}")
         finally:
             self.readCaptionFinished.emit()
 
@@ -296,25 +395,26 @@ class CaptionWidget(QtWidgets.QWidget):
             task = DescribeImageTask(image_path, self)
             self.thread_pool.start(task)
         else:
-            self.text_edit.setPlainText("No image selected for description.")
+            self.set_caption("No image selected for description.")
 
     @QtCore.Slot(str, bool)
     def update_description_status(self, message, is_error):
         """Updates the description status in the UI."""
         if is_error:
-            self.text_edit.setPlainText(message)
+            self.set_caption(message)
             self.describe_label.setText("Description failed.")
         else:
-            self.text_edit.setPlainText(message)
+            self.set_caption(message)
             self.describe_label.setText("Describe the image")
 
     def emit_caption_changed(self):
         """Emits the captionChanged signal with the current caption."""
-        self.captionChanged.emit(self.text_edit.toPlainText())
+        self.captionChanged.emit(
+            self.text_edit.toPlainText())  # emit plain text caption
 
     def get_caption(self):
-        """Returns the current caption text."""
-        return self.text_edit.toPlainText()
+        """Returns the current caption text (plain text, not HTML)."""
+        return self.text_edit.toPlainText()  # get plain text caption for other operations
 
     def toggle_recording(self):
         """Toggles the recording state and updates the UI."""
@@ -393,8 +493,9 @@ class CaptionWidget(QtWidgets.QWidget):
 
                 # Transcribe the combined audio
                 text = recognizer.recognize_google(complete_audio)
-                self.text_edit.moveCursor(QtGui.QTextCursor.End)
-                self.text_edit.insertPlainText(text)
+                current_plain_text = self.get_caption()  # Get current plain text
+                # Append to the plain text and re-render with LaTeX
+                self.set_caption(current_plain_text + text)
 
             except sr.UnknownValueError:
                 self.record_label.setText("Could not understand audio.")
@@ -414,7 +515,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def improve_caption_async(self):
         """Improves the caption using Ollama in a background thread."""
-        current_caption = self.text_edit.toPlainText()
+        current_caption = self.get_caption()  # get plain text caption
         if not current_caption:
             print("Caption is empty. Nothing to improve.")
             return
@@ -436,7 +537,10 @@ class CaptionWidget(QtWidgets.QWidget):
             self.improve_label.setText("Improvement failed.")
         else:
             # Append improved version
-            self.text_edit.append("\n\nImproved Version:\n" + message)
+            current_plain_text = self.get_caption()
+            # append to plain text and re-render
+            self.set_caption(current_plain_text +
+                             "\n\nImproved Version:\n" + message)
             self.improve_label.setText("Improve Caption")
 
         self.improve_button.setEnabled(True)
@@ -576,7 +680,7 @@ class ChatWithOllamaTask(QRunnable):
             # Check and handle the response
             if "message" in response and "content" in response["message"]:
                 response_content = response["message"]["content"]
-                QtCore.QMetaObject.invokeMethod(
+                QMetaObject.invokeMethod(
                     self.widget, "update_chat_response", QtCore.Qt.QueuedConnection,
                     QtCore.Q_ARG(str, response_content),
                     QtCore.Q_ARG(bool, False)
