@@ -1,5 +1,5 @@
 from qtpy import QtWidgets, QtGui, QtCore
-from qtpy.QtWidgets import QVBoxLayout, QTextEdit, QPushButton, QLabel, QHBoxLayout, QLineEdit
+from qtpy.QtWidgets import QVBoxLayout, QTextEdit, QPushButton, QLabel, QHBoxLayout, QLineEdit, QComboBox
 from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject
 import threading
 import os
@@ -7,6 +7,7 @@ import tempfile
 import matplotlib.pyplot as plt
 import io
 import base64
+import ollama  # Import ollama here
 
 
 class CaptionWidget(QtWidgets.QWidget):
@@ -21,6 +22,15 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.available_models = self.get_available_models()
+        self.selected_model = "llama3.2-vision:latest"  # Default model
+        if "llama3.2-vision:latest" not in self.available_models:
+            if self.available_models:
+                # Fallback to first available if default not present
+                self.selected_model = self.available_models[0]
+            else:
+                self.selected_model = ""  # No model available
+
         self.init_ui()
         self.previous_text = ""
         self.image_path = ""
@@ -29,9 +39,37 @@ class CaptionWidget(QtWidgets.QWidget):
         self.voiceRecordingFinished.connect(
             self.on_voice_recording_finished)  # Connect signal
 
+    def get_available_models(self):
+        """Fetches the list of available Ollama models."""
+        try:
+            model_list = ollama.list()
+            return [model['name'] for model in model_list['models']]
+        except Exception as e:
+            print(f"Error fetching model list: {e}")
+            return []
+
     def init_ui(self):
         """Initializes the UI components."""
         self.layout = QVBoxLayout(self)
+
+        # Model selection dropdown
+        self.model_label = QLabel("Select Model:")
+        self.model_selector = QComboBox()
+        self.model_selector.addItems(self.available_models)
+        if self.selected_model and self.selected_model in self.available_models:
+            self.model_selector.setCurrentText(self.selected_model)
+        elif self.available_models:
+            # Ensure selected_model is updated if default was not found and list is not empty
+            self.selected_model = self.available_models[0]
+            # Select the first model if default is not available
+            self.model_selector.setCurrentIndex(0)
+
+        model_layout = QHBoxLayout()
+        model_layout.addWidget(self.model_label)
+        model_layout.addWidget(self.model_selector)
+        self.layout.addLayout(model_layout)
+
+        self.model_selector.currentIndexChanged.connect(self.on_model_changed)
 
         # Create a QTextEdit for editing captions
         self.text_edit = QTextEdit()
@@ -48,7 +86,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
                 font-family: monospace;           // Consistent character spacing, especially useful for code
                 line-height: 1.6;                // Comfortable line height for reading
-                
+
                 -|:after {
                     content: '';
                     color: #666666;                // Subtle gray line between lines
@@ -181,6 +219,11 @@ class CaptionWidget(QtWidgets.QWidget):
         # Integrate existing layouts
         self.setLayout(self.layout)
 
+    def on_model_changed(self, index):
+        """Updates the selected model when the combo box changes."""
+        self.selected_model = self.model_selector.itemText(index)
+        print(f"Selected model changed to: {self.selected_model}")
+
     def chat_with_ollama(self):
         """Initiates a chat with the Ollama model and displays chat history."""
         user_input = self.prompt_text_edit.text()
@@ -195,7 +238,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self.chat_button.setEnabled(False)
 
         # Start the chat task
-        task = ChatWithOllamaTask(user_input, self.image_path, self)
+        task = ChatWithOllamaTask(
+            user_input, self.image_path, self, model=self.selected_model)  # Pass selected model
         self.thread_pool.start(task)
         self.prompt_text_edit.clear()
 
@@ -409,7 +453,8 @@ class CaptionWidget(QtWidgets.QWidget):
         image_path = self.get_image_path()
         if image_path:
             self.describe_label.setText("Describing image...")
-            task = DescribeImageTask(image_path, self)
+            task = DescribeImageTask(
+                image_path, self, model=self.selected_model)  # Pass selected model
             self.thread_pool.start(task)
         else:
             self.set_caption("No image selected for description.")
@@ -564,7 +609,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self.improve_button.setEnabled(False)
 
         if self.image_path:
-            task = ImproveCaptionTask(self.image_path, current_caption, self)
+            task = ImproveCaptionTask(
+                self.image_path, current_caption, self, model=self.selected_model)  # Pass selected model
             self.thread_pool.start(task)
         else:
             self.update_improve_status(
@@ -587,11 +633,12 @@ class CaptionWidget(QtWidgets.QWidget):
 
 
 class ImproveCaptionTask(QRunnable):
-    def __init__(self, image_path, current_caption, widget):
+    def __init__(self, image_path, current_caption, widget, model="llama3.2-vision:latest"):  # Added model parameter
         super().__init__()
         self.image_path = image_path
         self.current_caption = current_caption
         self.widget = widget
+        self.model = model  # Store model
 
     def run(self):
         try:
@@ -611,7 +658,7 @@ class ImproveCaptionTask(QRunnable):
                 }]
 
             response = ollama.chat(
-                model='llama3.2-vision',
+                model=self.model,  # Use selected model
                 messages=messages
             )
 
@@ -639,19 +686,21 @@ class DescribeImageTask(QRunnable):
 
     def __init__(self, image_path,
                  widget,
-                 prompt='Describe this image in detail.'
+                 prompt='Describe this image in detail.',
+                 model="llama3.2-vision:latest"  # Added model parameter
                  ):
         super().__init__()
         self.image_path = image_path
         self.widget = widget
         self.prompt = prompt
+        self.model = model  # Store model
 
     def run(self):
         """Runs the task in the background."""
         try:
             import ollama
             response = ollama.chat(
-                model='llama3.2-vision',
+                model=self.model,  # Use selected model
                 messages=[{
                     'role': 'user',
                     'content': self.prompt,
@@ -696,11 +745,12 @@ class ReadCaptionTask(QRunnable):
 class ChatWithOllamaTask(QRunnable):
     """A task to chat with the Ollama model in the background."""
 
-    def __init__(self, prompt, image_path=None, widget=None):
+    def __init__(self, prompt, image_path=None, widget=None, model="llama3.2-vision:latest"):  # Added model parameter
         super().__init__()
         self.prompt = prompt
         self.image_path = image_path
         self.widget = widget
+        self.model = model  # Store model
 
     def run(self):
         """Sends a chat message to Ollama and processes the response."""
@@ -713,7 +763,7 @@ class ChatWithOllamaTask(QRunnable):
                 messages[0]['images'] = [self.image_path]
 
             response = ollama.chat(
-                model='llama3.2-vision',
+                model=self.model,  # Use selected model
                 messages=messages,
             )
 
