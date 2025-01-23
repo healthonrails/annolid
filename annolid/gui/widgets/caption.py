@@ -16,6 +16,8 @@ class CaptionWidget(QtWidgets.QWidget):
     charDeleted = Signal(str)     # Signal emitted when a character is deleted
     readCaptionFinished = Signal()  # Define a custom signal
     imageNotFound = Signal(str)
+    # Signal to emit when voice recording is done
+    voiceRecordingFinished = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -24,6 +26,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self.image_path = ""
         self.is_recording = False
         self.thread_pool = QThreadPool()  # Thread pool for running background tasks
+        self.voiceRecordingFinished.connect(
+            self.on_voice_recording_finished)  # Connect signal
 
     def init_ui(self):
         """Initializes the UI components."""
@@ -31,12 +35,25 @@ class CaptionWidget(QtWidgets.QWidget):
 
         # Create a QTextEdit for editing captions
         self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(True)  # Make it read-only for chat display
+        self.text_edit.setReadOnly(False)  # Make it read-only for chat display
         # Style the QTextEdit to have a light background
         self.text_edit.setStyleSheet("""
             QTextEdit {
-                background-color: #f0f0f0; /* Very light gray background */
-                border: 1px solid #c0c0c0; /* Light gray border */
+                background-color: #f0f0f0;          // Very light gray background
+                border: 1px solid #c0c0c0;          // Light gray border
+
+                color: #e0e0e0;                   // Light blue text (or white if very light background)
+                hover:color: #d0d0d0;              // Slightly darker on hover for better UX
+                text-indent: -1em;               // Indent lines for better readability
+
+                font-family: monospace;           // Consistent character spacing, especially useful for code
+                line-height: 1.6;                // Comfortable line height for reading
+                
+                -|:after {
+                    content: '';
+                    color: #666666;                // Subtle gray line between lines
+                    font-size: 0.7em;
+                }
             }
         """)
         self.layout.addWidget(self.text_edit)
@@ -494,24 +511,44 @@ class CaptionWidget(QtWidgets.QWidget):
                 # Transcribe the combined audio
                 text = recognizer.recognize_google(complete_audio)
                 current_plain_text = self.get_caption()  # Get current plain text
-                # Append to the plain text and re-render with LaTeX
-                self.set_caption(current_plain_text + text)
+                # Emit the signal with the transcribed text to be handled in the main thread
+                QMetaObject.invokeMethod(
+                    self, "on_voice_recording_finished", Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, current_plain_text + text)
+                )
 
             except sr.UnknownValueError:
                 self.record_label.setText("Could not understand audio.")
+                QMetaObject.invokeMethod(
+                    self, "stop_recording_ui_reset", Qt.QueuedConnection
+                )  # UI reset on main thread
             except sr.RequestError:
                 self.record_label.setText("Recognition service error.")
+                QMetaObject.invokeMethod(
+                    self, "stop_recording_ui_reset", Qt.QueuedConnection
+                )  # UI reset on main thread
             finally:
                 # Reset the button and label after transcription or error
                 self.is_recording = False
-                self.record_button.setStyleSheet("""
-                    QPushButton {
-                        border: none;
-                        background-color: #ff4d4d;
-                        border-radius: 25px;
-                    }
-                """)
-                self.record_label.setText("Tap to record")
+
+    # Make this a slot just in case, even though it's called via invokeMethod now
+    def stop_recording_ui_reset(self):
+        """Resets the UI after recording ends."""
+        self.record_button.setStyleSheet("""
+            QPushButton {
+                border: none;
+                background-color: #ff4d4d;
+                border-radius: 20px;
+            }
+        """)
+        self.record_label.setText("Tap to record")
+
+    @QtCore.Slot(str)
+    def on_voice_recording_finished(self, transcribed_text):
+        """Slot to handle voice recording finished signal and update caption."""
+        self.stop_recording_ui_reset()  # Reset UI elements
+        # Safely update caption in main thread
+        self.set_caption(transcribed_text)
 
     def improve_caption_async(self):
         """Improves the caption using Ollama in a background thread."""
