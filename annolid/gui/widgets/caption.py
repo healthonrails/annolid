@@ -507,9 +507,12 @@ class CaptionWidget(QtWidgets.QWidget):
                     source.SAMPLE_RATE,
                     source.SAMPLE_WIDTH
                 )
-
-                # Transcribe the combined audio
-                text = recognizer.recognize_google(complete_audio)
+                try:
+                    from annolid.agents.speech_recognition import transcribe_audio
+                    text = transcribe_audio(complete_audio.get_wav_data())[0]
+                except Exception as e:
+                    # Transcribe the combined audio
+                    text = recognizer.recognize_google(complete_audio)
                 current_plain_text = self.get_caption()  # Get current plain text
                 # Emit the signal with the transcribed text to be handled in the main thread
                 QMetaObject.invokeMethod(
