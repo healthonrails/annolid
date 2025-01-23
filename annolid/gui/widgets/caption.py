@@ -38,6 +38,7 @@ class CaptionWidget(QtWidgets.QWidget):
         self.thread_pool = QThreadPool()  # Thread pool for running background tasks
         self.voiceRecordingFinished.connect(
             self.on_voice_recording_finished)  # Connect signal
+        self.is_streaming_chat = False  # Flag to indicate if chat is streaming
 
     def get_available_models(self):
         """Fetches the list of available Ollama models."""
@@ -232,36 +233,49 @@ class CaptionWidget(QtWidgets.QWidget):
             return
 
         # Append user's input to the chat history
-        self.append_to_chat_history(f"User: {user_input}", is_user=True)
+        self.append_to_chat_history(user_input, is_user=True)
+        # Add Ollama prefix immediately, ready for streaming
+        self.append_to_chat_history("Ollama:", is_user=False)
 
         # Update UI to indicate that a chat is in progress
         self.chat_button.setEnabled(False)
+        self.is_streaming_chat = True  # Set the streaming flag
 
         # Start the chat task
-        task = ChatWithOllamaTask(
+        task = StreamingChatWithOllamaTask(  # Use Streaming Task Here
             user_input, self.image_path, self, model=self.selected_model)  # Pass selected model
         self.thread_pool.start(task)
         self.prompt_text_edit.clear()
 
     def append_to_chat_history(self, message, is_user=False):
-        """Appends a message to the chat history display with styling."""
+        """Appends a message to the chat history display with ChatGPT-style boxes."""
+        text_color = "#202124"  # Unified text color
+        background_color_user = "#E8F0FE"  # Light blue for user messages
+        background_color_model = "#F1F3F4"  # Light gray for model messages
+        border_radius = "12px"
+
         if is_user:
-            # User message style (right-aligned, light blue background, dark text)
+            # User message style (right-aligned, blue background)
             message_html = f"""
-                <div style='text-align: right; margin-left: 30%; background-color: #e6f7ff; color: #000; padding: 10px; border-radius: 10px; margin-bottom: 8px; word-wrap: break-word;'>
-                    {self.escape_html(message)}
+                <div style='margin-bottom: 12px; text-align: left;'> 
+                    <div style='display: inline-block; color: {text_color}; padding: 12px 16px; border-radius: {border_radius}; word-wrap: break-word; max-width: 60%; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'>
+                    <span style = 'background-color: {background_color_user};'><strong>User:</strong> 
+                        {message}</span>
+                    </div>
                 </div>
             """
         else:
-            # Model message style (left-aligned, white background, dark text)
+            # Model message style (left-aligned, gray background)
             message_html = f"""
-                <div style='text-align: left; margin-right: 30%; background-color: #ffffff; color: #000; padding: 10px; border-radius: 10px; margin-bottom: 8px; word-wrap: break-word;'>
-                    {self.escape_html(message)}
+                <div style='margin-bottom: 12px; text-align: left;'> 
+                    <div style='display: inline-block; color: {text_color}; padding: 12px 16px; border-radius: {border_radius}; word-wrap: break-word; max-width: 60%; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'>
+                        <span style = 'background-color: {background_color_model};'><strong>AI</strong> {self.escape_html(message)}</span>
+                    </div>
                 </div>
             """
 
         current_html = self.text_edit.toHtml()
-        # Find the closing body tag and insert before it, or just append if no body tag
+        # Insert the new message before the closing body tag
         body_close_tag_index = current_html.lower().rfind("</body>")
         if body_close_tag_index != -1:
             new_html = current_html[:body_close_tag_index] + \
@@ -270,7 +284,7 @@ class CaptionWidget(QtWidgets.QWidget):
             new_html = current_html + message_html
 
         self.text_edit.setHtml(new_html)
-        # Ensure scrollbar is at the bottom after adding new message
+        # Ensure the scrollbar is at the bottom after adding a new message
         self.text_edit.verticalScrollBar().setValue(
             self.text_edit.verticalScrollBar().maximum())
 
@@ -279,12 +293,23 @@ class CaptionWidget(QtWidgets.QWidget):
         """Handles the chat response and appends to chat history."""
         if is_error:
             # Keep error message simple
-            self.append_to_chat_history("\nError: " + message)
+            # Stream error message
+            self.stream_chat_chunk("\nError: " + message)
         else:
-            self.append_to_chat_history("Ollama: " + message)
+            # No need to append full message here as we are streaming
+            pass
 
-        # Reset UI
+        # Reset UI and streaming flag
         self.chat_button.setEnabled(True)
+        self.is_streaming_chat = False
+
+    @QtCore.Slot(str)
+    def stream_chat_chunk(self, chunk):
+        """Streams a chunk of the chat response by appending to the end of the QTextEdit as plain text."""
+        self.text_edit.moveCursor(QtGui.QTextCursor.End)
+        self.text_edit.insertPlainText(chunk)  # Insert the new text chunk
+        self.text_edit.verticalScrollBar().setValue(
+            self.text_edit.verticalScrollBar().maximum())  # Scroll to bottom
 
     def create_button(self, icon_name, color, hover_color):
         """Creates and returns a styled button."""
@@ -631,9 +656,44 @@ class CaptionWidget(QtWidgets.QWidget):
 
         self.improve_button.setEnabled(True)
 
+    @QtCore.Slot(str)
+    def stream_chat_chunk(self, chunk):
+        """Streams a chunk of the chat response by appending to the last Ollama message's span."""
+        current_html = self.text_edit.toHtml()
+        chunk_escaped = self.escape_html(chunk)
+
+        # Very specific targeting of the last Ollama response span
+        ollama_span_start_marker_lower = "<span id='ollama-response-area' style='color: #202124;'></span>"
+        last_ollama_span_start_index = current_html.lower().rfind(
+            ollama_span_start_marker_lower)
+
+        if last_ollama_span_start_index != -1:
+            # Insertion point is right *before* the closing </span> of the marker span
+            insertion_index = current_html.lower().find(
+                "</span>", last_ollama_span_start_index)
+            if insertion_index != -1:
+                # Reconstruct HTML by inserting chunk content
+                new_html = current_html[:insertion_index] + \
+                    chunk_escaped + current_html[insertion_index:]
+                self.text_edit.setHtml(new_html)
+            else:
+                print(
+                    "Error: Closing </span> tag for Ollama response area not found.")
+                # Fallback: Append to end of QTextEdit if span structure is broken
+                self.text_edit.moveCursor(QtGui.QTextCursor.End)
+                self.text_edit.insertPlainText(chunk)
+        else:
+            # Fallback: Append to end of QTextEdit if marker span is missing
+            self.text_edit.moveCursor(QtGui.QTextCursor.End)
+            self.text_edit.insertPlainText(chunk)
+
+        # Ensure scrollbar is at the bottom
+        self.text_edit.verticalScrollBar().setValue(
+            self.text_edit.verticalScrollBar().maximum())
+
 
 class ImproveCaptionTask(QRunnable):
-    def __init__(self, image_path, current_caption, widget, model="llama3.2-vision:latest"):  # Added model parameter
+    def __init__(self, image_path, current_caption, widget, model="llama3.2-vision:latest"):
         super().__init__()
         self.image_path = image_path
         self.current_caption = current_caption
@@ -658,7 +718,7 @@ class ImproveCaptionTask(QRunnable):
                 }]
 
             response = ollama.chat(
-                model=self.model,  # Use selected model
+                model=self.model,
                 messages=messages
             )
 
@@ -687,7 +747,7 @@ class DescribeImageTask(QRunnable):
     def __init__(self, image_path,
                  widget,
                  prompt='Describe this image in detail.',
-                 model="llama3.2-vision:latest"  # Added model parameter
+                 model="llama3.2-vision:latest"
                  ):
         super().__init__()
         self.image_path = image_path
@@ -700,7 +760,7 @@ class DescribeImageTask(QRunnable):
         try:
             import ollama
             response = ollama.chat(
-                model=self.model,  # Use selected model
+                model=self.model,
                 messages=[{
                     'role': 'user',
                     'content': self.prompt,
@@ -742,8 +802,9 @@ class ReadCaptionTask(QRunnable):
         self.widget.read_caption()
 
 
-class ChatWithOllamaTask(QRunnable):
-    """A task to chat with the Ollama model in the background."""
+# Renamed to StreamingChatWithOllamaTask
+class StreamingChatWithOllamaTask(QRunnable):
+    """A task to chat with the Ollama model in the background, streaming results."""
 
     def __init__(self, prompt, image_path=None, widget=None, model="llama3.2-vision:latest"):  # Added model parameter
         super().__init__()
@@ -762,21 +823,45 @@ class ChatWithOllamaTask(QRunnable):
                 # Attach the image if provided
                 messages[0]['images'] = [self.image_path]
 
-            response = ollama.chat(
+            stream = ollama.chat(
                 model=self.model,  # Use selected model
                 messages=messages,
+                stream=True  # Enable streaming
             )
+            full_response = ""  # Accumulate full response
 
-            # Check and handle the response
-            if "message" in response and "content" in response["message"]:
-                response_content = response["message"]["content"]
+            for part in stream:
+                if 'message' in part and 'content' in part['message']:
+                    chunk = part['message']['content']
+                    full_response += chunk  # Accumulate full response
+                    QMetaObject.invokeMethod(
+                        self.widget, "stream_chat_chunk", QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(str, chunk)
+                    )
+                elif 'error' in part:
+                    error_message = f"Stream error: {part['error']}"
+                    QMetaObject.invokeMethod(
+                        self.widget, "update_chat_response", QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(str, error_message),
+                        QtCore.Q_ARG(bool, True)
+                    )
+                    return  # Stop streaming on error
+
+            # After stream ends, handle completion or empty response
+            if not full_response.strip():  # Check if full response is empty or just whitespace
+                error_message = "No response from Ollama."
                 QMetaObject.invokeMethod(
                     self.widget, "update_chat_response", QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, response_content),
-                    QtCore.Q_ARG(bool, False)
+                    QtCore.Q_ARG(str, error_message),
+                    QtCore.Q_ARG(bool, True)
                 )
             else:
-                raise ValueError("Unexpected response format from Ollama.")
+                QMetaObject.invokeMethod(
+                    self.widget, "update_chat_response", QtCore.Qt.QueuedConnection,
+                    # No message for success, signal completion
+                    QtCore.Q_ARG(str, ""),
+                    QtCore.Q_ARG(bool, False)
+                )
 
         except Exception as e:
             error_message = f"Error in chat interaction: {e}"
