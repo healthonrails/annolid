@@ -248,45 +248,65 @@ class CaptionWidget(QtWidgets.QWidget):
         self.prompt_text_edit.clear()
 
     def append_to_chat_history(self, message, is_user=False):
-        """Appends a message to the chat history display with ChatGPT-style boxes."""
-        text_color = "#202124"  # Unified text color
-        background_color_user = "#E8F0FE"  # Light blue for user messages
-        background_color_model = "#F1F3F4"  # Light gray for model messages
-        border_radius = "12px"
+        """
+        Appends a message to the chat history display with styled ChatGPT-style message boxes.
 
-        if is_user:
-            # User message style (right-aligned, blue background)
-            message_html = f"""
-                <div style='margin-bottom: 12px; text-align: left;'> 
-                    <div style='display: inline-block; color: {text_color}; padding: 12px 16px; border-radius: {border_radius}; word-wrap: break-word; max-width: 60%; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'>
-                    <span style = 'background-color: {background_color_user};'><strong>User:</strong> 
-                        {message}</span>
-                    </div>
-                </div>
-            """
-        else:
-            # Model message style (left-aligned, gray background)
-            message_html = f"""
-                <div style='margin-bottom: 12px; text-align: left;'> 
-                    <div style='display: inline-block; color: {text_color}; padding: 12px 16px; border-radius: {border_radius}; word-wrap: break-word; max-width: 60%; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'>
-                        <span style = 'background-color: {background_color_model};'><strong>AI</strong> {self.escape_html(message)}</span>
-                    </div>
-                </div>
-            """
+        Args:
+            message (str): The message to append.
+            is_user (bool): Whether the message is from the user. Defaults to False (AI message).
+        """
+        # Define styles
+        styles = {
+            "text_color": "#202124",
+            "background_user": "#E8F0FE",  # Light blue
+            "background_model": "#F1F3F4",  # Light gray
+            "border_radius": "12px",
+            "box_shadow": "0 1px 3px rgba(0,0,0,0.1)",
+            "max_width": "60%",
+            "padding": "12px 16px",
+        }
 
+        # Determine message styles
+        background_color = styles["background_user"] if is_user else styles["background_model"]
+        sender_label = "User: " if is_user else "AI"
+        alignment = "right" if is_user else "left"
+
+        # Construct the HTML for the message
+        message_html = f"""
+            <div style="margin-bottom: 12px; text-align: {alignment};">
+                <div style="
+                    display: inline-block;
+                    /*color: {styles['text_color']};
+                    background-color: {background_color};*/
+                    padding: {styles['padding']};
+                    border-radius: {styles['border_radius']};
+                    word-wrap: break-word;
+                    max-width: {styles['max_width']};
+                    box-shadow: {styles['box_shadow']};
+                ">
+                    <span background-color:{background_color};><strong>{sender_label}</strong></span>{self.escape_html(message)}
+                </div>
+            </div>
+        """
+
+        # Update the chat history HTML
         current_html = self.text_edit.toHtml()
-        # Insert the new message before the closing body tag
         body_close_tag_index = current_html.lower().rfind("</body>")
         if body_close_tag_index != -1:
-            new_html = current_html[:body_close_tag_index] + \
-                message_html + current_html[body_close_tag_index:]
+            new_html = (
+                current_html[:body_close_tag_index]
+                + message_html
+                + current_html[body_close_tag_index:]
+            )
         else:
             new_html = current_html + message_html
 
         self.text_edit.setHtml(new_html)
-        # Ensure the scrollbar is at the bottom after adding a new message
+
+        # Ensure the scrollbar is at the bottom after updating the chat
         self.text_edit.verticalScrollBar().setValue(
-            self.text_edit.verticalScrollBar().maximum())
+            self.text_edit.verticalScrollBar().maximum()
+        )
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message, is_error):
