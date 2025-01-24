@@ -37,8 +37,6 @@ class CaptionWidget(QtWidgets.QWidget):
             if self.available_models:
                 # Fallback to first available if default not present
                 self.selected_model = self.available_models[0]
-            else:
-                self.selected_model = ""  # No model available
 
         self.init_ui()
         self.previous_text = ""
