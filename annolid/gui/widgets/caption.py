@@ -7,7 +7,16 @@ import tempfile
 import matplotlib.pyplot as plt
 import io
 import base64
-import ollama  # Import ollama here
+
+try:
+    import ollama
+except ImportError:
+    print(
+        "The 'ollama' module is not installed. Please install it by running:\n"
+        "    pip install ollama\n"
+        "For more information, visit the GitHub repository:\n"
+        "    https://github.com/ollama/ollama-python"
+    )
 
 
 class CaptionWidget(QtWidgets.QWidget):
@@ -268,7 +277,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
         # Determine message styles
         background_color = styles["background_user"] if is_user else styles["background_model"]
-        sender_label = "User: " if is_user else "AI"
+        sender_label = "User: " if is_user else "AI "
         alignment = "right" if is_user else "left"
 
         # Construct the HTML for the message
