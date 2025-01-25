@@ -33,10 +33,12 @@ class CaptionWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.available_models = self.get_available_models()
         self.selected_model = "llama3.2-vision:latest"  # Default model
-        if "llama3.2-vision:latest" not in self.available_models:
+        if len(self.available_models) > 0 and "llama3.2-vision:latest" not in self.available_models:
             if self.available_models:
                 # Fallback to first available if default not present
                 self.selected_model = self.available_models[0]
+        elif len(self.available_models) == 0:
+            self.available_models.append("llama3.2-vision:latest")
 
         self.init_ui()
         self.previous_text = ""
@@ -51,7 +53,19 @@ class CaptionWidget(QtWidgets.QWidget):
         """Fetches the list of available Ollama models."""
         try:
             model_list = ollama.list()
-            return [model['name'] for model in model_list['models']]
+
+            # Check if models are in the original format (list of dicts)
+            if isinstance(model_list['models'], list) and all(isinstance(model, dict) for model in model_list['models']):
+                return [model['name'] for model in model_list['models']]
+
+            # Handle the case where models are returned as objects with detailed attributes
+            elif isinstance(model_list['models'], list) and all(hasattr(model, 'model') for model in model_list['models']):
+                return [model.model for model in model_list['models']]
+
+            # If the format is unexpected, raise a descriptive error
+            else:
+                raise ValueError("Unexpected model format in response.")
+
         except Exception as e:
             print(f"Error fetching model list: {e}")
             return []
