@@ -344,14 +344,6 @@ class CaptionWidget(QtWidgets.QWidget):
         self.chat_button.setEnabled(True)
         self.is_streaming_chat = False
 
-    @QtCore.Slot(str)
-    def stream_chat_chunk(self, chunk):
-        """Streams a chunk of the chat response by appending to the end of the QTextEdit as plain text."""
-        self.text_edit.moveCursor(QtGui.QTextCursor.End)
-        self.text_edit.insertPlainText(chunk)  # Insert the new text chunk
-        self.text_edit.verticalScrollBar().setValue(
-            self.text_edit.verticalScrollBar().maximum())  # Scroll to bottom
-
     def create_button(self, icon_name, color, hover_color):
         """Creates and returns a styled button."""
         button = QPushButton()
@@ -568,17 +560,6 @@ class CaptionWidget(QtWidgets.QWidget):
         """Stops recording and displays conversion status."""
         self.is_recording = False
         self.record_label.setText("Converting speech to text...")
-
-    def stop_recording_ui_reset(self):
-        """Resets the UI after recording ends."""
-        self.record_button.setStyleSheet("""
-            QPushButton {
-                border: none;
-                background-color: #ff4d4d;
-                border-radius: 20px;
-            }
-        """)
-        self.record_label.setText("Tap to record")
 
     def record_voice(self):
         """Records voice input and converts it to text continuously until stopped."""
