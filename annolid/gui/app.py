@@ -163,6 +163,11 @@ class AnnolidWindow(MainWindow):
         self.here = Path(__file__).resolve().parent
         action = functools.partial(newAction, self)
         self._df = None
+        self._df_deeplabcut = None
+        self._df_deeplabcut_scorer = None
+        self._df_deeplabcut_columns = None
+        self._df_deeplabcut_bodyparts = None
+        self._df_deeplabcut_animal_ids = None
         self.label_stats = {}
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
@@ -904,6 +909,11 @@ class AnnolidWindow(MainWindow):
                 self.statusBar().removeWidget(self.playButton)
             self.seekbar = None
         self._df = None
+        self._df_deeplabcut = None
+        self._df_deeplabcut_scorer = None
+        self._df_deeplabcut_columns = None
+        self._df_deeplabcut_bodyparts = None
+        self._df_deeplabcut_animal_ids = None
         self.label_stats = {}
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
@@ -2165,6 +2175,70 @@ class AnnolidWindow(MainWindow):
                 return True
         return False
 
+    def _load_deeplabcut_results(self, frame_number: int, is_multi_animal: bool = False):
+        """
+        Load DeepLabCut tracking results for a given frame and convert them into shape objects.
+
+        This method extracts x, y coordinates for each body part and, if applicable, for each animal.
+        It then creates shape objects for visualization.
+
+        Args:
+            frame_number (int): The index of the frame to extract tracking data from.
+            is_multi_animal (bool, optional): Whether the dataset contains multiple animals.
+                Defaults to False.
+
+        Notes:
+            - Assumes self._df_deeplabcut is a multi-index Pandas DataFrame.
+            - Multi-animal mode expects an 'animal' level in the column index.
+            - Logs warnings for missing data instead of failing.
+
+        Raises:
+            KeyError: If expected columns are missing.
+            Exception: For unexpected errors during shape extraction.
+        """
+        if self._df_deeplabcut is None:
+            return
+
+        shapes = []
+        try:
+            if self._df_deeplabcut_scorer is None:
+                self._df_deeplabcut_scorer = self._df_deeplabcut.columns.get_level_values(
+                    0)[0]
+
+            if self._df_deeplabcut_animal_ids is None:
+                if is_multi_animal:
+                    self._df_deeplabcut_animal_ids = self._df_deeplabcut.columns.get_level_values(
+                        'animal').unique()
+                else:
+                    self._df_deeplabcut_animal_ids = [
+                        None]  # Single-animal mode
+
+            if self._df_deeplabcut_bodyparts is None:
+                self._df_deeplabcut_bodyparts = self._df_deeplabcut.columns.get_level_values(
+                    'bodyparts').unique()
+            row = self._df_deeplabcut.loc[frame_number]
+
+            for animal_id in self._df_deeplabcut_animal_ids:
+                for bodypart in self._df_deeplabcut_bodyparts:
+                    x_col = (self._df_deeplabcut_scorer, animal_id, bodypart, 'x') if is_multi_animal else (
+                        self._df_deeplabcut_scorer, bodypart, 'x')
+                    y_col = (self._df_deeplabcut_scorer, animal_id, bodypart, 'y') if is_multi_animal else (
+                        self._df_deeplabcut_scorer, bodypart, 'y')
+
+                    x, y = row.get(x_col, None), row.get(y_col, None)
+                    if pd.notna(x) and pd.notna(y):
+                        shape = Shape(label=bodypart,
+                                      shape_type='point', visible=True)
+                        shape.addPoint((x, y))
+                        shapes.append(shape)
+
+        except KeyError as e:
+            logger.warning(f"Missing columns in DeepLabCut results: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error loading DeepLabCut results: {e}")
+
+        self.loadShapes(shapes)
+
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Loads behavior data from a CSV file and stores it in timestamp_dict.
 
@@ -2179,9 +2253,16 @@ class AnnolidWindow(MainWindow):
 
         # Iterate through each row of the DataFrame
         for _, row in df_behaviors.iterrows():
-            timestamp: float = row["Recording time"]
-            event: str = row["Event"]
-            behavior = row["Behavior"]
+            try:
+                timestamp: float = row["Recording time"]
+                event: str = row["Event"]
+                behavior = row["Behavior"]
+            except KeyError:
+                del df_behaviors
+                # try to load deeplabcut results
+                self._df_deeplabcut = pd.read_csv(
+                    behavior_csv_file, header=[0, 1, 2], index_col=0)
+                return
             self.behaviors.add(behavior)
             # Calculate the frame number based on timestamp and fps
             frame_number: int = int(float(timestamp) * self.fps)
@@ -2469,6 +2550,8 @@ class AnnolidWindow(MainWindow):
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         self.loadPredictShapes(frame_number, filename)
+        if self._df_deeplabcut is not None:
+            self._load_deeplabcut_results(frame_number)
         return True
 
     def clean_up(self):
