@@ -9,3 +9,4 @@ from annolid.gui.widgets.about_dialog import SystemInfoDialog
 from annolid.gui.widgets.flags import FlagTableWidget
 from annolid.gui.widgets.video_recording import RecordingWidget
 from annolid.gui.widgets.screen_shot import CanvasScreenshotWidget
+from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog

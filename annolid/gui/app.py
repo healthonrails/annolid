@@ -66,6 +66,7 @@ from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
+from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets import RecordingWidget
 from annolid.gui.widgets import CanvasScreenshotWidget
@@ -338,11 +339,19 @@ class AnnolidWindow(MainWindow):
         )
 
         convert_sleap = action(
-            self.tr("&Load SLEAP h5"),
+            self.tr("&Convert SLEAP h5 to labelme"),
             self.convert_sleap_h5_to_labelme,
             None,
-            "Load SLEAP h5",
-            self.tr("Load SLEAP h5")
+            "Convert SLEAP h5 to labelme",
+            self.tr("Convert SLEAP h5 to labelme")
+        )
+
+        convert_deeplabcut = action(
+            self.tr("&Convert DeepLabCut CSV to labelme"),
+            self.convert_deeplabcut_csv_to_labelme,
+            None,
+            "Convert DeepLabCut CSV to labelme",
+            self.tr("Convert DeepLabCut CSV to labelme")
         )
 
         convert_labelme2yolo_format = action(
@@ -526,6 +535,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (downsample_video,))
         utils.addActions(self.menus.file, (convert_csv,))
         utils.addActions(self.menus.file, (extract_shape_keypoints,))
+        utils.addActions(self.menus.file, (convert_deeplabcut,))
         utils.addActions(self.menus.file, (convert_sleap,))
         utils.addActions(self.menus.file, (convert_labelme2yolo_format,))
         utils.addActions(self.menus.file, (place_perference,))
@@ -719,6 +729,10 @@ class AnnolidWindow(MainWindow):
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
+
+    def convert_deeplabcut_csv_to_labelme(self):
+        convert_deeplabcut_widget = ConvertDLCDialog()
+        convert_deeplabcut_widget.exec_()
 
     def convert_labelme2yolo_format(self):
         from annolid.gui.widgets import convert_labelme2yolo
