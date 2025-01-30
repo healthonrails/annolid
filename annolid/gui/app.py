@@ -582,6 +582,8 @@ class AnnolidWindow(MainWindow):
             "sam2_hiera_l",
             "YOLO11n",
             "YOLO11x",
+            "YOLO11n-pose",
+            "YOLO11x-pose",
         ]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
@@ -1184,6 +1186,8 @@ class AnnolidWindow(MainWindow):
             "sam2_hiera_l": "sam2_hiera_l",
             "YOLO11n": "yolo11n-seg.pt",
             "YOLO11x": "yolo11x-seg.pt",
+            "YOLO11n-pose": "yolo11n-pose.pt",
+            "YOLO11x-pose": "yolo11x-pose.pt",
         }
         default_model_name = "Segment-Anything (Edge)"
 

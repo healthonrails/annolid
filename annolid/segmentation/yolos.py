@@ -2,6 +2,7 @@ import os
 import numpy as np
 from ultralytics import YOLO, SAM
 from annolid.gui.shape import Shape
+from pathlib import Path
 from annolid.annotation.keypoints import save_labels
 from collections import defaultdict
 from annolid.annotation.polygons import simplify_polygons
@@ -25,6 +26,15 @@ class InferenceProcessor:
         self.model = self._load_model(model_name, class_names)
         self.frame_count = 0
         self.track_history = defaultdict(lambda: [])
+        self.keypoint_names = None
+        if 'pose' in model_name:
+            from annolid.utils.config import get_config
+            _here = os.path.dirname(__file__)
+            cfg_folder = Path(_here).parent
+            keypoint_config_file = cfg_folder / 'configs' / 'keypoints.yaml'
+            keypoint_config = get_config(keypoint_config_file)
+            self.keypoint_names = keypoint_config['KEYPOINTS'].split(" ")
+            print(f"Keypoint names: {self.keypoint_names}")
 
     def _find_best_model(self, model_name):
         """
@@ -74,6 +84,8 @@ class InferenceProcessor:
                 yolo_results = self.extract_yolo_results(result)
                 self.save_yolo_to_labelme(
                     yolo_results, frame_shape, output_directory)
+            else:
+                self.frame_count += 1
 
         return f"Done#{self.frame_count}"
 
@@ -92,19 +104,32 @@ class InferenceProcessor:
                 "" for _ in range(len(boxes))]  # Check for track_ids
             masks = result.masks
             names = result.names
+            keypoints = result.keypoints
             cls_ids = [int(_box.cls) for _box in result.boxes]
             confidences = result.boxes.conf.cpu().tolist() if result.boxes.conf is not None else [
                 0.0 for _ in range(len(boxes))]  # Check for confidences
 
-        for box, track_id, mask, cls_id, conf in zip(boxes,
-                                                     track_ids,
-                                                     masks,
-                                                     cls_ids,
-                                                     confidences):
+        if keypoints is not None:
+            for _keypoints in enumerate(keypoints.xy):
+                _keypoint_points = _keypoints[1].cpu().tolist()
+                for kpt_id, kpt in enumerate(_keypoint_points):
+                    kpt_label = f"{kpt_id}" if self.keypoint_names is None else self.keypoint_names[
+                        kpt_id]
+                    keypoint_shape = Shape(kpt_label,
+                                           shape_type='point',
+                                           description=self.model_type,
+                                           flags={},
+                                           )
+                    keypoint_shape.points = [kpt]
+                    yolo_results.append(keypoint_shape)
+
+        for _id, box in enumerate(boxes):
             x, y, w, h = box.tolist()
-            class_name = names[cls_id]
+            class_name = names[cls_ids[_id]]
+            mask = masks[_id] if masks is not None else None
 
             if save_track:
+                track_id = track_ids[_id]
                 # Get the track history (will be empty if track_id is "")
                 track = self.track_history[track_id]
                 # Store only if track_id is not empty
@@ -178,7 +203,7 @@ class InferenceProcessor:
 
 if __name__ == "__main__":
     # Replace with your video path
-    video_path = os.path.expanduser("~/Downloads/IMG_0769.MOV")
+    video_path = os.path.expanduser("~/Downloads/people-detection.mp4")
 
     # Automatically find best.pt or use default
     yolo_processor = InferenceProcessor("yolo11n-seg.pt", model_type="yolo")
