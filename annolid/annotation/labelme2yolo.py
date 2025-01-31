@@ -1,5 +1,6 @@
 # How to use it?
 # python annolid/main.py --labelme2yolo /path/to/labelme_json_folder/ --val_size 0.1 --test_size 0.1
+# Refer to https://docs.ultralytics.com/datasets/pose/#dataset-yaml-format for more details.
 import json
 import math
 import os
@@ -105,6 +106,8 @@ class Labelme2YOLO:
         self.json_file_dir = json_dir
         self.label_to_id_dict = self.map_label_to_id(self.json_file_dir)
         self.yolo_dataset_name = yolo_dataset_name
+        self.annotation_type = "segmentation"
+        self.kpt_shape = None  # [17, 2]
 
     def create_yolo_dataset_dirs(self):
         """
@@ -272,6 +275,8 @@ class Labelme2YOLO:
         image_height = json_data['imageHeight']
         image_width = json_data['imageWidth']
 
+        keypoints = []
+
         # Iterate through each shape in the annotation file
         for shape in json_data["shapes"]:
             # labelme circle has 2 points,
@@ -281,11 +286,30 @@ class Labelme2YOLO:
                 # Convert the circle shape to a YOLO formatted object
                 yolo_obj = self.circle_shape_to_yolo(
                     shape, image_height, image_width)
+            elif shape['shape_type'] == 'point':
+                keypoints.append(shape.get('points')[0])
             else:
                 # Convert the shape to a YOLO formatted object
                 yolo_obj = self.scale_points(
                     shape, image_height, image_width)
 
+                yolo_objects.append(yolo_obj)
+
+        if len(keypoints) > 0:
+            self.kpt_shape = [len(keypoints), len(keypoints[0])]
+            self.annotation_type = "pose"
+            keypoint_shape = {
+                "label": "keypoints",
+                "points": keypoints,
+                "group_id": None,
+                "shape_type": "pose",
+                "flags": {},
+                "visible": True,
+            }
+            yolo_obj = self.scale_points(keypoint_shape,
+                                         image_height,
+                                         image_width,
+                                         output_fromat='pose')
             yolo_objects.append(yolo_obj)
 
         return yolo_objects
@@ -340,10 +364,15 @@ class Labelme2YOLO:
         # # Close the polygon by appending the first point to the end
         # points = np.append(points, [points[0], points[1]])
         # Map the label of the shape to a label_id
-        label_id = self.label_to_id_dict[labelme_shape['label']]
+        try:
+            label_id = self.label_to_id_dict[labelme_shape['label']]
+        except KeyError:
+            label_id = 0
         # Return the label_id and points as a list
         if output_fromat == 'bbox':
             return label_id, scaled_cxcywh
+        elif output_fromat == 'pose':
+            return label_id, scaled_cxcywh + points.tolist()
         else:
             return label_id,  points.tolist()
 
@@ -430,6 +459,15 @@ class Labelme2YOLO:
             # Include test set in the YAML
             yaml_file.write(f"test: images/test\n")
             yaml_file.write("\n")  # Add an empty line for better readability
+            if self.annotation_type == "pose":
+                # Keypoints
+                # kpt_shape: [17, 2] # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
+                yaml_file.write(f"kpt_shape: {self.kpt_shape}\n")
+                yaml_file.write(
+                    "#(Optional) if the points are symmetric then need flip_idx, like left-right side of human or face. For example if we assume five keypoints of facial landmark: [left eye, right eye, nose, left mouth, right mouth], and the original index is [0, 1, 2, 3, 4], then flip_idx is [1, 0, 2, 4, 3] (just exchange the left-right index, i.e. 0-1 and 3-4, and do not modify others like nose in this example.)\n")
+                yaml_file.write(
+                    "#flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]\n")
+
             yaml_file.write(names_section)
 
     @staticmethod
