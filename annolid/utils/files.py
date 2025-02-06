@@ -160,33 +160,71 @@ def find_most_recent_file(folder_path, file_ext=".json"):
     return most_recent_file
 
 
+def is_duplicate(row, ref_row, tol_coord=3, tol_motion=0.1):
+    """
+    Return True if `row` is considered a duplicate of `ref_row` 
+    based on the given tolerances for coordinates and motion_index.
+    """
+    close_cx = abs(row['cx'] - ref_row['cx']) <= tol_coord
+    close_cy = abs(row['cy'] - ref_row['cy']) <= tol_coord
+    close_motion = abs(row['motion_index'] -
+                       ref_row['motion_index']) < tol_motion
+    return close_cx and close_cy and close_motion
+
+
+def remove_custom_duplicates(group, tol_coord=3, tol_motion=0.1):
+    """
+    For rows within the same group (i.e. same frame_number and instance_name),
+    iterate through the rows and only keep one if they are too similar.
+    """
+    kept_indices = []
+    for idx, row in group.iterrows():
+        duplicate_found = False
+        for kept_idx in kept_indices:
+            ref_row = group.loc[kept_idx]
+            if is_duplicate(row, ref_row, tol_coord, tol_motion):
+                duplicate_found = True
+                break
+        if not duplicate_found:
+            kept_indices.append(idx)
+    return group.loc[kept_indices]
+
+
 def create_tracking_csv_file(frame_numbers,
                              instance_names,
                              cx_values,
                              cy_values,
                              motion_indices,
                              output_file,
-                             fps=30
-                             ):
+                             fps=30):
     """
-    Create or update a tracking CSV file with the specified columns.
+    Create or update a tracking CSV file with fuzzy duplicate removal.
+
+    This function reads an existing CSV file (if it exists), appends new data,
+    and then removes duplicates. Two rows are considered duplicates if:
+      - They have the same frame_number and instance_name.
+      - Their cx and cy values differ by no more than 3 units.
+      - Their motion_index values differ by less than 0.1.
+
+    After duplicate removal, timestamps are generated based on the frame_number
+    and the specified frames per second (fps).
 
     Args:
-    - frame_numbers (list): List of frame numbers.
-    - instance_names (list): List of instance names.
-    - cx_values (list): List of cx values.
-    - cy_values (list): List of cy values.
-    - motion_indices (list): List of motion indices.
-    - output_file (str): Output CSV file name.
-    - fps (int): Frames per second for generating timestamps.
+      frame_numbers (list): List of frame numbers.
+      instance_names (list): List of instance names.
+      cx_values (list): List of cx values.
+      cy_values (list): List of cy values.
+      motion_indices (list): List of motion indices.
+      output_file (str): Output CSV file name.
+      fps (int): Frames per second for generating timestamps.
     """
+    # Try to load the existing CSV file; if it doesn't exist, start with an empty DataFrame.
     try:
-        # Read existing CSV file into a DataFrame if it exists
         existing_data = pd.read_csv(output_file)
     except FileNotFoundError:
         existing_data = pd.DataFrame()
 
-    # Create a DataFrame for new data
+    # Create a DataFrame for the new data.
     new_data = {
         'frame_number': frame_numbers,
         'instance_name': instance_names,
@@ -194,21 +232,30 @@ def create_tracking_csv_file(frame_numbers,
         'cy': cy_values,
         'motion_index': motion_indices,
     }
+    new_df = pd.DataFrame(new_data)
 
-    # Append new data to the existing DataFrame
-    updated_data = pd.concat([existing_data, pd.DataFrame(new_data)])
+    # Combine existing and new data.
+    combined_df = pd.concat([existing_data, new_df], ignore_index=True)
 
-    # Remove duplicates from the DataFrame
-    updated_data.drop_duplicates(inplace=True)
+    # If a timestamps column exists (from a previous run), drop it so that only the core columns are used for duplicate checks.
+    if 'timestamps' in combined_df.columns:
+        combined_df = combined_df.drop(columns=['timestamps'])
 
-    # Generate timestamps based on frame numbers and FPS
+    # Group the data by 'frame_number' and 'instance_name' as these must match exactly.
+    grouped = combined_df.groupby(
+        ['frame_number', 'instance_name'], group_keys=False)
+
+    # Apply our custom duplicate removal within each group.
+    cleaned_df = grouped.apply(lambda group: remove_custom_duplicates(
+        group, tol_coord=3, tol_motion=0.1))
+
+    # Generate timestamps based on frame_number and fps.
     timestamps_seconds = pd.to_datetime(
-        updated_data['frame_number'] / fps, unit='s')
-    updated_data['timestamps'] = timestamps_seconds.dt.time
+        cleaned_df['frame_number'] / fps, unit='s')
+    cleaned_df['timestamps'] = timestamps_seconds.dt.time
 
-    # Write the updated DataFrame back to the CSV file without including the index column
-    updated_data.to_csv(output_file, index=False)
-
+    # Write the cleaned DataFrame back to the CSV file without the index.
+    cleaned_df.to_csv(output_file, index=False)
 
 # Function to clone a Git repository
 
