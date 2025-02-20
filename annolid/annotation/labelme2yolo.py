@@ -101,13 +101,16 @@ class Labelme2YOLO:
 
     def __init__(self,
                  json_dir,
-                 yolo_dataset_name="YOLO_dataset"
+                 yolo_dataset_name="YOLO_dataset",
+                 include_visibility=False
                  ):
         self.json_file_dir = json_dir
         self.label_to_id_dict = self.map_label_to_id(self.json_file_dir)
         self.yolo_dataset_name = yolo_dataset_name
         self.annotation_type = "segmentation"
-        self.kpt_shape = None  # [17, 2]
+        # e.g. [17, 2] or [17, 3] if visibility is included
+        self.kpt_shape = None
+        self.include_visibility = include_visibility
 
     def create_yolo_dataset_dirs(self):
         """
@@ -296,7 +299,8 @@ class Labelme2YOLO:
                 yolo_objects.append(yolo_obj)
 
         if len(keypoints) > 0:
-            self.kpt_shape = [len(keypoints), len(keypoints[0])]
+            self.kpt_shape = [len(keypoints), 3] if self.include_visibility else [
+                len(keypoints), 2]
             self.annotation_type = "pose"
             keypoint_shape = {
                 "label": "keypoints",
@@ -339,14 +343,18 @@ class Labelme2YOLO:
                                       target_dir, yolo_objects)
 
     def scale_points(self,
-                     labelme_shape,
-                     image_height,
-                     image_width,
-                     output_fromat='polygon',
+                     labelme_shape: dict,
+                     image_height: int,
+                     image_width: int,
+                     output_fromat: str = 'polygon',
+                     include_visibility: bool = None,
                      ):
         """
         Returns the label_id and scaled points of the given shape object in YOLO format.
         """
+        # Use the class default if not explicitly provided
+        if include_visibility is None:
+            include_visibility = self.include_visibility
         cx, cy, w, h = find_bbox_from_shape(labelme_shape)
         scaled_cxcywh = [cx/image_width,
                          cy/image_height,
@@ -354,6 +362,16 @@ class Labelme2YOLO:
                          h/image_height]
         # Extract the points from the shape object
         point_list = labelme_shape['points']
+        scaled_points = []
+        for point in point_list:
+            x = float(point[0]) / image_width
+            y = float(point[1]) / image_height
+            if include_visibility:
+                visibility = labelme_shape.get("description", 1)
+                scaled_points.extend([x, y, visibility])
+            else:
+                scaled_points.extend([x, y])
+
         # Create an array of zeros with length 2 * len(point_list)
         points = np.zeros(2 * len(point_list))
         # Fill the array with the x and y coordinates of each point in the shape, scaled between 0 and 1
@@ -372,7 +390,7 @@ class Labelme2YOLO:
         if output_fromat == 'bbox':
             return label_id, scaled_cxcywh
         elif output_fromat == 'pose':
-            return label_id, scaled_cxcywh + points.tolist()
+            return label_id, scaled_cxcywh + scaled_points
         else:
             return label_id,  points.tolist()
 
@@ -436,7 +454,8 @@ class Labelme2YOLO:
                 PIL.Image.fromarray(img).save(img_path)
             else:
                 src_img_path = json_data['imagePath']
-                shutil.copy(src_img_path, img_path)
+                if os.path.exists(src_img_path):
+                    shutil.copy(src_img_path, img_path)
         return img_path
 
     def save_data_yaml(self):
@@ -462,7 +481,8 @@ class Labelme2YOLO:
             if self.annotation_type == "pose":
                 # Keypoints
                 # kpt_shape: [17, 2] # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
-                yaml_file.write(f"kpt_shape: {self.kpt_shape}\n")
+                dims = 3 if self.include_visibility else 2
+                yaml_file.write(f"kpt_shape: [{self.kpt_shape[0]}, {dims}]\n")
                 yaml_file.write(
                     "#(Optional) if the points are symmetric then need flip_idx, like left-right side of human or face. For example if we assume five keypoints of facial landmark: [left eye, right eye, nose, left mouth, right mouth], and the original index is [0, 1, 2, 3, 4], then flip_idx is [1, 0, 2, 4, 3] (just exchange the left-right index, i.e. 0-1 and 3-4, and do not modify others like nose in this example.)\n")
                 yaml_file.write(
