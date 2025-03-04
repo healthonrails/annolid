@@ -231,11 +231,13 @@ class Shape(object):
             painter.drawPath(line_path)
 
         if self.points:
+            # Do not draw points if it is a mask shape
+            if self.shape_type == 'mask':
+                return
             line_path = QtGui.QPainterPath()
             vrtx_path = QtGui.QPainterPath()
             negative_vrtx_path = QtGui.QPainterPath()
-
-            if self.shape_type in ["rectangle", "mask"]:
+            if self.shape_type in ["rectangle"]:
                 assert len(self.points) in [1, 2]
                 if len(self.points) == 2:
                     rectangle = self.getRectFromLine(*self.points)
@@ -320,26 +322,27 @@ class Shape(object):
 
             # Draw label text without background box
             painter.drawText(label_pos, self.label)
-    
+
     def should_draw_label(self, image_width, image_height):
         """Determine if the shape is large enough to draw its label."""
         if image_width is None or image_height is None:
-             return False # No image size, don't draw label
+            return False  # No image size, don't draw label
 
         if image_width == 0 or image_height == 0:
-             return False # Avoid division by zero.
-            
+            return False  # Avoid division by zero.
+
         image_area = image_width * image_height
         if image_area == 0:
-           return False #avoid division by zero.
+            return False  # avoid division by zero.
 
         shape_rect = self.boundingRect()
         if shape_rect is None:
-             return False # no shape, don't draw label
+            return False  # no shape, don't draw label
         shape_area = shape_rect.width() * shape_rect.height()
 
         # Define a threshold (adjust as needed) for the minimum shape size relative to the image
-        min_area_percentage = 0.02  # Example: 2% of the image area. Adjust this value.
+        # Example: 2% of the image area. Adjust this value.
+        min_area_percentage = 0.02
         min_area = image_area * min_area_percentage
         return shape_area > min_area
 
