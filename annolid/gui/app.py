@@ -2651,6 +2651,28 @@ class AnnolidWindow(MainWindow):
                 caption)  # Update caption widget
             self.caption_widget.set_image_path(self.filename)
 
+    def update_flags_from_file(self, label_file):
+        """Update flags from label file with proper validation and error handling.
+        
+        Args:
+            label_file: LabelFile object containing flags
+        """
+        if not hasattr(label_file, 'flags'):
+            logger.warning("Label file has no flags attribute")
+            return
+            
+        try:
+            # Validate flags from file
+            if isinstance(label_file.flags, dict):
+                # Deep copy to avoid modifying original
+                new_flags = label_file.flags.copy()
+                self.canvas.setBehaviorText(','.join(new_flags.keys()))         
+            else:
+                logger.error(f"Invalid flags format: {type(label_file.flags)}")
+                
+        except Exception as e:
+            logger.error(f"Error updating flags: {e}")
+
     def loadPredictShapes(self, frame_number, filename):
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(filename)
@@ -2693,6 +2715,7 @@ class AnnolidWindow(MainWindow):
                                            is_video_frame=True)
                 if self.labelFile:
                     self.loadLabels(self.labelFile.shapes)
+                    self.update_flags_from_file(self.labelFile)
                     caption = self.labelFile.get_caption()
                     if caption is not None and len(caption) > 0:
                         if self.caption_widget is None:
