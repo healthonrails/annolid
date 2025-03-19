@@ -22,6 +22,7 @@ class CalMS21ToLabelme:
         self.image_height = 570
         self.body_parts = ['nose', 'left_ear', 'right_ear', 'neck',
                            'left_hip', 'right_hip', 'tail_base']
+        self.video_name = None
         self.behavior_mapping = {
             0: 'attack',
             1: 'investigation',
@@ -40,6 +41,7 @@ class CalMS21ToLabelme:
             for video_path, video_data in videos.items():
                 # Create output directory for this video
                 video_name = Path(video_path).name
+                self.video_name = video_name
                 video_dir = self.output_dir / video_name
                 video_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,7 +60,8 @@ class CalMS21ToLabelme:
                     )
 
                     # Save LabelMe JSON
-                    json_path = video_dir / f"{frame_idx:09d}.json"
+                    json_path = video_dir / \
+                        f"{self.video_name}_{frame_idx:09d}.json"
                     with open(json_path, 'w') as f:
                         json.dump(labelme_json, f, indent=2)
 

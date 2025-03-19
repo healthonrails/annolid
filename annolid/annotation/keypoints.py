@@ -49,11 +49,11 @@ def format_shape(shape):
     return data
 
 
-def load_existing_shapes(filename):
+def load_existing_json(filename):
     if os.path.exists(filename):
         with open(filename, 'r') as file:
-            return json.load(file).get('shapes', [])
-    return []
+            return json.load(file)
+    return None
 
 
 def merge_shapes(new_shapes, existing_shapes):
@@ -102,7 +102,10 @@ def save_labels(filename, imagePath,
     shapes = [format_shape(shape) for shape in label_list]
 
     # Load existing shapes from the JSON file and merge with new shapes
-    existing_shapes = load_existing_shapes(filename)
+    json_data = load_existing_json(filename)
+    existing_shapes = json_data.get('shapes', []) if json_data else []
+    if flags is None:
+        flags = json_data.get('flags', {}) if json_data else {}
 
     # shapes.extend(existing_shapes)
     shapes = merge_shapes(shapes, existing_shapes)
