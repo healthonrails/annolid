@@ -1173,8 +1173,7 @@ class AnnolidWindow(MainWindow):
         # save png if there is no png or jpg image in the folder
         if (not Path(image_filename).exists()
                 and not Path(imgage_jpg_file).exists()):
-            img = utils.img_data_to_arr(self.imageData)
-            imgviz.io.imsave(image_filename, img)
+            self.imageData.save(image_filename)
         return image_filename
 
     def _select_sam_model_name(self):
@@ -1389,7 +1388,8 @@ class AnnolidWindow(MainWindow):
             ) if self.is_behavior_active(self.frame_number, _flag)}
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
-            imageData = self.imageData if self._config["store_data"] else None
+            imageData = utils.img_pil_to_data(
+                self.imageData) if self._config["store_data"] else None
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))
             lf.save(
@@ -2531,8 +2531,8 @@ class AnnolidWindow(MainWindow):
         self.filename = str(filename)
         self.image = qimage
         imageData = ImageQt.fromqimage(qimage)
-
-        self.imageData = utils.img_pil_to_data(imageData)
+        # Save imageData as PIL Image to speed up frame loading by 10x
+        self.imageData = imageData
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
