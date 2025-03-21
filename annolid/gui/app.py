@@ -10,6 +10,7 @@ import yaml
 import html
 import shutil
 import sys
+import hashlib
 
 from PIL import ImageQt
 import pandas as pd
@@ -1992,21 +1993,36 @@ class AnnolidWindow(MainWindow):
                                       color='red')
 
     def add_highlighted_mark(self, val=None,
-                             mark_type='event_start',
-                             color='green',
-                             init_load=False
-                             ):
-        """Adds a new highlighted mark with a green filled color to the slider."""
+                             mark_type=None,
+                             color=None,
+                             init_load=False):
+        """
+        Adds a new highlighted mark to the slider.
+
+        If no color is specified and self.event_type is set, a color is computed
+        based on the behavior name.
+        """
         if val is None:
             val = self.frame_number
         else:
             val = int(val)
-        if init_load or (val, mark_type) not in self.timestamp_dict:
+
+        # Use hash-based color if color not provided and an event type exists.
+        if color is None:
+            if mark_type is not None:
+                color = self.get_behavior_color(mark_type)
+            else:
+                color = 'green' if mark_type == 'event_start' else 'red'
+
+        # Only add mark if not already present or if loading initial data.
+        if init_load or ((val, mark_type) not in self.timestamp_dict):
             highlighted_mark = VideoSliderMark(mark_type=mark_type,
-                                               val=val, _color=color)
+                                               val=val,
+                                               _color=color)
+            # Store a timestamp or convert frame number to time, as before.
             if (val, mark_type) not in self.timestamp_dict:
-                self.timestamp_dict[(val, mark_type)
-                                    ] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
+                self.timestamp_dict[(
+                    val, mark_type)] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
             self.seekbar.addMark(highlighted_mark)
             return highlighted_mark
 
@@ -2183,7 +2199,7 @@ class AnnolidWindow(MainWindow):
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""
-        if self.behavior_ranges is not None or behavior not in self.behavior_ranges:
+        if self.behavior_ranges is None or behavior not in self.behavior_ranges:
             return False  # Behavior not found
 
         for start, end in self.behavior_ranges[behavior]:
@@ -2192,6 +2208,29 @@ class AnnolidWindow(MainWindow):
             if start <= frame_number <= end:
                 return True
         return False
+
+    def get_behavior_color(self, behavior: str) -> str:
+        """
+        Computes a stable color for a given behavior using its hash value.
+        Returns a hex color string.
+        """
+        # Define a palette of hex color codes.
+        palette = [
+            "#1f77b4",  # blue
+            "#ff7f0e",  # orange
+            "#2ca02c",  # green
+            "#d62728",  # red
+            "#9467bd",  # purple
+            "#8c564b",  # brown
+            "#e377c2",  # pink
+            "#7f7f7f",  # gray
+            "#bcbd22",  # olive
+            "#17becf",  # cyan
+        ]
+        # Create a hash of the behavior name in lowercase.
+        hash_digest = hashlib.md5(behavior.lower().encode('utf-8')).hexdigest()
+        idx = int(hash_digest, 16) % len(palette)
+        return palette[idx]
 
     def _load_deeplabcut_results(self, frame_number: int, is_multi_animal: bool = False):
         """
@@ -2302,11 +2341,12 @@ class AnnolidWindow(MainWindow):
                         (last_start, frame_number))
 
             # Store the relevant data in the timestamp_dict
-            self.timestamp_dict[(frame_number, mark_type)] = (
+            self.timestamp_dict[(frame_number, behavior)] = (
                 timestamp,
                 behavior,
                 row["Subject"],
-                row["Trial time"]
+                row["Trial time"],
+                event,
             )
 
     def _load_labels(self, labels_csv_file):
@@ -2497,29 +2537,18 @@ class AnnolidWindow(MainWindow):
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
         flags = {}
-        _event_key = (frame_number, 'event_start')
-        if _event_key not in self.timestamp_dict:
-            _event_key = (frame_number, 'event_end')
-        _, _state = _event_key
-        if _event_key in self.timestamp_dict:
-            try:
-                timestamp, behaivor, subject, trial_time = self.timestamp_dict[_event_key]
-            except ValueError:
-                behaivor = "Others"
-            if _state != 'event_end':
-                flags[behaivor] = True
-            elif _state == 'event_end':
-                flags[behaivor] = False
-            else:
-                if behaivor in flags:
-                    del flags[behaivor]
-        elif self.behaviors is not None:
+        if self.behaviors is not None:
             for behavior in self.behaviors:
                 if self.is_behavior_active(self.frame_number, behavior):
                     flags[behavior] = True
-                    _state = 'continue'
+                    self.add_highlighted_mark(
+                        self.frame_number, mark_type=behavior)
+                    self.canvas.setBehaviorText(behavior)
                 else:
-                    flags[behavior] = False
+                    if self.canvas.current_behavior_text == behavior:
+                        flags[behavior] = True
+                    else:
+                        flags[behavior] = False
 
         self.loadFlags(flags)
         if self._config["keep_prev"] and self.noShapes():
@@ -2653,23 +2682,23 @@ class AnnolidWindow(MainWindow):
 
     def update_flags_from_file(self, label_file):
         """Update flags from label file with proper validation and error handling.
-        
+
         Args:
             label_file: LabelFile object containing flags
         """
         if not hasattr(label_file, 'flags'):
             logger.warning("Label file has no flags attribute")
             return
-            
+
         try:
             # Validate flags from file
             if isinstance(label_file.flags, dict):
                 # Deep copy to avoid modifying original
                 new_flags = label_file.flags.copy()
-                self.canvas.setBehaviorText(','.join(new_flags.keys()))         
+                self.canvas.setBehaviorText(','.join(new_flags.keys()))
             else:
                 logger.error(f"Invalid flags format: {type(label_file.flags)}")
-                
+
         except Exception as e:
             logger.error(f"Error updating flags: {e}")
 
@@ -2716,6 +2745,9 @@ class AnnolidWindow(MainWindow):
                 if self.labelFile:
                     self.loadLabels(self.labelFile.shapes)
                     self.update_flags_from_file(self.labelFile)
+                    if self.canvas.current_behavior_text is not None and 'other' not in self.canvas.current_behavior_text.lower():
+                        self.add_highlighted_mark(self.frame_number,
+                                                  mark_type=self.canvas.current_behavior_text)
                     caption = self.labelFile.get_caption()
                     if caption is not None and len(caption) > 0:
                         if self.caption_widget is None:
