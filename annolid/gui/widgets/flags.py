@@ -243,6 +243,7 @@ class FlagTableWidget(QtWidgets.QWidget):
     startButtonClicked = QtCore.Signal(str)
     endButtonClicked = QtCore.Signal(str)
     rowSelected = QtCore.Signal(str)
+    flagToggled = QtCore.Signal(str, bool)
 
     COLUMN_NAME = 0
     COLUMN_ACTIVE = 1
@@ -328,6 +329,12 @@ class FlagTableWidget(QtWidgets.QWidget):
         # Change icon when the checkbox toggles
         flag_checkbox.stateChanged.connect(
             lambda state: self._update_checkbox_icon(flag_checkbox, state == Qt.Checked))
+        flag_checkbox.stateChanged.connect(
+            lambda state, row=row: self.flagToggled.emit(
+                self._table.cellWidget(row, self.COLUMN_NAME).text().strip(),
+                state == Qt.Checked
+            )
+        )
         self._table.setCellWidget(row, self.COLUMN_ACTIVE, flag_checkbox)
         flag_checkbox.setAccessibleDescription(f"Toggle state for {name}")
         # Start Button

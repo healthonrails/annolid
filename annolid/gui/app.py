@@ -236,6 +236,8 @@ class AnnolidWindow(MainWindow):
             self.handle_flag_start_button)
         self.flag_widget.endButtonClicked.connect(
             self.handle_flag_end_button)
+        self.flag_widget.flagToggled.connect(
+            self.handle_flag_toggled)
         self.flag_widget.flagsSaved.connect(self.handle_flags_saved)
         self.flag_widget.rowSelected.connect(self.handle_row_selected)
 
@@ -717,12 +719,23 @@ class AnnolidWindow(MainWindow):
             self.highlighted_mark = self.add_highlighted_mark(
                 self.frame_number, mark_type=event_type)
         self.canvas.setBehaviorText(flag_name)
+        self.event_type = flag_name
+        self.pinned_flags[flag_name] = True
+
+    def handle_flag_toggled(self, flag_name, state):
+        if state:
+            self.handle_flag_start_button(flag_name)
+        else:
+            self.handle_flag_end_button(flag_name)
 
     def handle_flag_end_button(self, flag_name):
         if self.seekbar:
             event_type = flag_name + '_end'
             self.highlighted_mark = self.add_highlighted_mark(
                 self.frame_number, mark_type=event_type, color='red')
+        self.event_type = flag_name
+        self.canvas.setBehaviorText("")
+        self.pinned_flags[flag_name] = False
 
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
@@ -2029,6 +2042,8 @@ class AnnolidWindow(MainWindow):
                 self.timestamp_dict[(
                     val, mark_type)] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
             self.seekbar.addMark(highlighted_mark)
+            self.canvas.setBehaviorText(mark_type)
+            self.pinned_flags[self.event_type] = True
             return highlighted_mark
 
     def remove_highlighted_mark(self):
@@ -2060,6 +2075,8 @@ class AnnolidWindow(MainWindow):
                     if _key in self.timestamp_dict:
                         del self.timestamp_dict[_key]
             self.seekbar.setTickMarks()
+        self.pinned_flags[self.event_type] = False
+        self.canvas.setBehaviorText(None)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
@@ -2089,6 +2106,7 @@ class AnnolidWindow(MainWindow):
                     event_type = self.event_type + '_end'
                 self.highlighted_mark = self.add_highlighted_mark(
                     self.frame_number, mark_type=event_type, color='red')
+                self.handle_flag_end_button(self.event_type)
             elif event.key() == Qt.Key_R:
                 self.remove_highlighted_mark()
             elif event.key() == Qt.Key_Q:
@@ -2701,6 +2719,11 @@ class AnnolidWindow(MainWindow):
                 # Deep copy to avoid modifying original
                 new_flags = label_file.flags.copy()
                 self.canvas.setBehaviorText(','.join(new_flags.keys()))
+                _existing_flags = self.flag_widget._get_existing_flag_names()
+                for _flag in _existing_flags:
+                    if _flag not in new_flags:
+                        new_flags[_flag] = False
+                self.flag_widget.loadFlags(new_flags)
             else:
                 logger.error(f"Invalid flags format: {type(label_file.flags)}")
 
