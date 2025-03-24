@@ -188,7 +188,7 @@ class CutieVideoProcessor:
 
             current_shape = MaskShape(label=label,
                                       flags={},
-                                      description='grounding_sam')
+                                      description=f'motion_index: {self._motion_index}',)
             current_shape.mask = mask
             _shapes = current_shape.toPolygons(
                 epsilon=self.epsilon_for_polygon)
