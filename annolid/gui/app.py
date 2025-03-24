@@ -232,8 +232,6 @@ class AnnolidWindow(MainWindow):
 
         self.flag_widget = FlagTableWidget()  # Replace QListWidget with FlagTableWidget
         self.flag_dock.setWidget(self.flag_widget)  # Set the widget to dock
-        # self.flag_widget.flagsChanged.connect(
-        #     self.setDirty)  # Connect signals for saving
         self.flag_widget.startButtonClicked.connect(
             self.handle_flag_start_button)
         self.flag_widget.endButtonClicked.connect(
@@ -718,6 +716,7 @@ class AnnolidWindow(MainWindow):
             event_type = flag_name + '_start'
             self.highlighted_mark = self.add_highlighted_mark(
                 self.frame_number, mark_type=event_type)
+        self.canvas.setBehaviorText(flag_name)
 
     def handle_flag_end_button(self, flag_name):
         if self.seekbar:
@@ -1386,6 +1385,12 @@ class AnnolidWindow(MainWindow):
             # Retrieve the flags as a dictionary
             flags = {_flag: True for _flag in self.flag_widget._get_existing_flag_names(
             ) if self.is_behavior_active(self.frame_number, _flag)}
+
+        if self.canvas.current_behavior_text is not None:
+            behaviors = self.canvas.current_behavior_text.split(",")
+            for behavior in behaviors:
+                if len(behavior) > 0:
+                    flags[behavior] = True
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
             imageData = utils.img_pil_to_data(
