@@ -2718,7 +2718,8 @@ class AnnolidWindow(MainWindow):
             if isinstance(label_file.flags, dict):
                 # Deep copy to avoid modifying original
                 new_flags = label_file.flags.copy()
-                self.canvas.setBehaviorText(','.join(new_flags.keys()))
+                flags_in_frame = ','.join(new_flags.keys())
+                self.canvas.setBehaviorText(flags_in_frame)
                 _existing_flags = self.flag_widget._get_existing_flag_names()
                 for _flag in _existing_flags:
                     if _flag not in new_flags:
@@ -2771,9 +2772,10 @@ class AnnolidWindow(MainWindow):
                 self.labelFile = LabelFile(label_json_file,
                                            is_video_frame=True)
                 if self.labelFile:
+                    self.canvas.setBehaviorText(None)
                     self.loadLabels(self.labelFile.shapes)
                     self.update_flags_from_file(self.labelFile)
-                    if self.canvas.current_behavior_text is not None and 'other' not in self.canvas.current_behavior_text.lower():
+                    if len(self.canvas.current_behavior_text) > 1 and 'other' not in self.canvas.current_behavior_text.lower():
                         self.add_highlighted_mark(self.frame_number,
                                                   mark_type=self.canvas.current_behavior_text)
                     caption = self.labelFile.get_caption()
