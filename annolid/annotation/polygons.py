@@ -94,6 +94,39 @@ def polygon_features(polygon_points):
     return features
 
 
+def resample_polygon(points, num_points=10):
+    """
+    Resample a polygon (list of [x, y] points) to have exactly num_points points.
+    Uses linear interpolation along the polygon's perimeter.
+    If points is empty, returns a list of [0, 0] repeated num_points times.
+    """
+    if not points:
+        return [[0.0, 0.0]] * num_points
+
+    points = np.array(points)
+    # Compute distances between consecutive points.
+    distances = np.sqrt(np.sum(np.diff(points, axis=0) ** 2, axis=1))
+    cumulative = np.insert(np.cumsum(distances), 0, 0)
+    total_length = cumulative[-1]
+
+    # Create evenly spaced distances along the total perimeter length.
+    target_distances = np.linspace(0, total_length, num_points)
+    resampled = []
+
+    for d in target_distances:
+        idx = np.searchsorted(cumulative, d)
+        if idx == 0 or cumulative[idx] == d:
+            resampled.append(points[idx].tolist())
+        else:
+            # Linear interpolation between two surrounding points.
+            ratio = (d - cumulative[idx - 1]) / \
+                (cumulative[idx] - cumulative[idx - 1])
+            new_point = points[idx - 1] + ratio * \
+                (points[idx] - points[idx - 1])
+            resampled.append(new_point.tolist())
+    return resampled
+
+
 # Example usage:
 if __name__ == "__main__":
     # Define a mouse polygon
@@ -177,3 +210,7 @@ if __name__ == "__main__":
     print("Polygon Features:")
     for key, value in features.items():
         print(f"{key}: {value}")
+    resamped_points = resample_polygon(
+        mouse_polygon_points.tolist(), num_points=20)
+    print(f"Resampled Points (20 points):{ resamped_points}")
+    assert len(resamped_points) == 20, "Resampled points should be exactly 20."
