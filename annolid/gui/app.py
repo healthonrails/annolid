@@ -80,6 +80,7 @@ from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDia
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
+from annolid.gui.models_registry import MODEL_REGISTRY
 
 __appname__ = 'Annolid'
 __version__ = "1.2.2"
@@ -577,15 +578,7 @@ class AnnolidWindow(MainWindow):
 
         self._selectAiModelComboBox.clear()
         self.custom_ai_model_names = [
-            'SAM_HQ', 'Cutie', "EfficientVit_SAM",
-            "CoTracker",
-            "sam2_hiera_s",
-            "sam2_hiera_l",
-            "YOLO11n",
-            "YOLO11x",
-            "YOLO11n-pose",
-            "YOLO11x-pose",
-        ]
+            model.display_name for model in MODEL_REGISTRY]
         model_names = [model.name for model in MODELS] + \
             self.custom_ai_model_names
         self._selectAiModelComboBox.addItems(model_names)
@@ -1188,25 +1181,15 @@ class AnnolidWindow(MainWindow):
             self.imageData.save(image_filename)
         return image_filename
 
-    def _select_sam_model_name(self):
-        model_names = {
-            "SAM_HQ": "sam_hq",
-            "EfficientVit_SAM": "efficientvit_sam",
-            "Cutie": "Cutie",
-            "CoTracker": "CoTracker",
-            "sam2_hiera_s": "sam2_hiera_s",
-            "sam2_hiera_l": "sam2_hiera_l",
-            "YOLO11n": "yolo11n-seg.pt",
-            "YOLO11x": "yolo11x-seg.pt",
-            "YOLO11n-pose": "yolo11n-pose.pt",
-            "YOLO11x-pose": "yolo11x-pose.pt",
-        }
-        default_model_name = "Segment-Anything (Edge)"
-
+    def get_current_model_weight_file(self) -> str:
+        """
+        Returns the weight file associated with the currently selected model.
+        If no matching model is found, returns a default fallback weight file.
+        """
         current_text = self._selectAiModelComboBox.currentText()
-        model_name = model_names.get(current_text, default_model_name)
-
-        return model_name
+        model = next(
+            (m for m in MODEL_REGISTRY if m.display_name == current_text), None)
+        return model.weight_file if model is not None else "Segment-Anything (Edge)"
 
     def stop_prediction(self):
         # Emit the stop signal to signal the prediction thread to stop
@@ -1223,7 +1206,7 @@ class AnnolidWindow(MainWindow):
 
     def predict_from_next_frame(self,
                                 to_frame=60):
-        model_name = self._select_sam_model_name()
+        model_name = self.get_current_model_weight_file()
         if self.pred_worker and self.stop_prediction_flag:
             # If prediction is running, stop the prediction
             self.stop_prediction()
