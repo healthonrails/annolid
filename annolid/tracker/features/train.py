@@ -171,7 +171,6 @@ ax1 = fig.add_subplot(122, title="top1err")
 
 
 def draw_curve(epoch, train_loss, train_err, test_loss, test_err):
-    global record
     record['train_loss'].append(train_loss)
     record['train_err'].append(train_err)
     record['test_loss'].append(test_loss)
@@ -191,7 +190,6 @@ def draw_curve(epoch, train_loss, train_err, test_loss, test_err):
 
 
 def lr_decay():
-    global optimizer
     for params in optimizer.param_groups:
         params['lr'] *= 0.1
         lr = params['lr']
