@@ -329,3 +329,16 @@ To request a new feature or report bugs, please use the link https://github.com/
 ### Videos
 
 * [YouTube Channel](https://www.youtube.com/@annolid)
+
+### Acknowledgement
+
+Annolid's counting tool integrates CountGD. If you find this feature useful, please cite the original CountGD paper and repository:
+
+#### Paper:
+
+Niki Amini-Naieni, Tengda Han, and Andrew Zisserman. CountGD: Multi-Modal Open-World Counting In Advances in Neural Information Processing Systems, 2024.
+
+#### Code:
+*[Code for CountGD available here](https://github.com/niki-amini-naieni/CountGD/tree/main)
+
+We are grateful for the CountGD team's contribution and support.
