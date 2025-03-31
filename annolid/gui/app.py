@@ -1204,92 +1204,149 @@ class AnnolidWindow(MainWindow):
         self.stop_prediction_flag = False
         logger.info(f"Prediction was stopped.")
 
-    def predict_from_next_frame(self,
-                                to_frame=60):
+    def extract_visual_prompts_from_canvas(self) -> dict:
+        """
+        Extract visual prompts from canvas rectangle shapes.
+
+        This function iterates over all shapes on the canvas, selects those that
+        are rectangles, and constructs:
+        - A list of bounding boxes [x1, y1, x2, y2].
+        - A list of class indices for each bounding box.
+
+        It also builds/updates self.class_mapping where each unique label found
+        is mapped to an integer. These labels will be used as class names for YOLOE.
+
+        Returns:
+            dict: A dictionary with keys "bboxes" and "cls" containing lists.
+                Returns an empty dict if no valid rectangle shapes are found.
+        """
+        bboxes = []
+        cls_list = []
+        # Build or update the mapping using all rectangle shapes with a valid label.
+        labels = {shape.label for shape in self.canvas.shapes
+                  if shape.shape_type == 'rectangle' and shape.label}
+        if labels:
+            # Create a sorted mapping so that the order is predictable.
+            self.class_mapping = {label: idx for idx,
+                                  label in enumerate(sorted(labels))}
+        else:
+            self.class_mapping = {}
+
+        for shape in self.canvas.shapes:
+            if shape.shape_type != 'rectangle':
+                continue
+            if not shape.points or len(shape.points) < 2:
+                continue
+
+            # Compute bounding box coordinates.
+            xs = [pt.x() if hasattr(pt, "x") else pt[0] for pt in shape.points]
+            ys = [pt.y() if hasattr(pt, "y") else pt[1] for pt in shape.points]
+            x1, y1 = min(xs), min(ys)
+            x2, y2 = max(xs), max(ys)
+            bboxes.append([x1, y1, x2, y2])
+
+            # Use the class mapping to get the index.
+            cls_idx = self.class_mapping.get(shape.label, 0)
+            cls_list.append(cls_idx)
+
+        if not bboxes:
+            logging.info(
+                "No rectangle shapes found on canvas for visual prompts.")
+            return {}
+
+        # Convert arrays to plain Python lists to avoid pop() errors in YOLOE.
+        return {"bboxes": bboxes, "cls": cls_list}
+
+    def predict_from_next_frame(self, to_frame=60):
+        """
+        Updated prediction routine that extracts visual prompts from the canvas.
+        If the current model supports visual prompts (e.g. YOLOE), the prompts are extracted
+        from the canvas rectangle shapes and passed to the inference module.
+        """
         model_name = self.get_current_model_weight_file()
         if self.pred_worker and self.stop_prediction_flag:
-            # If prediction is running, stop the prediction
             self.stop_prediction()
-        elif len(self.canvas.shapes) <= 0 and not "yolo" in model_name:
+            return
+        elif len(self.canvas.shapes) <= 0 and "yolo" not in model_name.lower():
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
-                                        f"Please label this frame")
+                                        "Please label this frame")
             return
-        else:
-            if self.video_file:
-                if "sam2_hiera" in model_name:
-                    from annolid.segmentation.SAM.sam_v2 import process_video
-                    self.video_processor = process_video
-                elif "yolo" in model_name:
-                    from annolid.segmentation.yolos import InferenceProcessor
-                    self.video_processor = InferenceProcessor(model_name=model_name,
-                                                              model_type="yolo"
-                                                              )
-                else:
-                    self.video_processor = VideoProcessor(
-                        self.video_file,
-                        model_name=model_name,
-                        save_image_to_disk=False,
-                        epsilon_for_polygon=self.epsilon_for_polygon,
-                        t_max_value=self.t_max_value,
-                        use_cpu_only=self.use_cpu_only,
-                        auto_recovery_missing_instances=self.auto_recovery_missing_instances,
-                        save_video_with_color_mask=self.save_video_with_color_mask,
-                        compute_optical_flow=self.compute_optical_flow,
+
+        if self.video_file:
+            if "sam2_hiera" in model_name:
+                from annolid.segmentation.SAM.sam_v2 import process_video
+                self.video_processor = process_video
+            elif "yolo" in model_name.lower():
+                from annolid.segmentation.yolos import InferenceProcessor
+                # Instead of using a hard-coded prompt, extract visual prompts from canvas.
+                visual_prompts = self.extract_visual_prompts_from_canvas()
+                # Optionally, log the mapping
+                logger.info(f"Extracted visual prompts: {visual_prompts}")
+                # For YOLO models, you might also pass class names if needed.
+                # Here, class_names could be the sorted keys of self.class_mapping.
+                class_names = list(self.class_mapping.keys()) if hasattr(
+                    self, "class_mapping") else None
+                self.video_processor = InferenceProcessor(model_name=model_name,
+                                                          model_type="yolo",
+                                                          class_names=class_names)
+            else:
+                from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+                self.video_processor = VideoProcessor(
+                    self.video_file,
+                    model_name=model_name,
+                    save_image_to_disk=False,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
+                    t_max_value=self.t_max_value,
+                    use_cpu_only=self.use_cpu_only,
+                    auto_recovery_missing_instances=self.auto_recovery_missing_instances,
+                    save_video_with_color_mask=self.save_video_with_color_mask,
+                    compute_optical_flow=self.compute_optical_flow,
+                )
+            if not self.seg_pred_thread.isRunning():
+                self.seg_pred_thread = QtCore.QThread()
+            self.seg_pred_thread.start()
+            # Determine end_frame etc. (same as your previous logic)
+            if self.step_size < 0:
+                end_frame = self.num_frames + self.step_size
+            else:
+                end_frame = self.frame_number + to_frame * self.step_size
+            if end_frame >= self.num_frames:
+                end_frame = self.num_frames - 1
+            stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
+                                                or self.automatic_pause_enabled)
+            if 'yolo' in model_name.lower():
+                # Pass visual_prompts to run_inference if extracted successfully.
+                self.pred_worker = FlexibleWorker(
+                    task_function=lambda: self.video_processor.run_inference(
+                        source=self.video_file,
+                        visual_prompts=visual_prompts if visual_prompts else None
                     )
-                if not self.seg_pred_thread.isRunning():
-                    self.seg_pred_thread = QtCore.QThread()
-                self.seg_pred_thread.start()
-                if self.step_size < 0:
-                    end_frame = self.num_frames + self.step_size
-                else:
-                    end_frame = self.frame_number + to_frame * self.step_size
-                if end_frame >= self.num_frames:
-                    end_frame = self.num_frames - 1
-                if self.step_size < 0:
-                    self.step_size = -self.step_size
-                stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
-                                                    or self.automatic_pause_enabled)
-                if "sam2_hiera" in model_name:
-                    self.pred_worker = FlexibleWorker(
-                        task_function=process_video,
-                        video_path=self.video_file,
-                        frame_idx=self.frame_number,
-                        model_config='sam2.1_hiera_l.yaml' if 'hiera_l' in model_name else "sam2.1_hiera_s.yaml",
-                    )
-                elif 'yolo' in model_name:
-                    self.pred_worker = FlexibleWorker(
-                        task_function=self.video_processor.run_inference,
-                        source=self.video_file
-                    )
-                else:
-                    self.pred_worker = FlexibleWorker(
-                        task_function=self.video_processor.process_video_frames,
-                        start_frame=self.frame_number+1,
-                        end_frame=end_frame,
-                        step=self.step_size,
-                        is_cutie=False if model_name == "CoTracker" else True,
-                        mem_every=self.step_size,
-                        point_tracking=model_name == "CoTracker",
-                        has_occlusion=stop_when_lost_tracking_instance,
-                    )
-                    self.video_processor.set_pred_worker(self.pred_worker)
-                self.frame_number += 1
-                logger.info(
-                    f"Prediction started from frame number: {self.frame_number}.")
-                self.stepSizeWidget.predict_button.setText(
-                    "Stop")  # Change button text
-                self.stepSizeWidget.predict_button.setStyleSheet(
-                    "background-color: red; color: white;")
-                self.stop_prediction_flag = True
-                self.pred_worker.moveToThread(self.seg_pred_thread)
-                self.pred_worker.start_signal.connect(self.pred_worker.run)
-                self.pred_worker.result_signal.connect(
-                    self.lost_tracking_instance)
-                self.pred_worker.finished_signal.connect(self.predict_is_ready)
-                self.seg_pred_thread.finished.connect(
-                    self.seg_pred_thread.quit)
-                self.pred_worker.start_signal.emit()
+                )
+            else:
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video_frames,
+                    start_frame=self.frame_number+1,
+                    end_frame=end_frame,
+                    step=self.step_size,
+                    is_cutie=False if model_name == "CoTracker" else True,
+                    mem_every=self.step_size,
+                    point_tracking=model_name == "CoTracker",
+                    has_occlusion=stop_when_lost_tracking_instance,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+            self.frame_number += 1
+            logger.info(f"Prediction started from frame: {self.frame_number}")
+            self.stepSizeWidget.predict_button.setText("Stop")
+            self.stepSizeWidget.predict_button.setStyleSheet(
+                "background-color: red; color: white;")
+            self.stop_prediction_flag = True
+            self.pred_worker.moveToThread(self.seg_pred_thread)
+            self.pred_worker.start_signal.connect(self.pred_worker.run)
+            self.pred_worker.result_signal.connect(self.lost_tracking_instance)
+            self.pred_worker.finished_signal.connect(self.predict_is_ready)
+            self.seg_pred_thread.finished.connect(self.seg_pred_thread.quit)
+            self.pred_worker.start_signal.emit()
 
     def lost_tracking_instance(self, message):
         if message is None:

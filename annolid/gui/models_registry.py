@@ -20,4 +20,6 @@ MODEL_REGISTRY = [
     ModelConfig("YOLO11x", "yolo11x", "yolo11x-seg.pt"),
     ModelConfig("YOLO11n-pose", "yolo11n-pose", "yolo11n-pose.pt"),
     ModelConfig("YOLO11x-pose", "yolo11x-pose", "yolo11x-pose.pt"),
+    ModelConfig("yoloe-11s-seg.pt", "yoloe-11s-seg.pt", "yoloe-11s-seg.pt"),
+    ModelConfig("yoloe-11l-seg.pt", "yoloe-11l-seg.pt", "yoloe-11l-seg.pt"),
 ]
