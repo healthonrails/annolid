@@ -1250,7 +1250,7 @@ class AnnolidWindow(MainWindow):
             cls_list.append(cls_idx)
 
         if not bboxes:
-            logging.info(
+            logger.info(
                 "No rectangle shapes found on canvas for visual prompts.")
             return {}
 
