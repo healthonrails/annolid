@@ -1287,6 +1287,11 @@ class AnnolidWindow(MainWindow):
                 # Here, class_names could be the sorted keys of self.class_mapping.
                 class_names = list(self.class_mapping.keys()) if hasattr(
                     self, "class_mapping") else None
+                if len(class_names) < 1:
+                    text_prompt = self.aiRectangle._aiRectanglePrompt.text().lower()
+                    class_names = text_prompt.split(",")
+                    logger.info(
+                        f"Extracted class names from text prompt: {class_names}")
                 self.video_processor = InferenceProcessor(model_name=model_name,
                                                           model_type="yolo",
                                                           class_names=class_names)
