@@ -332,6 +332,17 @@ To request a new feature or report bugs, please use the link https://github.com/
 
 ### Acknowledgement
 
+(Annolid's tracking module integrates **Cutie** for enhanced video object segmentation. If you find this feature useful, please cite the original Cutie paper and repository:
+
+#### Paper:
+
+Ho Kei Cheng, Seoung Wug Oh, Brian Price, Joon-Young Lee, and Alexander Schwing. *Putting the Object Back into Video Object Segmentation*, arXiv, 2023.
+
+#### Code:
+*[Code for Cutie available here](https://github.com/hkchengrex/Cutie)*
+
+We appreciate the Cutie team's valuable contributions and continued support.)
+
 Annolid's counting tool integrates CountGD. If you find this feature useful, please cite the original CountGD paper and repository:
 
 #### Paper:
