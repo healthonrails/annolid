@@ -166,48 +166,68 @@ def save_metadata_to_csv(metadata, output_csv):
         writer.writerows(metadata)
 
 
-def compress_and_rescale_video(input_folder, output_folder, scale_factor):
+def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30, apply_denoise=False):
     """
     Compresses and rescales video files in the input folder using ffmpeg.
+    Optionally applies spacetempo smoothing (denoising) and adjusts FPS.
 
     Args:
-    - input_folder (str): Path to the folder containing video files.
-    - output_folder (str): Path to the folder for compressed and rescaled video files.
-    - scale_factor (float): Scale factor for resizing videos.
+        input_folder (str): Path to the folder containing video files.
+        output_folder (str): Path to the folder for processed videos.
+        scale_factor (float): Scale factor for resizing videos (e.g., 0.25 for 25%).
+        fps (int): Frames per second for the output video.
+        apply_denoise (bool): If True, applies spacetempo smoothing using the hqdn3d filter.
+
+    Returns:
+        dict: A mapping from each output video filename to the FFmpeg command used.
     """
     if not os.path.exists(input_folder):
         print("Input folder does not exist.")
-        return
-
+        return {}
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
+    # Support additional extensions including MTS.
+    video_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv',
+                        '.mpeg', '.mpg', '.m4v', '.mts')
     video_files = [f for f in os.listdir(
-        input_folder) if f.endswith(('.mp4', '.avi', '.mkv'))]
+        input_folder) if f.lower().endswith(video_extensions)]
 
     if not video_files:
         print("No video files found in the input folder.")
-        return
+        return {}
+
+    command_log = {}
 
     for video_file in video_files:
         input_path = os.path.join(input_folder, video_file)
-        output_path = os.path.join(output_folder, video_file)
-        # Update extension to .mp4
-        root, extension = os.path.splitext(output_path)
-        output_path = root + '.mp4'
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-vf', f'scale=iw*{scale_factor}:ih*{scale_factor}',
-            '-c:v', 'libx264', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k',
-            output_path
-        ]
+        root, _ = os.path.splitext(video_file)
+        # Append a suffix if denoising is applied.
+        output_filename = f"{root}_fix.mp4" if apply_denoise else f"{root}.mp4"
+        output_path = os.path.join(output_folder, output_filename)
 
+        # Build filter chain: set FPS and scale; append denoise filter if required.
+        filters = f'fps={fps},scale=iw*{scale_factor}:ih*{scale_factor}'
+        if apply_denoise:
+            filters += ',hqdn3d=4.0:3.0:6.0:4.5'
+
+        # Build the FFmpeg command.
+        cmd = ['ffmpeg', '-i', input_path, '-vf', filters, '-c:v', 'libx264']
+        if apply_denoise:
+            cmd.extend(['-preset', 'medium', '-crf', '23', '-c:a', 'copy'])
+        else:
+            cmd.extend(['-crf', '23', '-c:a', 'aac', '-b:a', '128k'])
+        cmd.append(output_path)
+
+        command_str = " ".join(cmd)
         try:
             subprocess.run(cmd, check=True)
             print(f"Compressed and rescaled {video_file} to {output_path}")
+            command_log[output_filename] = command_str
         except subprocess.CalledProcessError as e:
             print(f"Error compressing and rescaling {video_file}: {e}")
+
+    return command_log
 
 
 def main(args):
