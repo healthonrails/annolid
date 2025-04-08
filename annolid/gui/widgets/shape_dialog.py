@@ -67,28 +67,37 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         logger.info(
             f"Propagating shape '{selected_shape.label}' from frame {self.current_frame+1} to {target_frame}")
 
+        # Save the current frame so we can restore it later.
+        original_frame = self.current_frame
+
         # Loop over future frames.
         for frame in range(self.current_frame + 1, target_frame + 1):
+            # Set the target frame
             main_window.set_frame_number(frame)
             label_file = main_window._getLabelFile(main_window.filename)
 
-            # Load existing shapes if available; otherwise, start with an empty list.
+            # Load existing shapes from the JSON file for this frame.
             try:
                 existing_shapes = main_window.loadShapesFromFile(label_file)
             except Exception:
                 existing_shapes = []
 
-            # Create a deep copy of the selected shape.
+            # Create a deep copy of the selected shape (if possible),
+            # ensuring that only this shape is propagated.
             new_shape = selected_shape.copy() if hasattr(
                 selected_shape, "copy") else selected_shape
+
+            # Append the new shape while keeping any shapes that already exist.
             existing_shapes.append(new_shape)
 
-            # Update the canvas annotation.
-            main_window.canvas.loadShapes(existing_shapes, replace=True)
-
-            # Save the updated JSON annotation file.
+            # Save the updated shapes list to the JSON annotation file.
+            # This ensures that whatever is displayed or stored remains unaltered
+            # except for the appended shape.
             main_window.saveLabels(label_file, save_image_data=False)
-            logger.info(f"Frame {frame} updated with the shape.")
+            logger.info(f"Frame {frame} updated with the new shape.")
+
+        # Optionally, restore the original frame display after propagation.
+        main_window.set_frame_number(original_frame)
 
         QtWidgets.QMessageBox.information(
             self, "Propagation Complete", "The shape has been propagated to future frames.")
