@@ -1,3 +1,5 @@
+import re
+import glob
 import os.path as osp
 from qtpy import QtWidgets, QtCore
 from annolid.utils.logger import logger
@@ -21,6 +23,32 @@ def shape_to_dict(shape):
         "mask": None if shape.mask is None else shape.mask,  # Adjust conversion as needed
         "visible": shape.visible,
     }
+
+
+def get_future_frame_from_mask(dir_path, current_frame):
+    """
+    Look in the provided directory for PNG files following the pattern:
+      *_<9-digit-frame-number>_mask.png
+    Returns the smallest future frame number (greater than current_frame)
+    found in these filenames. If none is found, returns None.
+    """
+    mask_pattern = osp.join(dir_path, "*_mask.png")
+    mask_files = glob.glob(mask_pattern)
+    frames = []
+    for file in mask_files:
+        basename = osp.basename(file)
+        m = re.search(r"_(\d{9})_mask\.png$", basename)
+        if m:
+            try:
+                frame_num = int(m.group(1))
+                if frame_num > current_frame:
+                    frames.append(frame_num)
+            except ValueError:
+                continue
+    if frames:
+        # Return the smallest future frame number found.
+        return min(frames)
+    return None
 
 
 class ShapePropagationDialog(QtWidgets.QDialog):
@@ -56,8 +84,30 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         # Spin box for selecting the target frame.
         self.frame_spin = QtWidgets.QSpinBox(self)
         self.frame_spin.setMinimum(current_frame + 1)
+
+        # Determine the default value from a mask file if one exists.
+        default_future_frame = None
+        # Check for mask files in a directory – for example, video_results_folder or annotation_dir.
+        folder_to_check = None
+        if hasattr(main_window, "video_results_folder") and main_window.video_results_folder:
+            folder_to_check = main_window.video_results_folder
+        elif hasattr(main_window, "annotation_dir") and main_window.annotation_dir:
+            folder_to_check = main_window.annotation_dir
+
+        if folder_to_check:
+            default_future_frame = get_future_frame_from_mask(
+                folder_to_check, current_frame)
+
+        # Fall back if no mask file was found.
+        if default_future_frame is None:
+            default_future_frame = current_frame + 100
+
+        # Also, ensure we do not exceed the provided max_frame.
+        if default_future_frame > max_frame:
+            default_future_frame = max_frame
+
         self.frame_spin.setMaximum(max_frame)
-        self.frame_spin.setValue(current_frame + 1)
+        self.frame_spin.setValue(default_future_frame)
 
         # Buttons for applying or canceling.
         self.apply_btn = QtWidgets.QPushButton("Apply", self)
