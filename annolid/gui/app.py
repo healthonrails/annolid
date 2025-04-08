@@ -81,6 +81,8 @@ from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
 from annolid.gui.models_registry import MODEL_REGISTRY
+from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
 
 __appname__ = 'Annolid'
 __version__ = "1.2.2"
@@ -1125,6 +1127,39 @@ class AnnolidWindow(MainWindow):
             )
         )
 
+    def propagateSelectedShape(self):
+        """
+        Triggered when the user selects "Propagate Selected Shape" from the context menu.
+        Uses the currently selected shape in the canvas.
+        """
+        from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+        if not self.canvas.selectedShapes:
+            QtWidgets.QMessageBox.information(
+                self, "No Shape Selected", "Please select a shape first.")
+            return
+
+        # For simplicity, take the first selected shape.
+        selected_shape = self.canvas.selectedShapes[0]
+
+        current_frame = self.frame_number  # AnnolidWindow's current frame attribute
+        max_frame = self.num_frames - 1      # Total number of frames
+
+        # Create the dialog, explicitly passing self (the main window) and canvas.
+        dialog = ShapePropagationDialog(
+            self.canvas, self, current_frame, max_frame, parent=self)
+
+        # Optionally, preselect the shape in the dialog's list.
+        for i in range(dialog.shape_list.count()):
+            item = dialog.shape_list.item(i)
+            if item.data(QtCore.Qt.UserRole) == selected_shape:
+                dialog.shape_list.setCurrentRow(i)
+                break
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self.statusBar().showMessage("Shape propagation completed.")
+        else:
+            self.statusBar().showMessage("Shape propagation canceled.")
+
     def editLabel(self, item=None):
         if item and not isinstance(item, LabelListWidgetItem):
             raise TypeError("item must be LabelListWidgetItem type")
@@ -1411,7 +1446,7 @@ class AnnolidWindow(MainWindow):
         self.canvas.setBehaviorText(behave_text)
         self.flag_widget.loadFlags(flags)
 
-    def saveLabels(self, filename):
+    def saveLabels(self, filename, save_image_data=True):
         lf = LabelFile()
         has_zone_shapes = False
 
@@ -1451,8 +1486,11 @@ class AnnolidWindow(MainWindow):
                     flags[behavior] = True
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
-            imageData = utils.img_pil_to_data(
-                self.imageData) if self._config["store_data"] else None
+            if save_image_data:
+                imageData = utils.img_pil_to_data(
+                    self.imageData) if self._config["store_data"] else None
+            else:
+                imageData = None
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))
             lf.save(

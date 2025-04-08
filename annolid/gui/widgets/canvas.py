@@ -691,6 +691,25 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.prevhVertex = None
         self.movingShape = True  # Save changes
 
+    def contextMenuEvent(self, event):
+        # If there is at least one selected shape, show the custom context menu.
+        if self.selectedShapes:
+            menu = QtWidgets.QMenu(self)
+            propagate_action = menu.addAction("Propagate Selected Shape")
+            propagate_action.triggered.connect(
+                lambda: self.propagateSelectedShapeFromCanvas())
+            menu.exec_(event.globalPos())
+        else:
+            # Otherwise, call the base class implementation.
+            super(Canvas, self).contextMenuEvent(event)
+
+    def propagateSelectedShapeFromCanvas(self):
+        # Since the canvas doesn't directly have frame data,
+        # we call the main window's method.
+        main_window = self.window()  # Assumes top-level window is AnnolidWindow
+        if hasattr(main_window, "propagateSelectedShape"):
+            main_window.propagateSelectedShape()
+
     def mousePressEvent(self, ev):
         if QT5:
             pos = self.transformPos(ev.localPos())
