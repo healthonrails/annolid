@@ -2124,7 +2124,7 @@ class AnnolidWindow(MainWindow):
         # Use hash-based color if color not provided and an event type exists.
         if color is None:
             if mark_type is not None:
-                color = self.get_behavior_color(mark_type)
+                color = self._get_rgb_by_label(mark_type)
             else:
                 color = 'green' if mark_type == 'event_start' else 'red'
 
@@ -2327,29 +2327,6 @@ class AnnolidWindow(MainWindow):
             if start <= frame_number <= end:
                 return True
         return False
-
-    def get_behavior_color(self, behavior: str) -> str:
-        """
-        Computes a stable color for a given behavior using its hash value.
-        Returns a hex color string.
-        """
-        # Define a palette of hex color codes.
-        palette = [
-            "#1f77b4",  # blue
-            "#ff7f0e",  # orange
-            "#2ca02c",  # green
-            "#d62728",  # red
-            "#9467bd",  # purple
-            "#8c564b",  # brown
-            "#e377c2",  # pink
-            "#7f7f7f",  # gray
-            "#bcbd22",  # olive
-            "#17becf",  # cyan
-        ]
-        # Create a hash of the behavior name in lowercase.
-        hash_digest = hashlib.md5(behavior.lower().encode('utf-8')).hexdigest()
-        idx = int(hash_digest, 16) % len(palette)
-        return palette[idx]
 
     def _load_deeplabcut_results(self, frame_number: int, is_multi_animal: bool = False):
         """
