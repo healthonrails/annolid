@@ -1051,24 +1051,37 @@ class AnnolidWindow(MainWindow):
         self.openNextImg(load=load)
 
     def _get_rgb_by_label(self, label):
-        if self._config["shape_color"] == "auto":
-            item = self.uniqLabelList.findItemByLabel(label)
-            if item is None:
-                item = self.uniqLabelList.createItemFromLabel(label)
-                self.uniqLabelList.addItem(item)
-                rgb = self._get_rgb_by_label(label)
-                self.uniqLabelList.setItemLabel(item, label, rgb)
-            label_id = self.uniqLabelList.indexFromItem(item).row() + 1
-            label_id += self._config["shift_auto_shape_color"]
-            return LABEL_COLORMAP[label_id % len(LABEL_COLORMAP)]
+        """
+        Return an (R, G, B) tuple for a given label.
+
+        If auto mode is active, compute the color by hashing the normalized label and adding
+        an optional shift offset. Otherwise, if manual mapping is provided use that mapping;
+        if neither is available, fall back to a default shape color.
+        """
+        config = self._config
+        if config.get("shape_color") == "auto":
+            # Normalize label (strip whitespace and lowercase)
+            normalized_label = label.strip().lower()
+            # Compute MD5 hash for reproducibility.
+            hash_digest = hashlib.md5(
+                normalized_label.encode("utf-8")).hexdigest()
+            hash_int = int(hash_digest, 16)
+            # Get a shift offset (default to 0 if not provided).
+            shift_offset = config.get("shift_auto_shape_color", 0)
+            # Calculate index within LABEL_COLORMAP.
+            index = (hash_int + shift_offset) % len(LABEL_COLORMAP)
+            # Convert the NumPy array color to a Python tuple.
+            return (int(LABEL_COLORMAP[index][0]),
+                    int(LABEL_COLORMAP[index][1]),
+                    int(LABEL_COLORMAP[index][2]))
         elif (
-            self._config["shape_color"] == "manual"
-            and self._config["label_colors"]
-            and label in self._config["label_colors"]
+            config.get("shape_color") == "manual"
+            and config.get("label_colors")
+            and label in config["label_colors"]
         ):
-            return self._config["label_colors"][label]
-        elif self._config["default_shape_color"]:
-            return self._config["default_shape_color"]
+            return config["label_colors"][label]
+        elif config.get("default_shape_color"):
+            return config["default_shape_color"]
 
     def _update_shape_color(self, shape):
 
