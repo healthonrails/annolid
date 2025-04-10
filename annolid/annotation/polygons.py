@@ -127,6 +127,48 @@ def resample_polygon(points, num_points=10):
     return resampled
 
 
+def are_polygons_close_or_overlap(shape1, shape2, threshold):
+    """
+    Given two shapes, determine if they are close enough or overlapping based on the given threshold.
+
+    This function converts each shape into a Shapely Polygon (assuming the shape is either a dict
+    with a "points" key or an object with a "points" attribute) and returns True if the distance between
+    them is less than or equal to the threshold.
+
+    Parameters:
+        shape1: First shape (dict or object with "points")
+        shape2: Second shape (dict or object with "points")
+        threshold: Proximity threshold (in pixels)
+
+    Returns:
+        bool: True if the shapes are close or overlapping, False otherwise.
+    """
+    def get_points(shape):
+        if isinstance(shape, dict):
+            return shape.get("points", [])
+        elif hasattr(shape, "points"):
+            return [(pt.x(), pt.y()) for pt in shape.points]
+        else:
+            return []
+
+    pts1 = get_points(shape1)
+    pts2 = get_points(shape2)
+
+    if not pts1 or not pts2:
+        return False
+
+    try:
+        poly1 = Polygon(pts1)
+        poly2 = Polygon(pts2)
+    except Exception:
+        return False
+
+    if not poly1.is_valid or not poly2.is_valid:
+        return False
+
+    return poly1.distance(poly2) <= threshold
+
+
 # Example usage:
 if __name__ == "__main__":
     # Define a mouse polygon

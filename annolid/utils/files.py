@@ -2,6 +2,7 @@ import argparse
 import cv2
 import glob as gb
 import os
+import os.path as osp
 import subprocess
 import platform
 import shutil
@@ -9,6 +10,31 @@ import glob
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
+
+
+def get_future_frame_from_mask(dir_path, current_frame):
+    """
+    Look in the provided directory for PNG files following the pattern:
+    _<9-digit-frame-number>_mask.png
+    Returns the smallest future frame number (greater than current_frame)
+    found in these filenames. If none is found, returns None.
+    """
+    mask_pattern = osp.join(dir_path, "mask.png")
+    mask_files = glob.glob(mask_pattern)
+    frames = []
+    for file in mask_files:
+        basename = osp.basename(file)
+        m = re.search(r"(\d{9})_mask.png$", basename)
+        if m:
+            try:
+                frame_num = int(m.group(1))
+                if frame_num > current_frame:
+                    frames.append(frame_num)
+            except ValueError:
+                continue
+    if frames:
+        return min(frames)
+    return None
 
 
 def construct_filename(results_folder,

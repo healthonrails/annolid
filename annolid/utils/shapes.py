@@ -174,3 +174,22 @@ def sample_grid_in_polygon(polygon_points, grid_size=None):
         point).within(polygon)]
 
     return np.array(valid_points)
+
+
+def shape_to_dict(shape):
+    """
+    Convert a shape object to a dictionary representation.
+    If the shape is already a dict, return it unmodified.
+    """
+    if isinstance(shape, dict):
+        return shape
+    return {
+        "label": shape.label,
+        "points": [(pt.x(), pt.y()) for pt in shape.points],
+        "group_id": shape.group_id,
+        "shape_type": shape.shape_type,
+        "flags": shape.flags,
+        "description": shape.description,
+        "mask": None if shape.mask is None else shape.mask,  # Adjust conversion as needed
+        "visible": shape.visible,
+    }
