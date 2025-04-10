@@ -166,10 +166,13 @@ def save_metadata_to_csv(metadata, output_csv):
         writer.writerows(metadata)
 
 
-def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30, apply_denoise=False):
+def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30,
+                               apply_denoise=False, crop_x=None, crop_y=None,
+                               crop_width=None, crop_height=None):
     """
     Compresses and rescales video files in the input folder using ffmpeg.
-    Optionally applies spacetempo smoothing (denoising) and adjusts FPS.
+    Optionally applies spacetempo smoothing (denoising), adjusts FPS, and
+    crops to a specified region.
 
     Args:
         input_folder (str): Path to the folder containing video files.
@@ -177,9 +180,13 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
         scale_factor (float): Scale factor for resizing videos (e.g., 0.25 for 25%).
         fps (int): Frames per second for the output video.
         apply_denoise (bool): If True, applies spacetempo smoothing using the hqdn3d filter.
+        crop_x (int, optional): X coordinate of the top-left corner for cropping.
+        crop_y (int, optional): Y coordinate of the top-left corner for cropping.
+        crop_width (int, optional): Width of the crop area.
+        crop_height (int, optional): Height of the crop area.
 
     Returns:
-        dict: A mapping from each output video filename to the FFmpeg command used.
+        dict: A mapping from each output video filename to the executed FFmpeg command.
     """
     if not os.path.exists(input_folder):
         print("Input folder does not exist.")
@@ -187,7 +194,6 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # Support additional extensions including MTS.
     video_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv',
                         '.mpeg', '.mpg', '.m4v', '.mts')
     video_files = [f for f in os.listdir(
@@ -202,17 +208,22 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
     for video_file in video_files:
         input_path = os.path.join(input_folder, video_file)
         root, _ = os.path.splitext(video_file)
-        # Append a suffix if denoising is applied.
         output_filename = f"{root}_fix.mp4" if apply_denoise else f"{root}.mp4"
         output_path = os.path.join(output_folder, output_filename)
 
-        # Build filter chain: set FPS and scale; append denoise filter if required.
-        filters = f'fps={fps},scale=iw*{scale_factor}:ih*{scale_factor}'
+        # Build filter chain.
+        filter_chain = ""
+        # Optionally add crop filter if all crop parameters are provided.
+        if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
+            filter_chain += f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
+        # Append the FPS and scaling filters.
+        filter_chain += f"fps={fps},scale=iw*{scale_factor}:ih*{scale_factor}"
+        # Optionally add the denoise filter.
         if apply_denoise:
-            filters += ',hqdn3d=4.0:3.0:6.0:4.5'
+            filter_chain += ",hqdn3d=4.0:3.0:6.0:4.5"
 
-        # Build the FFmpeg command.
-        cmd = ['ffmpeg', '-i', input_path, '-vf', filters, '-c:v', 'libx264']
+        cmd = ['ffmpeg', '-i', input_path, '-vf',
+               filter_chain, '-c:v', 'libx264']
         if apply_denoise:
             cmd.extend(['-preset', 'medium', '-crf', '23', '-c:a', 'copy'])
         else:
