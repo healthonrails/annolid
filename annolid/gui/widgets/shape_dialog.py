@@ -107,6 +107,10 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         self.event_end_frame_spin.setMinimum(current_frame + 1)
         self.event_end_frame_spin.setMaximum(max_frame)
         self.event_end_frame_spin.setValue(default_future_frame)
+        # add tooltips and placeholder text
+        self.event_end_frame_spin.setToolTip(f"Maximum frame: {max_frame}")
+        self.event_end_frame_spin.lineEdit().setPlaceholderText(str(max_frame))
+
         event_layout.addWidget(QtWidgets.QLabel("Event Start Frame:"))
         event_layout.addWidget(self.event_start_frame_spin)
         event_layout.addWidget(QtWidgets.QLabel("Event End Frame:"))
