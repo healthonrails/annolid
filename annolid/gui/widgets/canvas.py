@@ -1187,6 +1187,51 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     logger.error(
                         f"An error occurred during AI mask prediction: {e}")
 
+            elif (
+                # Check if the current mode is either 'linestrip' or 'line' to handle line segment drawing.
+                self.createMode in ["linestrip", "line"]
+                and self.drawing()
+                and self.current
+                and len(self.current.points) > 0
+            ):
+                # Get starting and end point for the line segment.
+                start_point = self.current.points[-1]
+                end_point = self.line.points[1]
+
+                # Compute Euclidean distance in pixels.
+                dx = end_point.x() - start_point.x()
+                dy = end_point.y() - start_point.y()
+                distance = (dx**2 + dy**2) ** 0.5
+
+                # Calculate the midpoint of the line segment to place the text.
+                mid_point = QtCore.QPointF(
+                    (start_point.x() + end_point.x()) / 2,
+                    (start_point.y() + end_point.y()) / 2,
+                )
+
+                # Adjust the font size with line length. Here we're using a simple scaling
+                # factor (distance/10) while clamping the font size between 8 and 20 points.
+                # Clamp the font size between 8 and 20 points.
+                # Adjust the scaling factor and min/max values as needed.
+                font_size = int(max(8, min(20, distance / 10)))
+
+                # Create a font with the computed size.
+                font = QtGui.QFont()
+                font.setPointSize(font_size)
+
+                # Use the pen already set for drawing lines (this reuses the line color).
+                line_pen = p.pen()
+
+                # Set the painter's font and pen.
+                p.setFont(font)
+                p.setPen(line_pen)
+                # Draw the text near the midpoint with localization.
+                localized_text = QtCore.QCoreApplication.translate(
+                    "Canvas", "{:.1f}px".format(distance)
+                )
+                p.drawText(mid_point, localized_text)
+                p.drawText(mid_point, f"{distance:.1f}px")
+
         except Exception as e:
             # General error handling for the entire block
             logger.error(f"An error occurred in paintEvent: {e}")
