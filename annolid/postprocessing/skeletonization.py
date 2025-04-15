@@ -2,6 +2,9 @@ import os
 import json
 import argparse
 import glob
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import distance_transform_edt, label
@@ -11,328 +14,380 @@ from sklearn.decomposition import PCA
 
 
 class ShapeProcessor:
-    def __init__(self, binary_mask):
+    def __init__(self, binary_mask: np.ndarray) -> None:
         """
         Initialize ShapeProcessor with a binary mask.
 
         Parameters:
-        binary_mask (ndarray): A binary mask representing the shape.
+        -----------
+        binary_mask : np.ndarray
+            A binary mask representing the shape.
         """
         self.binary_mask = binary_mask
         self.skeleton = skeletonize(self.binary_mask)
-        self.medial_axis, self.dist_transform = medial_axis(
-            self.binary_mask, return_distance=True)
+        # Compute medial axis and its distance transform
+        medial, dist = medial_axis(self.binary_mask, return_distance=True)
+        self.medial_axis = medial
+        self.dist_transform = dist
         self.medial_axis = self.prune_medial_axis(threshold_length=2)
+
         self.centroid = self.calculate_centroid()
         self.extreme_points = self.calculate_extreme_points_on_medial_axis()
-        self.labeled_points = self.label_extreme_points()
+        # Label extreme points if any were found
+        self.labeled_points = self.label_extreme_points() if self.extreme_points else {}
         self.ensure_tail_is_farthest()
 
-    def prune_medial_axis(self, threshold_length):
+    def prune_medial_axis(self, threshold_length: int) -> np.ndarray:
         """
         Prune small branches in the medial axis.
 
         Parameters:
-        threshold_length (int): The length threshold for pruning branches.
+        -----------
+        threshold_length : int
+            The minimum branch length to keep.
 
         Returns:
-        ndarray: The pruned medial axis.
+        --------
+        np.ndarray:
+            The pruned medial axis.
         """
-        labeled_skeleton, num_features = label(self.medial_axis)
-        sizes = np.bincount(labeled_skeleton.ravel())
+        labeled, _ = label(self.medial_axis)
+        sizes = np.bincount(labeled.ravel())
         mask_sizes = sizes >= threshold_length
-        mask_sizes[0] = 0
-        cleaned_skeleton = mask_sizes[labeled_skeleton]
-        return cleaned_skeleton
+        mask_sizes[0] = 0  # Ensure that background is removed
+        cleaned = mask_sizes[labeled]
+        return cleaned
 
-    def calculate_centroid(self):
+    def calculate_centroid(self) -> Tuple[float, float]:
         """
         Calculate the centroid of the medial axis.
 
         Returns:
-        tuple: Coordinates of the centroid (centroid_x, centroid_y).
+        --------
+        Tuple[float, float]:
+            The centroid coordinates (x, y).
         """
         y_coords, x_coords = np.nonzero(self.medial_axis)
-        centroid_x = np.mean(x_coords)
-        centroid_y = np.mean(y_coords)
-        return (centroid_x, centroid_y)
+        if len(x_coords) == 0 or len(y_coords) == 0:
+            logging.warning(
+                "Medial axis has no nonzero points; using default centroid (0, 0).")
+            return (0.0, 0.0)
+        return (np.mean(x_coords), np.mean(y_coords))
 
-    def calculate_extreme_points_on_medial_axis(self):
+    def calculate_extreme_points_on_medial_axis(self) -> Optional[Dict[str, Tuple[int, int]]]:
         """
         Calculate the extreme points (leftmost, rightmost, topmost, bottommost) on the medial axis.
 
         Returns:
-        dict: A dictionary with keys 'leftmost', 'rightmost', 'topmost', 'bottommost' and their respective coordinates.
+        --------
+        Optional[Dict[str, Tuple[int, int]]]:
+            A dictionary with keys 'leftmost', 'rightmost', 'topmost', 'bottommost' mapped to their coordinates,
+            or None if no points are found.
         """
         y_coords, x_coords = np.nonzero(self.medial_axis)
+        if len(x_coords) == 0 or len(y_coords) == 0:
+            logging.warning("No points found in the medial axis.")
+            return None
 
-        if len(y_coords) == 0 or len(x_coords) == 0:
-            return None  # Handle case where there are no points in the medial axis
-
-        leftmost = (x_coords[0], y_coords[0])
-        rightmost = (x_coords[0], y_coords[0])
-        topmost = (x_coords[0], y_coords[0])
-        bottommost = (x_coords[0], y_coords[0])
-
-        for x, y in zip(x_coords, y_coords):
-            if x < leftmost[0]:
-                leftmost = (x, y)
-            if x > rightmost[0]:
-                rightmost = (x, y)
-            if y < topmost[1]:
-                topmost = (x, y)
-            if y > bottommost[1]:
-                bottommost = (x, y)
+        points = list(zip(x_coords, y_coords))
+        leftmost = min(points, key=lambda p: p[0])
+        rightmost = max(points, key=lambda p: p[0])
+        topmost = min(points, key=lambda p: p[1])
+        bottommost = max(points, key=lambda p: p[1])
 
         return {"leftmost": leftmost, "rightmost": rightmost, "topmost": topmost, "bottommost": bottommost}
 
-    def distance_to_centroid(self, point):
+    def distance_to_centroid(self, point: Tuple[float, float]) -> float:
         """
-        Calculate the Euclidean distance from a point to the centroid.
+        Compute the Euclidean distance from a point to the centroid.
 
         Parameters:
-        point (tuple): Coordinates of the point (x, y).
+        -----------
+        point : Tuple[float, float]
+            The (x, y) coordinate.
 
         Returns:
-        float: Distance to the centroid.
+        --------
+        float:
+            The Euclidean distance.
         """
-        return np.sqrt((point[0] - self.centroid[0]) ** 2 + (point[1] - self.centroid[1]) ** 2)
+        return np.linalg.norm(np.array(point) - np.array(self.centroid))
 
-    def calculate_distance(self, point1, point2):
+    def calculate_distance(self, point1: Tuple[float, float], point2: Tuple[float, float]) -> float:
         """
-        Calculate the Euclidean distance between two points.
+        Compute the Euclidean distance between two points.
 
         Parameters:
-        point1 (tuple): Coordinates of the first point (x1, y1).
-        point2 (tuple): Coordinates of the second point (x2, y2).
+        -----------
+        point1 : Tuple[float, float]
+            The first point (x, y).
+        point2 : Tuple[float, float]
+            The second point (x, y).
 
         Returns:
-        float: Distance between the two points.
+        --------
+        float:
+            The Euclidean distance.
         """
-        return np.sqrt((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2)
+        return np.linalg.norm(np.array(point1) - np.array(point2))
 
-    def calculate_polygon_edge_distances(self):
+    def calculate_polygon_edge_points(self) -> List[Tuple[int, int]]:
         """
-        Calculate the coordinates of the polygon edges.
+        Calculate all edge points of the polygon defined by the binary mask.
 
         Returns:
-        list: A list of tuples representing the edge points.
+        --------
+        List[Tuple[int, int]]:
+            A list of (x, y) coordinates of the edge points.
         """
-        poly_y, poly_x = np.nonzero(self.binary_mask)
-        edge_points = list(zip(poly_x, poly_y))
-        return edge_points
+        y_coords, x_coords = np.nonzero(self.binary_mask)
+        return list(zip(x_coords, y_coords))
 
-    def distance_to_polygon_edge(self, point):
+    def distance_to_polygon_edge(self, point: Tuple[float, float]) -> float:
         """
-        Calculate the minimum distance from a point to the polygon edge.
+        Calculate the shortest distance from a given point to the polygon edge.
 
         Parameters:
-        point (tuple): Coordinates of the point (x, y).
+        -----------
+        point : Tuple[float, float]
+            The (x, y) coordinate.
 
         Returns:
-        float: Minimum distance to the polygon edge.
+        --------
+        float:
+            The minimum distance.
         """
-        edge_points = self.calculate_polygon_edge_distances()
-        distances = [np.sqrt((point[0] - ex) ** 2 + (point[1] - ey) ** 2)
-                     for ex, ey in edge_points]
-        return min(distances)
+        edge_points = self.calculate_polygon_edge_points()
+        distances = [self.calculate_distance(
+            point, (ex, ey)) for ex, ey in edge_points]
+        return min(distances) if distances else float('inf')
 
-    def label_extreme_points(self):
+    def label_extreme_points(self) -> Dict[str, Tuple[float, float]]:
         """
-        Label the extreme points on the medial axis as 'head', 'tail', 'nose', 'tailbase', and 'body_center'.
+        Label the extreme points of the medial axis as 'head', 'tail', 'nose', 'tailbase', and 'body_center'.
 
         Returns:
-        dict: A dictionary with labeled points.
+        --------
+        Dict[str, Tuple[float, float]]:
+            A dictionary with labeled keypoints.
         """
-        # Calculate distances to centroid
+        if not self.extreme_points:
+            return {}
+
+        # Determine head (closest to centroid) and tail (farthest from centroid)
         distances = {k: self.distance_to_centroid(
             v) for k, v in self.extreme_points.items()}
+        head_label = min(distances, key=distances.get)
+        tail_label = max(distances, key=distances.get)
 
-        closest_point_label = min(distances, key=distances.get)
-        farthest_point_label = max(distances, key=distances.get)
+        labels = {
+            "head": self.extreme_points[head_label],
+            "tail": self.extreme_points[tail_label]
+        }
 
-        labels = {}
-        labels["head"] = self.extreme_points[closest_point_label]
-        labels["tail"] = self.extreme_points[farthest_point_label]
+        # Process remaining points for additional labels
+        remaining = {k: v for k, v in self.extreme_points.items() if k not in [
+            head_label, tail_label]}
+        if remaining:
+            # For "nose": select the remaining point closest to head, further refined by proximity to edge
+            nose_distances = {k: self.calculate_distance(
+                v, labels["head"]) for k, v in remaining.items()}
+            nose_candidate = min(nose_distances, key=nose_distances.get)
+            nose_candidates = {
+                k: self.distance_to_polygon_edge(self.extreme_points[k])
+                for k, d in nose_distances.items() if d == nose_distances[nose_candidate]
+            }
+            nose_label = min(nose_candidates, key=nose_candidates.get)
+            labels["nose"] = self.extreme_points[nose_label]
 
-        remaining_points = {k: v for k, v in self.extreme_points.items(
-        ) if k not in [closest_point_label, farthest_point_label]}
+            # Use PCA to determine the primary axis to estimate "tailbase"
+            y_coords, x_coords = np.nonzero(self.medial_axis)
+            coords = np.column_stack((x_coords, y_coords))
+            if len(coords) >= 2:
+                pca = PCA(n_components=2)
+                pca.fit(coords)
+                primary_axis = pca.components_[0]
+                projections = {k: np.dot(primary_axis, (np.array(v) - np.array(labels["head"])))
+                               for k, v in remaining.items()}
+                tailbase_label = max(projections, key=projections.get)
+                labels["tailbase"] = remaining[tailbase_label]
+            else:
+                labels["tailbase"] = next(iter(remaining.values()))
+        else:
+            labels["nose"] = labels["head"]
+            labels["tailbase"] = labels["tail"]
 
-        # Calculate distances from head to other points
-        head_distances = {k: self.calculate_distance(
-            v, labels['head']) for k, v in remaining_points.items()}
-
-        # Ensure the "nose" point is near the "head" and close to the border
-        min_distance_to_head = min(head_distances.values())
-        nose_candidates = [
-            point for point, dist in head_distances.items() if dist == min_distance_to_head]
-        nose_candidates_dist_to_edge = {point: self.distance_to_polygon_edge(
-            self.extreme_points[point]) for point in nose_candidates}
-        nose_point_label = min(nose_candidates_dist_to_edge,
-                               key=nose_candidates_dist_to_edge.get)
-
-        # Use PCA to determine the primary axis of the shape
-        y_coords, x_coords = np.nonzero(self.medial_axis)
-        pca = PCA(n_components=2)
-        pca.fit(np.column_stack((x_coords, y_coords)))
-        primary_axis = pca.components_[0]
-
-        # Find the point closest and farthest to the primary axis
-        projected_points = {k: np.dot(primary_axis, np.array(
-            v) - np.array(labels['head'])) for k, v in remaining_points.items()}
-        tailbase_point_label = max(projected_points, key=projected_points.get)
-
-        labels["nose"] = self.extreme_points[nose_point_label]
-        labels["tailbase"] = remaining_points[tailbase_point_label]
         labels["body_center"] = self.centroid
-
         return labels
 
-    def ensure_tail_is_farthest(self):
+    def ensure_tail_is_farthest(self) -> None:
         """
-        Ensure that the labeled tail point is the farthest from the head point.
+        Re-check and ensure that the labeled 'tail' point is indeed the farthest from the 'head'.
         """
+        if "head" not in self.labeled_points or "tail" not in self.labeled_points:
+            return
+
         head_point = self.labeled_points["head"]
         tail_point = self.labeled_points["tail"]
-        tail_distance = self.calculate_distance(head_point, tail_point)
+        max_distance = self.calculate_distance(head_point, tail_point)
 
-        # Re-evaluate the points to find the actual farthest point if necessary
         for label, point in self.labeled_points.items():
-            if label not in ["head", "tail"]:
-                distance = self.calculate_distance(head_point, point)
-                if distance > tail_distance:
-                    # Update the tail point and the label
-                    tail_distance = distance
-                    self.labeled_points["tail"] = point
+            if label in ["head", "tail"]:
+                continue
+            dist = self.calculate_distance(head_point, point)
+            if dist > max_distance:
+                max_distance = dist
+                self.labeled_points["tail"] = point
 
-    def visualize(self):
+    def visualize(self) -> None:
         """
-        Visualize the binary mask, medial axis, and labeled points.
+        Visualize the binary mask, medial axis, and key points with annotations.
         """
         plt.figure(figsize=(10, 5))
         plt.imshow(self.binary_mask, cmap='gray')
-        plt.imshow(self.medial_axis, cmap='jet',
-                   alpha=0.5)  # Overlay medial axis
-
-        # Plot labeled points on the medial axis
+        plt.imshow(self.medial_axis, cmap='jet', alpha=0.5)
         for label, point in self.labeled_points.items():
             plt.plot(point[0], point[1], 'o', label=label.capitalize())
-
         plt.title('Medial Axis and Labeled Points')
         plt.legend()
         plt.show()
 
 
-def compute_distance_transform(binary_image):
+def compute_distance_transform(binary_image: np.ndarray) -> np.ndarray:
     """
     Compute the distance transform of a binary image.
 
     Parameters:
-    binary_image (ndarray): A binary image.
+    -----------
+    binary_image : np.ndarray
+        The binary image.
 
     Returns:
-    ndarray: The distance transform of the binary image.
+    --------
+    np.ndarray:
+        The computed distance transform.
     """
     return distance_transform_edt(binary_image)
 
 
-def extract_medial_axis(binary_image):
+def extract_medial_axis(binary_image: np.ndarray) -> np.ndarray:
     """
-    Extract the medial axis of a binary image.
+    Extract the medial axis from a binary image.
 
     Parameters:
-    binary_image (ndarray): A binary image.
+    -----------
+    binary_image : np.ndarray
+        The binary image.
 
     Returns:
-    ndarray: The medial axis of the binary image.
+    --------
+    np.ndarray:
+        The medial axis.
     """
-    medial_axis_result, _ = medial_axis(binary_image, return_distance=True)
-    return medial_axis_result
+    medial, _ = medial_axis(binary_image, return_distance=True)
+    return medial
 
 
-def add_key_points_to_labelme_json(json_path, instance_names, is_vis=False):
+def add_key_points_to_labelme_json(json_path: str, instance_names: List[str], is_vis: bool = False) -> None:
     """
-    Processes annotations from a LabelMe JSON file, extracts key points, and adds them as annotations.
+    Process a LabelMe JSON file, extract key points for specified instances, and add these as new point annotations.
 
-    Args:
-        json_path (str): Path to the LabelMe JSON file.
-        instance_names (list): List of instance names to process.
-
-    Returns:
-        None: The function directly modifies the JSON file in place.
+    Parameters:
+    -----------
+    json_path : str
+        Path to the LabelMe JSON file.
+    instance_names : List[str]
+        List of instance names to process.
+    is_vis : bool, optional
+        If True, visualize the medial axis and key points during processing.
     """
-
-    # Load the existing JSON data
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        logging.error(f"Failed to load JSON file {json_path}: {e}")
+        return
 
     mask_converter = LabelMeProcessor(json_path)
     binary_masks = mask_converter.get_all_masks()
 
-    for bm, label in binary_masks:
+    for binary_mask, label in binary_masks:
         if label in instance_names:
-            processor = ShapeProcessor(bm)
+            processor = ShapeProcessor(binary_mask)
             if is_vis:
                 processor.visualize()
-            # Add key point annotations to the JSON data
             for point_label, point in processor.labeled_points.items():
-                data['shapes'].append({
+                data.setdefault('shapes', []).append({
                     "label": f"{label}_{point_label}",
                     "points": [[int(point[0]), int(point[1])]],
                     "shape_type": "point",
                     "visible": True,
                 })
 
-    # Save the updated JSON data
-    with open(json_path, 'w') as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(json_path, 'w') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logging.error(f"Failed to save updated JSON file {json_path}: {e}")
 
 
-def extract_ground_truth_keypoints(json_path):
+def extract_ground_truth_keypoints(json_path: str) -> Dict[str, Any]:
     """
     Extract ground truth keypoints from a LabelMe JSON file.
+    Only points whose labels do not include an underscore are extracted.
 
     Parameters:
-    json_path (str): Path to the LabelMe JSON file containing ground truth keypoints.
+    -----------
+    json_path : str
+        Path to the LabelMe JSON file containing keypoints.
 
     Returns:
-    dict: A dictionary where keys are labels of keypoints and 
-    values are the coordinates of those keypoints.
+    --------
+    Dict[str, Any]:
+        Dictionary mapping keypoint labels to their coordinates.
     """
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        logging.error(f"Error loading {json_path}: {e}")
+        return {}
 
-    ground_truth_keypoints = {}
-    for shape in data['shapes']:
-        if shape['shape_type'] == 'point' and '_' not in shape['label']:
-            ground_truth_keypoints[shape['label']] = shape['points'][0]
+    ground_truth = {}
+    for shape in data.get('shapes', []):
+        if shape.get('shape_type') == 'point' and '_' not in shape.get('label', ''):
+            ground_truth[shape['label']] = shape['points'][0]
+    return ground_truth
 
-    return ground_truth_keypoints
 
-
-def main(input_folder, instance_names):
+def main(input_folder: str, instance_names: List[str]) -> None:
     """
-    Main function to process annotations and visualize results.
+    Process all LabelMe JSON files in the input folder by adding keypoint annotations.
 
     Parameters:
-    - input_folder (str): Path to the folder containing JSON files.
-    - instance_names (list): List of instance names.
+    -----------
+    input_folder : str
+        Directory containing JSON files.
+    instance_names : List[str]
+        List of instance names to process.
     """
-    ground_truth_keypoints = None
-    # Get all JSON files recursively in the input folder
     json_files = glob.glob(os.path.join(
         input_folder, '**/*.json'), recursive=True)
+    ground_truth_keypoints = None
 
-    # Iterate through each JSON file
-    for i, json_file in enumerate(json_files):
-        if '00000000.json' in json_file:
+    for json_file in json_files:
+        base_filename = os.path.basename(json_file)
+        if '00000000.json' in base_filename:
             ground_truth_keypoints = extract_ground_truth_keypoints(json_file)
-            print(ground_truth_keypoints)
+            logging.info(
+                f"Extracted ground truth keypoints from {json_file}: {ground_truth_keypoints}")
         else:
             add_key_points_to_labelme_json(json_file, instance_names)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Add key points to LabelMe JSON files.")
     parser.add_argument(
