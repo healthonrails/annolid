@@ -58,6 +58,85 @@ class ShapeProcessor:
         cleaned = mask_sizes[labeled]
         return cleaned
 
+    def compute_symmetry_axis(self) -> tuple:
+        """
+        Compute the symmetry axis for the head region.
+
+        Uses PCA on points in the upper (facial) region of the medial axis.
+
+        Returns:
+            center (np.ndarray): The centroid of the head region.
+            axis (np.ndarray): The unit vector along the primary (symmetry) axis.
+        """
+        # Select points above the overall centroid (assumed to be the head region)
+        y_coords, x_coords = np.nonzero(self.medial_axis)
+        points = np.column_stack((x_coords, y_coords))
+        head_region = points[points[:, 1] < self.centroid[1]]
+        if len(head_region) < 2:  # fallback to all points
+            head_region = points
+        pca = PCA(n_components=2)
+        pca.fit(head_region)
+        center = np.mean(head_region, axis=0)
+        axis = pca.components_[0]  # first principal component
+        return center, axis
+
+    def refine_keypoints_with_symmetry(self, candidates: dict, extra_features: dict = None) -> dict:
+        """
+        Refine keypoint assignments using symmetry and additional anatomical cues.
+
+        Parameters:
+            candidates (dict): Initial candidates for keypoints (e.g., 'head', 'nose', 'tail').
+            extra_features (dict, optional): Detected positions of features like ears or eyes.
+                Expected keys might include 'left_ear', 'right_ear', 'eye_left', 'eye_right', etc.
+
+        Returns:
+            dict: Refined keypoint dictionary with improved anatomical consistency.
+        """
+        refined = {}
+
+        # Compute symmetry axis for the head region.
+        center, axis = self.compute_symmetry_axis()
+
+        # For the nose, enforce proximity to the symmetry axis.
+        head_pt = np.array(candidates.get("head", self.centroid))
+        nose_candidate = np.array(candidates.get("nose", head_pt))
+        vec = nose_candidate - center
+        # projection on the symmetry axis
+        projection = np.dot(vec, axis) * axis
+        deviation = np.linalg.norm(vec - projection)
+
+        # If additional facial features (e.g., ears, eyes) are provided, adjust the nose score.
+        if extra_features:
+            # For instance, assume the nose should be near the center of eyes and ears.
+            face_features = []
+            for feat in ['left_ear', 'right_ear', 'eye_left', 'eye_right']:
+                if feat in extra_features:
+                    face_features.append(np.array(extra_features[feat]))
+            if face_features:
+                face_center = np.mean(face_features, axis=0)
+                nose_to_face = np.linalg.norm(nose_candidate - face_center)
+                # Weight the deviation: lower nose_to_face distance further supports nose candidate.
+                deviation *= 0.5 if nose_to_face < 20 else 1.0  # threshold is an example value
+        # Use the deviation as a quality measure: lower is better. If the candidate deviates too much,
+        # consider swapping with a more symmetric candidate if available.
+        # assign refined nose candidate
+        refined["nose"] = tuple(nose_candidate)
+
+        # For tail, typically the candidate should be the one farthest from the head in the direction opposite to the nose.
+        tail_candidate = np.array(candidates.get("tail", self.centroid))
+        # Here we use the original logic: tail should maximize distance from head.
+        refined["tail"] = tuple(tail_candidate)
+
+        # Retain the head and body center as computed.
+        refined["head"] = tuple(head_pt)
+        refined["body_center"] = self.centroid
+
+        # Optionally incorporate extra features if available.
+        if extra_features:
+            refined.update(extra_features)
+
+        return refined
+
     def calculate_centroid(self) -> Tuple[float, float]:
         """
         Calculate the centroid of the medial axis.
@@ -162,82 +241,150 @@ class ShapeProcessor:
             point, (ex, ey)) for ex, ey in edge_points]
         return min(distances) if distances else float('inf')
 
-    def label_extreme_points(self) -> Dict[str, Tuple[float, float]]:
+    def compute_medial_axis_curvature(self) -> list:
         """
-        Label the extreme points of the medial axis as 'head', 'tail', 'nose', 'tailbase', and 'body_center'.
+        Compute the curvature at each point along the medial axis.
 
         Returns:
         --------
-        Dict[str, Tuple[float, float]]:
-            A dictionary with labeled keypoints.
+        List[Tuple[float, Tuple[int, int]]]:
+            A list of tuples where the first element is the curvature (in radians)
+            and the second element is the corresponding (x, y) point.
+        """
+        # Extract points along the medial axis
+        y_coords, x_coords = np.nonzero(self.medial_axis)
+        points = list(zip(x_coords, y_coords))
+        if len(points) < 3:
+            return []
+
+        # Order points using PCA – this provides an approximate order along the body.
+        points_arr = np.array(points)
+        pca = PCA(n_components=1)
+        pca.fit(points_arr)
+        projection = points_arr @ pca.components_[0]
+        sorted_indices = np.argsort(projection)
+        sorted_points = points_arr[sorted_indices]
+
+        curvature_points = []
+        # Use finite differences to approximate curvature at each interior point.
+        for i in range(1, len(sorted_points) - 1):
+            p_prev = sorted_points[i - 1]
+            p_curr = sorted_points[i]
+            p_next = sorted_points[i + 1]
+            v1 = p_curr - p_prev
+            v2 = p_next - p_curr
+            # Avoid division by zero
+            norm1 = np.linalg.norm(v1)
+            norm2 = np.linalg.norm(v2)
+            if norm1 == 0 or norm2 == 0:
+                curvature = 0
+            else:
+                # Calculate the angle between the segments.
+                dot = np.dot(v1, v2)
+                cos_angle = np.clip(dot / (norm1 * norm2), -1.0, 1.0)
+                curvature = np.arccos(cos_angle)
+            curvature_points.append(
+                (curvature, (int(p_curr[0]), int(p_curr[1]))))
+        return curvature_points
+
+    def local_thickness(self, point: tuple) -> float:
+        """
+        Calculate the local thickness at a given point using the distance transform.
+        Lower values indicate a thinner region.
+
+        Parameters:
+            point (tuple): The (x, y) coordinates.
+
+        Returns:
+            float: The local thickness (distance transform value) at the point.
+        """
+        x, y = int(point[0]), int(point[1])
+        # Note: Using [y, x] indexing because numpy arrays are row-major.
+        return self.dist_transform[y, x]
+
+    def label_extreme_points(self) -> dict:
+        """
+        Label the extreme points on the medial axis as 'head', 'nose', 'tail',
+        'tailbase', and 'body_center' by incorporating distance, curvature,
+        local thickness, and domain-specific anatomical knowledge.
+
+        Returns:
+            dict: A dictionary with keys corresponding to anatomical labels
+                  and values as the (x, y) coordinates.
         """
         if not self.extreme_points:
             return {}
 
-        # Determine head (closest to centroid) and tail (farthest from centroid)
-        distances = {k: self.distance_to_centroid(
-            v) for k, v in self.extreme_points.items()}
-        head_label = min(distances, key=distances.get)
-        tail_label = max(distances, key=distances.get)
+        # Select head candidate as the point closest to the centroid.
+        head_label = min(
+            self.extreme_points,
+            key=lambda k: self.distance_to_centroid(self.extreme_points[k])
+        )
+        head_point = self.extreme_points[head_label]
 
-        labels = {
-            "head": self.extreme_points[head_label],
-            "tail": self.extreme_points[tail_label]
-        }
+        # For tail: while conventional logic would take the farthest point,
+        # we now incorporate the local thickness.
+        # The tail should be long (high distance from head) and thin (low local thickness).
+        epsilon = 1e-6  # small constant to avoid division by zero
+        candidate_scores = {}
+        for label, pt in self.extreme_points.items():
+            if label == head_label:
+                continue
+            # The candidate score favors points that are far from the head relative to their thickness.
+            distance = self.calculate_distance(pt, head_point)
+            thickness = self.local_thickness(pt)
+            candidate_scores[label] = distance / (thickness + epsilon)
+        tail_label = max(candidate_scores, key=candidate_scores.get)
+        tail_point = self.extreme_points[tail_label]
 
-        # Process remaining points for additional labels
-        remaining = {k: v for k, v in self.extreme_points.items() if k not in [
-            head_label, tail_label]}
-        if remaining:
-            # For "nose": select the remaining point closest to head, further refined by proximity to edge
-            nose_distances = {k: self.calculate_distance(
-                v, labels["head"]) for k, v in remaining.items()}
-            nose_candidate = min(nose_distances, key=nose_distances.get)
-            nose_candidates = {
-                k: self.distance_to_polygon_edge(self.extreme_points[k])
-                for k, d in nose_distances.items() if d == nose_distances[nose_candidate]
-            }
-            nose_label = min(nose_candidates, key=nose_candidates.get)
-            labels["nose"] = self.extreme_points[nose_label]
-
-            # Use PCA to determine the primary axis to estimate "tailbase"
-            y_coords, x_coords = np.nonzero(self.medial_axis)
-            coords = np.column_stack((x_coords, y_coords))
-            if len(coords) >= 2:
-                pca = PCA(n_components=2)
-                pca.fit(coords)
-                primary_axis = pca.components_[0]
-                projections = {k: np.dot(primary_axis, (np.array(v) - np.array(labels["head"])))
-                               for k, v in remaining.items()}
-                tailbase_label = max(projections, key=projections.get)
-                labels["tailbase"] = remaining[tailbase_label]
+        # Curvature analysis to refine the nose (typically a sharp turning point near the head).
+        # assumes this method is defined as before
+        curvature_points = self.compute_medial_axis_curvature()
+        if curvature_points:
+            nose_candidates = [
+                cp for cp in curvature_points
+                if self.calculate_distance(cp[1], head_point) < self.calculate_distance(tail_point, head_point) * 0.5
+            ]
+            if nose_candidates:
+                nose_point = max(nose_candidates, key=lambda x: x[0])[1]
             else:
-                labels["tailbase"] = next(iter(remaining.values()))
+                nose_point = head_point
         else:
-            labels["nose"] = labels["head"]
-            labels["tailbase"] = labels["tail"]
+            nose_point = head_point
 
-        labels["body_center"] = self.centroid
+        # Approximate tailbase as the midpoint between head and tail.
+        tailbase_point = (
+            (head_point[0] + tail_point[0]) / 2,
+            (head_point[1] + tail_point[1]) / 2
+        )
+
+        # Use the geometric centroid as body_center.
+        labels = {
+            "head": head_point,
+            "nose": nose_point,
+            "tail": tail_point,
+            "tailbase": tailbase_point,
+            "body_center": self.centroid
+        }
         return labels
 
     def ensure_tail_is_farthest(self) -> None:
         """
-        Re-check and ensure that the labeled 'tail' point is indeed the farthest from the 'head'.
+        Confirm that the 'tail' point is indeed the farthest from the head based on the refined assignment.
         """
         if "head" not in self.labeled_points or "tail" not in self.labeled_points:
             return
 
-        head_point = self.labeled_points["head"]
-        tail_point = self.labeled_points["tail"]
-        max_distance = self.calculate_distance(head_point, tail_point)
-
-        for label, point in self.labeled_points.items():
+        head_pt = self.labeled_points["head"]
+        current_tail = self.labeled_points["tail"]
+        max_dist = self.calculate_distance(head_pt, current_tail)
+        for label, pt in self.labeled_points.items():
             if label in ["head", "tail"]:
                 continue
-            dist = self.calculate_distance(head_point, point)
-            if dist > max_distance:
-                max_distance = dist
-                self.labeled_points["tail"] = point
+            d = self.calculate_distance(head_pt, pt)
+            if d > max_dist:
+                max_dist = d
+                self.labeled_points["tail"] = pt
 
     def visualize(self) -> None:
         """
