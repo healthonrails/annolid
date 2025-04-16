@@ -276,6 +276,33 @@ class FlagTableWidget(QtWidgets.QWidget):
         layout.addWidget(self._table)
         layout.addLayout(buttons_layout)
 
+        # add keyboard shortcuts
+        shortcuts = [
+            # “S” calls handle_start_button on whatever row is focused.
+            ("S", lambda: self._trigger_start_on_current_row()),
+            # “E” calls handle_end_button on the focused row.
+            ("E", lambda: self._trigger_end_on_current_row()),
+            # “Ctrl+S” saves all flags.
+            ("Ctrl+S", self.save_all_flags),      # save flags
+            # “Ctrl+D” deletes the selected row.
+            ("Ctrl+D", self.remove_selected_row),  # delete selected
+            # “Ctrl+L” clears the entire table after confirmation.
+            ("Ctrl+L", self.clear_all_rows),      # clear all
+        ]
+        for seq, handler in shortcuts:
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(handler)
+
+    def _trigger_start_on_current_row(self):
+        row = self._table.currentRow()
+        if row >= 0:
+            self.handle_start_button(row)
+
+    def _trigger_end_on_current_row(self):
+        row = self._table.currentRow()
+        if row >= 0:
+            self.handle_end_button(row)
+
     def _handle_table_clicked(self, index):
         """Emit the flag name of the selected row."""
         row = index.row()
