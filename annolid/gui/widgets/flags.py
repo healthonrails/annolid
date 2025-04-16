@@ -226,11 +226,6 @@ class FlagTable(QTableWidget):
         if checkbox:
             checkbox.setChecked(False)
 
-    def delete_selected(self):
-        rows = set(item.row() for item in self.selectedItems())
-        for row in sorted(rows, reverse=True):
-            self.removeRow(row)
-
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         menu.addAction("Add", self.add_flag)
