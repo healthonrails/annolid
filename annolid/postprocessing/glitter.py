@@ -511,7 +511,7 @@ def tracks2nix(video_file=None,
                                        -1)
                         if _class in animal_names and 'zone' not in _class.lower():
                             mask_label = f"-{_class}{tracking_id if tracking_id != 0 else ''}" if len(
-                                bbox_info) < 10 else str(tracking_id)
+                                bbox_info) < 10 else f"-{_class.split('_')[-1]}"
                             cv2.putText(frame, mask_label,
                                         (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
                                         0.65, color, 2)

@@ -93,7 +93,9 @@ class FreezingAnalyzer():
 
     def run(self,
             deep=False,
-            pretrained_model=None):
+            pretrained_model=None,
+            draw_grid=False,
+            ):
         video = cv2.VideoCapture(self.video_file)
         width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -158,6 +160,17 @@ class FreezingAnalyzer():
                             [_mask],
                             [_row.instance_name]
                         )
+                        cx = int((_row.x1_y + _row.x2_y) / 2)
+                        cy = int((_row.y1_y + _row.y2_y) / 2)
+                        try:
+                            label = _row.instance_name.split('_')[-1]
+                        except:
+                            label = _row.instance_name
+
+                        cv2.putText(bgr, label,
+                                    (cx+3, cy+3), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.65, (255, 255, 255))
+
                     else:
                         self.motion_values.append(
                             (_row.frame_number_x,
@@ -190,7 +203,7 @@ class FreezingAnalyzer():
                         instance_status[_row.instance_name] -= 3
 
                 dst = cv2.addWeighted(frame1, 1, bgr, 1, 0)
-                if not deep:
+                if not deep and draw_grid:
                     dst = draw.draw_flow(dst, flow)
                 cv2.imshow('frame2', dst)
                 video_writer.write(dst)
