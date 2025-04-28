@@ -74,7 +74,7 @@ class InferenceProcessor:
                         class_names, model.get_text_pe(class_names))
             else:
                 model = YOLO(model_name)
-                if class_names:
+                if 'seg' not in model_name and class_names:
                     model.set_classes(class_names)
             return model
         elif self.model_type == 'sam':
