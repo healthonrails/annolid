@@ -2,8 +2,8 @@ import labelme
 import numpy as np
 import uuid
 from shapely.geometry import Polygon, Point
-from sklearn_extra.cluster import KMedoids
 import json
+import warnings
 
 
 def load_zone_json(zone_file):
@@ -99,39 +99,53 @@ def polygon_center(points):
 
 def extract_flow_points_in_mask(mask, flow, num_points=8):
     """
-    Extracts representative points from the optical flow field using KMedoids clustering
-    while considering points from a binary mask.
-
-    'scikit-learn-extra >= 0.3.0',
-
+    Extract representative motion-aware points using KMeans on (x, y, dx, dy).
+    Falls back to top-N motion points if sklearn is not installed.
 
     Args:
-        mask (numpy.ndarray): Binary mask where non-zero values represent valid points.
-        flow (numpy.ndarray): The optical flow field obtained from some method.
-        num_points (int): The number of representative points to extract. Default is 8.
+        mask (np.ndarray): Binary mask (H, W).
+        flow (np.ndarray): Optical flow field (H, W, 2).
+        num_points (int): Number of points to extract.
+        min_magnitude (float): Threshold for flow magnitude.
 
     Returns:
-        numpy.ndarray: An array of (x, y) pairs representing 
-        the representative points extracted from the flow field.
+        np.ndarray: Array of shape (N, 2) with (x, y) coordinates.
     """
-    # Get valid indices from the binary mask
-    valid_indices = np.argwhere(mask != 0)
+    yx = np.argwhere(mask != 0)
+    if len(yx) == 0:
+        return np.empty((0, 2), dtype=np.float32)
 
-    # Extract the flow vectors corresponding to valid indices
-    flow_vectors = flow[valid_indices[:, 0], valid_indices[:, 1]]
+    flow_vectors = flow[yx[:, 0], yx[:, 1]]
+    magnitudes = np.linalg.norm(flow_vectors, axis=1)
 
-    # Initialize KMedoids with num_points clusters
-    kmedoids = KMedoids(n_clusters=num_points, random_state=0)
+    keep_mask = magnitudes >= min_magnitude
+    if not np.any(keep_mask):
+        # fallback: keep top-N motion
+        top_idx = np.argsort(magnitudes)[-num_points:]
+        yx = yx[top_idx]
+        flow_vectors = flow_vectors[top_idx]
+    else:
+        yx = yx[keep_mask]
+        flow_vectors = flow_vectors[keep_mask]
 
-    # Fit the KMedoids model to the flow vectors
-    kmedoids.fit(flow_vectors)
+    features = np.hstack([yx[:, ::-1], flow_vectors])  # (x, y, dx, dy)
 
-    # Get the cluster medoids (representative points) indices
-    medoids_indices = valid_indices[kmedoids.medoid_indices_]
-    # Convert indices to (x, y) pairs
-    medoids_locations = np.array([(x, y) for y, x in medoids_indices])
+    if len(features) <= num_points:
+        return features[:, :2].astype(np.float32)
 
-    return medoids_locations
+    try:
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=num_points, random_state=42, n_init='auto')
+        kmeans.fit(features)
+        return kmeans.cluster_centers_[:, :2].astype(np.float32)
+    except ImportError:
+        warnings.warn(
+            "scikit-learn is not installed. Falling back to top-N motion-based points.",
+            category=ImportWarning
+        )
+        top_idx = np.argsort(np.linalg.norm(
+            flow_vectors, axis=1))[-num_points:]
+        return features[top_idx, :2].astype(np.float32)
 
 
 def sample_grid_in_polygon(polygon_points, grid_size=None):
