@@ -97,7 +97,9 @@ def polygon_center(points):
     return centroid_x, centroid_y
 
 
-def extract_flow_points_in_mask(mask, flow, num_points=8):
+def extract_flow_points_in_mask(mask, flow,
+                                num_points=8,
+                                min_magnitude=1.0):
     """
     Extract representative motion-aware points using KMeans on (x, y, dx, dy).
     Falls back to top-N motion points if sklearn is not installed.
