@@ -192,7 +192,7 @@ def key_frames(video_file=None,
 
 
 def video_loader(video_file=None):
-    if not Path(video_file).exists:
+    if not Path(video_file).exists():
         return
     with open(video_file, 'rb') as f:
         vr = de.VideoReader(f, ctx=de.cpu(0))

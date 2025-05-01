@@ -82,6 +82,7 @@ from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
 from annolid.gui.models_registry import MODEL_REGISTRY
 from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+from annolid.postprocessing.video_timestamp_annotator import process_directory
 
 
 __appname__ = 'Annolid'
@@ -506,6 +507,15 @@ class AnnolidWindow(MainWindow):
 
         self.recording_widget = RecordingWidget(self.canvas)
 
+        # Create the QAction with the new label
+        add_stamps_action = newAction(
+            self,
+            self.tr("Add Real-Time Stamps…"),       # menu text
+            self._add_real_time_stamps,             # our slot handler
+            icon="timestamp",                       # ensure icons/timestamp.png exists
+            tip=self.tr("Populate CSVs with true frame timestamps")
+        )
+
         _action_tools = list(self.actions.tool)
         _action_tools.insert(0, frames)
         _action_tools.insert(1, open_video)
@@ -537,12 +547,17 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (tracks,))
         utils.addActions(self.menus.file, (quality_control,))
         utils.addActions(self.menus.file, (downsample_video,))
+
+        # Insert it under File
+        self.menus.file.addSeparator()
         utils.addActions(self.menus.file, (convert_csv,))
         utils.addActions(self.menus.file, (extract_shape_keypoints,))
         utils.addActions(self.menus.file, (convert_deeplabcut,))
         utils.addActions(self.menus.file, (convert_sleap,))
         utils.addActions(self.menus.file, (convert_labelme2yolo_format,))
         utils.addActions(self.menus.file, (place_perference,))
+        utils.addActions(self.menus.file, (add_stamps_action,))
+
         utils.addActions(self.menus.file, (advance_params,))
 
         utils.addActions(self.menus.view, (glitter2,))
@@ -735,6 +750,28 @@ class AnnolidWindow(MainWindow):
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
         video_downsample_widget.exec_()
+
+    def _add_real_time_stamps(self):
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Select folder to annotate"),
+            str(Path.home())
+        )
+        if not folder:
+            return
+        try:
+            process_directory(Path(folder))
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Done"),
+                f"{self.tr('All CSVs have been updated in:')}\n{folder}"
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                self.tr("Error"),
+                f"{self.tr('Failed to add real-time stamps:')}\n{e}"
+            )
 
     def convert_sleap_h5_to_labelme(self):
         convert_sleap_h5_widget = ConvertSleapDialog()
