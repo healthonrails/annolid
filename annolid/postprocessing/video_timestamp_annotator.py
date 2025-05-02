@@ -3,50 +3,48 @@ import logging
 from pathlib import Path
 import argparse
 import pandas as pd
+import json
 from typing import List, Optional, Tuple
 
 # Configure logger
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.flv', '.mpeg', '.mpg', '.m4v', '.mts'}
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov',
+                    '.flv', '.mpeg', '.mpg', '.m4v', '.mts'}
 CSV_EXTENSION = '.csv'
 
 
 def extract_frame_timestamps(video_path: Path) -> List[float]:
     """
-    Use ffprobe to extract the true presentation timestamps (PTS) for every frame.
-
-    Args:
-        video_path: Path to the video file.
-
-    Returns:
-        List of frame timestamps in seconds.
-
-    Raises:
-        RuntimeError: if ffprobe fails.
+    Use ffprobe with JSON output to extract frame presentation timestamps (PTS) reliably.
     """
     cmd = [
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
         '-show_frames',
         '-show_entries', 'frame=pkt_pts_time',
-        '-of', 'csv', str(video_path)
+        '-of', 'json', str(video_path)
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe error: {result.stderr.strip()}")
 
-    timestamps: List[float] = []
-    for line in result.stdout.splitlines():
-        if not line.startswith("frame,"):
-            continue
-        try:
-            _, ts = line.split(',', 1)
-            timestamps.append(float(ts))
-        except ValueError:
-            logger.warning(f"Skipping malformed line: {line}")
-    logger.debug(f"Extracted {len(timestamps)} timestamps from {video_path.name}")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON parsing error: {e}")
+
+    timestamps = []
+    for frame in data.get("frames", []):
+        ts = frame.get("pkt_pts_time")
+        if ts is not None:
+            try:
+                timestamps.append(float(ts))
+            except ValueError:
+                continue
     return timestamps
 
 
@@ -60,7 +58,8 @@ def find_assets(root: Path) -> Tuple[List[Path], List[Path]]:
     Returns:
         Tuple of (video_files, csv_files).
     """
-    video_files = [p for p in root.rglob('*') if p.suffix.lower() in VIDEO_EXTENSIONS]
+    video_files = [p for p in root.rglob(
+        '*') if p.suffix.lower() in VIDEO_EXTENSIONS]
     csv_files = [p for p in root.rglob(f'*{CSV_EXTENSION}')]
     return video_files, csv_files
 
@@ -102,7 +101,8 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
 
     frame_col = find_frame_column(df)
     if not frame_col:
-        logger.warning(f"Skipping {csv_path.name}: no frame_number column found.")
+        logger.warning(
+            f"Skipping {csv_path.name}: no frame_number column found.")
         return
 
     output_path = csv_path.with_name(csv_path.stem + '_annotated.csv')
@@ -113,16 +113,19 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
     try:
         timestamps = extract_frame_timestamps(video_path)
     except Exception as e:
-        logger.error(f"Failed to extract timestamps for {video_path.name}: {e}")
+        logger.error(
+            f"Failed to extract timestamps for {video_path.name}: {e}")
         return
 
     max_frame = int(df[frame_col].max())
     if max_frame >= len(timestamps):
-        logger.error(f"Frame index {max_frame} out of range for {video_path.name} ({len(timestamps)} frames)")
+        logger.error(
+            f"Frame index {max_frame} out of range for {video_path.name} ({len(timestamps)} frames)")
         return
 
     # Map frame numbers to real timestamps
-    df['real_timestamp_sec'] = df[frame_col].astype(int).map(lambda i: timestamps[i])
+    df['real_timestamp_sec'] = df[frame_col].astype(
+        int).map(lambda i: timestamps[i])
 
     try:
         df.to_csv(output_path, index=False)
@@ -150,7 +153,8 @@ def process_directory(root: Path) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Annotate tracking CSVs with real frame timestamps.")
+    parser = argparse.ArgumentParser(
+        description="Annotate tracking CSVs with real frame timestamps.")
     parser.add_argument('root_folder', type=Path,
                         help='Root folder containing videos and CSVs')
     args = parser.parse_args()
