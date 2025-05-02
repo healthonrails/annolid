@@ -474,14 +474,18 @@ class CutieVideoProcessor:
                         current_frame_index += 1
 
                     break
+                try:
+                    create_tracking_csv_file(self._frame_numbers,
+                                            self._instance_names,
+                                            self._cx_values,
+                                            self._cy_values,
+                                            self._motion_indices,
+                                            self.output_tracking_csvpath,
+                                            self.video_name,
+                                            fps)
+                except Exception as e:
+                    logger.error(f"Failed to save tracking CSV: {e}")
 
-                create_tracking_csv_file(self._frame_numbers,
-                                         self._instance_names,
-                                         self._cx_values,
-                                         self._cy_values,
-                                         self._motion_indices,
-                                         self.output_tracking_csvpath,
-                                         fps)
                 message = ("Stop at frame:\n") + \
                     delimiter + str(current_frame_index-1)
                 pred_worker.stop_signal.emit()

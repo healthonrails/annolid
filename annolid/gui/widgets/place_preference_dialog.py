@@ -91,12 +91,12 @@ class TrackingAnalyzerDialog(QDialog):
         except:
             output_csv_path = None
 
-        # Notify the user with the path of the result CSV file
-        if output_csv_path:
-            QMessageBox.information(
-                self, "Analysis Complete",
-                f"Analysis is complete. Result CSV file saved at:\n{output_csv_path}",
-                QMessageBox.Ok)
+        # Optional: Notify the user with the path of the result CSV file
+        # if output_csv_path:
+        #     QMessageBox.information(
+        #         self, "Analysis Complete",
+        #         f"Analysis is complete. Result CSV file saved at:\n{output_csv_path}",
+        #         QMessageBox.Ok)
 
     def run_analysis_without_gui(self, video_path, zone_path=None, fps=None):
         self.video_path_edit.setText(video_path)

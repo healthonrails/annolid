@@ -1477,9 +1477,6 @@ class AnnolidWindow(MainWindow):
                     if num_json_files >= self.num_frames:
                         # convert json labels to csv file
                         self.convert_json_to_tracked_csv()
-                QtWidgets.QMessageBox.information(
-                    self, "Prediction Ready",
-                    "Predictions for the video frames have been generated!")
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
@@ -1902,7 +1899,7 @@ class AnnolidWindow(MainWindow):
             lambda: QtWidgets.QMessageBox.information(
                 self,
                 "Tracking Complete",
-                f"Kindly review the file here: {Path(self.video_file).with_suffix('.csv')}"
+                f"Review the file at: {Path(self.video_file).with_suffix('')}_tracked.csv"
             )
         )
         self.worker.progress_signal.connect(self._update_progress_bar)

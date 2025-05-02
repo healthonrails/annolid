@@ -11,6 +11,7 @@ import glob
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
+from annolid.postprocessing.video_timestamp_annotator import annotate_csv
 
 
 def get_future_frame_from_mask(dir_path, current_frame):
@@ -223,6 +224,7 @@ def create_tracking_csv_file(frame_numbers,
                              cy_values,
                              motion_indices,
                              output_file,
+                             video_path,
                              fps=30):
     """
     Create or update a tracking CSV file with fuzzy duplicate removal.
@@ -283,6 +285,7 @@ def create_tracking_csv_file(frame_numbers,
 
     # Write the cleaned DataFrame back to the CSV file without the index.
     cleaned_df.to_csv(output_file, index=False)
+    annotate_csv(Path(output_file), Path(video_path))
 
 # Function to clone a Git repository
 
