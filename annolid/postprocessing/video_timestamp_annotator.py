@@ -119,13 +119,19 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
 
     max_frame = int(df[frame_col].max())
     if max_frame >= len(timestamps):
-        logger.error(
-            f"Frame index {max_frame} out of range for {video_path.name} ({len(timestamps)} frames)")
-        return
+        logger.warning(
+            f"{csv_path.name}: Frame index {max_frame} exceeds available timestamps ({len(timestamps)}). "
+            "Truncating unavailable timestamps."
+        )
+    # Map frame numbers to timestamps with bounds check
 
-    # Map frame numbers to real timestamps
-    df['real_timestamp_sec'] = df[frame_col].astype(
-        int).map(lambda i: timestamps[i])
+    def safe_lookup(i):
+        if 0 <= i < len(timestamps):
+            return timestamps[i]
+        else:
+            return float('nan')
+
+    df['real_timestamp_sec'] = df[frame_col].astype(int).map(safe_lookup)
 
     try:
         df.to_csv(output_path, index=False)
