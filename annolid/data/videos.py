@@ -19,6 +19,59 @@ except ImportError:
     print("Decord is not installed.")
 
 
+def get_video_fps(video_path: str) -> float | None:
+    """
+    Extracts the frames per second (FPS) of a video file using `ffprobe` if available,
+    with a fallback to OpenCV in case of failure.
+
+    Parameters:
+        video_path (str): Full path to the video file.
+
+    Returns:
+        float | None: The frame rate (FPS) as a float (rounded to 2 decimals), or None if extraction fails.
+
+    Notes:
+        - Requires `ffprobe` to be installed and accessible in the system PATH.
+        - Fallback via OpenCV may return an approximate value or 0 if not available.
+    """
+    try:
+        # Use ffprobe to get the rational frame rate (e.g., "30000/1001")
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ]
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if result.returncode == 0:
+            rate_str = result.stdout.strip()
+            if "/" in rate_str:
+                num, denom = map(int, rate_str.split("/"))
+                if denom != 0:
+                    return round(num / denom, 2)
+            elif rate_str.replace('.', '', 1).isdigit():
+                return round(float(rate_str), 2)
+    except Exception as e:
+        print(f"[get_video_fps] ffprobe failed: {e}")
+
+    # Fallback to OpenCV
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            if fps > 0:
+                return round(fps, 2)
+    except Exception as e:
+        print(f"[get_video_fps] OpenCV fallback failed: {e}")
+
+    return None
+
+
 def get_video_files(video_folder):
     """
     Retrieves a list of video files from the specified folder.

@@ -5,7 +5,7 @@ import cv2  # OpenCV to extract a video frame
 from annolid.utils.videos import (
     collect_video_metadata,
     compress_and_rescale_video,
-    save_metadata_to_csv
+    save_metadata_to_csv,
 )
 from qtpy.QtWidgets import (
     QApplication, QDialog, QLabel, QPushButton, QVBoxLayout, QFileDialog,
@@ -14,9 +14,10 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Qt, QRectF, QPointF
 from qtpy.QtGui import QPixmap, QPen, QColor
-
+from annolid.data.videos import get_video_fps, get_video_files
 
 # --- Cropping dialog classes ---
+
 
 class CropFrameWidget(QGraphicsView):
     def __init__(self, image_path, parent=None):
@@ -132,7 +133,7 @@ class VideoRescaleWidget(QDialog):
 
         # FPS Option
         self.fps_label = QLabel('Frames Per Second (FPS):')
-        self.fps_text = QLineEdit("30")
+        self.fps_text = QLineEdit("FPS e.g. 29.97")
 
         # Codec Option (kept for future extension)
         self.codec_label = QLabel('Codec:')
@@ -197,6 +198,14 @@ class VideoRescaleWidget(QDialog):
         folder = QFileDialog.getExistingDirectory(self, 'Select Input Folder')
         if folder:
             self.input_folder_label.setText(f'Input Folder: {folder}')
+        video_files = get_video_files(folder)
+        if video_files:
+            first_video_path = os.path.join(folder, video_files[0])
+            fps = get_video_fps(first_video_path)
+            if fps:
+                self.fps_text.setText(str(fps))
+            else:
+                print("[select_input_folder] Failed to extract FPS")
 
     def select_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, 'Select Output Folder')
