@@ -123,6 +123,11 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
             f"{csv_path.name}: Frame index {max_frame} exceeds available timestamps ({len(timestamps)}). "
             "Truncating unavailable timestamps."
         )
+    elif len(timestamps) > max_frame + 1:
+        logger.info(
+            f"{csv_path.name}: Video has {len(timestamps)} frame timestamps but CSV uses only {max_frame + 1} frames. "
+            "Consider checking for dropped or skipped frames."
+        )
     # Map frame numbers to timestamps with bounds check
 
     def safe_lookup(i):

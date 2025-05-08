@@ -127,13 +127,15 @@ class VideoRescaleWidget(QDialog):
         self.scale_factor_slider.setTickPosition(QSlider.TicksBelow)
         self.scale_factor_slider.valueChanged.connect(
             self.update_scale_factor_from_slider)
-        self.scale_factor_text = QLineEdit("0.25")
+        self.scale_factor_text = QLineEdit("0.5")
         self.scale_factor_text.editingFinished.connect(
             self.update_scale_factor_from_text)
 
         # FPS Option
         self.fps_label = QLabel('Frames Per Second (FPS):')
         self.fps_text = QLineEdit("FPS e.g. 29.97")
+        self.override_fps_checkbox = QCheckBox(
+            "Use specified FPS for all videos")
 
         # Codec Option (kept for future extension)
         self.codec_label = QLabel('Codec:')
@@ -182,6 +184,7 @@ class VideoRescaleWidget(QDialog):
         layout.addWidget(self.scale_factor_text)
         layout.addWidget(self.fps_label)
         layout.addWidget(self.fps_text)
+        layout.addWidget(self.override_fps_checkbox)
         layout.addWidget(self.codec_label)
         layout.addWidget(self.codec_text)
         layout.addWidget(self.denoise_checkbox)
@@ -298,7 +301,8 @@ class VideoRescaleWidget(QDialog):
                     if scale_factor is not None:
                         f.write("**Processing Parameters:**\n")
                         f.write(f"- Scale Factor: {scale_factor}\n")
-                        f.write(f"- FPS: {fps}\n")
+                        f.write(
+                            f"- FPS: {fps if fps is not None else 'original per-video FPS'}\n")
                         f.write(f"- Apply Denoise: {apply_denoise}\n")
                         if crop_params is not None:
                             crop_x, crop_y, crop_width, crop_height = crop_params
@@ -335,13 +339,16 @@ class VideoRescaleWidget(QDialog):
             self.run_button.setText('Run Rescaling')
             return
 
-        try:
-            fps = int(self.fps_text.text())
-        except ValueError:
-            QMessageBox.warning(self, 'Error', 'Invalid FPS value.')
-            self.run_button.setEnabled(True)
-            self.run_button.setText('Run Rescaling')
-            return
+        if self.override_fps_checkbox.isChecked():
+            try:
+                fps = float(self.fps_text.text())
+            except ValueError:
+                QMessageBox.warning(self, 'Error', 'Invalid FPS value.')
+                self.run_button.setEnabled(True)
+                self.run_button.setText('Run Rescaling')
+                return
+        else:
+            fps = None  # Let each video retain its native FPS
 
         rescale = self.rescale_checkbox.isChecked()
         collect_only = self.collect_only_checkbox.isChecked()

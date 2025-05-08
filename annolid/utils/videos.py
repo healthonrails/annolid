@@ -3,6 +3,8 @@ import os
 import subprocess
 import csv
 import argparse
+from annolid.data.videos import get_video_fps
+from annolid.utils.logger import logger
 
 
 def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, quality=95):
@@ -54,7 +56,7 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
 
     # Check if the output directory already has the required number of frames
     if existing_frames >= total_frames:
-        print(
+        logger.info(
             f"Output directory already contains {existing_frames} frames, skipping extraction.")
         cap.release()
         return output_dir
@@ -78,7 +80,7 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
     # Release the video capture object
     cap.release()
 
-    print(f"Frames extracted and saved in: {output_dir}")
+    logger.info(f"Frames extracted and saved in: {output_dir}")
     return output_dir
 
 
@@ -103,14 +105,14 @@ def collect_video_metadata(input_folder):
     metadata = []
 
     if not os.path.exists(input_folder):
-        print("Input folder does not exist.")
+        logger.info("Input folder does not exist.")
         return metadata
 
     video_files = [f for f in os.listdir(
         input_folder) if f.endswith(('.mp4', '.avi', '.mkv'))]
 
     if not video_files:
-        print("No video files found in the input folder.")
+        logger.info("No video files found in the input folder.")
         return metadata
 
     for video_file in video_files:
@@ -119,7 +121,7 @@ def collect_video_metadata(input_folder):
         cap = cv2.VideoCapture(input_path)
 
         if not cap.isOpened():
-            print(f"Error opening video file: {video_file}")
+            logger.info(f"Error opening video file: {video_file}")
             continue
 
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -139,7 +141,7 @@ def collect_video_metadata(input_folder):
 
         metadata.append(metadata_entry)
 
-        print(f"Collected metadata for {video_file}")
+        logger.info(f"Collected metadata for {video_file}")
 
         cap.release()
 
@@ -155,7 +157,7 @@ def save_metadata_to_csv(metadata, output_csv):
     - output_csv (str): Path to the output CSV file.
     """
     if not metadata:
-        print("No metadata to save.")
+        logger.info("No metadata to save.")
         return
 
     fieldnames = ['video_name', 'width',
@@ -166,7 +168,7 @@ def save_metadata_to_csv(metadata, output_csv):
         writer.writerows(metadata)
 
 
-def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30,
+def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=None,
                                apply_denoise=False, crop_x=None, crop_y=None,
                                crop_width=None, crop_height=None):
     """
@@ -189,7 +191,7 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
         dict: A mapping from each output video filename to the executed FFmpeg command.
     """
     if not os.path.exists(input_folder):
-        print("Input folder does not exist.")
+        logger.info("Input folder does not exist.")
         return {}
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -200,13 +202,20 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
         input_folder) if f.lower().endswith(video_extensions)]
 
     if not video_files:
-        print("No video files found in the input folder.")
+        logger.info("No video files found in the input folder.")
         return {}
 
     command_log = {}
 
     for video_file in video_files:
         input_path = os.path.join(input_folder, video_file)
+
+        video_fps = fps if fps is not None else get_video_fps(input_path)
+        if video_fps is None:
+            logger.info(
+                f"Warning: Failed to detect FPS for {video_file}. Skipping.")
+            continue
+
         root, _ = os.path.splitext(video_file)
         output_filename = f"{root}_fix.mp4" if apply_denoise else f"{root}.mp4"
         output_path = os.path.join(output_folder, output_filename)
@@ -217,7 +226,7 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
         if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
             filter_chain += f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
         # Append the FPS and scaling filters.
-        filter_chain += f"fps={fps},scale=iw*{scale_factor}:ih*{scale_factor}"
+        filter_chain += f"fps={video_fps},scale=iw*{scale_factor}:ih*{scale_factor}"
         # Optionally add the denoise filter.
         if apply_denoise:
             filter_chain += ",hqdn3d=4.0:3.0:6.0:4.5"
@@ -233,10 +242,11 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=30
         command_str = " ".join(cmd)
         try:
             subprocess.run(cmd, check=True)
-            print(f"Compressed and rescaled {video_file} to {output_path}")
+            logger.info(
+                f"Compressed and rescaled {video_file} to {output_path}")
             command_log[output_filename] = command_str
         except subprocess.CalledProcessError as e:
-            print(f"Error compressing and rescaling {video_file}: {e}")
+            logger.info(f"Error compressing and rescaling {video_file}: {e}")
 
     return command_log
 
