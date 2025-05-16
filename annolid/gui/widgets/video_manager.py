@@ -6,7 +6,8 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Signal, Qt
 from annolid.data.videos import extract_frames_from_videos
-from annolid.gui.workers import FrameExtractorWorker, ProcessVideosWorker
+from annolid.gui.workers import FrameExtractorWorker, ProcessVideosWorker, TrackAllWorker
+from annolid.utils.files import find_most_recent_file
 
 
 class VideoManagerWidget(QWidget):
@@ -29,6 +30,16 @@ class VideoManagerWidget(QWidget):
         self.import_button.clicked.connect(self.import_videos)
         self.button_layout.addWidget(self.import_button)
 
+        # Track All Button (replaces Batch Predict)
+        self.track_all_button = QPushButton("Track All")
+        self.track_all_button.clicked.connect(self.track_all_videos)
+        self.button_layout.addWidget(self.track_all_button)
+
+        self.stop_track_button = QPushButton("Stop Tracking")
+        self.stop_track_button.clicked.connect(self.stop_tracking)
+        self.stop_track_button.setVisible(False)
+        self.button_layout.addWidget(self.stop_track_button)
+
         # Process All Videos Button
         self.process_all_button = QPushButton("Analyze All")
         self.process_all_button.clicked.connect(self.process_all_videos)
@@ -47,9 +58,11 @@ class VideoManagerWidget(QWidget):
         self.main_layout.addLayout(self.button_layout)
 
         # Video Table
-        self.video_table = QTableWidget(0, 5)
+        # Video Table with new column for JSON status
+        self.video_table = QTableWidget(0, 6)  # Increased column count to 6
         self.video_table.setHorizontalHeaderLabels(
-            ["Name", "Path", "Load", "Close", "Delete"])
+            ["Name", "Path", "Load", "Close", "Delete", "JSON Labeled"]
+        )
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectRows)
 
         # Progress Bar
@@ -95,6 +108,16 @@ class VideoManagerWidget(QWidget):
             if video not in self.imported_videos:
                 self.add_video_to_table(video)
 
+    def check_json_exists(self, video_path):
+        """Check if a JSON label file exists for the video's first frame."""
+        video_name = Path(video_path).stem
+        output_folder = Path(video_path).with_suffix('')  # e.g., video_name/
+        json_file = find_most_recent_file(output_folder, '.json')
+        if json_file and Path(json_file).exists():
+            return "Yes"
+        else:
+            return "No"
+
     def add_video_to_table(self, video_path):
         # Add the video to the imported videos set
         self.imported_videos.add(video_path)
@@ -126,6 +149,13 @@ class VideoManagerWidget(QWidget):
         delete_button.clicked.connect(
             lambda: self.delete_video(row_position, video_path))
         self.video_table.setCellWidget(row_position, 4, delete_button)
+
+        # Add JSON Labeled Status
+        json_status = self.check_json_exists(video_path)
+        json_item = QTableWidgetItem(json_status)
+        json_item.setFlags(json_item.flags() & ~
+                           Qt.ItemIsEditable)  # Make non-editable
+        self.video_table.setItem(row_position, 5, json_item)
 
     def close_video_and_clear(self, row):
         """
@@ -166,10 +196,57 @@ class VideoManagerWidget(QWidget):
                 QMessageBox.critical(
                     self, "Error", f"Failed to load response: {e}")
         else:
-            QMessageBox.warning(
-                self, "No Response Found", f"No response file found for {os.path.basename(video_path)}.")
-            # Optionally, emit the signal to just load the video without response
             self.video_selected.emit(video_path)
+
+    def track_all_videos(self):
+        """Initiate Track All for all imported videos with JSON label files."""
+        if not self.imported_videos:
+            QMessageBox.warning(self, "No Videos",
+                                "Please import videos before tracking.")
+            return
+
+        # Get all video paths
+        video_paths = [self.video_table.item(row, 1).text()
+                       for row in range(self.video_table.rowCount())]
+
+        # Initialize worker
+        self.worker = TrackAllWorker(video_paths=video_paths, parent=self)
+        self.worker.progress.connect(self.update_track_progress)
+        self.worker.finished.connect(self.on_track_all_complete)
+        self.worker.error.connect(self.show_error)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.chat_display.setVisible(True)
+        self.stop_track_button.setVisible(True)
+        self.worker.start()
+
+    def stop_tracking(self):
+        """Stop the Track All worker."""
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            self.worker.stop()
+        self.stop_track_button.setVisible(False)
+        self.progress_bar.setVisible(False)
+
+    def update_track_progress(self, percentage, message):
+        """Update progress bar and chat display."""
+        self.progress_bar.setValue(percentage)
+        self.chat_display.append(f"<b>{message}</b><br>")
+        self.chat_display.ensureCursorVisible()
+
+    def on_track_all_complete(self, message):
+        """Handle completion of Track All."""
+        QMessageBox.information(self, "Track All Complete", message)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setVisible(False)
+        self.update_json_status()  # Refresh JSON Labeled column
+        for video_path in self.imported_videos:
+            output_folder = Path(video_path).with_suffix('')
+            self.output_folder_ready.emit(str(output_folder))
+
+    def show_error(self, error_message):
+        """Display error message in chat display and as a warning."""
+        self.chat_display.append(f"<b>Error:</b> {error_message}<br>")
+        QMessageBox.warning(self, "Error", error_message)
 
     def delete_video(self, row, video_path):
         if QMessageBox.question(
@@ -235,6 +312,15 @@ class VideoManagerWidget(QWidget):
         QMessageBox.information(
             self, "Clear All", "All videos and results have been cleared.")
 
+    def update_json_status(self):
+        """Update the JSON Labeled column for all videos in the table."""
+        for row in range(self.video_table.rowCount()):
+            video_path = self.video_table.item(row, 1).text()
+            json_status = self.check_json_exists(video_path)
+            json_item = QTableWidgetItem(json_status)
+            json_item.setFlags(json_item.flags() & ~Qt.ItemIsEditable)
+            self.video_table.setItem(row, 5, json_item)
+
     def on_extraction_complete(self, output_folder):
         QMessageBox.information(
             self, "Extraction Complete", "Frame extraction finished successfully!")
@@ -250,10 +336,6 @@ class VideoManagerWidget(QWidget):
         QMessageBox.information(self, "Processing Complete", message)
         self.progress_bar.setValue(100)
         self.progress_bar.setVisible(False)
-
-    def show_error(self, error_message):
-        QMessageBox.critical(
-            self, "Error", f"An error occurred: {error_message}")
 
     def extract_frames(self):
         if not self.imported_videos:

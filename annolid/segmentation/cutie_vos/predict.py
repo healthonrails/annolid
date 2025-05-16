@@ -30,7 +30,7 @@ from annolid.utils import draw
 from annolid.utils.files import create_tracking_csv_file
 from annolid.utils.files import get_frame_number_from_json
 from annolid.utils.lru_cache import BboxCache
-
+from hydra.core.global_hydra import GlobalHydra
 """
 References:
 @inproceedings{cheng2023putting,
@@ -120,6 +120,8 @@ class CutieVideoProcessor:
         # general setup
         torch.cuda.empty_cache()
         with torch.inference_mode():
+            if GlobalHydra.instance().is_initialized():
+                GlobalHydra.instance().clear()
             initialize(version_base='1.3.2', config_path="config",
                        job_name="eval_config")
             cfg = compose(config_name="eval_config")
@@ -476,13 +478,13 @@ class CutieVideoProcessor:
                     break
                 try:
                     create_tracking_csv_file(self._frame_numbers,
-                                            self._instance_names,
-                                            self._cx_values,
-                                            self._cy_values,
-                                            self._motion_indices,
-                                            self.output_tracking_csvpath,
-                                            self.video_name,
-                                            fps)
+                                             self._instance_names,
+                                             self._cx_values,
+                                             self._cy_values,
+                                             self._motion_indices,
+                                             self.output_tracking_csvpath,
+                                             self.video_name,
+                                             fps)
                 except Exception as e:
                     logger.error(f"Failed to save tracking CSV: {e}")
 

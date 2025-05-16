@@ -198,6 +198,26 @@ class VideoProcessor:
         shapes = data.get('shapes', [])
         return shapes
 
+    def reset_cutie_processor(self, mem_every=5):
+        """Reset or create a new CutieVideoProcessor for the current video."""
+        logger.debug(
+            f"Resetting CutieVideoProcessor for video: {self.video_path}")
+        self.cutie_processor = CutieVideoProcessor(
+            self.video_path,
+            mem_every=mem_every,
+            debug=False,
+            epsilon_for_polygon=self.epsilon_for_polygon,
+            t_max_value=self.t_max_value,
+            use_cpu_only=self.use_cpu_only,
+            compute_optical_flow=self.compute_optical_flow,
+        )
+        if VideoProcessor.sam_hq is None:
+            VideoProcessor.sam_hq = SamHQSegmenter()
+        self.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
+
+    def get_total_frames(self):
+        return self.video_loader.total_frames()
+
     def process_video_with_cutite(self, frames_to_propagate=100,
                                   mem_every=5,
                                   has_occlusion=False,
@@ -232,6 +252,8 @@ class VideoProcessor:
         logger.info(f"Frame size: {image_size}")
         mask, _ = shapes_to_label(
             image_size, shapes, label_name_to_value)
+        logger.debug(
+            f"Generated mask shape: {mask.shape if mask is not None else 'None'}")
         if VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
         if VideoProcessor.cutie_processor is None:
@@ -253,6 +275,14 @@ class VideoProcessor:
                                                                          has_occlusion=has_occlusion,
                                                                          )
         return message
+
+    def __del__(self):
+        """Clean up resources."""
+        if hasattr(self, 'cap') and self.cap is not None:
+            self.cap.release()
+        self.cutie_processor = None  # Clear processor on deletion
+        import torch
+        torch.cuda.empty_cache()
 
     def get_model(self,
                   encoder_path="edge_sam_3x_encoder.onnx",

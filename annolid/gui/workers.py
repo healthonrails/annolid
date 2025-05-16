@@ -3,13 +3,284 @@ from threading import Lock
 from collections import deque
 import time
 import os
+import logging
+import glob
 import qimage2ndarray
 import numpy as np
+from annolid.gui.label_file import LabelFile
 from pathlib import Path
 from annolid.utils.logger import logger
-from qtpy.QtCore import Signal, Qt
+from qtpy.QtCore import Signal, Qt, QObject
 from annolid.data.videos import extract_frames_from_videos
 from qtpy.QtCore import QThread
+from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+from annolid.utils.files import find_manual_labeled_json_files, get_frame_number_from_json
+from hydra.core.global_hydra import GlobalHydra
+
+
+class PredictionWorker(QObject):
+    stop_signal = Signal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._stopped = False
+
+    def is_stopped(self):
+        return self._stopped
+
+    def stop(self):
+        self._stopped = True
+        self.stop_signal.emit()
+
+
+class TrackAllWorker(QThread):
+    """Worker thread to process videos with Cutie tracking, skipping those without JSON label files."""
+
+    progress = Signal(int, str)  # Progress percentage and message
+    finished = Signal(str)  # Completion message
+    error = Signal(str)  # Error message
+
+    def __init__(self, video_paths, config=None, parent=None):
+        """
+        Initialize the TrackAllWorker.
+
+        Args:
+            video_paths (list): List of video file paths to process.
+            config (dict, optional): Configuration dictionary for VideoProcessor parameters.
+            parent (QObject, optional): Parent Qt object.
+        """
+        super().__init__(parent)
+        self.video_paths = video_paths
+        self.config = config or {
+            'mem_every': 5,
+            'epsilon_for_polygon': 2.0,
+            't_max_value': 5,
+            'use_cpu_only': False,
+            'auto_recovery_missing_instances': False,
+            'save_video_with_color_mask': False,
+            'compute_optical_flow': True,
+            'has_occlusion': True
+        }
+        self.is_running = True
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
+
+    def is_video_finished(self, video_path, total_frames):
+        """
+        Check if a video is already processed by verifying the last frame's JSON or a tracking CSV.
+
+        Args:
+            video_path (str): Path to the video file.
+            total_frames (int): Total number of frames in the video.
+
+        Returns:
+            bool: True if the video is finished, False otherwise.
+        """
+        video_name = Path(video_path).stem
+        output_folder = Path(video_path).with_suffix('')
+
+        # Check for tracking CSV
+        csv_pattern = str(output_folder / f"{video_name}*_tracking.csv")
+        csv_files = glob.glob(csv_pattern)
+        if csv_files:
+            self.logger.info(
+                f"Found tracking CSV for {video_name}: {csv_files[0]}")
+            return True
+
+        # Check for last frame JSON
+        last_frame = total_frames - 1  # 0-based indexing
+        json_filename = output_folder / f"{video_name}_{last_frame:09d}.json"
+        return json_filename.exists()
+
+    def run(self):
+        """Process videos sequentially, running CUTIE predictions for those with JSON label files."""
+        try:
+            total_videos = len(self.video_paths)
+            processed_videos = 0
+
+            for idx, video_path in enumerate(self.video_paths, start=1):
+                if not self.is_running:
+                    self.finished.emit("Track All stopped by user.")
+                    return
+
+                video_name = Path(video_path).stem
+                self.progress.emit(
+                    int((idx / total_videos) * 100),
+                    f"Checking {video_name}..."
+                )
+
+                # Check for JSON file
+                json_folder = Path(video_path).with_suffix('')
+                json_files = find_manual_labeled_json_files(str(json_folder))
+                if not json_files:
+                    self.progress.emit(
+                        int((idx / total_videos) * 100),
+                        f"Skipping {video_name}: No JSON label file found."
+                    )
+                    continue
+
+                # Select the last manually labeled JSON file (sorted by frame number)
+                json_file = Path(json_folder) / sorted(json_files)[-1]
+
+                labeled_frame_number = get_frame_number_from_json(
+                    str(json_file))
+
+                try:
+                    label_file = LabelFile(str(json_file), is_video_frame=True)
+                    valid_shapes = [
+                        shape for shape in label_file.shapes
+                        if shape.get('shape_type') == 'polygon' and len(shape.get('points', [])) >= 3
+                    ]
+                    if not valid_shapes:
+                        self.progress.emit(
+                            int((idx / total_videos) * 100),
+                            f"Skipping {video_name}: JSON file {json_file.name} has no valid polygons (≥3 points)."
+                        )
+                        continue
+                except Exception as e:
+                    self.error.emit(
+                        f"Invalid JSON file for {video_name}: {str(e)}")
+                    continue
+
+                # Create output folder
+                output_folder = Path(video_path).with_suffix('')
+                output_folder.mkdir(exist_ok=True, parents=True)
+
+                try:
+                    processor = VideoProcessor(
+                        video_path=video_path,
+                        model_name="Cutie",
+                        save_image_to_disk=False,
+                        **self.config
+                    )
+                    # Log video frame size
+                    frame_size = processor.first_frame.shape if processor.first_frame is not None else "Unknown"
+                    self.logger.debug(
+                        f"Video {video_name} frame size: {frame_size}")
+                except Exception as e:
+                    self.error.emit(
+                        f"Failed to initialize VideoProcessor for {video_name}: {str(e)}")
+                    self.logger.error(
+                        f"Initialization error: {str(e)}", exc_info=True)
+                    continue
+
+                # Check if video is already finished
+                total_frames = processor.get_total_frames()
+                if self.is_video_finished(video_path, total_frames):
+                    self.progress.emit(
+                        int((idx / total_videos) * 100),
+                        f"Skipping {video_name}: Video already processed (last frame JSON or tracking CSV found)."
+                    )
+                    del processor
+                    import torch
+                    torch.cuda.empty_cache()
+                    continue
+
+                # Initialize VideoProcessor
+                self.progress.emit(
+                    int((idx / total_videos) * 100),
+                    f"Initializing VideoProcessor for {video_name}..."
+                )
+
+                # Create PredictionWorker and set it
+                pred_worker = PredictionWorker()
+                try:
+                    processor.set_pred_worker(pred_worker)
+                    self.logger.debug(
+                        f"Set pred_worker for {video_name}: {pred_worker}")
+                except Exception as e:
+                    self.error.emit(
+                        f"Failed to set pred_worker for {video_name}: {str(e)}")
+                    self.logger.error(
+                        f"pred_worker error: {str(e)}", exc_info=True)
+                    del processor
+                    import torch
+                    torch.cuda.empty_cache()
+                    continue
+
+                # Reset CutieVideoProcessor for clean state
+                try:
+                    processor.reset_cutie_processor(
+                        mem_every=self.config['mem_every'])
+                    self.logger.debug(
+                        f"Reset CutieVideoProcessor for {video_name}")
+                except AttributeError:
+                    self.logger.warning(
+                        "reset_cutie_processor not implemented in VideoProcessor; proceeding without reset")
+                    # Fallback: set cutie_processor to None to force reinitialization
+                    processor.cutie_processor = None
+                # Run predictions with per-frame progress
+                try:
+                    # total_frames = processor.total_frames()
+
+                    start_frame = labeled_frame_number + 1
+                    end_frame = total_frames - 1
+
+                    self.logger.info(
+                        f"Processing {video_name} from frame {start_frame} to {end_frame}")
+
+                    message = processor.process_video_frames(
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        step=1,
+                        is_cutie=True,
+                        mem_every=self.config['mem_every'],
+                        point_tracking=False,
+                        has_occlusion=self.config['has_occlusion'],
+                        save_video_with_color_mask=self.config['save_video_with_color_mask']
+                    )
+                    if "No valid polygon" in message or "No label file" in message:
+                        self.error.emit(
+                            f"Failed to process {video_name}: {message}")
+                        continue
+                    processed_videos += 1
+                    self.progress.emit(
+                        int((idx / total_videos) * 100),
+                        f"Completed tracking for {video_name}."
+                    )
+                except RuntimeError as e:
+                    if "Sizes of tensors must match" in str(e):
+                        self.error.emit(
+                            f"Failed to process {video_name}: Tensor size mismatch - {str(e)}")
+                        self.logger.error(
+                            f"Tensor size mismatch: {str(e)}", exc_info=True)
+                    else:
+                        self.error.emit(
+                            f"Failed to process {video_name}: {str(e)}")
+                        self.logger.error(
+                            f"Runtime error: {str(e)}", exc_info=True)
+                    continue
+                except UnboundLocalError as e:
+                    self.error.emit(
+                        f"Failed to process {video_name}: Prediction variable not assigned - {str(e)}")
+                    self.logger.error(
+                        f"UnboundLocalError: {str(e)}", exc_info=True)
+                    continue
+                except Exception as e:
+                    self.error.emit(
+                        f"Failed to process {video_name}: {str(e)}")
+                    self.logger.error(
+                        f"Processing error: {str(e)}", exc_info=True)
+                    continue
+                finally:
+                    # Clean up processor resources
+                    processor.cutie_processor = None
+                    del processor
+                    import torch
+                    torch.cuda.empty_cache()
+
+            self.finished.emit(
+                f"Track All completed. Processed {processed_videos}/{total_videos} videos."
+            )
+        except Exception as e:
+            self.error.emit(f"Unexpected error: {str(e)}")
+            self.logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        finally:
+            self.is_running = False
+
+    def stop(self):
+        """Stop the worker thread and interrupt ongoing processing."""
+        self.is_running = False
 
 
 class LoadFrameThread(QtCore.QObject):
