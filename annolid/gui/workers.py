@@ -10,12 +10,12 @@ import numpy as np
 from annolid.gui.label_file import LabelFile
 from pathlib import Path
 from annolid.utils.logger import logger
-from qtpy.QtCore import Signal, Qt, QObject
+from qtpy.QtCore import Signal, QObject
 from annolid.data.videos import extract_frames_from_videos
 from qtpy.QtCore import QThread
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.utils.files import find_manual_labeled_json_files, get_frame_number_from_json
-from hydra.core.global_hydra import GlobalHydra
+from annolid.annotation.labelme2csv import convert_json_to_csv
 
 
 class PredictionWorker(QObject):
@@ -193,10 +193,6 @@ class TrackAllWorker(QThread):
                         f"Failed to set pred_worker for {video_name}: {str(e)}")
                     self.logger.error(
                         f"pred_worker error: {str(e)}", exc_info=True)
-                    del processor
-                    import torch
-                    torch.cuda.empty_cache()
-                    continue
 
                 # Reset CutieVideoProcessor for clean state
                 try:
@@ -211,8 +207,6 @@ class TrackAllWorker(QThread):
                     processor.cutie_processor = None
                 # Run predictions with per-frame progress
                 try:
-                    # total_frames = processor.total_frames()
-
                     start_frame = labeled_frame_number + 1
                     end_frame = total_frames - 1
 
@@ -233,6 +227,8 @@ class TrackAllWorker(QThread):
                         self.error.emit(
                             f"Failed to process {video_name}: {message}")
                         continue
+
+                    convert_json_to_csv(str(output_folder))
                     processed_videos += 1
                     self.progress.emit(
                         int((idx / total_videos) * 100),
@@ -265,9 +261,11 @@ class TrackAllWorker(QThread):
                 finally:
                     # Clean up processor resources
                     processor.cutie_processor = None
-                    del processor
-                    import torch
-                    torch.cuda.empty_cache()
+                    try:
+                        import torch
+                        torch.cuda.empty_cache()
+                    except Exception as e:
+                        self.logger.inf(f"CUDA message: {e}")
 
             self.finished.emit(
                 f"Track All completed. Processed {processed_videos}/{total_videos} videos."
