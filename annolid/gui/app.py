@@ -153,6 +153,8 @@ class AnnolidWindow(MainWindow):
         self.video_manager_widget.close_video_requested.connect(self.closeFile)
         self.video_manager_widget.output_folder_ready.connect(
             self.handle_extracted_frames)
+        self.video_manager_widget.json_saved.connect(
+            self.video_manager_widget.update_json_column)
 
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
@@ -1564,6 +1566,12 @@ class AnnolidWindow(MainWindow):
                 items[0].setCheckState(Qt.Checked)
             # disable allows next and previous image to proceed
             # self.filename = filename
+            # Emit VideoManagerWidget's json_saved signal if shapes are present and video_file is set
+            if shapes and self.video_file:
+                self.video_manager_widget.json_saved.emit(
+                    self.video_file, filename)
+                logger.debug(
+                    f"Emitted VideoManagerWidget.json_saved for video: {self.video_file}, JSON: {filename}")
             return True
         except LabelFileError as e:
             self.errorMessage(

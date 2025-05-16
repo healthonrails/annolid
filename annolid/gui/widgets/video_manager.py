@@ -4,16 +4,18 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QTableWidget, QFileDialog,
     QTableWidgetItem, QProgressBar, QMessageBox, QAbstractItemView, QHBoxLayout, QTextEdit
 )
-from qtpy.QtCore import Signal, Qt
+from qtpy.QtCore import Signal, Qt, Slot
 from annolid.data.videos import extract_frames_from_videos
 from annolid.gui.workers import FrameExtractorWorker, ProcessVideosWorker, TrackAllWorker
 from annolid.utils.files import find_most_recent_file
+from annolid.utils.logger import logger
 
 
 class VideoManagerWidget(QWidget):
     video_selected = Signal(str)
     close_video_requested = Signal()
     output_folder_ready = Signal(str)
+    json_saved = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -320,6 +322,39 @@ class VideoManagerWidget(QWidget):
             json_item = QTableWidgetItem(json_status)
             json_item.setFlags(json_item.flags() & ~Qt.ItemIsEditable)
             self.video_table.setItem(row, 5, json_item)
+
+    @Slot(str, str)
+    def update_json_column(self, video_path, json_filename):
+        """
+        Update the 'JSON Labeled' column for the given video when a JSON is saved.
+
+        Args:
+            video_path (str): Path to the video file.
+            json_filename (str): Path to the saved JSON file.
+        """
+        try:
+            json_filename = Path(json_filename)
+            # Validate JSON file
+            if not json_filename.exists() or json_filename.suffix != '.json':
+                logger.warning(f"Invalid JSON file: {json_filename}")
+                return
+
+            # Find the row for the video_path
+            for row in range(self.video_table.rowCount()):
+                if self.video_table.item(row, 1).text() == video_path:
+                    # Update JSON Labeled column to "Yes"
+                    json_item = QTableWidgetItem("Yes")
+                    json_item.setFlags(json_item.flags() & ~Qt.ItemIsEditable)
+                    self.video_table.setItem(row, 5, json_item)
+                    logger.debug(
+                        f"Updated JSON Labeled to 'Yes' for {video_path}")
+                    break
+            else:
+                logger.warning(f"Video not found in table: {video_path}")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update JSON Labeled for {video_path}: {str(e)}", exc_info=True)
 
     def on_extraction_complete(self, output_folder):
         QMessageBox.information(
