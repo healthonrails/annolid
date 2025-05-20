@@ -105,11 +105,6 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
             f"Skipping {csv_path.name}: no frame_number column found.")
         return
 
-    output_path = csv_path.with_name(csv_path.stem + '_annotated.csv')
-    if output_path.exists():
-        logger.info(f"Already annotated: {output_path.name}")
-        return
-
     try:
         timestamps = extract_frame_timestamps(video_path)
     except Exception as e:
@@ -139,10 +134,10 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
     df['real_timestamp_sec'] = df[frame_col].astype(int).map(safe_lookup)
 
     try:
-        df.to_csv(output_path, index=False)
-        logger.info(f"Annotated CSV saved: {output_path.name}")
+        df.to_csv(csv_path, index=False)
+        logger.info(f"Annotated CSV saved: {csv_path.name}")
     except Exception as e:
-        logger.error(f"Failed to write {output_path.name}: {e}")
+        logger.error(f"Failed to write {csv_path.name}: {e}")
 
 
 def process_directory(root: Path) -> None:
