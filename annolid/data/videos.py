@@ -13,6 +13,8 @@ from annolid.segmentation.maskrcnn import inference
 
 try:
     import decord as de
+    from decord import bridge
+    bridge.set_bridge('native')
     IS_DECORD_INSTALLED = True
 except ImportError:
     IS_DECORD_INSTALLED = False
