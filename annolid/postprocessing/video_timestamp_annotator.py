@@ -5,6 +5,7 @@ import argparse
 import pandas as pd
 import json
 from typing import List, Optional, Tuple
+import warnings
 
 # Configure logger
 logging.basicConfig(level=logging.INFO,
@@ -19,12 +20,13 @@ CSV_EXTENSION = '.csv'
 def extract_frame_timestamps(video_path: Path) -> List[float]:
     """
     Use ffprobe with JSON output to extract frame presentation timestamps (PTS) reliably.
+    Supports both 'pts_time' (newer FFmpeg versions) and 'pkt_pts_time' (older versions).
     """
     cmd = [
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
         '-show_frames',
-        '-show_entries', 'frame=pkt_pts_time',
+        '-show_entries', 'frame=pts_time,pkt_pts_time',
         '-of', 'json', str(video_path)
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE,
@@ -39,12 +41,19 @@ def extract_frame_timestamps(video_path: Path) -> List[float]:
 
     timestamps = []
     for frame in data.get("frames", []):
-        ts = frame.get("pkt_pts_time")
+        # Prefer pts_time (newer FFmpeg), fall back to pkt_pts_time (older FFmpeg)
+        ts = frame.get("pts_time") or frame.get("pkt_pts_time")
         if ts is not None:
             try:
                 timestamps.append(float(ts))
             except ValueError:
                 continue
+        else:
+            warnings.warn(
+                f"No valid timestamp (pts_time or pkt_pts_time) found in frame: {frame}")
+    if not timestamps:
+        warnings.warn(
+            "No valid timestamps extracted. Check FFmpeg version or video input.")
     return timestamps
 
 
