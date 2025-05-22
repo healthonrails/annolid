@@ -192,7 +192,8 @@ class Canvas(QtWidgets.QWidget):
             logger.debug("Initializing AI model: %r" % model.name)
             self._ai_model = model()
 
-        if self.pixmap.isNull():
+        # Check if self.pixmap is None before calling isNull()
+        if self.pixmap is None or self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
             return
 
