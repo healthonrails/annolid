@@ -1155,3 +1155,28 @@ class VideoSlider(QtWidgets.QGraphicsView):
     def paint(self, *args, **kwargs):
         """Method required by Qt."""
         super(VideoSlider, self).paint(*args, **kwargs)
+
+    def removeMarksByType(self, mark_type_to_remove: str):
+        """Removes all marks of a specific type from the slider."""
+        marks_to_delete = []
+        if hasattr(self, "_marks") and self._marks:  # Check if _marks exists and is not empty
+            for mark_instance in list(self._marks):  # Iterate over a copy
+                if mark_instance.mark_type == mark_type_to_remove:
+                    marks_to_delete.append(mark_instance)
+
+        for mark_instance in marks_to_delete:
+            self.removeMark(mark_instance)  # Uses your existing removeMark
+
+        if marks_to_delete:  # Only update if something was removed
+            self._update_visual_positions()  # Ensure visuals are updated after removal
+
+    def removeMark(self, mark_to_remove: VideoSliderMark):  # Your existing method
+        """Removes an individual mark."""
+        if mark_to_remove in self._mark_labels:
+            self.scene.removeItem(self._mark_labels[mark_to_remove])
+            del self._mark_labels[mark_to_remove]
+        if mark_to_remove in self._mark_items:
+            self.scene.removeItem(self._mark_items[mark_to_remove])
+            del self._mark_items[mark_to_remove]
+        if mark_to_remove in self._marks:
+            self._marks.remove(mark_to_remove)

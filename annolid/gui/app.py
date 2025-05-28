@@ -31,6 +31,7 @@ from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
+from qtpy.QtCore import QFileSystemWatcher
 
 from annolid.gui.widgets.video_manager import VideoManagerWidget
 from annolid.gui.workers import FlexibleWorker, LoadFrameThread
@@ -211,6 +212,9 @@ class AnnolidWindow(MainWindow):
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+
+        self.prediction_progress_watcher = None
+        self.last_known_predicted_frame = -1  # Track the latest frame seen
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -1004,6 +1008,10 @@ class AnnolidWindow(MainWindow):
             self.video_processor.cutie_processor = None
         self.video_processor = None
         self.fps = None
+        self._stop_prediction_folder_watcher()
+        # Clear "predicted" marks from the slider when file is closed
+        if self.seekbar:
+            self.seekbar.removeMarksByType("predicted")
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)
@@ -1361,6 +1369,11 @@ class AnnolidWindow(MainWindow):
             return
 
         if self.video_file:
+
+            if self.video_results_folder:  # video_results_folder is Path object
+                self._setup_prediction_folder_watcher(
+                    str(self.video_results_folder))
+
             if "sam2_hiera" in model_name:
                 from annolid.segmentation.SAM.sam_v2 import process_video
                 self.video_processor = process_video
@@ -1893,6 +1906,97 @@ class AnnolidWindow(MainWindow):
         """Update the progress bar's value."""
         self.progress_bar.setValue(progress)
 
+    # method to hide progress bar
+    def _finalize_prediction_progress(self, message=""):
+        logger.info(f"Prediction finalization: {message}")
+        if hasattr(self, 'progress_bar') and self.progress_bar.isVisible():
+            self.statusBar().removeWidget(self.progress_bar)
+        self._stop_prediction_folder_watcher()
+        # Clear "predicted" marks from the slider
+        if self.seekbar:
+            self.seekbar.removeMarksByType("predicted")  # Use the new method
+
+        # Reset button state (already in predict_is_ready and lost_tracking_instance)
+        self.stepSizeWidget.predict_button.setText("Pred")
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;")
+        self.stepSizeWidget.predict_button.setEnabled(True)
+        self.stop_prediction_flag = False  # This flag is specific to AnnolidWindow
+
+    def _setup_prediction_folder_watcher(self, folder_path_to_watch):
+        if self.prediction_progress_watcher is None:
+            self.prediction_progress_watcher = QFileSystemWatcher(self)
+            self.prediction_progress_watcher.directoryChanged.connect(
+                self._handle_prediction_folder_change
+            )
+            # You can also watch for file additions specifically if directoryChanged is too broad
+            # self.prediction_progress_watcher.fileChanged.connect(...)
+
+        # Remove any existing paths
+        if self.prediction_progress_watcher.directories():
+            self.prediction_progress_watcher.removePaths(
+                self.prediction_progress_watcher.directories())
+
+        if osp.isdir(folder_path_to_watch):
+            self.prediction_progress_watcher.addPath(str(folder_path_to_watch))
+            logger.info(
+                f"Prediction progress watcher started for: {folder_path_to_watch}")
+            # Initial scan when watcher starts
+            self._scan_prediction_folder(folder_path_to_watch)
+        else:
+            logger.warning(
+                f"Cannot watch non-existent folder: {folder_path_to_watch}")
+
+    def _scan_prediction_folder(self, folder_path):
+        if not self.video_loader or self.num_frames is None or self.num_frames == 0:
+            return
+        if not self.seekbar:
+            return
+
+        try:
+            # Get current "predicted" marks on slider to avoid re-adding if not necessary
+            # This assumes getMarks() is efficient or we cache this info.
+            # For simplicity, let's assume addMark might re-add but it won't break.
+            # A more robust addMark in VideoSlider would check for existing (type, val).
+
+            existing_predicted_vals = {
+                mark.val for mark in self.seekbar.getMarks() if mark.mark_type == "predicted"
+            }
+
+            for f_name in os.listdir(folder_path):
+                if f_name.endswith(".json") and self.video_results_folder.name in f_name:
+                    try:
+                        frame_part = f_name.split('_')[-1].replace('.json', '')
+                        frame_num = int(frame_part)
+                        if 0 <= frame_num < self.num_frames:
+                            if frame_num not in existing_predicted_vals:  # Add only if not already marked
+                                pred_mark = VideoSliderMark(
+                                    mark_type="predicted",
+                                    val=frame_num
+                                )
+                                self.seekbar.addMark(pred_mark)
+                                # existing_predicted_vals.add(frame_num) # Keep track locally if needed
+                    except (ValueError, IndexError):
+                        continue
+        except Exception as e:
+            logger.error(
+                f"Error scanning prediction folder for slider marks: {e}")
+
+    @QtCore.Slot(str)
+    def _handle_prediction_folder_change(self, path):
+        logger.debug(f"Prediction folder changed: {path}. Re-scanning.")
+        self._scan_prediction_folder(path)
+
+    def _stop_prediction_folder_watcher(self):
+        if self.prediction_progress_watcher:
+            if self.prediction_progress_watcher.directories():
+                self.prediction_progress_watcher.removePaths(
+                    self.prediction_progress_watcher.directories())
+            # self.prediction_progress_watcher.directoryChanged.disconnect(self._handle_prediction_folder_change)
+            # self.prediction_progress_watcher = None # Or just keep it around
+            logger.info("Prediction progress watcher stopped.")
+        self.last_known_predicted_frame = -1  # Reset
+
     def _connect_worker_signals(self):
         """Connect worker signals to their respective slots safely."""
         self.worker.start_signal.connect(self.worker.run)
@@ -1911,6 +2015,7 @@ class AnnolidWindow(MainWindow):
             )
         )
         self.worker.progress_signal.connect(self._update_progress_bar)
+        self.seekbar.removeMarksByType("predicted")  # Clear previous marks
 
     def tracks(self):
         """
