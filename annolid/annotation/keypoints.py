@@ -56,14 +56,33 @@ def load_existing_json(filename):
     return None
 
 
-def merge_shapes(new_shapes, existing_shapes):
-    # Make a copy of existing shapes to retain original
-    merged_shapes = existing_shapes.copy()
+def merge_shapes(new_shapes_list, existing_shapes_list):
+    """
+    Merges new shapes with existing shapes.
+    If a new shape has the same label as an existing shape,
+    the existing shape is replaced by the new one.
+    Otherwise, the new shape is added.
 
-    for new_shape in new_shapes:
-        if new_shape not in merged_shapes:
-            merged_shapes.append(new_shape)
-    return merged_shapes
+    Args:
+        new_shapes_list (list): List of new shape dictionaries.
+        existing_shapes_list (list): List of existing shape dictionaries.
+
+    Returns:
+        list: A list of merged shape dictionaries.
+    """
+    # Create a dictionary of existing shapes for efficient lookup and modification
+    # Assuming 'label' is unique or you want to replace based on the first match found
+    # If labels are not unique and you need more complex logic, this needs adjustment.
+    merged_shapes_dict = {
+        shape_data['label']: shape_data for shape_data in existing_shapes_list}
+
+    for new_shape_data in new_shapes_list:
+        label = new_shape_data['label']
+        # If label exists, replace; otherwise, add.
+        merged_shapes_dict[label] = new_shape_data
+
+    # Convert the dictionary back to a list
+    return list(merged_shapes_dict.values())
 
 
 def save_labels(filename, imagePath,
