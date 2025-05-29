@@ -1165,18 +1165,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
                     marks_to_delete.append(mark_instance)
 
         for mark_instance in marks_to_delete:
-            self.removeMark(mark_instance)  # Uses your existing removeMark
+            self.removeMark(mark_instance)
 
         if marks_to_delete:  # Only update if something was removed
             self._update_visual_positions()  # Ensure visuals are updated after removal
-
-    def removeMark(self, mark_to_remove: VideoSliderMark):  # Your existing method
-        """Removes an individual mark."""
-        if mark_to_remove in self._mark_labels:
-            self.scene.removeItem(self._mark_labels[mark_to_remove])
-            del self._mark_labels[mark_to_remove]
-        if mark_to_remove in self._mark_items:
-            self.scene.removeItem(self._mark_items[mark_to_remove])
-            del self._mark_items[mark_to_remove]
-        if mark_to_remove in self._marks:
-            self._marks.remove(mark_to_remove)

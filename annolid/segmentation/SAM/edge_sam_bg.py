@@ -235,7 +235,10 @@ class VideoProcessor:
             shape
             for shape in shapes
             if len(shape["points"]) >= 3
-            and 'zone' not in (shape.get('description', '').lower() + shape.get('label', '').lower())
+            and 'zone' not in (
+                (shape.get('description') or '').lower() +
+                (shape.get('label') or '').lower()
+            )
         ]
         if len(shapes) < 1:
             return f"No valid polygon found in this frame; requires a minimum of 3 points #{frame_number} "
