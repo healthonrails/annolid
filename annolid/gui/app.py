@@ -26,7 +26,7 @@ import subprocess
 
 from labelme.ai import MODELS
 from qtpy import QtCore
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Slot
 from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import PY2
@@ -157,6 +157,9 @@ class AnnolidWindow(MainWindow):
         self.video_manager_widget.json_saved.connect(
             self.video_manager_widget.update_json_column)
 
+        self.video_manager_widget.track_all_worker_created.connect(
+            self._connect_track_all_signals)
+
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
         # Set a unique objectName
@@ -206,6 +209,8 @@ class AnnolidWindow(MainWindow):
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
         self.behaviors = None
+        self.playButton = None
+        self.saveButton = None
         self.behavior_ranges = {}
         self.pinned_flags = {}
         # Create progress bar
@@ -676,6 +681,57 @@ class AnnolidWindow(MainWindow):
     def handle_row_selected(self, flag_name: str):
         self.event_type = flag_name
 
+    def _connect_track_all_signals(self, worker_instance):
+        """Connects to signals from a newly created TrackAllWorker instance."""
+        if worker_instance:
+            worker_instance.video_processing_started.connect(
+                self._handle_track_all_video_started)
+            worker_instance.video_processing_finished.connect(
+                self._handle_track_all_video_finished)
+
+    @Slot(str, str)
+    def _handle_track_all_video_started(self, video_path, output_folder_path):
+        logger.info(f"TrackAll: Starting processing for {video_path}")
+        self.closeFile()  # Close any currently open video
+        # 1. Load the video into the canvas
+        self.openVideo(from_video_list=True,  # Ensure this is set to True
+                       video_path=video_path,
+                       programmatic_call=True)
+        # 2. Setup the prediction folder watcher for this video's output_folder
+        #    Ensure self.video_results_folder is correctly set by openVideo to output_folder_path
+        #    or pass output_folder_path directly.
+        if self.video_file == video_path and self.video_results_folder == Path(output_folder_path):
+            logger.info(
+                f"TrackAll: Setting up watcher for {output_folder_path}")
+            self._setup_prediction_folder_watcher(output_folder_path)
+            # Initialize progress bar for predictions (if you have one for single video)
+            if hasattr(self, 'progress_bar'):
+                self._initialize_progress_bar()  # Make sure this is suitable
+        else:
+            logger.warning(
+                f"TrackAll: Video {video_path} not properly loaded or output folder mismatch. Cannot start watcher.")
+            logger.warning(
+                f"Current video_file: {self.video_file}, expected: {video_path}")
+            logger.warning(
+                f"Current video_results_folder: {self.video_results_folder}, expected: {output_folder_path}")
+
+    @Slot(str)
+    def _handle_track_all_video_finished(self, video_path):
+        logger.info(f"TrackAll: Finished processing for {video_path}")
+        # Clean up the watcher and progress for this specific video
+        # Check if this is the video we were actually watching
+        current_video_name_in_watcher = ""
+        if self.prediction_progress_watcher and self.prediction_progress_watcher.directories():
+            current_video_name_in_watcher = Path(
+                self.prediction_progress_watcher.directories()[0]).name
+
+        if Path(video_path).stem == current_video_name_in_watcher:
+            self._finalize_prediction_progress(
+                f"Automated tracking for {Path(video_path).name} complete.")
+        else:
+            logger.info(
+                f"TrackAll: Video {video_path} finished, but watcher was on {current_video_name_in_watcher} or not active.")
+
     def get_active_flags(self, flags):
         active_flags = []
         for _flag in flags:
@@ -1008,6 +1064,7 @@ class AnnolidWindow(MainWindow):
             self.video_processor.cutie_processor = None
         self.video_processor = None
         self.fps = None
+        self.only_json_files = False
         self._stop_prediction_folder_watcher()
         # Clear "predicted" marks from the slider when file is closed
         if self.seekbar:
@@ -1975,7 +2032,9 @@ class AnnolidWindow(MainWindow):
                                     val=frame_num
                                 )
                                 self.seekbar.addMark(pred_mark)
-                                # existing_predicted_vals.add(frame_num) # Keep track locally if needed
+                                # Move slider to this frame
+                                self.set_frame_number(frame_num)
+                                self.seekbar.setValue(frame_num)
                     except (ValueError, IndexError):
                         continue
         except Exception as e:
@@ -2609,13 +2668,14 @@ class AnnolidWindow(MainWindow):
     def openVideo(self, _value=False,
                   from_video_list=False,
                   video_path=None,
+                  programmatic_call=False
                   ):
         """open a video for annotaiton frame by frame
 
         Args:
             _value (bool, optional):  Defaults to False.
         """
-        if self.dirty or self.video_loader is not None:
+        if not programmatic_call and (self.dirty or self.video_loader is not None):
             message_box = QtWidgets.QMessageBox()
             message_box.setWindowTitle(
                 "Unsaved Changes or Closing the Existing Video")
@@ -2672,6 +2732,10 @@ class AnnolidWindow(MainWindow):
             self.num_frames = self.video_loader.total_frames()
             if self.seekbar:
                 self.statusBar().removeWidget(self.seekbar)
+            if self.playButton:
+                self.statusBar().removeWidget(self.playButton)
+            if self.saveButton:
+                self.statusBar().removeWidget(self.saveButton)
             self.seekbar = VideoSlider()
             self.seekbar.input_value.returnPressed.connect(self.jump_to_frame)
             self.seekbar.keyPress.connect(self.keyPressEvent)

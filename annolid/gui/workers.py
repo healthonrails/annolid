@@ -41,6 +41,11 @@ class TrackAllWorker(QThread):
     finished = Signal(str)      # Completion message
     error = Signal(str)         # Error message
 
+    # video_path, output_folder_path
+    video_processing_started = Signal(str, str)
+    # video_path (or output_folder_path)
+    video_processing_finished = Signal(str)
+
     def __init__(self, video_paths, config=None, parent=None):
         super().__init__(parent)
         self.video_paths = self._validate_video_paths(video_paths)
@@ -137,6 +142,9 @@ class TrackAllWorker(QThread):
         output_folder.mkdir(exist_ok=True, parents=True)
         self.logger.info(
             f"Processing {video_name}: Output folder = {output_folder}")
+
+        # --- Emit signal that a video is starting ---
+        self.video_processing_started.emit(video_path, str(output_folder))
 
         # Log device memory before processing
         self.log_gpu_memory(video_name, "Before")
@@ -273,6 +281,7 @@ class TrackAllWorker(QThread):
         finally:
             self.cleanup_processor(processor, device)
             self.log_gpu_memory(video_name, "After")
+            self.video_processing_finished.emit(video_path)
 
     def run(self):
         """Process videos sequentially, ensuring one processor per video."""

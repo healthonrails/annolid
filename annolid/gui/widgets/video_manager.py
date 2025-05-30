@@ -16,6 +16,7 @@ class VideoManagerWidget(QWidget):
     close_video_requested = Signal()
     output_folder_ready = Signal(str)
     json_saved = Signal(str, str)
+    track_all_worker_created = Signal(TrackAllWorker)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -213,6 +214,8 @@ class VideoManagerWidget(QWidget):
 
         # Initialize worker
         self.worker = TrackAllWorker(video_paths=video_paths, parent=self)
+        self.track_all_worker_created.emit(
+            self.worker)  # Emit the worker instance
         self.worker.progress.connect(self.update_track_progress)
         self.worker.finished.connect(self.on_track_all_complete)
         self.worker.error.connect(self.show_error)
@@ -226,6 +229,10 @@ class VideoManagerWidget(QWidget):
         """Stop the Track All worker."""
         if hasattr(self, 'worker') and self.worker.isRunning():
             self.worker.stop()
+            # Also tell AnnolidWindow to finalize progress for the video that was interrupted
+            if self.parent() and hasattr(self.parent(), '_handle_track_all_video_finished') and self.worker.current_processing_video_path:  # you'd need to store this in worker
+                self.parent()._handle_track_all_video_finished(
+                    self.worker.current_processing_video_path)
         self.stop_track_button.setVisible(False)
         self.progress_bar.setVisible(False)
 
