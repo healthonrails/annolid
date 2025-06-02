@@ -11,6 +11,7 @@ import html
 import shutil
 import sys
 import hashlib
+import json
 
 from PIL import ImageQt
 import pandas as pd
@@ -26,7 +27,7 @@ import subprocess
 
 from labelme.ai import MODELS
 from qtpy import QtCore
-from qtpy.QtCore import Qt, Slot
+from qtpy.QtCore import Qt, Slot, Signal
 from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import PY2
@@ -84,6 +85,10 @@ from annolid.gui.widgets.caption import CaptionWidget
 from annolid.gui.models_registry import MODEL_REGISTRY
 from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
+from annolid.gui.widgets.segment_editor import SegmentEditorDialog
+from annolid.jobs.tracking_worker import TrackingWorker
+from typing import List, Optional
+from annolid.jobs.tracking_jobs import TrackingSegment
 
 
 __appname__ = 'Annolid'
@@ -132,6 +137,9 @@ class VisualizationWindow(QtWidgets.QDialog):
 class AnnolidWindow(MainWindow):
     """Annolid Main Window based on Labelme.
     """
+
+    live_annolid_frame_updated = Signal(
+        int, str)  # For modeless dialogs if any
 
     def __init__(self,
                  config=None
@@ -217,6 +225,10 @@ class AnnolidWindow(MainWindow):
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+
+        self._current_video_defined_segments: List[TrackingSegment] = []
+        self.active_tracking_worker: Optional[TrackingWorker] = None
+        self._setup_custom_menu_actions()
 
         self.prediction_progress_watcher = None
         self.last_known_predicted_frame = -1  # Track the latest frame seen
@@ -634,6 +646,112 @@ class AnnolidWindow(MainWindow):
         self._setup_canvas_screenshot_action()
 
         self.populateModeActions()
+
+    def _setup_custom_menu_actions(self):
+        self.open_segment_editor_action = newAction(
+            self, self.tr("Define Video Segments..."),
+            self._open_segment_editor_dialog, shortcut="Ctrl+Alt+S",
+            tip=self.tr("Define tracking segments for the current video")
+        )
+        self.open_segment_editor_action.setEnabled(False)
+        if not hasattr(self.menus, 'video_tools'):
+            self.menus.video_tools = self.menuBar().addMenu(self.tr("&Video Tools"))
+        utils.addActions(self.menus.video_tools,
+                         (self.open_segment_editor_action,))
+
+    @Slot()
+    def _open_segment_editor_dialog(self):  # Largely the same
+        if not self.video_file or self.fps is None or self.num_frames is None:
+            QtWidgets.QMessageBox.information(
+                self, "No Video Loaded", "Please load a video first.")
+            return
+
+        initial_segment_dicts = [s.to_dict()
+                                 for s in self._current_video_defined_segments]
+
+        dialog = SegmentEditorDialog(
+            active_video_path=Path(self.video_file), active_video_fps=self.fps,
+            active_video_total_frames=self.num_frames, current_annolid_frame=self.frame_number,
+            initial_segments_data=initial_segment_dicts,
+            annolid_config=self.config,  # Pass Annolid's main config to dialog
+            parent=self
+        )
+
+        # NEW: Connect to the dialog's signal that provides the worker instance
+        dialog.tracking_initiated.connect(
+            self._handle_tracking_initiated_by_dialog)
+
+        # Optional: For modeless live updates (if SegmentEditorDialog becomes modeless)
+        # self.live_annolid_frame_updated.connect(dialog.update_live_annolid_frame_info)
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:  # User clicked "OK"
+            self._current_video_defined_segments = dialog.get_defined_segments()
+            logger.info(
+                f"Segment Editor OK. {len(self._current_video_defined_segments)} segments stored.")
+            self._save_segments_for_active_video()  # Persist
+        else:  # User clicked "Cancel" or closed dialog
+            logger.info("Segment Editor Cancelled/Closed.")
+
+        # try: self.live_annolid_frame_updated.disconnect(dialog.update_live_annolid_frame_info)
+        # except TypeError: pass
+        dialog.deleteLater()
+
+    # --- Modified/New Slot to handle tracking started by the dialog ---
+
+    @Slot(TrackingWorker, Path)  # worker_instance, video_path_processed
+    def _handle_tracking_initiated_by_dialog(self, worker_instance: TrackingWorker, video_path: Path):
+        if self.active_tracking_worker and self.active_tracking_worker.isRunning():
+            QtWidgets.QMessageBox.warning(self, "Tracking Busy",
+                                          "Dialog initiated tracking, but Annolid already has an active worker. This shouldn't happen if dialog checks.")
+            # Potentially stop the new worker if necessary, or log error
+            worker_instance.stop()  # Stop the worker the dialog created if we can't handle it
+            worker_instance.wait(1000)  # Wait a bit for it to stop
+            return
+
+        logger.info(
+            f"AnnolidWindow: Tracking initiated by SegmentEditorDialog for {video_path.name}")
+        self.active_tracking_worker = worker_instance
+        # The worker is already started by the dialog. AnnolidWindow just needs to connect UI signals.
+        # Connect progress, finished, error, UI updates
+        self._connect_signals_to_active_worker(self.active_tracking_worker)
+
+    # Helper method (public for dialog to check)
+
+    def is_tracking_busy(self) -> bool:
+        return bool(self.active_tracking_worker and self.active_tracking_worker.isRunning())
+
+    @Slot(str)
+    def _on_tracking_job_finished(self, completion_message: str):
+        QtWidgets.QMessageBox.information(
+            self, "Tracking Job Complete", completion_message)
+        self.statusBar().showMessage(completion_message, 5000)
+        self._set_tracking_ui_state(is_tracking=False)
+
+        # Disconnect signals from the finished worker
+        if self.active_tracking_worker:
+            try:
+                # Attempt to disconnect all relevant signals
+                self.active_tracking_worker.progress.disconnect(
+                    self._update_main_status_progress)
+                self.active_tracking_worker.finished.disconnect(
+                    self._on_tracking_job_finished)
+                self.active_tracking_worker.error.disconnect(
+                    self._on_tracking_job_error)
+                if hasattr(self.active_tracking_worker, 'video_job_started'):
+                    self.active_tracking_worker.video_job_started.disconnect(
+                        self._handle_tracking_video_started_ui_update)
+                if hasattr(self.active_tracking_worker, 'video_job_finished'):
+                    self.active_tracking_worker.video_job_finished.disconnect(
+                        self._handle_tracking_video_finished_ui_update)
+            except (TypeError, RuntimeError) as e:
+                logger.debug(
+                    f"Error disconnecting signals from finished worker (may have already been disconnected or was never connected): {e}")
+
+            # If the worker's parent was None (as set in dialog), and AnnolidWindow is meant to manage its lifetime
+            # after receiving it, you might consider worker.deleteLater() here,
+            # but only if AnnolidWindow is truly taking ownership beyond just signal connection.
+            # For now, let's assume the worker cleans itself up or its parent (if set in dialog) handles it.
+            self.active_tracking_worker = None  # CRITICAL: Clear the reference
 
     def _setup_canvas_screenshot_action(self):
         """Sets up the 'Save Canvas Image' action."""
@@ -1069,6 +1187,29 @@ class AnnolidWindow(MainWindow):
         # Clear "predicted" marks from the slider when file is closed
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")
+
+        if self.active_tracking_worker and self.active_tracking_worker.isRunning():
+            reply = QtWidgets.QMessageBox.question(self, "Tracking in Progress",
+                                                   "Stop tracking and close video?",
+                                                   QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+            if reply == QtWidgets.QMessageBox.Yes:
+                self.active_tracking_worker.stop()
+                # It's better to wait for worker's finished signal before truly closing,
+                # but for simplicity here, we'll proceed.
+            else:
+                return  # Don't close
+
+        # if self.video_file and self._current_video_defined_segments: # Auto-save on close?
+        #     self._save_segments_for_active_video()
+
+        super().closeFile(_value)  # Call parent's closeFile
+
+        self.open_segment_editor_action.setEnabled(False)
+        self._current_video_defined_segments = []
+        logger.info("File closed in AnnolidWindow.")
+
+    def _update_frame_display_and_emit_update(self):
+        self._emit_live_frame_update()
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)
@@ -2795,6 +2936,18 @@ class AnnolidWindow(MainWindow):
                                               init_load=True
                                               )
 
+            if self.filename:  # Video successfully loaded
+                self.open_segment_editor_action.setEnabled(True)
+                # Load persisted segments for the new video
+                self._load_segments_for_active_video()
+                if not programmatic_call:
+                    self._emit_live_frame_update()
+                logger.info(
+                    f"Video '{self.filename}' loaded. Segment definition enabled.")
+            else:
+                self.open_segment_editor_action.setEnabled(False)
+                self._current_video_defined_segments = []
+
     def jump_to_frame(self):
         """
         Jump to the specified frame number.
@@ -3119,6 +3272,7 @@ class AnnolidWindow(MainWindow):
                     self.caption_widget.set_image_path(self.filename)
 
         self._config["keep_prev"] = keep_prev
+        self._update_frame_display_and_emit_update()
 
     def openPrevImg(self, _value=False):
         keep_prev = self._config["keep_prev"]
@@ -3154,6 +3308,266 @@ class AnnolidWindow(MainWindow):
                         self.caption_widget.set_image_path(self.filename)
 
         self._config["keep_prev"] = keep_prev
+        self._update_frame_display_and_emit_update()
+
+    def _emit_live_frame_update(self):
+        if self.filename and self.frame_number is not None and hasattr(self, '_time_stamp'):
+            self.live_annolid_frame_updated.emit(
+                self.frame_number, self._time_stamp or "")
+
+    def _save_segments_for_active_video(self):
+        if not self.video_file or not hasattr(self, '_current_video_defined_segments'):
+            return
+        segments_as_dicts = [s.to_dict()
+                             for s in self._current_video_defined_segments]
+        # Use Path(self.video_file) to ensure it's a Path object
+        sidecar_path = Path(self.video_file).with_suffix(
+            Path(self.video_file).suffix + ".segments.json")
+        try:
+            with open(sidecar_path, 'w') as f:
+                json.dump(segments_as_dicts, f, indent=2)
+            logger.info(
+                f"Saved {len(segments_as_dicts)} segments to {sidecar_path}")
+        except Exception as e:
+            logger.error(f"Failed to save segments to {sidecar_path}: {e}")
+
+    def _load_segments_for_active_video(self):
+        self._current_video_defined_segments = []  # Clear first
+        if not self.video_file or not self.fps:
+            return
+
+        sidecar_path = Path(self.video_file).with_suffix(
+            Path(self.video_file).suffix + ".segments.json")
+        if sidecar_path.exists():
+            try:
+                with open(sidecar_path, 'r') as f:
+                    segment_dicts = json.load(f)
+                loaded_segments = []
+                for s_dict in segment_dicts:
+                    try:  # Ensure current video context is used, even if stored differently
+                        # Force current video path
+                        s_dict['video_path'] = str(self.video_file)
+                        # Force current FPS
+                        s_dict['fps'] = self.fps
+                        loaded_segments.append(
+                            TrackingSegment.from_dict(s_dict))
+                    except Exception as e:
+                        logger.error(
+                            f"Error creating TrackingSegment from dict {s_dict}: {e}")
+                self._current_video_defined_segments = loaded_segments
+                logger.info(
+                    f"Loaded {len(self._current_video_defined_segments)} segments from {sidecar_path}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to load segments from {sidecar_path}: {e}")
+
+    # --- Handler for Tracking Initiated by SegmentEditorDialog ---
+
+    # worker_instance, video_path_processed by dialog
+    @Slot(TrackingWorker, Path)
+    def _handle_tracking_initiated_by_dialog(self, worker_instance: TrackingWorker, video_path: Path):
+        if self.active_tracking_worker and self.active_tracking_worker.isRunning():
+            QtWidgets.QMessageBox.warning(
+                self, "Tracking Busy", "Another tracking job is already active. Please wait.")
+            # Stop the newly created worker if we can't handle it
+            worker_instance.stop()
+            worker_instance.wait(500)  # Give it a moment to stop
+            worker_instance.deleteLater()  # Schedule for deletion
+            return
+
+        logger.info(
+            f"AnnolidWindow: Tracking initiated by SegmentEditorDialog for {video_path.name}")
+        self.active_tracking_worker = worker_instance
+        self._connect_signals_to_active_worker(self.active_tracking_worker)
+        self._set_tracking_ui_state(is_tracking=True)
+        # Worker is already started by the dialog.
+
+    # Helper method for dialog to check (or internal check)
+    def is_tracking_busy(self) -> bool:
+        return bool(self.active_tracking_worker and self.active_tracking_worker.isRunning())
+
+    # --- Generic Signal Connection & Handling for the active_tracking_worker ---
+    def _connect_signals_to_active_worker(self, worker_instance: Optional[TrackingWorker]):
+        if not worker_instance:
+            logger.warning(
+                "Attempted to connect signals to a null worker instance.")
+            return
+
+        # Disconnect from any previous worker to avoid duplicate signal handling
+        # This logic needs to be robust if self.active_tracking_worker could be something else
+        # For now, assume only one active_tracking_worker at a time.
+        # Note: If the previous worker was already deleted or cleaned up, disconnect might raise error.
+        previous_worker = getattr(self, '_previous_connected_worker', None)
+        if previous_worker and previous_worker != worker_instance:
+            try:
+                previous_worker.progress.disconnect(
+                    self._update_main_status_progress)
+                previous_worker.finished.disconnect(
+                    self._on_tracking_job_finished)
+                previous_worker.error.disconnect(self._on_tracking_job_error)
+                if hasattr(previous_worker, 'video_job_started'):
+                    previous_worker.video_job_started.disconnect(
+                        self._handle_tracking_video_started_ui_update)
+                if hasattr(previous_worker, 'video_job_finished'):
+                    previous_worker.video_job_finished.disconnect(
+                        self._handle_tracking_video_finished_ui_update)
+                logger.debug(
+                    f"Disconnected signals from previous worker: {previous_worker.__class__.__name__}")
+            except (TypeError, RuntimeError) as e:
+                logger.debug(
+                    f"Error disconnecting signals from previous worker (might be okay): {e}")
+
+        self._previous_connected_worker = worker_instance  # Keep track for next disconnect
+
+        worker_instance.progress.connect(self._update_main_status_progress)
+        worker_instance.finished.connect(self._on_tracking_job_finished)
+        worker_instance.error.connect(self._on_tracking_job_error)
+
+        # video_job_started/finished are crucial for UI updates per video
+        if hasattr(worker_instance, 'video_job_started'):
+            worker_instance.video_job_started.connect(
+                self._handle_tracking_video_started_ui_update)
+        if hasattr(worker_instance, 'video_job_finished'):
+            worker_instance.video_job_finished.connect(
+                self._handle_tracking_video_finished_ui_update)
+
+        logger.info(
+            f"AnnolidWindow: Connected UI signals for worker: {worker_instance.__class__.__name__}")
+
+    def _get_tracking_device(self) -> torch.device:  # Centralized device selection
+        # More sophisticated logic could go here (e.g., user settings)
+        if self.config.get('use_cpu_only', False):
+            return torch.device("cpu")
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
+    # --- Slots for worker signals ---
+    @Slot(int, str)
+    def _update_main_status_progress(self, percentage: int, message: str):
+        self.statusBar().showMessage(f"{message} ({percentage}%)", 4000)
+
+    @Slot(str)
+    def _on_tracking_job_finished(self, completion_message: str):
+        QtWidgets.QMessageBox.information(
+            self, "Tracking Job Complete", completion_message)
+        self.statusBar().showMessage(completion_message, 5000)
+        self._set_tracking_ui_state(is_tracking=False)
+
+        worker_that_finished = self.sender()  # Get the worker that emitted the signal
+        if self.active_tracking_worker == worker_that_finished:
+            # Disconnect signals before clearing reference or deleting
+            try:
+                self.active_tracking_worker.progress.disconnect(
+                    self._update_main_status_progress)
+                self.active_tracking_worker.finished.disconnect(
+                    self._on_tracking_job_finished)
+                self.active_tracking_worker.error.disconnect(
+                    self._on_tracking_job_error)
+                if hasattr(self.active_tracking_worker, 'video_job_started'):
+                    self.active_tracking_worker.video_job_started.disconnect(
+                        self._handle_tracking_video_started_ui_update)
+                if hasattr(self.active_tracking_worker, 'video_job_finished'):
+                    self.active_tracking_worker.video_job_finished.disconnect(
+                        self._handle_tracking_video_finished_ui_update)
+            except (TypeError, RuntimeError):
+                logger.debug("Error disconnecting from finished worker.")
+
+            # If the worker's parent was None (dialog created it this way), schedule for deletion
+            if self.active_tracking_worker.parent() is None:
+                self.active_tracking_worker.deleteLater()
+                logger.info("Scheduled dialog-created worker for deletion.")
+            self.active_tracking_worker = None
+        elif worker_that_finished:  # Some other worker finished
+            worker_that_finished.deleteLater()  # If it's not the main one, clean it up too
+            logger.info(
+                f"An external worker ({worker_that_finished.__class__.__name__}) finished and was scheduled for deletion.")
+
+    @Slot(str)
+    def _on_tracking_job_error(self, error_message: str):
+        QtWidgets.QMessageBox.critical(
+            self, "Tracking Job Error", error_message)
+        self.statusBar().showMessage(
+            f"Error: {error_message}", 0)  # Persistent
+        self._set_tracking_ui_state(is_tracking=False)
+        worker_that_errored = self.sender()
+        if self.active_tracking_worker == worker_that_errored:
+            if self.active_tracking_worker.parent() is None:
+                self.active_tracking_worker.deleteLater()
+            self.active_tracking_worker = None
+        elif worker_that_errored:
+            worker_that_errored.deleteLater()
+
+    @Slot(str, str)
+    def _handle_tracking_video_started_ui_update(self, video_path_str: str, output_folder_str: str):
+        logger.info(
+            f"AnnolidWindow UI: Job started for video {video_path_str}")
+        if self.filename != video_path_str:  # If the worker is processing a video not currently on canvas
+            logger.info(
+                f"Worker started on {video_path_str}, but canvas shows {self.filename}. Opening programmatically.")
+            # This ensures the canvas shows what the worker is processing for marker updates
+            self.openVideo(from_video_list=True,
+                           video_path=video_path_str,
+                           programmatic_call=True)
+
+        # Now, self.filename should be video_path_str
+        if self.video_file == video_path_str:  # self.video_file is usually set by openVideo/loadFile
+            # self.video_results_folder is also set by openVideo/loadFile for labelme
+            # For consistency, let's ensure it matches output_folder_str or update it
+            expected_results_folder = Path(output_folder_str)
+            if self.video_results_folder != expected_results_folder:
+                logger.warning(
+                    f"Mismatch in video_results_folder. Expected: {expected_results_folder}, Have: {self.video_results_folder}. Forcing update.")
+                # Ensure watcher uses correct folder
+                self.video_results_folder = expected_results_folder
+
+            self._setup_prediction_folder_watcher(
+                str(output_folder_str))  # Start watching for JSONs
+            # self._initialize_progress_bar() # If you have a per-file progress bar in labelme
+        else:
+            logger.error(f"Critical: Mismatch after attempting to open video for tracking. "
+                         f"Current: {self.video_file}, Expected by worker: {video_path_str}.")
+
+    @Slot(str)
+    def _handle_tracking_video_finished_ui_update(self, video_path_str: str):
+        logger.info(
+            f"AnnolidWindow UI: Job finished for video {video_path_str}")
+        # Clean up UI specific to this video (e.g., marker watcher)
+        # Only finalize if this video_path_str matches what the watcher is currently on
+        current_watched_folder_path_str = ""
+        if self.prediction_progress_watcher and self.prediction_progress_watcher.directories():
+            current_watched_folder_path_str = self.prediction_progress_watcher.directories()[
+                0]
+
+        if Path(video_path_str).with_suffix('') == Path(current_watched_folder_path_str):
+            self._finalize_prediction_progress(
+                f"GUI finalized for {Path(video_path_str).name}.")
+        else:
+            logger.info(
+                f"GUI: Video {video_path_str} finished, but watcher was on {current_watched_folder_path_str} or not active for UI updates.")
+
+    def _set_tracking_ui_state(self, is_tracking: bool):
+        self.open_segment_editor_action.setEnabled(
+            not is_tracking and bool(self.video_file))
+        # Add other UI elements to disable/enable
+        # For example, file opening actions from labelme's self.actions
+        if hasattr(self.actions, 'open'):
+            self.actions.open.setEnabled(not is_tracking)
+        if hasattr(self.actions, 'openDir'):
+            self.actions.openDir.setEnabled(not is_tracking)
+        if hasattr(self.actions, 'openVideo'):
+            self.actions.openVideo.setEnabled(
+                not is_tracking)  # Your main video open
+
+        # If VideoManagerWidget is present and has its own track all button
+        if hasattr(self, 'video_manager_widget') and hasattr(self.video_manager_widget, 'track_all_button'):
+            self.video_manager_widget.track_all_button.setEnabled(
+                not is_tracking)
+
+        logger.info(
+            f"AnnolidWindow UI state for tracking: {'ACTIVE' if is_tracking else 'IDLE'}")
 
     def coco(self):
         """
