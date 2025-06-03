@@ -24,8 +24,7 @@ def compute_optical_flow(prev_frame, current_frame, scale=1.0):
     magnitude = np.nan_to_num(magnitude)
     magnitude_normalized = np.clip(cv2.normalize(
         magnitude, None, 0, 255, cv2.NORM_MINMAX), 0, 255).astype(np.uint8)
-    magnitude_uint8 = np.clip(magnitude, 0, 255).astype(np.uint8)
-
+    magnitude_float = magnitude.astype(np.float32)
     # Convert angle to degrees (scale and convert to uint8)
     angle_degrees = (angle * 180 / np.pi / 2).astype(np.uint8)
 
@@ -33,6 +32,6 @@ def compute_optical_flow(prev_frame, current_frame, scale=1.0):
     flow_hsv = np.empty_like(prev_frame)
     flow_hsv[..., 0] = angle_degrees
     flow_hsv[..., 1] = magnitude_normalized
-    flow_hsv[..., 2] = magnitude_uint8
+    flow_hsv[..., 2] = magnitude_float
 
     return flow_hsv, flow

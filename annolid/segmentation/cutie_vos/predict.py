@@ -51,8 +51,8 @@ def find_mask_center_opencv(mask):
     moments = cv2.moments(mask_int)
 
     # Calculate the centroid coordinates
-    cx = int(moments["m10"] / moments["m00"])
-    cy = int(moments["m01"] / moments["m00"])
+    cx = moments["m10"] / moments["m00"]
+    cy = moments["m01"] / moments["m00"]
 
     return cx, cy
 
@@ -172,8 +172,13 @@ class CutieVideoProcessor:
         if self._flow_hsv is not None:
             # unnormalized magnitude
             magnitude = self._flow_hsv[..., 2]
-            self._motion_index = np.sum(
-                mask * magnitude) / np.sum(mask)
+            magnitude = magnitude.astype(np.float32)
+            mask_sum = np.sum(mask)
+            if mask_sum > 0:
+                self._motion_index = np.sum(
+                    mask * magnitude) / mask_sum
+            else:
+                self._motion_index = 0.0
         else:
             self._motion_index = -1
         self._motion_indices.append(self._motion_index)
