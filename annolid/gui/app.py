@@ -3016,13 +3016,30 @@ class AnnolidWindow(MainWindow):
             self.setDirty()
         else:
             self.setClean()
-        # set zoom values
-        is_initial_load = not self.zoom_values
-        if self.filename in self.zoom_values:
-            self.zoomMode = self.zoom_values[self.filename][0]
-            self.setZoom(self.zoom_values[self.filename][1])
-        elif is_initial_load or not self._config["keep_prev_scale"]:
+
+        video_file_key_for_zoom = str(
+            self.video_file) if self.video_file else str(self.filename)
+        if not self._config["keep_prev_scale"]:
+            # If "Keep Previous Scale" is OFF, always try to fit the new frame.
             self.adjustScale(initial=True)
+        elif video_file_key_for_zoom in self.zoom_values:
+            # If "Keep Previous Scale" is ON and we have a saved zoom state for this video, restore it.
+            self.zoomMode = self.zoom_values[video_file_key_for_zoom][0]
+            # setZoom updates widget and calls paintCanvas
+            self.setZoom(self.zoom_values[video_file_key_for_zoom][1])
+        else:
+            # If "Keep Previous Scale" is ON, but no saved state for this video yet
+            #  (e.g., first frame of this video loaded in session)
+            # OR if it's the very first image/frame loaded in the entire application session.
+            # is_first_image_ever_in_session = not self.zoom_values # Original labelme logic for this
+            self.adjustScale(initial=True)
+
+        # Store the current zoom state for this video file, so if we navigate away and back,
+        # it can be restored (if keep_prev_scale is on)
+        if video_file_key_for_zoom:  # Ensure we have a valid key
+            self.zoom_values[video_file_key_for_zoom] = (
+                self.zoomMode, self.zoomWidget.value())
+
         # set scroll values
         for orientation in self.scroll_values:
             if self.filename in self.scroll_values[orientation]:
