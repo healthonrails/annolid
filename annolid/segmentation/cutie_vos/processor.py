@@ -18,6 +18,8 @@ from annolid.motion.optical_flow import compute_optical_flow
 from annolid.utils import draw  # For drawing flow
 # For visualization video
 from annolid.segmentation.cutie_vos.interactive_utils import overlay_davis
+from annolid.segmentation.cutie_vos.predict import find_mask_center_opencv
+from annolid.utils.files import create_tracking_csv_file
 
 
 class SegmentedCutieExecutor:
@@ -51,6 +53,18 @@ class SegmentedCutieExecutor:
         # {'mask': np.array, 'labels_dict': dict, 'num_objects': int}
         self.initial_mask_info: Optional[Dict] = None
         self.video_writer: Optional[cv2.VideoWriter] = None
+
+        # For _save_per_object_results
+        self._current_frame_idx_for_saving: Optional[int] = None
+        # List of dicts like {'frame_number':idx, 'instance_name':str, 'cx':float, 'cy':float, 'motion_index':float}
+        # ** NEW: Initialize lists for CSV data accumulation for this segment **
+        self._csv_frame_numbers: List[int] = []
+        self._csv_instance_labels: List[str] = []
+        self._csv_cx_values: List[float] = []  # Use float for precision
+        self._csv_cy_values: List[float] = []
+        self._csv_motion_indices: List[float] = []
+
+        self._current_frame_idx_for_saving: Optional[int] = None
 
         self._initialize_engine()
 
@@ -172,36 +186,73 @@ class SegmentedCutieExecutor:
             logger.info(
                 f"Recording segment overlay to: {output_video_path_str}")
 
-    def _save_frame_annotation(self, frame_idx: int, predicted_mask_np: np.ndarray,
-                               labels_map_id_to_name: Dict[int, str], frame_shape: tuple):
-        """Saves the predicted mask for a single frame as a JSON annotation."""
+    # To calculate motion index and store per-object data for the current frame
+    def _process_object_metrics(self,
+                                object_label_str: str,
+                                object_mask_np: np.ndarray,  # Boolean mask for this single object
+                                dense_flow_xy: Optional[np.ndarray]):  # Optical flow (dx, dy) for the current frame transition
+        """Calculates centroid and motion index for a single object mask."""
+
+        motion_index = -1.0
+        cx, cy = find_mask_center_opencv(object_mask_np)
+
+        if dense_flow_xy is not None and self.config.get('compute_optical_flow', True):
+            magnitude = np.sqrt(
+                dense_flow_xy[..., 0]**2 + dense_flow_xy[..., 1]**2)
+            sum_mask = np.sum(object_mask_np)  # Sum of boolean mask
+            if sum_mask > 0:
+                motion_index = np.sum(object_mask_np * magnitude) / sum_mask
+            else:
+                motion_index = 0.0  # No motion if mask is empty
+
+        # Store for potential CSV or detailed logging
+        if self._current_frame_idx_for_saving is not None:  # Ensure frame context is set
+            self._csv_frame_numbers.append(self._current_frame_idx_for_saving)
+            self._csv_instance_labels.append(object_label_str)
+            self._csv_cx_values.append(cx)
+            self._csv_cy_values.append(cy)
+            self._csv_motion_indices.append(motion_index)
+
+        return motion_index  # Return for direct use in description
+
+    def _save_frame_annotation(self,
+                               frame_idx: int,
+                               predicted_mask_np_object_ids: np.ndarray,  # Mask with numeric object IDs
+                               labels_map_id_to_name: Dict[int, str],
+                               frame_shape: tuple,
+                               dense_flow_for_this_frame: Optional[np.ndarray]):  # Pass the computed flow
+        """Saves the predicted mask for a single frame as a JSON annotation, including motion index."""
+        self._current_frame_idx_for_saving = frame_idx  # Set for _process_object_metrics
+
         filename_json = self.video_folder / \
             f"{self.video_path.stem}_{frame_idx:09d}.json"
         height, width, _ = frame_shape
-
         label_list_for_save: List[Shape] = []
-        unique_object_ids_in_pred = np.unique(predicted_mask_np)
+        unique_object_ids_in_pred = np.unique(predicted_mask_np_object_ids)
 
         for obj_id in unique_object_ids_in_pred:
             if obj_id == 0:
-                continue  # Skip background
+                continue
 
-            obj_label_str = labels_map_id_to_name.get(
-                obj_id, f"obj_{obj_id}")  # Fallback label
-            # Boolean mask for this object
-            single_obj_mask_bool = (predicted_mask_np == obj_id)
+            obj_label_str = labels_map_id_to_name.get(obj_id, f"obj_{obj_id}")
+            single_obj_mask_bool = (predicted_mask_np_object_ids == obj_id)
 
-            # Create MaskShape and convert to polygons for saving
+            # Calculate motion index for this specific object's mask
+            motion_idx_for_this_object = self._process_object_metrics(
+                obj_label_str, single_obj_mask_bool, dense_flow_for_this_frame
+            )
+
             mask_shape_obj = MaskShape(
-                label=obj_label_str, flags={}, description=f"cutie_vos_segment")
-            mask_shape_obj.mask = single_obj_mask_bool  # Assign boolean mask
+                label=obj_label_str, flags={},
+                # Include motion index
+                description=f'cutie_vos_segment; motion_index: {motion_idx_for_this_object:.2f}'
+            )
+            mask_shape_obj.mask = single_obj_mask_bool
 
             polygon_shapes = mask_shape_obj.toPolygons(
                 epsilon=self.config.get('epsilon_for_polygon', 2.0))
             if polygon_shapes:
-                # Annolid's save_labels might expect Shape, not MaskShape, or handle both
-                # For now, assume we convert to basic Shape with points
-                main_polygon = polygon_shapes[0]  # Take the first polygon
+                main_polygon = polygon_shapes[0]
                 shape_to_save = Shape(label=obj_label_str, shape_type='polygon',
                                       flags=main_polygon.flags, description=main_polygon.description)
                 shape_to_save.points = [[p.x(), p.y()]
@@ -209,10 +260,10 @@ class SegmentedCutieExecutor:
                 label_list_for_save.append(shape_to_save)
             else:
                 logger.warning(
-                    f"Could not extract polygon for object ID {obj_id}(label: {obj_label_str}) in frame {frame_idx}.")
+                    f"Could not extract polygon for ID {obj_id} (label: {obj_label_str}) in frame {frame_idx}.")
 
         if label_list_for_save:
-            save_labels(filename=str(filename_json), imagePath=None,  # No image data in JSON
+            save_labels(filename=str(filename_json), imagePath=None,
                         label_list=label_list_for_save,
                         height=height, width=width, save_image_to_json=False)
 
@@ -239,68 +290,74 @@ class SegmentedCutieExecutor:
         self._initialize_segment_video_writer(
             video_fps)  # Init writer if recording
 
-        prev_frame_bgr_for_flow: Optional[np.ndarray] = None
+        self._csv_frame_numbers.clear()
+        self._csv_instance_labels.clear()
+        self._csv_cx_values.clear()
+        self._csv_cy_values.clear()
+        self._csv_motion_indices.clear()
+
+        prev_frame_bgr: Optional[np.ndarray] = None
+        # Load the frame *before* the segment_start_frame if flow is needed for the very first segment frame
+        if self.config.get('compute_optical_flow', True) and self.segment_start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, self.segment_start_frame - 1)
+            ret_prev, prev_frame_bgr = cap.read()
+            if not ret_prev:
+                prev_frame_bgr = None  # Could not read frame before segment start
         frames_actually_processed_count = 0
         # Default if loop doesn't run
         final_message = f"Segment processed up to frame {self.segment_start_frame -1 }."
 
         try:
+            # Engine reads from this frame
+            start_frame_for_cutie_engine = self.segment_start_frame
 
-            if self.annotated_frame != self.segment_start_frame:
-                logger.warning(f"Segment for {self.video_path.name}: Annotated frame {self.annotated_frame} "
-                               f"differs from segment processing start frame {self.segment_start_frame}. "
-                               f"Mask from frame {self.annotated_frame} will be applied at frame {self.segment_start_frame}.")
-
-            # Frame where Cutie applies the initial mask & starts reading
-            cutie_start_frame_for_mask = self.segment_start_frame
-
-            for frame_idx, pred_mask_np in self.cutie_engine.process_frames(
+            for frame_idx, pred_mask_np_obj_ids in self.cutie_engine.process_frames(
                 video_capture=cap,
-                # Cutie starts reading and applies mask here
-                start_frame_index=cutie_start_frame_for_mask,
+                start_frame_index=start_frame_for_cutie_engine,
                 initial_mask_np=self.initial_mask_info['mask_np'],
                 num_objects_in_mask=self.initial_mask_info['num_objects'],
-                frames_to_propagate=frames_to_propagate_this_segment,  # Max frames for this segment
+                frames_to_propagate=frames_to_propagate_this_segment,
                 pred_worker=self.pred_worker
             ):
-                # frame_idx is the actual video frame number processed by CutieEngine
-                # We only care about saving annotations if frame_idx is within our defined segment
-                if not (self.segment_start_frame <= frame_idx <= self.segment_end_frame):
-                    # This should not happen if CutieEngine starts at segment_start_frame and runs for correct duration
-                    logger.warning(f"CutieEngine yielded frame {frame_idx} outside target segment "
-                                   f"[{self.segment_start_frame}-{self.segment_end_frame}]. Ignoring.")
-                    continue
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret_curr, current_frame_bgr = cap.read()
+                if not ret_curr:
+                    logger.warning(
+                        f"Could not read current frame {frame_idx} for flow/viz. Skipping metrics for this frame.")
+                    prev_frame_bgr = None  # Cannot compute flow for next iteration
+                    continue  # Skip to next prediction from engine
+
+                dense_flow_for_this_frame: Optional[np.ndarray] = None
+                if self.config.get('compute_optical_flow', True) and prev_frame_bgr is not None:
+                    _, dense_flow_for_this_frame = compute_optical_flow(
+                        prev_frame_bgr, current_frame_bgr)
 
                 self._save_frame_annotation(
-                    frame_idx, pred_mask_np,
+                    frame_idx, pred_mask_np_obj_ids,
                     self.initial_mask_info['labels_map_id_to_name'],
-                    self.initial_mask_info['frame_shape']
+                    self.initial_mask_info['frame_shape'],
+                    dense_flow_for_this_frame  # Pass computed flow
                 )
                 frames_actually_processed_count += 1
+                prev_frame_bgr = current_frame_bgr.copy()
 
-                # Optional: Optical flow and video recording
-                if self.video_writer or self.config.get('compute_optical_flow', False):
-                    # Re-read frame for visualization/flow
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                    ret, current_frame_bgr_for_viz = cap.read()
-                    if ret:
-                        if self.config.get('compute_optical_flow', False) and prev_frame_bgr_for_flow is not None:
-                            flow_hsv, flow_xy = compute_optical_flow(
-                                prev_frame_bgr_for_flow, current_frame_bgr_for_viz)
-                            # Flow could be used or saved alongside JSON if needed
+                if self.video_writer:
+                    overlay = overlay_davis(
+                        current_frame_bgr, pred_mask_np_obj_ids)
+                    if dense_flow_for_this_frame is not None and self.config.get('compute_optical_flow', False):
+                        mask_for_flow_viz = pred_mask_np_obj_ids > 0
+                        overlay_with_flow = draw.draw_flow(overlay.copy(
+                        ), dense_flow_for_this_frame * np.expand_dims(mask_for_flow_viz, axis=-1))
+                        self.video_writer.write(overlay_with_flow)
+                    else:
+                        self.video_writer.write(overlay)
 
-                        if self.video_writer:
-                            overlay = overlay_davis(
-                                current_frame_bgr_for_viz, pred_mask_np)  # Uses BGR
-                            # Add flow to overlay if computed and desired
-                            self.video_writer.write(overlay)
-                        prev_frame_bgr_for_flow = current_frame_bgr_for_viz.copy()
-
+                # Current becomes previous for next iteration
+                prev_frame_bgr = current_frame_bgr.copy()
                 final_message = f"Segment processed up to frame {frame_idx}."
 
             final_message = (f"Segment processing completed. Processed {frames_actually_processed_count} frames "
                              f"in range [{self.segment_start_frame}-{self.segment_end_frame}].")
-
         except Exception as e:
             logger.error(
                 f"Exception during segment processing for {self.video_path.name}: {e}", exc_info=True)
@@ -311,9 +368,26 @@ class SegmentedCutieExecutor:
             if self.video_writer:
                 self.video_writer.release()
                 self.video_writer = None
-            # Optionally clear CutieEngine memory if it's reused for more segments by the same worker
-            # if self.cutie_engine: self.cutie_engine.clear_memory()
 
+            if self._csv_frame_numbers:  # If any data was collected
+                csv_filename = self.video_folder.parent / \
+                    f"{self.video_path.stem}_segment_{self.segment_start_frame}_to_{self.segment_end_frame}_tracked.csv"
+                try:
+                    create_tracking_csv_file(
+                        frame_numbers=self._csv_frame_numbers,
+                        instance_names=self._csv_instance_labels,
+                        cx_values=self._csv_cx_values,
+                        cy_values=self._csv_cy_values,
+                        motion_indices=self._csv_motion_indices,  # Pass the motion indices
+                        output_file=str(csv_filename),
+                        video_path=str(self.video_path),
+                    )
+                    logger.info(
+                        f"Saved tracking CSV for segment to: {csv_filename}")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to save tracking CSV for segment {csv_filename.name}: {e}", exc_info=True)
+                    final_message += f" (CSV Save Error: {e})"
         return final_message
 
     def cleanup(self):
