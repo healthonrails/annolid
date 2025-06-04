@@ -137,43 +137,75 @@ class VideoManagerWidget(QWidget):
 
         # Add Load Button
         load_button = QPushButton("Load")
+        # Use a partial to pass video_path, row determination will be dynamic
         load_button.clicked.connect(
-            lambda: self.load_video_and_response(video_path))
+            lambda checked=False, vp=video_path: self.load_video_and_response(vp))  # Pass video_path
         self.video_table.setCellWidget(row_position, 2, load_button)
 
         # Add Close Button
         close_button = QPushButton("Close")
+        # For close, knowing the row index might not be as critical if it just emits a global close
         close_button.clicked.connect(
-            lambda: self.close_video_and_clear(row_position))
+            lambda checked=False, r=row_position: self.close_video_and_clear_by_sender_or_row(r))
         self.video_table.setCellWidget(row_position, 3, close_button)
 
         # Add Delete Button
         delete_button = QPushButton("Delete")
-        delete_button.clicked.connect(
-            lambda: self.delete_video(row_position, video_path))
+        # Connect to a new slot that dynamically finds the row
+        delete_button.clicked.connect(self._handle_delete_button_clicked)
+        # Store video_path on the button itself for easy retrieval
+        delete_button.setProperty("video_path", video_path)
         self.video_table.setCellWidget(row_position, 4, delete_button)
 
         # Add JSON Labeled Status
         json_status = self.check_json_exists(video_path)
         json_item = QTableWidgetItem(json_status)
-        json_item.setFlags(json_item.flags() & ~
-                           Qt.ItemIsEditable)  # Make non-editable
+        json_item.setFlags(json_item.flags() & ~Qt.ItemIsEditable)
         self.video_table.setItem(row_position, 5, json_item)
 
-    def close_video_and_clear(self, row):
-        """
-        Handle closing the video and clearing the chat display.
-        """
-        # Emit the close video signal
-        self.close_video_requested.emit()
+    @Slot()
+    def _handle_delete_button_clicked(self):
+        button = self.sender()  # Get the button that was clicked
+        if button:
+            # Find the row of this button
+            for row in range(self.video_table.rowCount()):
+                # Check if cellWidget in column 4 (Delete button column) is our button
+                if self.video_table.cellWidget(row, 4) == button:
+                    video_path_to_delete = button.property(
+                        "video_path")  # Retrieve stored path
+                    # Now call the original delete_video logic with the correct current row
+                    self.delete_video(row, video_path_to_delete)
+                    break  # Found and processed, exit loop
 
-        # Clear chat display
+    def close_video_and_clear_by_sender_or_row(self, fallback_row=None):
+        button = self.sender()
+        row_closed = -1
+        video_name_closed = "Unknown"
+
+        if button:
+            for row in range(self.video_table.rowCount()):
+                # Assuming close is in col 3
+                if self.video_table.cellWidget(row, 3) == button:
+                    row_closed = row
+                    item = self.video_table.item(row, 0)  # Get name item
+                    if item:
+                        video_name_closed = item.text()
+                    break
+        elif fallback_row is not None:
+            row_closed = fallback_row
+            item = self.video_table.item(fallback_row, 0)
+            if item:
+                video_name_closed = item.text()
+
+        self.close_video_requested.emit()
         self.chat_display.clear()
         self.chat_display.setVisible(False)
-
-        # Optionally, provide feedback to the user
-        QMessageBox.information(self, "Close Video",
-                                f"Video at row {row + 1} has been closed.")
+        if row_closed != -1:
+            QMessageBox.information(self, "Video Closed",
+                                    f"Video '{video_name_closed}' (formerly at row {row_closed + 1}) interface closed.")
+        else:
+            QMessageBox.information(
+                self, "Video Closed", "Video interface closed.")
 
     def load_video_and_response(self, video_path):
         response_file = Path(video_path).with_suffix('.txt')
