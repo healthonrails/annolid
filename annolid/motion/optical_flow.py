@@ -13,9 +13,19 @@ def compute_optical_flow(prev_frame, current_frame, scale=1.0):
     current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
 
     # Calculate optical flow with tuned parameters (adjust these as needed)
+    # flow = cv2.calcOpticalFlowFarneback(
+    #     prev_gray, current_gray, None,
+    #     0.5, 3, 15, 3, 5, 1.2, 0)
     flow = cv2.calcOpticalFlowFarneback(
         prev_gray, current_gray, None,
-        0.5, 3, 15, 3, 5, 1.2, 0)
+        pyr_scale=0.5,     # This value is ignored when levels=1
+        levels=1,          # Force calculation on full-resolution image only
+        winsize=3,         # Sharply reduced window to focus on local details
+        iterations=3,      # Keep iterations the same for now
+        poly_n=3,          # Smaller polynomial neighborhood, proportional to winsize
+        poly_sigma=1.1,    # Slightly smaller sigma for a sharper polynomial fit
+        flags=0
+    )
 
     # Convert flow to polar coordinates
     magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
