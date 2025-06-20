@@ -20,7 +20,7 @@ def compute_optical_flow(prev_frame, current_frame, scale=1.0):
         prev_gray, current_gray, None,
         pyr_scale=0.5,     # This value is ignored when levels=1
         levels=1,          # Force calculation on full-resolution image only
-        winsize=3,         # Sharply reduced window to focus on local details
+        winsize=1,         # Sharply reduced window to focus on local details
         iterations=3,      # Keep iterations the same for now
         poly_n=3,          # Smaller polynomial neighborhood, proportional to winsize
         poly_sigma=1.1,    # Slightly smaller sigma for a sharper polynomial fit
