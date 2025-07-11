@@ -350,6 +350,14 @@ class AnnolidWindow(MainWindow):
             self.tr("Downsample Videos")
         )
 
+        tracking_reports = action(
+            self.tr("&Tracking Reports"),
+            self.trigger_gap_analysis,
+            None,
+            "Tracking Reports",
+            self.tr("Generate tracking reports for the selected video")
+        )
+
         convert_csv = action(
             self.tr("&Save CSV"),
             self.convert_labelme_json_to_csv,
@@ -570,6 +578,7 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.file, (tracks,))
         utils.addActions(self.menus.file, (quality_control,))
         utils.addActions(self.menus.file, (downsample_video,))
+        utils.addActions(self.menus.file, (tracking_reports,))
 
         # Insert it under File
         self.menus.file.addSeparator()
@@ -930,6 +939,75 @@ class AnnolidWindow(MainWindow):
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
         video_downsample_widget.exec_()
+
+    def trigger_gap_analysis(self):
+        """
+        Prompts the user to select a video file, then runs the gap analysis
+        synchronously and asks to open the generated report.
+        """
+        video_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select Video File to Analyze"),
+            self.lastOpenDir,  # Start in the last used directory
+            self.tr("Video Files (*.mp4 *.avi *.mov *.mkv)")
+        )
+
+        if not video_path:
+            # User canceled the dialog
+            return
+
+        video_file = Path(video_path)
+        if not video_file.is_file():
+            QtWidgets.QMessageBox.warning(
+                self, "File Not Found", f"The selected video file does not exist:\n{video_path}")
+            return
+
+        json_dir = video_file.with_suffix('')
+        if not json_dir.is_dir():
+            QtWidgets.QMessageBox.warning(self, "Results Not Found",
+                                          f"Could not find the associated tracking results directory:\n{json_dir}\n\n"
+                                          "Please ensure tracking has been run for this video.")
+            return
+
+        # --- Execute the analysis directly ---
+        try:
+            # 1. Provide feedback to the user that something is happening
+            self.statusBar().showMessage(
+                self.tr(f"Analyzing {video_file.name}, please wait..."))
+            QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)
+
+            # 2. Import and run the core logic
+            from annolid.postprocessing.tracking_reports import find_tracking_gaps, generate_reports
+
+            gaps = find_tracking_gaps(video_file)
+            # This function now also saves the files
+            md_filepath = generate_reports(gaps, video_file)
+
+            # 3. Restore cursor and show completion message
+            QtWidgets.QApplication.restoreOverrideCursor()
+            report_path = str(md_filepath)
+
+            self.statusBar().showMessage(self.tr("Gap analysis complete."), 5000)
+
+            reply = QtWidgets.QMessageBox.information(
+                self,
+                "Analysis Complete",
+                f"A tracking gap report has been saved to:\n{report_path}\n\nWould you like to open it now?",
+                QtWidgets.QMessageBox.Open | QtWidgets.QMessageBox.Close,
+                QtWidgets.QMessageBox.Open
+            )
+            if reply == QtWidgets.QMessageBox.Open:
+                QtGui.QDesktopServices.openUrl(
+                    QtCore.QUrl.fromLocalFile(report_path))
+
+        except Exception as e:
+            # Catch any errors from the analysis and report them gracefully
+            QtWidgets.QApplication.restoreOverrideCursor()
+            logger.error(
+                f"An error occurred during gap analysis: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(self, "Analysis Error",
+                                           f"An unexpected error occurred:\n\n{e}")
+            self.statusBar().showMessage(self.tr("Gap analysis failed."), 5000)
 
     def _add_real_time_stamps(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(

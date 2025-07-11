@@ -203,6 +203,7 @@ def generate_reports(gap_report: dict, video_path: str):
         f.write("5.  **Run tracking for just that segment.** This will efficiently fill in the missing annotations without re-processing the entire video.\n\n")
 
     logger.info(f"Human-readable report saved to: {md_filename}")
+    return md_filename
 
 
 def main():
