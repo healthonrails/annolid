@@ -12,8 +12,8 @@ import shutil
 import sys
 import hashlib
 import json
-
-from PIL import ImageQt
+import io
+from PIL import ImageQt, Image
 import pandas as pd
 import numpy as np
 import torch
@@ -1784,6 +1784,51 @@ class AnnolidWindow(MainWindow):
         self.canvas.setBehaviorText(behave_text)
         self.flag_widget.loadFlags(flags)
 
+    def _get_pil_image_from_state(self) -> Image.Image | None:
+        """
+        Safely converts the stored image data (self.imageData) to a standard
+        PIL.Image.Image object, regardless of its current Qt-related type.
+
+        This method centralizes the conversion logic to ensure robustness and
+        avoids code duplication.
+
+        Returns:
+            A PIL.Image.Image object in RGB format, or None if conversion fails.
+        """
+        if self.imageData is None:
+            return None
+
+        # 0. Handle raw bytes (from a loaded JSON with embedded data)
+        if isinstance(self.imageData, bytes):
+            try:
+                # Create an in-memory binary stream and open it with Pillow
+                pil_image = Image.open(io.BytesIO(self.imageData))
+            except Exception as e:
+                logger.error(f"Failed to load PIL Image from bytes: {e}")
+                return None
+
+        # 1. Check if it's already the target type
+        elif isinstance(self.imageData, Image.Image):
+            pil_image = self.imageData
+        # 2. Check for the most common case: a QImage from the video loader
+        elif isinstance(self.imageData, QtGui.QImage):
+            pil_image = ImageQt.fromqimage(self.imageData)
+        # 3. Handle the special ImageQt.Image wrapper type
+        elif isinstance(self.imageData, ImageQt.ImageQt):
+            pil_image = self.imageData
+        else:
+            logger.warning(
+                f"self.imageData is of an unexpected type ({type(self.imageData)}). "
+                "Cannot convert to PIL.Image for saving."
+            )
+            return None
+
+        # 4. Ensure the final image is in a standard format (RGB)
+        if pil_image.mode != 'RGB':
+            return pil_image.convert('RGB')
+
+        return pil_image
+
     def saveLabels(self, filename, save_image_data=True):
         lf = LabelFile()
         has_zone_shapes = False
@@ -1824,11 +1869,15 @@ class AnnolidWindow(MainWindow):
                     flags[behavior] = True
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
-            if save_image_data:
-                imageData = utils.img_pil_to_data(
-                    self.imageData) if self._config["store_data"] else None
-            else:
-                imageData = None
+            imageData = None
+            if save_image_data and self._config["store_data"]:
+                # Call the dedicated helper method to get a clean PIL image
+                pil_image_to_save = self._get_pil_image_from_state()
+
+                # If the conversion was successful, get the byte data
+                if pil_image_to_save:
+                    imageData = utils.img_pil_to_data(pil_image_to_save)
+
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))
             lf.save(
@@ -3068,9 +3117,9 @@ class AnnolidWindow(MainWindow):
         self.imagePath = str(filename.parent)
         self.filename = str(filename)
         self.image = qimage
-        imageData = ImageQt.fromqimage(qimage)
+        # imageData = ImageQt.fromqimage(qimage)
         # Save imageData as PIL Image to speed up frame loading by 10x
-        self.imageData = imageData
+        self.imageData = qimage
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
@@ -3125,29 +3174,29 @@ class AnnolidWindow(MainWindow):
                     orientation, self.scroll_values[orientation][self.filename]
                 )
         # set brightness constrast values
-        dialog = BrightnessContrastDialog(
-            imageData,
-            self.onNewBrightnessContrast,
-            parent=self,
-        )
-        brightness, contrast = self.brightnessContrast_values.get(
-            self.filename, (None, None)
-        )
-        if self._config["keep_prev_brightness"] and self.recentFiles:
-            brightness, _ = self.brightnessContrast_values.get(
-                self.recentFiles[0], (None, None)
-            )
-        if self._config["keep_prev_contrast"] and self.recentFiles:
-            _, contrast = self.brightnessContrast_values.get(
-                self.recentFiles[0], (None, None)
-            )
-        if brightness is not None:
-            dialog.slider_brightness.setValue(brightness)
-        if contrast is not None:
-            dialog.slider_contrast.setValue(contrast)
-        self.brightnessContrast_values[self.filename] = (brightness, contrast)
-        if brightness is not None or contrast is not None:
-            dialog.onNewValue(None)
+        # dialog = BrightnessContrastDialog(
+        #     imageData,
+        #     self.onNewBrightnessContrast,
+        #     parent=self,
+        # )
+        # brightness, contrast = self.brightnessContrast_values.get(
+        #     self.filename, (None, None)
+        # )
+        # if self._config["keep_prev_brightness"] and self.recentFiles:
+        #     brightness, _ = self.brightnessContrast_values.get(
+        #         self.recentFiles[0], (None, None)
+        #     )
+        # if self._config["keep_prev_contrast"] and self.recentFiles:
+        #     _, contrast = self.brightnessContrast_values.get(
+        #         self.recentFiles[0], (None, None)
+        #     )
+        # if brightness is not None:
+        #     dialog.slider_brightness.setValue(brightness)
+        # if contrast is not None:
+        #     dialog.slider_contrast.setValue(contrast)
+        # self.brightnessContrast_values[self.filename] = (brightness, contrast)
+        # if brightness is not None or contrast is not None:
+        #     dialog.onNewValue(None)
         self.paintCanvas()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
