@@ -148,6 +148,43 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
     except Exception as e:
         logger.error(f"Failed to write {csv_path.name}: {e}")
 
+    try:
+        # run gap analysis for the video
+        run_gap_analysis_for_video(str(video_path))
+    except Exception as e:
+        logger.error(f"Gap analysis failed for {video_path.name}: {e}")
+
+
+def run_gap_analysis_for_video(video_path: str) -> bool:
+    """
+    Analyzes a video's tracking results to find and report gaps in tracked instances.
+
+    This function serves as a single, convenient entry point. It takes a video file,
+    infers the associated JSON results directory, calculates tracking gaps based on the
+    video's true frame count, and saves both a human-readable Markdown report and a
+    machine-readable CSV file in the results directory.
+
+    Args:
+        video_path (str): The full path to the video file to be analyzed.
+
+    Returns:
+        bool: True if the reports were successfully generated, False otherwise.
+    """
+    from annolid.postprocessing.tracking_reports import find_tracking_gaps, generate_reports
+    try:
+        # --- Core Logic: Find Gaps ---
+        gaps = find_tracking_gaps(video_path)
+
+        # --- Reporting ---
+        generate_reports(gaps, video_path)
+
+        logger.info("Gap analysis completed successfully.")
+        return True
+    except Exception as e:
+        logger.error(
+            f"An unexpected error occurred during analysis: {e}", exc_info=True)
+        return False
+
 
 def process_directory(root: Path) -> None:
     """
