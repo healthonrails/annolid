@@ -2761,34 +2761,53 @@ class AnnolidWindow(MainWindow):
             self.caption_widget.set_image_path(self.filename)
 
     def load_tracking_results(self, cur_video_folder, video_filename):
-        """Load tracking results from CSV files in the given folder that match the video filename."""
-        self.timestamp_dict = {}  # Assuming timestamp_dict is an instance variable
+        """
+        Loads various tracking and behavior data from standardized CSV files
+        in the video's directory.
+        """
+        self.timestamp_dict = {}
+        self._df = None  # Reset dataframe
 
         video_name = Path(video_filename).stem
-        tracking_csv_file = None
 
-        for tr in cur_video_folder.glob('*.csv'):
-            if not (tr.is_file() and tr.suffix == '.csv'):
-                continue
+        # --- Define Standardized Filenames ---
+        # This makes the logic explicit and robust.
+        main_tracking_file = cur_video_folder / f"{video_name}_tracking.csv"
+        timestamps_file = cur_video_folder / f"{video_name}_timestamps.csv"
+        labels_file_path = cur_video_folder / f"{video_name}_labels.csv"
 
-            if 'timestamp' in tr.name and video_name in tr.name:
-                self._load_behavior(tr)
-            if tr.name.endswith(f"{video_name}.csv"):
-                self._load_behavior(tr)
-
-            if 'tracking' in tr.name and video_name in tr.name and '_nix' not in tr.name:
-                tracking_csv_file = tr
-
-            elif '_labels' in tr.name and video_name in tr.name:
-                self._load_labels(tr)
-
-        if tracking_csv_file:
+        # --- Load the Main Tracking Results File ---
+        # We look for one specific file. No more ambiguity with 'tracking' in the name.
+        if main_tracking_file.is_file():
             try:
-                self._df = pd.read_csv(tracking_csv_file)
-                self._df = self._df.drop(
-                    columns=['Unnamed: 0'], errors='ignore')
-            except:
-                logger.info(f"Error loading file {tracking_csv_file}")
+                logger.info(
+                    f"Loading main tracking data from: {main_tracking_file}")
+                df = pd.read_csv(main_tracking_file)
+                # Ensure the 'frame_number' column exists, which is critical.
+                if 'frame_number' not in df.columns and 'Unnamed: 0' in df.columns:
+                    df.rename(
+                        columns={'Unnamed: 0': 'frame_number'}, inplace=True)
+
+                if 'frame_number' in df.columns:
+                    self._df = df
+                else:
+                    logger.warning(
+                        f"'{main_tracking_file}' is missing the required 'frame_number' column.")
+
+            except Exception as e:
+                logger.error(
+                    f"Error loading main tracking file {main_tracking_file}: {e}")
+
+        # --- Load Behavior/Timestamp Data ---
+        # Check for the standardized timestamp/behavior file.
+        if timestamps_file.is_file():
+            logger.info(f"Loading behavior data from: {timestamps_file}")
+            self._load_behavior(timestamps_file)
+
+        # --- Load Other Data Types (like labels) ---
+        if labels_file_path.is_file():
+            logger.info(f"Loading labels data from: {labels_file_path}")
+            self._load_labels(labels_file_path)
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""
