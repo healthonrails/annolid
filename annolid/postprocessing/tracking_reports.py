@@ -156,7 +156,7 @@ def generate_reports(gap_report: dict, video_path: str):
     if csv_records:
         csv_df = pd.DataFrame(csv_records)
         csv_filename = output_path.parent / \
-            f"{output_path.stem}_tracking_gaps.csv"
+            f"{output_path.stem}_gaps_report.csv"
         csv_df.to_csv(csv_filename, index=False)
         logger.info(f"Machine-readable gap report saved to: {csv_filename}")
 
