@@ -239,6 +239,9 @@ class Labelme2YOLO:
         json_names = [file_name for file_name in os.listdir(self.json_file_dir)
                       if os.path.isfile(os.path.join(self.json_file_dir, file_name)) and
                       file_name.endswith('.json')]
+        # filter and only keep the JSON files with a image associated with it
+        json_names = [json_name for json_name in json_names if
+                      os.path.exists(os.path.join(self.json_file_dir, json_name.replace('.json', '.png')))]
 
         # Get a list of folder names from the input directory
         folders = [file_name for file_name in os.listdir(self.json_file_dir)
