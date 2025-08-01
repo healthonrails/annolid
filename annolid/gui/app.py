@@ -2010,39 +2010,66 @@ class AnnolidWindow(MainWindow):
 
     def deleteAllFuturePredictions(self):
         """
-        Delete all future predictions files except manually labeled ones.
-
-        This method removes all prediction files for future frames, excluding
-        those that have been manually labeled.
-
-        Returns:
-            None
+        Delete all future prediction files except manually labeled ones.
+        This version uses robust parsing to handle varied filename formats.
         """
-        if not self.video_loader:
+        if not self.video_loader or not self.video_results_folder:
             return
 
         prediction_folder = self.video_results_folder
         deleted_files = 0
 
-        for prediction_file in os.listdir(prediction_folder):
+        logger.info(f"Scanning for future predictions in: {prediction_folder}")
+
+        for filename_str in os.listdir(prediction_folder):
             prediction_file_path = os.path.join(
-                prediction_folder, prediction_file)
-            if not os.path.isfile(prediction_file_path):
-                continue
-            if not prediction_file_path.endswith('.json'):
+                prediction_folder, filename_str)
+
+            # Skip directories and non-JSON files
+            if not os.path.isfile(prediction_file_path) or not filename_str.endswith('.json'):
                 continue
 
-            frame_number = int(prediction_file.split(
-                '_')[-1].replace('.json', ''))
-            is_future_frames = frame_number > self.frame_number
+            # Instead of fragile splitting, use a regular expression to find the number.
+            # This regex looks for a sequence of digits at the end of the filename, right before ".json".
+            match = re.search(r'(\d+)(?=\.json$)', filename_str)
+
+            # If the filename doesn't match our expected pattern, skip it safely.
+            if not match:
+                logger.debug(
+                    f"Skipping file with unexpected name format: {filename_str}")
+                continue
+
+            try:
+                # The part of the string matched by the regex
+                frame_number_str = match.group(1)
+                # Convert to float first to handle potential decimals, then to int.
+                frame_number = int(float(frame_number_str))
+            except (ValueError, IndexError):
+                # This handles cases where the regex matches but the string is still invalid (rare).
+                logger.warning(
+                    f"Could not parse frame number from file: {filename_str}")
+                continue
+
+            is_future_frame = frame_number > self.frame_number
+
+            # The logic to check for a manually saved file seems to be based on an accompanying .png.
+            # Let's make that check more robust as well.
+            image_file_png = prediction_file_path.replace('.json', '.png')
+            image_file_jpg = prediction_file_path.replace('.json', '.jpg')
             is_manually_saved = os.path.exists(
-                prediction_file_path.replace('.json', '.png'))
-            if is_future_frames and not is_manually_saved:
-                os.remove(prediction_file_path)
-                deleted_files += 1
+                image_file_png) or os.path.exists(image_file_jpg)
+
+            if is_future_frame and not is_manually_saved:
+                try:
+                    os.remove(prediction_file_path)
+                    deleted_files += 1
+                except OSError as e:
+                    logger.error(
+                        f"Failed to delete file {prediction_file_path}: {e}")
 
         logger.info(
-            f"{deleted_files} predictions from the next frames were removed, excluding manually labeled files.")
+            f"{deleted_files} future prediction(s) were removed, excluding manually labeled files."
+        )
 
     def deleteFile(self):
         mb = QtWidgets.QMessageBox
