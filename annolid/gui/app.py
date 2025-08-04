@@ -2300,41 +2300,103 @@ class AnnolidWindow(MainWindow):
                 f"Cannot watch non-existent folder: {folder_path_to_watch}")
 
     def _scan_prediction_folder(self, folder_path):
+        """
+        Scans a folder for prediction JSONs and adds corresponding marks to the slider.
+
+        This version is optimized to handle a very large number of files by
+        dynamically decimating the visual markers to prevent GUI freezing, while
+        still providing accurate progress feedback.
+        """
         if not self.video_loader or self.num_frames is None or self.num_frames == 0:
             return
         if not self.seekbar:
             return
 
         try:
-            # Get current "predicted" marks on slider to avoid re-adding if not necessary
-            # This assumes getMarks() is efficient or we cache this info.
-            # For simplicity, let's assume addMark might re-add but it won't break.
-            # A more robust addMark in VideoSlider would check for existing (type, val).
+            path = Path(folder_path)
+            # Use a robust regex to extract frame numbers from filenames
+            json_pattern = re.compile(r'_(\d{9,})\.json$')
 
+            # --- 1. Efficiently Scan and Parse All Relevant Frame Numbers ---
+            all_frame_nums = []
+            for f_name in os.listdir(path):
+                # The check `self.video_results_folder.name in f_name` is kept for consistency
+                if f_name.endswith(".json") and self.video_results_folder.name in f_name:
+                    match = json_pattern.search(f_name)
+                    if match:
+                        try:
+                            # Convert via float to handle cases like "123.0"
+                            frame_num = int(float(match.group(1)))
+                            all_frame_nums.append(frame_num)
+                        except (ValueError, IndexError):
+                            continue  # Skip malformed numbers
+
+            if not all_frame_nums:
+                return
+
+            all_frame_nums.sort()
+            num_total_frames = len(all_frame_nums)
+
+            # --- 2. Dynamic Marker Decimation Logic ---
+            frames_to_mark = []
+            # Define the threshold at which we start thinning the markers
+            DECIMATION_THRESHOLD = 2000
+
+            if num_total_frames < DECIMATION_THRESHOLD:
+                # If the number of files is manageable, mark all of them
+                frames_to_mark = all_frame_nums
+            else:
+                # If there are too many files, apply the decimation strategy
+                step = 100 if num_total_frames > 10000 else 20
+                # Add every Nth frame
+                frames_to_mark = all_frame_nums[::step]
+
+                # IMPORTANT: Always ensure the very last frame is included to show completion
+                if all_frame_nums[-1] not in frames_to_mark:
+                    frames_to_mark.append(all_frame_nums[-1])
+
+            # --- 3. Update the GUI Efficiently ---
+            if not frames_to_mark:
+                return
+            # Get existing markers once to avoid repeated calls inside the loop
             existing_predicted_vals = {
                 mark.val for mark in self.seekbar.getMarks() if mark.mark_type == "predicted"
             }
 
-            for f_name in os.listdir(folder_path):
-                if f_name.endswith(".json") and self.video_results_folder.name in f_name:
-                    try:
-                        frame_part = f_name.split('_')[-1].replace('.json', '')
-                        frame_num = int(frame_part)
-                        if 0 <= frame_num < self.num_frames:
-                            if frame_num not in existing_predicted_vals:  # Add only if not already marked
-                                pred_mark = VideoSliderMark(
-                                    mark_type="predicted",
-                                    val=frame_num
-                                )
-                                self.seekbar.addMark(pred_mark)
-                                # Move slider to this frame
-                                self.set_frame_number(frame_num)
-                                self.seekbar.setValue(frame_num)
-                    except (ValueError, IndexError):
-                        continue
+            # Block signals to prevent the UI from trying to update thousands of times
+            self.seekbar.blockSignals(True)
+
+            new_marks_added = False
+            for frame_num in frames_to_mark:
+                if 0 <= frame_num < self.num_frames and frame_num not in existing_predicted_vals:
+                    pred_mark = VideoSliderMark(
+                        mark_type="predicted", val=frame_num)
+                    self.seekbar.addMark(pred_mark)
+                    new_marks_added = True
+
+            # Re-enable signals and force a single repaint if we added anything
+            self.seekbar.blockSignals(False)
+            if new_marks_added:
+                self.seekbar.update()
+
+            # Update the progress bar and slider position to the latest actual frame
+            latest_frame = all_frame_nums[-1]
+            self.last_known_predicted_frame = max(
+                self.last_known_predicted_frame, latest_frame)
+
+            if self.num_frames > 0:
+                progress = int(
+                    (self.last_known_predicted_frame / self.num_frames) * 100)
+                self._update_progress_bar(progress)
+
+            # The original code moved the slider on every found frame.
+            # This is not ideal for user experience. We will move it only once to the latest frame.
+            self.set_frame_number(latest_frame)
+            self.seekbar.setValue(latest_frame)
+
         except Exception as e:
             logger.error(
-                f"Error scanning prediction folder for slider marks: {e}")
+                f"Error scanning prediction folder for slider marks: {e}", exc_info=True)
 
     @QtCore.Slot(str)
     def _handle_prediction_folder_change(self, path):
