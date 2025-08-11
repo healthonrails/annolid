@@ -37,7 +37,7 @@ class Config:
     camera_index: Union[int, str] = 0
     server_address: str = "localhost"
     server_port: int = 5002
-    model_base_name: str = "yolon11-seg.pt"
+    model_base_name: str = "yolo11n-seg.pt"
     publisher_address: str = "tcp://*:5555"
     target_behaviors: List[str] = field(default_factory=lambda: ['person'])
     confidence_threshold: float = 0.25
@@ -77,8 +77,11 @@ class FrameSource(Protocol):
 class DetectionResult:
     """Structured detection result."""
 
-    def __init__(self, behavior: str, confidence: float, bbox: List[float],
-                 timestamp: float, metadata: Dict[str, Any]):
+    def __init__(self, behavior: str,
+                 confidence: float,
+                 bbox: List[float],
+                 timestamp: float,
+                 metadata: Dict[str, Any]):
         self.behavior = behavior
         self.confidence = confidence
         self.bbox = bbox
@@ -161,7 +164,7 @@ class NetworkProtocolHandler:
 # --- Remote Video Source ---
 
 class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
-    """Async remote video client with improved connection management."""
+    """Async remote video client with improved state management and error handling."""
 
     def __init__(self, config: Config):
         super().__init__()
@@ -171,7 +174,12 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
         self.frame_queue = asyncio.Queue(maxsize=5)
         self._listener_task: Optional[asyncio.Task] = None
         self._is_active = False
+        self._playing = False  # Track play state
+        self._recording = False  # Track server recording state
+        self._got_exception = False  # Track exception state
         self._connection_lock = asyncio.Lock()
+        self._play_state_event = asyncio.Event()  # Event to signal play state changes
+        self._play_state_event.set()  # Initially set to allow processing
 
     async def connect(self) -> bool:
         """Connect to remote server with proper error handling."""
@@ -190,14 +198,35 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                 self._is_active = True
                 self._listener_task = asyncio.create_task(
                     self._listen_for_messages())
+                # Request to start playing
                 await self._send_message('started_playing', None)
                 logger.info("Successfully connected to remote server")
                 return True
 
             except (OSError, socket.gaierror, asyncio.TimeoutError) as e:
-                logger.warning(f"Remote connection failed: {e}")
+                await self.process_exception(str(e), traceback.format_exc(), from_thread=False)
                 await self._cleanup_connection()
                 return False
+
+    async def process_exception(self, error: str, exec_info: str, from_thread: bool = False):
+        """Handle exceptions from server or internal operations."""
+        self._got_exception = True
+        logger.error(
+            f"{'Thread' if from_thread else 'Server'} exception: {error}\n{exec_info}")
+
+    async def process_recording_state(self, state: bool):
+        """Handle server recording state changes."""
+        self._recording = state
+        logger.info(f"Server {'started' if state else 'stopped'} recording")
+
+    async def process_image(self, raw_frame_data, timestamp: float):
+        """Process incoming image data."""
+        if self._playing and not self.frame_queue.full():
+            try:
+                self.frame_queue.put_nowait((raw_frame_data, timestamp))
+                logger.debug(f"Queued image at {timestamp}")
+            except asyncio.QueueFull:
+                logger.debug("Frame queue full, dropping image")
 
     async def _listen_for_messages(self):
         """Listen for incoming messages with robust error handling."""
@@ -211,11 +240,10 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
 
                     # Read message body
                     total_size = sum(msg_len)
+                    msg_buff = b''
                     if total_size > 0:
                         msg_buff = await asyncio.wait_for(
                             self.reader.readexactly(total_size), timeout=10.0)
-                    else:
-                        msg_buff = b''
 
                     msg, value = self.decode_data(msg_buff, msg_len)
                     await self._handle_message(msg, value)
@@ -223,28 +251,46 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                 except asyncio.TimeoutError:
                     logger.warning("Message receive timeout")
                     break
-                except (asyncio.IncompleteReadError, ConnectionResetError):
-                    logger.info("Remote connection closed")
+                except (asyncio.IncompleteReadError, ConnectionResetError) as e:
+                    await self.process_exception(str(e), traceback.format_exc(), from_thread=False)
+                    break
+                except Exception as e:
+                    await self.process_exception(str(e), traceback.format_exc(), from_thread=True)
                     break
 
         except Exception as e:
-            logger.error(f"Listener error: {e}", exc_info=True)
+            await self.process_exception(str(e), traceback.format_exc(), from_thread=True)
         finally:
             await self.disconnect()
 
     async def _handle_message(self, msg: str, value):
         """Handle different message types."""
         if msg == 'image':
-            if not self.frame_queue.full():
-                try:
-                    self.frame_queue.put_nowait((value, time.time()))
-                except asyncio.QueueFull:
-                    pass  # Drop frame if queue is full
-        elif msg in ('started_recording', 'stopped_recording'):
-            logger.info(f"Server recording state: {msg}")
+            await self.process_image(value, time.time())
+        elif msg == 'started_recording':
+            await self.process_recording_state(True)
+        elif msg == 'stopped_recording':
+            await self.process_recording_state(False)
+        elif msg == 'started_playing':
+            logger.info("Received started_playing signal")
+            self._playing = True
+            self._play_state_event.set()
+        elif msg == 'stopped_playing':
+            logger.info("Received stopped_playing signal")
+            self._playing = False
+            self._play_state_event.clear()
+        elif msg == 'exception':
+            logger.error(f"Server sent exception: {value}")
+            await self.process_exception(value, "", from_thread=False)
+        else:
+            logger.warning(f"Unknown message received: {msg}")
 
     async def get_frame(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
-        """Get frame with timeout handling."""
+        """Get frame with timeout handling, respecting play state."""
+        if not self._playing or not self._recording:
+            await self._play_state_event.wait()  # Wait until both playing and recording
+            return None
+
         try:
             raw_frame_data, timestamp = await asyncio.wait_for(
                 self.frame_queue.get(), timeout=1.0)
@@ -280,7 +326,7 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                 self.writer.write(message_bytes)
                 await self.writer.drain()
             except Exception as e:
-                logger.error(f"Failed to send message '{key}': {e}")
+                await self.process_exception(str(e), traceback.format_exc(), from_thread=True)
 
     async def _cleanup_connection(self):
         """Clean up connection resources."""
@@ -625,7 +671,7 @@ class PerceptionProcess:
         logger.info("Setup complete")
 
     async def run(self):
-        """Main processing loop."""
+        """Main processing loop with play state handling."""
         await self.setup()
         frame_interval = 1.0 / self.config.max_fps
 
@@ -634,7 +680,6 @@ class PerceptionProcess:
 
             while self.running and not self._shutdown_event.is_set():
                 loop_start = time.time()
-
                 try:
                     # Get frame
                     frame_data = await self.video_source.get_frame()
@@ -643,25 +688,16 @@ class PerceptionProcess:
                         continue
 
                     frame, metadata = frame_data
-
-                    # Run inference
                     results = await self._run_inference(frame)
                     inference_time = time.time() - loop_start
-
-                    # Process results
-                    detection_count = await self._process_detections(
-                        results, loop_start, metadata)
-
-                    # Update metrics
+                    detection_count = await self._process_detections(results, loop_start, metadata)
                     self.metrics.record_frame(inference_time, detection_count)
 
-                    # Report metrics
                     if self.metrics.should_report():
                         report = self.metrics.generate_report(
                             self.video_source.state.name)
                         logger.info(f"Performance: {json.dumps(report)}")
 
-                    # Visualization
                     if self.config.visualize:
                         self._visualize_results(results, frame)
 
@@ -669,7 +705,6 @@ class PerceptionProcess:
                     logger.error(f"Processing error: {e}", exc_info=True)
                     self.metrics.record_error()
 
-                # Frame rate limiting
                 elapsed = time.time() - loop_start
                 await asyncio.sleep(max(0, frame_interval - elapsed))
 
@@ -687,8 +722,7 @@ class PerceptionProcess:
             logger.error(f"Inference error: {e}")
             raise
 
-    async def _process_detections(self, result, timestamp: float,
-                                  metadata: Dict[str, Any]) -> int:
+    async def _process_detections(self, result, timestamp: float, metadata: Dict[str, Any]) -> int:
         """Process detection results and publish."""
         if not result.boxes or len(result.boxes) == 0:
             return 0
@@ -771,18 +805,18 @@ def create_config_from_args() -> Config:
 
     parser.add_argument('--camera-index', type=str, default='0',
                         help="Camera index or video file path")
-    parser.add_argument('--server-address', type=str, default="localhost",
-                        help="Remote server address")
-    parser.add_argument('--server-port', type=int, default=5002,
-                        help="Remote server port")
-    parser.add_argument('--model', type=str, default="yolo11n-seg.pt",
-                        help="YOLO model file name")
-    parser.add_argument('--publisher', type=str, default="tcp://*:5555",
-                        help="ZeroMQ publisher address")
-    parser.add_argument('--targets', type=str, nargs='+', default=['person'],
-                        help="Target class names")
-    parser.add_argument('--confidence', type=float, default=0.25,
-                        help="Confidence threshold")
+    parser.add_argument('--server-address', type=str,
+                        default="localhost", help="Remote server address")
+    parser.add_argument('--server-port', type=int,
+                        default=5002, help="Remote server port")
+    parser.add_argument('--model', type=str,
+                        default="yolo11n-seg.pt", help="YOLO model file name")
+    parser.add_argument('--publisher', type=str,
+                        default="tcp://*:5555", help="ZeroMQ publisher address")
+    parser.add_argument('--targets', type=str, nargs='+',
+                        default=['person'], help="Target class names")
+    parser.add_argument('--confidence', type=float,
+                        default=0.25, help="Confidence threshold")
     parser.add_argument('--width', type=int, default=640, help="Frame width")
     parser.add_argument('--height', type=int, default=480, help="Frame height")
     parser.add_argument('--max-fps', type=float,
