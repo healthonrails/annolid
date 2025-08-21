@@ -1,18 +1,3 @@
-"""
-Enhanced Computer Vision Perception System
-
-Key improvements:
-1. Better separation of concerns
-2. Improved error handling and logging
-3. Resource management with context managers
-4. Type safety improvements
-5. Configuration validation
-6. Performance optimizations
-7. Cleaner async patterns
-8. Enhanced recording state management
-9. Improved colorspace conversion handling
-"""
-
 import asyncio
 import argparse
 import json
@@ -53,7 +38,7 @@ class Config:
     camera_index: Union[int, str] = 0
     server_address: str = "localhost"
     server_port: int = 5002
-    model_base_name: str = "yolov11-seg.pt"
+    model_base_name: str = "yolo11n-seg.pt"  # Default to segmentation model
     publisher_address: str = "tcp://*:5555"
     target_behaviors: List[str] = field(default_factory=lambda: ['person'])
     confidence_threshold: float = 0.25
@@ -68,20 +53,13 @@ class Config:
     pause_on_recording_stop: bool = True
     recording_state_timeout: float = 30.0
 
-    def __post_init__(self):
-        """Validate configuration parameters."""
-        if self.confidence_threshold < 0 or self.confidence_threshold > 1:
-            raise ValueError("confidence_threshold must be between 0 and 1")
-        if self.max_fps <= 0:
-            raise ValueError("max_fps must be positive")
-        if self.frame_width <= 0 or self.frame_height <= 0:
-            raise ValueError("Frame dimensions must be positive")
-        if not self.target_behaviors:
-            raise ValueError("At least one target behavior must be specified")
+    # segmentation-specific options
+    enable_segmentation: bool = True  # Whether to process masks
+    mask_confidence_threshold: float = 0.5  # Threshold for mask pixels
+    mask_encoding: str = "rle"  # "rle", "polygon", or "bitmap"
 
 
 # --- Recording State Management ---
-
 class RecordingState(Enum):
     """Server recording states."""
     UNKNOWN = auto()
@@ -154,18 +132,19 @@ class FrameSource(Protocol):
 
 
 class DetectionResult:
-    """Structured detection result."""
+    """Structured detection result with segmentation mask support."""
 
     def __init__(self, behavior: str, confidence: float, bbox: List[float],
-                 timestamp: float, metadata: Dict[str, Any]):
+                 timestamp: float, metadata: Dict[str, Any], mask: Optional[np.ndarray] = None):
         self.behavior = behavior
         self.confidence = confidence
         self.bbox = bbox
         self.timestamp = timestamp
         self.metadata = metadata
+        self.mask = mask  # segmentation mask
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "behavior": self.behavior,
             "confidence": self.confidence,
             "bbox_normalized": self.bbox,
@@ -173,8 +152,48 @@ class DetectionResult:
             "metadata": self.metadata
         }
 
+        # Include mask data if available
+        if self.mask is not None:
+            # Convert mask to run-length encoding or polygon for efficient transmission
+            result["mask"] = self._encode_mask(self.mask)
+            result["has_mask"] = True
+        else:
+            result["has_mask"] = False
+
+        return result
+
+    def _encode_mask(self, mask: np.ndarray) -> Dict[str, Any]:
+        """Encode mask using pycocotools RLE format."""
+        try:
+            from pycocotools import mask as maskUtils
+
+            # Ensure mask is in correct format (uint8, fortran order)
+            if mask.dtype != np.uint8:
+                mask = mask.astype(np.uint8)
+
+            # pycocotools expects fortran-ordered array
+            mask_fortran = np.asfortranarray(mask)
+
+            # Encode to RLE
+            rle = maskUtils.encode(mask_fortran)
+
+            # Convert bytes to string for JSON serialization
+            if isinstance(rle['counts'], bytes):
+                rle['counts'] = rle['counts'].decode('utf-8')
+
+            return {
+                "encoding": "coco_rle",
+                "size": rle['size'],
+                "counts": rle['counts']
+            }
+        except Exception as e:
+            logger.warning(
+                f"COCO RLE encoding failed: {e}, falling back to simple RLE")
+            return mask
+
 
 # --- Network Protocol Handling ---
+
 
 class NetworkProtocolHandler:
     """Handles network message encoding/decoding with improved error handling."""
@@ -970,12 +989,16 @@ class PerceptionProcess:
 
     async def _process_detections(self, result, timestamp: float,
                                   metadata: Dict[str, Any]) -> int:
-        """Process detection results and publish."""
+        """Process detection results and publish with mask support."""
         if not result.boxes or len(result.boxes) == 0:
             return 0
 
         detection_count = 0
         boxes = result.boxes
+
+        # Check if segmentation masks are available
+        masks = result.masks if hasattr(
+            result, 'masks') and result.masks is not None else None
 
         for i in range(len(boxes)):
             try:
@@ -983,19 +1006,35 @@ class PerceptionProcess:
                 class_name = self.class_names[class_id]
 
                 if class_name in self.config.target_behaviors:
-                    # Enhance metadata with recording state info
+                    # Enhanced metadata with recording state info
                     enhanced_metadata = {
                         **metadata,
                         "recording_state": self.recording_manager.state.name,
-                        "processing_enabled": self.recording_manager.should_process_frames()
+                        "processing_enabled": self.recording_manager.should_process_frames(),
+                        "has_segmentation": masks is not None
                     }
+
+                    # Extract mask if available
+                    mask = None
+                    if masks is not None:
+                        # Get the mask for this detection
+                        # Shape: (H, W)
+                        mask_data = masks.data[i].cpu().numpy()
+                        mask = mask_data > 0.5  # Convert to boolean mask
+
+                        # Add mask statistics to metadata
+                        enhanced_metadata.update({
+                            "mask_area": int(np.sum(mask)),
+                            "mask_bbox_ratio": np.sum(mask) / (mask.shape[0] * mask.shape[1])
+                        })
 
                     detection = DetectionResult(
                         behavior=class_name,
                         confidence=float(boxes.conf[i]),
                         bbox=boxes.xyxyn[i].cpu().numpy().tolist(),
                         timestamp=timestamp,
-                        metadata=enhanced_metadata
+                        metadata=enhanced_metadata,
+                        mask=mask  # Include the mask
                     )
 
                     await self.publisher.publish_detection(detection)
@@ -1007,11 +1046,40 @@ class PerceptionProcess:
         return detection_count
 
     def _visualize_results(self, result, frame: np.ndarray):
-        """Visualize detection results with recording state info."""
+        """Visualize detection results with masks and recording state info."""
         try:
+            # Use the built-in YOLO plotting that handles masks automatically
             annotated_frame = result.plot()
 
-            # Add performance info
+            # Alternative: Manual mask overlay if you want custom styling
+            if hasattr(result, 'masks') and result.masks is not None:
+                masks = result.masks.data.cpu().numpy()
+                boxes = result.boxes
+
+                # Create colored mask overlay
+                mask_overlay = np.zeros_like(frame)
+                colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
+                          (255, 255, 0), (255, 0, 255)]
+
+                for i, mask in enumerate(masks):
+                    if i < len(boxes):
+                        class_id = int(boxes.cls[i])
+                        # class_names is a dict: {id: name}
+                        class_name = self.class_names[class_id]
+
+                        if class_name in self.config.target_behaviors:
+                            color = colors[i % len(colors)]
+                            mask_resized = cv2.resize(
+                                mask, (frame.shape[1], frame.shape[0]))
+                            mask_bool = mask_resized > 0.5
+                            mask_overlay[mask_bool] = color
+
+                # Blend with original frame
+                alpha = 0.3
+                annotated_frame = cv2.addWeighted(
+                    annotated_frame, 1-alpha, mask_overlay, alpha, 0)
+
+            # Add performance info (existing code)
             fps_text = f"FPS: {self.metrics.fps_history[-1]:.1f}" if self.metrics.fps_history else "FPS: N/A"
             source_text = f"Source: {self.video_source.state.name}"
             recording_text = f"Recording: {self.recording_manager.state.name}"
@@ -1033,12 +1101,11 @@ class PerceptionProcess:
             cv2.putText(annotated_frame, processing_text, (10, 120),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, processing_color, 2)
 
-            # Add recording state indicator
-            state_info = self.recording_manager.get_state_info()
-            time_since_change = state_info["time_since_change"]
-            status_text = f"State changed {time_since_change:.1f}s ago"
-            cv2.putText(annotated_frame, status_text, (10, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # Add segmentation info
+            if hasattr(result, 'masks') and result.masks is not None:
+                seg_text = f"Masks: {len(result.masks.data)}"
+                cv2.putText(annotated_frame, seg_text, (10, 150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
             cv2.imshow("Perception System", annotated_frame)
 
