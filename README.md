@@ -21,15 +21,6 @@ Annolid is a deep learning-based software package designed for the segmentation,
 
 ![Effortlessly Create Polygon Labels for Objects using Segment Anything Models](docs/imgs/annolid_with_segment_anything.gif)
 
-## Overview of Annolid workflow
-
-![Overview of Annolid workflow](docs/imgs/Annolid_workflow.svg)
-
-* Labeling of frames (annotation)
-* COCO formatting
-* Training and inference (local or Colab)
-* Post-processing and analysis
-
 ## Annolid video tutorials
 
 [![Annolid Youtube playlist](docs/imgs/00002895_7.jpg)](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc "Annolid Youtube playlist")
