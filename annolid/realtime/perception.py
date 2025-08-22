@@ -6,7 +6,6 @@ import socket
 import statistics
 import struct
 import time
-import traceback
 import warnings
 from collections import deque
 from contextlib import asynccontextmanager
@@ -25,6 +24,9 @@ from ffpyplayer.pic import Image, SWScale
 from tree_config.utils import (yaml_loads as orig_yaml_loads,
                                get_yaml,
                                yaml_dumps as orig_yaml_dumps)
+from pycocotools import mask as maskUtils
+
+from ultralytics.engine.results import Masks
 from ultralytics import YOLO
 
 from annolid.utils.logger import logger
@@ -40,7 +42,7 @@ class Config:
     server_port: int = 5002
     model_base_name: str = "yolo11n-seg.pt"  # Default to segmentation model
     publisher_address: str = "tcp://*:5555"
-    target_behaviors: List[str] = field(default_factory=lambda: ['person'])
+    target_behaviors: List[str] = field(default_factory=lambda: ['mouse'])
     confidence_threshold: float = 0.25
     frame_width: int = 640
     frame_height: int = 480
@@ -132,65 +134,33 @@ class FrameSource(Protocol):
 
 
 class DetectionResult:
-    """Structured detection result with segmentation mask support."""
+    """Structured detection result with support for pre-encoded segmentation masks."""
 
     def __init__(self, behavior: str, confidence: float, bbox: List[float],
-                 timestamp: float, metadata: Dict[str, Any], mask: Optional[np.ndarray] = None):
+                 timestamp: float, metadata: Dict[str, Any],
+                 mask_data: Optional[Dict[str, Any]] = None):
         self.behavior = behavior
         self.confidence = confidence
         self.bbox = bbox
         self.timestamp = timestamp
         self.metadata = metadata
-        self.mask = mask  # segmentation mask
+        self.mask_data = mask_data  # Stores the pre-encoded mask dictionary
 
     def to_dict(self) -> Dict[str, Any]:
+        """Converts the result to a dictionary for JSON serialization."""
         result = {
             "behavior": self.behavior,
             "confidence": self.confidence,
             "bbox_normalized": self.bbox,
             "timestamp": self.timestamp,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "has_mask": self.mask_data is not None
         }
 
-        # Include mask data if available
-        if self.mask is not None:
-            # Convert mask to run-length encoding or polygon for efficient transmission
-            result["mask"] = self._encode_mask(self.mask)
-            result["has_mask"] = True
-        else:
-            result["has_mask"] = False
+        if self.mask_data:
+            result["mask"] = self.mask_data
 
         return result
-
-    def _encode_mask(self, mask: np.ndarray) -> Dict[str, Any]:
-        """Encode mask using pycocotools RLE format."""
-        try:
-            from pycocotools import mask as maskUtils
-
-            # Ensure mask is in correct format (uint8, fortran order)
-            if mask.dtype != np.uint8:
-                mask = mask.astype(np.uint8)
-
-            # pycocotools expects fortran-ordered array
-            mask_fortran = np.asfortranarray(mask)
-
-            # Encode to RLE
-            rle = maskUtils.encode(mask_fortran)
-
-            # Convert bytes to string for JSON serialization
-            if isinstance(rle['counts'], bytes):
-                rle['counts'] = rle['counts'].decode('utf-8')
-
-            return {
-                "encoding": "coco_rle",
-                "size": rle['size'],
-                "counts": rle['counts']
-            }
-        except Exception as e:
-            logger.warning(
-                f"COCO RLE encoding failed: {e}, falling back to simple RLE")
-            return mask
-
 
 # --- Network Protocol Handling ---
 
@@ -987,6 +957,74 @@ class PerceptionProcess:
             logger.error(f"Inference error: {e}")
             raise
 
+    def _encode_mask(self, masks_obj: Masks, detection_index: int) -> Optional[Dict[str, Any]]:
+        """
+        Encodes a single mask from a Masks object based on the configured strategy.
+
+        Args:
+            masks_obj: The `ultralytics.engine.results.Masks` object from the result.
+            detection_index: The index of the specific mask to encode.
+
+        Returns:
+            A dictionary containing the encoded mask data, or None on failure.
+        """
+        encoding_type = self.config.mask_encoding
+
+        try:
+            # --- STRATEGY 1: Polygon (Most Efficient) ---
+            # Uses the pre-computed, scaled polygon coordinates directly from the Masks object.
+            if encoding_type == "polygon":
+                # masks_obj.xy is a list of numpy arrays (N, 2)
+                polygon_pixels = masks_obj.xy[detection_index]
+                return {
+                    "encoding": "polygon",
+                    # .tolist() is essential for JSON serialization
+                    "points": polygon_pixels.tolist()
+                }
+
+            # --- STRATEGY 2: COCO RLE (Standard & Compressed) ---
+            # Operates on the raw mask bitmap.
+            elif encoding_type == "rle":
+                # Get the raw boolean mask tensor for the specific detection
+                mask_tensor = masks_obj.data[detection_index]
+
+                # Convert to a numpy array in the format pycocotools expects
+                mask_bitmap = mask_tensor.cpu().numpy().astype(np.uint8)
+                mask_fortran = np.asfortranarray(mask_bitmap)
+
+                # Encode to RLE
+                rle = maskUtils.encode(mask_fortran)
+
+                # Decode the byte string for JSON compatibility
+                if isinstance(rle['counts'], bytes):
+                    rle['counts'] = rle['counts'].decode('utf-8')
+
+                return {
+                    "encoding": "coco_rle",
+                    "size": rle['size'],
+                    "counts": rle['counts']
+                }
+
+            # --- STRATEGY 3: Bitmap (Uncompressed Fallback) ---
+            # This is less efficient for transmission but provides raw data.
+            elif encoding_type == "bitmap":
+                mask_bitmap = masks_obj.data[detection_index].cpu().numpy()
+                # Not directly JSON serializable, so we don't implement this by default.
+                # If needed, one could use base64 encoding here.
+                logger.warning(
+                    "Bitmap encoding is not recommended for network transmission.")
+                return None
+
+            else:
+                logger.warning(
+                    f"Unknown mask_encoding type: '{encoding_type}'. No mask will be sent.")
+                return None
+
+        except Exception as e:
+            logger.error(
+                f"Failed to encode mask with strategy '{encoding_type}': {e}")
+            return None
+
     async def _process_detections(self, result, timestamp: float,
                                   metadata: Dict[str, Any]) -> int:
         """Process detection results and publish with mask support."""
@@ -996,8 +1034,8 @@ class PerceptionProcess:
         detection_count = 0
         boxes = result.boxes
 
-        # Check if segmentation masks are available
-        masks = result.masks if hasattr(
+        # Check if segmentation masks are available in the result object
+        masks = result.masks if self.config.enable_segmentation and hasattr(
             result, 'masks') and result.masks is not None else None
 
         for i in range(len(boxes)):
@@ -1006,42 +1044,26 @@ class PerceptionProcess:
                 class_name = self.class_names[class_id]
 
                 if class_name in self.config.target_behaviors:
-                    # Enhanced metadata with recording state info
-                    enhanced_metadata = {
-                        **metadata,
-                        "recording_state": self.recording_manager.state.name,
-                        "processing_enabled": self.recording_manager.should_process_frames(),
-                        "has_segmentation": masks is not None
-                    }
+                    encoded_mask_data = None
+                    # If masks are available, encode the one for this specific detection
+                    if masks:
+                        encoded_mask_data = self._encode_mask(masks, i)
 
-                    # Extract mask if available
-                    mask = None
-                    if masks is not None:
-                        # Get the mask for this detection
-                        # Shape: (H, W)
-                        mask_data = masks.data[i].cpu().numpy()
-                        mask = mask_data > 0.5  # Convert to boolean mask
-
-                        # Add mask statistics to metadata
-                        enhanced_metadata.update({
-                            "mask_area": int(np.sum(mask)),
-                            "mask_bbox_ratio": np.sum(mask) / (mask.shape[0] * mask.shape[1])
-                        })
-
+                    # Create the DetectionResult with the pre-encoded mask
                     detection = DetectionResult(
                         behavior=class_name,
                         confidence=float(boxes.conf[i]),
                         bbox=boxes.xyxyn[i].cpu().numpy().tolist(),
                         timestamp=timestamp,
-                        metadata=enhanced_metadata,
-                        mask=mask  # Include the mask
+                        metadata=metadata,
+                        mask_data=encoded_mask_data  # Pass the encoded dictionary here
                     )
 
                     await self.publisher.publish_detection(detection)
                     detection_count += 1
 
             except Exception as e:
-                logger.error(f"Detection processing error: {e}")
+                logger.error(f"Detection processing error: {e}", exc_info=True)
 
         return detection_count
 
@@ -1154,7 +1176,7 @@ def create_config_from_args() -> Config:
                         help="YOLO model file name")
     parser.add_argument('--publisher', type=str, default="tcp://*:5555",
                         help="ZeroMQ publisher address")
-    parser.add_argument('--targets', type=str, nargs='+', default=['person'],
+    parser.add_argument('--targets', type=str, nargs='+', default=['mouse'],
                         help="Target class names")
     parser.add_argument('--confidence', type=float, default=0.25,
                         help="Confidence threshold")
