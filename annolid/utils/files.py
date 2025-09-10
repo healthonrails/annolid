@@ -263,8 +263,33 @@ def create_tracking_csv_file(frame_numbers,
     }
     new_df = pd.DataFrame(new_data)
 
-    # Combine existing and new data.
-    combined_df = pd.concat([existing_data, new_df], ignore_index=True)
+    # --- Core Logic for Keeping New Rows on Exact Match ---
+    if existing_data.empty:
+        # If existing_data is empty, just use the new data as the combined result
+        combined_df = new_df.copy()
+    else:
+        # If existing_data is not empty, proceed with filtering and merging
+        # 1. Identify the common (frame_number, instance_name) keys
+        common_keys = pd.merge(
+            existing_data[['frame_number', 'instance_name']],
+            new_df[['frame_number', 'instance_name']],
+            on=['frame_number', 'instance_name'],
+            how='inner'
+        )
+
+        # 2. Filter out the old rows that are superseded by new rows
+        is_in_common = existing_data[['frame_number', 'instance_name']].merge(
+            common_keys.assign(is_common=True),
+            on=['frame_number', 'instance_name'],
+            how='left'
+        )['is_common'].fillna(False)
+
+        existing_data_filtered = existing_data[~is_in_common]
+
+        # 3. Concatenate the filtered existing data with all new data
+        combined_df = pd.concat(
+            [existing_data_filtered, new_df], ignore_index=True)
+    # --- End of Core Logic for Keeping New Rows on Exact Match ---
 
     # If a timestamps column exists (from a previous run), drop it so that only the core columns are used for duplicate checks.
     if 'timestamps' in combined_df.columns:
