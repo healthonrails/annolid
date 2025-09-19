@@ -23,3 +23,16 @@ MODEL_REGISTRY = [
     ModelConfig("yoloe-11s-seg.pt", "yoloe-11s-seg.pt", "yoloe-11s-seg.pt"),
     ModelConfig("yoloe-11l-seg.pt", "yoloe-11l-seg.pt", "yoloe-11l-seg.pt"),
 ]
+
+
+# Registry for patch-similarity (DINO) backbones. These identifiers correspond
+# to Hugging Face model IDs and may require gated-access for certain DINOv3
+# checkpoints.
+PATCH_SIMILARITY_MODELS = [
+    ModelConfig("DINOv2 Base (open)", "facebook/dinov2-base", ""),
+    ModelConfig("DINOv2 Large (open)", "facebook/dinov2-large", ""),
+    ModelConfig("DINOv3 ViT-S/16 (gated)",
+                "facebook/dinov3-vits16-pretrain-lvd1689m", ""),
+    ModelConfig("DINOv3 ViT-L/16 (gated)",
+                "facebook/dinov3-vitl16-pretrain-lvd1426", ""),
+]

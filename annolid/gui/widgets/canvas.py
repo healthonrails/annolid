@@ -140,6 +140,11 @@ class Canvas(QtWidgets.QWidget):
         self.behavior_text_background = None  # Optional background color
         self.current_behavior_text = None
 
+        # Patch similarity helpers
+        self._patch_similarity_active = False
+        self._patch_similarity_callback = None
+        self._patch_similarity_pixmap = None
+
     def fillDrawing(self):
         return self._fill_drawing
 
@@ -154,6 +159,39 @@ class Canvas(QtWidgets.QWidget):
 
     def getCaption(self):
         return self.caption_label.toPlainText()
+
+    # ------------------------------------------------------------------
+    # Patch similarity helpers (DINO visualization)
+    # ------------------------------------------------------------------
+    def enablePatchSimilarityMode(self, callback):
+        """Enable click-to-query mode for DINO patch similarity."""
+        self._patch_similarity_active = True
+        self._patch_similarity_callback = callback
+        self.overrideCursor(CURSOR_POINT)
+
+    def disablePatchSimilarityMode(self):
+        self._patch_similarity_active = False
+        self._patch_similarity_callback = None
+        self._patch_similarity_pixmap = None
+        self.restoreCursor()
+        self.update()
+
+    def setPatchSimilarityOverlay(self, overlay_rgba):
+        """Update or clear the rendered heatmap overlay."""
+        if overlay_rgba is None:
+            self._patch_similarity_pixmap = None
+        else:
+            h, w, _ = overlay_rgba.shape
+            image = QtGui.QImage(
+                overlay_rgba.data,
+                w,
+                h,
+                overlay_rgba.strides[0],
+                QtGui.QImage.Format_RGBA8888,
+            )
+            self._patch_similarity_pixmap = QtGui.QPixmap.fromImage(
+                image.copy())
+        self.update()
 
     @property
     def createMode(self):
@@ -719,6 +757,12 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
         is_shift_pressed = ev.modifiers() & QtCore.Qt.ShiftModifier
 
+        if self._patch_similarity_active and ev.button() == QtCore.Qt.LeftButton:
+            if not self.outOfPixmap(pos) and self._patch_similarity_callback:
+                self._patch_similarity_callback(int(pos.x()), int(pos.y()))
+            ev.accept()
+            return
+
         if ev.button() == QtCore.Qt.LeftButton:
             if self.drawing():
                 if self.current:
@@ -1060,6 +1104,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             p.drawPixmap(0, 0, self.pixmap)
 
         self.sam_mask.paint(p)
+
+        if self._patch_similarity_pixmap is not None:
+            p.drawPixmap(0, 0, self._patch_similarity_pixmap)
 
         if self.current_behavior_text and len(self.current_behavior_text) > 0:
             # Calculate font size based on pixmap size

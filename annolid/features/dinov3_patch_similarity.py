@@ -78,9 +78,15 @@ class DinoPatchSimilarity:
         # Map click to patch index using original image size → resized grid
         # We reconstruct the resized size via extractor utilities
         new_h, new_w = self.extractor._compute_resized_hw(*base.size)
+        scale_x = new_w / base.width
+        scale_y = new_h / base.height
         px_x, px_y = new_w / w, new_h / h
-        i = min(max(int(click_xy[0] / px_x), 0), w - 1)
-        j = min(max(int(click_xy[1] / px_y), 0), h - 1)
+
+        click_x_resized = click_xy[0] * scale_x
+        click_y_resized = click_xy[1] * scale_y
+
+        i = min(max(int(click_x_resized / px_x), 0), w - 1)
+        j = min(max(int(click_y_resized / px_y), 0), h - 1)
 
         # Cosine similarity (prefer device matmul if available)
         device = torch.device(

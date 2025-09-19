@@ -82,19 +82,24 @@ from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDia
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
-from annolid.gui.models_registry import MODEL_REGISTRY
+from annolid.gui.models_registry import MODEL_REGISTRY, PATCH_SIMILARITY_MODELS
 from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.jobs.tracking_worker import TrackingWorker
 from typing import List, Optional
 from annolid.jobs.tracking_jobs import TrackingSegment
+from annolid.gui.dino_patch_service import (
+    DinoPatchRequest,
+    DinoPatchSimilarityService,
+)
 
 
 __appname__ = 'Annolid'
 __version__ = "1.2.2"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
+PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 
 
 def start_tensorboard(log_dir=None,
@@ -538,6 +543,26 @@ class AnnolidWindow(MainWindow):
 
         self.recording_widget = RecordingWidget(self.canvas)
 
+        self.patch_similarity_action = newAction(
+            self,
+            self.tr("Patch Similarity"),
+            self._toggle_patch_similarity_tool,
+            icon="visualization",
+            tip=self.tr(
+                "Click on the frame to generate a DINO patch similarity heatmap"),
+        )
+        self.patch_similarity_action.setCheckable(True)
+        self.patch_similarity_action.setIcon(
+            QtGui.QIcon(str(self.here / "icons/visualization.png")))
+
+        self.patch_similarity_settings_action = newAction(
+            self,
+            self.tr("Patch Similarity Settings…"),
+            self._open_patch_similarity_settings,
+            tip=self.tr(
+                "Choose model and overlay opacity for patch similarity"),
+        )
+
         # Create the QAction with the new label
         add_stamps_action = newAction(
             self,
@@ -561,6 +586,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(quality_control)
         _action_tools.append(colab)
         _action_tools.append(visualization)
+        _action_tools.append(self.patch_similarity_action)
         _action_tools.append(self.recording_widget.record_action)
 
         self.actions.tool = tuple(_action_tools)
@@ -594,6 +620,9 @@ class AnnolidWindow(MainWindow):
 
         utils.addActions(self.menus.view, (glitter2,))
         utils.addActions(self.menus.view, (visualization,))
+        utils.addActions(self.menus.view, (self.patch_similarity_action,))
+        utils.addActions(
+            self.menus.view, (self.patch_similarity_settings_action,))
 
         utils.addActions(self.menus.help, (about_annolid,))
 
@@ -606,6 +635,26 @@ class AnnolidWindow(MainWindow):
         position = self.settings.value("window/position", QtCore.QPoint(0, 0))
         state = self.settings.value("window/state", QtCore.QByteArray())
         self.move(position)
+
+        # Patch similarity preferences
+        self.patch_similarity_model = str(
+            self.settings.value(
+                "patch_similarity/model",
+                PATCH_SIMILARITY_DEFAULT_MODEL,
+            )
+        )
+        self.patch_similarity_alpha = float(
+            self.settings.value("patch_similarity/alpha", 0.55)
+        )
+        self.patch_similarity_alpha = min(
+            max(self.patch_similarity_alpha, 0.05), 1.0)
+        self.patch_similarity_service = DinoPatchSimilarityService(self)
+        self.patch_similarity_service.started.connect(
+            self._on_patch_similarity_started)
+        self.patch_similarity_service.finished.connect(
+            self._on_patch_similarity_finished)
+        self.patch_similarity_service.error.connect(
+            self._on_patch_similarity_error)
 
         self.video_results_folder = None
         self.seekbar = None
@@ -1201,6 +1250,7 @@ class AnnolidWindow(MainWindow):
         if not self.mayContinue():
             return
         self.resetState()
+        self._deactivate_patch_similarity()
         self.setClean()
         self.toggleActions(False)
         self.canvas.setEnabled(False)
@@ -3220,6 +3270,7 @@ class AnnolidWindow(MainWindow):
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
         self.canvas.setEnabled(True)
+        self.canvas.setPatchSimilarityOverlay(None)
         if isinstance(filename, str):
             filename = Path(filename)
         self.imagePath = str(filename.parent)
@@ -3312,6 +3363,148 @@ class AnnolidWindow(MainWindow):
         if self._df_deeplabcut is not None:
             self._load_deeplabcut_results(frame_number)
         return True
+
+    # ------------------------------------------------------------------
+    # Patch similarity (DINO) integration
+    # ------------------------------------------------------------------
+    def _toggle_patch_similarity_tool(self, checked=False):
+        state = bool(checked) if isinstance(
+            checked, bool) else self.patch_similarity_action.isChecked()
+        if not state:
+            self._deactivate_patch_similarity()
+            return
+
+        if self.canvas.pixmap is None or self.canvas.pixmap.isNull():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Patch Similarity"),
+                self.tr(
+                    "Load an image or video frame before starting patch similarity."),
+            )
+            self.patch_similarity_action.setChecked(False)
+            return
+
+        if not self.patch_similarity_model:
+            self._open_patch_similarity_settings()
+            if not self.patch_similarity_model:
+                self.patch_similarity_action.setChecked(False)
+                return
+
+        self.canvas.enablePatchSimilarityMode(self._request_patch_similarity)
+        self.statusBar().showMessage(
+            self.tr("Patch similarity active – click on the frame to query patches."),
+            5000,
+        )
+
+    def _deactivate_patch_similarity(self):
+        if hasattr(self, "patch_similarity_action"):
+            self.patch_similarity_action.setChecked(False)
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.disablePatchSimilarityMode()
+            self.canvas.setPatchSimilarityOverlay(None)
+
+    def _grab_current_frame_image(self):
+        if self.canvas.pixmap is None or self.canvas.pixmap.isNull():
+            return None
+        qimage = self.canvas.pixmap.toImage().convertToFormat(
+            QtGui.QImage.Format_RGBA8888)
+        ptr = qimage.bits()
+        ptr.setsize(qimage.sizeInBytes())
+        array = np.frombuffer(ptr, dtype=np.uint8).reshape(
+            (qimage.height(), qimage.width(), 4))
+        return Image.fromarray(array, mode="RGBA").convert("RGB")
+
+    def _request_patch_similarity(self, x: int, y: int) -> None:
+        if self.patch_similarity_service.is_busy():
+            self.statusBar().showMessage(
+                self.tr("Patch similarity is already running…"), 2000)
+            return
+
+        pil_image = self._grab_current_frame_image()
+        if pil_image is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Patch Similarity"),
+                self.tr("Failed to access the current frame."),
+            )
+            self._deactivate_patch_similarity()
+            return
+
+        self.canvas.setPatchSimilarityOverlay(None)
+        request = DinoPatchRequest(
+            image=pil_image,
+            click_xy=(int(x), int(y)),
+            model_name=self.patch_similarity_model,
+            short_side=768,
+            device=None,
+            alpha=float(self.patch_similarity_alpha),
+        )
+        if not self.patch_similarity_service.request(request):
+            self.statusBar().showMessage(
+                self.tr("Patch similarity is already running…"), 2000)
+
+    def _on_patch_similarity_started(self):
+        self.statusBar().showMessage(
+            self.tr("Computing patch similarity…"))
+
+    def _on_patch_similarity_finished(self, payload: dict) -> None:
+        overlay = payload.get("overlay_rgba")
+        self.canvas.setPatchSimilarityOverlay(overlay)
+        self.statusBar().showMessage(
+            self.tr("Patch similarity ready."),
+            4000,
+        )
+
+    def _on_patch_similarity_error(self, message: str) -> None:
+        self.canvas.setPatchSimilarityOverlay(None)
+        QtWidgets.QMessageBox.warning(
+            self,
+            self.tr("Patch Similarity"),
+            message,
+        )
+        self._deactivate_patch_similarity()
+
+    def _open_patch_similarity_settings(self):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("Patch Similarity Settings"))
+        layout = QtWidgets.QFormLayout(dialog)
+
+        model_combo = QtWidgets.QComboBox(dialog)
+        for cfg in PATCH_SIMILARITY_MODELS:
+            model_combo.addItem(cfg.display_name, cfg.identifier)
+
+        current_index = model_combo.findData(self.patch_similarity_model)
+        if current_index >= 0:
+            model_combo.setCurrentIndex(current_index)
+
+        alpha_spin = QtWidgets.QDoubleSpinBox(dialog)
+        alpha_spin.setRange(0.05, 1.0)
+        alpha_spin.setSingleStep(0.05)
+        alpha_spin.setValue(self.patch_similarity_alpha)
+
+        layout.addRow(self.tr("Model"), model_combo)
+        layout.addRow(self.tr("Overlay opacity"), alpha_spin)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        layout.addRow(buttons)
+
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self.patch_similarity_model = model_combo.currentData()
+            self.patch_similarity_alpha = alpha_spin.value()
+            self.settings.setValue(
+                "patch_similarity/model", self.patch_similarity_model)
+            self.settings.setValue(
+                "patch_similarity/alpha", self.patch_similarity_alpha)
+            self.statusBar().showMessage(
+                self.tr("Patch similarity model updated."),
+                3000,
+            )
 
     def clean_up(self):
         def quit_and_wait(thread, message):
