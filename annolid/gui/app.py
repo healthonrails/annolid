@@ -93,6 +93,7 @@ from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
     DinoPatchSimilarityService,
 )
+from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 
 
 __appname__ = 'Annolid'
@@ -1700,7 +1701,16 @@ class AnnolidWindow(MainWindow):
                 self._setup_prediction_folder_watcher(
                     str(self.video_results_folder))
 
-            if "sam2_hiera" in model_name:
+            if model_name == "DINO_KEYPOINT_TRACKER":
+                dino_model = self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
+                self.video_processor = DinoKeypointVideoProcessor(
+                    video_path=self.video_file,
+                    result_folder=self.video_results_folder,
+                    model_name=dino_model,
+                    short_side=768,
+                    device=None,
+                )
+            elif "sam2_hiera" in model_name:
                 from annolid.segmentation.SAM.sam_v2 import process_video
                 self.video_processor = process_video
             elif "yolo" in model_name.lower():
@@ -1746,7 +1756,18 @@ class AnnolidWindow(MainWindow):
                 end_frame = self.num_frames - 1
             stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                 or self.automatic_pause_enabled)
-            if 'yolo' in model_name.lower():
+            if model_name == "DINO_KEYPOINT_TRACKER":
+                step_size = self.step_size if self.step_size > 0 else 1
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video,
+                    start_frame=self.frame_number,
+                    end_frame=end_frame,
+                    step=step_size,
+                    pred_worker=None,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+            elif 'yolo' in model_name.lower():
                 # Pass visual_prompts to run_inference if extracted successfully.
                 self.pred_worker = FlexibleWorker(
                     task_function=lambda: self.video_processor.run_inference(
