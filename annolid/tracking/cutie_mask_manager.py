@@ -168,7 +168,7 @@ class CutieMaskManager:
         if not contours:
             return []
         largest = max(contours, key=cv2.contourArea)
-        epsilon = 0.008 * cv2.arcLength(largest, True)
+        epsilon = 0.003 * cv2.arcLength(largest, True)
         approx = cv2.approxPolyDP(largest, epsilon, True)
         points = [(float(pt[0][0]), float(pt[0][1])) for pt in approx]
         if points and points[0] != points[-1]:
