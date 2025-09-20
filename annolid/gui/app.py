@@ -1747,7 +1747,7 @@ class AnnolidWindow(MainWindow):
             if not self.seg_pred_thread.isRunning():
                 self.seg_pred_thread = QtCore.QThread()
             self.seg_pred_thread.start()
-            # Determine end_frame 
+            # Determine end_frame
             # step_size is -1, i.e., predict to the end
             if self.step_size < 0:
                 end_frame = self.num_frames + self.step_size
@@ -1758,12 +1758,13 @@ class AnnolidWindow(MainWindow):
             stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                 or self.automatic_pause_enabled)
             if model_name == "DINO_KEYPOINT_TRACKER":
-                step_size = self.step_size if self.step_size > 0 else 1
+                # Run the Cutie + DINO tracker over the full video by default.
+                end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.process_video,
                     start_frame=self.frame_number,
                     end_frame=end_frame,
-                    step=step_size,
+                    step=1,
                     pred_worker=None,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
