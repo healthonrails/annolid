@@ -29,6 +29,7 @@ class KeypointTrack:
     label: str
     patch_rc: Tuple[int, int]
     descriptor: torch.Tensor
+    reference_descriptor: torch.Tensor
     velocity: Tuple[float, float] = (0.0, 0.0)
     misses: int = 0
 
@@ -45,6 +46,9 @@ class DinoKeypointTracker:
         search_radius: int = 2,
         min_similarity: float = 0.2,
         momentum: float = 0.2,
+        reference_weight: float = 0.7,
+        reference_support_radius: int = 0,
+        reference_center_weight: float = 1.0,
     ) -> None:
         cfg = Dinov3Config(
             model_name=model_name,
@@ -55,6 +59,10 @@ class DinoKeypointTracker:
         self.search_radius = max(1, int(search_radius))
         self.min_similarity = float(min_similarity)
         self.momentum = float(np.clip(momentum, 0.0, 1.0))
+        self.reference_weight = float(np.clip(reference_weight, 0.0, 1.0))
+        self.reference_support_radius = max(0, int(reference_support_radius))
+        self.reference_center_weight = float(
+            np.clip(reference_center_weight, 0.0, 1.0))
         self.tracks: Dict[str, KeypointTrack] = {}
         self.patch_size = self.extractor.patch_size
         self.max_misses = 8
@@ -100,10 +108,36 @@ class DinoKeypointTracker:
             identifier = kp.get("id") or kp.get("label") or f"kp_{idx}"
             label = kp.get("label") or identifier
             patch_rc = self._pixel_to_patch(x, y, scale_x, scale_y, grid_hw)
-            desc = feats[:, patch_rc[0], patch_rc[1]].detach().clone()
-            desc = desc / (desc.norm() + 1e-12)
+            base_desc = feats[:, patch_rc[0], patch_rc[1]].detach().clone()
+            base_desc = base_desc / (base_desc.norm() + 1e-12)
+
+            reference_desc = base_desc
+            if self.reference_support_radius > 0:
+                # Aggregate neighborhood descriptors from the labeled frame to stabilize matching.
+                r_min = max(0, patch_rc[0] - self.reference_support_radius)
+                r_max = min(grid_hw[0] - 1, patch_rc[0] +
+                            self.reference_support_radius)
+                c_min = max(0, patch_rc[1] - self.reference_support_radius)
+                c_max = min(grid_hw[1] - 1, patch_rc[1] +
+                            self.reference_support_radius)
+                region = feats[:, r_min:r_max + 1, c_min:c_max + 1]
+                region = region.reshape(region.shape[0], -1)
+                region_mean = region.mean(dim=1).detach()
+                region_mean = region_mean / (region_mean.norm() + 1e-12)
+                mix = (
+                    self.reference_center_weight * base_desc
+                    + (1.0 - self.reference_center_weight) * region_mean
+                )
+                reference_desc = mix / (mix.norm() + 1e-12)
+
+            desc = reference_desc.clone()
             self.tracks[identifier] = KeypointTrack(
-                identifier, label, patch_rc, desc)
+                identifier=identifier,
+                label=label,
+                patch_rc=patch_rc,
+                descriptor=desc,
+                reference_descriptor=reference_desc.clone(),
+            )
 
         self.prev_gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
 
@@ -187,8 +221,12 @@ class DinoKeypointTracker:
                 track.patch_rc = best_rc
                 new_desc = feats[:, best_rc[0], best_rc[1]].detach()
                 new_desc = new_desc / (new_desc.norm() + 1e-12)
-                blended = (1.0 - self.momentum) * \
-                    track.descriptor + self.momentum * new_desc
+                blended = (1.0 - self.momentum) * track.descriptor + \
+                    self.momentum * new_desc
+                if self.reference_weight > 0.0:
+                    # Pull the descriptor back toward the labeled frame to remain anchored.
+                    blended = (1.0 - self.reference_weight) * blended + \
+                        self.reference_weight * track.reference_descriptor
                 track.descriptor = blended / (blended.norm() + 1e-12)
                 x, y = self._patch_to_pixel(best_rc, scale_x, scale_y)
                 delta_x = x - base_x

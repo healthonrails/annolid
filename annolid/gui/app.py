@@ -1747,7 +1747,8 @@ class AnnolidWindow(MainWindow):
             if not self.seg_pred_thread.isRunning():
                 self.seg_pred_thread = QtCore.QThread()
             self.seg_pred_thread.start()
-            # Determine end_frame etc. (same as your previous logic)
+            # Determine end_frame 
+            # step_size is -1, i.e., predict to the end
             if self.step_size < 0:
                 end_frame = self.num_frames + self.step_size
             else:
