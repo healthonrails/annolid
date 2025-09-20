@@ -45,7 +45,7 @@ class Shape(object):
     vertex_fill_color = DEFAULT_VERTEX_FILL_COLOR
     hvertex_fill_color = DEFAULT_HVERTEX_FILL_COLOR
     point_type = P_ROUND
-    point_size = 8
+    point_size = 10
     scale = 1.0
 
     def __init__(
@@ -231,6 +231,8 @@ class Shape(object):
             painter.drawPath(line_path)
 
         if self.points:
+            # reset the queue used to render per-vertex styling in this paint pass
+            self._queued_vertices = []
             # Do not draw points if it is a mask shape
             if self.shape_type == 'mask':
                 return
@@ -265,7 +267,8 @@ class Shape(object):
                     if l == 1:
                         self.drawVertex(vrtx_path, i)
                     else:
-                        self.drawVertex(negative_vrtx_path, i)
+                        self.drawVertex(negative_vrtx_path,
+                                        i, is_negative=True)
             else:
                 line_path.moveTo(self.points[0])
                 # Uncommenting the following line will draw 2 paths
@@ -280,9 +283,6 @@ class Shape(object):
                     line_path.lineTo(self.points[0])
 
             painter.drawPath(line_path)
-            if vrtx_path.length() > 0:
-                painter.drawPath(vrtx_path)
-                painter.fillPath(vrtx_path, self._vertex_fill_color)
             if self.fill and self.mask is None:
                 color = (
                     self.select_fill_color
@@ -291,10 +291,7 @@ class Shape(object):
                 )
                 painter.fillPath(line_path, color)
 
-            pen.setColor(QtGui.QColor(255, 0, 0, 255))
-            painter.setPen(pen)
-            painter.drawPath(negative_vrtx_path)
-            painter.fillPath(negative_vrtx_path, QtGui.QColor(255, 0, 0, 255))
+            self._render_queued_vertices(painter)
 
         # Draw the label near the shape
         if self.label and (self.shape_type == "polygon"
@@ -346,7 +343,7 @@ class Shape(object):
         min_area = image_area * min_area_percentage
         return shape_area > min_area
 
-    def drawVertex(self, path, i):
+    def drawVertex(self, path, i, is_negative=False):
         d = self.point_size / self.scale
         shape = self.point_type
         point = self.points[i]
@@ -363,6 +360,135 @@ class Shape(object):
             path.addEllipse(point, d / 2.0, d / 2.0)
         else:
             assert False, "unsupported vertex shape"
+        if not hasattr(self, "_queued_vertices"):
+            self._queued_vertices = []
+        base_negative_color = getattr(
+            self,
+            "negative_vertex_fill_color",
+            DEFAULT_NEG_VERTEX_FILL_COLOR,
+        )
+        self._queued_vertices.append(
+            {
+                "center": QtCore.QPointF(point),
+                "diameter": d,
+                "shape": shape,
+                "fill_color": QtGui.QColor(
+                    base_negative_color if is_negative else self._vertex_fill_color
+                ),
+                "highlighted": i == self._highlightIndex,
+                "negative": is_negative,
+            }
+        )
+
+    def _render_queued_vertices(self, painter):
+        if not getattr(self, "_queued_vertices", None):
+            return
+
+        original_pen = QtGui.QPen(painter.pen())
+        original_brush = QtGui.QBrush(painter.brush())
+
+        for vertex in self._queued_vertices:
+            center = vertex["center"]
+            radius = vertex["diameter"] / 2.0
+            fill_color = QtGui.QColor(vertex["fill_color"])
+            if vertex["highlighted"]:
+                # brighten the base color a bit for highlighted points
+                fill_color = fill_color.lighter(130)
+
+            glow_radius = radius * 1.75
+            glow = QtGui.QRadialGradient(center, glow_radius)
+            glow_color = QtGui.QColor(fill_color)
+            glow_color.setAlpha(min(fill_color.alpha() + 80, 255))
+            transparent_color = QtGui.QColor(fill_color)
+            transparent_color.setAlpha(0)
+            glow.setColorAt(0.0, glow_color)
+            glow.setColorAt(1.0, transparent_color)
+
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+            painter.setBrush(QtGui.QBrush(glow))
+            painter.setPen(QtCore.Qt.NoPen)
+            if vertex["shape"] == self.P_ROUND:
+                painter.drawEllipse(center, glow_radius, glow_radius)
+            else:
+                side = glow_radius * 2
+                rect = QtCore.QRectF(
+                    center.x() - glow_radius,
+                    center.y() - glow_radius,
+                    side,
+                    side,
+                )
+                painter.drawRoundedRect(
+                    rect, glow_radius * 0.35, glow_radius * 0.35)
+
+            accent = QtGui.QRadialGradient(center, radius)
+            accent.setColorAt(0.0, fill_color.lighter(160))
+            accent.setColorAt(0.65, fill_color)
+            accent.setColorAt(1.0, fill_color.darker(140))
+
+            outline_color = fill_color.darker(160)
+            outline_width = max(1, int(round(1.2 / self.scale)))
+            painter.setBrush(QtGui.QBrush(accent))
+            painter.setPen(QtGui.QPen(outline_color, outline_width))
+
+            if vertex["shape"] == self.P_ROUND:
+                painter.drawEllipse(center, radius, radius)
+            else:
+                side = radius * 2
+                rect = QtCore.QRectF(
+                    center.x() - radius,
+                    center.y() - radius,
+                    side,
+                    side,
+                )
+                corner_radius = radius * 0.35
+                painter.drawRoundedRect(rect, corner_radius, corner_radius)
+
+            inner_radius = radius * 0.35
+            inner_color = QtGui.QColor(255, 255, 255, 220)
+            if vertex["negative"]:
+                inner_color = fill_color.lighter(180)
+
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(inner_color)
+            if vertex["shape"] == self.P_ROUND:
+                painter.drawEllipse(center, inner_radius, inner_radius)
+            else:
+                side = inner_radius * 2
+                rect = QtCore.QRectF(
+                    center.x() - inner_radius,
+                    center.y() - inner_radius,
+                    side,
+                    side,
+                )
+                painter.drawRoundedRect(
+                    rect, inner_radius * 0.35, inner_radius * 0.35)
+
+            if vertex["highlighted"]:
+                halo_pen = QtGui.QPen(QtGui.QColor(
+                    255, 255, 255, 180), outline_width)
+                halo_pen.setCapStyle(QtCore.Qt.RoundCap)
+                halo_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+                halo_pen.setStyle(QtCore.Qt.DotLine)
+                painter.setPen(halo_pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+                halo_radius = glow_radius * 1.1
+                if vertex["shape"] == self.P_ROUND:
+                    painter.drawEllipse(center, halo_radius, halo_radius)
+                else:
+                    side = halo_radius * 2
+                    rect = QtCore.QRectF(
+                        center.x() - halo_radius,
+                        center.y() - halo_radius,
+                        side,
+                        side,
+                    )
+                    painter.drawRoundedRect(
+                        rect, halo_radius * 0.35, halo_radius * 0.35)
+
+        painter.setPen(original_pen)
+        painter.setBrush(original_brush)
+        self._queued_vertices = []
 
     def nearestVertex(self, point, epsilon):
         min_distance = float("inf")
@@ -610,26 +736,23 @@ class MultipoinstShape(Shape):
 
     def paint(self, painter):
         if self.points:
-            d = self.point_size / self.scale
-            shape = self.point_type
-            pos_pen = QtGui.QPen(self.positive_vertex_fill_color)
-            neg_pen = QtGui.QPen(self.negative_vertex_fill_color)
-            # Try using integer sizes for smoother drawing(?)
-            pos_pen.setWidth(max(1, int(round(2.0 / self.scale))))
-            neg_pen.setWidth(max(1, int(round(2.0 / self.scale))))
-            for i, (point, is_positive) in enumerate(zip(self.points, self.labels)):
-                if is_positive:
-                    painter.setPen(pos_pen)
-                else:
-                    painter.setPen(neg_pen)
+            dummy_path = QtGui.QPainterPath()
+            original_vertex_color = QtGui.QColor(self.vertex_fill_color)
+            self._queued_vertices = []
 
-                if shape == self.P_SQUARE:
-                    painter.drawRect(point.x() - d / 2,
-                                     point.y() - d / 2, d, d)
-                elif shape == self.P_ROUND:
-                    painter.drawEllipse(point, d / 2.0, d / 2.0)
+            for i, is_positive in enumerate(self.labels):
+                if is_positive:
+                    self.vertex_fill_color = QtGui.QColor(
+                        self.positive_vertex_fill_color)
+                    self.drawVertex(dummy_path, i, is_negative=False)
                 else:
-                    assert False, "unsupported vertex shape"
+                    # keep the current vertex color for glow, but mark as negative
+                    self.vertex_fill_color = QtGui.QColor(
+                        self.negative_vertex_fill_color)
+                    self.drawVertex(dummy_path, i, is_negative=True)
+
+            self.vertex_fill_color = original_vertex_color
+            self._render_queued_vertices(painter)
 
     def highlightClear(self):
         """Clear the highlighted point"""
