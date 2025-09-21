@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 ProgressHook = Callable[[int, int], None]
 ErrorHook = Callable[[Exception], None]
@@ -20,6 +20,25 @@ class CutieDinoTrackerConfig:
     cutie_frames_to_propagate: int = 30
     cutie_device: Optional[str] = None
     cutie_max_mem_frames: int = 5
+    mask_dilation_iterations: int = 2
+    mask_dilation_kernel: int = 2
+    mask_similarity_bonus: float = 0.12
+    max_mask_fallback_frames: int = 5
+    velocity_smoothing: float = 0.55
+    structural_consistency_weight: float = 0.35
+    appearance_bundle_radius: int = 2
+    appearance_bundle_size: int = 20
+    appearance_bundle_weight: float = 0.95
+    baseline_similarity_weight: float = 0.15
+    symmetry_pairs: Tuple[Tuple[str, str], ...] = (('leftear','rightear'),)
+    symmetry_penalty: float = 0.4
+    max_candidate_tracks: int = 8
+    support_probe_count: int = 8
+    support_probe_sigma: float = 1.25
+    support_probe_radius: int = 4
+    support_probe_weight: float = 0.35
+    support_probe_mask_only: bool = True
+    support_probe_mask_bonus: float = 0.05
     progress_hook: Optional[ProgressHook] = None
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None

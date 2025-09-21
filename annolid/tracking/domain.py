@@ -46,6 +46,10 @@ class KeypointState:
     y: float
     visible: bool = True
     confidence: float = 1.0
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
+    misses: int = 0
+    quality: float = 1.0
 
     def to_tracker_payload(self) -> KeypointPayload:
         """Convert to the payload expected by the Dino tracker."""
@@ -55,6 +59,7 @@ class KeypointState:
             "x": float(self.x),
             "y": float(self.y),
             "visible": bool(self.visible),
+            "quality": float(self.quality),
         }
 
     @property
@@ -62,13 +67,29 @@ class KeypointState:
         """Stable label used for JSON serialization to avoid collisions."""
         return combine_labels(self.instance_label, self.label)
 
-    def update(self, *, x: float, y: float, visible: bool = True,
-               confidence: Optional[float] = None) -> None:
+    def update(
+        self,
+        *,
+        x: float,
+        y: float,
+        visible: bool = True,
+        confidence: Optional[float] = None,
+        velocity: Optional[Tuple[float, float]] = None,
+        misses: Optional[int] = None,
+        quality: Optional[float] = None,
+    ) -> None:
         self.x = float(x)
         self.y = float(y)
         self.visible = bool(visible)
         if confidence is not None:
             self.confidence = float(confidence)
+        if velocity is not None:
+            self.velocity_x = float(velocity[0])
+            self.velocity_y = float(velocity[1])
+        if misses is not None:
+            self.misses = int(misses)
+        if quality is not None:
+            self.quality = float(quality)
 
 
 @dataclass
@@ -137,10 +158,18 @@ class InstanceRegistry:
             keypoint = self.get_keypoint(key)
             if keypoint is None:
                 continue
+            velocity = None
+            if "velocity" in result and result["velocity"] is not None:
+                vx, vy = result["velocity"]
+                velocity = (float(vx), float(vy))
             keypoint.update(
                 x=result.get("x", keypoint.x),
                 y=result.get("y", keypoint.y),
                 visible=result.get("visible", keypoint.visible),
+                confidence=result.get("confidence"),
+                velocity=velocity,
+                misses=result.get("misses"),
+                quality=result.get("quality"),
             )
             instance = self.instances[keypoint.instance_label]
             instance.last_updated_frame = frame_number

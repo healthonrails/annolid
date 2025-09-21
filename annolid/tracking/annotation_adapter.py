@@ -102,6 +102,12 @@ class AnnotationAdapter:
                     flags={
                         "instance_label": instance.label,
                         "display_label": keypoint.label,
+                        "quality": round(float(keypoint.quality), 4),
+                        "velocity": [
+                            round(float(keypoint.velocity_x), 4),
+                            round(float(keypoint.velocity_y), 4),
+                        ],
+                        "misses": int(keypoint.misses),
                     },
                     description=self.description,
                     visible=keypoint.visible,

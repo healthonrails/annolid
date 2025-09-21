@@ -47,6 +47,8 @@ class CutieMaskManager:
         self._label_to_value: Dict[str, int] = {}
         self._value_to_label: Dict[int, str] = {}
         self._initialized = False
+        self._last_results: Dict[str, MaskResult] = {}
+        self._mask_miss_counts: Dict[str, int] = {}
 
     def ready(self) -> bool:
         return self.enabled and self._initialized
@@ -88,6 +90,7 @@ class CutieMaskManager:
         self._value_to_label = {
             value: label for label, value in mapping.items()}
         self._initialized = True
+        self._seed_last_results(registry)
         logger.debug("CutieMaskManager primed with instances: %s",
                      list(mapping.keys()))
 
@@ -114,7 +117,65 @@ class CutieMaskManager:
                 mask_bitmap=binary_mask,
                 polygon=polygon,
             )
+
+        expected_labels = [instance.label for instance in registry]
+        results = self._apply_fallbacks(results, expected_labels)
         return results
+
+    def _apply_fallbacks(
+        self,
+        results: Dict[str, MaskResult],
+        expected_labels: List[str],
+    ) -> Dict[str, MaskResult]:
+        updated: Dict[str, MaskResult] = {}
+        for label, result in results.items():
+            updated[label] = result
+            self._last_results[label] = result
+            self._mask_miss_counts[label] = 0
+
+        kernel_size = max(1, int(self.config.mask_dilation_kernel))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        iterations = max(0, int(self.config.mask_dilation_iterations))
+        allowed_misses = max(0, int(self.config.max_mask_fallback_frames))
+
+        for label in set(expected_labels):
+            if label in updated:
+                continue
+            previous = self._last_results.get(label)
+            if previous is None:
+                continue
+            misses = self._mask_miss_counts.get(label, 0) + 1
+            self._mask_miss_counts[label] = misses
+            if misses > allowed_misses:
+                continue
+            fallback_bitmap = previous.mask_bitmap
+            if iterations > 0:
+                fallback_bitmap = self._dilate_bitmap(
+                    fallback_bitmap, kernel_size, iterations)
+            polygon = self._mask_to_polygon(fallback_bitmap)
+            updated[label] = MaskResult(
+                instance_label=label,
+                mask_bitmap=fallback_bitmap,
+                polygon=polygon,
+            )
+            self._last_results[label] = updated[label]
+        return updated
+
+    def _seed_last_results(self, registry: InstanceRegistry) -> None:
+        self._last_results = {}
+        self._mask_miss_counts = {}
+        for instance in registry:
+            mask_bitmap = self._resolve_instance_mask(instance)
+            if mask_bitmap is None or not mask_bitmap.any():
+                continue
+            polygon = instance.polygon or self._mask_to_polygon(mask_bitmap)
+            self._last_results[instance.label] = MaskResult(
+                instance_label=instance.label,
+                mask_bitmap=mask_bitmap,
+                polygon=polygon,
+            )
+            self._mask_miss_counts[instance.label] = 0
 
     def _ensure_core(self) -> None:
         if self._core is not None:
@@ -159,6 +220,19 @@ class CutieMaskManager:
         if self.config.restrict_to_initial_mask and instance.mask_bitmap is not None:
             return mask & instance.mask_bitmap.astype(bool)
         return mask
+
+    def _dilate_bitmap(
+        self,
+        bitmap: np.ndarray,
+        kernel_size: int,
+        iterations: int,
+    ) -> np.ndarray:
+        if iterations <= 0:
+            return bitmap
+        cv2 = self._lazy_cv2()
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+        dilated = cv2.dilate(bitmap.astype(np.uint8), kernel, iterations=iterations)
+        return dilated.astype(bool)
 
     def _mask_to_polygon(self, mask: np.ndarray) -> List[Tuple[float, float]]:
         cv2 = self._lazy_cv2()
