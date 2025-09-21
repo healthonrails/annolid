@@ -1603,15 +1603,53 @@ class AnnolidWindow(MainWindow):
             self.imageData.save(image_filename)
         return image_filename
 
+    def _get_current_model_config(self):
+        """Return the ModelConfig for the currently selected model, if any."""
+        current_text = self._selectAiModelComboBox.currentText()
+        return next(
+            (m for m in MODEL_REGISTRY if m.display_name == current_text), None)
+
     def get_current_model_weight_file(self) -> str:
         """
         Returns the weight file associated with the currently selected model.
         If no matching model is found, returns a default fallback weight file.
         """
-        current_text = self._selectAiModelComboBox.currentText()
-        model = next(
-            (m for m in MODEL_REGISTRY if m.display_name == current_text), None)
+        model = self._get_current_model_config()
         return model.weight_file if model is not None else "Segment-Anything (Edge)"
+
+    def _resolve_model_identity(self):
+        model_config = self._get_current_model_config()
+        identifier = model_config.identifier if model_config else None
+        weight = model_config.weight_file if model_config else None
+        if identifier is None and weight is None:
+            fallback = self.get_current_model_weight_file()
+            identifier = fallback
+            weight = fallback
+        return model_config, identifier or "", weight or ""
+
+    @staticmethod
+    def _is_cotracker_model(identifier: str, weight: str) -> bool:
+        identifier = identifier.lower()
+        weight = weight.lower()
+        return identifier == "cotracker" or weight == "cotracker.pt"
+
+    @staticmethod
+    def _is_dino_keypoint_model(identifier: str, weight: str) -> bool:
+        identifier = identifier.lower()
+        weight = weight.lower()
+        return identifier == "dinov3_keypoint_tracker" or weight == "dino_keypoint_tracker"
+
+    @staticmethod
+    def _is_yolo_model(identifier: str, weight: str) -> bool:
+        identifier = identifier.lower()
+        weight = weight.lower()
+        return "yolo" in identifier or "yolo" in weight
+
+    @staticmethod
+    def _is_sam2_model(identifier: str, weight: str) -> bool:
+        identifier = identifier.lower()
+        weight = weight.lower()
+        return "sam2_hiera" in identifier or "sam2_hiera" in weight
 
     def stop_prediction(self):
         # Emit the stop signal to signal the prediction thread to stop
@@ -1685,11 +1723,12 @@ class AnnolidWindow(MainWindow):
         If the current model supports visual prompts (e.g. YOLOE), the prompts are extracted
         from the canvas rectangle shapes and passed to the inference module.
         """
-        model_name = self.get_current_model_weight_file()
+        model_config, model_identifier, model_weight = self._resolve_model_identity()
+        model_name = model_identifier or model_weight
         if self.pred_worker and self.stop_prediction_flag:
             self.stop_prediction()
             return
-        elif len(self.canvas.shapes) <= 0 and "yolo" not in model_name.lower():
+        elif len(self.canvas.shapes) <= 0 and not self._is_yolo_model(model_name, model_weight):
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
                                         "Please label this frame")
@@ -1701,7 +1740,7 @@ class AnnolidWindow(MainWindow):
                 self._setup_prediction_folder_watcher(
                     str(self.video_results_folder))
 
-            if model_name == "DINO_KEYPOINT_TRACKER":
+            if self._is_dino_keypoint_model(model_name, model_weight):
                 dino_model = self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
                 self.video_processor = DinoKeypointVideoProcessor(
                     video_path=self.video_file,
@@ -1710,10 +1749,10 @@ class AnnolidWindow(MainWindow):
                     short_side=768,
                     device=None,
                 )
-            elif "sam2_hiera" in model_name:
+            elif self._is_sam2_model(model_name, model_weight):
                 from annolid.segmentation.SAM.sam_v2 import process_video
                 self.video_processor = process_video
-            elif "yolo" in model_name.lower():
+            elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
                 # Instead of using a hard-coded prompt, extract visual prompts from canvas.
                 visual_prompts = self.extract_visual_prompts_from_canvas()
@@ -1728,7 +1767,7 @@ class AnnolidWindow(MainWindow):
                     class_names = text_prompt.split(",")
                     logger.info(
                         f"Extracted class names from text prompt: {class_names}")
-                self.video_processor = InferenceProcessor(model_name=model_name,
+                self.video_processor = InferenceProcessor(model_name=model_weight,
                                                           model_type="yolo",
                                                           class_names=class_names)
             else:
@@ -1757,7 +1796,7 @@ class AnnolidWindow(MainWindow):
                 end_frame = self.num_frames - 1
             stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                 or self.automatic_pause_enabled)
-            if model_name == "DINO_KEYPOINT_TRACKER":
+            if self._is_dino_keypoint_model(model_name, model_weight):
                 # Run the Cutie + DINO tracker over the full video by default.
                 end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
@@ -1769,7 +1808,7 @@ class AnnolidWindow(MainWindow):
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
-            elif 'yolo' in model_name.lower():
+            elif self._is_yolo_model(model_name, model_weight):
                 # Pass visual_prompts to run_inference if extracted successfully.
                 self.pred_worker = FlexibleWorker(
                     task_function=lambda: self.video_processor.run_inference(
@@ -1783,9 +1822,9 @@ class AnnolidWindow(MainWindow):
                     start_frame=self.frame_number+1,
                     end_frame=end_frame,
                     step=self.step_size,
-                    is_cutie=False if model_name == "CoTracker" else True,
+                    is_cutie=False if self._is_cotracker_model(model_name, model_weight) else True,
                     mem_every=self.step_size,
-                    point_tracking=model_name == "CoTracker",
+                    point_tracking=self._is_cotracker_model(model_name, model_weight),
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
