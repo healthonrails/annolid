@@ -18,6 +18,10 @@ from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.cutie_mask_manager import CutieMaskManager, MaskResult
 from annolid.tracking.domain import InstanceRegistry
+from annolid.utils.files import (
+    find_manual_labeled_json_files,
+    get_frame_number_from_json,
+)
 from annolid.utils.logger import logger
 
 
@@ -63,6 +67,19 @@ class Candidate:
     descriptor: torch.Tensor
 
 
+@dataclass
+class MotionPrior:
+    predicted_xy: Tuple[float, float]
+    predicted_rc: Tuple[int, int]
+    base_xy: Tuple[float, float]
+    flow_vec: Optional[Tuple[float, float]]
+    flow_speed: float
+    velocity_speed: float
+    radius: int
+    radius_px: float
+    confidence: float
+
+
 class DinoKeypointTracker:
     """Patch descriptor tracker with optional mask-aware constraints."""
 
@@ -98,6 +115,17 @@ class DinoKeypointTracker:
             np.clip(self.runtime_config.mask_descriptor_weight, 0.0, 1.0))
         self.restrict_to_mask = bool(
             self.runtime_config.restrict_to_initial_mask)
+        self.mask_enforce_position = bool(
+            getattr(self.runtime_config, "mask_enforce_position", True))
+        snap_radius = getattr(
+            self.runtime_config,
+            "mask_enforce_snap_radius",
+            getattr(self.runtime_config, "mask_enforce_search_radius", 12),
+        )
+        self.mask_enforce_snap_radius = max(1, int(snap_radius))
+        self.mask_enforce_reject_outside = bool(
+            getattr(self.runtime_config, "mask_enforce_reject_outside", True)
+        )
         self.tracks: Dict[str, KeypointTrack] = {}
         self.patch_size = self.extractor.patch_size
         self.max_misses = 8
@@ -107,6 +135,18 @@ class DinoKeypointTracker:
         self._mask_miss_counts: Dict[str, int] = {}
         self.max_candidates = max(
             1, int(self.runtime_config.max_candidate_tracks))
+        self._is_fresh_start = False
+        self.reset_state()
+
+    def reset_state(self) -> None:
+        """Restore tracker state to a clean slate prior to (re)starting."""
+        self.tracks.clear()
+        self.prev_gray = None
+        self.prev_scale = (1.0, 1.0)
+        self._last_patch_masks = {}
+        self._mask_miss_counts = {}
+
+        self._is_fresh_start = False
 
     def start(
         self,
@@ -114,6 +154,9 @@ class DinoKeypointTracker:
         registry: InstanceRegistry,
         mask_lookup: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
+        self.reset_state()
+        self._is_fresh_start = True  # Signal that the next update is the first
+
         feats = self._extract_features(image)
         new_h, new_w = self.extractor._compute_resized_hw(*image.size)
         scale_x = new_w / image.width
@@ -146,6 +189,8 @@ class DinoKeypointTracker:
                     patch_mask = cache_entry.get("patch_mask")
                 descriptor = self._apply_mask_descriptor(
                     reference_desc.clone(), mask_descriptor)
+
+                # KeypointTrack always starts with zero velocity.
                 track = KeypointTrack(
                     key=keypoint.key,
                     storage_label=keypoint.storage_label,
@@ -156,6 +201,7 @@ class DinoKeypointTracker:
                     reference_descriptor=reference_desc.clone(),
                     last_position=(float(keypoint.x), float(keypoint.y)),
                 )
+
                 track.appearance_codebook = self._collect_appearance_codebook(
                     feats, patch_rc)
                 if track.appearance_codebook is not None:
@@ -195,6 +241,12 @@ class DinoKeypointTracker:
             feats.shape[1:],
             allow_fallback=True,
         )
+        active_masks: Dict[str, Optional[np.ndarray]] = {}
+        if mask_lookup:
+            active_masks = {
+                label: mask.astype(bool) if mask is not None else None
+                for label, mask in mask_lookup.items()
+            }
 
         frame_array = np.array(image)
         frame_gray = cv2.cvtColor(frame_array, cv2.COLOR_RGB2GRAY)
@@ -221,21 +273,25 @@ class DinoKeypointTracker:
         track_candidates: Dict[str, List[Candidate]] = {}
         mask_descriptors: Dict[str, Optional[torch.Tensor]] = {}
         base_positions: Dict[str, Tuple[float, float]] = {}
+        motion_priors: Dict[str, MotionPrior] = {}
         results: List[Dict[str, object]] = []
         for track in self.tracks.values():
             prev_r, prev_c = track.patch_rc
             base_x, base_y = self._patch_to_pixel(
                 (prev_r, prev_c), scale_x, scale_y)
             flow_dx = flow_dy = 0.0
+            flow_vec_tuple: Optional[Tuple[float, float]] = None
             if flow is not None:
                 fy = int(round(base_y))
                 fx = int(round(base_x))
                 if 0 <= fy < flow.shape[0] and 0 <= fx < flow.shape[1]:
                     flow_vec = flow[fy, fx]
                     flow_dx, flow_dy = float(flow_vec[0]), float(flow_vec[1])
+                    flow_vec_tuple = (flow_dx, flow_dy)
 
-            predicted_x = base_x + flow_dx + track.velocity[0]
-            predicted_y = base_y + flow_dy + track.velocity[1]
+            velocity_dx, velocity_dy = track.velocity
+            predicted_x = base_x + flow_dx + velocity_dx
+            predicted_y = base_y + flow_dy + velocity_dy
             predicted_r, predicted_c = self._pixel_to_patch(
                 predicted_x,
                 predicted_y,
@@ -244,7 +300,18 @@ class DinoKeypointTracker:
                 feats.shape[1:],
             )
 
-            radius = self.search_radius + track.misses
+            prior = self._prepare_motion_prior(
+                track,
+                base_xy=(base_x, base_y),
+                predicted_xy=(predicted_x, predicted_y),
+                predicted_rc=(predicted_r, predicted_c),
+                flow_vec=flow_vec_tuple,
+                scale_x=scale_x,
+                scale_y=scale_y,
+            )
+            motion_priors[track.key] = prior
+            predicted_r, predicted_c = prior.predicted_rc
+            radius = prior.radius
             r_min = max(0, predicted_r - radius)
             r_max = min(grid_h - 1, predicted_r + radius)
             c_min = max(0, predicted_c - radius)
@@ -253,11 +320,13 @@ class DinoKeypointTracker:
 
             mask_entry = mask_cache.get(track.instance_label)
             patch_mask = mask_entry.get("patch_mask") if mask_entry else None
-            mask_descriptor = mask_entry.get("descriptor") if mask_entry else None
+            mask_descriptor = mask_entry.get(
+                "descriptor") if mask_entry else None
             similarity_bonus = mask_entry.get(
                 "similarity_bonus", 0.0) if mask_entry else 0.0
             mask_descriptors[track.key] = mask_descriptor
             base_positions[track.key] = (base_x, base_y)
+            mask_pixels = active_masks.get(track.instance_label)
 
             for r in range(r_min, r_max + 1):
                 row_vecs = feats[:, r, c_min:c_max + 1]
@@ -284,6 +353,11 @@ class DinoKeypointTracker:
                         track, candidate_xy)
                     candidate_score -= self._baseline_penalty(
                         track, float(candidate_sim))
+                    candidate_score -= self._motion_prior_penalty(
+                        track,
+                        candidate_xy,
+                        motion_priors.get(track.key),
+                    )
                     candidate_score += self._support_score(
                         track,
                         (r, candidate_c),
@@ -318,40 +392,70 @@ class DinoKeypointTracker:
                 if track.misses > self.max_misses:
                     track.velocity = (0.0, 0.0)
             else:
-                track.misses = 0
-                best_rc = assignment.rc
-                track.patch_rc = best_rc
-                new_desc = assignment.descriptor.clone()
-                blended = (1.0 - self.momentum) * track.descriptor + \
-                    self.momentum * new_desc
-                if self.reference_weight > 0.0:
-                    blended = (1.0 - self.reference_weight) * blended + \
-                        self.reference_weight * track.reference_descriptor
-                blended = self._apply_mask_descriptor(blended, mask_descriptor)
-                track.descriptor = blended / (blended.norm() + 1e-12)
-                self._update_appearance_codebook(track, assignment.descriptor)
-                if track.appearance_codebook is not None:
-                    refreshed = torch.matmul(
-                        track.appearance_codebook, track.descriptor)
-                    track.baseline_similarity = min(
-                        1.0,
-                        max(
-                            track.baseline_similarity,
-                            float(refreshed.max().item()),
-                        ),
-                    )
-                self._refresh_support_probes(track, feats)
-                self._update_support_probe_mask_flags(track, patch_mask)
                 x, y = assignment.xy
-                delta_x = x - base_x
-                delta_y = y - base_y
-                smoothing = float(
-                    np.clip(self.runtime_config.velocity_smoothing, 0.0, 1.0))
-                track.velocity = (
-                    (1.0 - smoothing) * track.velocity[0] + smoothing * delta_x,
-                    (1.0 - smoothing) * track.velocity[1] + smoothing * delta_y,
-                )
-                visible = True
+                candidate_visible = True
+                if (
+                    self.mask_enforce_position
+                    and mask_pixels is not None
+                    and mask_pixels.size > 0
+                ):
+                    x, y, inside_mask = self._enforce_mask_position(
+                        x,
+                        y,
+                        mask_pixels,
+                        search_radius=self.mask_enforce_snap_radius,
+                    )
+                    if not inside_mask and self.mask_enforce_reject_outside:
+                        candidate_visible = False
+
+                if not candidate_visible:
+                    track.misses += 1
+                    visible = False
+                    x, y = track.last_position
+                    quality = 0.0
+                else:
+                    track.misses = 0
+                    visible = True
+                    track.patch_rc = self._pixel_to_patch(
+                        x,
+                        y,
+                        scale_x,
+                        scale_y,
+                        feats.shape[1:],
+                    )
+                    new_desc = assignment.descriptor.clone()
+                    blended = (1.0 - self.momentum) * track.descriptor + \
+                        self.momentum * new_desc
+                    if self.reference_weight > 0.0:
+                        blended = (1.0 - self.reference_weight) * blended + \
+                            self.reference_weight * track.reference_descriptor
+                    blended = self._apply_mask_descriptor(
+                        blended, mask_descriptor)
+                    track.descriptor = blended / (blended.norm() + 1e-12)
+                    self._update_appearance_codebook(
+                        track, assignment.descriptor)
+                    if track.appearance_codebook is not None:
+                        refreshed = torch.matmul(
+                            track.appearance_codebook, track.descriptor)
+                        track.baseline_similarity = min(
+                            1.0,
+                            max(
+                                track.baseline_similarity,
+                                float(refreshed.max().item()),
+                            ),
+                        )
+                    self._refresh_support_probes(track, feats)
+                    self._update_support_probe_mask_flags(track, patch_mask)
+                    delta_x = x - base_x
+                    delta_y = y - base_y
+                    smoothing = float(
+                        np.clip(self.runtime_config.velocity_smoothing, 0.0, 1.0))
+                    track.velocity = (
+                        (1.0 - smoothing) *
+                        track.velocity[0] + smoothing * delta_x,
+                        (1.0 - smoothing) *
+                        track.velocity[1] + smoothing * delta_y,
+                    )
 
             quality = max(0.0, quality)
             results.append(
@@ -376,6 +480,9 @@ class DinoKeypointTracker:
             else:
                 track.quality = max(0.0, min(1.0, quality))
         self._update_symmetry_midpoints()
+
+        if self._is_fresh_start:
+            self._is_fresh_start = False  # Clear the fresh start flag
         return results
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
@@ -475,9 +582,13 @@ class DinoKeypointTracker:
         candidate_xy: Tuple[float, float],
         previous_positions: Dict[str, Tuple[float, float]],
     ) -> float:
-        weight = float(max(0.0, self.runtime_config.structural_consistency_weight))
+        weight = float(
+            max(0.0, self.runtime_config.structural_consistency_weight))
         if weight <= 0.0 or not track.struct_refs:
             return 0.0
+        if self._is_fresh_start:
+            return 0.0
+
         total = 0.0
         count = 0
         for other_key, ref_distance in track.struct_refs.items():
@@ -503,6 +614,19 @@ class DinoKeypointTracker:
         penalty = float(max(0.0, self.runtime_config.symmetry_penalty))
         if penalty <= 0.0:
             return 0.0
+
+        # If a track has been missed, its position is unreliable. The symmetry constraint,
+        # which depends on the partner's position, is likely stale. We disable the
+        # penalty to allow the tracker to re-acquire the keypoint based on appearance alone.
+        # Once found, misses will be reset to 0 and the symmetry logic will resume.
+        if track.misses > 0:
+            return 0.0
+
+        if self._is_fresh_start:
+            # On the first frame after a start/restart, the symmetry references may be inaccurate.
+            # We disable the penalty for this single frame to avoid misguiding the tracker.
+            return 0.0
+
         axis = track.symmetry_axis
         midpoint = track.symmetry_midpoint
         if axis is None or midpoint is None:
@@ -572,12 +696,177 @@ class DinoKeypointTracker:
         penalty_ratio = penalties / total_weight if total_weight else 0.0
         return weight * (normalized - penalty_ratio)
 
+    def _prepare_motion_prior(
+        self,
+        track: KeypointTrack,
+        *,
+        base_xy: Tuple[float, float],
+        predicted_xy: Tuple[float, float],
+        predicted_rc: Tuple[int, int],
+        flow_vec: Optional[Tuple[float, float]],
+        scale_x: float,
+        scale_y: float,
+    ) -> MotionPrior:
+        min_radius = max(1.0, float(
+            self.runtime_config.motion_search_min_radius))
+        max_radius = max(min_radius, float(
+            self.runtime_config.motion_search_max_radius))
+        tighten = float(
+            np.clip(self.runtime_config.motion_search_tighten, 0.1, 2.0))
+        base_radius = max(min_radius, float(self.search_radius) * tighten)
+
+        patch_px_x = self.patch_size / max(scale_x, 1e-6)
+        patch_px_y = self.patch_size / max(scale_y, 1e-6)
+        patch_px = max(1.0, 0.5 * (patch_px_x + patch_px_y))
+
+        flow_dx = flow_vec[0] if flow_vec else 0.0
+        flow_dy = flow_vec[1] if flow_vec else 0.0
+        flow_speed = math.hypot(flow_dx, flow_dy)
+        velocity_speed = math.hypot(track.velocity[0], track.velocity[1])
+        flow_gain = max(0.0, float(
+            self.runtime_config.motion_search_flow_gain))
+        velocity_gain = max(0.0, float(self.runtime_config.motion_search_gain))
+        motion_px = (flow_speed * flow_gain) + (velocity_speed * velocity_gain)
+        effective_patch_px = max(patch_px, 1e-6)
+        radius_f = base_radius + (motion_px / effective_patch_px)
+
+        miss_boost = max(0.0, float(
+            self.runtime_config.motion_search_miss_boost))
+        radius_f += miss_boost * track.misses
+        radius_f = max(min_radius, min(max_radius, radius_f))
+
+        radius = max(1, int(math.ceil(radius_f)))
+        radius_px = max(patch_px, radius_f * patch_px)
+
+        confidence = 1.0 / (1.0 + track.misses)
+        if flow_vec is None:
+            confidence *= 0.5
+        confidence *= 0.5 + 0.5 * track.quality
+        confidence = float(np.clip(confidence, 0.1, 1.0))
+
+        return MotionPrior(
+            predicted_xy=predicted_xy,
+            predicted_rc=(int(predicted_rc[0]), int(predicted_rc[1])),
+            base_xy=base_xy,
+            flow_vec=flow_vec,
+            flow_speed=float(flow_speed),
+            velocity_speed=float(velocity_speed),
+            radius=radius,
+            radius_px=radius_px,
+            confidence=confidence,
+        )
+
+    def _motion_prior_penalty(
+        self,
+        track: KeypointTrack,
+        candidate_xy: Tuple[float, float],
+        prior: Optional[MotionPrior],
+    ) -> float:
+        weight = float(
+            max(0.0, self.runtime_config.motion_prior_penalty_weight))
+        if weight <= 0.0 or prior is None:
+            return 0.0
+        soft_radius_px = max(
+            1.0,
+            float(self.runtime_config.motion_prior_soft_radius_px),
+        )
+        radius_factor = max(1.0, float(
+            self.runtime_config.motion_prior_radius_factor))
+        soft_radius_px = max(soft_radius_px, prior.radius_px * radius_factor)
+
+        dx = candidate_xy[0] - prior.predicted_xy[0]
+        dy = candidate_xy[1] - prior.predicted_xy[1]
+        dist = math.hypot(dx, dy)
+        if dist <= 1e-6:
+            return 0.0
+
+        scaled = dist / soft_radius_px
+        penalty = weight * (1.0 - math.exp(-scaled * scaled))
+
+        miss_relief = 1.0 / (
+            1.0
+            + track.misses
+            * max(0.0, float(self.runtime_config.motion_prior_miss_relief))
+        )
+        combined = 0.5 * (prior.confidence + miss_relief)
+
+        flow_relief_gain = max(
+            0.0, float(getattr(self.runtime_config,
+                       "motion_prior_flow_relief", 0.0))
+        )
+        if flow_relief_gain > 0.0:
+            flow_speed = getattr(prior, "flow_speed", 0.0)
+            velocity_speed = getattr(prior, "velocity_speed", 0.0)
+            speed_sum = max(0.0, float(flow_speed + velocity_speed))
+            combined *= 1.0 / (1.0 + speed_sum * flow_relief_gain)
+
+        combined = float(np.clip(combined, 0.1, 1.0))
+        return penalty * combined
+
     def _baseline_penalty(self, track: KeypointTrack, similarity: float) -> float:
-        weight = float(max(0.0, self.runtime_config.baseline_similarity_weight))
+        weight = float(
+            max(0.0, self.runtime_config.baseline_similarity_weight))
         if weight <= 0.0:
             return 0.0
         delta = track.baseline_similarity - similarity
         return weight * max(0.0, delta)
+
+    @staticmethod
+    def snap_point_to_mask(
+        x: float,
+        y: float,
+        mask: np.ndarray,
+        *,
+        search_radius: int,
+    ) -> Tuple[float, float, bool]:
+        height, width = mask.shape
+
+        def clamp_index(value: float, upper: int) -> int:
+            return int(min(max(math.floor(value), 0), upper - 1))
+
+        floored_x = math.floor(x)
+        floored_y = math.floor(y)
+        cx = clamp_index(x, width)
+        cy = clamp_index(y, height)
+        if floored_x == cx and floored_y == cy and mask[cy, cx]:
+            return x, y, True
+
+        best_xy: Optional[Tuple[float, float]] = None
+
+        for radius in range(1, search_radius + 1):
+            y_min = max(0, cy - radius)
+            y_max = min(height - 1, cy + radius)
+            x_min = max(0, cx - radius)
+            x_max = min(width - 1, cx + radius)
+            region = mask[y_min:y_max + 1, x_min:x_max + 1]
+            if not region.any():
+                continue
+            ys, xs = np.nonzero(region)
+            xs = xs + x_min
+            ys = ys + y_min
+            diff_x = xs.astype(np.float32) - float(x)
+            diff_y = ys.astype(np.float32) - float(y)
+            dist_sq = diff_x * diff_x + diff_y * diff_y
+            idx = int(np.argmin(dist_sq))
+            best_xy = (float(xs[idx]), float(ys[idx]))
+            break
+
+        if best_xy is not None:
+            snapped_x = min(max(best_xy[0] + 0.001, 0.0), width - 1.0)
+            snapped_y = min(max(best_xy[1] + 0.001, 0.0), height - 1.0)
+            return snapped_x, snapped_y, True
+
+        return x, y, False
+
+    def _enforce_mask_position(
+        self,
+        x: float,
+        y: float,
+        mask: np.ndarray,
+        *,
+        search_radius: int,
+    ) -> Tuple[float, float, bool]:
+        return self.snap_point_to_mask(x, y, mask, search_radius=search_radius)
 
     def _collect_appearance_codebook(
         self,
@@ -901,7 +1190,8 @@ class DinoKeypointTracker:
         if not allow_fallback:
             return cache
 
-        allowed_misses = max(0, int(self.runtime_config.max_mask_fallback_frames))
+        allowed_misses = max(
+            0, int(self.runtime_config.max_mask_fallback_frames))
         for label, stored_mask in list(self._last_patch_masks.items()):
             if label in cache:
                 continue
@@ -915,7 +1205,8 @@ class DinoKeypointTracker:
                     fallback_mask, kernel_size, iterations)
             descriptor = None
             if self.mask_descriptor_weight > 0.0:
-                descriptor = self._compute_mask_descriptor(feats, fallback_mask)
+                descriptor = self._compute_mask_descriptor(
+                    feats, fallback_mask)
             cache[label] = {
                 "patch_mask": fallback_mask,
                 "descriptor": descriptor,
@@ -938,7 +1229,8 @@ class DinoKeypointTracker:
         if iterations <= 0:
             return patch_mask
         kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        dilated = cv2.dilate(patch_mask.astype(np.uint8), kernel, iterations=iterations)
+        dilated = cv2.dilate(patch_mask.astype(np.uint8),
+                             kernel, iterations=iterations)
         return dilated.astype(bool)
 
     def _compute_mask_descriptor(
@@ -1069,6 +1361,15 @@ class DinoKeypointVideoProcessor:
             end_frame = min(self.total_frames - 1, start_frame + 1)
         step = max(1, abs(step))
 
+        manual_frames = self._manual_annotation_frames(
+            start_frame=start_frame,
+            end_frame=end_frame,
+        )
+        manual_frames.pop(initial_frame, None)
+
+        self.mask_manager.reset_state()
+        self.tracker.reset_state()
+
         initial_frame_array = self.video_loader.load_frame(initial_frame)
         if initial_frame_array is None:
             raise RuntimeError(
@@ -1090,7 +1391,10 @@ class DinoKeypointVideoProcessor:
         )
 
         frame_numbers = list(range(start_frame, end_frame + 1, step))
-        total_steps = max(1, len(frame_numbers) - 1)
+        frames_to_process = [
+            frame for frame in frame_numbers if frame != initial_frame
+        ]
+        total_steps = max(1, len(frames_to_process))
         processed = 0
         stopped_early = False
 
@@ -1100,6 +1404,28 @@ class DinoKeypointVideoProcessor:
             if self._should_stop():
                 stopped_early = True
                 break
+
+            manual_path = manual_frames.get(frame_number)
+            if manual_path is not None:
+                resume_result = self._resume_from_manual_annotation(
+                    frame_number,
+                    manual_path,
+                )
+                manual_frames.pop(frame_number, None)
+                if resume_result is not None:
+                    registry, manual_mask_lookup = resume_result
+                    processed += 1
+                    self._report_progress(processed, total_steps)
+                    if self.config.analytics_hook:
+                        self.config.analytics_hook(
+                            {
+                                "frame": frame_number,
+                                "keypoints": len(
+                                    registry.keypoint_payload()),
+                                "masks": len(manual_mask_lookup),
+                            }
+                        )
+                    continue
 
             frame = self.video_loader.load_frame(frame_number)
             if frame is None:
@@ -1141,6 +1467,107 @@ class DinoKeypointVideoProcessor:
             message = "Cutie + DINO tracking stopped early."
         logger.info(message)
         return message
+
+    def _manual_annotation_frames(
+        self,
+        *,
+        start_frame: int,
+        end_frame: int,
+    ) -> Dict[int, Path]:
+        manual_files = find_manual_labeled_json_files(
+            str(self.video_result_folder))
+        mapping: Dict[int, Path] = {}
+        for filename in manual_files:
+            try:
+                frame_idx = get_frame_number_from_json(filename)
+            except (ValueError, IndexError):  # pragma: no cover - defensive
+                logger.warning(
+                    "Skipping manual annotation with unexpected name: %s",
+                    filename,
+                )
+                continue
+            if frame_idx < start_frame or frame_idx > end_frame:
+                continue
+            mapping[frame_idx] = self.video_result_folder / filename
+        return mapping
+
+    def _resume_from_manual_annotation(
+        self,
+        frame_number: int,
+        manual_path: Path,
+    ) -> Optional[Tuple[InstanceRegistry, Dict[str, np.ndarray]]]:
+
+        previous_masks: Dict[str, MaskResult] = {}
+        last_results = getattr(self.mask_manager, "_last_results", None)
+        if isinstance(last_results, dict) and last_results:
+            for label, result in last_results.items():
+                if result.mask_bitmap is None:
+                    continue
+                polygon_copy: Optional[List[Tuple[float, float]]] = None
+                if result.polygon:
+                    polygon_copy = [
+                        (float(x), float(y)) for x, y in result.polygon
+                    ]
+                previous_masks[label] = MaskResult(
+                    instance_label=result.instance_label,
+                    mask_bitmap=np.array(result.mask_bitmap, copy=True),
+                    polygon=polygon_copy or [],
+                )
+
+        try:
+            registry = self.adapter.read_annotation(manual_path)
+        except Exception as exc:
+            logger.warning(
+                "Manual resume skipped for frame %s: failed to read %s (%s)",
+                frame_number,
+                manual_path,
+                exc,
+            )
+            return None
+
+        if previous_masks:
+            for instance in registry:
+                has_mask = (
+                    instance.mask_bitmap is not None
+                    and bool(np.any(instance.mask_bitmap))
+                )
+                if has_mask:
+                    continue
+                fallback = previous_masks.get(instance.label)
+                if fallback is None:
+                    continue
+                polygon = [
+                    tuple(point) for point in fallback.polygon] if fallback.polygon else None
+                instance.set_mask(
+                    bitmap=np.array(fallback.mask_bitmap, copy=True),
+                    polygon=polygon,
+                )
+
+        frame_array = self.video_loader.load_frame(frame_number)
+        if frame_array is None:
+            logger.warning(
+                "Manual resume skipped for frame %s: frame unavailable",
+                frame_number,
+            )
+            return None
+
+        for instance in registry:
+            instance.last_updated_frame = frame_number
+
+        self.mask_manager.reset_state()
+        self.tracker.reset_state()
+
+        mask_lookup = self._mask_lookup_from_registry(registry)
+        if self.mask_manager.enabled:
+            self.mask_manager.prime(frame_number, frame_array, registry)
+
+        self.tracker.start(
+            Image.fromarray(frame_array),
+            registry,
+            mask_lookup,
+        )
+
+        return registry, mask_lookup
 
     def _apply_mask_results(
         self,

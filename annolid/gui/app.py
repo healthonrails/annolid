@@ -13,6 +13,7 @@ import sys
 import hashlib
 import json
 import io
+import copy
 from PIL import ImageQt, Image
 import pandas as pd
 import numpy as np
@@ -93,6 +94,7 @@ from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
     DinoPatchSimilarityService,
 )
+from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 
 
@@ -152,6 +154,17 @@ class AnnolidWindow(MainWindow):
                  ):
 
         self.config = config
+        tracker_cfg = dict((self.config or {}).get("tracker", {}) or {})
+        tracker_fields = set(CutieDinoTrackerConfig.__dataclass_fields__)
+        unsupported_tracker_keys = set(tracker_cfg.keys()) - tracker_fields
+        if unsupported_tracker_keys:
+            logger.warning(
+                "Ignoring unsupported tracker config keys: %s",
+                sorted(unsupported_tracker_keys),
+            )
+        tracker_kwargs = {k: v for k,
+                          v in tracker_cfg.items() if k in tracker_fields}
+        self.tracker_runtime_config = CutieDinoTrackerConfig(**tracker_kwargs)
         super(AnnolidWindow, self).__init__(config=self.config)
 
         # self.flag_dock.setVisible(True)
@@ -1141,19 +1154,29 @@ class AnnolidWindow(MainWindow):
             self.canvas.setCaption)  # Update canvas
 
     def set_advanced_params(self):
-        advanced_params_dialog = AdvancedParametersDialog(self)
-        advanced_params_dialog.exec_()
-        advanced_params_dialog.apply_parameters()
+        advanced_params_dialog = AdvancedParametersDialog(
+            self,
+            tracker_config=self.tracker_runtime_config,
+        )
+        if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
         self.epsilon_for_polygon = advanced_params_dialog.get_epsilon_value()
         self.automatic_pause_enabled = advanced_params_dialog.is_automatic_pause_enabled()
         self.t_max_value = advanced_params_dialog.get_t_max_value()
         self.use_cpu_only = advanced_params_dialog.is_cpu_only_enabled()
-        self.save_video_with_color_mask = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
+        self.save_video_with_color_mask = advanced_params_dialog.is_save_video_with_color_mask_enabled()
         self.auto_recovery_missing_instances = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
         self.compute_optical_flow = advanced_params_dialog.is_compute_optiocal_flow_enabled()
-        logger.info(f"Computing optical flow is {self.compute_optical_flow} .")
-        logger.info(
-            f"Set eplision for polygon to : {self.epsilon_for_polygon}")
+
+        tracker_settings = advanced_params_dialog.get_tracker_settings()
+        for key, value in tracker_settings.items():
+            setattr(self.tracker_runtime_config, key, value)
+
+        logger.info("Computing optical flow is %s .",
+                    self.compute_optical_flow)
+        logger.info("Set epsilon for polygon to : %s",
+                    self.epsilon_for_polygon)
 
     def segmentAnything(self,):
         try:
@@ -1742,12 +1765,20 @@ class AnnolidWindow(MainWindow):
 
             if self._is_dino_keypoint_model(model_name, model_weight):
                 dino_model = self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
+                # Instead of passing a reference to the shared config object,
+                # pass a deep copy. This ensures every tracking run starts with
+                # a pristine configuration, free from any mutations made by
+                # a previous run. This is the key to a true "start from scratch".
+                fresh_tracker_config = copy.deepcopy(
+                    self.tracker_runtime_config)
+
                 self.video_processor = DinoKeypointVideoProcessor(
                     video_path=self.video_file,
                     result_folder=self.video_results_folder,
                     model_name=dino_model,
                     short_side=768,
                     device=None,
+                    runtime_config=fresh_tracker_config,
                 )
             elif self._is_sam2_model(model_name, model_weight):
                 from annolid.segmentation.SAM.sam_v2 import process_video
@@ -1822,9 +1853,11 @@ class AnnolidWindow(MainWindow):
                     start_frame=self.frame_number+1,
                     end_frame=end_frame,
                     step=self.step_size,
-                    is_cutie=False if self._is_cotracker_model(model_name, model_weight) else True,
+                    is_cutie=False if self._is_cotracker_model(
+                        model_name, model_weight) else True,
                     mem_every=self.step_size,
-                    point_tracking=self._is_cotracker_model(model_name, model_weight),
+                    point_tracking=self._is_cotracker_model(
+                        model_name, model_weight),
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
@@ -2093,9 +2126,6 @@ class AnnolidWindow(MainWindow):
             title = self.getTitle(clean=False)
         self.setWindowTitle(title)
 
-        if self.dirty and self.filename:
-            # Save immediately if auto-save
-            self.saveLabels(self._getLabelFile(self.filename))
 
     def getTitle(self, clean=True):
         title = __appname__

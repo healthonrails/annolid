@@ -36,14 +36,25 @@ class AnnotationAdapter:
     description: str = "Cutie+DINO"
 
     def load_initial_state(self, annotation_dir: Path) -> Tuple[int, InstanceRegistry]:
-        json_files = sorted(
-            find_manual_labeled_json_files(str(annotation_dir)))
+        json_files = find_manual_labeled_json_files(str(annotation_dir))
         if not json_files:
             raise RuntimeError(
                 "No labeled JSON files found. Provide an initial annotation for the first frame.")
-        first_json = annotation_dir / json_files[0]
-        frame_number = get_frame_number_from_json(first_json.name)
-        registry = self.read_annotation(first_json)
+        candidates: List[Tuple[float, int, Path]] = []
+        for name in json_files:
+            path = annotation_dir / name
+            try:
+                mtime = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            frame_idx = get_frame_number_from_json(name)
+            candidates.append((mtime, frame_idx, path))
+        if not candidates:
+            raise RuntimeError(
+                "No labeled JSON files found. Provide an initial annotation for the first frame.")
+        _, frame_number, latest_json = max(
+            candidates, key=lambda item: (item[0], item[1]))
+        registry = self.read_annotation(latest_json)
         return frame_number, registry
 
     def read_annotation(self, json_path: Path) -> InstanceRegistry:
@@ -63,17 +74,19 @@ class AnnotationAdapter:
                 point = (shape.get("points") or [[None, None]])[0]
                 if point[0] is None or point[1] is None:
                     continue
+                
                 key = self._build_key(instance_label, keypoint_label)
-                registry.register_keypoint(
-                    KeypointState(
-                        key=key,
-                        instance_label=instance_label,
-                        label=keypoint_label,
-                        x=float(point[0]),
-                        y=float(point[1]),
-                        visible=bool(shape.get("visible", True)),
-                    )
+                keypoint_state = KeypointState(
+                    key=key,
+                    instance_label=instance_label,
+                    label=keypoint_label,
+                    x=float(point[0]),
+                    y=float(point[1]),
+                    visible=bool(shape.get("visible", True)),
                 )
+
+                registry.register_keypoint(keypoint_state)
+
             elif shape_type == "polygon":
                 instance_label = self._parse_mask_label(label, flags)
                 if not instance_label:

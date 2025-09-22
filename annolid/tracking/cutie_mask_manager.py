@@ -53,6 +53,17 @@ class CutieMaskManager:
     def ready(self) -> bool:
         return self.enabled and self._initialized
 
+    def reset_state(self) -> None:
+        """Reset cached Cutie state so a new run starts clean."""
+        self._processor = None
+        self._core = None
+        self._device = None
+        self._label_to_value = {}
+        self._value_to_label = {}
+        self._initialized = False
+        self._last_results = {}
+        self._mask_miss_counts = {}
+
     def prime(self, frame_number: int, frame: np.ndarray, registry: InstanceRegistry) -> None:
         if not self.enabled:
             logger.debug(

@@ -133,3 +133,24 @@ shortcuts:
 events:
   start: event_start
   end: event_end
+
+tracker:
+  # Flow-aware search radius controls
+  motion_search_tighten: 0.85
+  motion_search_gain: 0.6
+  motion_search_min_radius: 1.0
+  motion_search_max_radius: 8.0
+  motion_search_miss_boost: 1.0
+  # Motion prior penalty controls
+  motion_prior_penalty_weight: 0.3
+  motion_prior_soft_radius_px: 12.0
+  motion_prior_radius_factor: 1.5
+  motion_prior_miss_relief: 0.75
+  # Mask enforcement
+  mask_enforce_position: true
+  mask_enforce_search_radius: 12
+  mask_enforce_snap_radius: 12
+  mask_enforce_reject_outside: true
+  # Flow-aware blending controls
+  motion_search_flow_gain: 0.6
+  motion_prior_flow_relief: 0.0

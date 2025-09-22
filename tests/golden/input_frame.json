@@ -1,0 +1,33 @@
+{
+  "imagePath": "",
+  "imageHeight": 100,
+  "imageWidth": 120,
+  "shapes": [
+    {
+      "label": "animalnose",
+      "points": [[10.0, 20.0]],
+      "shape_type": "point",
+      "flags": {
+        "instance_label": "animal",
+        "display_label": "nose"
+      },
+      "visible": true,
+      "description": "Cutie+DINO"
+    },
+    {
+      "label": "animal",
+      "points": [
+        [5.0, 5.0],
+        [55.0, 5.0],
+        [55.0, 55.0],
+        [5.0, 55.0],
+        [5.0, 5.0]
+      ],
+      "shape_type": "polygon",
+      "flags": {
+        "instance_label": "animal"
+      },
+      "description": "Cutie"
+    }
+  ]
+}
