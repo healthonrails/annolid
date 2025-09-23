@@ -1875,7 +1875,7 @@ class AnnolidWindow(MainWindow):
             self.pred_worker.start_signal.emit()
 
     def lost_tracking_instance(self, message):
-        if message is None:
+        if message is None or "#" not in str(message):
             return
         message, current_frame_index = message.split("#")
         current_frame_index = int(current_frame_index)
@@ -2125,7 +2125,6 @@ class AnnolidWindow(MainWindow):
         if self.filename is not None:
             title = self.getTitle(clean=False)
         self.setWindowTitle(title)
-
 
     def getTitle(self, clean=True):
         title = __appname__
