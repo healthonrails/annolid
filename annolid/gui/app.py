@@ -1619,11 +1619,14 @@ class AnnolidWindow(MainWindow):
 
     def _saveImageFile(self, filename):
         image_filename = filename.replace('.json', '.png')
-        imgage_jpg_file = filename.replace('.json', '.jpg')
-        # save png if there is no png or jpg image in the folder
-        if (not Path(image_filename).exists()
-                and not Path(imgage_jpg_file).exists()):
-            self.imageData.save(image_filename)
+        if self.imageData is None:
+            return image_filename
+        try:
+            if not self.imageData.save(image_filename):
+                logger.warning(f"Failed to save seed image: {image_filename}")
+        except Exception as exc:
+            logger.warning(
+                f"Exception while saving seed image {image_filename}: {exc}")
         return image_filename
 
     def _get_current_model_config(self):
@@ -1813,6 +1816,8 @@ class AnnolidWindow(MainWindow):
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
                     save_video_with_color_mask=self.save_video_with_color_mask,
                     compute_optical_flow=self.compute_optical_flow,
+                    results_folder=str(self.video_results_folder)
+                    if self.video_results_folder else None,
                 )
             if not self.seg_pred_thread.isRunning():
                 self.seg_pred_thread = QtCore.QThread()

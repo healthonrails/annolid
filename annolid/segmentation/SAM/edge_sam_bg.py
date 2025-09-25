@@ -16,7 +16,6 @@ from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
 from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
 from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
-from labelme.utils.shape import shapes_to_label
 from annolid.utils.logger import logger
 from annolid.tracker.cotracker.track import CoTrackerProcessor
 
@@ -165,7 +164,10 @@ class VideoProcessor:
         - num_center_points (int): number of center points for prompt.
         """
         self.video_path = video_path
-        self.video_folder = Path(video_path).with_suffix("")
+        results_folder = kwargs.pop('results_folder', None)
+        self.video_folder = Path(results_folder) if results_folder else Path(
+            video_path).with_suffix("")
+        self.results_folder = self.video_folder
         self.video_loader = CV2Video(video_path)
         self.first_frame = self.video_loader.get_first_frame()
         self.t_max_value = kwargs.get("t_max_value", 5)
@@ -211,6 +213,7 @@ class VideoProcessor:
             t_max_value=self.t_max_value,
             use_cpu_only=self.use_cpu_only,
             compute_optical_flow=self.compute_optical_flow,
+            results_folder=self.results_folder,
         )
         if VideoProcessor.sam_hq is None:
             VideoProcessor.sam_hq = SamHQSegmenter()
@@ -223,60 +226,44 @@ class VideoProcessor:
                                   mem_every=5,
                                   has_occlusion=False,
                                   ):
-        self.most_recent_file = self.get_most_recent_file()
-        if self.most_recent_file is None:
-            message = f"No label file was saved.Please save a frame #0"
+        seed_frames = CutieVideoProcessor.discover_seed_frames(
+            self.video_path, self.results_folder)
+        if not seed_frames:
+            png_candidates = sorted(
+                p.name for p in self.results_folder.glob('*.png'))
+            logger.info(
+                f"CUTIE seed discovery returned 0 seeds. Folder: {self.results_folder}."
+                f" PNG candidates: {png_candidates}")
+            message = ("No label frames found. Please label a frame click save  "
+                       "(PNG+JSON are saved together) before running CUTIE.")
             logger.info(message)
             return message
-        label_name_to_value = {"_background_": 0}
-        frame_number = int(
-            Path(self.most_recent_file).stem.split('_')[-1])
-        shapes = self.load_shapes(self.most_recent_file)
-        shapes = [
-            shape
-            for shape in shapes
-            if len(shape["points"]) >= 3
-            and 'zone' not in (
-                (shape.get('description') or '').lower() +
-                (shape.get('label') or '').lower()
-            )
-        ]
-        if len(shapes) < 1:
-            return f"No valid polygon found in this frame; requires a minimum of 3 points #{frame_number} "
-        for shape in sorted(shapes, key=lambda x: x["label"]):
-            label_name = shape["label"]
-            if label_name in label_name_to_value:
-                label_value = label_name_to_value[label_name]
-            else:
-                label_value = len(label_name_to_value)
-                label_name_to_value[label_name] = label_value
 
-        image_size = self.first_frame.shape
-        logger.info(f"Loaded the shapes from: {self.most_recent_file}")
-        logger.info(f"Frame size: {image_size}")
-        mask, _ = shapes_to_label(
-            image_size, shapes, label_name_to_value)
-        logger.debug(
-            f"Generated mask shape: {mask.shape if mask is not None else 'None'}")
-        if VideoProcessor.sam_hq is None:
-            VideoProcessor.sam_hq = SamHQSegmenter()
-        VideoProcessor.cutie_processor = CutieVideoProcessor(
-            self.video_path, mem_every=mem_every, debug=False,
-            epsilon_for_polygon=self.epsilon_for_polygon,
-            t_max_value=self.t_max_value,
-            use_cpu_only=self.use_cpu_only,
-            compute_optical_flow=self.compute_optical_flow,
+        self.reset_cutie_processor(mem_every=mem_every)
+        VideoProcessor.cutie_processor = self.cutie_processor
+
+        target_end = self.num_frames - 1
+        if frames_to_propagate is not None:
+            try:
+                frames_to_propagate = int(frames_to_propagate)
+                if frames_to_propagate < 0:
+                    frames_to_propagate = self.num_frames - 1
+            except (TypeError, ValueError):
+                frames_to_propagate = self.num_frames - 1
+
+            if frames_to_propagate >= self.num_frames - 1:
+                target_end = self.num_frames - 1
+            else:
+                target_end = frames_to_propagate
+
+        message = self.cutie_processor.process_video_from_seeds(
+            end_frame=target_end,
+            pred_worker=self.pred_worker,
+            recording=self.save_video_with_color_mask,
+            output_video_path=None,
+            has_occlusion=has_occlusion,
+            visualize_every=20,
         )
-        VideoProcessor.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
-        message = VideoProcessor.cutie_processor.process_video_with_mask(frame_number,
-                                                                         mask,
-                                                                         frames_to_propagate=frames_to_propagate,
-                                                                         visualize_every=20,
-                                                                         labels_dict=label_name_to_value,
-                                                                         pred_worker=self.pred_worker,
-                                                                         recording=self.save_video_with_color_mask,
-                                                                         has_occlusion=has_occlusion,
-                                                                         )
         return message
 
     def __del__(self):
@@ -531,7 +518,7 @@ class VideoProcessor:
         Returns:
         - str: Path to the most recent file.
         """
-        _recent_file = find_most_recent_file(self.video_folder)
+        _recent_file = find_most_recent_file(self.results_folder)
         return _recent_file
 
     def _run_cotracker_tracking(self, start_frame=0, end_frame=-1,
@@ -545,7 +532,8 @@ class VideoProcessor:
             self.most_recent_file = self.get_most_recent_file()
 
         if not self.most_recent_file:
-            logger.warning("CoTracker requires at least one labeled frame before tracking")
+            logger.warning(
+                "CoTracker requires at least one labeled frame before tracking")
             self.pred_worker.stop_signal.emit()
             return "Please label at least one frame before running CoTracker#-1"
 

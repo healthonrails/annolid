@@ -190,6 +190,7 @@ class TrackAllWorker(QThread):
                 model_name="Cutie",
                 save_image_to_disk=False,
                 device=device,
+                results_folder=str(output_folder),
                 **self.config
             )
             self.logger.info(
