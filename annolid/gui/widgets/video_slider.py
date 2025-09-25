@@ -54,6 +54,7 @@ class VideoSliderMark:
             filled="blue",
             open="blue",
             predicted=(1, 170, 247),  # light blue
+            prediction_progress=(255, 136, 0),
             tick="lightGray",
             tick_column="gray",
             event_start="green",
@@ -107,7 +108,7 @@ class VideoSliderMark:
     def visual_width(self):
         if self.mark_type in ("open", "filled", "tick", "event_start", "event_end"):
             return 2
-        if self.mark_type in ("tick_column", "simple", "predicted"):
+        if self.mark_type in ("tick_column", "simple", "predicted", "prediction_progress"):
             return 1
         return 2
 

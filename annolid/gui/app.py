@@ -251,6 +251,8 @@ class AnnolidWindow(MainWindow):
 
         self.prediction_progress_watcher = None
         self.last_known_predicted_frame = -1  # Track the latest frame seen
+        self.prediction_start_timestamp = 0.0
+        self._prediction_progress_mark = None
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -2436,6 +2438,7 @@ class AnnolidWindow(MainWindow):
                 self.prediction_progress_watcher.directories())
 
         if osp.isdir(folder_path_to_watch):
+            self.prediction_start_timestamp = time.time()
             self.prediction_progress_watcher.addPath(str(folder_path_to_watch))
             logger.info(
                 f"Prediction progress watcher started for: {folder_path_to_watch}")
@@ -2468,6 +2471,13 @@ class AnnolidWindow(MainWindow):
             for f_name in os.listdir(path):
                 # The check `self.video_results_folder.name in f_name` is kept for consistency
                 if f_name.endswith(".json") and self.video_results_folder.name in f_name:
+                    file_path = path / f_name
+                    if self.prediction_start_timestamp:
+                        try:
+                            if file_path.stat().st_mtime < self.prediction_start_timestamp:
+                                continue
+                        except FileNotFoundError:
+                            continue
                     match = json_pattern.search(f_name)
                     if match:
                         try:
@@ -2537,8 +2547,17 @@ class AnnolidWindow(MainWindow):
 
             # The original code moved the slider on every found frame.
             # This is not ideal for user experience. We will move it only once to the latest frame.
-            self.set_frame_number(latest_frame)
-            self.seekbar.setValue(latest_frame)
+            if 0 <= latest_frame < self.num_frames:
+                self.seekbar.removeMarksByType("prediction_progress")
+                progress_mark = VideoSliderMark(
+                    mark_type="prediction_progress",
+                    val=latest_frame
+                )
+                self.seekbar.addMark(progress_mark)
+                self._prediction_progress_mark = progress_mark
+                if self.frame_number != latest_frame:
+                    self.set_frame_number(latest_frame)
+                self.seekbar.setValue(latest_frame)
 
         except Exception as e:
             logger.error(
@@ -2558,6 +2577,10 @@ class AnnolidWindow(MainWindow):
             # self.prediction_progress_watcher = None # Or just keep it around
             logger.info("Prediction progress watcher stopped.")
         self.last_known_predicted_frame = -1  # Reset
+        self.prediction_start_timestamp = 0.0
+        if self.seekbar:
+            self.seekbar.removeMarksByType("prediction_progress")
+        self._prediction_progress_mark = None
 
     def _connect_worker_signals(self):
         """Connect worker signals to their respective slots safely."""
