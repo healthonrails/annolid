@@ -35,6 +35,12 @@ PATCH_SIMILARITY_MODELS = [
     ModelConfig("DINOv2 Large (open)", "facebook/dinov2-large", ""),
     ModelConfig("DINOv3 ViT-S/16 (gated)",
                 "facebook/dinov3-vits16-pretrain-lvd1689m", ""),
+    ModelConfig("DINOv3 ViT-S/16+ (gated)",
+                "facebook/dinov3-vits16plus-pretrain-lvd1689m", ""),
     ModelConfig("DINOv3 ViT-L/16 (gated)",
-                "facebook/dinov3-vitl16-pretrain-lvd1426", ""),
+                "facebook/dinov3-vitl16-pretrain-lvd1689m", ""),
+    ModelConfig("DINOv3 ViT-H/16+ (gated)",
+                "facebook/dinov3-vith16plus-pretrain-lvd1689m", ""),
+    ModelConfig("DINOv3 ViT-7B/16 (gated)",
+                "facebook/dinov3-vit7b16-pretrain-lvd1689m", ""),
 ]

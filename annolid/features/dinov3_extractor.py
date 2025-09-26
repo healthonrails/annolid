@@ -35,9 +35,9 @@ class Dinov3Config:
     model_name: Hugging Face model id or legacy torch.hub alias.
         Recommended checkpoints:
             - "facebook/dinov3-vits16-pretrain-lvd1689m"
-            - "facebook/dinov3-vitsplus-pretrain-lvd1689m"
+            - "facebook/dinov3-vits16plus-pretrain-lvd1689m"
             - "facebook/dinov3-vitb16-pretrain-lvd1426"
-            - "facebook/dinov3-vitl16-pretrain-lvd1426"
+            - "facebook/dinov3-vitl16-pretrain-lvd1689m"
             - "facebook/dinov3-vit7b16-pretrain-lvd1689m"
         Legacy aliases such as "dinov3_vitl16" are translated automatically.
     short_side: int
@@ -70,10 +70,10 @@ class Dinov3Config:
 
 LEGACY_ALIAS_TO_HF_ID = {
     "dinov3_vits16": "facebook/dinov3-vits16-pretrain-lvd1689m",
-    "dinov3_vits16plus": "facebook/dinov3-vitsplus-pretrain-lvd1689m",
+    "dinov3_vits16plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
     "dinov3_vitb16": "facebook/dinov3-vitb16-pretrain-lvd1426",
-    "dinov3_vitl16": "facebook/dinov3-vitl16-pretrain-lvd1426",
-    "dinov3_vith16plus": "facebook/dinov3-vitb16-pretrain-lvd1426",
+    "dinov3_vitl16": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+    "dinov3_vith16plus": "facebook/dinov3-vith16plus-pretrain-lvd1689m",
     "dinov3_vit7b16": "facebook/dinov3-vit7b16-pretrain-lvd1689m",
 }
 
@@ -120,7 +120,8 @@ class Dinov3FeatureExtractor:
                 self.cfg.patch_size,
             )
 
-        cls_tokens = 1 if getattr(self.model.config, "use_cls_token", True) else 0
+        cls_tokens = 1 if getattr(
+            self.model.config, "use_cls_token", True) else 0
         register_tokens = int(
             getattr(self.model.config, "num_register_tokens", 0))
         self._num_special_tokens = cls_tokens + register_tokens
@@ -298,7 +299,8 @@ class Dinov3FeatureExtractor:
             tokens = tokens.detach()
         B, seq_len, dim = tokens.shape
         if B != 1:
-            raise ValueError("Only batch size 1 is supported for feature extraction")
+            raise ValueError(
+                "Only batch size 1 is supported for feature extraction")
         H, W = spatial_hw
         grid_h = H // self.patch_size
         grid_w = W // self.patch_size
