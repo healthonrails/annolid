@@ -3726,10 +3726,11 @@ class AnnolidWindow(MainWindow):
             if getattr(shape, "shape_type", "") == "polygon" and len(shape.points) >= 3
         ]
         if selected_polygons:
-            polygon = selected_polygons[0]
-            coords = [(float(pt.x()), float(pt.y())) for pt in polygon.points]
             mask_img = Image.new("L", pil_image.size, 0)
-            ImageDraw.Draw(mask_img).polygon(coords, fill=255)
+            draw = ImageDraw.Draw(mask_img)
+            for polygon in selected_polygons:
+                coords = [(float(pt.x()), float(pt.y())) for pt in polygon.points]
+                draw.polygon(coords, fill=255)
             mask_bool = np.array(mask_img) > 0
 
         request = DinoPCARequest(
