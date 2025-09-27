@@ -14,7 +14,7 @@ import hashlib
 import json
 import io
 import copy
-from PIL import ImageQt, Image
+from PIL import ImageQt, Image, ImageDraw
 import pandas as pd
 import numpy as np
 import torch
@@ -3719,6 +3719,19 @@ class AnnolidWindow(MainWindow):
             self._deactivate_pca_map()
             return
 
+        mask_bool = None
+        selected_polygons = [
+            shape
+            for shape in getattr(self.canvas, "selectedShapes", [])
+            if getattr(shape, "shape_type", "") == "polygon" and len(shape.points) >= 3
+        ]
+        if selected_polygons:
+            polygon = selected_polygons[0]
+            coords = [(float(pt.x()), float(pt.y())) for pt in polygon.points]
+            mask_img = Image.new("L", pil_image.size, 0)
+            ImageDraw.Draw(mask_img).polygon(coords, fill=255)
+            mask_bool = np.array(mask_img) > 0
+
         request = DinoPCARequest(
             image=pil_image,
             model_name=self.pca_map_model,
@@ -3728,6 +3741,7 @@ class AnnolidWindow(MainWindow):
             components=3,
             clip_percentile=1.0,
             alpha=float(self.pca_map_alpha),
+            mask=mask_bool,
         )
         if not self.pca_map_service.request(request):
             self.statusBar().showMessage(

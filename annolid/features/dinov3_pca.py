@@ -41,6 +41,7 @@ def features_to_pca_rgb(
     num_components: int = 3,
     clip_percentile: Optional[float] = 1.0,
     eps: float = 1e-6,
+    mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Project dense features to a 3-channel PCA embedding.
 
@@ -55,6 +56,9 @@ def features_to_pca_rgb(
         outliers before min/max normalization. Pass ``None`` to disable.
     eps:
         Numerical stability term for normalization.
+    mask:
+        Optional boolean mask on the feature grid (H_p, W_p). When provided,
+        PCA components are estimated using only the masked spatial positions.
     """
     if isinstance(features, np.ndarray):
         feats = torch.from_numpy(features)
@@ -71,16 +75,33 @@ def features_to_pca_rgb(
     if flattened.shape[0] < 2:
         raise ValueError("PCA requires at least two spatial positions")
 
-    centered = flattened - flattened.mean(dim=0, keepdim=True)
+    mask_flat: Optional[torch.Tensor] = None
+    mean_vec = flattened.mean(dim=0, keepdim=True)
+    if mask is not None:
+        if mask.shape != (H, W):
+            raise ValueError("mask shape must match feature grid")
+        mask_flat = torch.from_numpy(mask.astype(bool).reshape(-1))
+        valid = int(mask_flat.sum().item())
+        if valid < 2:
+            raise ValueError(
+                "PCA mask must cover at least two spatial positions")
+        mean_vec = flattened[mask_flat].mean(dim=0, keepdim=True)
+
+    centered = flattened - mean_vec
     q = min(num_components, centered.shape[0], centered.shape[1])
     if q <= 0:
         raise ValueError("Cannot compute PCA with zero components")
 
+    if mask_flat is not None:
+        pca_source = centered[mask_flat]
+    else:
+        pca_source = centered
+
     # Low-rank PCA for efficiency on large feature grids
-    U, S, V = torch.pca_lowrank(centered, q=q, center=False)
+    U, S, V = torch.pca_lowrank(pca_source, q=q, center=False)
     projected = centered @ V[:, :q]  # (N, q)
 
-    arr = projected.reshape(H, W, q).float().numpy()
+    arr = projected.reshape(H, W, q).cpu().numpy()
     if q < num_components:
         pad = np.zeros((H, W, num_components - q), dtype=arr.dtype)
         arr = np.concatenate([arr, pad], axis=2)
@@ -88,14 +109,19 @@ def features_to_pca_rgb(
     arr = arr[:, :, :num_components]
     arr_flat = arr.reshape(-1, num_components)
 
+    if mask_flat is not None:
+        reference = arr_flat[mask_flat.numpy()]
+    else:
+        reference = arr_flat
+
     if clip_percentile is not None:
         if not (0.0 <= clip_percentile < 50.0):
             raise ValueError("clip_percentile must be in [0, 50)")
-        lower = np.percentile(arr_flat, clip_percentile, axis=0)
-        upper = np.percentile(arr_flat, 100.0 - clip_percentile, axis=0)
+        lower = np.percentile(reference, clip_percentile, axis=0)
+        upper = np.percentile(reference, 100.0 - clip_percentile, axis=0)
     else:
-        lower = arr_flat.min(axis=0)
-        upper = arr_flat.max(axis=0)
+        lower = reference.min(axis=0)
+        upper = reference.max(axis=0)
 
     scale = np.maximum(upper - lower, eps)
     arr_flat = np.clip(arr_flat, lower, upper)
@@ -131,6 +157,7 @@ class Dinov3PCAMapper:
         custom_size: Optional[Tuple[int, int]] = None,
         return_type: Literal["pil", "array"] = "pil",
         normalize_features: bool = True,
+        mask: Optional[np.ndarray] = None,
     ) -> PCAMapResult:
         """Generate a PCA map for an input image.
 
@@ -154,8 +181,19 @@ class Dinov3PCAMapper:
         normalize_features:
             Whether to L2-normalize per-location features before PCA. Defaults
             to True for consistency with typical DINO usage.
+        mask:
+            Optional boolean or binary array matching the original image size.
+            When provided, PCA components are fitted using only masked pixels
+            and the returned visualization is derived from that sub-region.
         """
         pil = self.extractor._to_pil(image, color_space=color_space)
+        mask_bool: Optional[np.ndarray] = None
+        if mask is not None:
+            mask_arr = np.asarray(mask)
+            if mask_arr.shape != (pil.height, pil.width):
+                raise ValueError("mask shape must match the input image size")
+            mask_bool = mask_arr.astype(bool)
+
         feats = self.extractor.extract(
             pil,
             color_space=color_space,
@@ -163,10 +201,18 @@ class Dinov3PCAMapper:
             return_layer="last",
             normalize=normalize_features,
         )
+
+        mask_patch = None
+        if mask_bool is not None:
+            quantized = self.extractor.quantize_mask(
+                mask_bool.astype(np.uint8) * 255)
+            mask_patch = (quantized.numpy() >= 0.5)
+
         pca_feat = features_to_pca_rgb(
             feats,
             num_components=self.num_components,
             clip_percentile=self.clip_percentile,
+            mask=mask_patch,
         )
 
         h_p, w_p = pca_feat.shape[:2]

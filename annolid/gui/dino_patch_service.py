@@ -174,6 +174,7 @@ class DinoPCARequest:
     clip_percentile: Optional[float] = 1.0
     alpha: float = 0.65
     normalize: bool = True
+    mask: Optional[np.ndarray] = None
 
 
 class _DinoPCAWorker(QtCore.QObject):
@@ -202,6 +203,7 @@ class _DinoPCAWorker(QtCore.QObject):
                 output_size=self._request.output_size,
                 return_type="array",
                 normalize_features=self._request.normalize,
+                mask=self._request.mask,
             )
 
             rgb = np.clip(result.output_rgb, 0.0, 1.0)
@@ -211,6 +213,18 @@ class _DinoPCAWorker(QtCore.QObject):
                 [rgb_uint8, np.full(rgb_uint8.shape[:2],
                                     alpha_val, dtype=np.uint8)]
             )
+
+            if self._request.mask is not None:
+                mask = self._request.mask.astype(bool)
+                if mask.shape != overlay_rgba.shape[:2]:
+                    mask_img = Image.fromarray(mask.astype(np.uint8) * 255)
+                    mask_img = mask_img.resize(
+                        (overlay_rgba.shape[1], overlay_rgba.shape[0]),
+                        resample=Image.NEAREST,
+                    )
+                    mask = np.array(mask_img) > 0
+                overlay_rgba[..., :3][~mask] = 0
+                overlay_rgba[..., 3][~mask] = 0
 
             payload = {
                 "overlay_rgba": overlay_rgba,
