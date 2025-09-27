@@ -93,6 +93,8 @@ from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
     DinoPatchSimilarityService,
+    DinoPCARequest,
+    DinoPCAMapService,
 )
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
@@ -579,6 +581,26 @@ class AnnolidWindow(MainWindow):
                 "Choose model and overlay opacity for patch similarity"),
         )
 
+        self.pca_map_action = newAction(
+            self,
+            self.tr("PCA Feature Map"),
+            self._toggle_pca_map_tool,
+            icon="visualization",
+            tip=self.tr(
+                "Toggle a PCA-colored DINO feature map overlay for the current frame",
+            ),
+        )
+        self.pca_map_action.setCheckable(True)
+        self.pca_map_action.setIcon(
+            QtGui.QIcon(str(self.here / "icons/visualization.png")))
+
+        self.pca_map_settings_action = newAction(
+            self,
+            self.tr("PCA Feature Map Settings…"),
+            self._open_pca_map_settings,
+            tip=self.tr("Choose model and overlay opacity for the PCA map"),
+        )
+
         # Create the QAction with the new label
         add_stamps_action = newAction(
             self,
@@ -603,6 +625,7 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(colab)
         _action_tools.append(visualization)
         _action_tools.append(self.patch_similarity_action)
+        _action_tools.append(self.pca_map_action)
         _action_tools.append(self.recording_widget.record_action)
 
         self.actions.tool = tuple(_action_tools)
@@ -637,8 +660,11 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.view, (glitter2,))
         utils.addActions(self.menus.view, (visualization,))
         utils.addActions(self.menus.view, (self.patch_similarity_action,))
+        utils.addActions(self.menus.view, (self.pca_map_action,))
         utils.addActions(
-            self.menus.view, (self.patch_similarity_settings_action,))
+            self.menus.view,
+            (self.patch_similarity_settings_action, self.pca_map_settings_action),
+        )
 
         utils.addActions(self.menus.help, (about_annolid,))
 
@@ -671,6 +697,21 @@ class AnnolidWindow(MainWindow):
             self._on_patch_similarity_finished)
         self.patch_similarity_service.error.connect(
             self._on_patch_similarity_error)
+
+        self.pca_map_model = str(
+            self.settings.value(
+                "pca_map/model",
+                self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL,
+            )
+        )
+        self.pca_map_alpha = float(
+            self.settings.value("pca_map/alpha", 0.65)
+        )
+        self.pca_map_alpha = min(max(self.pca_map_alpha, 0.05), 1.0)
+        self.pca_map_service = DinoPCAMapService(self)
+        self.pca_map_service.started.connect(self._on_pca_map_started)
+        self.pca_map_service.finished.connect(self._on_pca_map_finished)
+        self.pca_map_service.error.connect(self._on_pca_map_error)
 
         self.video_results_folder = None
         self.seekbar = None
@@ -3390,6 +3431,7 @@ class AnnolidWindow(MainWindow):
         self.resetState()
         self.canvas.setEnabled(True)
         self.canvas.setPatchSimilarityOverlay(None)
+        self._deactivate_pca_map()
         if isinstance(filename, str):
             filename = Path(filename)
         self.imagePath = str(filename.parent)
@@ -3509,6 +3551,7 @@ class AnnolidWindow(MainWindow):
                 self.patch_similarity_action.setChecked(False)
                 return
 
+        self._deactivate_pca_map()
         self.canvas.enablePatchSimilarityMode(self._request_patch_similarity)
         self.statusBar().showMessage(
             self.tr("Patch similarity active – click on the frame to query patches."),
@@ -3624,6 +3667,135 @@ class AnnolidWindow(MainWindow):
                 self.tr("Patch similarity model updated."),
                 3000,
             )
+
+    # ------------------------------------------------------------------
+    # PCA feature map (DINO) integration
+    # ------------------------------------------------------------------
+    def _toggle_pca_map_tool(self, checked=False):
+        state = bool(checked) if isinstance(
+            checked, bool) else self.pca_map_action.isChecked()
+        if not state:
+            self._deactivate_pca_map()
+            return
+
+        if self.canvas.pixmap is None or self.canvas.pixmap.isNull():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("PCA Feature Map"),
+                self.tr(
+                    "Load an image or video frame before generating a PCA map."),
+            )
+            self.pca_map_action.setChecked(False)
+            return
+
+        if not self.pca_map_model:
+            self._open_pca_map_settings()
+            if not self.pca_map_model:
+                self.pca_map_action.setChecked(False)
+                return
+
+        self._request_pca_map()
+
+    def _deactivate_pca_map(self):
+        if hasattr(self, "pca_map_action"):
+            self.pca_map_action.setChecked(False)
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.setPCAMapOverlay(None)
+
+    def _request_pca_map(self) -> None:
+        if self.pca_map_service.is_busy():
+            self.statusBar().showMessage(
+                self.tr("PCA map is already running…"), 2000)
+            return
+
+        self.canvas.setPCAMapOverlay(None)
+        pil_image = self._grab_current_frame_image()
+        if pil_image is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("PCA Feature Map"),
+                self.tr("Failed to access the current frame."),
+            )
+            self._deactivate_pca_map()
+            return
+
+        request = DinoPCARequest(
+            image=pil_image,
+            model_name=self.pca_map_model,
+            short_side=768,
+            device=None,
+            output_size="input",
+            components=3,
+            clip_percentile=1.0,
+            alpha=float(self.pca_map_alpha),
+        )
+        if not self.pca_map_service.request(request):
+            self.statusBar().showMessage(
+                self.tr("PCA map is already running…"), 2000)
+
+    def _on_pca_map_started(self):
+        self.statusBar().showMessage(self.tr("Computing PCA feature map…"))
+
+    def _on_pca_map_finished(self, payload: dict) -> None:
+        if not self.pca_map_action.isChecked():
+            return
+        overlay = payload.get("overlay_rgba")
+        self.canvas.setPCAMapOverlay(overlay)
+        self.statusBar().showMessage(
+            self.tr("PCA feature map ready."),
+            4000,
+        )
+
+    def _on_pca_map_error(self, message: str) -> None:
+        self.canvas.setPCAMapOverlay(None)
+        QtWidgets.QMessageBox.warning(
+            self,
+            self.tr("PCA Feature Map"),
+            message,
+        )
+        self._deactivate_pca_map()
+
+    def _open_pca_map_settings(self):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("PCA Feature Map Settings"))
+        layout = QtWidgets.QFormLayout(dialog)
+
+        model_combo = QtWidgets.QComboBox(dialog)
+        for cfg in PATCH_SIMILARITY_MODELS:
+            model_combo.addItem(cfg.display_name, cfg.identifier)
+
+        current_index = model_combo.findData(self.pca_map_model)
+        if current_index >= 0:
+            model_combo.setCurrentIndex(current_index)
+
+        alpha_spin = QtWidgets.QDoubleSpinBox(dialog)
+        alpha_spin.setRange(0.05, 1.0)
+        alpha_spin.setSingleStep(0.05)
+        alpha_spin.setValue(self.pca_map_alpha)
+
+        layout.addRow(self.tr("Model"), model_combo)
+        layout.addRow(self.tr("Overlay opacity"), alpha_spin)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        layout.addRow(buttons)
+
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self.pca_map_model = model_combo.currentData()
+            self.pca_map_alpha = alpha_spin.value()
+            self.settings.setValue("pca_map/model", self.pca_map_model)
+            self.settings.setValue("pca_map/alpha", self.pca_map_alpha)
+            self.statusBar().showMessage(
+                self.tr("PCA feature map preferences updated."),
+                3000,
+            )
+            if self.pca_map_action.isChecked():
+                self._request_pca_map()
 
     def clean_up(self):
         def quit_and_wait(thread, message):

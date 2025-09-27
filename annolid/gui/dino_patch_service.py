@@ -10,13 +10,17 @@ human readable error message.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 from qtpy import QtCore
 
-from annolid.features import Dinov3Config, Dinov3FeatureExtractor
+from annolid.features import (
+    Dinov3Config,
+    Dinov3FeatureExtractor,
+    Dinov3PCAMapper,
+)
 from annolid.features.dinov3_patch_similarity import DinoPatchSimilarity
 
 
@@ -130,6 +134,117 @@ class DinoPatchSimilarityService(QtCore.QObject):
 
         self._thread = QtCore.QThread()
         self._worker = _DinoPatchWorker(request)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._handle_finished)
+        self._worker.error.connect(self._handle_error)
+        self._worker.finished.connect(self._cleanup)
+        self._worker.error.connect(self._cleanup)
+        self._thread.start()
+        self.started.emit()
+        return True
+
+    @QtCore.Slot(dict)
+    def _handle_finished(self, payload: dict) -> None:
+        self.finished.emit(payload)
+
+    @QtCore.Slot(str)
+    def _handle_error(self, message: str) -> None:
+        self.error.emit(message)
+
+    def _cleanup(self) -> None:
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait()
+            self._thread.deleteLater()
+            self._thread = None
+
+
+@dataclass
+class DinoPCARequest:
+    image: Image.Image
+    model_name: str
+    short_side: int = 768
+    device: Optional[str] = None
+    output_size: Literal["input", "resized", "feature"] = "input"
+    components: int = 3
+    clip_percentile: Optional[float] = 1.0
+    alpha: float = 0.65
+    normalize: bool = True
+
+
+class _DinoPCAWorker(QtCore.QObject):
+    finished = QtCore.Signal(dict)
+    error = QtCore.Signal(str)
+
+    def __init__(self, request: DinoPCARequest) -> None:
+        super().__init__()
+        self._request = request
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            extractor = _get_or_create_extractor(
+                self._request.model_name,
+                self._request.short_side,
+                self._request.device,
+            )
+            mapper = Dinov3PCAMapper(
+                extractor,
+                num_components=self._request.components,
+                clip_percentile=self._request.clip_percentile,
+            )
+            result = mapper.map_image(
+                self._request.image,
+                output_size=self._request.output_size,
+                return_type="array",
+                normalize_features=self._request.normalize,
+            )
+
+            rgb = np.clip(result.output_rgb, 0.0, 1.0)
+            rgb_uint8 = (rgb * 255.0).astype(np.uint8)
+            alpha_val = int(np.clip(self._request.alpha * 255.0, 0, 255))
+            overlay_rgba = np.dstack(
+                [rgb_uint8, np.full(rgb_uint8.shape[:2],
+                                    alpha_val, dtype=np.uint8)]
+            )
+
+            payload = {
+                "overlay_rgba": overlay_rgba,
+                "model": self._request.model_name,
+                "image_size": (
+                    self._request.image.width,
+                    self._request.image.height,
+                ),
+                "components": self._request.components,
+            }
+            self.finished.emit(payload)
+        except Exception as exc:  # pragma: no cover - GUI surface
+            self.error.emit(str(exc))
+
+
+class DinoPCAMapService(QtCore.QObject):
+    started = QtCore.Signal()
+    finished = QtCore.Signal(dict)
+    error = QtCore.Signal(str)
+
+    def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent)
+        self._thread: Optional[QtCore.QThread] = None
+        self._worker: Optional[_DinoPCAWorker] = None
+
+    def is_busy(self) -> bool:
+        return self._thread is not None and self._thread.isRunning()
+
+    def request(self, request: DinoPCARequest) -> bool:
+        if self.is_busy():
+            return False
+
+        self._thread = QtCore.QThread()
+        self._worker = _DinoPCAWorker(request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._handle_finished)
