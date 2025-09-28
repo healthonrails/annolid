@@ -127,6 +127,7 @@ class CutieVideoProcessor:
         self.label_registry: Dict[str, int] = {"_background_": 0}
         self._seed_segment_lookup: Dict[int, SeedSegment] = {}
         self._committed_seed_frames: Set[int] = set()
+        self._cached_labeled_frames: Optional[Set[int]] = None
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -206,6 +207,74 @@ class CutieVideoProcessor:
         logger.info(
             f"Discovered {len(discovered)} CUTIE seed(s) in {results_dir}")
         return discovered
+
+    def _collect_labeled_frame_indices(self) -> Set[int]:
+        """Return cached frame indices that already have polygon annotations saved."""
+        if self._cached_labeled_frames is not None:
+            return self._cached_labeled_frames
+
+        labeled_frames: Set[int] = set()
+        results_dir = self.video_folder
+        if not results_dir.exists() or not results_dir.is_dir():
+            self._cached_labeled_frames = labeled_frames
+            return labeled_frames
+
+        stem = results_dir.name
+        stem_prefix = f"{stem}_"
+        stem_prefix_lower = stem_prefix.lower()
+
+        def scan_directory(directory: Path):
+            if not directory.exists() or not directory.is_dir():
+                return
+            for json_path in directory.glob('*.json'):
+                name_lower = json_path.stem.lower()
+                if not name_lower.startswith(stem_prefix_lower):
+                    continue
+                suffix = name_lower[len(stem_prefix_lower):]
+                if len(suffix) != 9 or not suffix.isdigit():
+                    continue
+                try:
+                    with open(json_path, 'r', encoding='utf-8') as fp:
+                        data = json.load(fp) or {}
+                except (OSError, ValueError) as exc:
+                    logger.debug(
+                        f"Failed to parse JSON annotation {json_path.name}: {exc}")
+                    continue
+
+                shapes = data.get('shapes') or []
+                has_polygon = any(
+                    (shape.get('shape_type') == 'polygon' and len(
+                        shape.get('points', [])) >= 3)
+                    or shape.get('mask')
+                    for shape in shapes
+                )
+                if not has_polygon:
+                    continue
+
+                labeled_frames.add(int(suffix))
+
+        scan_directory(results_dir)
+        nested_dir = results_dir / stem
+        if nested_dir.exists():
+            scan_directory(nested_dir)
+
+        self._cached_labeled_frames = labeled_frames
+        return labeled_frames
+
+    @staticmethod
+    def _segment_already_completed(segment: SeedSegment,
+                                   resolved_end: int,
+                                   labeled_frames: Set[int]) -> bool:
+        """Return True if every frame in the segment range already has annotations."""
+        if resolved_end is None:
+            return False
+        if resolved_end < segment.start_frame:
+            return True
+
+        for frame_idx in range(segment.start_frame, resolved_end + 1):
+            if frame_idx not in labeled_frames:
+                return False
+        return True
 
     def initialize_video_writer(self, output_video_path,
                                 frame_width,
@@ -586,6 +655,10 @@ class CutieVideoProcessor:
         if not segments:
             return "No valid segments found for CUTIE processing."
 
+        # Refresh cached labeled frames so resume logic sees the latest edits
+        self._cached_labeled_frames = None
+        labeled_frames = self._collect_labeled_frame_indices()
+
         cap = cv2.VideoCapture(self.video_name)
         if not cap.isOpened():
             if pred_worker is not None:
@@ -608,6 +681,8 @@ class CutieVideoProcessor:
 
         final_message: Optional[str] = None
         halt_requested = False
+        processed_any_segment = False
+        skipped_segments = 0
 
         if seed_segment_lookup is None:
             seed_segment_lookup = {
@@ -632,6 +707,12 @@ class CutieVideoProcessor:
                         f"Skipping segment starting at {segment.start_frame} with end {resolved_end}.")
                     continue
 
+                if self._segment_already_completed(segment, resolved_end, labeled_frames):
+                    skipped_segments += 1
+                    logger.info(
+                        f"Skipping Cutie segment [{segment.start_frame}, {resolved_end}] - annotations already exist.")
+                    continue
+
                 message, should_halt = self._process_segment(
                     cap=cap,
                     segment=segment,
@@ -645,12 +726,18 @@ class CutieVideoProcessor:
                     visualize_every=visualize_every,
                 )
 
+                processed_any_segment = True
+
                 if message:
                     final_message = message
 
                 if should_halt:
                     halt_requested = True
                     break
+
+            if not processed_any_segment and skipped_segments > 0 and final_message is None:
+                final_message = ("CUTIE processing skipped. All selected segment ranges already "
+                                 "contained saved annotations.")
 
             if final_message is None:
                 last_segment = segments[-1]
