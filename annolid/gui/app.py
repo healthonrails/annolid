@@ -88,7 +88,7 @@ from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.jobs.tracking_worker import TrackingWorker
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
@@ -98,12 +98,15 @@ from annolid.gui.dino_patch_service import (
 )
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
+from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
+from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
 
 
 __appname__ = 'Annolid'
 __version__ = "1.2.2"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
+
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 
 
@@ -219,9 +222,8 @@ class AnnolidWindow(MainWindow):
         self.isPlaying = False
         self.event_type = None
         self._time_stamp = ''
-        self.timestamp_dict = dict()
+        self.behavior_controller = BehaviorController(self._get_rgb_by_label)
         self.annotation_dir = None
-        self.highlighted_mark = None
         self.step_size = 5
         self.stepSizeWidget = StepSizeWidget(5)
         self.prev_shapes = None
@@ -237,10 +239,8 @@ class AnnolidWindow(MainWindow):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
-        self.behaviors = None
         self.playButton = None
         self.saveButton = None
-        self.behavior_ranges = {}
         self.pinned_flags = {}
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
@@ -292,6 +292,23 @@ class AnnolidWindow(MainWindow):
         self.flag_widget.rowSelected.connect(self.handle_row_selected)
 
         self.handle_flags_saved()
+
+        # Behavior event log dock
+        self.behavior_log_widget = BehaviorEventLogWidget(self)
+        self.behavior_log_widget.jumpToFrame.connect(
+            self._jump_to_frame_from_log)
+        self.behavior_log_widget.undoRequested.connect(
+            self.undo_last_behavior_event)
+        self.behavior_log_widget.clearRequested.connect(
+            self._clear_behavior_events_from_log)
+
+        self.behavior_log_dock = QtWidgets.QDockWidget("Behavior Log", self)
+        self.behavior_log_dock.setObjectName('behaviorLogDock')
+        self.behavior_log_dock.setWidget(self.behavior_log_widget)
+        self.behavior_log_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
+                                           QtWidgets.QDockWidget.DockWidgetClosable |
+                                           QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_log_dock)
 
         self.setCentralWidget(scrollArea)
 
@@ -708,6 +725,11 @@ class AnnolidWindow(MainWindow):
             self.settings.value("pca_map/alpha", 0.65)
         )
         self.pca_map_alpha = min(max(self.pca_map_alpha, 0.05), 1.0)
+        self.pca_map_clusters = int(
+            self.settings.value("pca_map/clusters", 0)
+        )
+        if self.pca_map_clusters < 0:
+            self.pca_map_clusters = 0
         self.pca_map_service = DinoPCAMapService(self)
         self.pca_map_service.started.connect(self._on_pca_map_started)
         self.pca_map_service.finished.connect(self._on_pca_map_finished)
@@ -1020,9 +1042,8 @@ class AnnolidWindow(MainWindow):
     def handle_flag_start_button(self, flag_name):
 
         if self.seekbar:
-            event_type = flag_name + '_start'
-            self.highlighted_mark = self.add_highlighted_mark(
-                self.frame_number, mark_type=event_type)
+            self.record_behavior_event(
+                flag_name, "start", frame_number=self.frame_number)
         self.canvas.setBehaviorText(flag_name)
         self.event_type = flag_name
         self.pinned_flags[flag_name] = True
@@ -1033,11 +1054,10 @@ class AnnolidWindow(MainWindow):
         else:
             self.handle_flag_end_button(flag_name)
 
-    def handle_flag_end_button(self, flag_name):
-        if self.seekbar:
-            event_type = flag_name + '_end'
-            self.highlighted_mark = self.add_highlighted_mark(
-                self.frame_number, mark_type=event_type, color='red')
+    def handle_flag_end_button(self, flag_name, record_event: bool = True):
+        if self.seekbar and record_event:
+            self.record_behavior_event(
+                flag_name, "end", frame_number=self.frame_number)
         self.event_type = flag_name
         self.canvas.setBehaviorText("")
         self.pinned_flags[flag_name] = False
@@ -1343,6 +1363,7 @@ class AnnolidWindow(MainWindow):
                 self.statusBar().removeWidget(self.saveButton)
             if self.playButton is not None:
                 self.statusBar().removeWidget(self.playButton)
+            self.behavior_controller.attach_slider(None)
             self.seekbar = None
         self._df = None
         self._df_deeplabcut = None
@@ -1357,7 +1378,8 @@ class AnnolidWindow(MainWindow):
         self.frame_number = 0
         self.step_size = 5
         self.video_results_folder = None
-        self.timestamp_dict = dict()
+        self.behavior_controller.clear()
+        self.behavior_log_widget.clear()
         self.isPlaying = False
         self._time_stamp = ''
         self.saveButton = None
@@ -1366,7 +1388,6 @@ class AnnolidWindow(MainWindow):
         self.filename = None
         self.canvas.pixmap = None
         self.event_type = None
-        self.highlighted_mark = None
         self.stepSizeWidget = StepSizeWidget()
         self.prev_shapes = None
         self.pred_worker = None
@@ -2184,7 +2205,7 @@ class AnnolidWindow(MainWindow):
                 self._time_stamp = convert_frame_number_to_time(
                     self.frame_number, self.fps)
                 if clean:
-                    title = f"{title}-Video Timestamp:{self._time_stamp}|Events:{len(self.timestamp_dict.keys())}"
+                    title = f"{title}-Video Timestamp:{self._time_stamp}|Events:{self.behavior_controller.events_count}"
                     title = f"{title}|Frame_number:{self.frame_number}"
                 else:
                     title = f"{title}|Video Timestamp:{self._time_stamp}"
@@ -2873,78 +2894,151 @@ class AnnolidWindow(MainWindow):
 
     def handle_uniq_label_list_selection_change(self):
         selected_items = self.uniqLabelList.selectedItems()
+        if self.seekbar is None:
+            return
         if selected_items:
             self.add_highlighted_mark()
         else:
             self.add_highlighted_mark(mark_type='event_end',
                                       color='red')
 
+    def _estimate_recording_time(self, frame_number: int) -> Optional[float]:
+        """Approximate the recording timestamp (seconds) for a frame."""
+        if self.fps and self.fps > 0:
+            return frame_number / float(self.fps)
+        # Fallback to NTSC-like default if FPS is not known
+        return frame_number / 29.97 if frame_number is not None else None
+
+    def record_behavior_event(self,
+                              behavior: str,
+                              event_label: str,
+                              frame_number: Optional[int] = None,
+                              timestamp: Optional[float] = None,
+                              trial_time: Optional[float] = None,
+                              subject: Optional[str] = None,
+                              highlight: bool = True) -> Optional[BehaviorEvent]:
+        if frame_number is None:
+            frame_number = self.frame_number
+        if timestamp is None:
+            timestamp = self._estimate_recording_time(frame_number)
+        if trial_time is None:
+            trial_time = timestamp
+        if subject is None:
+            subject = "Subject 1"
+
+        event = self.behavior_controller.record_event(
+            behavior,
+            event_label,
+            frame_number,
+            timestamp=timestamp,
+            trial_time=trial_time,
+            subject=subject,
+            highlight=highlight,
+        )
+        if event is None:
+            logger.warning(
+                "Unrecognized behavior event label '%s' for '%s'.",
+                event_label,
+                behavior,
+            )
+            return None
+        self.pinned_flags.setdefault(behavior, False)
+        fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
+        self.behavior_log_widget.append_event(event, fps=fps_for_log)
+        return event
+
+    def _jump_to_frame_from_log(self, frame: int) -> None:
+        if self.seekbar is None or self.num_frames is None:
+            return
+        target = max(0, min(frame, self.num_frames - 1))
+        if self.seekbar.value() != target:
+            self.seekbar.setValue(target)
+        else:
+            self.set_frame_number(target)
+
+    def undo_last_behavior_event(self) -> None:
+        event = self.behavior_controller.pop_last_event()
+        if event is None:
+            return
+        self.behavior_log_widget.remove_event(event.mark_key)
+        if self.seekbar is not None:
+            self.seekbar.setTickMarks()
+        self.canvas.setBehaviorText(None)
+
+    def _clear_behavior_events_from_log(self) -> None:
+        if not self.behavior_controller.events_count:
+            self.behavior_log_widget.clear()
+            return
+        self.behavior_controller.clear_behavior_data()
+        self.behavior_log_widget.clear()
+        if self.seekbar is not None:
+            self.seekbar.setTickMarks()
+        self.canvas.setBehaviorText(None)
+        if self.pinned_flags:
+            for behavior in list(self.pinned_flags.keys()):
+                self.pinned_flags[behavior] = False
+            self.loadFlags(self.pinned_flags)
+
     def add_highlighted_mark(self, val=None,
                              mark_type=None,
                              color=None,
                              init_load=False):
-        """
-        Adds a new highlighted mark to the slider.
+        """Add a non-behavior highlight mark to the slider."""
+        if self.seekbar is None:
+            return None
 
-        If no color is specified and self.event_type is set, a color is computed
-        based on the behavior name.
-        """
-        if val is None:
-            val = self.frame_number
-        else:
-            val = int(val)
-
-        # Use hash-based color if color not provided and an event type exists.
-        if color is None:
-            if mark_type is not None:
-                color = self._get_rgb_by_label(mark_type)
-            else:
-                color = 'green' if mark_type == 'event_start' else 'red'
-
-        # Only add mark if not already present or if loading initial data.
-        if init_load or ((val, mark_type) not in self.timestamp_dict):
-            highlighted_mark = VideoSliderMark(mark_type=mark_type,
-                                               val=val,
-                                               _color=color)
-            # Store a timestamp or convert frame number to time, as before.
-            if (val, mark_type) not in self.timestamp_dict:
-                self.timestamp_dict[(
-                    val, mark_type)] = self._time_stamp if self._time_stamp else convert_frame_number_to_time(val)
-            self.seekbar.addMark(highlighted_mark)
-            self.canvas.setBehaviorText(mark_type)
-            self.pinned_flags[self.event_type] = True
-            return highlighted_mark
+        frame_val = self.frame_number if val is None else int(val)
+        return self.behavior_controller.add_generic_mark(
+            frame_val,
+            mark_type=mark_type,
+            color=color,
+            init_load=init_load,
+        )
 
     def remove_highlighted_mark(self):
-        if self.highlighted_mark is not None:
-            self.seekbar.setValue(self.highlighted_mark.val)
+        if self.seekbar is None:
+            return
+
+        removed_behavior_keys: List[Tuple[int, str, str]] = []
+
+        if self.behavior_controller.highlighted_mark is not None:
             if self.isPlaying:
                 self.togglePlay()
-            self.seekbar.removeMark(self.highlighted_mark)
-            _item = (self.highlighted_mark.val,
-                     self.highlighted_mark.mark_type)
-            if _item in self.timestamp_dict:
-                del self.timestamp_dict[_item]
-                self.highlighted_mark = None
+            removed = self.behavior_controller.remove_highlighted_mark()
+            if removed:
+                if removed[0] == "behavior":
+                    removed_behavior_keys.append(
+                        removed[1])  # type: ignore[index]
+                if self.event_type in self.pinned_flags:
+                    self.pinned_flags[self.event_type] = False
         elif self.seekbar.isMarkedVal(self.frame_number):
-            cur_marks = self.seekbar.getMarksAtVal(self.frame_number)
-            for cur_mark in cur_marks:
-                self.seekbar.removeMark(cur_mark)
-                _key = (self.frame_number, cur_mark.mark_type)
-                if _key in self.timestamp_dict:
-                    del self.timestamp_dict[_key]
-            self.seekbar.setTickMarks()
+            removed = self.behavior_controller.remove_marks_at_value(
+                self.frame_number)
+            for kind, key in removed:
+                if kind == "behavior":
+                    removed_behavior_keys.append(key)  # type: ignore[arg-type]
+            if removed and self.event_type in self.pinned_flags:
+                self.pinned_flags[self.event_type] = False
         else:
-            _curr_val = self.seekbar.value()
-            _marks = list(self.seekbar.getMarks())
-            for i in range(len(_marks)):
-                if _curr_val == _marks[i].val:
-                    self.seekbar.removeMark(_marks[i])
-                    _key = (_curr_val, _marks[i].mark_type)
-                    if _key in self.timestamp_dict:
-                        del self.timestamp_dict[_key]
-            self.seekbar.setTickMarks()
-        self.pinned_flags[self.event_type] = False
+            current_val = self.seekbar.value()
+            removed_any = False
+            local_removed_keys: List[Tuple[int, str, str]] = []
+            for mark in list(self.seekbar.getMarks()):
+                if mark.val == current_val:
+                    result = self.behavior_controller.remove_mark_instance(
+                        mark)
+                    removed_any = removed_any or bool(result)
+                    if result and result[0] == "behavior":
+                        # type: ignore[arg-type]
+                        local_removed_keys.append(result[1])
+            if removed_any:
+                self.seekbar.setTickMarks()
+                if self.event_type in self.pinned_flags:
+                    self.pinned_flags[self.event_type] = False
+                removed_behavior_keys.extend(local_removed_keys)
+
+        for key in removed_behavior_keys:
+            self.behavior_log_widget.remove_event(key)
         self.canvas.setBehaviorText(None)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
@@ -2963,19 +3057,25 @@ class AnnolidWindow(MainWindow):
                 self.togglePlay()
             elif event.key() == Qt.Key_S:
                 if self.event_type is None:
-                    event_type = self._config['events']["start"]
+                    self.add_highlighted_mark(
+                        self.frame_number,
+                        mark_type=self._config['events']["start"],
+                    )
                 else:
-                    event_type = self.event_type + '_start'
-                self.highlighted_mark = self.add_highlighted_mark(
-                    self.frame_number, mark_type=event_type)
+                    self.record_behavior_event(
+                        self.event_type, "start", frame_number=self.frame_number)
             elif event.key() == Qt.Key_E:
                 if self.event_type is None:
-                    event_type = self._config['events']["end"]
+                    self.add_highlighted_mark(
+                        self.frame_number,
+                        mark_type=self._config['events']["end"],
+                        color='red',
+                    )
                 else:
-                    event_type = self.event_type + '_end'
-                self.highlighted_mark = self.add_highlighted_mark(
-                    self.frame_number, mark_type=event_type, color='red')
-                self.handle_flag_end_button(self.event_type)
+                    self.record_behavior_event(
+                        self.event_type, "end", frame_number=self.frame_number)
+                    self.handle_flag_end_button(
+                        self.event_type, record_event=False)
             elif event.key() == Qt.Key_R:
                 self.remove_highlighted_mark()
             elif event.key() == Qt.Key_Q:
@@ -3004,30 +3104,16 @@ class AnnolidWindow(MainWindow):
                                                    "CSV files (*.csv)")
 
         if file_path:
+            rows = self.behavior_controller.export_rows(
+                timestamp_fallback=lambda evt: self._estimate_recording_time(
+                    evt.frame)
+            )
             with open(file_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                # Write the header for the new CSV format
                 writer.writerow(['Trial time', 'Recording time',
                                 'Subject', 'Behavior', 'Event'])
-
-                # Assuming the timestamp_dict keys are (frame_number, behavior) tuples
-                for _key in sorted(self.timestamp_dict.keys()):
-                    if self.fps:
-                        recording_time = int(_key[0]) / self.fps
-                    else:
-                        recording_time = int(_key[0]) / 29.97
-
-                    # In this case, trial time is the same as recording time
-                    trial_time = recording_time
-                    subject = "Subject 1"  #
-                    # Assuming the behavior is stored as part of the tuple
-                    behavior = _key[1]
-                    # Assuming event based on behavior
-                    event = "state start" if "start" in behavior else "state stop"
-                    behavior = behavior.split('_')[0]
-
-                    writer.writerow(
-                        [trial_time, recording_time, subject, behavior, event])
+                for row in rows:
+                    writer.writerow(row)
 
             QtWidgets.QMessageBox.information(
                 self, "Timestamps saved", "Timestamps saved successfully!")
@@ -3064,7 +3150,9 @@ class AnnolidWindow(MainWindow):
         Loads various tracking and behavior data from standardized CSV files
         in the video's directory.
         """
-        self.timestamp_dict = {}
+        self.behavior_controller.clear()
+        self.behavior_log_widget.clear()
+        self.pinned_flags = {}
         self._df = None  # Reset dataframe
 
         video_name = Path(video_filename).stem
@@ -3110,15 +3198,7 @@ class AnnolidWindow(MainWindow):
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""
-        if self.behavior_ranges is None or behavior not in self.behavior_ranges:
-            return False  # Behavior not found
-
-        for start, end in self.behavior_ranges[behavior]:
-            if end is None:  # Handles case where there is no 'end' event yet for a given behavior
-                end = float('inf')
-            if start <= frame_number <= end:
-                return True
-        return False
+        return self.behavior_controller.is_behavior_active(frame_number, behavior)
 
     def _load_deeplabcut_results(self, frame_number: int, is_multi_animal: bool = False):
         """
@@ -3185,7 +3265,7 @@ class AnnolidWindow(MainWindow):
         self.loadShapes(shapes)
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
-        """Loads behavior data from a CSV file and stores it in timestamp_dict.
+        """Load behavior events from CSV and populate the slider timeline.
 
         Args:
             behavior_csv_file (str): Path to the CSV file containing behavior data.
@@ -3193,49 +3273,67 @@ class AnnolidWindow(MainWindow):
         # Load the CSV file into a DataFrame
         df_behaviors = pd.read_csv(behavior_csv_file)
 
-        self.behavior_ranges = {}
-        self.behaviors = set()
+        rows: List[Tuple[float, float, str, str, str]] = []
 
-        # Iterate through each row of the DataFrame
         for _, row in df_behaviors.iterrows():
             try:
-                timestamp: float = row["Recording time"]
-                event: str = row["Event"]
-                behavior = row["Behavior"]
+                raw_timestamp = row["Recording time"]
+                event_label = str(row["Event"])
+                behavior = str(row["Behavior"])
+                raw_subject = row.get("Subject")
+                raw_trial_time = row.get("Trial time")
             except KeyError:
                 del df_behaviors
-                # try to load deeplabcut results
                 self._df_deeplabcut = pd.read_csv(
                     behavior_csv_file, header=[0, 1, 2], index_col=0)
                 return
-            self.behaviors.add(behavior)
-            # Calculate the frame number based on timestamp and fps
-            frame_number: int = int(float(timestamp) * self.fps)
 
-            # Determine the type of event (start or end)
-            mark_type: str = 'event_start' if 'start' in event.lower() else 'event_end'
+            try:
+                timestamp_value = float(raw_timestamp)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Failed to convert timestamp '%s' for behavior '%s'.",
+                    raw_timestamp,
+                    behavior,
+                )
+                continue
 
-            if behavior not in self.behavior_ranges:
-                self.behavior_ranges[behavior] = []
+            trial_time_value: Optional[float]
+            try:
+                trial_time_value = float(raw_trial_time) if raw_trial_time is not None and pd.notna(
+                    raw_trial_time) else None
+            except (TypeError, ValueError):
+                trial_time_value = None
 
-            if mark_type == 'event_start':
-                # Start range, end is None initially
-                self.behavior_ranges[behavior].append((frame_number, None))
-            elif mark_type == 'event_end':
-                # Check if a corresponding start exists
-                if self.behavior_ranges[behavior]:
-                    last_start, _ = self.behavior_ranges[behavior].pop()
-                    self.behavior_ranges[behavior].append(
-                        (last_start, frame_number))
+            subject_value = None
+            if raw_subject is not None and pd.notna(raw_subject):
+                subject_value = str(raw_subject)
 
-            # Store the relevant data in the timestamp_dict
-            self.timestamp_dict[(frame_number, behavior)] = (
-                timestamp,
+            rows.append((
+                trial_time_value,
+                timestamp_value,
+                subject_value,
                 behavior,
-                row["Subject"],
-                row["Trial time"],
-                event,
-            )
+                event_label,
+            ))
+
+        fps = self.fps if self.fps and self.fps > 0 else 29.97
+
+        def time_to_frame(time_value: float) -> int:
+            return int(round(time_value * fps))
+
+        self.behavior_controller.load_events_from_rows(
+            rows,
+            time_to_frame=time_to_frame,
+        )
+        self.behavior_controller.attach_slider(self.seekbar)
+        fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
+        self.behavior_log_widget.set_events(
+            list(self.behavior_controller.iter_events()),
+            fps=fps_for_log,
+        )
+        self.pinned_flags.update(
+            {behavior: False for behavior in self.behavior_controller.behavior_names})
 
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
@@ -3316,6 +3414,7 @@ class AnnolidWindow(MainWindow):
                 return
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
+            self.behavior_log_widget.set_fps(self.fps)
             if self.seekbar:
                 self.statusBar().removeWidget(self.seekbar)
             if self.playButton:
@@ -3323,6 +3422,7 @@ class AnnolidWindow(MainWindow):
             if self.saveButton:
                 self.statusBar().removeWidget(self.saveButton)
             self.seekbar = VideoSlider()
+            self.behavior_controller.attach_slider(self.seekbar)
             self.seekbar.input_value.returnPressed.connect(self.jump_to_frame)
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
@@ -3374,13 +3474,6 @@ class AnnolidWindow(MainWindow):
             # and segmentation
             self.load_tracking_results(cur_video_folder, video_filename)
 
-            if self.timestamp_dict:
-                for frame_number, mark_type in self.timestamp_dict.keys():
-                    self.add_highlighted_mark(val=frame_number,
-                                              mark_type=mark_type,
-                                              init_load=True
-                                              )
-
             if self.filename:  # Video successfully loaded
                 self.open_segment_editor_action.setEnabled(True)
                 # Load persisted segments for the new video
@@ -3422,9 +3515,8 @@ class AnnolidWindow(MainWindow):
             logger.error(f"Error while jumping to frame: {e}")
 
     def tooltip_callable(self, val):
-        if self.highlighted_mark is not None:
-            if self.frame_number == val:
-                return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
+        if self.behavior_controller.highlighted_mark is not None and self.frame_number == val:
+            return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
         return ''
 
     def image_to_canvas(self, qimage, filename, frame_number):
@@ -3443,19 +3535,19 @@ class AnnolidWindow(MainWindow):
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
-        flags = {}
-        if self.behaviors is not None:
-            for behavior in self.behaviors:
-                if self.is_behavior_active(self.frame_number, behavior):
-                    flags[behavior] = True
-                    self.add_highlighted_mark(
-                        self.frame_number, mark_type=behavior)
-                    self.canvas.setBehaviorText(behavior)
-                else:
-                    if self.canvas.current_behavior_text == behavior:
-                        flags[behavior] = True
-                    else:
-                        flags[behavior] = False
+        flags: Dict[str, bool] = {}
+        active_behaviors = self.behavior_controller.active_behaviors(
+            self.frame_number)
+        if active_behaviors:
+            self.canvas.setBehaviorText(",".join(sorted(active_behaviors)))
+        else:
+            self.canvas.setBehaviorText(None)
+
+        current_text = self.canvas.current_behavior_text or ""
+        current_text_set = {item.strip()
+                            for item in current_text.split(",") if item.strip()}
+        for behavior in sorted(self.behavior_controller.behavior_names):
+            flags[behavior] = behavior in current_text_set
 
         self.loadFlags(flags)
         if self._config["keep_prev"] and self.noShapes():
@@ -3729,10 +3821,13 @@ class AnnolidWindow(MainWindow):
             mask_img = Image.new("L", pil_image.size, 0)
             draw = ImageDraw.Draw(mask_img)
             for polygon in selected_polygons:
-                coords = [(float(pt.x()), float(pt.y())) for pt in polygon.points]
+                coords = [(float(pt.x()), float(pt.y()))
+                          for pt in polygon.points]
                 draw.polygon(coords, fill=255)
             mask_bool = np.array(mask_img) > 0
 
+        cluster_k = self.pca_map_clusters if getattr(
+            self, "pca_map_clusters", 0) > 1 else None
         request = DinoPCARequest(
             image=pil_image,
             model_name=self.pca_map_model,
@@ -3743,6 +3838,7 @@ class AnnolidWindow(MainWindow):
             clip_percentile=1.0,
             alpha=float(self.pca_map_alpha),
             mask=mask_bool,
+            cluster_k=cluster_k,
         )
         if not self.pca_map_service.request(request):
             self.statusBar().showMessage(
@@ -3756,10 +3852,13 @@ class AnnolidWindow(MainWindow):
             return
         overlay = payload.get("overlay_rgba")
         self.canvas.setPCAMapOverlay(overlay)
-        self.statusBar().showMessage(
-            self.tr("PCA feature map ready."),
-            4000,
-        )
+        cluster_labels = payload.get("cluster_labels") or []
+        if cluster_labels:
+            labels_text = ", ".join(cluster_labels)
+            message = self.tr("PCA clustering ready (%s)") % labels_text
+        else:
+            message = self.tr("PCA feature map ready.")
+        self.statusBar().showMessage(message, 4000)
 
     def _on_pca_map_error(self, message: str) -> None:
         self.canvas.setPCAMapOverlay(None)
@@ -3788,8 +3887,14 @@ class AnnolidWindow(MainWindow):
         alpha_spin.setSingleStep(0.05)
         alpha_spin.setValue(self.pca_map_alpha)
 
+        cluster_spin = QtWidgets.QSpinBox(dialog)
+        cluster_spin.setRange(0, 32)
+        cluster_spin.setValue(
+            max(0, int(getattr(self, "pca_map_clusters", 0))))
+
         layout.addRow(self.tr("Model"), model_combo)
         layout.addRow(self.tr("Overlay opacity"), alpha_spin)
+        layout.addRow(self.tr("Cluster count"), cluster_spin)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
@@ -3803,8 +3908,10 @@ class AnnolidWindow(MainWindow):
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             self.pca_map_model = model_combo.currentData()
             self.pca_map_alpha = alpha_spin.value()
+            self.pca_map_clusters = cluster_spin.value()
             self.settings.setValue("pca_map/model", self.pca_map_model)
             self.settings.setValue("pca_map/alpha", self.pca_map_alpha)
+            self.settings.setValue("pca_map/clusters", self.pca_map_clusters)
             self.statusBar().showMessage(
                 self.tr("PCA feature map preferences updated."),
                 3000,

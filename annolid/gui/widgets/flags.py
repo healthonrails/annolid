@@ -414,8 +414,11 @@ class FlagTableWidget(QtWidgets.QWidget):
         row = existing_flags.get(name)
         if row is not None:
             value_widget = self._table.cellWidget(row, self.COLUMN_ACTIVE)
-            value_widget.setChecked(value)
-            self._update_checkbox_icon(value_widget, value)
+            if isinstance(value_widget, QCheckBox):
+                blocker = QtCore.QSignalBlocker(value_widget)
+                value_widget.setChecked(value)
+                del blocker
+                self._update_checkbox_icon(value_widget, value)
 
     def remove_selected_row(self):
         """Remove the selected row."""
@@ -451,7 +454,10 @@ class FlagTableWidget(QtWidgets.QWidget):
                 self.startButtonClicked.emit(flag_name)
                 checkbox = self._table.cellWidget(row, self.COLUMN_ACTIVE)
                 if checkbox:
+                    blocker = QtCore.QSignalBlocker(checkbox)
                     checkbox.setChecked(True)
+                    del blocker
+                    self._update_checkbox_icon(checkbox, True)
 
     def handle_end_button(self, row):
         """Handle the End button click."""
@@ -462,7 +468,10 @@ class FlagTableWidget(QtWidgets.QWidget):
                 self.endButtonClicked.emit(flag_name)
                 checkbox = self._table.cellWidget(row, self.COLUMN_ACTIVE)
                 if checkbox:
+                    blocker = QtCore.QSignalBlocker(checkbox)
                     checkbox.setChecked(False)
+                    del blocker
+                    self._update_checkbox_icon(checkbox, False)
 
     def save_all_flags(self):
         """Collect and save all flags."""

@@ -175,6 +175,7 @@ class DinoPCARequest:
     alpha: float = 0.65
     normalize: bool = True
     mask: Optional[np.ndarray] = None
+    cluster_k: Optional[int] = None
 
 
 class _DinoPCAWorker(QtCore.QObject):
@@ -204,6 +205,7 @@ class _DinoPCAWorker(QtCore.QObject):
                 return_type="array",
                 normalize_features=self._request.normalize,
                 mask=self._request.mask,
+                cluster_k=self._request.cluster_k,
             )
 
             rgb = np.clip(result.output_rgb, 0.0, 1.0)
@@ -234,6 +236,7 @@ class _DinoPCAWorker(QtCore.QObject):
                     self._request.image.height,
                 ),
                 "components": self._request.components,
+                "cluster_labels": result.cluster_labels,
             }
             self.finished.emit(payload)
         except Exception as exc:  # pragma: no cover - GUI surface

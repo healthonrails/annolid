@@ -4,11 +4,12 @@ import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Tuple, Union, Sequence, List, Dict
 
 import numpy as np
 import torch
 from PIL import Image
+import colorsys
 
 from annolid.features.dinov3_extractor import Dinov3Config, Dinov3FeatureExtractor
 
@@ -24,6 +25,8 @@ class PCAMapResult:
     output_mode: Literal["feature", "resized", "input", "custom"]
     patch_size: int
     input_size: Tuple[int, int]
+    cluster_rgb: Optional[np.ndarray] = None
+    cluster_labels: Optional[List[str]] = None
 
     def as_pil(self) -> Image.Image:
         """Return the output visualization as a PIL image."""
@@ -158,6 +161,7 @@ class Dinov3PCAMapper:
         return_type: Literal["pil", "array"] = "pil",
         normalize_features: bool = True,
         mask: Optional[np.ndarray] = None,
+        cluster_k: Optional[int] = None,
     ) -> PCAMapResult:
         """Generate a PCA map for an input image.
 
@@ -185,6 +189,10 @@ class Dinov3PCAMapper:
             Optional boolean or binary array matching the original image size.
             When provided, PCA components are fitted using only masked pixels
             and the returned visualization is derived from that sub-region.
+        cluster_k:
+            When greater than 1, unsupervised clustering is performed over the
+            PCA feature grid (respecting the optional mask). The resulting
+            cluster overlay replaces the standard PCA coloring.
         """
         pil = self.extractor._to_pil(image, color_space=color_space)
         mask_bool: Optional[np.ndarray] = None
@@ -219,31 +227,31 @@ class Dinov3PCAMapper:
         patch_sz = self.extractor.patch_size
         resized_hw = (h_p * patch_sz, w_p * patch_sz)
 
-        feature_img = Image.fromarray(
-            np.clip(pca_feat * 255.0, 0.0, 255.0).astype(np.uint8), mode="RGB"
+        pca_output_arr = self._resize_feature_image(
+            feature=pca_feat,
+            output_size=output_size,
+            custom_size=custom_size,
+            pil_size=pil.size,
+            resized_hw=resized_hw,
         )
-        if output_size == "feature":
-            output_img = feature_img
-        elif output_size == "resized":
-            output_img = feature_img.resize(
-                (resized_hw[1], resized_hw[0]), resample=self.feature_resample
-            )
-        elif output_size == "input":
-            target_size = custom_size or pil.size
-            output_img = feature_img.resize(
-                target_size, resample=self.feature_resample
-            )
-        else:
-            raise ValueError(f"Unsupported output_size '{output_size}'")
 
-        output_arr = np.asarray(output_img).astype(np.float32) / 255.0
-        if return_type == "array":
-            # nothing extra needed; data already numpy
-            pass
-        elif return_type == "pil":
-            # ensure we keep float version in result while PIL can be rebuilt
-            output_arr = output_arr
-        else:
+        cluster_rgb = None
+        cluster_output_arr = None
+        cluster_labels: List[str] = []
+        if cluster_k is not None and cluster_k > 1:
+            cluster_rgb, cluster_output_arr, cluster_labels = self._cluster_pca_features(
+                pca_feat=pca_feat,
+                mask_patch=mask_patch,
+                cluster_k=cluster_k,
+                output_size=output_size,
+                custom_size=custom_size,
+                pil_size=pil.size,
+                resized_hw=resized_hw,
+            )
+
+        output_arr = cluster_output_arr if cluster_output_arr is not None else pca_output_arr
+
+        if return_type not in {"array", "pil"}:
             raise ValueError(f"Unsupported return_type '{return_type}'")
 
         return PCAMapResult(
@@ -254,7 +262,123 @@ class Dinov3PCAMapper:
             output_mode=output_size if custom_size is None else "custom",
             patch_size=patch_sz,
             input_size=pil.size,
+            cluster_rgb=cluster_rgb,
+            cluster_labels=cluster_labels if cluster_labels else None,
         )
+
+    def _resize_feature_image(
+        self,
+        *,
+        feature: np.ndarray,
+        output_size: Literal["feature", "resized", "input"],
+        custom_size: Optional[Tuple[int, int]],
+        pil_size: Tuple[int, int],
+        resized_hw: Tuple[int, int],
+    ) -> np.ndarray:
+        feature_img = Image.fromarray(
+            np.clip(feature * 255.0, 0.0, 255.0).astype(np.uint8), mode="RGB"
+        )
+        if output_size == "feature":
+            return feature.astype(np.float32)
+        if output_size == "resized":
+            output_img = feature_img.resize(
+                (resized_hw[1], resized_hw[0]), resample=self.feature_resample
+            )
+        elif output_size == "input":
+            target_size = custom_size or pil_size
+            output_img = feature_img.resize(
+                target_size, resample=self.feature_resample
+            )
+        else:
+            raise ValueError(f"Unsupported output_size '{output_size}'")
+        return np.asarray(output_img).astype(np.float32) / 255.0
+
+    def _cluster_pca_features(
+        self,
+        *,
+        pca_feat: np.ndarray,
+        mask_patch: Optional[np.ndarray],
+        cluster_k: int,
+        output_size: Literal["feature", "resized", "input"],
+        custom_size: Optional[Tuple[int, int]],
+        pil_size: Tuple[int, int],
+        resized_hw: Tuple[int, int],
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List[str]]:
+        H, W, C = pca_feat.shape
+        flat = pca_feat.reshape(-1, C)
+
+        if mask_patch is not None:
+            mask_flat = mask_patch.reshape(-1).astype(bool)
+            candidate_idx = np.flatnonzero(mask_flat)
+        else:
+            candidate_idx = np.arange(flat.shape[0])
+
+        if candidate_idx.size == 0:
+            return None, None, []
+
+        k = int(max(2, cluster_k))
+        if candidate_idx.size < k:
+            k = int(candidate_idx.size)
+        if k < 2:
+            return None, None, []
+
+        subset = flat[candidate_idx]
+        labels_subset = self._kmeans(subset, k)
+
+        full_labels = np.full(flat.shape[0], fill_value=-1, dtype=np.int32)
+        full_labels[candidate_idx] = labels_subset
+        label_image = full_labels.reshape(H, W)
+
+        palette = self._generate_palette(k)
+        cluster_rgb = np.zeros((H, W, 3), dtype=np.float32)
+        for idx in range(k):
+            cluster_rgb[label_image == idx] = palette[idx]
+
+        cluster_output_arr = self._resize_feature_image(
+            feature=cluster_rgb,
+            output_size=output_size,
+            custom_size=custom_size,
+            pil_size=pil_size,
+            resized_hw=resized_hw,
+        )
+
+        labels = [f"cluster_{i}" for i in range(k)]
+        return cluster_rgb, cluster_output_arr, labels
+
+    @staticmethod
+    def _kmeans(features: np.ndarray, k: int, iterations: int = 40) -> np.ndarray:
+        rng = np.random.default_rng()
+        n_samples = features.shape[0]
+        if k > n_samples:
+            raise ValueError("k cannot exceed number of samples")
+
+        centroids = features[rng.choice(n_samples, size=k, replace=False)]
+        labels = np.zeros(n_samples, dtype=np.int32)
+
+        for _ in range(iterations):
+            distances = np.linalg.norm(
+                features[:, None, :] - centroids[None, :, :], axis=2)
+            new_labels = distances.argmin(axis=1)
+            if np.array_equal(new_labels, labels):
+                break
+            labels = new_labels
+            for idx in range(k):
+                mask = labels == idx
+                if np.any(mask):
+                    centroids[idx] = features[mask].mean(axis=0)
+                else:
+                    centroids[idx] = features[rng.integers(0, n_samples)]
+
+        return labels
+
+    @staticmethod
+    def _generate_palette(k: int) -> np.ndarray:
+        colors = []
+        for idx in range(k):
+            hue = idx / float(k)
+            r, g, b = colorsys.hsv_to_rgb(hue, 0.65, 1.0)
+            colors.append((r, g, b))
+        return np.array(colors, dtype=np.float32)
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -302,6 +426,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--save-npy",
         help="Optional path to store the raw PCA feature grid as .npy",
     )
+    ap.add_argument(
+        "--cluster-k",
+        type=int,
+        default=0,
+        help="Optional number of clusters to run on PCA features (>1)",
+    )
     return ap
 
 
@@ -325,7 +455,9 @@ def main() -> None:
 
     img = Image.open(args.image).convert("RGB")
     logging.info("Generating PCA map for %s", args.image)
-    result = mapper.map_image(img, output_size=args.output_size)
+    cluster_k = args.cluster_k if args.cluster_k and args.cluster_k > 1 else None
+    result = mapper.map_image(
+        img, output_size=args.output_size, cluster_k=cluster_k)
     result.save(args.output)
     logging.info("Saved PCA visualization to %s", args.output)
 
