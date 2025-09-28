@@ -89,6 +89,10 @@ class VideoSliderMark:
             return True
 
     @property
+    def has_interval(self) -> bool:
+        return self.end_val is not None and self.end_val >= self.val
+
+    @property
     def top_pad(self):
         if self.mark_type in ["tick_column"]:
             return 40
@@ -298,31 +302,59 @@ class VideoSlider(QtWidgets.QGraphicsView):
 
     def _update_visual_positions(self):
         """Updates the visual x position of handle and slider annotations."""
-        x = self._toPos(self.value())
-        self.handle.setPos(x, 0)
+        handle_x = self._toPos(self.value())
+        self.handle.setPos(handle_x, 0)
 
-        for mark in self._mark_items.keys():
+        slider_width = max(0.0, self._slider_width)
+        value_span = max(1, self._val_max - self._val_min)
+        px_per_value = slider_width / value_span if slider_width > 0 else 1.0
+        container_height = self.box_rect.height() - self._header_height
+
+        for mark, item in self._mark_items.items():
+            mark_height = mark.get_height(container_height=container_height)
+            rect = item.rect()
+            rect.setHeight(mark_height)
+
+            if mark.has_interval and mark.end_val is not None:
+                start_val = mark.val
+                end_val = mark.end_val
+                if end_val < start_val:
+                    start_val, end_val = end_val, start_val
+
+                start_x = self._toPos(start_val)
+                start_x = max(0.0, min(slider_width, start_x))
+
+                span_values = abs(end_val - start_val) + 1
+                width = span_values * px_per_value
+                width = max(px_per_value, width)
+
+                available = slider_width - start_x
+                if available > 0:
+                    width = min(width, available)
+                else:
+                    width = px_per_value
+
+                rect.setX(0)
+                rect.setWidth(width)
+                rect.setHeight(mark_height)
+                item.setRect(rect)
+                item.setPos(start_x, 0)
+                continue
 
             width = mark.visual_width
+            rect.setWidth(width)
+            rect.setHeight(mark_height)
+            item.setRect(rect)
 
-            x = self._toPos(mark.val, center=True)
-            self._mark_items[mark].setPos(x, 0)
+            mark_x = self._toPos(mark.val, center=True)
+            item.setPos(mark_x, 0)
 
             if mark in self._mark_labels:
                 label_x = max(
-                    0, x - self._mark_labels[mark].boundingRect().width() // 2
+                    0, mark_x -
+                    self._mark_labels[mark].boundingRect().width() // 2
                 )
                 self._mark_labels[mark].setPos(label_x, 4)
-
-            rect = self._mark_items[mark].rect()
-            rect.setWidth(width)
-            rect.setHeight(
-                mark.get_height(
-                    container_height=self.box_rect.height() - self._header_height
-                )
-            )
-
-            self._mark_items[mark].setRect(rect)
 
     def _get_min_max_slider_heights(self):
 
@@ -703,8 +735,6 @@ class VideoSlider(QtWidgets.QGraphicsView):
         v_top_pad += new_mark.top_pad
         v_bottom_pad += new_mark.bottom_pad
 
-        width = new_mark.visual_width
-
         v_offset = v_top_pad
 
         height = new_mark.get_height(
@@ -712,29 +742,41 @@ class VideoSlider(QtWidgets.QGraphicsView):
         )
 
         color = new_mark.QColor
-        pen = QPen(color, 0.5)
-        pen.setCosmetic(True)
-        brush = QBrush(color) if new_mark.filled else QBrush()
+        is_interval = new_mark.mark_type == "behavior_interval" and new_mark.has_interval
 
-        line = self.scene.addRect(-width // 2, v_offset,
-                                  width, height, pen, brush)
-        self._mark_items[new_mark] = line
-
-        if new_mark.mark_type in ["tick", "event_start", "event_end"]:
-            # Show tick mark behind other slider marks
-            self._mark_items[new_mark].setZValue(0)
-
-            # Add a text label to show in header area
-            mark_label_text = (
-                # sci notation if large
-                f"{new_mark.val + self.tick_index_offset:g}"
-            )
-            self._mark_labels[new_mark] = self.scene.addSimpleText(
-                mark_label_text, self._base_font
-            )
+        if is_interval:
+            pen = QPen(QtCore.Qt.NoPen)
         else:
-            # Show in front of tick marks and behind track lines
-            self._mark_items[new_mark].setZValue(1)
+            pen = QPen(color, 0.5)
+            pen.setCosmetic(True)
+
+        brush = QBrush(color) if (new_mark.filled or is_interval) else QBrush()
+
+        if is_interval:
+            item = self.scene.addRect(0, v_offset, 1, height, pen, brush)
+            item.setZValue(0.3)
+        else:
+            width = new_mark.visual_width
+            item = self.scene.addRect(-width // 2,
+                                      v_offset, width, height, pen, brush)
+
+            if new_mark.mark_type in ["tick", "event_start", "event_end"]:
+                # Show tick mark behind other slider marks
+                item.setZValue(0)
+
+                # Add a text label to show in header area
+                mark_label_text = (
+                    # sci notation if large
+                    f"{new_mark.val + self.tick_index_offset:g}"
+                )
+                self._mark_labels[new_mark] = self.scene.addSimpleText(
+                    mark_label_text, self._base_font
+                )
+            else:
+                # Show in front of tick marks and behind track lines
+                item.setZValue(1)
+
+        self._mark_items[new_mark] = item
 
         if update:
             self._update_visual_positions()
@@ -945,7 +987,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
             (
                 mark.val
                 for mark in self._marks
-                if mark.val < val <= mark.end_val
+                if mark.end_val is not None and mark.val < val <= mark.end_val
             ),
             default=val,
         )
@@ -962,9 +1004,9 @@ class VideoSlider(QtWidgets.QGraphicsView):
         """Increments value within contiguously marked range if possible."""
         inc_val = max(
             (
-                mark.end_val - 1
+                int(mark.end_val) - 1
                 for mark in self._marks
-                if mark.val <= val < mark.end_val
+                if mark.end_val is not None and mark.val <= val < mark.end_val
             ),
             default=val,
         )

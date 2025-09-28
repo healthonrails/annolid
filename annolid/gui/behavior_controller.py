@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
+from qtpy import QtGui
+
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 
 
@@ -169,6 +171,14 @@ class BehaviorTimeline:
     def iter_events(self) -> Iterable[BehaviorEvent]:
         return iter(sorted(self._events.values(), key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1, evt.behavior)))
 
+    def iter_ranges(self) -> Iterable[Tuple[str, int, Optional[int]]]:
+        for behavior, ranges in self._ranges.items():
+            for start, end in ranges:
+                yield behavior, start, end
+
+    def get_behavior_ranges(self, behavior: str) -> List[Tuple[int, Optional[int]]]:
+        return list(self._ranges.get(behavior, []))
+
     def to_export_rows(
         self,
         timestamp_fallback: Optional[Callable[[
@@ -193,13 +203,17 @@ class BehaviorTimeline:
         return rows
 
 
+ColorType = Union[str, Tuple[int, int, int], Tuple[int, int, int, int]]
+
+
 class BehaviorMarkManager:
     """Handle mapping between behavior events and slider marks."""
 
-    def __init__(self, color_getter: Callable[[str], Union[str, Tuple[int, int, int]]]) -> None:
+    def __init__(self, color_getter: Callable[[str], ColorType]) -> None:
         self._color_getter = color_getter
         self._slider: Optional[VideoSlider] = None
         self._behavior_marks: Dict[Tuple[int, str, str], VideoSliderMark] = {}
+        self._interval_marks: Dict[Tuple[str, int, int], VideoSliderMark] = {}
         self._generic_marks: Dict[Tuple[int,
                                         Optional[str]], VideoSliderMark] = {}
         self._highlighted_mark: Optional[VideoSliderMark] = None
@@ -212,25 +226,31 @@ class BehaviorMarkManager:
     def attach_slider(self, slider: Optional[VideoSlider]) -> None:
         if self._slider is slider:
             return
-
         self._detach_marks()
         self._slider = slider
         if self._slider is None:
             return
-
-        for mark in self._behavior_marks.values():
-            self._slider.addMark(mark)
-        for mark in self._generic_marks.values():
-            self._slider.addMark(mark)
+        self._reattach_marks()
 
     def _detach_marks(self) -> None:
         if self._slider is None:
             return
-        for mark in list(self._behavior_marks.values()) + list(self._generic_marks.values()):
+        for mark in list(self._behavior_marks.values()) + list(self._interval_marks.values()) + list(self._generic_marks.values()):
             try:
                 self._slider.removeMark(mark)
             except Exception:
                 pass
+
+    def _reattach_marks(self) -> None:
+        if self._slider is None:
+            return
+        for mark in self._behavior_marks.values():
+            self._slider.addMark(mark, update=False)
+        for mark in self._interval_marks.values():
+            self._slider.addMark(mark, update=False)
+        for mark in self._generic_marks.values():
+            self._slider.addMark(mark, update=False)
+        self._slider._update_visual_positions()
 
     @property
     def highlighted_mark(self) -> Optional[VideoSliderMark]:
@@ -246,130 +266,166 @@ class BehaviorMarkManager:
 
     def clear_behavior_marks(self) -> None:
         if self._slider is not None:
-            for mark in self._behavior_marks.values():
+            for mark in list(self._behavior_marks.values()) + list(self._interval_marks.values()):
                 self._slider.removeMark(mark)
+            self._slider._update_visual_positions()
         self._behavior_marks.clear()
+        self._interval_marks.clear()
         self.clear_highlight()
 
-    def clear_all(self) -> None:
-        self.clear_behavior_marks()
+    def clear_generic_marks(self) -> None:
         if self._slider is not None:
             for mark in self._generic_marks.values():
                 self._slider.removeMark(mark)
+            self._slider._update_visual_positions()
         self._generic_marks.clear()
 
-    def ensure_behavior_mark(self, event: BehaviorEvent, highlight: bool = False) -> VideoSliderMark:
-        mark = self._behavior_marks.get(event.mark_key)
-        if mark is None:
-            color = self._color_getter(event.behavior)
-            mark = VideoSliderMark(mark_type=event.slider_mark_type,
-                                   val=event.frame,
-                                   _color=color)
-            self._behavior_marks[event.mark_key] = mark
-            if self._slider is not None:
-                self._slider.addMark(mark)
-        if highlight:
-            self._highlighted_mark = mark
-            self._highlighted_behavior_key = event.mark_key
-        return mark
+    def clear_all(self) -> None:
+        self.clear_behavior_marks()
+        self.clear_generic_marks()
 
-    def remove_behavior_mark(self, key: Tuple[int, str, str]) -> Optional[VideoSliderMark]:
-        mark = self._behavior_marks.pop(key, None)
-        if mark is None:
-            return None
-        if self._slider is not None:
-            self._slider.removeMark(mark)
-            self._slider.setTickMarks()
-        if self._highlighted_behavior_key == key:
+    def set_marks(
+        self,
+        events: Iterable[BehaviorEvent],
+        ranges: Iterable[Tuple[str, int, Optional[int]]],
+        *,
+        highlight_key: Optional[Tuple[int, str, str]] = None,
+    ) -> None:
+        if self._slider is None:
+            self._behavior_marks.clear()
+            self._interval_marks.clear()
             self.clear_highlight()
-        return mark
+            return
 
-    def add_generic_mark(self,
-                         frame: int,
-                         mark_type: Optional[str] = None,
-                         color: Optional[Union[str,
-                                               Tuple[int, int, int]]] = None,
-                         init_load: bool = False) -> Optional[VideoSliderMark]:
+        self.clear_behavior_marks()
+        for event in events:
+            self._create_behavior_mark(
+                event, highlight=highlight_key == event.mark_key)
+        for behavior, start, end in ranges:
+            if end is None:
+                continue
+            self._create_interval_mark(behavior, start, end)
+        self._slider._update_visual_positions()
+
+    def add_generic_mark(
+        self,
+        frame: int,
+        mark_type: Optional[str] = None,
+        color: Optional[ColorType] = None,
+        init_load: bool = False,
+    ) -> Optional[VideoSliderMark]:
         if self._slider is None:
             return None
-
         key = (frame, mark_type)
         if key in self._generic_marks and not init_load:
             return self._generic_marks[key]
 
-        resolved_color = color
-        if resolved_color is None:
-            if mark_type is not None:
-                resolved_color = self._color_getter(str(mark_type))
-            else:
-                resolved_color = "green"
-
+        qcolor = self._normalize_color(
+            color if color is not None else (
+                self._color_getter(str(mark_type)) if mark_type else "green"
+            )
+        )
+        mark_color = self._color_tuple(qcolor)
         style = mark_type or "simple"
-        mark = VideoSliderMark(
-            mark_type=style, val=frame, _color=resolved_color)
+        mark = VideoSliderMark(mark_type=style, val=frame, _color=mark_color)
         self._generic_marks[key] = mark
         self._slider.addMark(mark)
         return mark
 
-    def remove_mark_instance(self, mark: VideoSliderMark) -> Optional[Tuple[str, Tuple]]:
-        if mark is None:
-            return None
-
-        for key, stored in list(self._behavior_marks.items()):
-            if stored is mark:
-                self.remove_behavior_mark(key)
-                return ("behavior", key)
-
-        for key, stored in list(self._generic_marks.items()):
-            if stored is mark:
-                if self._slider is not None:
-                    self._slider.removeMark(mark)
-                self._generic_marks.pop(key, None)
-                return ("generic", key)
-        return None
-
-    def remove_highlighted_mark(self) -> Optional[Tuple[str, Tuple]]:
-        if self._highlighted_mark is None:
-            return None
-
+    def remove_generic_highlighted_mark(self) -> bool:
+        if self._highlighted_mark is None or self._highlighted_behavior_key is not None:
+            return False
         mark = self._highlighted_mark
-        self._highlighted_mark = None
-
-        if self._highlighted_behavior_key is not None:
-            key = self._highlighted_behavior_key
-            self.remove_behavior_mark(key)
-            return ("behavior", key)
-
-        # Highlighted mark was not a behavior mark; remove via instance search
-        result = self.remove_mark_instance(mark)
+        self._remove_generic_mark_instance(mark)
         self.clear_highlight()
-        return result
+        return True
 
-    def remove_marks_at_value(self, value: int) -> List[Tuple[str, Tuple]]:
-        removed: List[Tuple[str, Tuple]] = []
-        if self._slider is None:
-            return removed
-
-        for mark in list(self._slider.getMarksAtVal(value)):
-            result = self.remove_mark_instance(mark)
-            if result is not None:
-                removed.append(result)
-
-        if removed:
-            self._slider.setTickMarks()
+    def remove_generic_marks_at_value(self, value: int) -> bool:
+        removed = False
+        for key in list(self._generic_marks.keys()):
+            frame, _ = key
+            if frame == value:
+                self._remove_generic_mark(key)
+                removed = True
         return removed
 
-    def remove_marks_matching_value(self, value: int) -> List[Tuple[str, Tuple]]:
-        return self.remove_marks_at_value(value)
+    def remove_mark_instance(self, mark: VideoSliderMark) -> Optional[Tuple[str, Tuple]]:
+        key = self._find_generic_key(mark)
+        if key is not None:
+            self._remove_generic_mark(key)
+            return ("generic", key)
+        return None
 
-    def remove_marks_by_value(self, value: int) -> List[Tuple[str, Tuple]]:
-        return self.remove_marks_at_value(value)
+    def find_behavior_key(self, mark: VideoSliderMark) -> Optional[Tuple[int, str, str]]:
+        for key, stored in self._behavior_marks.items():
+            if stored is mark:
+                return key
+        return None
+
+    def _create_behavior_mark(self, event: BehaviorEvent, highlight: bool = False) -> None:
+        qcolor = self._normalize_color(self._color_getter(event.behavior))
+        color = self._color_tuple(qcolor)
+        mark = VideoSliderMark(mark_type=event.slider_mark_type,
+                               val=event.frame,
+                               _color=color)
+        self._behavior_marks[event.mark_key] = mark
+        if self._slider is not None:
+            self._slider.addMark(mark, update=False)
+        if highlight:
+            self._highlighted_mark = mark
+            self._highlighted_behavior_key = event.mark_key
+
+    def _create_interval_mark(self, behavior: str, start: int, end: int) -> None:
+        qcolor = self._normalize_color(self._color_getter(behavior))
+        qcolor.setAlpha(80)
+        color = self._color_tuple(qcolor)
+        mark = VideoSliderMark(mark_type="behavior_interval",
+                               val=start,
+                               end_val=end,
+                               _color=color)
+        self._interval_marks[(behavior, start, end)] = mark
+        if self._slider is not None:
+            self._slider.addMark(mark, update=False)
+
+    def _remove_generic_mark(self, key: Tuple[int, Optional[str]]) -> None:
+        mark = self._generic_marks.pop(key, None)
+        if mark is not None:
+            self._remove_generic_mark_instance(mark)
+
+    def _remove_generic_mark_instance(self, mark: VideoSliderMark) -> None:
+        if self._slider is not None:
+            try:
+                self._slider.removeMark(mark)
+            except Exception:
+                pass
+            self._slider._update_visual_positions()
+        if self._highlighted_mark is mark:
+            self.clear_highlight()
+
+    def _find_generic_key(self, mark: VideoSliderMark) -> Optional[Tuple[int, Optional[str]]]:
+        for key, stored in self._generic_marks.items():
+            if stored is mark:
+                return key
+        return None
+
+    @staticmethod
+    def _color_tuple(color: QtGui.QColor) -> Tuple[int, int, int, int]:
+        return (color.red(), color.green(), color.blue(), color.alpha())
+
+    def _normalize_color(self, value: ColorType) -> QtGui.QColor:
+        if isinstance(value, str):
+            return QtGui.QColor(value)
+        if len(value) == 4:
+            r, g, b, a = value
+            return QtGui.QColor(r, g, b, a)
+        r, g, b = value
+        return QtGui.QColor(r, g, b)
 
 
 class BehaviorController:
     """High-level orchestrator for behavior events and slider marks."""
 
-    def __init__(self, color_getter: Callable[[str], Union[str, Tuple[int, int, int]]]) -> None:
+    def __init__(self, color_getter: Callable[[str], ColorType]) -> None:
         self.timeline = BehaviorTimeline()
         self.marks = BehaviorMarkManager(color_getter)
 
@@ -386,10 +442,13 @@ class BehaviorController:
         if slider is not None:
             self.sync_marks()
 
-    def sync_marks(self) -> None:
-        self.marks.clear_behavior_marks()
-        for event in self.timeline.iter_events():
-            self.marks.ensure_behavior_mark(event)
+    def sync_marks(self, highlight_key: Optional[Tuple[int, str, str]] = None) -> None:
+        if self.marks.slider is None:
+            return
+        self.timeline.flush_pending()
+        events = list(self.timeline.iter_events())
+        ranges = list(self.timeline.iter_ranges())
+        self.marks.set_marks(events, ranges, highlight_key=highlight_key)
 
     def clear(self) -> None:
         self.timeline.clear()
@@ -397,7 +456,7 @@ class BehaviorController:
 
     def clear_behavior_data(self) -> None:
         self.timeline.clear()
-        self.marks.clear_behavior_marks()
+        self.sync_marks()
 
     def record_event(
         self,
@@ -424,43 +483,48 @@ class BehaviorController:
         )
         if event is None:
             return None
-
-        self.marks.ensure_behavior_mark(event, highlight=highlight)
+        self.sync_marks(highlight_key=event.mark_key if highlight else None)
         return event
 
     def remove_highlighted_mark(self) -> Optional[Tuple[str, Tuple]]:
-        result = self.marks.remove_highlighted_mark()
-        if result is None:
-            return None
-        kind, key = result
-        if kind == "behavior":
-            self.timeline.remove_event(key)  # type: ignore[arg-type]
-        return result
+        key = self.marks.highlighted_behavior_key
+        if key is not None:
+            self.timeline.remove_event(key)
+            self.sync_marks()
+            return ("behavior", key)
+        if self.marks.remove_generic_highlighted_mark():
+            return ("generic", ())
+        return None
 
     def remove_marks_at_value(self, value: int) -> List[Tuple[str, Tuple]]:
-        removed = self.marks.remove_marks_at_value(value)
-        for kind, key in removed:
-            if kind == "behavior":
-                self.timeline.remove_event(key)  # type: ignore[arg-type]
-        return removed
+        removed: List[Tuple[str, Tuple]] = []
+        for key, event in list(self.timeline.events.items()):
+            if event.frame == value:
+                self.timeline.remove_event(key)
+                removed.append(("behavior", key))
+        if removed:
+            self.sync_marks()
+            return removed
+        if self.marks.remove_generic_marks_at_value(value):
+            return [("generic", ())]
+        return []
 
     def add_generic_mark(
         self,
         frame: int,
         mark_type: Optional[str] = None,
-        color: Optional[Union[str, Tuple[int, int, int]]] = None,
+        color: Optional[ColorType] = None,
         init_load: bool = False,
     ) -> Optional[VideoSliderMark]:
         return self.marks.add_generic_mark(frame, mark_type=mark_type, color=color, init_load=init_load)
 
     def remove_mark_instance(self, mark: VideoSliderMark) -> Optional[Tuple[str, Tuple]]:
-        result = self.marks.remove_mark_instance(mark)
-        if result is None:
-            return None
-        kind, key = result
-        if kind == "behavior":
-            self.timeline.remove_event(key)  # type: ignore[arg-type]
-        return result
+        key = self.marks.find_behavior_key(mark)
+        if key is not None:
+            self.timeline.remove_event(key)
+            self.sync_marks()
+            return ("behavior", key)
+        return self.marks.remove_mark_instance(mark)
 
     def active_behaviors(self, frame: int) -> Set[str]:
         self.timeline.flush_pending()
@@ -485,7 +549,7 @@ class BehaviorController:
     def delete_event(self, key: Tuple[int, str, str]) -> Optional[BehaviorEvent]:
         event = self.timeline.remove_event(key)
         if event is not None:
-            self.marks.remove_behavior_mark(key)
+            self.sync_marks()
         return event
 
     def pop_last_event(self) -> Optional[BehaviorEvent]:
@@ -493,8 +557,8 @@ class BehaviorController:
         if not events:
             return None
         event = events[-1]
-        self.marks.remove_behavior_mark(event.mark_key)
         self.timeline.remove_event(event.mark_key)
+        self.sync_marks()
         return event
 
     def export_rows(
@@ -512,7 +576,7 @@ class BehaviorController:
         time_to_frame: Callable[[float], int],
         rebuild: bool = True,
     ) -> None:
-        self.clear_behavior_data()
+        self.timeline.clear()
         for trial_time, recording_time, subject, behavior, event_label in rows:
             try:
                 time_value = float(recording_time)
@@ -538,4 +602,4 @@ class BehaviorController:
 
         if rebuild:
             self.timeline.flush_pending()
-            self.sync_marks()
+        self.sync_marks()
