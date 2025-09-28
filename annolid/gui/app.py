@@ -1998,6 +1998,32 @@ class AnnolidWindow(MainWindow):
         self.canvas.setBehaviorText(behave_text)
         self.flag_widget.loadFlags(flags)
 
+    def _refresh_behavior_overlay(self) -> None:
+        """Synchronize canvas label and flag widget with timeline behaviors."""
+        active_behaviors = self.behavior_controller.active_behaviors(
+            self.frame_number)
+
+        # Preserve any user-specified flags that aren't managed by the behavior controller.
+        current_flags: Dict[str, bool] = {}
+        table = self.flag_widget._table
+        for row in range(table.rowCount()):
+            name_widget = table.cellWidget(row, FlagTableWidget.COLUMN_NAME)
+            value_widget = table.cellWidget(row, FlagTableWidget.COLUMN_ACTIVE)
+            if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(value_widget, QtWidgets.QCheckBox):
+                name = name_widget.text().strip()
+                if name:
+                    current_flags[name] = value_widget.isChecked()
+
+        for behavior in sorted(self.behavior_controller.behavior_names):
+            current_flags[behavior] = behavior in active_behaviors
+
+        if current_flags:
+            self.loadFlags(current_flags)
+        else:
+            text = ",".join(sorted(active_behaviors)
+                            ) if active_behaviors else None
+            self.canvas.setBehaviorText(text)
+
     def _get_pil_image_from_state(self) -> Image.Image | None:
         """
         Safely converts the stored image data (self.imageData) to a standard
@@ -3535,21 +3561,6 @@ class AnnolidWindow(MainWindow):
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
-        flags: Dict[str, bool] = {}
-        active_behaviors = self.behavior_controller.active_behaviors(
-            self.frame_number)
-        if active_behaviors:
-            self.canvas.setBehaviorText(",".join(sorted(active_behaviors)))
-        else:
-            self.canvas.setBehaviorText(None)
-
-        current_text = self.canvas.current_behavior_text or ""
-        current_text_set = {item.strip()
-                            for item in current_text.split(",") if item.strip()}
-        for behavior in sorted(self.behavior_controller.behavior_names):
-            flags[behavior] = behavior in current_text_set
-
-        self.loadFlags(flags)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
@@ -3615,6 +3626,7 @@ class AnnolidWindow(MainWindow):
         self.loadPredictShapes(frame_number, filename)
         if self._df_deeplabcut is not None:
             self._load_deeplabcut_results(frame_number)
+        self._refresh_behavior_overlay()
         return True
 
     # ------------------------------------------------------------------

@@ -1129,22 +1129,56 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             p.drawPixmap(0, 0, self._pca_map_pixmap)
 
         if self.current_behavior_text and len(self.current_behavior_text) > 0:
-            # Calculate font size based on pixmap size
-            pixmap_size = min(self.pixmap.width(), self.pixmap.height())
-            font_size = max(20, pixmap_size // 40)  # Adjust divisor as needed
+            p.save()
+            p.resetTransform()
+
+            if self.pixmap and not self.pixmap.isNull():
+                base_size = min(self.pixmap.width(), self.pixmap.height())
+            else:
+                base_size = min(max(self.width(), 1), max(self.height(), 1))
+            font_size = max(20, base_size // 40)
 
             font = QtGui.QFont()
             font.setPointSize(font_size)
             font.setBold(True)
             p.setFont(font)
-            p.setPen(QtGui.QColor(255, 255, 255))  # White text
 
-            # Adjust position based on font size
-            text_x = 10
-            text_y = font_size + 10  # Add some padding
+            metrics = QtGui.QFontMetrics(font)
+            text = self.current_behavior_text
+            text_bounds = metrics.boundingRect(text)
 
-            # Position and text
-            p.drawText(text_x, text_y, self.current_behavior_text)
+            margin = 12
+            padding_x = 8
+            padding_y = 6
+
+            background_rect = QtCore.QRect(
+                margin,
+                margin,
+                text_bounds.width() + 2 * padding_x,
+                text_bounds.height() + 2 * padding_y,
+            )
+
+            if self.behavior_text_background is not None:
+                bg_color = QtGui.QColor(self.behavior_text_background)
+                p.setPen(QtCore.Qt.NoPen)
+                p.setBrush(QtGui.QBrush(bg_color))
+                p.drawRoundedRect(background_rect, 6, 6)
+
+            text_rect = QtCore.QRect(
+                background_rect.left() + padding_x,
+                background_rect.top() + padding_y,
+                text_bounds.width(),
+                text_bounds.height(),
+            )
+
+            p.setPen(QtGui.QPen(QtGui.QColor(self.behavior_text_color)))
+            p.drawText(
+                text_rect,
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                text,
+            )
+
+            p.restore()
 
         # draw crosshair
         if ((not self.createMode == 'grounding_sam')
