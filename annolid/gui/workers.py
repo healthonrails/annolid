@@ -5,18 +5,23 @@ import time
 import os
 import logging
 import glob
+import json
+import cv2
 import qimage2ndarray
 import numpy as np
 import torch
 from annolid.gui.label_file import LabelFile
 from pathlib import Path
+from typing import List
 from annolid.utils.logger import logger
 from qtpy.QtCore import Signal, QObject
 from annolid.data.videos import extract_frames_from_videos
 from qtpy.QtCore import QThread
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+from annolid.segmentation.cutie_vos.processor import SegmentedCutieExecutor
 from annolid.utils.files import find_manual_labeled_json_files, get_frame_number_from_json
 from annolid.annotation.labelme2csv import convert_json_to_csv
+from annolid.jobs.tracking_jobs import TrackingSegment
 import gc
 
 
@@ -79,6 +84,53 @@ class TrackAllWorker(QThread):
             raise ValueError("No valid video files provided.")
         return valid_paths
 
+    def _get_video_fps(self, video_path: Path) -> float:
+        """Best-effort FPS lookup for a video file."""
+        fps = 0.0
+        cap = cv2.VideoCapture(str(video_path))
+        try:
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        finally:
+            cap.release()
+        if fps <= 0.0:
+            self.logger.warning(
+                f"Unable to determine FPS for {video_path.name}; defaulting to 0.0.")
+        return fps
+
+    def _load_saved_segments(self, video_path: Path) -> List[TrackingSegment]:
+        """Load persisted segments for a video if available."""
+        sidecar_path = video_path.with_suffix(
+            video_path.suffix + ".segments.json")
+        if not sidecar_path.exists():
+            return []
+
+        try:
+            with open(sidecar_path, "r") as f:
+                raw_segments = json.load(f)
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to read segments from {sidecar_path.name}: {exc}")
+            return []
+
+        segments: List[TrackingSegment] = []
+        fps_cache = None
+        for entry in raw_segments or []:
+            if not isinstance(entry, dict):
+                continue
+            entry = dict(entry)
+            entry["video_path"] = str(video_path)
+            if not entry.get("fps") or entry["fps"] <= 0:
+                if fps_cache is None:
+                    fps_cache = self._get_video_fps(video_path)
+                entry["fps"] = fps_cache
+            try:
+                segments.append(TrackingSegment.from_dict(entry))
+            except Exception as exc:
+                self.logger.error(
+                    f"Invalid segment entry in {sidecar_path.name}: {exc}")
+        return segments
+
     def select_device(self):
         """Select the appropriate device (CUDA, MPS, or CPU)."""
         if torch.cuda.is_available():
@@ -86,6 +138,96 @@ class TrackAllWorker(QThread):
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
+
+    def _process_segments_for_video(self,
+                                    video_path: Path,
+                                    segments: List[TrackingSegment],
+                                    idx: int,
+                                    total_videos: int,
+                                    device: torch.device) -> bool:
+        """Run tracking for pre-defined segments of a single video."""
+        if not segments:
+            return False
+
+        video_name = video_path.stem
+        output_folder = video_path.with_suffix('')
+        output_folder.mkdir(exist_ok=True, parents=True)
+
+        total_segments = len(segments)
+        successful_segments = 0
+
+        for seg_idx, segment in enumerate(segments, start=1):
+            if not self.is_running:
+                self.logger.info(
+                    f"Segment processing interrupted for {video_name}.")
+                break
+
+            if not segment.is_annotation_valid():
+                warning_msg = (
+                    f"Skipping segment annotated at frame {segment.annotated_frame} "
+                    f"for {video_name}: annotation JSON not found.")
+                self.logger.warning(warning_msg)
+                self.error.emit(warning_msg)
+                continue
+
+            progress_fraction = (
+                (idx - 1) + (seg_idx / total_segments)) / max(total_videos, 1)
+            progress_value = max(0, min(100, int(progress_fraction * 100)))
+            status_msg = (f"Processing {video_name}: segment {seg_idx}/{total_segments} "
+                          f"({segment.segment_start_frame}-{segment.segment_end_frame})")
+            self.progress.emit(progress_value, status_msg)
+            self.log_gpu_memory(video_name, f"Segment {seg_idx} - Before")
+
+            segment_executor = None
+            try:
+                segment_executor = SegmentedCutieExecutor(
+                    video_path_str=str(video_path),
+                    segment_annotated_frame=segment.annotated_frame,
+                    segment_start_frame=segment.segment_start_frame,
+                    segment_end_frame=segment.segment_end_frame,
+                    processing_config=self.config,
+                    pred_worker=self,
+                    device=device
+                )
+                result_message = segment_executor.process_segment()
+                if any(keyword in result_message for keyword in ["Error", "not found", "Failed"]):
+                    error_msg = (
+                        f"Segment {seg_idx} for {video_name} failed: {result_message}")
+                    self.error.emit(error_msg)
+                    self.logger.error(error_msg)
+                else:
+                    successful_segments += 1
+                    self.logger.info(
+                        f"Segment {seg_idx} for {video_name} completed: {result_message}")
+            except Exception as exc:
+                error_msg = (
+                    f"Unexpected exception while processing segment {seg_idx} for {video_name}: {exc}")
+                self.error.emit(error_msg)
+                self.logger.error(error_msg, exc_info=True)
+            finally:
+                if segment_executor is not None:
+                    segment_executor.cleanup()
+                self.log_gpu_memory(video_name, f"Segment {seg_idx} - After")
+
+        if successful_segments > 0:
+            try:
+                convert_json_to_csv(str(output_folder))
+            except Exception as exc:
+                csv_error = f"CSV conversion failed for {video_name}: {exc}"
+                self.error.emit(csv_error)
+                self.logger.error(csv_error, exc_info=True)
+
+        if total_segments > 0:
+            completion_progress = min(
+                100, int((idx / max(total_videos, 1)) * 100))
+            if successful_segments == total_segments:
+                completion_msg = f"Completed all {total_segments} segments for {video_name}."
+            else:
+                completion_msg = (
+                    f"Processed {successful_segments}/{total_segments} segments for {video_name}.")
+            self.progress.emit(completion_progress, completion_msg)
+
+        return successful_segments == total_segments and successful_segments > 0
 
     def cleanup_processor(self, processor, device):
         """Clean up the processor and free device memory."""
@@ -136,72 +278,75 @@ class TrackAllWorker(QThread):
         return json_filename.exists()
 
     def process_single_video(self, video_path, idx, total_videos):
-        """Process a single video with a fresh VideoProcessor."""
+        """Process a single video either via saved segments or whole-video tracking."""
         video_name = Path(video_path).stem
         output_folder = Path(video_path).with_suffix('')
         output_folder.mkdir(exist_ok=True, parents=True)
         self.logger.info(
             f"Processing {video_name}: Output folder = {output_folder}")
 
-        # --- Emit signal that a video is starting ---
         self.video_processing_started.emit(video_path, str(output_folder))
 
-        # Log device memory before processing
-        self.log_gpu_memory(video_name, "Before")
-
-        # Select device
         device = self.select_device()
         self.logger.info(f"Using device: {device} for {video_name}")
+        self.log_gpu_memory(video_name, "Before")
 
-        # Check for JSON file
-        json_files = find_manual_labeled_json_files(str(output_folder))
-        if not json_files:
-            self.progress.emit(
-                int((idx / total_videos) * 100),
-                f"Skipping {video_name}: No JSON label file found."
-            )
-            return False
+        segments = self._load_saved_segments(Path(video_path))
+        processor = None
 
-        json_file = Path(output_folder) / sorted(json_files)[-1]
         try:
-            labeled_frame_number = get_frame_number_from_json(str(json_file))
-            label_file = LabelFile(str(json_file), is_video_frame=True)
-            valid_shapes = [
-                shape for shape in label_file.shapes
-                if shape.get('shape_type') == 'polygon' and len(shape.get('points', [])) >= 3
-            ]
-            if not valid_shapes:
+            if segments:
+                return self._process_segments_for_video(
+                    Path(video_path), segments, idx, total_videos, device)
+
+            json_files = find_manual_labeled_json_files(str(output_folder))
+            if not json_files:
                 self.progress.emit(
                     int((idx / total_videos) * 100),
-                    f"Skipping {video_name}: JSON file {json_file.name} has no valid polygons (≥3 points)."
+                    f"Skipping {video_name}: No JSON label file found."
                 )
                 return False
-        except Exception as e:
-            self.error.emit(f"Invalid JSON file for {video_name}: {str(e)}")
-            self.logger.error(
-                f"JSON error for {video_name}: {str(e)}", exc_info=True)
-            return False
 
-        # Initialize fresh VideoProcessor
-        processor = None
-        try:
-            processor = VideoProcessor(
-                video_path=str(video_path),  # Ensure string path
-                model_name="Cutie",
-                save_image_to_disk=False,
-                device=device,
-                results_folder=str(output_folder),
-                **self.config
-            )
-            self.logger.info(
-                f"Initialized VideoProcessor for {video_name} with video_path: {video_path}")
-        except Exception as e:
-            self.error.emit(
-                f"Failed to initialize VideoProcessor for {video_name}: {str(e)}")
-            self.logger.error(f"Initialization error: {str(e)}", exc_info=True)
-            return False
+            json_file = Path(output_folder) / sorted(json_files)[-1]
+            try:
+                labeled_frame_number = get_frame_number_from_json(
+                    str(json_file))
+                label_file = LabelFile(str(json_file), is_video_frame=True)
+                valid_shapes = [
+                    shape for shape in label_file.shapes
+                    if shape.get('shape_type') == 'polygon' and len(shape.get('points', [])) >= 3
+                ]
+                if not valid_shapes:
+                    self.progress.emit(
+                        int((idx / total_videos) * 100),
+                        f"Skipping {video_name}: JSON file {json_file.name} has no valid polygons (≥3 points)."
+                    )
+                    return False
+            except Exception as e:
+                self.error.emit(
+                    f"Invalid JSON file for {video_name}: {str(e)}")
+                self.logger.error(
+                    f"JSON error for {video_name}: {str(e)}", exc_info=True)
+                return False
 
-        try:
+            try:
+                processor = VideoProcessor(
+                    video_path=str(video_path),
+                    model_name="Cutie",
+                    save_image_to_disk=False,
+                    device=device,
+                    results_folder=str(output_folder),
+                    **self.config
+                )
+                self.logger.info(
+                    f"Initialized VideoProcessor for {video_name} with video_path: {video_path}")
+            except Exception as exc:
+                self.error.emit(
+                    f"Failed to initialize VideoProcessor for {video_name}: {exc}")
+                self.logger.error(
+                    f"Initialization error for {video_name}: {exc}", exc_info=True)
+                return False
+
             total_frames = processor.get_total_frames()
             if self.is_video_finished(video_path, total_frames):
                 self.progress.emit(
@@ -210,12 +355,11 @@ class TrackAllWorker(QThread):
                 )
                 return False
 
-            # Create new PredictionWorker
             pred_worker = PredictionWorker()
             self.logger.info(
                 f"Created new pred_worker for {video_name}: {id(pred_worker)}")
             try:
-                processor.video_path = str(video_path)  # Ensure string path
+                processor.video_path = str(video_path)
                 processor.set_pred_worker(pred_worker)
             except Exception as e:
                 self.error.emit(
@@ -224,7 +368,6 @@ class TrackAllWorker(QThread):
                     f"pred_worker error: {str(e)}", exc_info=True)
                 return False
 
-            # Reset Cutie processor
             try:
                 processor.reset_cutie_processor(
                     mem_every=self.config['mem_every'])
@@ -238,7 +381,6 @@ class TrackAllWorker(QThread):
                 int((idx / total_videos) * 100),
                 f"Processing {video_name}..."
             )
-            # Process video frames
             start_frame = labeled_frame_number + 1
             end_frame = total_frames - 1
             self.logger.info(
@@ -259,7 +401,6 @@ class TrackAllWorker(QThread):
                 self.error.emit(f"Failed to process {video_name}: {message}")
                 return False
 
-            # Convert JSON to CSV
             try:
                 convert_json_to_csv(str(output_folder))
             except Exception as e:
@@ -311,6 +452,10 @@ class TrackAllWorker(QThread):
     def stop(self):
         """Stop the worker thread."""
         self.is_running = False
+
+    def is_stopped(self) -> bool:
+        """Interface for segmented executors to query stop state."""
+        return not self.is_running
 
 
 class LoadFrameThread(QtCore.QObject):
