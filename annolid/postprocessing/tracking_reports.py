@@ -170,12 +170,12 @@ def generate_reports(gap_report: dict, video_path: str):
             f"**Report Generated On:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
         if not gap_report:
-            f.write("## ✅ Analysis Complete: No Tracking Gaps Found\n\n")
+            f.write("## Analysis Complete: No Tracking Gaps Found\n\n")
             f.write("All tracked instances were present in all analyzed frames.\n")
             logger.info(f"Human-readable report saved to: {md_filename}")
             return
 
-        f.write("## 🚨 Summary of Detected Gaps\n\n")
+        f.write("## Summary of Detected Gaps\n\n")
         f.write("This report lists all time periods where a tracked instance was not found. "
                 "These 'gaps' may indicate that the animal left the frame, was occluded, "
                 "or that no JSON file was generated for that frame (no detections).\n\n")
@@ -191,7 +191,7 @@ def generate_reports(gap_report: dict, video_path: str):
                     f"| {i} | {gap['start_frame']} | {gap['end_frame']} | {gap['duration_frames']} |\n")
             f.write("\n")
 
-        f.write("## 💡 Actionable Recommendations\n\n")
+        f.write("## Actionable Recommendations\n\n")
         f.write(
             "To fix these gaps, especially in cases where the animal was present but not tracked:\n\n")
         f.write("1.  **Navigate to the `Start Frame`** of a gap listed above.\n")
