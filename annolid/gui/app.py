@@ -2491,7 +2491,7 @@ class AnnolidWindow(MainWindow):
                 task_function=labelme2csv.convert_json_to_csv,
                 json_folder=str(out_folder),
                 csv_file=str(csv_output_path),
-                progress_callback=self._update_progress_bar
+                progress_callback=self._csv_worker_progress_proxy
             )
             self.csv_thread = QtCore.QThread()
 
@@ -2572,6 +2572,12 @@ class AnnolidWindow(MainWindow):
         """Initialize the progress bar and add it to the status bar."""
         self.progress_bar.setValue(0)
         self.statusBar().addWidget(self.progress_bar)
+
+    def _csv_worker_progress_proxy(self, progress):
+        """Route worker progress updates through thread-safe signal emission."""
+        worker = getattr(self, "csv_worker", None)
+        if worker is not None:
+            worker.report_progress(progress)
 
     def _update_progress_bar(self, progress):
         """Update the progress bar's value."""

@@ -83,8 +83,9 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
         csv_writer.writerow(csv_header)
 
         json_folder_path = Path(json_folder)
-        json_files = [f for f in os.listdir(
-            json_folder) if f.endswith('.json')]
+        json_files = sorted(
+            f for f in os.listdir(json_folder) if f.endswith('.json')
+        )
 
         store = AnnotationStore.for_frame_path(
             json_folder_path / f"{json_folder_path.name}_000000000.json")
@@ -104,16 +105,33 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
         for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
             json_path = os.path.join(json_folder, json_file)
             data = read_json_file(json_path)
+            if not data:
+                num_processed_files += 1
+                if progress_callback:
+                    progress = int((num_processed_files / total_files) * 100)
+                    progress_callback(progress)
+                continue
+
             frame_number = get_frame_number_from_filename(json_file)
-            img_height, img_width = data["imageHeight"], data["imageWidth"]
+            img_height = data.get("imageHeight")
+            img_width = data.get("imageWidth")
+            shapes = data.get("shapes") or []
+
+            if img_height is None or img_width is None:
+                num_processed_files += 1
+                if progress_callback:
+                    progress = int((num_processed_files / total_files) * 100)
+                    progress_callback(progress)
+                continue
+
             img_shape = (img_height, img_width)
 
-            for shape in data["shapes"]:
-                instance_name = shape["label"]
-                points = shape["points"]
-                if shape['shape_type'] == 'point':
+            for shape in shapes:
+                instance_name = shape.get("label")
+                points = shape.get("points") or []
+                if shape.get('shape_type') == 'point':
                     points = keypoint_to_polygon_points(points)
-                    shape['shape_type'] == 'polygon'
+                    shape['shape_type'] = 'polygon'
                 if len(points) > 2:
                     mask = convert_shape_to_mask(img_shape, points)
                     bboxs = masks_to_bboxes(mask[None, :, :])
