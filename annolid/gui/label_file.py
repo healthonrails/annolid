@@ -12,6 +12,8 @@ from labelme import __version__
 from labelme import utils
 from labelme.logger import logger
 
+from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
+
 PIL.Image.MAX_IMAGE_PIXELS = None
 
 
@@ -91,26 +93,31 @@ class LabelFile(object):
             "visible",
         ]
         try:
-            with open(filename, "r") as f:
-                data = json.load(f)
+            data = load_labelme_json(filename)
+        except AnnotationStoreError as err:
+            raise LabelFileError(err) from err
+        except Exception as e:
+            raise LabelFileError(e)
+
+        try:
             imageData = None
             imagePath = None
             caption = None
 
-            if 'caption' in data and data['caption'] is not None:
-                caption = data['caption']
+            if data.get("caption") is not None:
+                caption = data["caption"]
 
-            if data["imageData"] is not None:
+            if data.get("imageData") is not None:
                 imageData = base64.b64decode(data["imageData"])
                 if PY2 and QT4:
                     imageData = utils.img_data_to_png_data(imageData)
-            elif data["imagePath"] is not None and data["imagePath"] != "":
+            elif data.get("imagePath") is not None and data["imagePath"] != "":
                 # relative path from label file to relative path from cwd
                 imagePath = osp.join(osp.dirname(filename), data["imagePath"])
                 if osp.exists(imagePath):
                     imageData = self.load_image_file(imagePath)
             flags = data.get("flags") or {}
-            if self.is_video_frame is None and data["imagePath"] is not None:
+            if self.is_video_frame is None and data.get("imagePath") is not None:
                 imagePath = data["imagePath"]
                 self._check_image_height_and_width(
                     base64.b64encode(imageData).decode("utf-8"),

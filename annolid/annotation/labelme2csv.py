@@ -1,12 +1,17 @@
-import json
 import csv
 import os
+from pathlib import Path
 from tqdm import tqdm
 import argparse
 from labelme.utils import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
 from annolid.annotation.keypoints import keypoint_to_polygon_points
+from annolid.utils.annotation_store import (
+    AnnotationStore,
+    AnnotationStoreError,
+    load_labelme_json,
+)
 
 
 def read_json_file(file_path):
@@ -19,8 +24,10 @@ def read_json_file(file_path):
     Returns:
     - dict: JSON data.
     """
-    with open(file_path, 'r') as file:
-        return json.load(file)
+    try:
+        return load_labelme_json(file_path)
+    except (FileNotFoundError, AnnotationStoreError, ValueError):
+        return {}
 
 
 def get_frame_number_from_filename(file_name):
@@ -75,13 +82,28 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
         csv_writer = csv.writer(csv_output)
         csv_writer.writerow(csv_header)
 
+        json_folder_path = Path(json_folder)
         json_files = [f for f in os.listdir(
             json_folder) if f.endswith('.json')]
+
+        store = AnnotationStore.for_frame_path(
+            json_folder_path / f"{json_folder_path.name}_000000000.json")
+        if store.store_path.exists():
+            store_files = [
+                f"{json_folder_path.name}_{frame:09d}.json"
+                for frame in sorted(store.iter_frames())
+            ]
+            json_files = sorted(set(json_files) | set(store_files))
+
+        if not json_files:
+            return f"No annotation files found in {json_folder}."
+
         total_files = len(json_files)
         num_processed_files = 0
 
         for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
-            data = read_json_file(os.path.join(json_folder, json_file))
+            json_path = os.path.join(json_folder, json_file)
+            data = read_json_file(json_path)
             frame_number = get_frame_number_from_filename(json_file)
             img_height, img_width = data["imageHeight"], data["imageWidth"]
             img_shape = (img_height, img_width)
@@ -107,9 +129,10 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
                                 segmentation, 0])
             num_processed_files += 1
             if progress_callback:
-                progress_callback(int(num_processed_files / total_files) * 100)
+                progress = int((num_processed_files / total_files) * 100)
+                progress_callback(progress)
 
-    return f"CSV file '{csv_file}' has been created."
+    return str(csv_file)
 
 
 def main():

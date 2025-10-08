@@ -1,12 +1,23 @@
+import base64
 import os
 import cv2
 import numpy as np
 import pandas as pd
-from annolid.gui.label_file import LabelFile
-from annolid.gui.shape import Shape
-from annolid.utils.logger import logger
 import json
 import math
+from pathlib import Path
+
+from labelme import __version__ as LABELME_VERSION
+from labelme import utils as labelme_utils
+
+from annolid.gui.label_file import LabelFile
+from annolid.gui.shape import Shape
+from annolid.utils.annotation_store import (
+    AnnotationStore,
+    AnnotationStoreError,
+    load_labelme_json,
+)
+from annolid.utils.logger import logger
 
 
 def keypoint_to_polygon_points(center_point,
@@ -35,25 +46,46 @@ def keypoint_to_polygon_points(center_point,
     return points
 
 
+def _serialize_point(point):
+    if hasattr(point, 'x') and hasattr(point, 'y'):
+        return [float(point.x()), float(point.y())]
+    if isinstance(point, (list, tuple, np.ndarray)) and len(point) >= 2:
+        return [float(point[0]), float(point[1])]
+    raise TypeError(f"Unsupported point format: {point}")
+
+
 def format_shape(shape):
     data = shape.other_data.copy()
     data.update({
         'label': shape.label,
-        'points': shape.points,
+        'points': [_serialize_point(pt) for pt in shape.points],
         'group_id': shape.group_id,
         'shape_type': shape.shape_type,
         'flags': shape.flags,
         'visible': shape.visible,
         'description': shape.description,
     })
+    if getattr(shape, 'mask', None) is not None:
+        mask = shape.mask
+        if mask is not None:
+            mask = np.asarray(mask)
+            if mask.ndim == 2:
+                mask = mask.astype(bool)
+            else:
+                mask = mask[..., 0].astype(bool)
+            data['mask'] = labelme_utils.img_arr_to_b64(mask.astype(np.uint8))
+    if shape.point_labels:
+        data['point_labels'] = list(shape.point_labels)
     return data
 
 
 def load_existing_json(filename):
-    if os.path.exists(filename):
-        with open(filename, 'r') as file:
-            return json.load(file)
-    return None
+    if not os.path.exists(filename):
+        return None
+    try:
+        return load_labelme_json(filename)
+    except (AnnotationStoreError, json.JSONDecodeError, FileNotFoundError):
+        return None
 
 
 def merge_shapes(new_shapes_list, existing_shapes_list):
@@ -117,43 +149,90 @@ def save_labels(filename, imagePath,
             We assume the frame has been manually labeled.
             No changes are needed for the JSON file.""")
         return
-    lf = LabelFile()
+    frame_path = Path(filename)
+    frame_number = AnnotationStore.frame_number_from_path(frame_path)
+
     shapes = [format_shape(shape) for shape in label_list]
 
-    # Load existing shapes from the JSON file and merge with new shapes
-    json_data = load_existing_json(filename)
-    existing_shapes = json_data.get('shapes', []) if json_data else []
-    if flags is None:
-        flags = json_data.get('flags', {}) if json_data else {}
+    # Fallback for files that do not follow frame-based naming.
+    if frame_number is None:
+        lf = LabelFile()
+        existing_json = load_existing_json(filename) or {}
+        existing_shapes = existing_json.get('shapes', [])
+        if flags is None:
+            flags = existing_json.get('flags', {})
+        shapes = merge_shapes(shapes, existing_shapes)
 
-    # shapes.extend(existing_shapes)
+        if imageData is None and save_image_to_json:
+            imageData = LabelFile.load_image_file(imagePath)
+
+        if otherData is None:
+            otherData = {}
+
+        lf.save(
+            filename=filename,
+            shapes=shapes,
+            imagePath=imagePath,
+            imageData=imageData,
+            imageHeight=height,
+            imageWidth=width,
+            otherData=otherData,
+            flags=flags,
+            caption=caption,
+        )
+        return
+
+    store = AnnotationStore.for_frame_path(frame_path)
+    existing_record = store.get_frame(frame_number)
+    existing_shapes = (
+        [dict(shape) for shape in existing_record.get('shapes', [])]
+        if existing_record else []
+    )
+    resolved_flags_source = flags if flags is not None else (
+        existing_record.get('flags', {}) if existing_record else {}
+    )
+    resolved_flags = dict(resolved_flags_source)
+    resolved_caption = caption if caption is not None else (
+        existing_record.get('caption') if existing_record else None
+    )
+
     shapes = merge_shapes(shapes, existing_shapes)
 
-    # Load image data if necessary
+    # Load existing shapes from the JSON file and merge with new shapes
     if imageData is None and save_image_to_json:
         imageData = LabelFile.load_image_file(imagePath)
 
-    # Set default value for otherData
-    if otherData is None:
-        otherData = {}
+    encoded_image = None
+    if imageData is not None:
+        if isinstance(imageData, bytes):
+            encoded_image = base64.b64encode(imageData).decode("utf-8")
+        else:
+            encoded_image = imageData
 
-    if flags is not None:
-        flags = flags
-    else:
-        flags = {}
-
-    # Save data to JSON file
-    lf.save(
-        filename=filename,
-        shapes=shapes,
-        imagePath=imagePath,
-        imageData=imageData,
-        imageHeight=height,
-        imageWidth=width,
-        otherData=otherData,
-        flags=flags,
-        caption=caption,
+    base_other = (
+        dict(existing_record.get('otherData', {}))
+        if existing_record else {}
     )
+    if otherData:
+        base_other.update(otherData)
+
+    record = {
+        "frame": frame_number,
+        "version": existing_record.get('version', LABELME_VERSION) if existing_record else LABELME_VERSION,
+        "imagePath": imagePath,
+        "imageHeight": height,
+        "imageWidth": width,
+        "shapes": shapes,
+        "flags": resolved_flags,
+        "caption": resolved_caption,
+        "otherData": base_other,
+    }
+    if encoded_image is not None:
+        record["imageData"] = encoded_image
+    elif existing_record and existing_record.get("imageData") is not None:
+        record["imageData"] = existing_record.get("imageData")
+
+    store.append_frame(record)
 
 
 def to_labelme(img_folder,

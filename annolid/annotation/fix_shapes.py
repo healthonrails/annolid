@@ -1,6 +1,6 @@
-import json
 import glob
 from pathlib import Path
+from annolid.utils.annotation_store import load_labelme_json
 
 
 def fix_image_path(anno_dir):
@@ -8,7 +8,7 @@ def fix_image_path(anno_dir):
     for js in jsons:
         with open(js, 'r') as f:
             print(js)
-            data = json.load(f)
+            data = load_labelme_json(js)
             data['imagePath'] = Path(data['imagePath']).name
 
             with open(js, 'w') as fw:

@@ -45,6 +45,7 @@ from labelme.widgets import LabelListWidgetItem
 from labelme import utils
 from annolid.utils.logger import logger
 from annolid.utils.files import count_json_files
+from annolid.utils.annotation_store import AnnotationStore
 from labelme.widgets import ToolBar
 from annolid.gui.label_file import LabelFileError
 from annolid.gui.label_file import LabelFile
@@ -178,6 +179,11 @@ class AnnolidWindow(MainWindow):
         self.label_dock.setVisible(True)
         self.shape_dock.setVisible(True)
         self.file_dock.setVisible(True)
+
+        self.csv_thread = None
+        self.csv_worker = None
+        self._last_tracking_csv_path = None
+        self._csv_conversion_queue = []
 
         # Create the Video Manager Widget
         self.video_manager_widget = VideoManagerWidget()
@@ -1460,12 +1466,14 @@ class AnnolidWindow(MainWindow):
     def _addItem(self, filename, label_file):
         item = QtWidgets.QListWidgetItem(filename)
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
-            label_file
-        ):
-            item.setCheckState(Qt.Checked)
-        else:
-            item.setCheckState(Qt.Unchecked)
+        is_checked = False
+        if QtCore.QFile.exists(label_file):
+            if LabelFile.is_label_file(label_file):
+                is_checked = True
+        elif self._annotation_store_has_frame(label_file):
+            is_checked = True
+
+        item.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
         if not self.fileListWidget.findItems(filename, Qt.MatchExactly):
             self.fileListWidget.addItem(item)
 
@@ -1975,12 +1983,12 @@ class AnnolidWindow(MainWindow):
                 )
             else:
                 if self.video_loader is not None:
-                    num_json_files = count_json_files(
-                        self.video_results_folder)
+                    json_count = count_json_files(self.video_results_folder)
+                    store_count = self._annotation_store_frame_count()
+                    total_predicted = max(json_count, store_count)
                     logger.info(
-                        f"Number of predicted frames: {num_json_files} in total {self.num_frames}")
-                    if num_json_files >= self.num_frames:
-                        # convert json labels to csv file
+                        f"Predicted frames available: json={json_count}, store={store_count}, total={total_predicted} of {self.num_frames}")
+                    if total_predicted >= max(1, self.num_frames - 1):
                         self.convert_json_to_tracked_csv()
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
@@ -2459,31 +2467,106 @@ class AnnolidWindow(MainWindow):
             )
             return
 
+        csv_output_path = out_folder.parent / \
+            f"{out_folder.name}_tracking.csv"
+
+        if getattr(self, "csv_thread", None) and self.csv_thread and self.csv_thread.isRunning():
+            job = (out_folder, csv_output_path)
+            if job not in self._csv_conversion_queue:
+                self._csv_conversion_queue.append(job)
+                self.statusBar().showMessage("Queued tracking CSV conversion...", 3000)
+            return
+
+        self._start_csv_conversion(out_folder, csv_output_path)
+
+    def _start_csv_conversion(self, out_folder: Path, csv_output_path: Path):
+        """Kick off a background CSV conversion job for the given folder."""
         self._initialize_progress_bar()
+        self._last_tracking_csv_path = str(csv_output_path)
+        self.statusBar().showMessage(
+            f"Generating tracking CSV: {csv_output_path.name}", 3000)
 
         try:
-            self.worker = FlexibleWorker(
+            self.csv_worker = FlexibleWorker(
                 task_function=labelme2csv.convert_json_to_csv,
                 json_folder=str(out_folder),
+                csv_file=str(csv_output_path),
                 progress_callback=self._update_progress_bar
             )
-            self.thread = QtCore.QThread()
+            self.csv_thread = QtCore.QThread()
 
             # Move the worker to the thread and connect signals
-            self.worker.moveToThread(self.thread)
+            self.csv_worker.moveToThread(self.csv_thread)
             self._connect_worker_signals()
 
             # Safely start the thread and worker signal
-            self.thread.start()
-            # Emit in a thread-safe way
+            self.csv_thread.start()
             QtCore.QTimer.singleShot(
-                0, lambda: self.worker.start_signal.emit())
+                0, lambda: self.csv_worker.start_signal.emit())
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(
                 self, "Error", f"An unexpected error occurred: {str(e)}")
-        finally:
-            self.statusBar().removeWidget(self.progress_bar)
+            try:
+                if hasattr(self, "progress_bar") and self.progress_bar.isVisible():
+                    self.statusBar().removeWidget(self.progress_bar)
+            except Exception:
+                pass
+            self.csv_worker = None
+            self.csv_thread = None
+            self._last_tracking_csv_path = None
+
+            if self._csv_conversion_queue:
+                next_out, next_csv = self._csv_conversion_queue.pop(0)
+                self._start_csv_conversion(next_out, next_csv)
+
+    def _on_csv_conversion_finished(self, result=None):
+        """Handle cleanup and user feedback after CSV conversion completes."""
+        try:
+            if hasattr(self, "progress_bar") and self.progress_bar.isVisible():
+                self.statusBar().removeWidget(self.progress_bar)
+            if hasattr(self, "progress_bar"):
+                self.progress_bar.setVisible(False)
+        except Exception:
+            pass
+
+        if isinstance(result, str) and result.startswith("No annotation"):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Tracking CSV",
+                result
+            )
+            self._last_tracking_csv_path = None
+            self._cleanup_csv_worker()
+            return
+
+        if isinstance(result, Exception):
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Tracking CSV Error",
+                f"Failed to generate tracking CSV:\n{result}"
+            )
+            self._cleanup_csv_worker()
+            return
+
+        csv_path = getattr(self, "_last_tracking_csv_path", None)
+        if csv_path:
+            path_obj = Path(csv_path)
+            if path_obj.exists():
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Tracking Complete",
+                    f"Review the file at:\n{csv_path}"
+                )
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Tracking CSV Missing",
+                    f"Expected tracking file was not found:\n{csv_path}\n"
+                    "Please try saving again."
+                )
+            self._last_tracking_csv_path = None
+        self._cleanup_csv_worker()
 
     def _initialize_progress_bar(self):
         """Initialize the progress bar and add it to the status bar."""
@@ -2576,7 +2659,12 @@ class AnnolidWindow(MainWindow):
                             continue  # Skip malformed numbers
 
             if not all_frame_nums:
-                return
+                store = AnnotationStore.for_frame_path(
+                    path / f"{path.name}_000000000.json")
+                if store.store_path.exists():
+                    all_frame_nums = sorted(store.iter_frames())
+                if not all_frame_nums:
+                    return
 
             all_frame_nums.sort()
             num_total_frames = len(all_frame_nums)
@@ -2672,23 +2760,36 @@ class AnnolidWindow(MainWindow):
 
     def _connect_worker_signals(self):
         """Connect worker signals to their respective slots safely."""
-        self.worker.start_signal.connect(self.worker.run)
-        self.worker.finished_signal.connect(self.place_preference_analyze_auto)
+        worker = self.csv_worker
+        thread = self.csv_thread
 
-        # Ensure cleanup happens in the right thread
-        self.worker.finished_signal.connect(self.thread.quit)
-        self.worker.finished_signal.connect(lambda: self.worker.deleteLater())
-        self.thread.finished.connect(lambda: self.thread.deleteLater())
+        worker.start_signal.connect(worker.run)
+        worker.finished_signal.connect(
+            lambda _result: self.place_preference_analyze_auto())
 
-        self.worker.finished_signal.connect(
-            lambda: QtWidgets.QMessageBox.information(
-                self,
-                "Tracking Complete",
-                f"Review the file at: {Path(self.video_file).with_suffix('')}_tracked.csv"
-            )
-        )
-        self.worker.progress_signal.connect(self._update_progress_bar)
+        worker.finished_signal.connect(self._on_csv_conversion_finished)
+        worker.finished_signal.connect(thread.quit)
+        worker.finished_signal.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_csv_worker)
+        thread.finished.connect(thread.deleteLater)
+
+        worker.progress_signal.connect(self._update_progress_bar)
         self.seekbar.removeMarksByType("predicted")  # Clear previous marks
+
+    def _cleanup_csv_worker(self):
+        """Clear references once the CSV conversion thread has fully finished."""
+        try:
+            if getattr(self, "csv_thread", None) and isinstance(self.csv_thread, QtCore.QThread):
+                if self.csv_thread.isRunning():
+                    return
+        except Exception:
+            pass
+        self.csv_thread = None
+        self.csv_worker = None
+
+        if self._csv_conversion_queue:
+            next_out, next_csv = self._csv_conversion_queue.pop(0)
+            self._start_csv_conversion(next_out, next_csv)
 
     def tracks(self):
         """
@@ -4038,15 +4139,50 @@ class AnnolidWindow(MainWindow):
         except Exception as e:
             logger.error(f"Error updating flags: {e}")
 
+    def _annotation_store_has_frame(self, label_json_file: str) -> bool:
+        """Return True if the annotation store contains a record for the given label path."""
+        try:
+            path = Path(label_json_file)
+            frame_number = AnnotationStore.frame_number_from_path(path)
+            if frame_number is None:
+                return False
+            store = AnnotationStore.for_frame_path(path)
+            if not store.store_path.exists():
+                return False
+            return store.get_frame(frame_number) is not None
+        except Exception:
+            return False
+
+    def _annotation_store_frame_count(self) -> int:
+        """Return the number of frames currently stored in the annotation store."""
+        if not self.video_results_folder:
+            return 0
+        try:
+            store = AnnotationStore.for_frame_path(
+                self.video_results_folder /
+                f"{self.video_results_folder.name}_000000000.json"
+            )
+            if not store.store_path.exists():
+                return 0
+            return len(list(store.iter_frames()))
+        except Exception:
+            return 0
+
     def loadPredictShapes(self, frame_number, filename):
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(filename)
 
         label_json_file = str(filename).replace(".png", ".json")
+        store_has_frame = self._annotation_store_has_frame(label_json_file)
         # try to load json files generated by SAM2 like 000000000.json
         if not Path(label_json_file).exists():
-            label_json_file = os.path.join(os.path.dirname(label_json_file),
-                                           os.path.basename(label_json_file).split('_')[-1])
+            alternate_label_json = os.path.join(
+                os.path.dirname(label_json_file),
+                os.path.basename(label_json_file).split('_')[-1]
+            )
+            store_has_frame = store_has_frame or self._annotation_store_has_frame(
+                alternate_label_json)
+            label_json_file = alternate_label_json
         if self._df is not None and not Path(filename).exists():
             df_cur = self._df[self._df.frame_number == frame_number]
             frame_label_list = []
@@ -4074,7 +4210,15 @@ class AnnolidWindow(MainWindow):
 
             self.loadShapes(frame_label_list)
 
-        if Path(label_json_file).exists():
+        store_has_frame = self._annotation_store_has_frame(label_json_file)
+        if not Path(label_json_file).exists():
+            label_json_file = os.path.join(os.path.dirname(label_json_file),
+                                           os.path.basename(label_json_file).split('_')[-1])
+            if not Path(label_json_file).exists():
+                store_has_frame = store_has_frame or self._annotation_store_has_frame(
+                    label_json_file)
+
+        if Path(label_json_file).exists() or store_has_frame:
             try:
                 self.labelFile = LabelFile(label_json_file,
                                            is_video_frame=True)

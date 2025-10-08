@@ -1,9 +1,9 @@
 # How to use it?
 # python annolid/main.py --labelme2yolo /path/to/labelme_json_folder/ --val_size 0.1 --test_size 0.1
 # Refer to https://docs.ultralytics.com/datasets/pose/#dataset-yaml-format for more details.
-import json
 import math
 import os
+from pathlib import Path
 import numpy as np
 import PIL.Image
 import shutil
@@ -11,6 +11,7 @@ from typing import List, Tuple
 from collections import OrderedDict
 from labelme.utils.image import img_b64_to_arr
 from sklearn.model_selection import train_test_split
+from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
 
 
 def point_list_to_numpy_array(point_list: List[str]) -> np.ndarray:
@@ -216,7 +217,7 @@ class Labelme2YOLO:
             if file_name.endswith('json'):
                 # Load the annotation data from the JSON file.
                 json_path = os.path.join(json_dir, file_name)
-                data = json.load(open(json_path))
+                data = load_labelme_json(json_path)
                 # Iterate through all label shapes in the annotation data, adding each label name to the label set.
                 for shape in data['shapes']:
                     label_set.add(shape['label'])
@@ -239,6 +240,14 @@ class Labelme2YOLO:
         json_names = [file_name for file_name in os.listdir(self.json_file_dir)
                       if os.path.isfile(os.path.join(self.json_file_dir, file_name)) and
                       file_name.endswith('.json')]
+        if not json_names:
+            folder = Path(self.json_file_dir)
+            store = AnnotationStore.for_frame_path(
+                folder / f"{folder.name}_000000000.json")
+            if store.store_path.exists():
+                json_names = [
+                    f"{folder.name}_{frame:09d}.json" for frame in sorted(store.iter_frames())
+                ]
         # filter and only keep the JSON files with a image associated with it
         json_names = [json_name for json_name in json_names if
                       os.path.exists(os.path.join(self.json_file_dir, json_name.replace('.json', '.png')))]
@@ -334,7 +343,7 @@ class Labelme2YOLO:
         """
         # Get the path to the input JSON file and load its data.
         json_path = os.path.join(self.json_file_dir, json_name)
-        json_data = json.load(open(json_path))
+        json_data = load_labelme_json(json_path)
 
         # Save the image file in the YOLO format.
         img_path = self.save_or_copy_image(

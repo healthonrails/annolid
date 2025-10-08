@@ -1,7 +1,7 @@
-import json
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage.draw import polygon
+from annolid.utils.annotation_store import load_labelme_json
 
 
 class LabelMeProcessor:
@@ -34,9 +34,7 @@ class LabelMeProcessor:
         Returns:
             dict: The JSON data loaded from the file.
         """
-        with open(self.json_path) as f:
-            data = json.load(f)
-        return data
+        return load_labelme_json(self.json_path)
 
     def _extract_image_shape(self):
         """

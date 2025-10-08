@@ -8,6 +8,8 @@ from imgaug import augmenters as iaa
 import imgaug as ia
 from imgaug.augmentables.polys import Polygon, PolygonsOnImage
 
+from annolid.utils.annotation_store import load_labelme_json
+
 
 class LabelStats:
 
@@ -18,7 +20,7 @@ class LabelStats:
     def count(self):
         label_files = Path(self.anno_dir).glob("*.json")
         for lf in label_files:
-            label_file = json.loads(lf.read_bytes())
+            label_file = load_labelme_json(lf)
             for shape in label_file['shapes']:
                 label = shape['label']
                 self.instance_counter[label] += 1
@@ -56,15 +58,15 @@ class Augmentation(LabelStats):
             #            mode=["constant", "edge"], cval=0),
             # iaa.CoarseDropout(0.1,size_px=8),
             # iaa.Fliplr(0.5),
-            #iaa.PerspectiveTransform((0.01, 0.01)),
-            #iaa.LinearContrast((0.8, 1.2), per_channel=0.5),
+            # iaa.PerspectiveTransform((0.01, 0.01)),
+            # iaa.LinearContrast((0.8, 1.2), per_channel=0.5),
             iaa.Sometimes(0.05, iaa.Snowflakes()),
 
             iaa.AddToHueAndSaturation((-50, 50)),
         ])
 
         for lf in label_files:
-            label_file = json.loads(lf.read_bytes())
+            label_file = load_labelme_json(lf)
             img_path = lf.with_suffix('.jpg')
             img = imageio.imread(img_path)
             image_polys = np.copy(img)

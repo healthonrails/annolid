@@ -12,6 +12,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 from annolid.postprocessing.video_timestamp_annotator import annotate_csv
+from annolid.utils.annotation_store import AnnotationStore
 
 
 def get_future_frame_from_mask(dir_path, current_frame):
@@ -130,6 +131,20 @@ def find_manual_labeled_json_files(folder_path):
             if os.path.exists(os.path.join(folder_path, json_filename)):
                 manually_labeled_files.append(json_filename)
 
+    if manually_labeled_files:
+        return manually_labeled_files
+
+    # Fallback to annotation store if no discrete JSON files exist.
+    directory = Path(folder_path)
+    store = AnnotationStore.for_frame_path(
+        directory / f"{directory.name}_000000000.json")
+    if store.store_path.exists():
+        store_frames = sorted(store.iter_frames())
+        return [
+            f"{directory.name}_{frame:09d}.json"
+            for frame in store_frames
+        ]
+
     return manually_labeled_files
 
 
@@ -165,8 +180,16 @@ def count_json_files(folder_path):
             # Increment the JSON file counter
             json_file_count += 1
 
-    # Return the number of JSON files found in the folder
-    return json_file_count
+    if json_file_count:
+        return json_file_count
+
+    # Fallback to annotation store records.
+    directory = Path(folder_path)
+    store = AnnotationStore.for_frame_path(
+        directory / f"{directory.name}_000000000.json")
+    if not store.store_path.exists():
+        return 0
+    return len(list(store.iter_frames()))
 
 
 def find_most_recent_file(folder_path, file_ext=".json"):
@@ -179,13 +202,24 @@ def find_most_recent_file(folder_path, file_ext=".json"):
     file_paths = [os.path.join(folder_path, file) for file in all_files if os.path.isfile(
         os.path.join(folder_path, file)) and file.endswith(file_ext)]
 
-    if not file_paths:
-        return None  # No files found
+    if file_paths:
+        # Get the most recent file based on modification time
+        most_recent_file = max(file_paths, key=os.path.getmtime)
+        return most_recent_file
 
-    # Get the most recent file based on modification time
-    most_recent_file = max(file_paths, key=os.path.getmtime)
+    # Fallback to annotation store if no individual files exist.
+    directory = Path(folder_path)
+    store = AnnotationStore.for_frame_path(
+        directory / f"{directory.name}_000000000{file_ext}")
+    if not store.store_path.exists():
+        return None
+    frames = list(store.iter_frames())
+    if not frames:
+        return None
+    latest_frame = max(frames)
+    return str(directory / f"{directory.name}_{latest_frame:09d}{file_ext}")
 
-    return most_recent_file
+    return None
 
 
 def is_duplicate(row, ref_row, tol_coord=3, tol_motion=0.1):

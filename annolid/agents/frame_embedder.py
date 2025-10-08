@@ -1,14 +1,16 @@
 import asyncio
-import json
 import logging
-import lancedb
 from pathlib import Path
 from random import sample
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from typing import Any, Dict, List, Optional
+
+import lancedb
 from lancedb.embeddings import EmbeddingFunctionRegistry
-from typing import List, Dict, Any, Optional
 from lancedb.pydantic import Vector
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
@@ -117,18 +119,16 @@ class FolderMonitor(FileSystemEventHandler):
         annotation_file = file_path.with_suffix(".json")
         if annotation_file.exists():
             try:
-                with open(annotation_file, "r") as f:
-                    annotation_data = json.load(f)
-                frame_labels = []
-                if 'flags' in annotation_data and len(annotation_data['flags']) > 0:
-                    frame_labels = annotation_data['flags'].keys()
+                annotation_data = load_labelme_json(annotation_file)
+                frame_labels = list(annotation_data.get('flags', {}).keys())
+                caption = annotation_data.get('caption', '')
 
                 frame_data = [
                     {"image_uri": str(file_path),
                      "flags": frame_labels,
-                     "caption": annotation_data['caption']}
+                     "caption": caption}
                 ]
-            except Exception as e:
+            except (AnnotationStoreError, Exception) as e:
                 logger.error(f"Error indexing new image:{file_path} - {e}")
         else:
             frame_data = [
@@ -159,13 +159,15 @@ async def index_existing_images(folder_path: Path, indexer: LanceDBFrameIndexer)
         annotation_file = Path(image_file).with_suffix(".json")
         if annotation_file.exists():
             try:
-                with open(annotation_file, "r") as f:
-                    annotation_data = json.load(f)
-                    frame_data_list.append(
-                        {"image_uri": image_file, "flags": list(annotation_data['flags'].keys()), 'caption': annotation_data['caption'],
-
-                         })
-            except Exception as e:
+                annotation_data = load_labelme_json(annotation_file)
+                frame_data_list.append(
+                    {
+                        "image_uri": image_file,
+                        "flags": list(annotation_data.get('flags', {}).keys()),
+                        'caption': annotation_data.get('caption', ''),
+                    }
+                )
+            except (AnnotationStoreError, Exception) as e:
                 logger.error(
                     f"Error indexing existing image: {image_file} - {e}")
         else:

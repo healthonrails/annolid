@@ -1,8 +1,8 @@
 import os
-import json
 from labelme.utils.shape import shapes_to_label
 from typing import Dict, List, Tuple, Any
 from annolid.utils.logger import logger
+from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 
 
 class LabelProcessor:
@@ -26,14 +26,9 @@ class LabelProcessor:
     def load_label_json(label_json_file: str) -> Dict[str, Any]:
         """Load label data from a JSON file."""
         try:
-            with open(label_json_file, 'r') as json_file:
-                return json.load(json_file)
-        except FileNotFoundError:
+            return load_labelme_json(label_json_file)
+        except (FileNotFoundError, AnnotationStoreError):
             logger.error(f"File not found: {label_json_file}")
-            return {}
-        except json.JSONDecodeError:
-            logger.error(
-                f"Failed to decode JSON from file: {label_json_file}")
             return {}
 
     @staticmethod
@@ -74,7 +69,7 @@ class LabelProcessor:
         """Return the ID to label name mapping."""
         return self.id_to_label_mapping
 
-    def convert_shapes_to_annotations(self,ann_frame_idx=0) -> List[Dict[str, Any]]:
+    def convert_shapes_to_annotations(self, ann_frame_idx=0) -> List[Dict[str, Any]]:
         """
         Convert LabelMe shapes to a custom annotations format.
 

@@ -18,6 +18,7 @@ from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
 from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
 from annolid.utils.logger import logger
 from annolid.tracker.cotracker.track import CoTrackerProcessor
+from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -196,8 +197,7 @@ class VideoProcessor:
         self.pred_worker = pred_worker
 
     def load_shapes(self, label_json_file):
-        with open(label_json_file, 'r') as json_file:
-            data = json.load(json_file)
+        data = load_labelme_json(label_json_file)
         shapes = data.get('shapes', [])
         return shapes
 
@@ -307,8 +307,7 @@ class VideoProcessor:
         Returns:
         - tuple: A tuple containing two dictionaries (points_dict, point_labels_dict).
         """
-        with open(json_file_path, 'r') as json_file:
-            data = json.load(json_file)
+        data = load_labelme_json(json_file_path)
 
         points_dict = {}
         point_labels_dict = {}
@@ -341,20 +340,22 @@ class VideoProcessor:
         cur_frame = cv2.cvtColor(cur_frame, cv2.COLOR_BGR2RGB)
         if self.sam_name == "Segment-Anything (Edge)":
             self.edge_sam.set_image(cur_frame)
-        filename = self.video_folder / \
-            (self.video_folder.name + f"_{frame_number:0>{9}}.json")
+        filename = self.video_folder / (
+            self.video_folder.name + f"_{frame_number:09d}.json")
 
         height, width, _ = cur_frame.shape
-        if self.most_recent_file is None:
-            return
-        if (str(frame_number) not in str(self.most_recent_file) or
-                str(frame_number - 1) not in str(self.most_recent_file)):
-            last_frame_annotation = self.video_folder / \
-                (self.video_folder.name + f"_{frame_number-1:0>{9}}.json")
-            if os.path.exists(last_frame_annotation):
-                self.most_recent_file = last_frame_annotation
+        if frame_number > 0:
+            annotation_source = self.video_folder / (
+                self.video_folder.name + f"_{frame_number-1:09d}.json")
+        else:
+            annotation_source = filename
 
-        points_dict, _ = self.load_json_file(self.most_recent_file)
+        try:
+            points_dict, _ = self.load_json_file(annotation_source)
+            self.most_recent_file = annotation_source
+        except AnnotationStoreError:
+            points_dict, _ = self.load_json_file(filename)
+            self.most_recent_file = filename
         label_list = []
 
         if self.sam_name == 'sam_hq' or self.sam_name == "efficientvit_sam":

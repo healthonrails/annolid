@@ -8,6 +8,7 @@ from qtpy.QtCore import Signal, Qt, Slot
 from annolid.data.videos import extract_frames_from_videos
 from annolid.gui.workers import FrameExtractorWorker, ProcessVideosWorker, TrackAllWorker
 from annolid.utils.files import find_most_recent_file
+from annolid.utils.annotation_store import AnnotationStore
 from annolid.utils.logger import logger
 
 
@@ -118,8 +119,13 @@ class VideoManagerWidget(QWidget):
         json_file = find_most_recent_file(output_folder, '.json')
         if json_file and Path(json_file).exists():
             return "Yes"
-        else:
-            return "No"
+
+        store = AnnotationStore.for_frame_path(
+            output_folder / f"{output_folder.name}_000000000.json")
+        if store.store_path.exists() and list(store.iter_frames()):
+            return "Yes"
+
+        return "No"
 
     def add_video_to_table(self, video_path):
         # Add the video to the imported videos set

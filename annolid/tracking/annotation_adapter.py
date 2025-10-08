@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -22,6 +21,7 @@ from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
 )
+from annolid.utils.annotation_store import load_labelme_json
 
 
 DEFAULT_KEYPOINT_LABEL = "centroid"
@@ -58,8 +58,7 @@ class AnnotationAdapter:
         return frame_number, registry
 
     def read_annotation(self, json_path: Path) -> InstanceRegistry:
-        with json_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        payload = load_labelme_json(json_path)
         shapes: Sequence[Dict[str, object]] = payload.get(
             "shapes", [])  # type: ignore[assignment]
         registry = InstanceRegistry()
@@ -74,7 +73,7 @@ class AnnotationAdapter:
                 point = (shape.get("points") or [[None, None]])[0]
                 if point[0] is None or point[1] is None:
                     continue
-                
+
                 key = self._build_key(instance_label, keypoint_label)
                 keypoint_state = KeypointState(
                     key=key,
