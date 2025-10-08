@@ -233,6 +233,25 @@ def save_labels(filename, imagePath,
         record["imageData"] = existing_record.get("imageData")
 
     store.append_frame(record)
+    # Persist a full JSON payload alongside the store entry so downstream
+    # consumers that load files directly continue to operate.
+    payload = {
+        "version": record.get("version") or LABELME_VERSION,
+        "flags": record.get("flags", {}),
+        "shapes": record.get("shapes", []),
+        "imagePath": record.get("imagePath"),
+        "imageHeight": record.get("imageHeight"),
+        "imageWidth": record.get("imageWidth"),
+    }
+    if record.get("caption") is not None:
+        payload["caption"] = record["caption"]
+    if "imageData" in record and record["imageData"] is not None:
+        payload["imageData"] = record["imageData"]
+    for key, value in (record.get("otherData") or {}).items():
+        payload[key] = value
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(frame_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, separators=(",", ":"))
 
 
 def to_labelme(img_folder,
