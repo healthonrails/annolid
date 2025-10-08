@@ -328,7 +328,8 @@ class CoTrackerProcessor:
             cur_shape.points = [_point]
             label_list.append(cur_shape)
         save_labels(json_file_path, imagePath="", label_list=label_list,
-                    width=self.video_width, height=self.video_height)
+                    width=self.video_width, height=self.video_height,
+                    persist_json=False)
         if frame_number % 100 == 0:
             logger.info("Saved %s", json_file_path)
 

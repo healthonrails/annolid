@@ -126,6 +126,7 @@ def save_labels(filename, imagePath,
                 save_image_to_json=False,
                 flags=None,
                 caption=None,
+                persist_json=True,
                 ):
     """Save a list of labeled shapes to a JSON file.
 
@@ -139,6 +140,9 @@ def save_labels(filename, imagePath,
         otherData (optional): Other data. Defaults to None.
         save_image_to_json (bool, optional): 
         Whether to save image data to JSON. Defaults to False.
+        persist_json (bool, optional):
+        Whether to write per-frame JSON files alongside the annotation store.
+        Defaults to True.
     """
     # Check if a PNG file exists with the same name
     png_filename = os.path.splitext(filename)[0] + ".png"
@@ -235,6 +239,9 @@ def save_labels(filename, imagePath,
     store.append_frame(record)
     # Persist a full JSON payload alongside the store entry so downstream
     # consumers that load files directly continue to operate.
+    if not persist_json:
+        return
+
     payload = {
         "version": record.get("version") or LABELME_VERSION,
         "flags": record.get("flags", {}),

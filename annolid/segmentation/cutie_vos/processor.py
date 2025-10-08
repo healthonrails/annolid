@@ -265,7 +265,8 @@ class SegmentedCutieExecutor:
         if label_list_for_save:
             save_labels(filename=str(filename_json), imagePath=None,
                         label_list=label_list_for_save,
-                        height=height, width=width, save_image_to_json=False)
+                        height=height, width=width, save_image_to_json=False,
+                        persist_json=False)
 
     def process_segment(self) -> str:
         """

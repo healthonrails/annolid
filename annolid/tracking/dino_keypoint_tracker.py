@@ -1304,6 +1304,7 @@ class DinoKeypointVideoProcessor:
         self.adapter = AnnotationAdapter(
             image_height=self.video_height,
             image_width=self.video_width,
+            persist_json=self.config.persist_labelme_json,
         )
         self.mask_manager = CutieMaskManager(
             Path(self.video_path),

@@ -57,6 +57,7 @@ class CutieDinoTrackerConfig:
     progress_hook: Optional[ProgressHook] = None
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None
+    persist_labelme_json: bool = False
 
     def __post_init__(self) -> None:
         if self.mask_enforce_snap_radius is None:

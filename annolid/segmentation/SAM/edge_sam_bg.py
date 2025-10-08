@@ -461,7 +461,8 @@ class VideoProcessor:
                 cv2.imwrite(img_filename, cur_frame)
 
         save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
-                    height=height, width=width, save_image_to_json=False)
+                    height=height, width=width, save_image_to_json=False,
+                    persist_json=False)
 
     def process_video_frames(self, *args, **kwargs):
         """

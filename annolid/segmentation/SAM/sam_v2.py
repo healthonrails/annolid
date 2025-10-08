@@ -210,7 +210,8 @@ class SAM2VideoProcessor:
             current_shape.points = points
             label_list.append(current_shape)
         save_labels(filename=filename, imagePath=image_path, label_list=label_list,
-                    height=height, width=width, save_image_to_json=False)
+                    height=height, width=width, save_image_to_json=False,
+                    persist_json=False)
         return label_list
 
     def _propagate(self, inference_state):

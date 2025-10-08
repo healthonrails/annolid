@@ -34,6 +34,7 @@ class AnnotationAdapter:
     image_height: int
     image_width: int
     description: str = "Cutie+DINO"
+    persist_json: bool = True
 
     def load_initial_state(self, annotation_dir: Path) -> Tuple[int, InstanceRegistry]:
         json_files = find_manual_labeled_json_files(str(annotation_dir))
@@ -146,6 +147,7 @@ class AnnotationAdapter:
             height=self.image_height,
             width=self.image_width,
             save_image_to_json=False,
+            persist_json=self.persist_json,
         )
         return json_path
 
