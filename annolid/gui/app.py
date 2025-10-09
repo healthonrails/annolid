@@ -3599,16 +3599,8 @@ class AnnolidWindow(MainWindow):
             self.frame_loader.moveToThread(self.frame_worker)
 
             if not self.frame_worker.isRunning():
-                self.frame_worker.started.connect(
-                    self.frame_loader.start, QtCore.Qt.QueuedConnection)
                 self.frame_worker.start(
                     priority=QtCore.QThread.IdlePriority)
-            else:
-                QtCore.QMetaObject.invokeMethod(
-                    self.frame_loader,
-                    "start",
-                    QtCore.Qt.QueuedConnection,
-                )
 
             self.frame_loader.res_frame.connect(
                 lambda qimage: self.image_to_canvas(
@@ -3674,8 +3666,6 @@ class AnnolidWindow(MainWindow):
         self.imagePath = str(filename.parent)
         self.filename = str(filename)
         self.image = qimage
-        # imageData = ImageQt.fromqimage(qimage)
-        # Save imageData as PIL Image to speed up frame loading by 10x
         self.imageData = qimage
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
@@ -3728,6 +3718,69 @@ class AnnolidWindow(MainWindow):
         #     brightness, _ = self.brightnessContrast_values.get(
         #         self.recentFiles[0], (None, None)
         #     )
+
+    @staticmethod
+    def _qimage_to_bytes(qimage: QtGui.QImage, fmt: str = "PNG"):
+        """Serialize a QImage into raw bytes compatible with LabelMe utilities."""
+        if qimage is None or qimage.isNull():
+            return None
+
+        buffer = QtCore.QBuffer()
+        if not buffer.open(QtCore.QIODevice.WriteOnly):
+            logger.warning("Unable to open buffer for QImage serialization.")
+            return None
+
+        succeeded = qimage.save(buffer, fmt)
+        buffer.close()
+
+        if not succeeded:
+            logger.warning("Failed to serialize QImage to %s", fmt)
+            return None
+
+        return bytes(buffer.data())
+
+    def brightnessContrast(self, value):
+        """Run brightness/contrast dialog, converting QImage lazily when needed."""
+        restore_image = None
+        converted = False
+
+        if isinstance(self.imageData, QtGui.QImage):
+            image_bytes = self._qimage_to_bytes(self.imageData)
+            if image_bytes is None:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("Brightness/Contrast Unavailable"),
+                    self.tr("Unable to prepare image data for adjustment."),
+                )
+                return
+            restore_image = self.imageData
+            self.imageData = image_bytes
+            converted = True
+
+        try:
+            return super().brightnessContrast(value)
+        finally:
+            if converted:
+                self.imageData = restore_image
+
+    def adjustScale(self, initial=False):
+        """Safely adjust zoom while handling cases with no active pixmap."""
+        canvas_pixmap = getattr(self.canvas, "pixmap", None)
+        if canvas_pixmap is None or canvas_pixmap.isNull():
+            logger.debug("adjustScale skipped: canvas pixmap not ready.")
+            return
+
+        if not getattr(self, "filename", None):
+            logger.debug("adjustScale skipped: no active filename.")
+            return
+
+        frame_number = getattr(self, "frame_number", None)
+        filename = getattr(self, "filename", None)
+        if frame_number is None or filename is None:
+            logger.debug("adjustScale skipped: missing frame context.")
+            return
+
+        super().adjustScale(initial=initial)
         # if self._config["keep_prev_contrast"] and self.recentFiles:
         #     _, contrast = self.brightnessContrast_values.get(
         #         self.recentFiles[0], (None, None)
@@ -4051,7 +4104,7 @@ class AnnolidWindow(MainWindow):
                 self._request_pca_map()
 
     def _stop_frame_loader(self):
-        """Stop the frame loader's timer safely from its owning thread."""
+        """Tear down the frame loader safely from its owning thread."""
         loader = getattr(self, "frame_loader", None)
         if loader is None:
             return
@@ -4059,7 +4112,19 @@ class AnnolidWindow(MainWindow):
         # Hold reference locally in case self.frame_loader is reassigned elsewhere
         old_loader = loader
         try:
-            if old_loader.thread() is QtCore.QThread.currentThread():
+            target_thread = old_loader.thread()
+            current_thread = QtCore.QThread.currentThread()
+            if target_thread is None or not target_thread.isRunning():
+                if target_thread is not current_thread:
+                    try:
+                        old_loader.moveToThread(current_thread)
+                    except RuntimeError:
+                        logger.debug(
+                            "Unable to move frame loader to current thread during shutdown.",
+                            exc_info=True,
+                        )
+                old_loader.shutdown()
+            elif target_thread is current_thread:
                 old_loader.shutdown()
             else:
                 QtCore.QMetaObject.invokeMethod(

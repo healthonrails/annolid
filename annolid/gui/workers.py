@@ -1,14 +1,12 @@
 from qtpy import QtCore, QtGui
 from threading import Lock
 from collections import deque
-import time
 import os
 import logging
 import glob
 import json
 import cv2
 import qimage2ndarray
-import numpy as np
 import torch
 from annolid.gui.label_file import LabelFile
 from pathlib import Path
@@ -476,60 +474,21 @@ class LoadFrameThread(QtCore.QObject):
         # Maintain same queue structure but with optimized settings
         # Limit queue size to prevent memory issues
         self.frame_queue = deque(maxlen=30)
-        # Increased sample size for better averaging
-        self.current_load_times = deque(maxlen=10)
-
-        # Timing management
-        self.previous_process_time = time.time()
-        self.request_waiting_time = 0.033  # Default to ~30fps for better responsiveness
-
         # Simple frame cache to avoid reloading recent frames
         self._frame_cache = {}
         self._cache_size = 5
         self._last_frame = None  # Keep last frame for error recovery
+        self._shutting_down = False
 
-        # Timer configuration (actual timer created once we're on worker thread)
-        self._timer = None
-        self._timer_interval_ms = 16  # ~60fps for smoother playback
-
-    @QtCore.Slot()
-    def start(self):
-        """Create and start the internal timer within the current thread."""
-        if self._timer is None:
-            self._timer = QtCore.QTimer()
-            self._timer.setInterval(self._timer_interval_ms)
-            self._timer.timeout.connect(self._optimized_load)
-            self._timer.moveToThread(QtCore.QThread.currentThread())
-
-        if not self._timer.isActive():
-            self._timer.start()
-
-    @QtCore.Slot()
-    def stop(self):
-        """Stop and dispose the internal timer from its owning thread."""
-        if self._timer is None:
-            return
-
-        if self._timer.isActive():
-            self._timer.stop()
-
-        self._timer.deleteLater()
-        self._timer = None
-
-        # Clear pending frames so we don't process stale work when restarting
-        with self.working_lock:
-            self.frame_queue.clear()
-
-    @QtCore.Slot()
-    def shutdown(self):
-        """Stop the timer and schedule this loader for deletion."""
-        self.stop()
-        self.deleteLater()
+        # Ensure frame processing runs on the worker thread event loop
+        self.process.connect(
+            self._optimized_load, type=QtCore.Qt.QueuedConnection
+        )
 
     def _optimized_load(self):
         """Optimized version of load() with better error handling and caching."""
-        current_time = time.time()
-        self.previous_process_time = current_time
+        if self._shutting_down:
+            return
 
         # Quick check without lock
         if not self.frame_queue:
@@ -548,16 +507,8 @@ class LoadFrameThread(QtCore.QObject):
             return
 
         try:
-            # Load and time the frame
-            t_start = time.time()
+            # Load frame
             frame = self.video_loader.load_frame(frame_number)
-
-            # Update timing metrics
-            load_time = time.time() - t_start
-            self.current_load_times.append(load_time)
-
-            # Use numpy for faster average calculation
-            self.request_waiting_time = np.mean(self.current_load_times)
 
             # Convert frame to QImage
             qimage = qimage2ndarray.array2qimage(frame)
@@ -578,6 +529,13 @@ class LoadFrameThread(QtCore.QObject):
             logger.error(f"Unexpected error loading frame {frame_number}: {e}")
             self._handle_error(frame_number)
 
+        # Schedule next frame if pending
+        with self.working_lock:
+            has_more = bool(self.frame_queue)
+
+        if has_more and not self._shutting_down:
+            self.process.emit()
+
     def _update_cache(self, frame_number: int, qimage: QtGui.QImage):
         """Update frame cache with size management."""
         self._frame_cache[frame_number] = qimage
@@ -591,19 +549,37 @@ class LoadFrameThread(QtCore.QObject):
         if self._last_frame is not None:
             # Use last successful frame as fallback
             self.res_frame.emit(self._last_frame)
+        with self.working_lock:
+            has_more = bool(self.frame_queue)
+        if has_more and not self._shutting_down:
+            self.process.emit()
 
     def request(self, frame_number):
         """Optimized request method with better queue management."""
+        if self._shutting_down:
+            return
+
+        should_trigger = False
+
         with self.working_lock:
             # Clear queue if too many pending requests to prevent lag
             if len(self.frame_queue) > 5:
                 self.frame_queue.clear()
+            was_empty = len(self.frame_queue) == 0
             self.frame_queue.appendleft(frame_number)
+            should_trigger = was_empty
 
-        t_last = time.time() - self.previous_process_time
-        if t_last > self.request_waiting_time:
-            self.previous_process_time = time.time()
+        if should_trigger:
             self.process.emit()
+
+    @QtCore.Slot()
+    def shutdown(self):
+        """Flush pending work and mark loader for deletion."""
+        self._shutting_down = True
+        with self.working_lock:
+            self.frame_queue.clear()
+        self._frame_cache.clear()
+        self.deleteLater()
 
     # Maintain original interface name for compatibility
     load = _optimized_load
