@@ -488,10 +488,43 @@ class LoadFrameThread(QtCore.QObject):
         self._cache_size = 5
         self._last_frame = None  # Keep last frame for error recovery
 
-        # Timer optimization
-        self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self._optimized_load)
-        self.timer.start(16)  # ~60fps for smoother playback
+        # Timer configuration (actual timer created once we're on worker thread)
+        self._timer = None
+        self._timer_interval_ms = 16  # ~60fps for smoother playback
+
+    @QtCore.Slot()
+    def start(self):
+        """Create and start the internal timer within the current thread."""
+        if self._timer is None:
+            self._timer = QtCore.QTimer()
+            self._timer.setInterval(self._timer_interval_ms)
+            self._timer.timeout.connect(self._optimized_load)
+            self._timer.moveToThread(QtCore.QThread.currentThread())
+
+        if not self._timer.isActive():
+            self._timer.start()
+
+    @QtCore.Slot()
+    def stop(self):
+        """Stop and dispose the internal timer from its owning thread."""
+        if self._timer is None:
+            return
+
+        if self._timer.isActive():
+            self._timer.stop()
+
+        self._timer.deleteLater()
+        self._timer = None
+
+        # Clear pending frames so we don't process stale work when restarting
+        with self.working_lock:
+            self.frame_queue.clear()
+
+    @QtCore.Slot()
+    def shutdown(self):
+        """Stop the timer and schedule this loader for deletion."""
+        self.stop()
+        self.deleteLater()
 
     def _optimized_load(self):
         """Optimized version of load() with better error handling and caching."""

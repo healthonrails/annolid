@@ -1399,6 +1399,7 @@ class AnnolidWindow(MainWindow):
         self.pred_worker = None
         self.stop_prediction_flag = False
         self.imageData = None
+        self._stop_frame_loader()
         self.frame_loader = LoadFrameThread()
         if self.video_processor is not None:
             self.video_processor.cutie_processor = None
@@ -3274,7 +3275,8 @@ class AnnolidWindow(MainWindow):
         self.filename = self.video_results_folder / \
             f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
         self.current_frame_time_stamp = self.video_loader.get_time_stamp()
-        self.frame_loader.request(frame_number)
+        if self.frame_loader is not None:
+            self.frame_loader.request(frame_number)
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(self.filename)
 
@@ -3596,7 +3598,17 @@ class AnnolidWindow(MainWindow):
 
             self.frame_loader.moveToThread(self.frame_worker)
 
-            self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
+            if not self.frame_worker.isRunning():
+                self.frame_worker.started.connect(
+                    self.frame_loader.start, QtCore.Qt.QueuedConnection)
+                self.frame_worker.start(
+                    priority=QtCore.QThread.IdlePriority)
+            else:
+                QtCore.QMetaObject.invokeMethod(
+                    self.frame_loader,
+                    "start",
+                    QtCore.Qt.QueuedConnection,
+                )
 
             self.frame_loader.res_frame.connect(
                 lambda qimage: self.image_to_canvas(
@@ -4038,6 +4050,29 @@ class AnnolidWindow(MainWindow):
             if self.pca_map_action.isChecked():
                 self._request_pca_map()
 
+    def _stop_frame_loader(self):
+        """Stop the frame loader's timer safely from its owning thread."""
+        loader = getattr(self, "frame_loader", None)
+        if loader is None:
+            return
+
+        # Hold reference locally in case self.frame_loader is reassigned elsewhere
+        old_loader = loader
+        try:
+            if old_loader.thread() is QtCore.QThread.currentThread():
+                old_loader.shutdown()
+            else:
+                QtCore.QMetaObject.invokeMethod(
+                    old_loader,
+                    "shutdown",
+                    QtCore.Qt.BlockingQueuedConnection,
+                )
+        except RuntimeError:
+            logger.debug("Frame loader already cleaned up.", exc_info=True)
+        finally:
+            if self.frame_loader is old_loader:
+                self.frame_loader = None
+
     def clean_up(self):
         def quit_and_wait(thread, message):
             if thread is not None:
@@ -4047,6 +4082,7 @@ class AnnolidWindow(MainWindow):
                 except RuntimeError:
                     logger.info(message)
 
+        self._stop_frame_loader()
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
         quit_and_wait(self.seg_pred_thread, "Bye!")
