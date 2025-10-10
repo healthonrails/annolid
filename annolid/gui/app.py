@@ -89,7 +89,7 @@ from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.jobs.tracking_worker import TrackingWorker
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
@@ -2261,60 +2261,95 @@ class AnnolidWindow(MainWindow):
         if not self.video_loader or not self.video_results_folder:
             return
 
-        prediction_folder = self.video_results_folder
+        prediction_folder = Path(self.video_results_folder)
+        if not prediction_folder.exists():
+            return
+
         deleted_files = 0
+        protected_frames: Set[int] = set()
 
         logger.info(f"Scanning for future predictions in: {prediction_folder}")
 
-        for filename_str in os.listdir(prediction_folder):
-            prediction_file_path = os.path.join(
-                prediction_folder, filename_str)
-
-            # Skip directories and non-JSON files
-            if not os.path.isfile(prediction_file_path) or not filename_str.endswith('.json'):
+        for prediction_path in prediction_folder.iterdir():
+            if not prediction_path.is_file():
+                continue
+            if prediction_path.suffix.lower() != ".json":
                 continue
 
-            # Instead of fragile splitting, use a regular expression to find the number.
-            # This regex looks for a sequence of digits at the end of the filename, right before ".json".
-            match = re.search(r'(\d+)(?=\.json$)', filename_str)
+            match = re.search(r"(\d+)(?=\.json$)", prediction_path.name)
 
             # If the filename doesn't match our expected pattern, skip it safely.
             if not match:
                 logger.debug(
-                    f"Skipping file with unexpected name format: {filename_str}")
+                    "Skipping file with unexpected name format: %s",
+                    prediction_path.name,
+                )
                 continue
 
             try:
-                # The part of the string matched by the regex
-                frame_number_str = match.group(1)
-                # Convert to float first to handle potential decimals, then to int.
-                frame_number = int(float(frame_number_str))
+                frame_number = int(float(match.group(1)))
             except (ValueError, IndexError):
-                # This handles cases where the regex matches but the string is still invalid (rare).
                 logger.warning(
-                    f"Could not parse frame number from file: {filename_str}")
+                    "Could not parse frame number from file: %s",
+                    prediction_path.name,
+                )
                 continue
+
+            image_file_png = prediction_path.with_suffix(".png")
+            image_file_jpg = prediction_path.with_suffix(".jpg")
+            is_manually_saved = image_file_png.exists() or image_file_jpg.exists()
+            if is_manually_saved:
+                protected_frames.add(frame_number)
 
             is_future_frame = frame_number > self.frame_number
 
-            # The logic to check for a manually saved file seems to be based on an accompanying .png.
-            # Let's make that check more robust as well.
-            image_file_png = prediction_file_path.replace('.json', '.png')
-            image_file_jpg = prediction_file_path.replace('.json', '.jpg')
-            is_manually_saved = os.path.exists(
-                image_file_png) or os.path.exists(image_file_jpg)
-
             if is_future_frame and not is_manually_saved:
                 try:
-                    os.remove(prediction_file_path)
+                    prediction_path.unlink()
                     deleted_files += 1
                 except OSError as e:
                     logger.error(
-                        f"Failed to delete file {prediction_file_path}: {e}")
+                        "Failed to delete file %s: %s", prediction_path, e
+                    )
 
-        logger.info(
-            f"{deleted_files} future prediction(s) were removed, excluding manually labeled files."
-        )
+        store_removed = 0
+        try:
+            store = AnnotationStore.for_frame_path(
+                prediction_folder / f"{prediction_folder.name}_000000000.json"
+            )
+            store_removed = store.remove_frames_after(
+                self.frame_number, protected_frames=protected_frames
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to prune annotation store in %s: %s",
+                prediction_folder,
+                exc,
+            )
+
+        if deleted_files or store_removed:
+            logger.info(
+                "%s future prediction JSON(s) removed and %s store record(s) pruned.",
+                deleted_files,
+                store_removed,
+            )
+            if self.seekbar:
+                self.seekbar.removeMarksByType("predicted")
+                self.seekbar.removeMarksByType("prediction_progress")
+            self.last_known_predicted_frame = -1
+            self.prediction_start_timestamp = 0.0
+            if hasattr(self, "_update_progress_bar"):
+                self._update_progress_bar(0)
+            try:
+                self._scan_prediction_folder(str(prediction_folder))
+            except Exception as exc:  # pragma: no cover - GUI safeguard
+                logger.debug(
+                    "Failed to rescan prediction folder after deletion: %s", exc
+                )
+        else:
+            logger.info(
+                "No future prediction files or store records required removal."
+            )
 
     def deleteFile(self):
         mb = QtWidgets.QMessageBox

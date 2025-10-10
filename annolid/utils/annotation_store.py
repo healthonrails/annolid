@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, Optional, Set, Union
 
 from annolid.utils.logger import logger
 
@@ -109,6 +109,103 @@ class AnnotationStore:
             "records": records,
         }
         return records
+
+    def remove_frames_after(
+        self,
+        frame_threshold: int,
+        protected_frames: Optional[Iterable[int]] = None,
+    ) -> int:
+        """Remove frames greater than the threshold from the store unless protected.
+
+        Args:
+            frame_threshold: Highest frame index to retain. Frames with a value
+                greater than this number are removed.
+            protected_frames: Optional iterable of frame numbers that should never
+                be removed, even if they are greater than ``frame_threshold``.
+
+        Returns:
+            The number of store records that were removed.
+        """
+        if not self.store_path.exists():
+            return 0
+
+        try:
+            protected: Set[int] = {
+                int(frame) for frame in (protected_frames or []) if frame is not None
+            }
+        except Exception:
+            protected = set()
+
+        lines_to_keep = []
+        removed = 0
+
+        try:
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.rstrip("\n")
+                    stripped = line.strip()
+                    if not stripped:
+                        # Preserve blank lines to avoid altering formatting unexpectedly.
+                        lines_to_keep.append(raw_line)
+                        continue
+
+                    try:
+                        payload = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        # If the line is malformed, keep it to avoid data loss.
+                        lines_to_keep.append(raw_line)
+                        continue
+
+                    frame_value = payload.get("frame")
+                    try:
+                        frame_number = int(frame_value)
+                    except (TypeError, ValueError):
+                        lines_to_keep.append(raw_line)
+                        continue
+
+                    if frame_number > frame_threshold and frame_number not in protected:
+                        removed += 1
+                        continue
+
+                    # Ensure the newline is preserved when rewriting.
+                    lines_to_keep.append(
+                        raw_line if raw_line.endswith(
+                            "\n") else f"{raw_line}\n"
+                    )
+        except OSError as exc:
+            logger.error(
+                "Unable to read annotation store %s for pruning: %s",
+                self.store_path,
+                exc,
+            )
+            return 0
+
+        if removed == 0:
+            return 0
+
+        temp_path = self.store_path.with_suffix(
+            self.store_path.suffix + ".tmp")
+
+        try:
+            with temp_path.open("w", encoding="utf-8") as fh:
+                fh.writelines(lines_to_keep)
+            temp_path.replace(self.store_path)
+        except OSError as exc:
+            logger.error(
+                "Failed to rewrite annotation store %s: %s", self.store_path, exc
+            )
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            return 0
+
+        AnnotationStore._CACHE.pop(self.store_path, None)
+        # Refresh cache after pruning so subsequent reads see the updated state.
+        self._load_records(force_reload=True)
+
+        return removed
 
     def write_stub(
         self,
