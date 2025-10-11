@@ -1987,10 +1987,23 @@ class AnnolidWindow(MainWindow):
                     json_count = count_json_files(self.video_results_folder)
                     store_count = self._annotation_store_frame_count()
                     total_predicted = max(json_count, store_count)
+                    expected_total_frames = self.num_frames or total_predicted
+                    missing_frames = max(
+                        0, expected_total_frames - total_predicted)
                     logger.info(
                         f"Predicted frames available: json={json_count}, store={store_count}, total={total_predicted} of {self.num_frames}")
-                    if total_predicted >= max(1, self.num_frames - 1):
+                    if total_predicted >= max(1, expected_total_frames - 1):
                         self.convert_json_to_tracked_csv()
+                    elif total_predicted > 0:
+                        logger.info(
+                            "Prediction finished with %d missing frame(s); generating CSV with available results.",
+                            missing_frames
+                        )
+                        self.convert_json_to_tracked_csv()
+                    else:
+                        logger.info(
+                            "Prediction finished without any frames to convert; skipping CSV generation."
+                        )
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
