@@ -136,6 +136,9 @@ class DinoKeypointTracker:
         self.max_candidates = max(
             1, int(self.runtime_config.max_candidate_tracks))
         self._is_fresh_start = False
+        self._roi_offset: Tuple[float, float] = (0.0, 0.0)
+        self._roi_box: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        self._roi_size: Tuple[int, int] = (0, 0)
         self.reset_state()
 
     def reset_state(self) -> None:
@@ -147,6 +150,9 @@ class DinoKeypointTracker:
         self._mask_miss_counts = {}
 
         self._is_fresh_start = False
+        self._roi_offset = (0.0, 0.0)
+        self._roi_box = (0, 0, 0, 0)
+        self._roi_size = (0, 0)
 
     def start(
         self,
@@ -157,16 +163,24 @@ class DinoKeypointTracker:
         self.reset_state()
         self._is_fresh_start = True  # Signal that the next update is the first
 
-        feats = self._extract_features(image)
-        new_h, new_w = self.extractor._compute_resized_hw(*image.size)
-        scale_x = new_w / image.width
-        scale_y = new_h / image.height
-        grid_hw = feats.shape[1:]
+        polygons: List[List[Tuple[float, float]]] = []
+        for instance in registry:
+            if instance.polygon:
+                polygons.append(
+                    [(float(x), float(y)) for x, y in instance.polygon]
+                )
+
+        feats, scale_x, scale_y, grid_hw = self._prepare_roi_inputs(
+            image=image,
+            mask_lookup=mask_lookup,
+            polygons=polygons,
+        )
+        cropped_masks = self._crop_masks_for_roi(mask_lookup)
         self._last_patch_masks = {}
         self._mask_miss_counts = {}
         mask_cache = self._build_mask_cache(
             feats,
-            mask_lookup,
+            cropped_masks,
             grid_hw,
             allow_fallback=False,
         )
@@ -230,15 +244,17 @@ class DinoKeypointTracker:
         if not self.tracks:
             return []
 
-        feats = self._extract_features(image)
-        new_h, new_w = self.extractor._compute_resized_hw(*image.size)
-        scale_x = new_w / image.width
-        scale_y = new_h / image.height
-        grid_h, grid_w = feats.shape[1:]
+        feats, scale_x, scale_y, grid_hw = self._prepare_roi_inputs(
+            image=image,
+            mask_lookup=mask_lookup,
+            polygons=None,
+        )
+        grid_h, grid_w = grid_hw
+        cropped_masks = self._crop_masks_for_roi(mask_lookup)
         mask_cache = self._build_mask_cache(
             feats,
-            mask_lookup,
-            feats.shape[1:],
+            cropped_masks,
+            grid_hw,
             allow_fallback=True,
         )
         active_masks: Dict[str, Optional[np.ndarray]] = {}
@@ -297,7 +313,7 @@ class DinoKeypointTracker:
                 predicted_y,
                 scale_x,
                 scale_y,
-                feats.shape[1:],
+                grid_hw,
             )
 
             prior = self._prepare_motion_prior(
@@ -421,7 +437,7 @@ class DinoKeypointTracker:
                         y,
                         scale_x,
                         scale_y,
-                        feats.shape[1:],
+                        grid_hw,
                     )
                     new_desc = assignment.descriptor.clone()
                     blended = (1.0 - self.momentum) * track.descriptor + \
@@ -494,6 +510,122 @@ class DinoKeypointTracker:
             feats = feats[-2:].mean(dim=0)
         return feats
 
+    def _prepare_roi_inputs(
+        self,
+        image: Image.Image,
+        mask_lookup: Optional[Dict[str, np.ndarray]],
+        polygons: Optional[List[List[Tuple[float, float]]]] = None,
+    ) -> Tuple[torch.Tensor, float, float, Tuple[int, int]]:
+        width, height = image.size
+        roi = self._determine_roi(
+            width=width,
+            height=height,
+            mask_lookup=mask_lookup,
+            polygons=polygons,
+        )
+        if self._roi_box != roi:
+            self._last_patch_masks = {}
+            self._mask_miss_counts = {}
+        left, top, right, bottom = roi
+        cropped_image = image.crop((left, top, right, bottom))
+        feats = self._extract_features(cropped_image)
+        new_h, new_w = self.extractor._compute_resized_hw(*cropped_image.size)
+        roi_w = max(1, cropped_image.width)
+        roi_h = max(1, cropped_image.height)
+        scale_x = new_w / roi_w
+        scale_y = new_h / roi_h
+        self._roi_offset = (float(left), float(top))
+        self._roi_box = roi
+        self._roi_size = (roi_w, roi_h)
+        return feats, scale_x, scale_y, feats.shape[1:]
+
+    def _determine_roi(
+        self,
+        width: int,
+        height: int,
+        mask_lookup: Optional[Dict[str, np.ndarray]],
+        polygons: Optional[List[List[Tuple[float, float]]]],
+    ) -> Tuple[int, int, int, int]:
+        min_x, min_y = width, height
+        max_x, max_y = 0, 0
+        found = False
+
+        if mask_lookup:
+            for mask in mask_lookup.values():
+                if mask is None:
+                    continue
+                ys, xs = np.nonzero(mask)
+                if xs.size == 0 or ys.size == 0:
+                    continue
+                min_x = min(min_x, int(xs.min()))
+                min_y = min(min_y, int(ys.min()))
+                max_x = max(max_x, int(xs.max()))
+                max_y = max(max_y, int(ys.max()))
+                found = True
+
+        if not found and polygons:
+            for polygon in polygons:
+                if not polygon:
+                    continue
+                xs, ys = zip(*polygon)
+                min_x = min(min_x, int(math.floor(min(xs))))
+                min_y = min(min_y, int(math.floor(min(ys))))
+                max_x = max(max_x, int(math.ceil(max(xs))))
+                max_y = max(max_y, int(math.ceil(max(ys))))
+                found = True
+
+        if not found:
+            return (0, 0, width, height)
+
+        margin = max(self.patch_size * 2, 16)
+        left = max(0, min_x - margin)
+        top = max(0, min_y - margin)
+        right = min(width, max_x + margin + 1)
+        bottom = min(height, max_y + margin + 1)
+
+        min_width = max(1, self.patch_size)
+        min_height = max(1, self.patch_size)
+
+        if right - left < min_width:
+            center = (left + right) / 2.0
+            left = int(max(0, math.floor(center - min_width / 2)))
+            right = int(min(width, left + min_width))
+        if bottom - top < min_height:
+            center = (top + bottom) / 2.0
+            top = int(max(0, math.floor(center - min_height / 2)))
+            bottom = int(min(height, top + min_height))
+
+        if right <= left:
+            right = min(width, left + 1)
+        if bottom <= top:
+            bottom = min(height, top + 1)
+
+        return (int(left), int(top), int(right), int(bottom))
+
+    def _crop_masks_for_roi(
+        self,
+        mask_lookup: Optional[Dict[str, np.ndarray]],
+    ) -> Dict[str, np.ndarray]:
+        if not mask_lookup:
+            return {}
+        left, top, right, bottom = self._roi_box
+        cropped: Dict[str, np.ndarray] = {}
+        for label, mask in mask_lookup.items():
+            if mask is None:
+                continue
+            h, w = mask.shape[:2]
+            y0 = max(0, min(top, h))
+            y1 = max(0, min(bottom, h))
+            x0 = max(0, min(left, w))
+            x1 = max(0, min(right, w))
+            if y0 >= y1 or x0 >= x1:
+                continue
+            region = mask[y0:y1, x0:x1]
+            if region.size == 0:
+                continue
+            cropped[label] = region.astype(bool)
+        return cropped
+
     def _pixel_to_patch(
         self,
         x: float,
@@ -503,8 +635,16 @@ class DinoKeypointTracker:
         grid_hw: Tuple[int, int],
     ) -> Tuple[int, int]:
         grid_h, grid_w = grid_hw
-        resized_x = x * scale_x
-        resized_y = y * scale_y
+        offset_x, offset_y = self._roi_offset
+        roi_w, roi_h = self._roi_size
+        local_x = (x - offset_x)
+        local_y = (y - offset_y)
+        if roi_w > 0:
+            local_x = min(max(local_x, 0.0), float(roi_w - 1))
+        if roi_h > 0:
+            local_y = min(max(local_y, 0.0), float(roi_h - 1))
+        resized_x = local_x * scale_x
+        resized_y = local_y * scale_y
         patch_c = int(resized_x / self.patch_size)
         patch_r = int(resized_y / self.patch_size)
         patch_c = max(0, min(grid_w - 1, patch_c))
@@ -520,7 +660,12 @@ class DinoKeypointTracker:
         r, c = patch_rc
         center_resized_x = (c + 0.5) * self.patch_size
         center_resized_y = (r + 0.5) * self.patch_size
-        return center_resized_x / scale_x, center_resized_y / scale_y
+        local_x = center_resized_x / scale_x if scale_x else 0.0
+        local_y = center_resized_y / scale_y if scale_y else 0.0
+        return (
+            local_x + self._roi_offset[0],
+            local_y + self._roi_offset[1],
+        )
 
     def _initialize_structural_refs(self, registry: InstanceRegistry) -> None:
         for instance in registry:

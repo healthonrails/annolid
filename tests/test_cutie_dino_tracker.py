@@ -97,8 +97,10 @@ def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):
     produced = json.loads(Path(output_path).read_text())
     expected = json.loads(expected_fixture.read_text())
 
-    produced_shapes = sorted(produced["shapes"], key=lambda shape: shape["label"])
-    expected_shapes = sorted(expected["shapes"], key=lambda shape: shape["label"])
+    produced_shapes = sorted(
+        produced["shapes"], key=lambda shape: shape["label"])
+    expected_shapes = sorted(
+        expected["shapes"], key=lambda shape: shape["label"])
     assert produced_shapes == expected_shapes
 
     keypoint_flags = produced_shapes[0]["flags"]
@@ -120,8 +122,10 @@ def test_annotation_adapter_uses_latest_manual_frame(tmp_path):
     base_time = time.time()
     # Mark frame 101 as the newest manual edit and keep others older.
     os.utime(source_dir / "clip_000000101.json", (base_time, base_time))
-    os.utime(source_dir / "clip_000000042.json", (base_time - 60, base_time - 60))
-    os.utime(source_dir / "clip_000000000.json", (base_time - 120, base_time - 120))
+    os.utime(source_dir / "clip_000000042.json",
+             (base_time - 60, base_time - 60))
+    os.utime(source_dir / "clip_000000000.json",
+             (base_time - 120, base_time - 120))
 
     adapter = AnnotationAdapter(image_height=100, image_width=120)
     frame_number, _ = adapter.load_initial_state(source_dir)
@@ -255,6 +259,73 @@ def test_tracker_rejects_mask_violation_when_radius_too_small(monkeypatch):
     assert tracker.tracks["animalnose"].misses == 1
 
 
+def test_tracker_roi_uses_polygon_bbox(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    tracker = DinoKeypointTracker(model_name="dummy", search_radius=1)
+    extractor: DummyExtractor = tracker.extractor  # type: ignore[assignment]
+
+    image = Image.new("RGB", (64, 64))
+    registry = InstanceRegistry()
+    instance = registry.ensure_instance("animal")
+    polygon = [
+        (30.0, 20.0),
+        (40.0, 20.0),
+        (40.0, 30.0),
+        (30.0, 30.0),
+        (30.0, 20.0),
+    ]
+    instance.set_mask(bitmap=None, polygon=polygon)
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=35.0,
+            y=25.0,
+        )
+    )
+
+    expected_roi = (14, 4, 57, 47)
+    roi_width = expected_roi[2] - expected_roi[0]
+    roi_height = expected_roi[3] - expected_roi[1]
+    extractor.set_queue([torch.zeros((2, roi_height, roi_width))])
+
+    tracker.start(image, registry, mask_lookup=None)
+    assert tracker._roi_box == expected_roi
+
+
+def test_tracker_roi_defaults_to_full_frame_without_polygons(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    tracker = DinoKeypointTracker(model_name="dummy", search_radius=1)
+    extractor: DummyExtractor = tracker.extractor  # type: ignore[assignment]
+
+    image = Image.new("RGB", (64, 64))
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=50.0,
+            y=10.0,
+        )
+    )
+
+    expected_roi = (0, 0, 64, 64)
+    roi_width = expected_roi[2] - expected_roi[0]
+    roi_height = expected_roi[3] - expected_roi[1]
+    extractor.set_queue([torch.zeros((2, roi_height, roi_width))])
+
+    tracker.start(image, registry, mask_lookup=None)
+    assert tracker._roi_box == expected_roi
+
+
 def test_tracker_reset_state_clears_history(monkeypatch):
     monkeypatch.setattr(
         "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
@@ -341,7 +412,8 @@ def test_cutie_mask_manager_reset_state(tmp_path):
     manager._label_to_value = {"animal": 1}
     manager._value_to_label = {1: "animal"}
     manager._initialized = True
-    manager._last_results = {"animal": MaskResult("animal", np.ones((2, 2), dtype=bool), [])}
+    manager._last_results = {"animal": MaskResult(
+        "animal", np.ones((2, 2), dtype=bool), [])}
     manager._mask_miss_counts = {"animal": 2}
 
     manager.reset_state()
@@ -608,8 +680,10 @@ def test_symmetry_pairs_prevent_swaps(monkeypatch):
     extractor = tracker.extractor
 
     start_features = torch.zeros((3, 4, 5), dtype=torch.float32)
-    start_features[:, 1, 1] = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
-    start_features[:, 1, 3] = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32)
+    start_features[:, 1, 1] = torch.tensor(
+        [1.0, 0.0, 0.0], dtype=torch.float32)
+    start_features[:, 1, 3] = torch.tensor(
+        [0.0, 1.0, 0.0], dtype=torch.float32)
 
     update_features = torch.zeros((3, 4, 5), dtype=torch.float32)
     update_features[:, 1, 1] = torch.tensor([0.1, 0.995, 0.0])
