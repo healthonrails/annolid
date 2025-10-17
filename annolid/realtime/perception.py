@@ -60,6 +60,9 @@ class Config:
     mask_confidence_threshold: float = 0.5  # Threshold for mask pixels
     mask_encoding: str = "rle"  # "rle", "polygon", or "bitmap"
 
+    # pose-specific options
+    enable_pose: bool = False  # Whether to publish pose keypoints
+
 
 # --- Recording State Management ---
 class RecordingState(Enum):
@@ -138,13 +141,19 @@ class DetectionResult:
 
     def __init__(self, behavior: str, confidence: float, bbox: List[float],
                  timestamp: float, metadata: Dict[str, Any],
-                 mask_data: Optional[Dict[str, Any]] = None):
+                 mask_data: Optional[Dict[str, Any]] = None,
+                 keypoints: Optional[List[List[float]]] = None,
+                 keypoint_scores: Optional[List[float]] = None,
+                 keypoint_labels: Optional[List[str]] = None):
         self.behavior = behavior
         self.confidence = confidence
         self.bbox = bbox
         self.timestamp = timestamp
         self.metadata = metadata
         self.mask_data = mask_data  # Stores the pre-encoded mask dictionary
+        self.keypoints = keypoints
+        self.keypoint_scores = keypoint_scores
+        self.keypoint_labels = keypoint_labels
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts the result to a dictionary for JSON serialization."""
@@ -159,6 +168,17 @@ class DetectionResult:
 
         if self.mask_data:
             result["mask"] = self.mask_data
+
+        result["has_keypoints"] = self.keypoints is not None
+
+        if self.keypoints is not None:
+            result["keypoints"] = self.keypoints
+
+        if self.keypoint_scores is not None:
+            result["keypoint_scores"] = self.keypoint_scores
+
+        if self.keypoint_labels is not None:
+            result["keypoint_labels"] = self.keypoint_labels
 
         return result
 
@@ -813,6 +833,17 @@ class PerceptionProcess:
         self.config = config
         self.model: Optional[YOLO] = None
         self.class_names: Optional[List[str]] = None
+        self.keypoint_labels: Optional[List[str]] = None
+
+        # Auto-enable pose mode for known pose models
+        model_name_lower = str(self.config.model_base_name).lower()
+        if "pose" in model_name_lower:
+            self.config.enable_pose = True
+
+        if self.config.enable_pose and self.config.enable_segmentation:
+            logger.info(
+                "Pose mode detected; disabling segmentation processing for compatibility.")
+            self.config.enable_segmentation = False
 
         # Initialize recording state manager
         self.recording_manager = RecordingStateManager(config)
@@ -827,6 +858,51 @@ class PerceptionProcess:
         # Setup recording state callbacks
         self.recording_manager.add_state_change_callback(
             self._on_recording_state_change)
+
+    def _extract_keypoint_labels(self, model: YOLO) -> Optional[List[str]]:
+        """Attempt to extract keypoint labels from the loaded YOLO model."""
+
+        def _normalize_labels(source) -> Optional[List[str]]:
+            if not source:
+                return None
+            if isinstance(source, dict):
+                return [source[key] for key in sorted(source)]
+            if isinstance(source, str):
+                return [source]
+            if isinstance(source, (list, tuple)):
+                return list(source)
+            try:
+                return list(source)
+            except TypeError:
+                return None
+
+        try:
+            overrides = getattr(model, "overrides", None)
+            if overrides:
+                labels = _normalize_labels(
+                    overrides.get("kpt_label") or overrides.get("kpt_labels"))
+                if labels:
+                    return labels
+
+            candidate_attrs = ("kpt_label", "kpt_labels", "names_kpt")
+            model_obj = getattr(model, "model", None)
+
+            for attr in candidate_attrs:
+                labels = _normalize_labels(getattr(model_obj, attr, None))
+                if labels:
+                    return labels
+
+            inner_model = getattr(model_obj, "model",
+                                  None) if model_obj else None
+            for attr in candidate_attrs:
+                labels = _normalize_labels(getattr(inner_model, attr, None))
+                if labels:
+                    return labels
+
+        except Exception as exc:
+            logger.debug("Unable to extract keypoint labels: %s", exc)
+
+        return None
 
     async def _on_recording_state_change(self, old_state: RecordingState, new_state: RecordingState):
         """Handle recording state changes."""
@@ -858,6 +934,22 @@ class PerceptionProcess:
             logger.info(f"Loading YOLO model: {self.config.model_base_name}")
             model = await asyncio.to_thread(YOLO, self.config.model_base_name)
             self.class_names = model.names
+            keypoint_labels = self._extract_keypoint_labels(model)
+            if keypoint_labels:
+                if not self.config.enable_pose:
+                    logger.info(
+                        "Pose metadata detected; enabling pose processing.")
+                self.config.enable_pose = True
+                self.keypoint_labels = keypoint_labels
+                if self.config.enable_segmentation:
+                    logger.info(
+                        "Disabling segmentation because pose keypoints are present.")
+                    self.config.enable_segmentation = False
+                logger.info(
+                    "Keypoint labels (%d): %s",
+                    len(keypoint_labels),
+                    ", ".join(keypoint_labels)
+                )
             logger.info("YOLO model loaded successfully")
             yield model
         except Exception as e:
@@ -1031,12 +1123,26 @@ class PerceptionProcess:
         if not result.boxes or len(result.boxes) == 0:
             return 0
 
+        def _to_list(data):
+            if data is None:
+                return None
+            processed = data
+            if hasattr(processed, "cpu"):
+                processed = processed.cpu()
+            if hasattr(processed, "numpy"):
+                processed = processed.numpy()
+            if hasattr(processed, "tolist"):
+                return processed.tolist()
+            return list(processed)
+
         detection_count = 0
         boxes = result.boxes
 
         # Check if segmentation masks are available in the result object
         masks = result.masks if self.config.enable_segmentation and hasattr(
             result, 'masks') and result.masks is not None else None
+        keypoints_obj = result.keypoints if hasattr(
+            result, 'keypoints') and result.keypoints is not None else None
 
         for i in range(len(boxes)):
             try:
@@ -1049,14 +1155,32 @@ class PerceptionProcess:
                     if masks:
                         encoded_mask_data = self._encode_mask(masks, i)
 
-                    # Create the DetectionResult with the pre-encoded mask
+                    # Prepare pose information if available
+                    keypoints = None
+                    keypoint_scores = None
+
+                    if keypoints_obj is not None:
+                        keypoints_data = getattr(keypoints_obj, "xyn", None)
+                        if keypoints_data is not None and i < len(keypoints_data):
+                            keypoints = _to_list(keypoints_data[i])
+
+                        conf_data = getattr(keypoints_obj, "conf", None)
+                        if conf_data is not None and i < len(conf_data):
+                            keypoint_scores = _to_list(conf_data[i])
+
+                    keypoint_labels = self.keypoint_labels if self.keypoint_labels and keypoints is not None else None
+
+                    # Create the DetectionResult with the pre-encoded mask and pose data
                     detection = DetectionResult(
                         behavior=class_name,
                         confidence=float(boxes.conf[i]),
                         bbox=boxes.xyxyn[i].cpu().numpy().tolist(),
                         timestamp=timestamp,
                         metadata=metadata,
-                        mask_data=encoded_mask_data  # Pass the encoded dictionary here
+                        mask_data=encoded_mask_data,  # Pass the encoded dictionary here
+                        keypoints=keypoints,
+                        keypoint_scores=keypoint_scores,
+                        keypoint_labels=keypoint_labels
                     )
 
                     await self.publisher.publish_detection(detection)
@@ -1074,7 +1198,7 @@ class PerceptionProcess:
             annotated_frame = result.plot()
 
             # Alternative: Manual mask overlay if you want custom styling
-            if hasattr(result, 'masks') and result.masks is not None:
+            if self.config.enable_segmentation and hasattr(result, 'masks') and result.masks is not None:
                 masks = result.masks.data.cpu().numpy()
                 boxes = result.boxes
 
@@ -1124,7 +1248,7 @@ class PerceptionProcess:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, processing_color, 2)
 
             # Add segmentation info
-            if hasattr(result, 'masks') and result.masks is not None:
+            if self.config.enable_segmentation and hasattr(result, 'masks') and result.masks is not None:
                 seg_text = f"Masks: {len(result.masks.data)}"
                 cv2.putText(annotated_frame, seg_text, (10, 150),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -1197,6 +1321,8 @@ def create_config_from_args() -> Config:
     camera_index = int(
         args.camera_index) if args.camera_index.isdigit() else args.camera_index
 
+    is_pose_model = "pose" in args.model.lower()
+
     return Config(
         camera_index=camera_index,
         server_address=args.server_address,
@@ -1210,7 +1336,9 @@ def create_config_from_args() -> Config:
         max_fps=args.max_fps,
         visualize=args.visualize,
         pause_on_recording_stop=not args.continue_on_stop,
-        recording_state_timeout=args.recording_timeout
+        recording_state_timeout=args.recording_timeout,
+        enable_segmentation=not is_pose_model,
+        enable_pose=is_pose_model
     )
 
 
