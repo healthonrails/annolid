@@ -23,7 +23,6 @@ import imgviz
 import argparse
 from pathlib import Path
 import functools
-import requests
 import subprocess
 
 from labelme.ai import MODELS
@@ -101,6 +100,7 @@ from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
+from annolid.gui.tensorboard import start_tensorboard, VisualizationWindow
 
 
 __appname__ = 'Annolid'
@@ -109,43 +109,6 @@ __version__ = "1.2.2"
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
-
-
-def start_tensorboard(log_dir=None,
-                      tensorboard_url='http://localhost:6006'):
-
-    process = None
-    if log_dir is None:
-        here = Path(__file__).parent
-        log_dir = here.parent.resolve() / "runs" / "logs"
-    try:
-        r = requests.get(tensorboard_url)
-    except requests.exceptions.ConnectionError:
-        process = subprocess.Popen(
-            ['tensorboard', f'--logdir={str(log_dir)}'])
-        time.sleep(8)
-    return process
-
-
-class VisualizationWindow(QtWidgets.QDialog):
-
-    def __init__(self):
-        super(VisualizationWindow, self).__init__()
-        from qtpy.QtWebEngineWidgets import QWebEngineView
-        self.setWindowTitle("Visualization Tensorboard")
-        self.process = start_tensorboard()
-        self.browser = QWebEngineView()
-        self.browser.setUrl(QtCore.QUrl(self.tensorboar_url))
-        vbox = QtWidgets.QVBoxLayout()
-        vbox.addWidget(self.browser)
-        self.setLayout(vbox)
-        self.show()
-
-    def closeEvent(self, event):
-        if self.process is not None:
-            time.sleep(3)
-            self.process.kill()
-        event.accept()
 
 
 class AnnolidWindow(MainWindow):
