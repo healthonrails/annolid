@@ -245,12 +245,12 @@ class InferenceProcessor:
 
     def save_yolo_to_labelme(self, annotations: list, frame_shape: tuple, output_dir: Path) -> None:
         """
-        Persist YOLO annotations for a frame using the annotation store.
+        Saves YOLO annotations to a LabelMe JSON file.
 
         Args:
             annotations (list): List of Shape objects.
             frame_shape (tuple): Tuple containing (height, width, channels).
-            output_dir (Path): Output directory where annotations will be recorded.
+            output_dir (Path): Output directory where JSON will be saved.
         """
         height, width, _ = frame_shape
         json_filename = f"{self.frame_count:09d}.json"

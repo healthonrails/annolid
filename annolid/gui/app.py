@@ -93,7 +93,8 @@ from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDia
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
 from annolid.gui.widgets.caption import CaptionWidget
-from annolid.gui.models_registry import MODEL_REGISTRY, PATCH_SIMILARITY_MODELS
+from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.gui.model_manager import AIModelManager
 from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
@@ -199,6 +200,13 @@ class AnnolidWindow(MainWindow):
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
         self._pred_res_folder_suffix = '_tracking_results_labelme'
+        self.ai_model_manager = AIModelManager(
+            parent=self,
+            combo=self._selectAiModelComboBox,
+            settings=self.settings,
+            base_config=self._config,
+            canvas_getter=lambda: getattr(self, "canvas", None),
+        )
         self.yolo_training_manager = YOLOTrainingManager(self)
         self.frame_number = 0
         self.video_loader = None
@@ -340,7 +348,8 @@ class AnnolidWindow(MainWindow):
 
         createAiPolygonMode.changed.connect(
             lambda: self.canvas.initializeAiModel(
-                name=self._selectAiModelComboBox.currentText()
+                name=self._selectAiModelComboBox.currentText(),
+                _custom_ai_models=self.ai_model_manager.custom_model_names,
             )
             if self.canvas.createMode == "ai_polygon"
             else None
@@ -772,30 +781,7 @@ class AnnolidWindow(MainWindow):
         # Callbacks:
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
 
-        self._selectAiModelComboBox.clear()
-        self.custom_ai_model_names = [
-            model.display_name for model in MODEL_REGISTRY]
-        model_names = [model.name for model in MODELS] + \
-            self.custom_ai_model_names
-        self._selectAiModelComboBox.addItems(model_names)
-        # Set EdgeSAM as default
-        if self._config["ai"]["default"] in model_names:
-            model_index = model_names.index(self._config["ai"]["default"])
-        else:
-            logger.warning(
-                "Default AI model is not found: %r",
-                self._config["ai"]["default"],
-            )
-            model_index = 0
-        self._selectAiModelComboBox.setCurrentIndex(model_index)
-        self._selectAiModelComboBox.currentIndexChanged.connect(
-            lambda: self.canvas.initializeAiModel(
-                name=self._selectAiModelComboBox.currentText(),
-                _custom_ai_models=self.custom_ai_model_names,
-            )
-            if self.canvas.createMode in ["ai_polygon", "ai_mask"]
-            else None
-        )
+        self.ai_model_manager.initialize()
 
         self.canvas_screenshot_widget = CanvasScreenshotWidget(
             canvas=self.canvas, here=Path(__file__).resolve().parent)
@@ -2180,17 +2166,14 @@ class AnnolidWindow(MainWindow):
 
     def _get_current_model_config(self):
         """Return the ModelConfig for the currently selected model, if any."""
-        current_text = self._selectAiModelComboBox.currentText()
-        return next(
-            (m for m in MODEL_REGISTRY if m.display_name == current_text), None)
+        return self.ai_model_manager.get_current_model()
 
     def get_current_model_weight_file(self) -> str:
         """
         Returns the weight file associated with the currently selected model.
         If no matching model is found, returns a default fallback weight file.
         """
-        model = self._get_current_model_config()
-        return model.weight_file if model is not None else "Segment-Anything (Edge)"
+        return self.ai_model_manager.get_current_weight()
 
     def _resolve_model_identity(self):
         model_config = self._get_current_model_config()
@@ -2218,7 +2201,29 @@ class AnnolidWindow(MainWindow):
     def _is_yolo_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()
-        return "yolo" in identifier or "yolo" in weight
+        if "yolo" in identifier or "yolo" in weight:
+            return True
+
+        non_yolo_keywords = (
+            "sam",
+            "dinov",
+            "dino",
+            "cotracker",
+            "cutie",
+            "efficientvit",
+            "mediapipe",
+            "maskrcnn",
+        )
+        if any(keyword in identifier for keyword in non_yolo_keywords):
+            return False
+        if any(keyword in weight for keyword in non_yolo_keywords):
+            return False
+
+        # Many custom YOLO exports rely on generic names such as "best.pt".
+        if weight.endswith((".pt", ".pth")):
+            return True
+
+        return False
 
     @staticmethod
     def _is_sam2_model(identifier: str, weight: str) -> bool:
