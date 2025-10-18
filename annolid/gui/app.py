@@ -114,6 +114,7 @@ from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
 from annolid.gui.tensorboard import start_tensorboard, VisualizationWindow
 from annolid.realtime.perception import Config as RealtimeConfig
+from annolid.gui.yolo_training_manager import YOLOTrainingManager
 
 
 __appname__ = 'Annolid'
@@ -198,6 +199,7 @@ class AnnolidWindow(MainWindow):
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
         self._pred_res_folder_suffix = '_tracking_results_labelme'
+        self.yolo_training_manager = YOLOTrainingManager(self)
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
@@ -3468,32 +3470,18 @@ class AnnolidWindow(MainWindow):
         if config_file is None:
             return
         if algo == 'YOLO':
-            from ultralytics import YOLO
-            try:
-                model = YOLO(yolo_model_file)  # Load the model from YAML
-
-                if model_path:
-                    try:
-                        model.load(model_path)
-                    except Exception as e:
-                        QtWidgets.QMessageBox.warning(
-                            self, "Error", f"Failed to load trained model: {e}")
-                        return
-
-                results = model.train(
-                    data=config_file,
-                    epochs=epochs,
-                    imgsz=image_size,
-                    project=out_dir if out_dir else None
-                )
-                self.statusBar().showMessage(self.tr(f"Training..."))
-
-                QtWidgets.QMessageBox.information(
-                    self, "Training Completed", "YOLO model training completed successfully!")
-
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    self, "Training Error", f"An error occurred during training: {e}")
+            data_config = self.yolo_training_manager.prepare_data_config(
+                config_file)
+            if data_config is None:
+                return
+            self.yolo_training_manager.start_training(
+                yolo_model_file=yolo_model_file,
+                model_path=model_path,
+                data_config_path=data_config,
+                epochs=epochs,
+                image_size=image_size,
+                out_dir=out_dir,
+            )
 
         elif algo == 'YOLACT':
             # start training models
@@ -4673,6 +4661,8 @@ class AnnolidWindow(MainWindow):
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
         quit_and_wait(self.seg_pred_thread, "Bye!")
+        if hasattr(self, "yolo_training_manager") and self.yolo_training_manager:
+            self.yolo_training_manager.cleanup()
 
     def loadLabels(self, shapes):
         s = []

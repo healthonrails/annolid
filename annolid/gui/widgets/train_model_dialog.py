@@ -2,6 +2,16 @@ from pathlib import Path
 from qtpy import QtCore, QtWidgets
 
 
+YOLO11_TASK_SUFFIXES = {
+    "Detection": "",
+    "Instance Segmentation": "-seg",
+    "Pose Estimation": "-pose",
+    "Oriented Detection": "-obb",
+    "Classification": "-cls",
+}
+YOLO11_MODEL_SIZES = ("n", "s", "m", "l", "x")
+
+
 class TrainModelDialog(QtWidgets.QDialog):
     def __init__(self, *args, **kwargs):
         super(TrainModelDialog, self).__init__(*args, **kwargs)
@@ -21,12 +31,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         # UI Components
         self.create_radio_buttons()
         self.create_sliders()
+        self.create_yolo_model_selector()
         self.create_file_selection_widgets()
         self.create_button_box()
 
         # Layout
         main_layout = QtWidgets.QVBoxLayout()
         main_layout.addWidget(self.groupBox)
+        main_layout.addWidget(self.yolo_model_groupbox)
         main_layout.addWidget(self.label1)
         main_layout.addWidget(self.slider)
         main_layout.addWidget(self.image_size_groupbox)
@@ -113,6 +125,44 @@ class TrainModelDialog(QtWidgets.QDialog):
         epoch_hbox_layout.addWidget(self.epoch_slider)
         epoch_hbox_layout.addWidget(self.epoch_label)
         self.epoch_groupbox.setLayout(epoch_hbox_layout)
+
+    def create_yolo_model_selector(self):
+        self.yolo_model_groupbox = QtWidgets.QGroupBox(
+            "YOLO11 Pretrained Weights")
+        self.yolo_task_combo = QtWidgets.QComboBox(self)
+        self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
+        self.yolo_size_combo = QtWidgets.QComboBox(self)
+        self.yolo_size_combo.addItems([size.upper()
+                                      for size in YOLO11_MODEL_SIZES])
+        self.yolo_model_label = QtWidgets.QLabel(self)
+        self.yolo_model_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse)
+
+        self.yolo_task_combo.currentTextChanged.connect(
+            self.update_yolo_model_filename)
+        self.yolo_size_combo.currentTextChanged.connect(
+            self.update_yolo_model_filename)
+
+        layout = QtWidgets.QGridLayout()
+        layout.addWidget(QtWidgets.QLabel("Task"), 0, 0)
+        layout.addWidget(self.yolo_task_combo, 0, 1)
+        layout.addWidget(QtWidgets.QLabel("Model Size"), 1, 0)
+        layout.addWidget(self.yolo_size_combo, 1, 1)
+        layout.addWidget(self.yolo_model_label, 2, 0, 1, 2)
+        self.yolo_model_groupbox.setLayout(layout)
+
+        # Default to segmentation small model to match previous behavior
+        self.yolo_task_combo.setCurrentText("Instance Segmentation")
+        self.yolo_size_combo.setCurrentText("N")
+        self.update_yolo_model_filename()
+
+    def update_yolo_model_filename(self):
+        task_text = self.yolo_task_combo.currentText()
+        size_text = self.yolo_size_combo.currentText().lower()
+        suffix = YOLO11_TASK_SUFFIXES.get(task_text, "")
+        self.yolo_model_file = f"yolo11{size_text}{suffix}.pt"
+        self.yolo_model_label.setText(
+            f"Selected weights: {self.yolo_model_file}")
 
     def create_file_selection_widgets(self):
         # Config File Selection
@@ -222,6 +272,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.configFileButton.setText("Open YAML" if yolo_selected else "Open")
         self.image_size_groupbox.setVisible(yolo_selected)
         self.epoch_groupbox.setVisible(yolo_selected)
+        self.yolo_model_groupbox.setVisible(yolo_selected)
 
     def accept(self):  # Override accept method for training logic
         # Validate inputs before accepting
