@@ -15,14 +15,14 @@ sort_labels: true
 validate_label: null
 
 default_shape_color: [0, 255, 0]
-shape_color: auto  # null, 'auto', 'manual'
+shape_color: auto # null, 'auto', 'manual'
 shift_auto_shape_color: 0
 label_colors: null
 
 shape:
   # drawing
   line_color: [0, 255, 0, 128]
-  fill_color: [0, 255, 0, 0]  # transparent
+  fill_color: [0, 255, 0, 0] # transparent
   vertex_fill_color: [0, 255, 0, 255]
   # selecting / hovering
   select_line_color: [255, 255, 255, 255]
@@ -31,7 +31,7 @@ shape:
   point_size: 8
 
 ai:
-  default: 'EfficientSam (speed)'
+  default: "EfficientSam (speed)"
 
 # main
 flag_dock:
@@ -154,3 +154,18 @@ tracker:
   # Flow-aware blending controls
   motion_search_flow_gain: 0.6
   motion_prior_flow_relief: 0.0
+
+realtime:
+  model: yolo11n-seg.pt
+  publisher_address: tcp://*:5555
+  subscriber_address: tcp://127.0.0.1:5555
+  camera_index: 0
+  server_address: localhost
+  server_port: 5002
+  frame_width: 640
+  frame_height: 480
+  max_fps: 30.0
+  confidence_threshold: 0.25
+  publish_frames: true
+  publish_annotated_frames: true
+  log_to_ndjson: false

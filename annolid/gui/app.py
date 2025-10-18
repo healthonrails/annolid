@@ -83,6 +83,7 @@ from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets import RecordingWidget
 from annolid.gui.widgets import CanvasScreenshotWidget
+from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
@@ -97,7 +98,9 @@ from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.jobs.tracking_worker import TrackingWorker
-from typing import Dict, List, Optional, Set, Tuple
+import contextlib
+import socket
+from typing import Any, Dict, List, Optional, Set, Tuple
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
@@ -214,7 +217,6 @@ class AnnolidWindow(MainWindow):
         self._realtime_connect_address = None
         self._realtime_shapes = []
         self.realtime_log_enabled = False
-        self.realtime_log_basepath = None
         self.realtime_log_fp = None
         self.realtime_log_path = None
         self.zone_path = None
@@ -297,6 +299,24 @@ class AnnolidWindow(MainWindow):
                                            QtWidgets.QDockWidget.DockWidgetClosable |
                                            QtWidgets.QDockWidget.DockWidgetFloatable)
         self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_log_dock)
+
+        self.realtime_control_dialog = QtWidgets.QDialog(self)
+        self.realtime_control_dialog.setWindowTitle(
+            self.tr("Realtime Control"))
+        self.realtime_control_dialog.setModal(False)
+        self.realtime_control_widget = RealtimeControlWidget(
+            parent=self.realtime_control_dialog,
+            config=self._config,
+        )
+        self.realtime_control_widget.start_requested.connect(
+            self._handle_realtime_start_request)
+        self.realtime_control_widget.stop_requested.connect(
+            self.stop_realtime_inference)
+        dialog_layout = QtWidgets.QVBoxLayout(self.realtime_control_dialog)
+        dialog_layout.setContentsMargins(10, 10, 10, 10)
+        dialog_layout.addWidget(self.realtime_control_widget)
+        self.realtime_control_dialog.resize(420, 560)
+        self.realtime_control_widget.set_status_text(self.tr("Realtime idle."))
 
         self.setCentralWidget(scrollArea)
 
@@ -566,28 +586,6 @@ class AnnolidWindow(MainWindow):
 
         self.recording_widget = RecordingWidget(self.canvas)
 
-        self.start_realtime_action = newAction(
-            self,
-            self.tr("Start Realtime"),
-            self.start_realtime_inference,
-            icon="fast_forward",
-            tip=self.tr(
-                "Start realtime inference and stream results to the canvas"),
-        )
-        self.start_realtime_action.setIcon(
-            QtGui.QIcon(str(self.here / "icons/fast_forward.png")))
-
-        self.stop_realtime_action = newAction(
-            self,
-            self.tr("Stop Realtime"),
-            self.stop_realtime_inference,
-            icon="stop_record",
-            tip=self.tr("Stop the realtime inference session"),
-        )
-        self.stop_realtime_action.setIcon(
-            QtGui.QIcon(str(self.here / "icons/stop_record.png")))
-        self.stop_realtime_action.setEnabled(False)
-
         self.patch_similarity_action = newAction(
             self,
             self.tr("Patch Similarity"),
@@ -653,8 +651,6 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(visualization)
         _action_tools.append(self.patch_similarity_action)
         _action_tools.append(self.pca_map_action)
-        _action_tools.append(self.start_realtime_action)
-        _action_tools.append(self.stop_realtime_action)
         _action_tools.append(self.recording_widget.record_action)
 
         self.actions.tool = tuple(_action_tools)
@@ -690,13 +686,20 @@ class AnnolidWindow(MainWindow):
         utils.addActions(self.menus.view, (visualization,))
         utils.addActions(self.menus.view, (self.patch_similarity_action,))
         utils.addActions(self.menus.view, (self.pca_map_action,))
+        self.realtime_control_action = newAction(
+            self,
+            self.tr("Realtime Control…"),
+            self._show_realtime_control_dialog,
+            icon="fast_forward",
+            tip=self.tr("Configure and launch realtime inference"),
+        )
+        self.realtime_control_action.setIcon(
+            QtGui.QIcon(str(self.here / "icons/fast_forward.png")))
+        utils.addActions(self.menus.view, (self.realtime_control_action,))
         utils.addActions(
             self.menus.view,
             (self.patch_similarity_settings_action, self.pca_map_settings_action),
         )
-        utils.addActions(self.menus.view,
-                         (self.start_realtime_action, self.stop_realtime_action))
-
         utils.addActions(self.menus.help, (about_annolid,))
 
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
@@ -1446,190 +1449,93 @@ class AnnolidWindow(MainWindow):
     # Realtime inference helpers
     # ------------------------------------------------------------------
 
-    def _default_realtime_targets(self) -> List[str]:
-        defaults = self._config.get("realtime", {}) or {}
-        configured_targets = defaults.get("targets")
-        if isinstance(configured_targets, (list, tuple)) and configured_targets:
-            return [str(target) for target in configured_targets if target]
+    def _handle_realtime_start_request(self,
+                                       realtime_config: RealtimeConfig,
+                                       extras: Dict[str, Any]):
+        self._show_realtime_control_dialog()
+        if self.realtime_perception_worker is not None:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Realtime Inference"),
+                self.tr("A realtime session is already running."),
+            )
+            self.realtime_control_widget.set_running(False)
+            self.realtime_control_widget.set_status_text(
+                self.tr("Realtime session already running."))
+            return
 
-        label_names: List[str] = []
-        label_list = getattr(self, "labelList", None)
-        if label_list is not None:
+        # Prevent duplicate publisher binding by probing the address first.
+        publisher = realtime_config.publisher_address
+        if publisher:
             try:
-                for item in label_list:
-                    if item:
-                        text = (item.text() or "").strip()
-                        if text:
-                            label_names.append(text)
-            except Exception as exc:
-                logger.debug("Unable to read labels from label list: %s", exc)
-
-        if label_names:
-            return label_names
-
-        config_labels = self._config.get("labels")
-        if isinstance(config_labels, list) and config_labels:
-            return [str(label) for label in config_labels if label]
-
-        return ["mouse"]
-
-    def _prompt_realtime_model(self, default_weight: str) -> Optional[str]:
-        segmentation_models = [
-            model for model in MODEL_REGISTRY
-            if model.weight_file.lower().endswith((".pt", ".engine"))
-        ]
-
-        if not segmentation_models:
-            return default_weight
-
-        items = [model.display_name for model in segmentation_models]
-        stored_identifier = str(self.settings.value(
-            "realtime/model_identifier", ""))
-
-        default_index = 0
-        for idx, model in enumerate(segmentation_models):
-            if model.identifier == stored_identifier or model.weight_file == stored_identifier:
-                default_index = idx
-                break
-
-        selection, ok = QtWidgets.QInputDialog.getItem(
-            self,
-            self.tr("Select Realtime Model"),
-            self.tr("Choose a YOLO model for realtime inference:"),
-            items,
-            default_index,
-            False,
-        )
-
-        if not ok:
-            return None
-
-        selected_model = segmentation_models[items.index(selection)]
-        self.settings.setValue(
-            "realtime/model_identifier", selected_model.identifier)
-        self.settings.setValue(
-            "realtime/model_weight", selected_model.weight_file)
-        return selected_model.weight_file
-
-    def _build_realtime_config(self) -> Optional[Tuple[RealtimeConfig, str]]:
-        defaults = self._config.get("realtime", {}) or {}
-
-        model_weight = (defaults.get("model_weight") or
-                        defaults.get("model") or
-                        self.settings.value("realtime/model_weight", ""))
-
-        if not model_weight:
-            model_weight = self._prompt_realtime_model("yolo11n-seg.pt")
-            if not model_weight:
-                return None
-
-        publisher_address = str(
-            defaults.get("publisher_address", "tcp://127.0.0.1:5555"))
-        connect_address = defaults.get("subscriber_address")
-        if not connect_address:
-            if publisher_address.startswith("tcp://*"):
-                connect_address = publisher_address.replace(
-                    "tcp://*", "tcp://127.0.0.1", 1)
-            else:
-                connect_address = publisher_address
-
-        targets = defaults.get("targets")
-        if isinstance(targets, str):
-            targets = [targets]
-        if not targets:
-            targets = self._default_realtime_targets()
-
-        encoding = str(defaults.get("frame_encoding", "jpg")).lower()
-        if encoding not in {"jpg", "jpeg", "png"}:
-            encoding = "jpg"
-
-        publish_annotated_frames = bool(
-            defaults.get("publish_annotated_frames",
-                         defaults.get("publish_annotated", True)))
+                with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+                    sock.settimeout(0.5)
+                    host, port = self._resolve_tcp_endpoint(publisher)
+                    bind_result = sock.connect_ex((host, port))
+                    if bind_result == 0:
+                        raise RuntimeError(
+                            self.tr("Publisher port %1 is already in use.").replace("%1", str(port)))
+            except RuntimeError:
+                message = self.tr(
+                    "Publisher address %1 is already in use.").replace("%1", publisher)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("Realtime Inference"),
+                    message,
+                )
+                self.realtime_control_widget.set_running(False)
+                self.realtime_control_widget.set_status_text(message)
+                return
+            except Exception:
+                # If we cannot determine the state we proceed; ZMQ will raise if needed.
+                pass
 
         try:
-            frame_quality = int(defaults.get("frame_quality", 80))
-        except (TypeError, ValueError):
-            frame_quality = 80
+            self.start_realtime_inference(realtime_config, extras)
+        except Exception as exc:
+            logger.error("Failed to start realtime inference: %s", exc,
+                         exc_info=True)
+            self.realtime_running = False
+            QtWidgets.QMessageBox.critical(
+                self,
+                self.tr("Realtime Inference"),
+                self.tr("Unable to start realtime inference: %s") % str(exc),
+            )
+            self.realtime_control_widget.set_running(False)
+            self.realtime_control_widget.set_status_text(
+                self.tr("Failed to start realtime inference."))
 
-        try:
-            frame_width = int(defaults.get("frame_width", 640))
-        except (TypeError, ValueError):
-            frame_width = 640
+    def _show_realtime_control_dialog(self):
+        self.realtime_control_dialog.show()
+        self.realtime_control_dialog.raise_()
+        self.realtime_control_dialog.activateWindow()
 
-        try:
-            frame_height = int(defaults.get("frame_height", 480))
-        except (TypeError, ValueError):
-            frame_height = 480
-
-        try:
-            max_fps = float(defaults.get("max_fps", 30.0))
-        except (TypeError, ValueError):
-            max_fps = 30.0
-
-        try:
-            confidence = float(defaults.get("confidence_threshold",
-                                            defaults.get("confidence", 0.25)))
-        except (TypeError, ValueError):
-            confidence = 0.25
-
-        pause_on_stop = bool(defaults.get(
-            "pause_on_recording_stop", True))
-
-        publish_frames = bool(defaults.get("publish_frames", True))
-
-        self.realtime_log_enabled = bool(defaults.get("log_to_ndjson", False))
-        self.realtime_log_basepath = defaults.get(
-            "log_path") or defaults.get("ndjson_path")
-        self.realtime_log_path = None
-
-        camera_index = defaults.get("camera_index", 0)
-        server_address = str(defaults.get("server_address", "localhost"))
-        try:
-            server_port = int(defaults.get("server_port", 5002))
-        except (TypeError, ValueError):
-            server_port = 5002
-
-        realtime_config = RealtimeConfig(
-            camera_index=camera_index,
-            server_address=server_address,
-            server_port=server_port,
-            model_base_name=str(model_weight),
-            publisher_address=publisher_address,
-            target_behaviors=list(targets),
-            confidence_threshold=confidence,
-            frame_width=frame_width,
-            frame_height=frame_height,
-            max_fps=max_fps,
-            visualize=bool(defaults.get("visualize", False)),
-            pause_on_recording_stop=pause_on_stop,
-            mask_encoding=str(defaults.get("mask_encoding", "rle")),
-            publish_frames=publish_frames,
-            publish_annotated_frames=publish_annotated_frames,
-            frame_encoding=encoding,
-            frame_quality=frame_quality,
-        )
-
-        if not connect_address:
-            connect_address = "tcp://127.0.0.1:5555"
-
-        return realtime_config, str(connect_address)
-
-    def _resolve_realtime_log_path(self) -> Path:
+    def _prepare_realtime_log_path(self, requested_path: str) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base = self.realtime_log_basepath
-        if not base:
-            default_dir = Path.home() / "annolid_realtime_logs"
-            return (default_dir / f"realtime_{timestamp}.ndjson").resolve()
+        if requested_path:
+            path = Path(requested_path).expanduser()
+            if path.is_dir() or not path.suffix:
+                path = path / f"realtime_{timestamp}.ndjson"
+        else:
+            path = Path.home() / "annolid_realtime_logs" / \
+                f"realtime_{timestamp}.ndjson"
+        return path.resolve()
 
-        candidate = Path(str(base)).expanduser()
-        if candidate.is_dir():
-            return (candidate / f"realtime_{timestamp}.ndjson").resolve()
-
-        if candidate.suffix.lower() == ".ndjson":
-            return candidate.resolve()
-
-        return (candidate / f"realtime_{timestamp}.ndjson").resolve()
+    def _resolve_tcp_endpoint(self, address: str) -> Tuple[str, int]:
+        if not address.startswith("tcp://"):
+            raise ValueError(f"Unsupported address format: {address}")
+        host_port = address[len("tcp://"):].strip()
+        if host_port.startswith("*:"):
+            host = "127.0.0.1"
+            port_part = host_port[2:]
+        elif host_port.count(":") >= 1:
+            host, port_part = host_port.rsplit(":", 1)
+            if host in ("*", "0.0.0.0"):
+                host = "127.0.0.1"
+        else:
+            raise ValueError(f"Invalid tcp address: {address}")
+        port = int(port_part)
+        return host, port
 
     def _decode_mask(self, mask_data, width: int, height: int):
         if not mask_data:
@@ -1680,36 +1586,28 @@ class AnnolidWindow(MainWindow):
 
         return None
 
-    def start_realtime_inference(self):
-        if self.realtime_perception_worker is not None:
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Realtime Inference"),
-                self.tr("A realtime session is already running."),
-            )
-            return
-
-        result = self._build_realtime_config()
-        if not result:
-            return
-
-        realtime_config, connect_address = result
-        self._realtime_connect_address = connect_address
+    def start_realtime_inference(self,
+                                 realtime_config: RealtimeConfig,
+                                 extras: Dict[str, Any]):
+        self.realtime_control_widget.set_running(True)
+        self._realtime_connect_address = extras.get(
+            "subscriber_address", "tcp://127.0.0.1:5555")
 
         self.realtime_running = True
         self._realtime_shapes = []
         self.realtime_log_fp = None
-        self.start_realtime_action.setEnabled(False)
-        self.stop_realtime_action.setEnabled(True)
+        self.realtime_log_path = None
+        self.realtime_log_enabled = bool(extras.get("log_enabled", False))
+
         status_message = self.tr("Realtime inference starting with %s") \
             % realtime_config.model_base_name
 
         if self.realtime_log_enabled:
             try:
-                log_path = self._resolve_realtime_log_path()
+                log_path = self._prepare_realtime_log_path(
+                    extras.get("log_path", ""))
                 log_path.parent.mkdir(parents=True, exist_ok=True)
-                self.realtime_log_fp = open(
-                    log_path, "a", encoding="utf-8")
+                self.realtime_log_fp = open(log_path, "a", encoding="utf-8")
                 self.realtime_log_path = log_path
                 logger.info(
                     "Realtime detections will be logged to %s", log_path)
@@ -1720,8 +1618,13 @@ class AnnolidWindow(MainWindow):
                 self.realtime_log_fp = None
                 self.realtime_log_path = None
                 self.realtime_log_enabled = False
+                status_message += self.tr(" (logging disabled)")
+        else:
+            self.realtime_log_fp = None
+            self.realtime_log_path = None
 
         self.statusBar().showMessage(status_message)
+        self.realtime_control_widget.set_status_text(status_message)
 
         self.realtime_perception_worker = PerceptionProcessWorker(
             config=realtime_config,
@@ -1916,20 +1819,28 @@ class AnnolidWindow(MainWindow):
             self.tr("Realtime frame %s — detections: %d")
             % (frame_index if frame_index is not None else "?",
                detection_count))
+        self.realtime_control_widget.set_status_text(
+            self.tr("Frame %s — detections: %d")
+            % (frame_index if frame_index is not None else "?",
+               detection_count))
 
     @QtCore.Slot(dict)
     def _on_realtime_status(self, status):
         if not isinstance(status, dict):
             return
         event_name = status.get("event") or "status"
-        self.statusBar().showMessage(
-            self.tr("Realtime %s: %s")
-            % (event_name, status.get("recording_state",
-                                      status.get("message", ""))))
+        message = self.tr("Realtime %s: %s") % (
+            event_name,
+            status.get("recording_state", status.get("message", "")),
+        )
+        self.statusBar().showMessage(message)
+        self.realtime_control_widget.set_status_text(message)
 
     @QtCore.Slot(str)
     def _on_realtime_error(self, message: str):
         logger.error("Realtime error: %s", message)
+        self.realtime_control_widget.set_status_text(
+            self.tr("Realtime error: %s") % message)
         QtWidgets.QMessageBox.critical(
             self,
             self.tr("Realtime Inference Error"),
@@ -1951,8 +1862,8 @@ class AnnolidWindow(MainWindow):
     def _finalize_realtime_shutdown(self):
         self._shutdown_realtime_subscriber()
         self.realtime_running = False
-        self.start_realtime_action.setEnabled(True)
-        self.stop_realtime_action.setEnabled(False)
+        self.realtime_perception_worker = None
+        self.realtime_control_widget.set_running(False)
         if hasattr(self.canvas, "setRealtimeShapes"):
             self.canvas.setRealtimeShapes([])
         self._realtime_shapes = []
@@ -1964,14 +1875,20 @@ class AnnolidWindow(MainWindow):
                 pass
             self.realtime_log_fp = None
             self.realtime_log_path = None
-        self.statusBar().showMessage(
-            self.tr("Realtime inference stopped."))
+        message = self.tr("Realtime inference stopped.")
+        self.statusBar().showMessage(message)
+        self.realtime_control_widget.set_status_text(message)
 
     def stop_realtime_inference(self):
         if self.realtime_perception_worker is None and not self.realtime_running:
+            self.realtime_control_widget.set_running(False)
+            self.realtime_control_widget.set_status_text(
+                self.tr("Realtime inference stopped."))
             return
 
-        self.stop_realtime_action.setEnabled(False)
+        self.realtime_control_widget.set_stopping()
+        self.realtime_control_widget.set_status_text(
+            self.tr("Stopping realtime inference…"))
         self.statusBar().showMessage(self.tr("Stopping realtime inference…"))
         self._shutdown_realtime_subscriber()
 

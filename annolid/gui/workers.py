@@ -764,7 +764,12 @@ class PerceptionProcessWorker(QtCore.QThread):
     async def _run_main(self):
         from annolid.realtime.perception import PerceptionProcess
 
-        self._perception = PerceptionProcess(self.config)
+        try:
+            self._perception = PerceptionProcess(self.config)
+        except Exception:
+            self._perception = None
+            raise
+
         try:
             await self._perception.run()
         finally:

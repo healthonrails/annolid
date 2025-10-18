@@ -513,6 +513,8 @@ class Shape(object):
 
     def containsPoint(self, point):
         if self.mask is not None:
+            if not self.points:
+                return False
             y = np.clip(
                 int(round(point.y() - self.points[0].y())),
                 0,
@@ -774,6 +776,7 @@ class MaskShape(MultipoinstShape):
                  group_id=None,
                  flags=None,
                  description=None):
+        super().__init__()
         self.label = label
         self.group_id = group_id
         self.fill = False
@@ -786,6 +789,7 @@ class MaskShape(MultipoinstShape):
         self.logits = None
         self.scale = 1
         self.points = []
+        self.shape_type = "mask"
 
     def setScaleMask(self, scale, mask):
         self.scale = scale
@@ -810,7 +814,7 @@ class MaskShape(MultipoinstShape):
             self.rgba_mask.data, self.rgba_mask.shape[1], self.rgba_mask.shape[0], QtGui.QImage.Format_RGBA8888)
         return qimage
 
-    def paint(self, painter):
+    def paint(self, painter, image_width=None, image_height=None):
         qimage = self.getQImageMask()
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
