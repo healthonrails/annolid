@@ -14,10 +14,12 @@ import hashlib
 import json
 import io
 import copy
+import logging
 from PIL import ImageQt, Image, ImageDraw
 import pandas as pd
 import numpy as np
 import torch
+import cv2
 import codecs
 import imgviz
 import argparse
@@ -33,10 +35,16 @@ from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
 from qtpy.QtCore import QFileSystemWatcher
+from pycocotools import mask as maskUtils
 
 from annolid.gui.widgets.video_manager import VideoManagerWidget
-from annolid.gui.workers import FlexibleWorker, LoadFrameThread
-from annolid.gui.shape import Shape
+from annolid.gui.workers import (
+    FlexibleWorker,
+    LoadFrameThread,
+    PerceptionProcessWorker,
+    RealtimeSubscriberWorker,
+)
+from annolid.gui.shape import Shape, MaskShape
 from labelme.app import MainWindow
 from labelme.utils import newAction
 from labelme.widgets import BrightnessContrastDialog
@@ -101,6 +109,7 @@ from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
 from annolid.gui.tensorboard import start_tensorboard, VisualizationWindow
+from annolid.realtime.perception import Config as RealtimeConfig
 
 
 __appname__ = 'Annolid'
@@ -198,6 +207,15 @@ class AnnolidWindow(MainWindow):
         self.prev_shapes = None
         self.pred_worker = None
         self.video_processor = None
+        self.realtime_perception_worker = None
+        self.realtime_subscriber_worker = None
+        self.realtime_running = False
+        self._realtime_connect_address = None
+        self._realtime_shapes = []
+        self.realtime_log_enabled = False
+        self.realtime_log_basepath = None
+        self.realtime_log_fp = None
+        self.realtime_log_path = None
         self.zone_path = None
         # Initialize a flag to control thread termination
         self.stop_prediction_flag = False
@@ -547,6 +565,28 @@ class AnnolidWindow(MainWindow):
 
         self.recording_widget = RecordingWidget(self.canvas)
 
+        self.start_realtime_action = newAction(
+            self,
+            self.tr("Start Realtime"),
+            self.start_realtime_inference,
+            icon="fast_forward",
+            tip=self.tr(
+                "Start realtime inference and stream results to the canvas"),
+        )
+        self.start_realtime_action.setIcon(
+            QtGui.QIcon(str(self.here / "icons/fast_forward.png")))
+
+        self.stop_realtime_action = newAction(
+            self,
+            self.tr("Stop Realtime"),
+            self.stop_realtime_inference,
+            icon="stop_record",
+            tip=self.tr("Stop the realtime inference session"),
+        )
+        self.stop_realtime_action.setIcon(
+            QtGui.QIcon(str(self.here / "icons/stop_record.png")))
+        self.stop_realtime_action.setEnabled(False)
+
         self.patch_similarity_action = newAction(
             self,
             self.tr("Patch Similarity"),
@@ -612,6 +652,8 @@ class AnnolidWindow(MainWindow):
         _action_tools.append(visualization)
         _action_tools.append(self.patch_similarity_action)
         _action_tools.append(self.pca_map_action)
+        _action_tools.append(self.start_realtime_action)
+        _action_tools.append(self.stop_realtime_action)
         _action_tools.append(self.recording_widget.record_action)
 
         self.actions.tool = tuple(_action_tools)
@@ -651,6 +693,8 @@ class AnnolidWindow(MainWindow):
             self.menus.view,
             (self.patch_similarity_settings_action, self.pca_map_settings_action),
         )
+        utils.addActions(self.menus.view,
+                         (self.start_realtime_action, self.stop_realtime_action))
 
         utils.addActions(self.menus.help, (about_annolid,))
 
@@ -1396,6 +1440,555 @@ class AnnolidWindow(MainWindow):
 
     def _update_frame_display_and_emit_update(self):
         self._emit_live_frame_update()
+
+    # ------------------------------------------------------------------
+    # Realtime inference helpers
+    # ------------------------------------------------------------------
+
+    def _default_realtime_targets(self) -> List[str]:
+        defaults = self._config.get("realtime", {}) or {}
+        configured_targets = defaults.get("targets")
+        if isinstance(configured_targets, (list, tuple)) and configured_targets:
+            return [str(target) for target in configured_targets if target]
+
+        label_names: List[str] = []
+        label_list = getattr(self, "labelList", None)
+        if label_list is not None:
+            try:
+                for item in label_list:
+                    if item:
+                        text = (item.text() or "").strip()
+                        if text:
+                            label_names.append(text)
+            except Exception as exc:
+                logger.debug("Unable to read labels from label list: %s", exc)
+
+        if label_names:
+            return label_names
+
+        config_labels = self._config.get("labels")
+        if isinstance(config_labels, list) and config_labels:
+            return [str(label) for label in config_labels if label]
+
+        return ["mouse"]
+
+    def _prompt_realtime_model(self, default_weight: str) -> Optional[str]:
+        segmentation_models = [
+            model for model in MODEL_REGISTRY
+            if model.weight_file.lower().endswith((".pt", ".engine"))
+        ]
+
+        if not segmentation_models:
+            return default_weight
+
+        items = [model.display_name for model in segmentation_models]
+        stored_identifier = str(self.settings.value(
+            "realtime/model_identifier", ""))
+
+        default_index = 0
+        for idx, model in enumerate(segmentation_models):
+            if model.identifier == stored_identifier or model.weight_file == stored_identifier:
+                default_index = idx
+                break
+
+        selection, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            self.tr("Select Realtime Model"),
+            self.tr("Choose a YOLO model for realtime inference:"),
+            items,
+            default_index,
+            False,
+        )
+
+        if not ok:
+            return None
+
+        selected_model = segmentation_models[items.index(selection)]
+        self.settings.setValue(
+            "realtime/model_identifier", selected_model.identifier)
+        self.settings.setValue(
+            "realtime/model_weight", selected_model.weight_file)
+        return selected_model.weight_file
+
+    def _build_realtime_config(self) -> Optional[Tuple[RealtimeConfig, str]]:
+        defaults = self._config.get("realtime", {}) or {}
+
+        model_weight = (defaults.get("model_weight") or
+                        defaults.get("model") or
+                        self.settings.value("realtime/model_weight", ""))
+
+        if not model_weight:
+            model_weight = self._prompt_realtime_model("yolo11n-seg.pt")
+            if not model_weight:
+                return None
+
+        publisher_address = str(
+            defaults.get("publisher_address", "tcp://127.0.0.1:5555"))
+        connect_address = defaults.get("subscriber_address")
+        if not connect_address:
+            if publisher_address.startswith("tcp://*"):
+                connect_address = publisher_address.replace(
+                    "tcp://*", "tcp://127.0.0.1", 1)
+            else:
+                connect_address = publisher_address
+
+        targets = defaults.get("targets")
+        if isinstance(targets, str):
+            targets = [targets]
+        if not targets:
+            targets = self._default_realtime_targets()
+
+        encoding = str(defaults.get("frame_encoding", "jpg")).lower()
+        if encoding not in {"jpg", "jpeg", "png"}:
+            encoding = "jpg"
+
+        publish_annotated_frames = bool(
+            defaults.get("publish_annotated_frames",
+                         defaults.get("publish_annotated", True)))
+
+        try:
+            frame_quality = int(defaults.get("frame_quality", 80))
+        except (TypeError, ValueError):
+            frame_quality = 80
+
+        try:
+            frame_width = int(defaults.get("frame_width", 640))
+        except (TypeError, ValueError):
+            frame_width = 640
+
+        try:
+            frame_height = int(defaults.get("frame_height", 480))
+        except (TypeError, ValueError):
+            frame_height = 480
+
+        try:
+            max_fps = float(defaults.get("max_fps", 30.0))
+        except (TypeError, ValueError):
+            max_fps = 30.0
+
+        try:
+            confidence = float(defaults.get("confidence_threshold",
+                                            defaults.get("confidence", 0.25)))
+        except (TypeError, ValueError):
+            confidence = 0.25
+
+        pause_on_stop = bool(defaults.get(
+            "pause_on_recording_stop", True))
+
+        publish_frames = bool(defaults.get("publish_frames", True))
+
+        self.realtime_log_enabled = bool(defaults.get("log_to_ndjson", False))
+        self.realtime_log_basepath = defaults.get(
+            "log_path") or defaults.get("ndjson_path")
+        self.realtime_log_path = None
+
+        camera_index = defaults.get("camera_index", 0)
+        server_address = str(defaults.get("server_address", "localhost"))
+        try:
+            server_port = int(defaults.get("server_port", 5002))
+        except (TypeError, ValueError):
+            server_port = 5002
+
+        realtime_config = RealtimeConfig(
+            camera_index=camera_index,
+            server_address=server_address,
+            server_port=server_port,
+            model_base_name=str(model_weight),
+            publisher_address=publisher_address,
+            target_behaviors=list(targets),
+            confidence_threshold=confidence,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            max_fps=max_fps,
+            visualize=bool(defaults.get("visualize", False)),
+            pause_on_recording_stop=pause_on_stop,
+            mask_encoding=str(defaults.get("mask_encoding", "rle")),
+            publish_frames=publish_frames,
+            publish_annotated_frames=publish_annotated_frames,
+            frame_encoding=encoding,
+            frame_quality=frame_quality,
+        )
+
+        if not connect_address:
+            connect_address = "tcp://127.0.0.1:5555"
+
+        return realtime_config, str(connect_address)
+
+    def _resolve_realtime_log_path(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = self.realtime_log_basepath
+        if not base:
+            default_dir = Path.home() / "annolid_realtime_logs"
+            return (default_dir / f"realtime_{timestamp}.ndjson").resolve()
+
+        candidate = Path(str(base)).expanduser()
+        if candidate.is_dir():
+            return (candidate / f"realtime_{timestamp}.ndjson").resolve()
+
+        if candidate.suffix.lower() == ".ndjson":
+            return candidate.resolve()
+
+        return (candidate / f"realtime_{timestamp}.ndjson").resolve()
+
+    def _decode_mask(self, mask_data, width: int, height: int):
+        if not mask_data:
+            return None
+
+        encoding = (mask_data.get("encoding") or "").lower()
+
+        try:
+            if encoding in {"coco_rle", "rle"}:
+                counts = mask_data.get("counts")
+                if counts is None:
+                    return None
+                rle = {
+                    "size": mask_data.get("size") or [height, width],
+                    "counts": counts.encode("utf-8") if isinstance(counts, str) else counts,
+                }
+                mask = maskUtils.decode(rle)
+                if mask is None:
+                    return None
+                if mask.shape[1] != width or mask.shape[0] != height:
+                    mask = cv2.resize(mask.astype(np.uint8),
+                                      (width, height),
+                                      interpolation=cv2.INTER_NEAREST)
+                return mask.astype(bool)
+
+            if encoding == "polygon":
+                points = np.array(mask_data.get("points")
+                                  or [], dtype=np.float32)
+                if points.size == 0:
+                    return None
+                pts = points.copy()
+                pts[:, 0] = np.clip(pts[:, 0], 0, width - 1)
+                pts[:, 1] = np.clip(pts[:, 1], 0, height - 1)
+                mask = np.zeros((height, width), dtype=np.uint8)
+                cv2.fillPoly(mask, [pts.astype(np.int32)], 1)
+                return mask.astype(bool)
+
+            if encoding == "bitmap":
+                data = mask_data.get("data")
+                if isinstance(data, list):
+                    arr = np.array(data, dtype=np.uint8)
+                    if arr.size == width * height:
+                        return arr.reshape((height, width)).astype(bool)
+
+        except Exception as exc:
+            logger.debug("Failed to decode realtime mask: %s",
+                         exc, exc_info=True)
+
+        return None
+
+    def start_realtime_inference(self):
+        if self.realtime_perception_worker is not None:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Realtime Inference"),
+                self.tr("A realtime session is already running."),
+            )
+            return
+
+        result = self._build_realtime_config()
+        if not result:
+            return
+
+        realtime_config, connect_address = result
+        self._realtime_connect_address = connect_address
+
+        self.realtime_running = True
+        self._realtime_shapes = []
+        self.realtime_log_fp = None
+        self.start_realtime_action.setEnabled(False)
+        self.stop_realtime_action.setEnabled(True)
+        status_message = self.tr("Realtime inference starting with %s") \
+            % realtime_config.model_base_name
+
+        if self.realtime_log_enabled:
+            try:
+                log_path = self._resolve_realtime_log_path()
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                self.realtime_log_fp = open(
+                    log_path, "a", encoding="utf-8")
+                self.realtime_log_path = log_path
+                logger.info(
+                    "Realtime detections will be logged to %s", log_path)
+                status_message += f" (logging to {log_path})"
+            except Exception as exc:
+                logger.error("Failed to open realtime NDJSON log: %s", exc,
+                             exc_info=True)
+                self.realtime_log_fp = None
+                self.realtime_log_path = None
+                self.realtime_log_enabled = False
+
+        self.statusBar().showMessage(status_message)
+
+        self.realtime_perception_worker = PerceptionProcessWorker(
+            config=realtime_config,
+            parent=self,
+        )
+        self.realtime_perception_worker.error.connect(
+            self._on_realtime_error)
+        self.realtime_perception_worker.stopped.connect(
+            self._on_realtime_stopped)
+        self.realtime_perception_worker.start()
+
+        self.realtime_subscriber_worker = RealtimeSubscriberWorker(
+            self._realtime_connect_address)
+        self.realtime_subscriber_worker.frame_received.connect(
+            self._on_realtime_frame)
+        self.realtime_subscriber_worker.status_received.connect(
+            self._on_realtime_status)
+        self.realtime_subscriber_worker.error.connect(
+            self._on_realtime_error)
+        self.realtime_subscriber_worker.start()
+
+    def _convert_detections_to_shapes(self,
+                                      detections: List[dict],
+                                      width: int,
+                                      height: int) -> List[Shape]:
+        shapes: List[Shape] = []
+        if not detections:
+            return shapes
+
+        for detection in detections:
+            label = str(detection.get("behavior", "") or "")
+            base_color_rgb = self._get_rgb_by_label(label) or (0, 255, 0)
+            base_color = QtGui.QColor(
+                int(base_color_rgb[0]),
+                int(base_color_rgb[1]),
+                int(base_color_rgb[2]),
+                255
+            )
+            fill_color = QtGui.QColor(
+                base_color.red(),
+                base_color.green(),
+                base_color.blue(),
+                60
+            )
+
+            bbox = detection.get("bbox_normalized") or []
+            if len(bbox) != 4:
+                bbox = None
+
+            rect_shape = None
+            if bbox:
+                x1 = max(0.0, min(1.0, float(bbox[0]))) * width
+                y1 = max(0.0, min(1.0, float(bbox[1]))) * height
+                x2 = max(0.0, min(1.0, float(bbox[2]))) * width
+                y2 = max(0.0, min(1.0, float(bbox[3]))) * height
+
+                if x2 > x1 and y2 > y1:
+                    rect_shape = Shape(
+                        label=label,
+                        shape_type="rectangle",
+                        flags={"source": "realtime"},
+                        description="realtime",
+                    )
+                    rect_shape.points = [
+                        QtCore.QPointF(x1, y1),
+                        QtCore.QPointF(x2, y2),
+                    ]
+                    rect_shape.point_labels = [1, 1]
+                    rect_shape.fill = True
+                    rect_shape.line_color = QtGui.QColor(base_color)
+                    rect_shape.fill_color = QtGui.QColor(fill_color)
+                    rect_shape.select_line_color = QtGui.QColor(
+                        255, 255, 255, 255)
+                    rect_shape.select_fill_color = QtGui.QColor(
+                        base_color.red(),
+                        base_color.green(),
+                        base_color.blue(),
+                        160
+                    )
+                    rect_shape.other_data["confidence"] = float(
+                        detection.get("confidence", 0.0))
+                    rect_shape.other_data["source"] = "realtime"
+                    rect_shape.other_data["frame_timestamp"] = detection.get(
+                        "timestamp")
+                    shapes.append(rect_shape)
+
+            mask_data = detection.get("mask")
+            if mask_data:
+                mask = self._decode_mask(mask_data, width, height)
+                if mask is not None:
+                    mask_shape = MaskShape(
+                        label=label,
+                        flags={"source": "realtime"},
+                        description="realtime_mask",
+                    )
+                    mask_shape.mask_color = np.array(
+                        [base_color.red(), base_color.green(),
+                         base_color.blue(), 64],
+                        dtype=np.uint8
+                    )
+                    mask_shape.boundary_color = np.array(
+                        [base_color.red(), base_color.green(),
+                         base_color.blue(), 180],
+                        dtype=np.uint8
+                    )
+                    mask_shape.mask = mask
+                    mask_shape.scale = 1.0
+                    mask_shape.other_data = dict(
+                        rect_shape.other_data if rect_shape else {})
+                    mask_shape.other_data["confidence"] = float(
+                        detection.get("confidence", 0.0))
+                    shapes.append(mask_shape)
+
+            keypoints = detection.get("keypoints")
+            if keypoints:
+                try:
+                    kp_array = np.array(
+                        keypoints, dtype=np.float32).reshape(-1, 2)
+                except ValueError:
+                    kp_array = np.array(keypoints, dtype=np.float32)
+                    if kp_array.ndim == 1:
+                        kp_array = kp_array.reshape(-1, 2)
+                if kp_array.size > 0 and kp_array.shape[1] == 2:
+                    points_shape = Shape(
+                        label=f"{label}_keypoints",
+                        shape_type="points",
+                        flags={"source": "realtime"},
+                        description="realtime_keypoints",
+                    )
+                    points_shape.points = []
+                    points_shape.point_labels = []
+                    for point in kp_array:
+                        px = max(0.0, min(1.0, float(point[0]))) * width
+                        py = max(0.0, min(1.0, float(point[1]))) * height
+                        points_shape.points.append(QtCore.QPointF(px, py))
+                        points_shape.point_labels.append(1)
+                    points_shape.line_color = QtGui.QColor(base_color)
+                    points_shape.vertex_fill_color = QtGui.QColor(
+                        base_color.red(),
+                        base_color.green(),
+                        base_color.blue(),
+                        255
+                    )
+                    shapes.append(points_shape)
+
+        return shapes
+
+    @QtCore.Slot(object, dict, list)
+    def _on_realtime_frame(self, qimage, metadata, detections):
+        if not self.realtime_running:
+            return
+
+        pixmap = QtGui.QPixmap.fromImage(qimage)
+        self.canvas.loadPixmap(pixmap, clear_shapes=False)
+        shapes = self._convert_detections_to_shapes(
+            detections, pixmap.width(), pixmap.height())
+        if hasattr(self.canvas, "setRealtimeShapes"):
+            self.canvas.setRealtimeShapes(shapes)
+        self._realtime_shapes = shapes
+
+        if self.realtime_log_fp:
+            try:
+                record = {
+                    "timestamp": time.time(),
+                    "frame_metadata": metadata,
+                    "detections": detections,
+                }
+                json.dump(record, self.realtime_log_fp)
+                self.realtime_log_fp.write("\n")
+                self.realtime_log_fp.flush()
+            except Exception as exc:
+                logger.error("Failed to write realtime NDJSON record: %s",
+                             exc, exc_info=True)
+                try:
+                    self.realtime_log_fp.close()
+                except Exception:
+                    pass
+                self.realtime_log_fp = None
+                self.realtime_log_path = None
+                self.realtime_log_enabled = False
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Realtime detections for frame %s: %d",
+                         metadata.get("frame_index"),
+                         len(detections))
+
+        self.canvas.update()
+
+        frame_index = metadata.get("frame_index")
+        detection_count = len(shapes)
+        self.statusBar().showMessage(
+            self.tr("Realtime frame %s — detections: %d")
+            % (frame_index if frame_index is not None else "?",
+               detection_count))
+
+    @QtCore.Slot(dict)
+    def _on_realtime_status(self, status):
+        if not isinstance(status, dict):
+            return
+        event_name = status.get("event") or "status"
+        self.statusBar().showMessage(
+            self.tr("Realtime %s: %s")
+            % (event_name, status.get("recording_state",
+                                      status.get("message", ""))))
+
+    @QtCore.Slot(str)
+    def _on_realtime_error(self, message: str):
+        logger.error("Realtime error: %s", message)
+        QtWidgets.QMessageBox.critical(
+            self,
+            self.tr("Realtime Inference Error"),
+            str(message),
+        )
+        self.stop_realtime_inference()
+
+    @QtCore.Slot()
+    def _on_realtime_stopped(self):
+        self.realtime_perception_worker = None
+        self._finalize_realtime_shutdown()
+
+    def _shutdown_realtime_subscriber(self):
+        if self.realtime_subscriber_worker is not None:
+            self.realtime_subscriber_worker.stop()
+            self.realtime_subscriber_worker.wait(500)
+            self.realtime_subscriber_worker = None
+
+    def _finalize_realtime_shutdown(self):
+        self._shutdown_realtime_subscriber()
+        self.realtime_running = False
+        self.start_realtime_action.setEnabled(True)
+        self.stop_realtime_action.setEnabled(False)
+        if hasattr(self.canvas, "setRealtimeShapes"):
+            self.canvas.setRealtimeShapes([])
+        self._realtime_shapes = []
+        if self.realtime_log_fp:
+            try:
+                self.realtime_log_fp.flush()
+                self.realtime_log_fp.close()
+            except Exception:
+                pass
+            self.realtime_log_fp = None
+            self.realtime_log_path = None
+        self.statusBar().showMessage(
+            self.tr("Realtime inference stopped."))
+
+    def stop_realtime_inference(self):
+        if self.realtime_perception_worker is None and not self.realtime_running:
+            return
+
+        self.stop_realtime_action.setEnabled(False)
+        self.statusBar().showMessage(self.tr("Stopping realtime inference…"))
+        self._shutdown_realtime_subscriber()
+
+        worker = self.realtime_perception_worker
+        if worker is not None:
+            worker.request_stop()
+            return
+
+        # Nothing running, finalize immediately.
+        self._finalize_realtime_shutdown()
+
+    def closeEvent(self, event):
+        try:
+            self.stop_realtime_inference()
+        except Exception as exc:  # pragma: no cover - shutdown best effort
+            logger.error("Error stopping realtime inference on exit: %s",
+                         exc, exc_info=True)
+        super().closeEvent(event)
 
     def toolbar(self, title, actions=None):
         toolbar = ToolBar(title)

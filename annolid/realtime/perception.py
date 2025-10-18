@@ -54,6 +54,10 @@ class Config:
     remote_retry_cooldown: float = 10.0
     pause_on_recording_stop: bool = True
     recording_state_timeout: float = 30.0
+    publish_frames: bool = True
+    frame_encoding: str = "jpg"
+    frame_quality: int = 80
+    publish_annotated_frames: bool = False
 
     # segmentation-specific options
     enable_segmentation: bool = True  # Whether to process masks
@@ -814,6 +818,44 @@ class DetectionPublisher:
         except Exception as e:
             logger.error(f"Failed to publish status: {e}")
 
+    async def publish_frame(self,
+                            frame: np.ndarray,
+                            metadata: Dict[str, Any],
+                            encoding: str = "jpg",
+                            quality: int = 80):
+        """Publish an encoded frame with associated metadata."""
+        if frame is None:
+            return
+
+        try:
+            encoding = (encoding or "jpg").lower()
+            quality = int(max(1, min(int(quality), 100)))
+
+            encode_params = []
+            if encoding in ("jpg", "jpeg"):
+                encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+            elif encoding == "png":
+                # Default compression keeps latency low.
+                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
+
+            success, buffer = await asyncio.to_thread(
+                cv2.imencode, f".{encoding}", frame, encode_params)
+            if not success:
+                logger.error("Failed to encode frame for publishing")
+                return
+
+            payload_metadata = dict(metadata or {})
+            payload_metadata.setdefault(
+                "encoding", "jpeg" if encoding in ("jpg", "jpeg") else encoding)
+            payload_metadata.setdefault(
+                "shape", [int(frame.shape[0]), int(frame.shape[1])])
+
+            await self.socket.send_string("frames", flags=zmq.SNDMORE)
+            await self.socket.send_json(payload_metadata, flags=zmq.SNDMORE)
+            await self.socket.send(buffer.tobytes())
+        except Exception as e:
+            logger.error(f"Failed to publish frame: {e}")
+
     async def cleanup(self):
         """Clean up publisher resources."""
         try:
@@ -854,6 +896,7 @@ class PerceptionProcess:
         self.publisher = DetectionPublisher(config.publisher_address)
         self.running = True
         self._shutdown_event = asyncio.Event()
+        self._frame_index = 0
 
         # Setup recording state callbacks
         self.recording_manager.add_state_change_callback(
@@ -991,41 +1034,70 @@ class PerceptionProcess:
                         continue
 
                     frame, metadata = frame_data
+                    metadata = dict(metadata or {})
+                    metadata.setdefault("capture_timestamp", time.time())
+                    metadata["frame_index"] = self._frame_index
 
                     # Check if we should process this frame based on recording state
-                    if not self.recording_manager.should_process_frames():
+                    processing_active = self.recording_manager.should_process_frames()
+                    if not processing_active:
                         self.metrics.record_skipped_frame()
                         # Use shorter sleep when paused to be more responsive to state changes
                         await asyncio.sleep(0.05)
                         continue
 
-                    # Run inference
-                    results = await self._run_inference(frame)
-                    inference_time = time.time() - loop_start
+                    try:
+                        # Run inference
+                        results = await self._run_inference(frame)
+                        inference_time = time.time() - loop_start
 
-                    # Process results
-                    detection_count = await self._process_detections(
-                        results, loop_start, metadata)
+                        # Process results
+                        detection_count = await self._process_detections(
+                            results, loop_start, metadata)
 
-                    # Update metrics
-                    self.metrics.record_frame(inference_time, detection_count)
+                        # Update metrics
+                        self.metrics.record_frame(
+                            inference_time, detection_count)
 
-                    # Report metrics
-                    if self.metrics.should_report():
-                        report = self.metrics.generate_report(
-                            self.video_source.state.name,
-                            self.recording_manager.state.name
-                        )
-                        logger.info(f"Performance: {json.dumps(report)}")
-                        await self.publisher.publish_status({
-                            "event": "performance_report",
-                            **report,
-                            "timestamp": time.time()
-                        })
+                        # Prepare visualization output if requested
+                        annotated_frame = None
+                        if self.config.visualize or self.config.publish_annotated_frames:
+                            annotated_frame = self._visualize_results(
+                                results, frame, show_window=self.config.visualize)
 
-                    # Visualization
-                    if self.config.visualize:
-                        self._visualize_results(results, frame)
+                        # Report metrics
+                        if self.metrics.should_report():
+                            report = self.metrics.generate_report(
+                                self.video_source.state.name,
+                                self.recording_manager.state.name
+                            )
+                            logger.info(f"Performance: {json.dumps(report)}")
+                            await self.publisher.publish_status({
+                                "event": "performance_report",
+                                **report,
+                                "timestamp": time.time()
+                            })
+
+                        if self.config.publish_frames:
+                            frame_to_publish = annotated_frame if (
+                                self.config.publish_annotated_frames and annotated_frame is not None
+                            ) else frame
+                            await self.publisher.publish_frame(
+                                frame_to_publish,
+                                {
+                                    "frame_index": metadata["frame_index"],
+                                    "capture_timestamp": metadata.get("capture_timestamp"),
+                                    "source": metadata.get("source"),
+                                    "recording_state": self.recording_manager.state.name,
+                                    "processing": processing_active,
+                                    "detection_count": detection_count,
+                                    "inference_ms": inference_time * 1000.0
+                                },
+                                encoding=self.config.frame_encoding,
+                                quality=self.config.frame_quality
+                            )
+                    finally:
+                        self._frame_index += 1
 
                 except Exception as e:
                     logger.error(f"Processing error: {e}", exc_info=True)
@@ -1136,6 +1208,8 @@ class PerceptionProcess:
             return list(processed)
 
         detection_count = 0
+        target_behaviors = self.config.target_behaviors or []
+        match_all_targets = (not target_behaviors) or ("*" in target_behaviors)
         boxes = result.boxes
 
         # Check if segmentation masks are available in the result object
@@ -1149,50 +1223,52 @@ class PerceptionProcess:
                 class_id = int(boxes.cls[i])
                 class_name = self.class_names[class_id]
 
-                if class_name in self.config.target_behaviors:
-                    encoded_mask_data = None
-                    # If masks are available, encode the one for this specific detection
-                    if masks:
-                        encoded_mask_data = self._encode_mask(masks, i)
+                if not match_all_targets and class_name not in target_behaviors:
+                    continue
 
-                    # Prepare pose information if available
-                    keypoints = None
-                    keypoint_scores = None
+                encoded_mask_data = None
+                # If masks are available, encode the one for this specific detection
+                if masks:
+                    encoded_mask_data = self._encode_mask(masks, i)
 
-                    if keypoints_obj is not None:
-                        keypoints_data = getattr(keypoints_obj, "xyn", None)
-                        if keypoints_data is not None and i < len(keypoints_data):
-                            keypoints = _to_list(keypoints_data[i])
+                # Prepare pose information if available
+                keypoints = None
+                keypoint_scores = None
 
-                        conf_data = getattr(keypoints_obj, "conf", None)
-                        if conf_data is not None and i < len(conf_data):
-                            keypoint_scores = _to_list(conf_data[i])
+                if keypoints_obj is not None:
+                    keypoints_data = getattr(keypoints_obj, "xyn", None)
+                    if keypoints_data is not None and i < len(keypoints_data):
+                        keypoints = _to_list(keypoints_data[i])
 
-                    keypoint_labels = self.keypoint_labels if self.keypoint_labels and keypoints is not None else None
+                    conf_data = getattr(keypoints_obj, "conf", None)
+                    if conf_data is not None and i < len(conf_data):
+                        keypoint_scores = _to_list(conf_data[i])
 
-                    # Create the DetectionResult with the pre-encoded mask and pose data
-                    detection = DetectionResult(
-                        behavior=class_name,
-                        confidence=float(boxes.conf[i]),
-                        bbox=boxes.xyxyn[i].cpu().numpy().tolist(),
-                        timestamp=timestamp,
-                        metadata=metadata,
-                        mask_data=encoded_mask_data,  # Pass the encoded dictionary here
-                        keypoints=keypoints,
-                        keypoint_scores=keypoint_scores,
-                        keypoint_labels=keypoint_labels
-                    )
+                keypoint_labels = self.keypoint_labels if self.keypoint_labels and keypoints is not None else None
 
-                    await self.publisher.publish_detection(detection)
-                    detection_count += 1
+                # Create the DetectionResult with the pre-encoded mask and pose data
+                detection = DetectionResult(
+                    behavior=class_name,
+                    confidence=float(boxes.conf[i]),
+                    bbox=boxes.xyxyn[i].cpu().numpy().tolist(),
+                    timestamp=timestamp,
+                    metadata=metadata,
+                    mask_data=encoded_mask_data,  # Pass the encoded dictionary here
+                    keypoints=keypoints,
+                    keypoint_scores=keypoint_scores,
+                    keypoint_labels=keypoint_labels
+                )
+
+                await self.publisher.publish_detection(detection)
+                detection_count += 1
 
             except Exception as e:
                 logger.error(f"Detection processing error: {e}", exc_info=True)
 
         return detection_count
 
-    def _visualize_results(self, result, frame: np.ndarray):
-        """Visualize detection results with masks and recording state info."""
+    def _visualize_results(self, result, frame: np.ndarray, show_window: bool = True) -> np.ndarray:
+        """Create an annotated frame and optionally display it locally."""
         try:
             # Use the built-in YOLO plotting that handles masks automatically
             annotated_frame = result.plot()
@@ -1253,14 +1329,18 @@ class PerceptionProcess:
                 cv2.putText(annotated_frame, seg_text, (10, 150),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
-            cv2.imshow("Perception System", annotated_frame)
+            if show_window:
+                cv2.imshow("Perception System", annotated_frame)
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                self.running = False
-                self._shutdown_event.set()
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
+                    self._shutdown_event.set()
+
+            return annotated_frame
 
         except Exception as e:
             logger.error(f"Visualization error: {e}")
+            return frame
 
     async def shutdown(self):
         """Graceful shutdown."""
@@ -1310,6 +1390,8 @@ def create_config_from_args() -> Config:
                         default=30.0, help="Maximum FPS")
     parser.add_argument('--visualize', action='store_true',
                         help="Enable visualization")
+    parser.add_argument('--publish-annotated', action='store_true',
+                        help="Publish annotated frames instead of raw frames")
     parser.add_argument('--continue-on-stop', action='store_true',
                         help="Continue processing when recording stops (default: pause)")
     parser.add_argument('--recording-timeout', type=float, default=30.0,
@@ -1335,6 +1417,7 @@ def create_config_from_args() -> Config:
         frame_height=args.height,
         max_fps=args.max_fps,
         visualize=args.visualize,
+        publish_annotated_frames=args.publish_annotated,
         pause_on_recording_stop=not args.continue_on_stop,
         recording_state_timeout=args.recording_timeout,
         enable_segmentation=not is_pose_model,

@@ -1,13 +1,18 @@
+import asyncio
+import threading
 from qtpy import QtCore, QtGui
 from threading import Lock
 from collections import deque
+from typing import Dict, List, Optional, Tuple
 import os
 import logging
 import glob
 import json
 import cv2
+import numpy as np
 import qimage2ndarray
 import torch
+import zmq
 from annolid.gui.label_file import LabelFile
 from pathlib import Path
 from typing import List
@@ -716,3 +721,239 @@ class ProcessVideosWorker(QThread):
             self.finished.emit("Processing complete.")
         except Exception as e:
             self.error.emit(str(e))
+
+
+class PerceptionProcessWorker(QtCore.QThread):
+    """
+    Background thread that runs the asynchronous PerceptionProcess inside its
+    own event loop. Exposes a request_stop() helper so the GUI can trigger a
+    graceful shutdown without blocking.
+    """
+
+    error = Signal(str)
+    stopped = Signal()
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._perception = None
+        self._shutdown_requested = threading.Event()
+
+    def run(self):
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._run_main())
+        except Exception as exc:
+            logger.error("Realtime perception worker error: %s",
+                         exc, exc_info=True)
+            self.error.emit(str(exc))
+        finally:
+            try:
+                asyncio.set_event_loop(None)
+            except Exception:
+                pass
+            if self._loop is not None:
+                if not self._loop.is_closed():
+                    self._loop.close()
+            self._loop = None
+            self._perception = None
+            self.stopped.emit()
+
+    async def _run_main(self):
+        from annolid.realtime.perception import PerceptionProcess
+
+        self._perception = PerceptionProcess(self.config)
+        try:
+            await self._perception.run()
+        finally:
+            # Ensure resources are released even if run() exits unexpectedly.
+            try:
+                await self._perception.shutdown()
+            except Exception as exc:
+                logger.error("Error during perception shutdown: %s",
+                             exc, exc_info=True)
+
+    def request_stop(self):
+        """Signal the perception loop to terminate."""
+        if self._shutdown_requested.is_set():
+            return
+
+        self._shutdown_requested.set()
+        loop = self._loop
+        perception = self._perception
+        if loop and perception:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    perception.shutdown(), loop)
+            except Exception as exc:
+                logger.error("Failed to request perception shutdown: %s",
+                             exc, exc_info=True)
+
+
+class RealtimeSubscriberWorker(QtCore.QThread):
+    """
+    Subscribes to perception PUB socket topics and emits Qt signals with the
+    decoded payloads for consumption by the GUI thread.
+    """
+
+    frame_received = Signal(object, dict, list)
+    status_received = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, address: str, parent=None):
+        super().__init__(parent)
+        self.address = address
+        self._running = False
+        self._context: Optional[zmq.Context] = None
+        self._socket: Optional[zmq.Socket] = None
+        self._detections: Dict[Tuple[str, Optional[float]], List[dict]] = {}
+
+    def _make_key(self, frame_index, capture_timestamp):
+        if frame_index is not None:
+            try:
+                return ("idx", float(frame_index))
+            except (TypeError, ValueError):
+                pass
+        if capture_timestamp is not None:
+            try:
+                return ("ts", round(float(capture_timestamp), 3))
+            except (TypeError, ValueError):
+                pass
+        return ("na", None)
+
+    def _prune_detections(self, max_entries: int = 256):
+        if len(self._detections) <= max_entries:
+            return
+        keys = sorted(
+            self._detections.keys(),
+            key=lambda item: item[1] if isinstance(
+                item[1], (int, float)) else float("inf")
+        )
+        for key in keys[:len(self._detections) - max_entries]:
+            self._detections.pop(key, None)
+
+    def _close(self):
+        if self._socket is not None:
+            try:
+                self._socket.close(0)
+            except Exception:
+                pass
+            finally:
+                self._socket = None
+        if self._context is not None:
+            try:
+                self._context.term()
+            except Exception:
+                pass
+            finally:
+                self._context = None
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        self._running = True
+        self._detections = {}
+
+        try:
+            self._context = zmq.Context()
+            self._socket = self._context.socket(zmq.SUB)
+            self._socket.connect(self.address)
+            for topic in ("frames", "detections", "status"):
+                self._socket.setsockopt_string(zmq.SUBSCRIBE, topic)
+
+            poller = zmq.Poller()
+            poller.register(self._socket, zmq.POLLIN)
+
+            while self._running:
+                try:
+                    events = dict(poller.poll(timeout=100))
+                except zmq.error.ZMQError as exc:
+                    if self._running:
+                        logger.error("Realtime subscriber poll error: %s",
+                                     exc, exc_info=True)
+                        self.error.emit(str(exc))
+                    break
+
+                if self._socket not in events:
+                    continue
+
+                try:
+                    parts = self._socket.recv_multipart()
+                except zmq.error.ZMQError as exc:
+                    if self._running:
+                        logger.error("Realtime subscriber recv error: %s",
+                                     exc, exc_info=True)
+                        self.error.emit(str(exc))
+                    break
+
+                if not parts:
+                    continue
+
+                topic = parts[0].decode(errors="ignore")
+
+                if topic == "detections":
+                    self._handle_detection(parts)
+                elif topic == "frames":
+                    self._handle_frame(parts)
+                elif topic == "status":
+                    self._handle_status(parts)
+        finally:
+            self._close()
+
+    def _handle_detection(self, parts):
+        if len(parts) < 2:
+            return
+        try:
+            payload = json.loads(parts[1].decode("utf-8"))
+        except Exception as exc:
+            logger.debug("Failed to decode detection payload: %s", exc)
+            return
+
+        metadata = payload.get("metadata") or {}
+        key = self._make_key(metadata.get("frame_index"),
+                             metadata.get("capture_timestamp"))
+        self._detections.setdefault(key, []).append(payload)
+        self._prune_detections()
+
+    def _handle_frame(self, parts):
+        if len(parts) < 3:
+            return
+        try:
+            metadata = json.loads(parts[1].decode("utf-8"))
+        except Exception:
+            metadata = {}
+
+        frame_bytes = parts[2]
+        np_buffer = np.frombuffer(frame_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = frame_rgb.shape
+        qimage = QtGui.QImage(
+            frame_rgb.data,
+            width,
+            height,
+            channels * width,
+            QtGui.QImage.Format_RGB888,
+        ).copy()
+
+        key = self._make_key(metadata.get("frame_index"),
+                             metadata.get("capture_timestamp"))
+        detections = self._detections.pop(key, [])
+        self.frame_received.emit(qimage, metadata, detections)
+        self._prune_detections()
+
+    def _handle_status(self, parts):
+        if len(parts) < 2:
+            return
+        try:
+            status = json.loads(parts[1].decode("utf-8"))
+        except Exception as exc:
+            logger.debug("Failed to decode status payload: %s", exc)
+            return
+        self.status_received.emit(status)

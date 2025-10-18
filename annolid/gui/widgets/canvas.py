@@ -1686,6 +1686,17 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.hEdge = None
         self.update()
 
+    def setRealtimeShapes(self, shapes):
+        """Replace shapes without touching the undo stack."""
+        self.shapes = list(shapes or [])
+        self.current = None
+        self.hShape = None
+        self.hVertex = None
+        self.hEdge = None
+        self.selectedShapes = []
+        self.selectedShapesCopy = []
+        self.update()
+
     def setShapeVisible(self, shape, value):
         self.visible[shape] = value
         self.update()
