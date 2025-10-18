@@ -41,7 +41,7 @@ class TrackingResultsAnalyzer:
             f"{self.video_path.stem}_tracking.csv"
         self.tracked_csv = self.video_path.parent / \
             f"{self.video_path.stem}_tracked.csv"
-        self.zone_file = zone_file
+        self.zone_file = Path(zone_file) if zone_file else None
         self.fps = fps
         if fps is None:
             self.fps = CV2Video(self.video_path).get_fps()
@@ -107,20 +107,52 @@ class TrackingResultsAnalyzer:
 
     def load_zone_json(self):
         """Load zone information from the JSON file."""
-        if not os.path.exists(self.zone_file):
-            json_files = sorted(find_manual_labeled_json_files(
-                str(self.tracking_csv).replace('_tracking.csv', '')))
-            if len(json_files) < 1:
-                return
-            # assume the first file has the Zone or place info
-            self.zone_file = json_files[0]
-        with open(self.zone_file, 'r') as f:
+        zone_path = None
+
+        potential_roots = [
+            self.video_path.parent,
+            self.video_path.parent / self.video_path.stem,
+        ]
+
+        if self.zone_file:
+            zone_candidates = [self.zone_file]
+            if not self.zone_file.is_absolute():
+                for root in potential_roots:
+                    zone_candidates.append(root / self.zone_file)
+                    zone_candidates.append(root / self.zone_file.name)
+            for candidate in zone_candidates:
+                if candidate.is_file():
+                    zone_path = candidate
+                    break
+
+        if zone_path is None:
+            results_dir = self.video_path.parent / self.video_path.stem
+            json_files = sorted(
+                find_manual_labeled_json_files(str(results_dir)))
+            for json_name in json_files:
+                candidate = results_dir / json_name
+                if candidate.is_file():
+                    zone_path = candidate
+                    break
+
+        if zone_path is None:
+            logger.warning(
+                "No zone JSON found for video '%s'. Zone-based analysis will be skipped.",
+                self.video_path,
+            )
+            self.zone_data = {}
+            self.zone_shapes = []
+            self.zone_time_dict = {}
+            return
+
+        self.zone_file = zone_path
+        with open(zone_path, 'r') as f:
             self.zone_data = json.load(f)
-        logger.info(f"Loading zones from {self.zone_file}")
-        
+        logger.info(f"Loading zones from {zone_path}")
+
         self.zone_shapes = [zone_shape for zone_shape in self.zone_data['shapes']
-                            if 'description' in zone_shape and zone_shape['description'] and 
-                             'zone' in zone_shape['description'].lower()
+                            if 'description' in zone_shape and zone_shape['description'] and
+                            'zone' in zone_shape['description'].lower()
                             or 'zone' in zone_shape['label'].lower()]
         self.zone_time_dict = {shape['label']: 0 for shape in self.zone_shapes}
 

@@ -66,16 +66,27 @@ class InferenceProcessor:
         Returns:
             The loaded model instance.
         """
+        filtered_classes = []
+        if class_names:
+            filtered_classes = [
+                cls for cls in class_names if isinstance(cls, str) and cls.strip()]
+
         if self.model_type == 'yolo':
-            if 'yoloe' in model_name:
+            model_name_lower = model_name.lower()
+            if 'yoloe' in model_name_lower:
                 model = YOLOE(model_name)
-                if class_names:
+                if filtered_classes:
                     model.set_classes(
-                        class_names, model.get_text_pe(class_names))
+                        filtered_classes, model.get_text_pe(filtered_classes))
             else:
                 model = YOLO(model_name)
-                if 'seg' not in model_name and class_names:
-                    model.set_classes(class_names)
+                if filtered_classes and 'pose' not in model_name_lower and 'seg' not in model_name_lower:
+                    if hasattr(model, "set_classes"):
+                        model.set_classes(filtered_classes)
+                    else:
+                        logging.warning(
+                            "Custom class assignment requested, but model '%s' does not support set_classes.",
+                            model_name)
             return model
         elif self.model_type == 'sam':
             model = SAM(model_name)
@@ -234,12 +245,12 @@ class InferenceProcessor:
 
     def save_yolo_to_labelme(self, annotations: list, frame_shape: tuple, output_dir: Path) -> None:
         """
-        Saves YOLO annotations to a LabelMe JSON file.
+        Persist YOLO annotations for a frame using the annotation store.
 
         Args:
             annotations (list): List of Shape objects.
             frame_shape (tuple): Tuple containing (height, width, channels).
-            output_dir (Path): Output directory where JSON will be saved.
+            output_dir (Path): Output directory where annotations will be recorded.
         """
         height, width, _ = frame_shape
         json_filename = f"{self.frame_count:09d}.json"
@@ -251,6 +262,7 @@ class InferenceProcessor:
             height=height,
             width=width,
             save_image_to_json=False,
+            persist_json=False,
         )
         self.frame_count += 1
 
