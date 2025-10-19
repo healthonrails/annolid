@@ -16,29 +16,41 @@ class StepSizeWidget(QtWidgets.QWidget):
         self.step_size_spin_box.setToolTip("Video Step Size")
         self.step_size_spin_box.setStatusTip(self.step_size_spin_box.toolTip())
         self.step_size_spin_box.setAlignment(QtCore.Qt.AlignCenter)
+        self.step_size_spin_box.setFixedWidth(60)
+        self.step_size_spin_box.setFocusPolicy(QtCore.Qt.NoFocus)
 
         # Checkbox for indicating occlusion
-        self.occclusion_checkbox = QtWidgets.QCheckBox("Auto")
-        # Default value is False
+        self.occclusion_checkbox = QtWidgets.QCheckBox(self.tr("Auto"))
         self.occclusion_checkbox.setChecked(True)
+        self.occclusion_checkbox.setToolTip(
+            self.tr("Enable automatic occlusion handling"))
+        self.occclusion_checkbox.setFocusPolicy(QtCore.Qt.NoFocus)
 
         # Predict Button
-        self.predict_button = QtWidgets.QPushButton("Pred")
+        self.predict_button = QtWidgets.QPushButton(self.tr("Pred"))
         self.predict_button.setStyleSheet(
             "background-color: green; color: white;")
+        self.predict_button.setToolTip(
+            self.tr("Run prediction on the next frame"))
+        self.predict_button.setFocusPolicy(QtCore.Qt.NoFocus)
 
         # Connect valueChanged signal of QSpinBox to self.valueChanged
         self.step_size_spin_box.valueChanged.connect(self.emit_value_changed)
 
         # Layout
-        layout = QtWidgets.QVBoxLayout()  # Vertical layout
-        layout.addWidget(self.occclusion_checkbox)  # Checkbox above spin box
-        layout.addWidget(self.step_size_spin_box)
-        layout.addWidget(self.predict_button)  # Predict button below checkbox
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.setAlignment(QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.occclusion_checkbox,
+                         alignment=QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.step_size_spin_box,
+                         alignment=QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.predict_button, alignment=QtCore.Qt.AlignHCenter)
         self.setLayout(layout)
-        # Set the width of the prediction button to match the width of the spin box
         self.predict_button.setFixedWidth(
-            self.step_size_spin_box.sizeHint().width())
+            self.step_size_spin_box.sizeHint().width()
+        )
 
     def set_value(self, value):
         self.step_size_spin_box.setValue(value)

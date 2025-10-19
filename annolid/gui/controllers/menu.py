@@ -1,7 +1,7 @@
 import functools
 from typing import Dict, TYPE_CHECKING
 
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from labelme import utils
 from labelme.utils import newAction
@@ -329,7 +329,19 @@ class MenuController:
         icon_path = spec.get("icon_path")
         if icon_path:
             action.setIcon(QtGui.QIcon(str(icon_path)))
+        action.setIconText(self._format_tool_button_text(action.text()))
         return action
+
+    @staticmethod
+    def _format_tool_button_text(text: str) -> str:
+        base = text.replace("&", "").strip()
+        if not base or "\n" in base:
+            return base
+        parts = base.split()
+        if len(parts) >= 2:
+            first, rest = parts[0], ' '.join(parts[1:])
+            return f"{first}\n{rest}"
+        return base
 
     def _populate_tools_and_menus(self) -> None:
         w = self._window
@@ -355,7 +367,16 @@ class MenuController:
         w.actions.tool = tuple(tool_actions)
 
         w.tools.clear()
+        w.tools.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+        w.tools.setIconSize(QtCore.QSize(32, 32))
         utils.addActions(w.tools, w.actions.tool)
+        for action in w.actions.tool:
+            button = w.tools.widgetForAction(action)
+            if isinstance(button, QtWidgets.QToolButton):
+                button.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+                button.setIconSize(QtCore.QSize(32, 32))
+                text = self._format_tool_button_text(action.text())
+                button.setText(text)
         utils.addActions(w.menus.file, (actions["open_video"],))
         utils.addActions(w.menus.file, (actions["open_audio"],))
         utils.addActions(w.menus.file, (actions["open_caption"],))
