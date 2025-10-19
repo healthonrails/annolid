@@ -40,10 +40,7 @@ cd annolid
 # install the package (be sure to include the space and the period after the -e)
 pip install -e .
 ```
-Note: if you get the following error, please try to install [ffmpeg](https://ffmpeg.org/) and then install decord from source as described [here](https://github.com/dmlc/decord).
-```
-ERROR: Could not find a version that satisfies the requirement decord>=0.4.0
-```
+Install [ffmpeg](https://ffmpeg.org/) (for example with `conda install -c conda-forge ffmpeg`) to ensure OpenCV can decode a wide range of video formats during playback.
 
 ### If you encounter errors On Windows for pycocotools, please download and install Visual studio 2019 from the link below. 
 https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&rel=16
