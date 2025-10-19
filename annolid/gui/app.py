@@ -1400,7 +1400,7 @@ class AnnolidWindow(MainWindow):
         self.imageData = None
         self._stop_frame_loader()
         self.frame_loader = LoadFrameThread()
-        if self.video_processor is not None:
+        if self.video_processor is not None and hasattr(self.video_processor, "cutie_processor"):
             self.video_processor.cutie_processor = None
         self.video_processor = None
         self.fps = None
@@ -2231,6 +2231,64 @@ class AnnolidWindow(MainWindow):
         weight = weight.lower()
         return "sam2_hiera" in identifier or "sam2_hiera" in weight
 
+    def _resolve_sam2_model_config(self, identifier: str, weight: str) -> str:
+        """
+        Resolve the SAM2 config file name based on the selected identifier or weight.
+        Falls back to the small hierarchy config if nothing matches.
+        """
+        key = f"{identifier or ''}|{weight or ''}".lower()
+        if "hiera_l" in key:
+            return "sam2.1_hiera_l.yaml"
+        if "hiera_s" in key:
+            return "sam2.1_hiera_s.yaml"
+        return "sam2.1_hiera_s.yaml"
+
+    def _resolve_sam2_checkpoint_path(self, weight: str) -> Optional[str]:
+        """
+        Try to resolve the absolute checkpoint path for SAM2 models.
+        Returns None to use the default download location when the file is not found.
+        """
+        if not weight:
+            return None
+
+        weight = weight.strip()
+        if not weight:
+            return None
+
+        weight_path = Path(weight)
+        if weight_path.exists():
+            return str(weight_path)
+
+        checkpoints_dir = (
+            Path(__file__).resolve().parent.parent
+            / "segmentation"
+            / "SAM"
+            / "segment-anything-2"
+            / "checkpoints"
+        )
+
+        candidate = checkpoints_dir / weight_path.name
+        if candidate.exists():
+            return str(candidate)
+
+        lower_name = weight_path.name.lower()
+        fallback_names = []
+        if "hiera_l" in lower_name:
+            fallback_names.extend(
+                ["sam2_hiera_large.pt", "sam2.1_hiera_large.pt"]
+            )
+        elif "hiera_s" in lower_name:
+            fallback_names.extend(
+                ["sam2_hiera_small.pt", "sam2.1_hiera_small.pt"]
+            )
+
+        for fallback_name in fallback_names:
+            fallback_candidate = checkpoints_dir / fallback_name
+            if fallback_candidate.exists():
+                return str(fallback_candidate)
+
+        return None
+
     def stop_prediction(self):
         # Emit the stop signal to signal the prediction thread to stop
         self.pred_worker.stop_signal.emit()
@@ -2339,7 +2397,24 @@ class AnnolidWindow(MainWindow):
                 )
             elif self._is_sam2_model(model_name, model_weight):
                 from annolid.segmentation.SAM.sam_v2 import process_video
-                self.video_processor = process_video
+                sam2_config = self._resolve_sam2_model_config(
+                    model_name, model_weight
+                )
+                sam2_checkpoint = self._resolve_sam2_checkpoint_path(
+                    model_weight
+                )
+                logger.info(
+                    "Using SAM2 config '%s' with checkpoint '%s'",
+                    sam2_config,
+                    sam2_checkpoint if sam2_checkpoint else "auto-download",
+                )
+                self.video_processor = functools.partial(
+                    process_video,
+                    video_path=self.video_file,
+                    checkpoint_path=sam2_checkpoint,
+                    model_config=sam2_config,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
+                )
             elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
                 # Instead of using a hard-coded prompt, extract visual prompts from canvas.
@@ -2398,6 +2473,12 @@ class AnnolidWindow(MainWindow):
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+            elif self._is_sam2_model(model_name, model_weight):
+                frame_idx = max(self.frame_number, 0)
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor,
+                    frame_idx=frame_idx,
+                )
             elif self._is_yolo_model(model_name, model_weight):
                 # Pass visual_prompts to run_inference if extracted successfully.
                 self.pred_worker = FlexibleWorker(
