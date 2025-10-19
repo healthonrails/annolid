@@ -734,7 +734,7 @@ class AnnolidWindow(MainWindow):
                 draw_action.setEnabled(createMode != draw_mode)
         self.actions.editMode.setEnabled(not edit)
 
-    def closeFile(self, _value=False):
+    def closeFile(self, _value=False, *, suppress_tracking_prompt=False):
         if not self.mayContinue():
             return
         self.resetState()
@@ -808,15 +808,23 @@ class AnnolidWindow(MainWindow):
             self.seekbar.removeMarksByType("predicted")
 
         if self.tracking_controller.is_tracking_busy():
-            reply = QtWidgets.QMessageBox.question(self, "Tracking in Progress",
-                                                   "Stop tracking and close video?",
-                                                   QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
-            if reply == QtWidgets.QMessageBox.Yes:
-                self.tracking_controller.stop_active_worker()
-                # It's better to wait for worker's finished signal before truly closing,
-                # but for simplicity here, we'll proceed.
+            if suppress_tracking_prompt or self.tracking_controller.is_track_all_running():
+                logger.info(
+                    "Skipping tracking stop prompt while batch processing is active.")
             else:
-                return  # Don't close
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    "Tracking in Progress",
+                    "Stop tracking and close video?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No,
+                )
+                if reply == QtWidgets.QMessageBox.Yes:
+                    self.tracking_controller.stop_active_worker()
+                    # It's better to wait for worker's finished signal before truly closing,
+                    # but for simplicity here, we'll proceed.
+                else:
+                    return  # Don't close
 
         # if self.video_file and self._current_video_defined_segments: # Auto-save on close?
         #     self._save_segments_for_active_video()
@@ -3540,10 +3548,10 @@ class AnnolidWindow(MainWindow):
             # create save button
             self.saveButton = QtWidgets.QPushButton("Save Timestamps", self)
             self.saveButton.clicked.connect(self.saveTimestampList)
-            # Add the play button to the status bar
-            self.statusBar().addWidget(self.playButton)
-            self.statusBar().addWidget(self.seekbar, stretch=1)
-            self.statusBar().addWidget(self.saveButton)
+            # Add the playback controls as permanent widgets so they stay visible
+            self.statusBar().addPermanentWidget(self.playButton)
+            self.statusBar().addPermanentWidget(self.seekbar, stretch=1)
+            self.statusBar().addPermanentWidget(self.saveButton)
 
             # load the first frame
             self.set_frame_number(self.frame_number)

@@ -17,7 +17,7 @@ class StepSizeWidget(QtWidgets.QWidget):
         self.step_size_spin_box.setStatusTip(self.step_size_spin_box.toolTip())
         self.step_size_spin_box.setAlignment(QtCore.Qt.AlignCenter)
         self.step_size_spin_box.setFixedWidth(60)
-        self.step_size_spin_box.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.step_size_spin_box.setFocusPolicy(QtCore.Qt.StrongFocus)
 
         # Checkbox for indicating occlusion
         self.occclusion_checkbox = QtWidgets.QCheckBox(self.tr("Auto"))

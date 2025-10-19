@@ -34,6 +34,10 @@ class TrackingController(QtCore.QObject):
             return True
         return False
 
+    def is_track_all_running(self) -> bool:
+        track_all = self._track_all_worker
+        return bool(track_all and track_all.isRunning())
+
     @QtCore.Slot(TrackingWorker, Path)
     def start_tracking(
         self,
@@ -223,7 +227,7 @@ class TrackingController(QtCore.QObject):
     ) -> None:
         window = self._window
         logger.info("TrackAll: Starting processing for %s", video_path)
-        window.closeFile()
+        window.closeFile(suppress_tracking_prompt=True)
         window.openVideo(
             from_video_list=True,
             video_path=video_path,
