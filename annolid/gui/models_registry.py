@@ -44,3 +44,5 @@ PATCH_SIMILARITY_MODELS = [
     ModelConfig("DINOv3 ViT-7B/16 (gated)",
                 "facebook/dinov3-vit7b16-pretrain-lvd1689m", ""),
 ]
+
+PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier

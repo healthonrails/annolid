@@ -256,6 +256,17 @@ class Canvas(QtWidgets.QWidget):
             image=labelme.utils.img_qt_to_arr(self.pixmap.toImage())
         )
 
+    def _ensure_ai_model_initialized(self) -> bool:
+        if self._ai_model is not None:
+            return True
+        try:
+            default_model = labelme.ai.MODELS[3].name
+        except Exception:
+            default_model = None
+        if default_model:
+            self.initializeAiModel(default_model)
+        return self._ai_model is not None
+
     def auto_mask_generator(self,
                             image_data,
                             label,
@@ -1240,22 +1251,29 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     label=self.line.point_labels[1],
                 )
                 try:
-                    points = self._ai_model.predict_polygon_from_points(
-                        points=[
-                            [point.x(), point.y()] for point in drawing_shape.points
-                        ],
-                        point_labels=drawing_shape.point_labels,
-                    )
-                    if len(points) > 2:
-                        drawing_shape.setShapeRefined(
-                            shape_type="polygon",
-                            points=[
-                                QtCore.QPointF(point[0], point[1]) for point in points
-                            ],
-                            point_labels=[1] * len(points),
+                    if not self._ensure_ai_model_initialized():
+                        logger.error(
+                            "AI polygon model is not initialized; skipping prediction."
                         )
-                        drawing_shape.fill = self.fillDrawing()
-                        drawing_shape.paint(p)
+                    else:
+                        points = self._ai_model.predict_polygon_from_points(
+                            points=[
+                                [point.x(), point.y()]
+                                for point in drawing_shape.points
+                            ],
+                            point_labels=drawing_shape.point_labels,
+                        )
+                        if len(points) > 2:
+                            drawing_shape.setShapeRefined(
+                                shape_type="polygon",
+                                points=[
+                                    QtCore.QPointF(point[0], point[1])
+                                    for point in points
+                                ],
+                                point_labels=[1] * len(points),
+                            )
+                            drawing_shape.fill = self.fillDrawing()
+                            drawing_shape.paint(p)
                 except Exception as e:
                     logger.error(
                         f"An error occurred during AI polygon prediction: {e}")
@@ -1267,24 +1285,29 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     label=self.line.point_labels[1],
                 )
                 try:
-                    mask = self._ai_model.predict_mask_from_points(
-                        points=[
-                            [point.x(), point.y()] for point in drawing_shape.points
-                        ],
-                        point_labels=drawing_shape.point_labels,
-                    )
-                    y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[0].astype(
-                        int
-                    )
-                    drawing_shape.setShapeRefined(
-                        shape_type="mask",
-                        points=[QtCore.QPointF(
-                            x1, y1), QtCore.QPointF(x2, y2)],
-                        point_labels=[1, 1],
-                        mask=mask[y1:y2, x1:x2],
-                    )
-                    drawing_shape.selected = True
-                    drawing_shape.paint(p)
+                    if not self._ensure_ai_model_initialized():
+                        logger.error(
+                            "AI mask model is not initialized; skipping prediction."
+                        )
+                    else:
+                        mask = self._ai_model.predict_mask_from_points(
+                            points=[
+                                [point.x(), point.y()]
+                                for point in drawing_shape.points
+                            ],
+                            point_labels=drawing_shape.point_labels,
+                        )
+                        y1, x1, y2, x2 = imgviz.instances.mask_to_bbox(
+                            [mask])[0].astype(int)
+                        drawing_shape.setShapeRefined(
+                            shape_type="mask",
+                            points=[QtCore.QPointF(
+                                x1, y1), QtCore.QPointF(x2, y2)],
+                            point_labels=[1, 1],
+                            mask=mask[y1:y2, x1:x2],
+                        )
+                        drawing_shape.selected = True
+                        drawing_shape.paint(p)
                 except Exception as e:
                     logger.error(
                         f"An error occurred during AI mask prediction: {e}")
@@ -1388,6 +1411,11 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             # convert points to polygon by an AI model
             if self.current.shape_type != "points":
                 return
+            if not self._ensure_ai_model_initialized():
+                logger.error(
+                    "AI polygon model is not initialized; skipping finalisation."
+                )
+                return
             points = self._ai_model.predict_polygon_from_points(
                 points=[
                     [point.x(), point.y()] for point in self.current.points
@@ -1404,6 +1432,11 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         elif self.createMode == "ai_mask":
             # convert points to mask by an AI model
             assert self.current.shape_type == "points"
+            if not self._ensure_ai_model_initialized():
+                logger.error(
+                    "AI mask model is not initialized; skipping finalisation."
+                )
+                return
             mask = self._ai_model.predict_mask_from_points(
                 points=[
                     [point.x(), point.y()] for point in self.current.points

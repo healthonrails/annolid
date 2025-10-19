@@ -6,7 +6,6 @@ import re
 import csv
 import os.path as osp
 import time
-import yaml
 import html
 import shutil
 import sys
@@ -20,9 +19,7 @@ import pandas as pd
 import numpy as np
 import torch
 import cv2
-import codecs
 import imgviz
-import argparse
 from pathlib import Path
 from datetime import datetime
 import functools
@@ -57,9 +54,7 @@ from annolid.utils.annotation_store import AnnotationStore
 from labelme.widgets import ToolBar
 from annolid.gui.label_file import LabelFileError
 from annolid.gui.label_file import LabelFile
-from annolid.configs import get_config
 from annolid.gui.widgets.canvas import Canvas
-from annolid.gui.widgets.text_prompt import AiRectangleWidget
 from annolid.annotation import labelme2coco
 from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
@@ -81,7 +76,6 @@ from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
-from annolid.gui.widgets import RecordingWidget
 from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
@@ -98,7 +92,6 @@ from annolid.gui.model_manager import AIModelManager
 from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
-from annolid.jobs.tracking_worker import TrackingWorker
 import contextlib
 import socket
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -116,6 +109,15 @@ from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
 from annolid.gui.tensorboard import start_tensorboard, VisualizationWindow
 from annolid.realtime.perception import Config as RealtimeConfig
 from annolid.gui.yolo_training_manager import YOLOTrainingManager
+from annolid.gui.cli import parse_cli
+from annolid.gui.application import create_qapp
+from annolid.gui.controllers import (
+    DinoController,
+    FlagsController,
+    MenuController,
+    TrackingController,
+    TrackingDataController,
+)
 
 
 __appname__ = 'Annolid'
@@ -163,6 +165,8 @@ class AnnolidWindow(MainWindow):
         self._last_tracking_csv_path = None
         self._csv_conversion_queue = []
 
+        self.tracking_controller = TrackingController(self)
+
         # Create the Video Manager Widget
         self.video_manager_widget = VideoManagerWidget()
         self.video_manager_widget.video_selected.connect(self._load_video)
@@ -174,7 +178,7 @@ class AnnolidWindow(MainWindow):
             self.video_manager_widget.update_json_column)
 
         self.video_manager_widget.track_all_worker_created.connect(
-            self._connect_track_all_signals)
+            self.tracking_controller.register_track_all_worker)
 
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
@@ -189,7 +193,7 @@ class AnnolidWindow(MainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.video_dock)
 
         self.here = Path(__file__).resolve().parent
-        action = functools.partial(newAction, self)
+        self.settings = QtCore.QSettings("Annolid", 'Annolid')
         self._df = None
         self._df_deeplabcut = None
         self._df_deeplabcut_scorer = None
@@ -241,15 +245,14 @@ class AnnolidWindow(MainWindow):
         self.compute_optical_flow = True
         self.playButton = None
         self.saveButton = None
-        self.pinned_flags = {}
         # Create progress bar
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
         self._current_video_defined_segments: List[TrackingSegment] = []
-        self.active_tracking_worker: Optional[TrackingWorker] = None
-        self._setup_custom_menu_actions()
+        self.menu_controller = MenuController(self)
+        self.menu_controller.setup()
 
         self.prediction_progress_watcher = None
         self.last_known_predicted_frame = -1  # Track the latest frame seen
@@ -280,18 +283,19 @@ class AnnolidWindow(MainWindow):
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
 
-        self.flag_widget = FlagTableWidget()  # Replace QListWidget with FlagTableWidget
-        self.flag_dock.setWidget(self.flag_widget)  # Set the widget to dock
-        self.flag_widget.startButtonClicked.connect(
-            self.handle_flag_start_button)
-        self.flag_widget.endButtonClicked.connect(
-            self.handle_flag_end_button)
-        self.flag_widget.flagToggled.connect(
-            self.handle_flag_toggled)
-        self.flag_widget.flagsSaved.connect(self.handle_flags_saved)
-        self.flag_widget.rowSelected.connect(self.handle_row_selected)
+        self.flag_widget = FlagTableWidget()
+        self.flag_dock.setWidget(self.flag_widget)
+        self.flags_controller = FlagsController(
+            window=self,
+            widget=self.flag_widget,
+            config_path=self.here.parent.resolve() / 'configs' / 'behaviors.yaml',
+        )
+        self.flags_controller.initialize()
 
-        self.handle_flags_saved()
+        self.dino_controller = DinoController(self)
+        self.dino_controller.initialize()
+
+        self.tracking_data_controller = TrackingDataController(self)
 
         # Behavior event log dock
         self.behavior_log_widget = BehaviorEventLogWidget(self)
@@ -330,438 +334,14 @@ class AnnolidWindow(MainWindow):
 
         self.setCentralWidget(scrollArea)
 
-        self.createPolygonSAMMode = action(
-            self.tr("AI Polygons"),
-            self.segmentAnything,
-            icon="objects",
-            tip=self.tr("Start creating polygons with segment anything"),
-        )
-
-        createAiPolygonMode = action(
-            self.tr("Create AI-Polygon"),
-            lambda: self.toggleDrawMode(False, createMode="ai_polygon"),
-            None,
-            "objects",
-            self.tr("Start drawing ai_polygon. Ctrl+LeftClick ends creation."),
-            enabled=False,
-        )
-
-        createAiPolygonMode.changed.connect(
-            lambda: self.canvas.initializeAiModel(
-                name=self._selectAiModelComboBox.currentText(),
-                _custom_ai_models=self.ai_model_manager.custom_model_names,
-            )
-            if self.canvas.createMode == "ai_polygon"
-            else None
-        )
-
-        self.createGroundingSAMMode = action(
-            self.tr("Create GroundingSAM"),
-            lambda: self.toggleDrawMode(False, createMode="grounding_sam"),
-            None,
-            "objects",
-            self.tr("Start using grounding_sam"),
-            enabled=False,
-        )
-
-        open_video = action(
-            self.tr("&Open Video"),
-            self.openVideo,
-            None,
-            "Open Video",
-            self.tr("Open video")
-        )
-
-        advance_params = action(
-            self.tr("&Advanced Parameters"),
-            self.set_advanced_params,
-            None,
-            "Advanced Parameters",
-            self.tr("Advanced Parameters")
-        )
-        open_video.setIcon(QtGui.QIcon(
-            str(
-                self.here / "icons/open_video.png"
-            )
-        ))
-
-        open_audio = action(
-            self.tr("&Open Audio"),
-            self.openAudio,
-            None,
-            "Open Audio",
-            self.tr("Open Audio")
-        )
-
-        open_caption = action(
-            self.tr("&Open Caption"),
-            self.openCaption,
-            None,
-            "Open Caption",
-            self.tr("Open Caption")
-        )
-
-        downsample_video = action(
-            self.tr("&Downsample Videos"),
-            self.downsample_videos,
-            None,
-            "Downsample Videos",
-            self.tr("Downsample Videos")
-        )
-
-        tracking_reports = action(
-            self.tr("&Tracking Reports"),
-            self.trigger_gap_analysis,
-            None,
-            "Tracking Reports",
-            self.tr("Generate tracking reports for the selected video")
-        )
-
-        convert_csv = action(
-            self.tr("&Save CSV"),
-            self.convert_labelme_json_to_csv,
-            None,
-            "Save CSV",
-            self.tr("Save CSV")
-        )
-
-        extract_shape_keypoints = action(
-            self.tr("&Extract Shape Keypoints"),
-            self.extract_and_save_shape_keypoints,
-            None,
-            "Extract Shape Keypoints",
-            self.tr("Extract Shape Keypoints")
-        )
-
-        convert_sleap = action(
-            self.tr("&Convert SLEAP h5 to labelme"),
-            self.convert_sleap_h5_to_labelme,
-            None,
-            "Convert SLEAP h5 to labelme",
-            self.tr("Convert SLEAP h5 to labelme")
-        )
-
-        convert_deeplabcut = action(
-            self.tr("&Convert DeepLabCut CSV to labelme"),
-            self.convert_deeplabcut_csv_to_labelme,
-            None,
-            "Convert DeepLabCut CSV to labelme",
-            self.tr("Convert DeepLabCut CSV to labelme")
-        )
-
-        convert_labelme2yolo_format = action(
-            self.tr("&Convert Labelme to YOLO format"),
-            self.convert_labelme2yolo_format,
-            None,
-            "Convert Labelme to YOLO format",
-            self.tr("Convert Labelme to YOLO format")
-        )
-
-        place_perference = action(
-            self.tr("&Place Preference"),
-            self.place_preference_analyze,
-            None,
-            "Place Preference",
-            self.tr("Place Preference")
-        )
-
-        about_annolid = action(
-            self.tr("&About Annolid"),
-            self.about_annolid_and_system_info,
-            None,
-            "About Annolid",
-            self.tr("About Annolid")
-        )
-
-        step_size = QtWidgets.QWidgetAction(self)
-        step_size.setIcon(QtGui.QIcon(
-            str(
-                self.here / "icons/fast_forward.png"
-            )
-        ))
-
-        step_size.setDefaultWidget(self.stepSizeWidget)
-
-        self.stepSizeWidget.setWhatsThis(
-            self.tr(
-                "Step for the next or prev image. e.g. 30"
-            )
-        )
-        self.stepSizeWidget.setEnabled(False)
-
-        coco = action(
-            self.tr("&COCO format"),
-            self.coco,
-            'Ctrl+C+O',
-            "coco",
-            self.tr("Convert to COCO format"),
-        )
-
-        coco.setIcon(QtGui.QIcon(str(
-            self.here / "icons/coco.png")))
-
-        save_labeles = action(
-            self.tr("&Save labels"),
-            self.save_labels,
-            'Ctrl+Shift+L',
-            'Save Labels',
-            self.tr("Save labels to txt file")
-        )
-
-        save_labeles.setIcon(QtGui.QIcon(
-            str(self.here/"icons/label_list.png")
-        ))
-
-        frames = action(
-            self.tr("&Extract frames"),
-            self.frames,
-            'Ctrl+Shift+E',
-            "Extract frames",
-            self.tr("Extract frames frome a video"),
-        )
-
-        models = action(
-            self.tr("&Train models"),
-            self.models,
-            "Ctrl+Shift+T",
-            "Train models",
-            self.tr("Train neural networks")
-        )
-        models.setIcon(QtGui.QIcon(str(
-            self.here / "icons/models.png")))
-
-        frames.setIcon(QtGui.QIcon(str(
-            self.here / "icons/extract_frames.png")))
-
-        tracks = action(
-            self.tr("&Track Animals"),
-            self.tracks,
-            "Ctrl+Shift+O",
-            "Track Animals",
-            self.tr("Track animals and Objects")
-        )
-
-        tracks.setIcon(QtGui.QIcon(str(
-            self.here / 'icons/track.png'
-        )))
-
-        glitter2 = action(
-            self.tr("&Glitter2"),
-            self.glitter2,
-            "Ctrl+Shift+G",
-            self.tr("Convert to Glitter2 nix format")
-        )
-
-        glitter2.setIcon(QtGui.QIcon(str(
-            self.here / 'icons/glitter2_logo.png'
-        )))
-
-        quality_control = action(
-            self.tr("&Quality Control"),
-            self.quality_control,
-            "Ctrl+Shift+G",
-            self.tr("Convert to tracking results to labelme format")
-        )
-
-        quality_control.setIcon(QtGui.QIcon(str(
-            self.here / 'icons/quality_control.png'
-        )))
-
-        visualization = action(
-            self.tr("&Visualization"),
-            self.visualization,
-            'Ctrl+Shift+V',
-            "Visualization",
-            self.tr("Visualization results"),
-        )
-
-        colab = action(
-            self.tr("&Open in Colab"),
-            self.train_on_colab,
-            icon="Colab",
-            tip=self.tr("Open in Colab"),
-        )
-
-        colab.setIcon(QtGui.QIcon(str(
-            self.here / "icons/colab.png")))
-        shortcuts = self._config["shortcuts"]
-        self.shortcuts = shortcuts
-
-        visualization.setIcon(QtGui.QIcon(str(
-            self.here / "icons/visualization.png")))
-
-        self.aiRectangle = AiRectangleWidget()
-        self.aiRectangle._aiRectanglePrompt.returnPressed.connect(
-            self._grounding_sam
-        )
-
-        self.recording_widget = RecordingWidget(self.canvas)
-
-        self.patch_similarity_action = newAction(
-            self,
-            self.tr("Patch Similarity"),
-            self._toggle_patch_similarity_tool,
-            icon="visualization",
-            tip=self.tr(
-                "Click on the frame to generate a DINO patch similarity heatmap"),
-        )
-        self.patch_similarity_action.setCheckable(True)
-        self.patch_similarity_action.setIcon(
-            QtGui.QIcon(str(self.here / "icons/visualization.png")))
-
-        self.patch_similarity_settings_action = newAction(
-            self,
-            self.tr("Patch Similarity Settings…"),
-            self._open_patch_similarity_settings,
-            tip=self.tr(
-                "Choose model and overlay opacity for patch similarity"),
-        )
-
-        self.pca_map_action = newAction(
-            self,
-            self.tr("PCA Feature Map"),
-            self._toggle_pca_map_tool,
-            icon="visualization",
-            tip=self.tr(
-                "Toggle a PCA-colored DINO feature map overlay for the current frame",
-            ),
-        )
-        self.pca_map_action.setCheckable(True)
-        self.pca_map_action.setIcon(
-            QtGui.QIcon(str(self.here / "icons/visualization.png")))
-
-        self.pca_map_settings_action = newAction(
-            self,
-            self.tr("PCA Feature Map Settings…"),
-            self._open_pca_map_settings,
-            tip=self.tr("Choose model and overlay opacity for the PCA map"),
-        )
-
-        # Create the QAction with the new label
-        add_stamps_action = newAction(
-            self,
-            self.tr("Add Real-Time Stamps…"),       # menu text
-            self._add_real_time_stamps,             # our slot handler
-            icon="timestamp",                       # ensure icons/timestamp.png exists
-            tip=self.tr("Populate CSVs with true frame timestamps")
-        )
-
-        _action_tools = list(self.actions.tool)
-        _action_tools.insert(0, frames)
-        _action_tools.insert(1, open_video)
-        _action_tools.insert(2, step_size)
-        _action_tools.append(self.aiRectangle.aiRectangleAction)
-        _action_tools.append(tracks)
-        _action_tools.append(glitter2)
-        _action_tools.append(coco)
-        _action_tools.append(models)
-        _action_tools.append(self.createPolygonSAMMode)
-        _action_tools.append(save_labeles)
-        _action_tools.append(quality_control)
-        _action_tools.append(colab)
-        _action_tools.append(visualization)
-        _action_tools.append(self.patch_similarity_action)
-        _action_tools.append(self.pca_map_action)
-        _action_tools.append(self.recording_widget.record_action)
-
-        self.actions.tool = tuple(_action_tools)
-        self.tools.clear()
-
-        utils.addActions(self.tools, self.actions.tool)
-        utils.addActions(self.menus.file, (open_video,))
-        utils.addActions(self.menus.file, (open_audio,))
-        utils.addActions(self.menus.file, (open_caption,))
-        utils.addActions(self.menus.file, (colab,))
-        utils.addActions(self.menus.file, (save_labeles,))
-        utils.addActions(self.menus.file, (coco,))
-        utils.addActions(self.menus.file, (frames,))
-        utils.addActions(self.menus.file, (models,))
-        utils.addActions(self.menus.file, (tracks,))
-        utils.addActions(self.menus.file, (quality_control,))
-        utils.addActions(self.menus.file, (downsample_video,))
-        utils.addActions(self.menus.file, (tracking_reports,))
-
-        # Insert it under File
-        self.menus.file.addSeparator()
-        utils.addActions(self.menus.file, (convert_csv,))
-        utils.addActions(self.menus.file, (extract_shape_keypoints,))
-        utils.addActions(self.menus.file, (convert_deeplabcut,))
-        utils.addActions(self.menus.file, (convert_sleap,))
-        utils.addActions(self.menus.file, (convert_labelme2yolo_format,))
-        utils.addActions(self.menus.file, (place_perference,))
-        utils.addActions(self.menus.file, (add_stamps_action,))
-
-        utils.addActions(self.menus.file, (advance_params,))
-
-        utils.addActions(self.menus.view, (glitter2,))
-        utils.addActions(self.menus.view, (visualization,))
-        utils.addActions(self.menus.view, (self.patch_similarity_action,))
-        utils.addActions(self.menus.view, (self.pca_map_action,))
-        self.realtime_control_action = newAction(
-            self,
-            self.tr("Realtime Control…"),
-            self._show_realtime_control_dialog,
-            icon="fast_forward",
-            tip=self.tr("Configure and launch realtime inference"),
-        )
-        self.realtime_control_action.setIcon(
-            QtGui.QIcon(str(self.here / "icons/fast_forward.png")))
-        utils.addActions(self.menus.view, (self.realtime_control_action,))
-        utils.addActions(
-            self.menus.view,
-            (self.patch_similarity_settings_action, self.pca_map_settings_action),
-        )
-        utils.addActions(self.menus.help, (about_annolid,))
-
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()
         self.setWindowTitle(__appname__)
-        self.settings = QtCore.QSettings("Annolid", 'Annolid')
         # Restore application settings.
         self.recentFiles = self.settings.value("recentFiles", []) or []
         position = self.settings.value("window/position", QtCore.QPoint(0, 0))
         state = self.settings.value("window/state", QtCore.QByteArray())
         self.move(position)
-
-        # Patch similarity preferences
-        self.patch_similarity_model = str(
-            self.settings.value(
-                "patch_similarity/model",
-                PATCH_SIMILARITY_DEFAULT_MODEL,
-            )
-        )
-        self.patch_similarity_alpha = float(
-            self.settings.value("patch_similarity/alpha", 0.55)
-        )
-        self.patch_similarity_alpha = min(
-            max(self.patch_similarity_alpha, 0.05), 1.0)
-        self.patch_similarity_service = DinoPatchSimilarityService(self)
-        self.patch_similarity_service.started.connect(
-            self._on_patch_similarity_started)
-        self.patch_similarity_service.finished.connect(
-            self._on_patch_similarity_finished)
-        self.patch_similarity_service.error.connect(
-            self._on_patch_similarity_error)
-
-        self.pca_map_model = str(
-            self.settings.value(
-                "pca_map/model",
-                self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL,
-            )
-        )
-        self.pca_map_alpha = float(
-            self.settings.value("pca_map/alpha", 0.65)
-        )
-        self.pca_map_alpha = min(max(self.pca_map_alpha, 0.05), 1.0)
-        self.pca_map_clusters = int(
-            self.settings.value("pca_map/clusters", 0)
-        )
-        if self.pca_map_clusters < 0:
-            self.pca_map_clusters = 0
-        self.pca_map_service = DinoPCAMapService(self)
-        self.pca_map_service.started.connect(self._on_pca_map_started)
-        self.pca_map_service.finished.connect(self._on_pca_map_finished)
-        self.pca_map_service.error.connect(self._on_pca_map_error)
 
         self.video_results_folder = None
         self.seekbar = None
@@ -789,18 +369,6 @@ class AnnolidWindow(MainWindow):
 
         self.populateModeActions()
 
-    def _setup_custom_menu_actions(self):
-        self.open_segment_editor_action = newAction(
-            self, self.tr("Define Video Segments..."),
-            self._open_segment_editor_dialog, shortcut="Ctrl+Alt+S",
-            tip=self.tr("Define tracking segments for the current video")
-        )
-        self.open_segment_editor_action.setEnabled(False)
-        if not hasattr(self.menus, 'video_tools'):
-            self.menus.video_tools = self.menuBar().addMenu(self.tr("&Video Tools"))
-        utils.addActions(self.menus.video_tools,
-                         (self.open_segment_editor_action,))
-
     @Slot()
     def _open_segment_editor_dialog(self):  # Largely the same
         if not self.video_file or self.fps is None or self.num_frames is None:
@@ -821,7 +389,7 @@ class AnnolidWindow(MainWindow):
 
         # NEW: Connect to the dialog's signal that provides the worker instance
         dialog.tracking_initiated.connect(
-            self._handle_tracking_initiated_by_dialog)
+            self.tracking_controller.start_tracking)
 
         # Optional: For modeless live updates (if SegmentEditorDialog becomes modeless)
         # self.live_annolid_frame_updated.connect(dialog.update_live_annolid_frame_info)
@@ -834,66 +402,10 @@ class AnnolidWindow(MainWindow):
         else:  # User clicked "Cancel" or closed dialog
             logger.info("Segment Editor Cancelled/Closed.")
 
-        # try: self.live_annolid_frame_updated.disconnect(dialog.update_live_annolid_frame_info)
-        # except TypeError: pass
         dialog.deleteLater()
 
-    # --- Modified/New Slot to handle tracking started by the dialog ---
-
-    @Slot(TrackingWorker, Path)  # worker_instance, video_path_processed
-    def _handle_tracking_initiated_by_dialog(self, worker_instance: TrackingWorker, video_path: Path):
-        if self.active_tracking_worker and self.active_tracking_worker.isRunning():
-            QtWidgets.QMessageBox.warning(self, "Tracking Busy",
-                                          "Dialog initiated tracking, but Annolid already has an active worker. This shouldn't happen if dialog checks.")
-            # Potentially stop the new worker if necessary, or log error
-            worker_instance.stop()  # Stop the worker the dialog created if we can't handle it
-            worker_instance.wait(1000)  # Wait a bit for it to stop
-            return
-
-        logger.info(
-            f"AnnolidWindow: Tracking initiated by SegmentEditorDialog for {video_path.name}")
-        self.active_tracking_worker = worker_instance
-        # The worker is already started by the dialog. AnnolidWindow just needs to connect UI signals.
-        # Connect progress, finished, error, UI updates
-        self._connect_signals_to_active_worker(self.active_tracking_worker)
-
-    # Helper method (public for dialog to check)
-
     def is_tracking_busy(self) -> bool:
-        return bool(self.active_tracking_worker and self.active_tracking_worker.isRunning())
-
-    @Slot(str)
-    def _on_tracking_job_finished(self, completion_message: str):
-        QtWidgets.QMessageBox.information(
-            self, "Tracking Job Complete", completion_message)
-        self.statusBar().showMessage(completion_message, 5000)
-        self._set_tracking_ui_state(is_tracking=False)
-
-        # Disconnect signals from the finished worker
-        if self.active_tracking_worker:
-            try:
-                # Attempt to disconnect all relevant signals
-                self.active_tracking_worker.progress.disconnect(
-                    self._update_main_status_progress)
-                self.active_tracking_worker.finished.disconnect(
-                    self._on_tracking_job_finished)
-                self.active_tracking_worker.error.disconnect(
-                    self._on_tracking_job_error)
-                if hasattr(self.active_tracking_worker, 'video_job_started'):
-                    self.active_tracking_worker.video_job_started.disconnect(
-                        self._handle_tracking_video_started_ui_update)
-                if hasattr(self.active_tracking_worker, 'video_job_finished'):
-                    self.active_tracking_worker.video_job_finished.disconnect(
-                        self._handle_tracking_video_finished_ui_update)
-            except (TypeError, RuntimeError) as e:
-                logger.debug(
-                    f"Error disconnecting signals from finished worker (may have already been disconnected or was never connected): {e}")
-
-            # If the worker's parent was None (as set in dialog), and AnnolidWindow is meant to manage its lifetime
-            # after receiving it, you might consider worker.deleteLater() here,
-            # but only if AnnolidWindow is truly taking ownership beyond just signal connection.
-            # For now, let's assume the worker cleans itself up or its parent (if set in dialog) handles it.
-            self.active_tracking_worker = None  # CRITICAL: Clear the reference
+        return self.tracking_controller.is_tracking_busy()
 
     def _setup_canvas_screenshot_action(self):
         """Sets up the 'Save Canvas Image' action."""
@@ -912,96 +424,6 @@ class AnnolidWindow(MainWindow):
         """ Calls CanvasScreenshotWidget and passes in the current filename"""
         self.canvas_screenshot_widget.save_canvas_screenshot(
             filename=self.filename)
-
-    def handle_flags_saved(self, flags={}):
-        default_config = self.here.parent.resolve() / 'configs' / 'behaviors.yaml'
-
-        # Load the existing configuration from the YAML file
-        try:
-            with open(default_config, 'r') as file:
-                config_data = yaml.safe_load(file) or {}
-        except FileNotFoundError:
-            config_data = {}
-
-        # Append the pinned flags to the existing configuration
-        if 'pinned_flags' not in config_data:
-            config_data['pinned_flags'] = []
-        config_data['pinned_flags'].extend(flags)  # Append the new flags
-        pinned_flags = {
-            pinned_flag: False for pinned_flag in config_data['pinned_flags']}
-
-        # Save the updated configuration back to the YAML file
-        with open(default_config, 'w') as file:
-            yaml.dump(config_data, file, default_flow_style=False)
-
-        # Update the pinned_flags attribute and load the flags
-        self.pinned_flags = pinned_flags
-        self.loadFlags(pinned_flags)
-
-    def handle_row_selected(self, flag_name: str):
-        self.event_type = flag_name
-
-    def _connect_track_all_signals(self, worker_instance):
-        """Connects to signals from a newly created TrackAllWorker instance."""
-        if worker_instance:
-            worker_instance.video_processing_started.connect(
-                self._handle_track_all_video_started)
-            worker_instance.video_processing_finished.connect(
-                self._handle_track_all_video_finished)
-
-    @Slot(str, str)
-    def _handle_track_all_video_started(self, video_path, output_folder_path):
-        logger.info(f"TrackAll: Starting processing for {video_path}")
-        self.closeFile()  # Close any currently open video
-        # 1. Load the video into the canvas
-        self.openVideo(from_video_list=True,  # Ensure this is set to True
-                       video_path=video_path,
-                       programmatic_call=True)
-        # 2. Setup the prediction folder watcher for this video's output_folder
-        #    Ensure self.video_results_folder is correctly set by openVideo to output_folder_path
-        #    or pass output_folder_path directly.
-        if self.video_file == video_path and self.video_results_folder == Path(output_folder_path):
-            logger.info(
-                f"TrackAll: Setting up watcher for {output_folder_path}")
-            self._setup_prediction_folder_watcher(output_folder_path)
-            # Initialize progress bar for predictions (if you have one for single video)
-            if hasattr(self, 'progress_bar'):
-                self._initialize_progress_bar()  # Make sure this is suitable
-        else:
-            logger.warning(
-                f"TrackAll: Video {video_path} not properly loaded or output folder mismatch. Cannot start watcher.")
-            logger.warning(
-                f"Current video_file: {self.video_file}, expected: {video_path}")
-            logger.warning(
-                f"Current video_results_folder: {self.video_results_folder}, expected: {output_folder_path}")
-
-    @Slot(str)
-    def _handle_track_all_video_finished(self, video_path):
-        logger.info(f"TrackAll: Finished processing for {video_path}")
-        # Clean up the watcher and progress for this specific video
-        # Check if this is the video we were actually watching
-        current_video_name_in_watcher = ""
-        if self.prediction_progress_watcher and self.prediction_progress_watcher.directories():
-            current_video_name_in_watcher = Path(
-                self.prediction_progress_watcher.directories()[0]).name
-
-        if Path(video_path).stem == current_video_name_in_watcher:
-            self._finalize_prediction_progress(
-                f"Automated tracking for {Path(video_path).name} complete.")
-        else:
-            logger.info(
-                f"TrackAll: Video {video_path} finished, but watcher was on {current_video_name_in_watcher} or not active.")
-
-    def get_active_flags(self, flags):
-        active_flags = []
-        for _flag in flags:
-            if flags[_flag]:
-                active_flags.append(_flag)
-        return active_flags
-
-    def get_current_behavior_text(self, flags):
-        active_flags = self.get_active_flags(flags)
-        return ','.join(active_flags)
 
     def _grounding_sam(self):
         """
@@ -1031,41 +453,15 @@ class AnnolidWindow(MainWindow):
             flags = {k.strip(): False for k in prompt_text.replace(
                 'flags:', '').split(',') if len(k.strip()) > 0}
             if len(flags.keys()) > 0:
-                self.pinned_flags = flags
-                self.loadFlags(flags)
+                self.flags_controller.apply_prompt_flags(flags)
             else:
-                # # If there is no string after 'flags'
-                # in the text prompt, clear the flag widget
-                self.flag_widget.clear()
+                self.flags_controller.clear_flags()
         else:
             self.canvas.predictAiRectangle(prompt_text)
 
     def update_step_size(self, value):
         self.step_size = value
         self.stepSizeWidget.set_value(self.step_size)
-
-    def handle_flag_start_button(self, flag_name):
-
-        if self.seekbar:
-            self.record_behavior_event(
-                flag_name, "start", frame_number=self.frame_number)
-        self.canvas.setBehaviorText(flag_name)
-        self.event_type = flag_name
-        self.pinned_flags[flag_name] = True
-
-    def handle_flag_toggled(self, flag_name, state):
-        if state:
-            self.handle_flag_start_button(flag_name)
-        else:
-            self.handle_flag_end_button(flag_name)
-
-    def handle_flag_end_button(self, flag_name, record_event: bool = True):
-        if self.seekbar and record_event:
-            self.record_behavior_event(
-                flag_name, "end", frame_number=self.frame_number)
-        self.event_type = flag_name
-        self.canvas.setBehaviorText("")
-        self.pinned_flags[flag_name] = False
 
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
@@ -1342,7 +738,8 @@ class AnnolidWindow(MainWindow):
         if not self.mayContinue():
             return
         self.resetState()
-        self._deactivate_patch_similarity()
+        self.dino_controller.deactivate_patch_similarity()
+        self.dino_controller.deactivate_pca_map()
         self.setClean()
         self.toggleActions(False)
         self.canvas.setEnabled(False)
@@ -1410,12 +807,12 @@ class AnnolidWindow(MainWindow):
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")
 
-        if self.active_tracking_worker and self.active_tracking_worker.isRunning():
+        if self.tracking_controller.is_tracking_busy():
             reply = QtWidgets.QMessageBox.question(self, "Tracking in Progress",
                                                    "Stop tracking and close video?",
                                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
             if reply == QtWidgets.QMessageBox.Yes:
-                self.active_tracking_worker.stop()
+                self.tracking_controller.stop_active_worker()
                 # It's better to wait for worker's finished signal before truly closing,
                 # but for simplicity here, we'll proceed.
             else:
@@ -2577,10 +1974,21 @@ class AnnolidWindow(MainWindow):
             "background-color: green; color: white;")
 
     def loadFlags(self, flags):
-        """ Loads flags using FlagTableWidget's loadFlags method """
-        behave_text = self.get_current_behavior_text(flags)
-        self.canvas.setBehaviorText(behave_text)
-        self.flag_widget.loadFlags(flags)
+        """Delegate flag loading to the flags controller."""
+        self.flags_controller.load_flags(flags)
+
+    @property
+    def pinned_flags(self):
+        if hasattr(self, "flags_controller"):
+            return self.flags_controller.pinned_flags
+        return getattr(self, "_pending_pinned_flags", {})
+
+    @pinned_flags.setter
+    def pinned_flags(self, value):
+        if hasattr(self, "flags_controller"):
+            self.flags_controller.set_flags(value or {}, persist=False)
+        else:
+            self.__dict__["_pending_pinned_flags"] = value or {}
 
     def _refresh_behavior_overlay(self) -> None:
         """Synchronize canvas label and flag widget with timeline behaviors."""
@@ -3804,7 +3212,7 @@ class AnnolidWindow(MainWindow):
                 else:
                     self.record_behavior_event(
                         self.event_type, "end", frame_number=self.frame_number)
-                    self.handle_flag_end_button(
+                    self.flags_controller.end_flag(
                         self.event_type, record_event=False)
             elif event.key() == Qt.Key_R:
                 self.remove_highlighted_mark()
@@ -3877,55 +3285,9 @@ class AnnolidWindow(MainWindow):
             self.caption_widget.set_image_path(self.filename)
 
     def load_tracking_results(self, cur_video_folder, video_filename):
-        """
-        Loads various tracking and behavior data from standardized CSV files
-        in the video's directory.
-        """
-        self.behavior_controller.clear()
-        self.behavior_log_widget.clear()
-        self.pinned_flags = {}
-        self._df = None  # Reset dataframe
-
-        video_name = Path(video_filename).stem
-
-        # --- Define Standardized Filenames ---
-        # This makes the logic explicit and robust.
-        main_tracking_file = cur_video_folder / f"{video_name}_tracking.csv"
-        timestamps_file = cur_video_folder / f"{video_name}_timestamps.csv"
-        labels_file_path = cur_video_folder / f"{video_name}_labels.csv"
-
-        # --- Load the Main Tracking Results File ---
-        # We look for one specific file. No more ambiguity with 'tracking' in the name.
-        if main_tracking_file.is_file():
-            try:
-                logger.info(
-                    f"Loading main tracking data from: {main_tracking_file}")
-                df = pd.read_csv(main_tracking_file)
-                # Ensure the 'frame_number' column exists, which is critical.
-                if 'frame_number' not in df.columns and 'Unnamed: 0' in df.columns:
-                    df.rename(
-                        columns={'Unnamed: 0': 'frame_number'}, inplace=True)
-
-                if 'frame_number' in df.columns:
-                    self._df = df
-                else:
-                    logger.warning(
-                        f"'{main_tracking_file}' is missing the required 'frame_number' column.")
-
-            except Exception as e:
-                logger.error(
-                    f"Error loading main tracking file {main_tracking_file}: {e}")
-
-        # --- Load Behavior/Timestamp Data ---
-        # Check for the standardized timestamp/behavior file.
-        if timestamps_file.is_file():
-            logger.info(f"Loading behavior data from: {timestamps_file}")
-            self._load_behavior(timestamps_file)
-
-        # --- Load Other Data Types (like labels) ---
-        if labels_file_path.is_file():
-            logger.info(f"Loading labels data from: {labels_file_path}")
-            self._load_labels(labels_file_path)
+        self.tracking_data_controller.load_tracking_results(
+            Path(cur_video_folder), video_filename
+        )
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""
@@ -4401,228 +3763,25 @@ class AnnolidWindow(MainWindow):
     # Patch similarity (DINO) integration
     # ------------------------------------------------------------------
     def _toggle_patch_similarity_tool(self, checked=False):
-        state = bool(checked) if isinstance(
-            checked, bool) else self.patch_similarity_action.isChecked()
-        if not state:
-            self._deactivate_patch_similarity()
-            return
-
-        if self.canvas.pixmap is None or self.canvas.pixmap.isNull():
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Patch Similarity"),
-                self.tr(
-                    "Load an image or video frame before starting patch similarity."),
-            )
-            self.patch_similarity_action.setChecked(False)
-            return
-
-        if not self.patch_similarity_model:
-            self._open_patch_similarity_settings()
-            if not self.patch_similarity_model:
-                self.patch_similarity_action.setChecked(False)
-                return
-
-        self._deactivate_pca_map()
-        self.canvas.enablePatchSimilarityMode(self._request_patch_similarity)
-        self.statusBar().showMessage(
-            self.tr("Patch similarity active – click on the frame to query patches."),
-            5000,
-        )
-
-    def _deactivate_patch_similarity(self):
-        if hasattr(self, "patch_similarity_action"):
-            self.patch_similarity_action.setChecked(False)
-        if hasattr(self, "canvas") and self.canvas is not None:
-            self.canvas.disablePatchSimilarityMode()
-            self.canvas.setPatchSimilarityOverlay(None)
-
-    def _grab_current_frame_image(self):
-        if self.canvas.pixmap is None or self.canvas.pixmap.isNull():
-            return None
-        qimage = self.canvas.pixmap.toImage().convertToFormat(
-            QtGui.QImage.Format_RGBA8888)
-        ptr = qimage.bits()
-        ptr.setsize(qimage.sizeInBytes())
-        array = np.frombuffer(ptr, dtype=np.uint8).reshape(
-            (qimage.height(), qimage.width(), 4))
-        return Image.fromarray(array, mode="RGBA").convert("RGB")
-
-    def _request_patch_similarity(self, x: int, y: int) -> None:
-        if self.patch_similarity_service.is_busy():
-            self.statusBar().showMessage(
-                self.tr("Patch similarity is already running…"), 2000)
-            return
-
-        pil_image = self._grab_current_frame_image()
-        if pil_image is None:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Patch Similarity"),
-                self.tr("Failed to access the current frame."),
-            )
-            self._deactivate_patch_similarity()
-            return
-
-        self.canvas.setPatchSimilarityOverlay(None)
-        request = DinoPatchRequest(
-            image=pil_image,
-            click_xy=(int(x), int(y)),
-            model_name=self.patch_similarity_model,
-            short_side=768,
-            device=None,
-            alpha=float(self.patch_similarity_alpha),
-        )
-        if not self.patch_similarity_service.request(request):
-            self.statusBar().showMessage(
-                self.tr("Patch similarity is already running…"), 2000)
-
-    def _on_patch_similarity_started(self):
-        self.statusBar().showMessage(
-            self.tr("Computing patch similarity…"))
-
-    def _on_patch_similarity_finished(self, payload: dict) -> None:
-        overlay = payload.get("overlay_rgba")
-        self.canvas.setPatchSimilarityOverlay(overlay)
-        self.statusBar().showMessage(
-            self.tr("Patch similarity ready."),
-            4000,
-        )
-
-    def _on_patch_similarity_error(self, message: str) -> None:
-        self.canvas.setPatchSimilarityOverlay(None)
-        QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("Patch Similarity"),
-            message,
-        )
-        self._deactivate_patch_similarity()
-
-    def _open_patch_similarity_settings(self):
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle(self.tr("Patch Similarity Settings"))
-        layout = QtWidgets.QFormLayout(dialog)
-
-        model_combo = QtWidgets.QComboBox(dialog)
-        for cfg in PATCH_SIMILARITY_MODELS:
-            model_combo.addItem(cfg.display_name, cfg.identifier)
-
-        current_index = model_combo.findData(self.patch_similarity_model)
-        if current_index >= 0:
-            model_combo.setCurrentIndex(current_index)
-
-        alpha_spin = QtWidgets.QDoubleSpinBox(dialog)
-        alpha_spin.setRange(0.05, 1.0)
-        alpha_spin.setSingleStep(0.05)
-        alpha_spin.setValue(self.patch_similarity_alpha)
-
-        layout.addRow(self.tr("Model"), model_combo)
-        layout.addRow(self.tr("Overlay opacity"), alpha_spin)
-
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
-            parent=dialog,
-        )
-        layout.addRow(buttons)
-
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            self.patch_similarity_model = model_combo.currentData()
-            self.patch_similarity_alpha = alpha_spin.value()
-            self.settings.setValue(
-                "patch_similarity/model", self.patch_similarity_model)
-            self.settings.setValue(
-                "patch_similarity/alpha", self.patch_similarity_alpha)
-            self.statusBar().showMessage(
-                self.tr("Patch similarity model updated."),
-                3000,
-            )
+        self.dino_controller.toggle_patch_similarity(checked)
 
     # ------------------------------------------------------------------
     # PCA feature map (DINO) integration
     # ------------------------------------------------------------------
     def _toggle_pca_map_tool(self, checked=False):
-        state = bool(checked) if isinstance(
-            checked, bool) else self.pca_map_action.isChecked()
-        if not state:
-            self._deactivate_pca_map()
-            return
-
-        if self.canvas.pixmap is None or self.canvas.pixmap.isNull():
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("PCA Feature Map"),
-                self.tr(
-                    "Load an image or video frame before generating a PCA map."),
-            )
-            self.pca_map_action.setChecked(False)
-            return
-
-        if not self.pca_map_model:
-            self._open_pca_map_settings()
-            if not self.pca_map_model:
-                self.pca_map_action.setChecked(False)
-                return
-
-        self._request_pca_map()
+        self.dino_controller.toggle_pca_map(checked)
 
     def _deactivate_pca_map(self):
-        if hasattr(self, "pca_map_action"):
-            self.pca_map_action.setChecked(False)
-        if hasattr(self, "canvas") and self.canvas is not None:
-            self.canvas.setPCAMapOverlay(None)
+        self.dino_controller.deactivate_pca_map()
 
     def _request_pca_map(self) -> None:
-        if self.pca_map_service.is_busy():
-            self.statusBar().showMessage(
-                self.tr("PCA map is already running…"), 2000)
-            return
+        self.dino_controller.request_pca_map()
 
-        self.canvas.setPCAMapOverlay(None)
-        pil_image = self._grab_current_frame_image()
-        if pil_image is None:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("PCA Feature Map"),
-                self.tr("Failed to access the current frame."),
-            )
-            self._deactivate_pca_map()
-            return
+    def _open_patch_similarity_settings(self):
+        self.dino_controller.open_patch_similarity_settings()
 
-        mask_bool = None
-        selected_polygons = [
-            shape
-            for shape in getattr(self.canvas, "selectedShapes", [])
-            if getattr(shape, "shape_type", "") == "polygon" and len(shape.points) >= 3
-        ]
-        if selected_polygons:
-            mask_img = Image.new("L", pil_image.size, 0)
-            draw = ImageDraw.Draw(mask_img)
-            for polygon in selected_polygons:
-                coords = [(float(pt.x()), float(pt.y()))
-                          for pt in polygon.points]
-                draw.polygon(coords, fill=255)
-            mask_bool = np.array(mask_img) > 0
-
-        cluster_k = self.pca_map_clusters if getattr(
-            self, "pca_map_clusters", 0) > 1 else None
-        request = DinoPCARequest(
-            image=pil_image,
-            model_name=self.pca_map_model,
-            short_side=768,
-            device=None,
-            output_size="input",
-            components=3,
-            clip_percentile=1.0,
-            alpha=float(self.pca_map_alpha),
-            mask=mask_bool,
-            cluster_k=cluster_k,
-        )
-        if not self.pca_map_service.request(request):
-            self.statusBar().showMessage(
-                self.tr("PCA map is already running…"), 2000)
+    def _open_pca_map_settings(self):
+        self.dino_controller.open_pca_map_settings()
 
     def _on_pca_map_started(self):
         self.statusBar().showMessage(self.tr("Computing PCA feature map…"))
@@ -5082,77 +4241,6 @@ class AnnolidWindow(MainWindow):
 
     # --- Handler for Tracking Initiated by SegmentEditorDialog ---
 
-    # worker_instance, video_path_processed by dialog
-    @Slot(TrackingWorker, Path)
-    def _handle_tracking_initiated_by_dialog(self, worker_instance: TrackingWorker, video_path: Path):
-        if self.active_tracking_worker and self.active_tracking_worker.isRunning():
-            QtWidgets.QMessageBox.warning(
-                self, "Tracking Busy", "Another tracking job is already active. Please wait.")
-            # Stop the newly created worker if we can't handle it
-            worker_instance.stop()
-            worker_instance.wait(500)  # Give it a moment to stop
-            worker_instance.deleteLater()  # Schedule for deletion
-            return
-
-        logger.info(
-            f"AnnolidWindow: Tracking initiated by SegmentEditorDialog for {video_path.name}")
-        self.active_tracking_worker = worker_instance
-        self._connect_signals_to_active_worker(self.active_tracking_worker)
-        self._set_tracking_ui_state(is_tracking=True)
-        # Worker is already started by the dialog.
-
-    # Helper method for dialog to check (or internal check)
-    def is_tracking_busy(self) -> bool:
-        return bool(self.active_tracking_worker and self.active_tracking_worker.isRunning())
-
-    # --- Generic Signal Connection & Handling for the active_tracking_worker ---
-    def _connect_signals_to_active_worker(self, worker_instance: Optional[TrackingWorker]):
-        if not worker_instance:
-            logger.warning(
-                "Attempted to connect signals to a null worker instance.")
-            return
-
-        # Disconnect from any previous worker to avoid duplicate signal handling
-        # This logic needs to be robust if self.active_tracking_worker could be something else
-        # For now, assume only one active_tracking_worker at a time.
-        # Note: If the previous worker was already deleted or cleaned up, disconnect might raise error.
-        previous_worker = getattr(self, '_previous_connected_worker', None)
-        if previous_worker and previous_worker != worker_instance:
-            try:
-                previous_worker.progress.disconnect(
-                    self._update_main_status_progress)
-                previous_worker.finished.disconnect(
-                    self._on_tracking_job_finished)
-                previous_worker.error.disconnect(self._on_tracking_job_error)
-                if hasattr(previous_worker, 'video_job_started'):
-                    previous_worker.video_job_started.disconnect(
-                        self._handle_tracking_video_started_ui_update)
-                if hasattr(previous_worker, 'video_job_finished'):
-                    previous_worker.video_job_finished.disconnect(
-                        self._handle_tracking_video_finished_ui_update)
-                logger.debug(
-                    f"Disconnected signals from previous worker: {previous_worker.__class__.__name__}")
-            except (TypeError, RuntimeError) as e:
-                logger.debug(
-                    f"Error disconnecting signals from previous worker (might be okay): {e}")
-
-        self._previous_connected_worker = worker_instance  # Keep track for next disconnect
-
-        worker_instance.progress.connect(self._update_main_status_progress)
-        worker_instance.finished.connect(self._on_tracking_job_finished)
-        worker_instance.error.connect(self._on_tracking_job_error)
-
-        # video_job_started/finished are crucial for UI updates per video
-        if hasattr(worker_instance, 'video_job_started'):
-            worker_instance.video_job_started.connect(
-                self._handle_tracking_video_started_ui_update)
-        if hasattr(worker_instance, 'video_job_finished'):
-            worker_instance.video_job_finished.connect(
-                self._handle_tracking_video_finished_ui_update)
-
-        logger.info(
-            f"AnnolidWindow: Connected UI signals for worker: {worker_instance.__class__.__name__}")
-
     def _get_tracking_device(self) -> torch.device:  # Centralized device selection
         # More sophisticated logic could go here (e.g., user settings)
         if self.config.get('use_cpu_only', False):
@@ -5163,130 +4251,22 @@ class AnnolidWindow(MainWindow):
             return torch.device("mps")
         return torch.device("cpu")
 
-    # --- Slots for worker signals ---
-    @Slot(int, str)
-    def _update_main_status_progress(self, percentage: int, message: str):
-        self.statusBar().showMessage(f"{message} ({percentage}%)", 4000)
-
-    @Slot(str)
-    def _on_tracking_job_finished(self, completion_message: str):
-        QtWidgets.QMessageBox.information(
-            self, "Tracking Job Complete", completion_message)
-        self.statusBar().showMessage(completion_message, 5000)
-        self._set_tracking_ui_state(is_tracking=False)
-
-        worker_that_finished = self.sender()  # Get the worker that emitted the signal
-        if self.active_tracking_worker == worker_that_finished:
-            # Disconnect signals before clearing reference or deleting
-            try:
-                self.active_tracking_worker.progress.disconnect(
-                    self._update_main_status_progress)
-                self.active_tracking_worker.finished.disconnect(
-                    self._on_tracking_job_finished)
-                self.active_tracking_worker.error.disconnect(
-                    self._on_tracking_job_error)
-                if hasattr(self.active_tracking_worker, 'video_job_started'):
-                    self.active_tracking_worker.video_job_started.disconnect(
-                        self._handle_tracking_video_started_ui_update)
-                if hasattr(self.active_tracking_worker, 'video_job_finished'):
-                    self.active_tracking_worker.video_job_finished.disconnect(
-                        self._handle_tracking_video_finished_ui_update)
-            except (TypeError, RuntimeError):
-                logger.debug("Error disconnecting from finished worker.")
-
-            # If the worker's parent was None (dialog created it this way), schedule for deletion
-            if self.active_tracking_worker.parent() is None:
-                self.active_tracking_worker.deleteLater()
-                logger.info("Scheduled dialog-created worker for deletion.")
-            self.active_tracking_worker = None
-        elif worker_that_finished:  # Some other worker finished
-            worker_that_finished.deleteLater()  # If it's not the main one, clean it up too
-            logger.info(
-                f"An external worker ({worker_that_finished.__class__.__name__}) finished and was scheduled for deletion.")
-
-    @Slot(str)
-    def _on_tracking_job_error(self, error_message: str):
-        QtWidgets.QMessageBox.critical(
-            self, "Tracking Job Error", error_message)
-        self.statusBar().showMessage(
-            f"Error: {error_message}", 0)  # Persistent
-        self._set_tracking_ui_state(is_tracking=False)
-        worker_that_errored = self.sender()
-        if self.active_tracking_worker == worker_that_errored:
-            if self.active_tracking_worker.parent() is None:
-                self.active_tracking_worker.deleteLater()
-            self.active_tracking_worker = None
-        elif worker_that_errored:
-            worker_that_errored.deleteLater()
-
-    @Slot(str, str)
-    def _handle_tracking_video_started_ui_update(self, video_path_str: str, output_folder_str: str):
-        logger.info(
-            f"AnnolidWindow UI: Job started for video {video_path_str}")
-        if self.filename != video_path_str:  # If the worker is processing a video not currently on canvas
-            logger.info(
-                f"Worker started on {video_path_str}, but canvas shows {self.filename}. Opening programmatically.")
-            # This ensures the canvas shows what the worker is processing for marker updates
-            self.openVideo(from_video_list=True,
-                           video_path=video_path_str,
-                           programmatic_call=True)
-
-        # Now, self.filename should be video_path_str
-        if self.video_file == video_path_str:  # self.video_file is usually set by openVideo/loadFile
-            # self.video_results_folder is also set by openVideo/loadFile for labelme
-            # For consistency, let's ensure it matches output_folder_str or update it
-            expected_results_folder = Path(output_folder_str)
-            if self.video_results_folder != expected_results_folder:
-                logger.warning(
-                    f"Mismatch in video_results_folder. Expected: {expected_results_folder}, Have: {self.video_results_folder}. Forcing update.")
-                # Ensure watcher uses correct folder
-                self.video_results_folder = expected_results_folder
-
-            self._setup_prediction_folder_watcher(
-                str(output_folder_str))  # Start watching for JSONs
-            # self._initialize_progress_bar() # If you have a per-file progress bar in labelme
-        else:
-            logger.error(f"Critical: Mismatch after attempting to open video for tracking. "
-                         f"Current: {self.video_file}, Expected by worker: {video_path_str}.")
-
-    @Slot(str)
-    def _handle_tracking_video_finished_ui_update(self, video_path_str: str):
-        logger.info(
-            f"AnnolidWindow UI: Job finished for video {video_path_str}")
-        # Clean up UI specific to this video (e.g., marker watcher)
-        # Only finalize if this video_path_str matches what the watcher is currently on
-        current_watched_folder_path_str = ""
-        if self.prediction_progress_watcher and self.prediction_progress_watcher.directories():
-            current_watched_folder_path_str = self.prediction_progress_watcher.directories()[
-                0]
-
-        if Path(video_path_str).with_suffix('') == Path(current_watched_folder_path_str):
-            self._finalize_prediction_progress(
-                f"GUI finalized for {Path(video_path_str).name}.")
-        else:
-            logger.info(
-                f"GUI: Video {video_path_str} finished, but watcher was on {current_watched_folder_path_str} or not active for UI updates.")
-
-    def _set_tracking_ui_state(self, is_tracking: bool):
+    def set_tracking_ui_state(self, is_tracking: bool) -> None:
         self.open_segment_editor_action.setEnabled(
             not is_tracking and bool(self.video_file))
-        # Add other UI elements to disable/enable
-        # For example, file opening actions from labelme's self.actions
         if hasattr(self.actions, 'open'):
             self.actions.open.setEnabled(not is_tracking)
         if hasattr(self.actions, 'openDir'):
             self.actions.openDir.setEnabled(not is_tracking)
         if hasattr(self.actions, 'openVideo'):
-            self.actions.openVideo.setEnabled(
-                not is_tracking)  # Your main video open
-
-        # If VideoManagerWidget is present and has its own track all button
+            self.actions.openVideo.setEnabled(not is_tracking)
         if hasattr(self, 'video_manager_widget') and hasattr(self.video_manager_widget, 'track_all_button'):
             self.video_manager_widget.track_all_button.setEnabled(
                 not is_tracking)
-
         logger.info(
-            f"AnnolidWindow UI state for tracking: {'ACTIVE' if is_tracking else 'IDLE'}")
+            "AnnolidWindow UI state for tracking: %s",
+            "ACTIVE" if is_tracking else "IDLE",
+        )
 
     def coco(self):
         """
@@ -5504,93 +4484,14 @@ class AnnolidWindow(MainWindow):
         )
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--version", "-V",
-        action="store_true",
-        help="show version"
-    )
-    # config for the gui
-    parser.add_argument(
-        "--nodata",
-        dest="store_data",
-        action="store_false",
-        help="stop storing image data to JSON file",
-        default=argparse.SUPPRESS,
-    )
+def main(argv=None):
+    config, _, version_requested = parse_cli(argv)
+    if version_requested:
+        print(__version__)
+        return 0
 
-    parser.add_argument(
-        "--autosave",
-        dest="auto_save",
-        action="store_true",
-        help="auto save",
-        default=argparse.SUPPRESS,
-    )
-
-    parser.add_argument(
-        '--labels',
-        default=argparse.SUPPRESS,
-        help="comma separated list of labels or file containing labels"
-    )
-
-    parser.add_argument(
-        "--flags",
-        help="comma separated list of flags OR file containing flags",
-        default=argparse.SUPPRESS,
-    )
-
-    default_config_file = str(Path.home() / '.labelmerc')
-    parser.add_argument(
-        '--config',
-        dest="config",
-        default=default_config_file,
-        help=f"config file or yaml format string default {default_config_file}"
-    )
-
-    parser.add_argument(
-        "--keep-prev",
-        action="store_true",
-        help="keep annotation of previous frame",
-        default=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--epsilon",
-        type=float,
-        help="epsilon to find nearest vertex on canvas",
-        default=argparse.SUPPRESS,
-    )
-
-    args = parser.parse_args()
-
-    if hasattr(args, "flags"):
-        if os.path.isfile(args.flags):
-            with codecs.open(args.flags, "r", encoding="utf-8") as f:
-                args.flags = [line.strip() for line in f if line.strip()]
-        else:
-            args.flags = [line for line in args.flags.split(",") if line]
-
-    if hasattr(args, "labels"):
-        if Path(args.labels).is_file():
-            with codecs.open(args.labels,
-                             'r', encoding='utf-8'
-                             ) as f:
-                args.labels = [line.strip()
-                               for line in f if line.strip()
-                               ]
-        else:
-            args.labels = [
-                line for line in args.labels.split(',')
-                if line
-            ]
-
-    config_from_args = args.__dict__
-    config_from_args.pop("version")
-    config_file_or_yaml = config_from_args.pop("config")
-
-    config = get_config(config_file_or_yaml, config_from_args)
-
-    app = QtWidgets.QApplication(sys.argv)
+    qt_args = sys.argv if argv is None else [sys.argv[0], *argv]
+    app = create_qapp(qt_args)
 
     app.setApplicationName(__appname__)
     annolid_icon = QtGui.QIcon(
@@ -5601,8 +4502,8 @@ def main():
 
     win.show()
     win.raise_()
-    sys.exit(app.exec_())
+    return app.exec_()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
