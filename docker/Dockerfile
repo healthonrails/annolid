@@ -47,7 +47,6 @@ RUN pip install --user -e detectron2_repo
 RUN git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 RUN pip install --user -e annolid
 RUN pip install --user numpy==1.24.4
-RUN pip install --user decord==0.4.0
 RUN rm  -rf  /home/annoliduser/.local/lib/python3.11/site-packages/cv2/qt/plugins/*
 # Set a fixed model cache directory
 ENV FVCORE_CACHE="/tmp"

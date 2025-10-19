@@ -113,7 +113,7 @@ annolid
   cd segmentation/SAM/segment-anything-2
   pip install -e .
   ```
-- **FFmpeg** is recommended for format conversion and to satisfy the `decord>=0.4.0` dependency:
+- **FFmpeg** is recommended for format conversion and improved compatibility with OpenCV-based video I/O:
   ```bash
   conda install -c conda-forge ffmpeg
   ```
@@ -168,8 +168,8 @@ annolid
 [![Mouse behavior analysis with instance segmentation based deep learning networks](http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8)
 
 ## Troubleshooting
-- `ERROR: Could not find a version that satisfies the requirement decord>=0.4.0`  
-  Install FFmpeg via your package manager or `conda install -c conda-forge ffmpeg`.
+- Video playback errors (`OpenCV: FFMPEG: tag ...` or missing codecs):  
+  Install FFmpeg via your package manager or `conda install -c conda-forge ffmpeg` to extend codec support.
 - macOS Qt warning (`Class QCocoaPageLayoutDelegate is implemented in both ...`):  
   `conda install qtpy` resolves the conflict between OpenCV and PyQt.
 - If the GUI does not launch, confirm the correct environment is active and run `annolid --help` for CLI usage.

@@ -6,19 +6,10 @@ import cv2
 import numpy as np
 import random
 import subprocess
-from typing import Generator, List
+from typing import Generator, List, Optional
 from pathlib import Path
 from collections import deque
 from annolid.segmentation.maskrcnn import inference
-
-try:
-    import decord as de
-    from decord import bridge
-    bridge.set_bridge('native')
-    IS_DECORD_INSTALLED = True
-except ImportError:
-    IS_DECORD_INSTALLED = False
-    print("Decord is not installed.")
 
 
 def get_video_fps(video_path: str) -> float | None:
@@ -72,6 +63,51 @@ def get_video_fps(video_path: str) -> float | None:
         print(f"[get_video_fps] OpenCV fallback failed: {e}")
 
     return None
+
+
+def get_keyframe_timestamps(video_path: str) -> List[float]:
+    """
+    Retrieves presentation timestamps (in seconds) for keyframes using ffprobe.
+
+    Returns an empty list if ffprobe is unavailable or keyframe data cannot be
+    extracted.
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-skip_frame", "nokey",
+        "-show_frames",
+        "-show_entries", "frame=pkt_pts_time",
+        "-of", "csv=p=0",
+        video_path,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+    except FileNotFoundError:
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    timestamps: List[float] = []
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        if "," in value:
+            value = value.split(",")[-1]
+        try:
+            ts = float(value)
+        except ValueError:
+            continue
+        if ts >= 0:
+            timestamps.append(ts)
+
+    return timestamps
 
 
 def get_video_files(video_folder):
@@ -223,8 +259,34 @@ def key_frames(video_file=None,
                                      start_seconds,
                                      end_seconds)
 
-    vr = de.VideoReader(video_file)
-    key_idxs = vr.get_key_indices()
+    cap = cv2.VideoCapture(video_file)
+    if not cap.isOpened():
+        raise RuntimeError(f"Unable to open video file: {video_file}")
+
+    keyframe_times = get_keyframe_timestamps(video_file)
+
+    extraction_points: List[tuple[str, float]] = []
+    if keyframe_times:
+        # Use timestamps directly to minimize rounding errors.
+        seen_times = set()
+        for ts in keyframe_times:
+            rounded = round(ts, 6)
+            if rounded in seen_times:
+                continue
+            seen_times.add(rounded)
+            extraction_points.append(("time", ts))
+    else:
+        # Fallback: sample frames roughly every second based on FPS.
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        if total_frames <= 0:
+            extraction_points = [("index", 0)]
+        else:
+            step = max(int(round(fps)) or 1, 1)
+            indices = list(range(0, total_frames, step))
+            if indices[-1] != total_frames - 1:
+                indices.append(total_frames - 1)
+            extraction_points = [("index", idx) for idx in indices]
 
     video_name = Path(video_file).stem
     video_name = video_name.replace(' ', '_')
@@ -235,38 +297,68 @@ def key_frames(video_file=None,
     out_dir.mkdir(
         parents=True,
         exist_ok=True)
-    for ki in key_idxs:
-        frame = vr[ki].asnumpy()
+
+    saved_indices = set()
+
+    for mode, value in extraction_points:
+        if mode == "time":
+            cap.set(cv2.CAP_PROP_POS_MSEC, value * 1000.0)
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(value))
+
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
+
+        frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+        if frame_idx < 0:
+            frame_idx = int(value if mode == "index" else round(
+                value * (cap.get(cv2.CAP_PROP_FPS) or 0)))
+
+        if frame_idx in saved_indices:
+            continue
+        saved_indices.add(frame_idx)
+
         out_frame_file = out_dir / \
-            f"{(video_name).replace(' ','_')}_{ki:08}.png"
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        cv2.imwrite(str(out_frame_file), frame)
+            f"{(video_name).replace(' ','_')}_{frame_idx:08}.png"
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(str(out_frame_file), frame_rgb)
         print(f"Saved {str(out_frame_file)}")
+
+    cap.release()
+
     print(f"Please check your frames located at {out_dir}")
     return out_dir
 
 
 def video_loader(video_file=None):
+    """
+    Backward-compatible helper that returns a CV2Video instance.
+    """
+    if video_file is None:
+        return None
     if not Path(video_file).exists():
-        return
-    with open(video_file, 'rb') as f:
-        vr = de.VideoReader(f, ctx=de.cpu(0))
-    return vr
+        raise FileNotFoundError(f"Video file not found: {video_file}")
+    return CV2Video(video_file)
 
 
 class CV2Video:
     def __init__(self, video_file, use_decord=False):
         self.video_file = Path(video_file).resolve()
-        if IS_DECORD_INSTALLED:
-            self.reader = de.VideoReader(str(self.video_file))
-        else:
-            self.reader = None
-            self.cap = cv2.VideoCapture(str(self.video_file))
+        if not self.video_file.exists():
+            raise FileNotFoundError(f"Video file not found: {self.video_file}")
+        # `use_decord` is kept for backward compatibility with previous signature.
+        # The flag is ignored because OpenCV is now the only backend.
+        self.cap = cv2.VideoCapture(str(self.video_file))
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Unable to open video: {self.video_file}")
+        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
         self.current_frame_timestamp = None
         self.width = None
         self.height = None
         self.first_frame = None
         self.fps = None
+        self._last_frame_index: Optional[int] = None
 
     def get_first_frame(self):
         if self.first_frame is None:
@@ -284,27 +376,27 @@ class CV2Video:
         return self.height
 
     def get_fps(self):
-        if self.reader is not None:
-            self.fps = self.reader.get_avg_fps()
-        else:
+        if self.fps is None:
             self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         return self.fps
 
     def load_frame(self, frame_number):
-        if self.reader is not None:
-            frame = self.reader[frame_number].asnumpy()
-        else:
-            if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != frame_number:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-                self.current_frame_timestamp = self.cap.get(
-                    cv2.CAP_PROP_POS_MSEC)
-            ret, frame = self.cap.read()
+        if frame_number < 0 or frame_number >= self.total_frames():
+            raise KeyError(f"Frame index out of bounds: {frame_number}")
 
-            if not ret or frame is None:
-                raise KeyError(f"Cannot load frame number: {frame_number}")
+        expected_next = (
+            self._last_frame_index + 1 if self._last_frame_index is not None else None
+        )
+        if expected_next is None or frame_number != expected_next:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
-            # convert bgr to rgb
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        ret, frame = self.cap.read()
+        if not ret or frame is None:
+            raise KeyError(f"Cannot load frame number: {frame_number}")
+
+        self._last_frame_index = frame_number
+        self.current_frame_timestamp = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         return frame
 
@@ -312,10 +404,7 @@ class CV2Video:
         return self.current_frame_timestamp
 
     def total_frames(self):
-        if self.reader is not None:
-            return len(self.reader)
-        else:
-            return int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        return self.frame_count
 
     def get_frames_in_batches(self, start_frame: int,
                               end_frame: int,
@@ -368,6 +457,13 @@ class CV2Video:
             frames.append(self.load_frame(frame_number))
 
         return np.stack(frames)
+
+    def release(self):
+        if getattr(self, "cap", None) is not None and self.cap.isOpened():
+            self.cap.release()
+
+    def __del__(self):
+        self.release()
 
 
 def extract_frames(video_file='None',

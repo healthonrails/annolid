@@ -198,18 +198,28 @@ def process_video_and_save_tracking_results(video_file, mask_generator, model=No
     Returns:
         None
     """
-    import decord as de
     import pandas as pd
-    video_reader = de.VideoReader(video_file)
+    cap = cv2.VideoCapture(video_file)
+    if not cap.isOpened():
+        raise RuntimeError(f"Unable to open video file: {video_file}")
     tracking_results = []
     existing_masks = []
 
-    for key_index in video_reader.get_key_indices():
-        frame = video_reader[key_index].asnumpy()
-        masks = mask_generator.generate(frame)
+    frame_index = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        masks = mask_generator.generate(frame_rgb)
         tracking_results += convert_to_annolid_format(
-            key_index, masks, frame, model, existing_masks=existing_masks)
-        print(key_index)
+            frame_index, masks, frame_rgb, model, existing_masks=existing_masks
+        )
+        print(frame_index)
+        frame_index += 1
+
+    cap.release()
 
     dataframe = pd.DataFrame(tracking_results)
     output_file = f"{video_file.split('.')[0]}_mask_tracking_results_with_segmentation.csv"

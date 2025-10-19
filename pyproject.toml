@@ -54,9 +54,6 @@ dependencies = [
     'transformers>=4.45.1',
     'ultralytics>=8.3.34',
     "segment-anything @ git+https://github.com/SysCV/sam-hq.git",
-    # Environment-specific dependencies
-    "decord>=0.4.0; platform_system != 'Darwin'",
-    "eva-decord>=0.6.1; sys_platform == 'darwin'",
     "dataclasses>=0.6; python_version < '3.7'",
 ]
 

@@ -1,5 +1,5 @@
 import os
-from decord import VideoReader, cpu
+import cv2
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
 from PIL import Image
 import torch
@@ -73,33 +73,43 @@ def describe_image(image, max_new_tokens=200):
 
 
 def process_video(video_path, sample_rate=1):  # Reduced default sample rate for testing
-    try:
-        vr = VideoReader(video_path, ctx=cpu(0))
-    except Exception as e:
-        print(f"Error opening video: {e}. Please check the video path.")
-        return []  # Return an empty list if video opening fails
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Error opening video: unable to read {video_path}.")
+        return []
 
-    num_frames = len(vr)
+    num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     descriptions = []
     video_dir = os.path.splitext(video_path)[0]
 
-    for i in range(0, num_frames, sample_rate):
-        try:
+    frame_index = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-            frame = vr[i].asnumpy()
-            frame_shape = frame.shape
-            filename = construct_filename(
-                video_dir, i, extension='.json', padding=9)
-            pil_image = Image.fromarray(frame)
-            description = describe_image(pil_image)
-            save_caption(filename, frame_shape, description)
-            descriptions.append((i, description))
-            print(f"Frame {i}: {description}")
-
-        except Exception as e:  # Catch errors during processing, continue to next frame
-            print(f"Error processing frame {i}: {e}")
+        if sample_rate > 1 and (frame_index % sample_rate) != 0:
+            frame_index += 1
             continue
 
+        try:
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_shape = frame_rgb.shape
+            filename = construct_filename(
+                video_dir, frame_index, extension='.json', padding=9)
+            pil_image = Image.fromarray(frame_rgb)
+            description = describe_image(pil_image)
+            save_caption(filename, frame_shape, description)
+            descriptions.append((frame_index, description))
+            print(f"Frame {frame_index}: {description}")
+
+        except Exception as e:  # Catch errors during processing, continue to next frame
+            print(f"Error processing frame {frame_index}: {e}")
+
+        frame_index += 1
+
+    cap.release()
     return descriptions
 
 

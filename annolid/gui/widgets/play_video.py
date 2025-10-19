@@ -1,6 +1,6 @@
 import sys
 import time
-import decord as de
+import cv2
 import numpy as np
 from qtpy import QtGui
 from qtpy.QtWidgets import QWidget, QPushButton, QGroupBox
@@ -12,8 +12,7 @@ from qtpy.QtCore import QThread, Signal, Slot
 
 class VideoPlayerThread(QThread):
     """
-    Use decord to read video frames and
-
+    Use OpenCV to read video frames and feed them back to the GUI thread.
     """
 
     pixmap_updated_signal = Signal(np.ndarray)
@@ -25,27 +24,54 @@ class VideoPlayerThread(QThread):
         self.run_flag = True
         self.back_flag = False
         self.pause_flag = False
-        self.vr = de.VideoReader(self.video_url, ctx=de.cpu(0))
-        self.frame_numbers = range(len(self.vr))
+        self.cap = cv2.VideoCapture(self.video_url)
+        if not self.cap.isOpened():
+            raise ValueError(f"Unable to open video: {self.video_url}")
+        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        self.frame_idx = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) or 0
 
     def run(self):
-        de.bridge.set_bridge('native')
-        for fn in self.frame_numbers:
+        try:
+            while self.run_flag and self.cap.isOpened():
+                if self.back_flag:
+                    # jump back 10 frames while clamping to start
+                    self.frame_idx = max(self.frame_idx - 10, 0)
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_idx)
+                    self.back_flag = False
+
+                if self.pause_flag:
+                    time.sleep(0.1)
+                    continue
+
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
+
+                rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.pixmap_updated_signal.emit(rgb_img)
+
+                # Track frame index after read to keep UI in sync
+                self.frame_idx = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+
+                while self.pause_flag and self.run_flag:
+                    time.sleep(0.1)
+
             if not self.run_flag:
-                # faster when close the video player window
                 return
-            if self.back_flag:
-                if fn - 10 >= 0:
-                    fn = fn - 10
-                self.back_flag = False
-            rgb_img = self.vr[fn].asnumpy()
-            self.pixmap_updated_signal.emit(rgb_img)
-            while self.pause_flag:
-                time.sleep(1)
+        finally:
+            self._release()
 
     def stop(self):
         self.run_flag = False
+        self.pause_flag = False
+        self.back_flag = False
         self.wait()
+        self._release()
+
+    def _release(self):
+        if getattr(self, "cap", None) is not None and self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
 
 
 class VideoPlayerWindow(QWidget):

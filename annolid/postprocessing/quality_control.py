@@ -5,7 +5,6 @@ from annolid.annotation.masks import mask_to_polygons
 from annolid.gui.shape import Shape
 from pathlib import Path
 import cv2
-import decord as de
 import pycocotools.mask as mask_util
 import ast
 import PIL.Image
@@ -144,76 +143,63 @@ class TracksResults():
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
-        if key_frames is not None and key_frames:
-            with open(self.video_file, 'rb') as f:
-                self.vr = de.VideoReader(f)
-            de.bridge.set_bridge('native')
-            self.key_frame_inices = self.vr.get_key_indices()
-            for kf in self.key_frame_inices:
-                frame = self.vr[kf]
-                frame = frame.asnumpy()
-                frame_label_list = []
-                img_path = f"{output_dir}/{Path(self.video_file).stem}_{kf:09}.png"
-                PIL.Image.fromarray(frame).save(img_path)
-                df_cur = self.df[self.df.frame_number == kf]
-                for row in df_cur.to_dict(orient='records'):
-                    try:
-                        label_list = pred_dict_to_labelme(
-                            row,
-                            keypoint_area_threshold
-                        )
-                        # each row is a dict of the single instance prediction
-                        frame_label_list += label_list
-                        save_labels(img_path.replace(".png", ".json"),
-                                    img_path,
-                                    frame_label_list,
-                                    height,
-                                    width,
-                                    imageData=None,
-                                    save_image_to_json=False
+        unique_frames = sorted(self.df.frame_number.unique())
+        if not unique_frames:
+            yield 100, 'No detections available'
+            self.clean_up()
+            return
 
-                                    )
-                        yield (kf / num_frames) * 100 + 1, Path(img_path).stem + '.json'
-                    except ValueError:
-                        yield 0, 'No predictions'
-                        continue
-
+        if key_frames:
+            if skip_frames and skip_frames > 1:
+                selected_frames = set(unique_frames[::skip_frames])
+            else:
+                selected_frames = set(unique_frames)
         else:
-            frame_numbers = self.df.frame_number.unique()
-            for frame_number in frame_numbers:
-                if frame_number % skip_frames == 0:
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-                    ret, frame = self.cap.read()
-                    if ret:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        frame_label_list = []
-                        img_path = f"{output_dir}/{Path(self.video_file).stem}_{frame_number:09}.png"
-                        PIL.Image.fromarray(frame).save(img_path)
-                        df_cur = self.df[self.df.frame_number == frame_number]
-                        for row in df_cur.to_dict(orient='records'):
-                            try:
-                                label_list = pred_dict_to_labelme(
-                                    row,
-                                    keypoint_area_threshold
-                                )
-                                # each row is a dict of the single instance prediction
-                                frame_label_list += label_list
-                                save_labels(img_path.replace(".png", ".json"),
-                                            img_path,
-                                            frame_label_list,
-                                            height,
-                                            width,
-                                            imageData=None,
-                                            save_image_to_json=False
+            if skip_frames and skip_frames > 1:
+                selected_frames = {
+                    fn for fn in unique_frames if fn % skip_frames == 0}
+            else:
+                selected_frames = set(unique_frames)
 
-                                            )
-                                yield (frame_number / num_frames) * 100 + 1, Path(img_path).stem + '.json'
-                            except ValueError:
-                                yield 0, 'No predictions'
-                                continue
-                else:
-                    yield (frame_number / num_frames) * 100 + 1, 'Skipped'
-            yield 100, 'Done'
+        for frame_number in unique_frames:
+            progress = (frame_number / max(num_frames, 1)) * 100 + 1
+            if frame_number not in selected_frames:
+                yield progress, 'Skipped'
+                continue
+
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_number))
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                yield progress, 'Failed to decode frame'
+                continue
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_label_list = []
+            img_path = f"{output_dir}/{Path(self.video_file).stem}_{int(frame_number):09}.png"
+            PIL.Image.fromarray(frame).save(img_path)
+            df_cur = self.df[self.df.frame_number == frame_number]
+            for row in df_cur.to_dict(orient='records'):
+                try:
+                    label_list = pred_dict_to_labelme(
+                        row,
+                        keypoint_area_threshold
+                    )
+                    frame_label_list += label_list
+                    save_labels(img_path.replace(".png", ".json"),
+                                img_path,
+                                frame_label_list,
+                                height,
+                                width,
+                                imageData=None,
+                                save_image_to_json=False
+
+                                )
+                    yield progress, Path(img_path).stem + '.json'
+                except ValueError:
+                    yield 0, 'No predictions'
+                    continue
+
+        yield 100, 'Done'
 
         self.clean_up()
 
@@ -312,9 +298,9 @@ class TracksResults():
         for cidx, ci in cur_instances.iterrows():
             for oidx, oi in old_instances.iterrows():
                 if (ci['frame_number'] == oi['frame_number']
-                        and int(ci['cx']) == int(oi['cx'])
-                        and int(ci['cy']) == int(oi['cy'])
-                    ):
+                            and int(ci['cx']) == int(oi['cx'])
+                            and int(ci['cy']) == int(oi['cy'])
+                        ):
                     continue
                 dist = np.sqrt((ci['cx'] - oi['cx'])**2 +
                                (ci['cy']-oi['cy']) ** 2)

@@ -24,7 +24,7 @@ cd annolid
 pip install -e .
 ```
 ```{note}
-Note: If you encounter this error: `ERROR: Could not find a version that satisfies the requirement decord>=0.4.0`, try to install [ffmpeg](https://ffmpeg.org/) or you can install it in conda with `conda install -c conda-forge ffmpeg`, and then install [decord](https://github.com/dmlc/decord) from source.
+Install [ffmpeg](https://ffmpeg.org/) (for example with `conda install -c conda-forge ffmpeg`) to ensure OpenCV can decode a wide range of video formats during playback.
 ```
 
 ```{note}
