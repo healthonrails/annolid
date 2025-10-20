@@ -46,26 +46,29 @@ class BehaviorDataset(Dataset):
 
         self.video_files, self.all_annotations = self.load_annotations()
         if not self.video_files or not self.all_annotations:
-            raise ValueError("No video/annotation files found. Check paths and data.")
+            raise ValueError(
+                "No video/annotation files found. Check paths and data.")
 
         self.label_mapping = self.create_label_mapping()
         self.indices = self.create_split_indices(split, val_ratio, random_seed)
 
         if len(self.indices) == 0:
-            raise ValueError("No samples after split. Check split ratio and data.")
-
+            raise ValueError(
+                "No samples after split. Check split ratio and data.")
 
     def create_split_indices(self, split: str, val_ratio: float, random_seed: int) -> List[int]:
         """
         Splits dataset indices for training and validation using stratified sampling.
         """
         np.random.seed(random_seed)
-        all_indices = np.arange(sum(len(annotations) for annotations in self.all_annotations.values()))
+        all_indices = np.arange(sum(len(annotations)
+                                for annotations in self.all_annotations.values()))
         labels = []
         for video_file, annotations in self.all_annotations.items():
             for _, row in annotations.iterrows():
                 behavior = row.get("Behavior", "unlabeled")
-                labels.append(self.label_mapping.get(behavior, self.label_mapping["unlabeled"]))
+                labels.append(self.label_mapping.get(
+                    behavior, self.label_mapping["unlabeled"]))
 
         train_indices, val_indices = train_test_split(
             all_indices, test_size=val_ratio, stratify=labels, random_state=random_seed
@@ -76,7 +79,6 @@ class BehaviorDataset(Dataset):
     def get_num_classes(self) -> int:
         return len(self.label_mapping)
 
-
     def __len__(self) -> int:
         return len(self.indices)
 
@@ -86,21 +88,30 @@ class BehaviorDataset(Dataset):
         """
         index = self.indices[idx]
 
-        video_file, row_index, annotations = self.get_video_and_row_index(index)
+        video_file, row_index, annotations = self.get_video_and_row_index(
+            index)
 
-        video_path = video_file # Path is already complete 
+        video_path = video_file  # Path is already complete
         behavior = annotations.iloc[row_index].get("Behavior", "unlabeled")
-        label = self.label_mapping.get(behavior, self.label_mapping["unlabeled"])
+        label = self.label_mapping.get(
+            behavior, self.label_mapping["unlabeled"])
         frames = self.load_video_frames(video_path, row_index, annotations)
 
-
         if frames is None:
-           raise ValueError(f"Failed to load frames for video {video_path} at row {row_index}")  # Or handle differently
+            # Or handle differently
+            raise ValueError(
+                f"Failed to load frames for video {video_path} at row {row_index}")
 
-        if self.transform:
-            frames = torch.stack([self.transform(frame) for frame in frames])
+        processed_frames = []
+        for frame_tensor in frames:
+            if self.transform:
+                processed_frames.append(self.transform(frame_tensor))
+            else:
+                processed_frames.append(frame_tensor)
 
-        return frames, label, video_path
+        frames_tensor = torch.stack(processed_frames)
+
+        return frames_tensor, label, video_path
 
     def fetch_data(self, index: int) -> Optional[Tuple[torch.Tensor, int, str]]:
         try:
@@ -118,11 +129,16 @@ class BehaviorDataset(Dataset):
             if frames is None:
                 return None
 
-            if self.transform:
-                frames = torch.stack([self.transform(frame)
-                                     for frame in frames])
+            processed_frames = []
+            for frame_tensor in frames:
+                if self.transform:
+                    processed_frames.append(self.transform(frame_tensor))
+                else:
+                    processed_frames.append(frame_tensor)
 
-            return frames, label, video_path
+            frames_tensor = torch.stack(processed_frames)
+
+            return frames_tensor, label, video_path
         except Exception as e:
             logger.error(f"Error fetching item at index {index}: {e}")
             return None

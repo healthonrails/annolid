@@ -1,2 +1,6 @@
 from .classifier import BehaviorClassifier
-from .feature_extractors import ResNetFeatureExtractor, CLIPFeatureExtractor
+from .feature_extractors import (
+    CLIPFeatureExtractor,
+    Dinov3BehaviorFeatureExtractor,
+    ResNetFeatureExtractor,
+)

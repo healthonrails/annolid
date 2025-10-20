@@ -1,7 +1,9 @@
+import logging
+import math
+from typing import Optional
+
 import torch
 import torch.nn as nn
-import math
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +62,23 @@ class BehaviorClassifier(nn.Module):
 
     def __init__(self, feature_extractor: nn.Module, d_model: int = 768, nhead: int = 8,
                  num_layers: int = 6, dim_feedforward: int = 2048, dropout: float = 0.1,
-                 num_classes: int = 5):
+                 num_classes: int = 5, feature_dim: Optional[int] = None):
         super().__init__()
         self.feature_extractor = feature_extractor
+        inferred_dim = feature_dim or getattr(
+            feature_extractor, "feature_dim", None)
+        if inferred_dim is None:
+            raise ValueError(
+                "Unable to infer feature dimension. Specify `feature_dim` when constructing BehaviorClassifier."
+            )
+        self.feature_dim = inferred_dim
+        if d_model is None:
+            d_model = self.feature_dim
+
+        self.input_projection = (
+            nn.Linear(self.feature_dim,
+                      d_model) if self.feature_dim != d_model else nn.Identity()
+        )
         self.positional_encoding = PositionalEncoding(d_model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model, nhead, dim_feedforward, dropout, batch_first=True)
@@ -87,6 +103,7 @@ class BehaviorClassifier(nn.Module):
         # Reshape and transpose
         # (frames, batch_size, feature_dim)
         features = features.view(batch_size, frames, -1)
+        features = self.input_projection(features)
 
         features = self.positional_encoding(features)
         encoded_features = self.transformer_encoder(features)

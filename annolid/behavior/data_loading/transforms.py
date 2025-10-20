@@ -6,6 +6,16 @@ logger = logging.getLogger(__name__)
 IMG_SIZE = 224  # Default image size
 
 
+class IdentityTransform:
+    """Returns inputs unchanged. Useful when raw frames must be preserved."""
+
+    def __call__(self, image):
+        return image
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__ + "()"
+
+
 class ResizeCenterCropNormalize(transforms.Compose):
     """
     Resizes, center crops, and normalizes an image.
