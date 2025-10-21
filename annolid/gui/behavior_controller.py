@@ -5,6 +5,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from qtpy import QtGui
 
+from annolid.behavior.project_schema import ProjectSchema
 from annolid.behavior.event_utils import normalize_event_label
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 
@@ -415,6 +416,21 @@ class BehaviorController:
     def __init__(self, color_getter: Callable[[str], ColorType]) -> None:
         self.timeline = BehaviorTimeline()
         self.marks = BehaviorMarkManager(color_getter)
+        self._schema: Optional[ProjectSchema] = None
+        self._behavior_categories: Dict[str, str] = {}
+        self._subjects: Set[str] = set()
+
+    def configure_from_schema(self, schema: Optional[ProjectSchema]) -> None:
+        """Record known metadata from the project schema."""
+        self._schema = schema
+        self._behavior_categories = {}
+        self._subjects = set()
+        if schema is None:
+            return
+        self._subjects = {subj.name for subj in schema.subjects}
+        for behavior in schema.behaviors:
+            if behavior.category_id:
+                self._behavior_categories[behavior.code] = behavior.category_id
 
     @property
     def highlighted_mark(self) -> Optional[VideoSliderMark]:
@@ -532,6 +548,10 @@ class BehaviorController:
     @property
     def events_count(self) -> int:
         return self.timeline.events_count
+
+    @property
+    def schema(self) -> Optional[ProjectSchema]:
+        return self._schema
 
     def delete_event(self, key: Tuple[int, str, str]) -> Optional[BehaviorEvent]:
         event = self.timeline.remove_event(key)

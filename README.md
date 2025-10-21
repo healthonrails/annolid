@@ -128,9 +128,12 @@ annolid
   ```bash
   annolid --labels=/path/to/labels_custom.txt
   ```
-- Summarise annotated behavior events into a time-budget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins):
+- Summarise annotated behavior events into a time-budget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins and a project schema):
   ```bash
-  python -m annolid.behavior.time_budget exported_events.csv --bin-size 60 -o time_budget.csv
+  python -m annolid.behavior.time_budget exported_events.csv \
+      --schema project.annolid.json \
+      --bin-size 60 \
+      -o time_budget.csv
   ```
 - Compress videos when storage is limited:
   ```bash

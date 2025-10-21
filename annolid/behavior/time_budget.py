@@ -18,6 +18,7 @@ import math
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from annolid.behavior.event_utils import normalize_event_label
+from annolid.behavior.project_schema import ProjectSchema, load_schema as load_project_schema
 
 __all__ = [
     "BehaviorInterval",
@@ -219,6 +220,32 @@ def compute_time_budget(rows: Iterable[Dict[str, object]]) -> Tuple[List[TimeBud
     return summary, warnings
 
 
+def summarize_by_category(rows: Iterable[TimeBudgetRow], schema: ProjectSchema) -> List[Tuple[str, float, int]]:
+    """Aggregate time-budget rows by category using the provided schema."""
+    category_map = schema.category_map()
+    behavior_map = schema.behavior_map()
+    totals: Dict[str, Tuple[float, int]] = {}
+
+    for row in rows:
+        behavior = behavior_map.get(row.behavior)
+        category_id = behavior.category_id if behavior else None
+        if category_id is None:
+            category_id = "uncategorized"
+        total_duration, occurrences = totals.get(category_id, (0.0, 0))
+        totals[category_id] = (total_duration + row.total_duration, occurrences + row.occurrences)
+
+    summary: List[Tuple[str, float, int]] = []
+    for category_id, (total_duration, occurrences) in totals.items():
+        if category_id == "uncategorized":
+            name = "Uncategorized"
+        else:
+            category = category_map.get(category_id)
+            name = category.name if category else category_id
+        summary.append((name, total_duration, occurrences))
+    summary.sort(key=lambda item: item[0].lower())
+    return summary
+
+
 def compute_binned_time_budget(intervals: Iterable[BehaviorInterval], bin_size: float) -> List[BinnedTimeBudgetRow]:
     """Compute per-bin durations for each subject/behavior."""
 
@@ -269,10 +296,11 @@ def compute_binned_time_budget(intervals: Iterable[BehaviorInterval], bin_size: 
     return rows
 
 
-def format_time_budget_table(rows: Sequence[TimeBudgetRow]) -> str:
+def format_time_budget_table(rows: Sequence[TimeBudgetRow], schema: Optional[ProjectSchema] = None) -> str:
     if not rows:
         return "No completed behavior intervals were found."
 
+    include_category = schema is not None
     headers = [
         "Subject",
         "Behavior",
@@ -284,6 +312,12 @@ def format_time_budget_table(rows: Sequence[TimeBudgetRow]) -> str:
         "Max (s)",
         "% Session",
     ]
+    if include_category:
+        headers.insert(2, "Category")
+
+    behavior_map = schema.behavior_map() if schema else {}
+    category_map = schema.category_map() if schema else {}
+
     str_rows: List[List[str]] = [
         [
             row.subject,
@@ -298,6 +332,15 @@ def format_time_budget_table(rows: Sequence[TimeBudgetRow]) -> str:
         ]
         for row in rows
     ]
+
+    if include_category:
+        for row, formatted in zip(rows, str_rows):
+            behavior = behavior_map.get(row.behavior)
+            category_name = None
+            if behavior and behavior.category_id:
+                category = category_map.get(behavior.category_id)
+                category_name = category.name if category else behavior.category_id
+            formatted.insert(2, category_name or "—")
 
     col_widths = [len(header) for header in headers]
     for r in str_rows:
@@ -315,7 +358,6 @@ def format_time_budget_table(rows: Sequence[TimeBudgetRow]) -> str:
 def format_binned_time_budget_table(rows: Sequence[BinnedTimeBudgetRow]) -> str:
     if not rows:
         return "No activity fell within the requested time bins."
-
     headers = [
         "Subject",
         "Behavior",
@@ -347,36 +389,67 @@ def format_binned_time_budget_table(rows: Sequence[BinnedTimeBudgetRow]) -> str:
     return "\n".join(lines)
 
 
-def write_time_budget_csv(rows: Sequence[TimeBudgetRow], path: Path) -> None:
+def format_category_summary(rows: Sequence[Tuple[str, float, int]]) -> str:
+    if not rows:
+        return "No category assignments were found."
+    headers = ["Category", "Total (s)", "Occurrences"]
+    str_rows = [
+        [name, f"{total:.2f}", str(occurrences)]
+        for name, total, occurrences in rows
+    ]
+    col_widths = [len(header) for header in headers]
+    for r in str_rows:
+        for idx, value in enumerate(r):
+            col_widths[idx] = max(col_widths[idx], len(value))
+
+    def fmt_row(values: Sequence[str]) -> str:
+        return "  ".join(value.ljust(col_widths[idx]) for idx, value in enumerate(values))
+
+    lines = [fmt_row(headers), fmt_row(["-" * len(h) for h in headers])]
+    lines.extend(fmt_row(r) for r in str_rows)
+    return "\n".join(lines)
+
+
+def write_time_budget_csv(rows: Sequence[TimeBudgetRow], path: Path, schema: Optional[ProjectSchema] = None) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "Subject",
-                "Behavior",
-                "Occurrences",
-                "TotalSeconds",
-                "MeanSeconds",
-                "MedianSeconds",
-                "MinSeconds",
-                "MaxSeconds",
-                "PercentOfSession",
-            ]
-        )
+        headers = [
+            "Subject",
+            "Behavior",
+            "Occurrences",
+            "TotalSeconds",
+            "MeanSeconds",
+            "MedianSeconds",
+            "MinSeconds",
+            "MaxSeconds",
+            "PercentOfSession",
+        ]
+        include_category = schema is not None
+        behavior_map = schema.behavior_map() if schema else {}
+        category_map = schema.category_map() if schema else {}
+        if include_category:
+            headers.insert(2, "Category")
+        writer.writerow(headers)
         for row in rows:
-            writer.writerow(
-                [
-                    row.subject,
-                    row.behavior,
-                    row.occurrences,
-                    f"{row.total_duration:.6f}",
-                    f"{row.mean_duration:.6f}",
-                    f"{row.median_duration:.6f}",
-                    f"{row.min_duration:.6f}",
-                    f"{row.max_duration:.6f}",
-                    f"{row.percent_of_session:.6f}",
-                ]
-            )
+            item = [
+                row.subject,
+                row.behavior,
+                row.occurrences,
+                f"{row.total_duration:.6f}",
+                f"{row.mean_duration:.6f}",
+                f"{row.median_duration:.6f}",
+                f"{row.min_duration:.6f}",
+                f"{row.max_duration:.6f}",
+                f"{row.percent_of_session:.6f}",
+            ]
+            if include_category:
+                behavior = behavior_map.get(row.behavior)
+                category_name = None
+                if behavior and behavior.category_id:
+                    category = category_map.get(behavior.category_id)
+                    category_name = category.name if category else behavior.category_id
+                item.insert(2, category_name or "")
+            writer.writerow(item)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -404,6 +477,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         help="Optional bin width (in seconds) for a secondary time-budget table.",
     )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        help="Optional project schema file used to enrich summaries (JSON or YAML).",
+    )
     return parser
 
 
@@ -420,6 +498,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except OSError as exc:
         raise TimeBudgetComputationError(
             f"Failed to read events file: {exc}") from exc
+
+    schema: Optional[ProjectSchema] = None
+    if args.schema is not None:
+        if not args.schema.exists():
+            parser.error(f"Schema file not found: {args.schema}")
+            return 2
+        try:
+            schema = load_project_schema(args.schema)
+        except Exception as exc:
+            parser.error(f"Failed to load schema {args.schema}: {exc}")
+            return 2
 
     summary = summarize_intervals(intervals)
 
@@ -440,9 +529,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     if args.output:
-        write_time_budget_csv(summary, args.output)
+        write_time_budget_csv(summary, args.output, schema=schema)
     else:
-        print(format_time_budget_table(summary))
+        print(format_time_budget_table(summary, schema=schema))
+
+    if schema is not None and summary:
+        category_summary = summarize_by_category(summary, schema)
+        if args.output:
+            category_path = args.output.with_name(
+                args.output.stem + "_categories" + args.output.suffix
+            )
+            with category_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["Category", "TotalSeconds", "Occurrences"])
+                for name, total, occurrences in category_summary:
+                    writer.writerow([name, f"{total:.6f}", occurrences])
+        else:
+            print()
+            print("Category Summary")
+            print(format_category_summary(category_summary))
 
     if binned_rows is not None:
         if not args.output:

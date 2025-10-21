@@ -1,0 +1,148 @@
+{
+  "version": "1.0",
+  "categories": [
+    {
+      "id": "social_contact",
+      "name": "Social Contact",
+      "color": "#1976D2",
+      "description": "Behaviors that involve direct physical interaction between animals."
+    },
+    {
+      "id": "approach_withdrawal",
+      "name": "Approach / Withdrawal",
+      "color": "#7B1FA2",
+      "description": "Transitions that change proximity to the social partner."
+    },
+    {
+      "id": "exploration_vertical",
+      "name": "Vertical Exploration",
+      "color": "#388E3C",
+      "description": "Exploratory or investigative behaviors directed away from the partner."
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "initiator_subject",
+      "name": "Focal Initiated",
+      "description": "The focal (annotated) subject initiated the action."
+    },
+    {
+      "id": "partner_initiated",
+      "name": "Partner Initiated",
+      "description": "The stimulus or partner animal initiated the action."
+    },
+    {
+      "id": "sustained",
+      "name": "Sustained",
+      "description": "Behavior lasted longer than the typical duration (mark when >3s)."
+    }
+  ],
+  "subjects": [
+    {
+      "id": "subject_1",
+      "name": "Subject 1",
+      "description": "Focal CaMKII mouse"
+    },
+    {
+      "id": "stimulus_mouse",
+      "name": "Stimulus Mouse",
+      "description": "Partner encountered during social assay"
+    }
+  ],
+  "behaviors": [
+    {
+      "code": "Approach",
+      "name": "Approach",
+      "description": "Focal animal moves toward the stimulus partner.",
+      "category_id": "approach_withdrawal",
+      "modifier_ids": [
+        "initiator_subject"
+      ],
+      "key_binding": "A",
+      "is_state": true
+    },
+    {
+      "code": "Withdrawal",
+      "name": "Withdrawal",
+      "description": "Focal animal increases distance from the stimulus partner.",
+      "category_id": "approach_withdrawal",
+      "modifier_ids": [
+        "initiator_subject"
+      ],
+      "key_binding": "Shift+A",
+      "is_state": true
+    },
+    {
+      "code": "FP Mouse Sniffing Excretions",
+      "name": "Sniffing Excretions",
+      "description": "Focal mouse sniffs excretions of the stimulus mouse.",
+      "category_id": "social_contact",
+      "modifier_ids": [
+        "initiator_subject",
+        "sustained"
+      ],
+      "key_binding": "S",
+      "is_state": true
+    },
+    {
+      "code": "Stimulus Mouse Sniffing FP Mouse",
+      "name": "Stimulus Sniffs Focal",
+      "description": "Stimulus mouse investigates the focal mouse.",
+      "category_id": "social_contact",
+      "modifier_ids": [
+        "partner_initiated",
+        "sustained"
+      ],
+      "key_binding": "Shift+S",
+      "is_state": true
+    },
+    {
+      "code": "Nose-to-Nose Sniffing",
+      "name": "Nose-to-Nose Sniffing",
+      "description": "Focal mouse engages in nose-to-nose sniffing.",
+      "category_id": "social_contact",
+      "modifier_ids": [
+        "initiator_subject",
+        "partner_initiated",
+        "sustained"
+      ],
+      "key_binding": "N",
+      "is_state": true
+    },
+    {
+      "code": "Nose-to-Flank Sniffing",
+      "name": "Nose-to-Flank Sniffing",
+      "description": "Focal mouse sniffs the flank of the stimulus partner.",
+      "category_id": "social_contact",
+      "modifier_ids": [
+        "initiator_subject",
+        "sustained"
+      ],
+      "key_binding": "F",
+      "is_state": true
+    },
+    {
+      "code": "Nose-to-Anogenital Sniffing",
+      "name": "Nose-to-Anogenital Sniffing",
+      "description": "Focal mouse sniffs the anogenital region of the partner.",
+      "category_id": "social_contact",
+      "modifier_ids": [
+        "initiator_subject",
+        "sustained"
+      ],
+      "key_binding": "G",
+      "is_state": true
+    },
+    {
+      "code": "Rearing",
+      "name": "Rearing",
+      "description": "Focal mouse rears up; vertical exploration event.",
+      "category_id": "exploration_vertical",
+      "modifier_ids": [
+        "sustained"
+      ],
+      "key_binding": "R",
+      "is_state": true
+    }
+  ]
+}

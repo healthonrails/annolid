@@ -139,6 +139,12 @@ class MenuController:
                 "tip": w.tr("Summarise recorded behavior events"),
             },
             {
+                "name": "project_schema",
+                "text": w.tr("Project &Schema"),
+                "slot": w.open_project_schema_dialog,
+                "tip": w.tr("Edit categories, modifiers, and behaviors"),
+            },
+            {
                 "name": "convert_csv",
                 "text": w.tr("&Save CSV"),
                 "slot": w.convert_labelme_json_to_csv,
@@ -396,6 +402,7 @@ class MenuController:
         utils.addActions(w.menus.file, (actions["downsample_video"],))
         utils.addActions(w.menus.file, (actions["tracking_reports"],))
         utils.addActions(w.menus.file, (actions["behavior_time_budget"],))
+        utils.addActions(w.menus.file, (actions["project_schema"],))
         w.menus.file.addSeparator()
         utils.addActions(w.menus.file, (actions["convert_csv"],))
         utils.addActions(w.menus.file, (actions["extract_shape_keypoints"],))

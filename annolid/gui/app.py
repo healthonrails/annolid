@@ -57,12 +57,24 @@ from annolid.gui.label_file import LabelFile
 from annolid.gui.widgets.canvas import Canvas
 from annolid.annotation import labelme2coco
 from annolid.data import videos
+from annolid.behavior.project_schema import (
+    DEFAULT_SCHEMA_FILENAME,
+    ProjectSchema,
+    default_schema,
+    find_schema_near_video,
+    save_schema as save_project_schema,
+    load_schema as load_project_schema,
+    validate_schema as validate_project_schema,
+)
 from annolid.behavior.time_budget import (
     compute_time_budget,
+    format_category_summary,
     format_time_budget_table,
-    write_time_budget_csv,
+    summarize_by_category,
     TimeBudgetComputationError,
+    write_time_budget_csv,
 )
+from annolid.gui.widgets.project_dialog import ProjectDialog
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
 from annolid.gui.widgets import TrainModelDialog
@@ -100,7 +112,7 @@ from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 import contextlib
 import socket
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.gui.dino_patch_service import (
     DinoPatchRequest,
@@ -132,6 +144,22 @@ __version__ = "1.2.2"
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
+
+
+def _hex_to_rgb(color: str) -> Optional[Tuple[int, int, int]]:
+    color = color.strip()
+    if not color.startswith("#"):
+        return None
+    hex_value = color[1:]
+    if len(hex_value) == 6:
+        try:
+            r = int(hex_value[0:2], 16)
+            g = int(hex_value[2:4], 16)
+            b = int(hex_value[4:6], 16)
+            return (r, g, b)
+        except ValueError:
+            return None
+    return None
 
 
 class AnnolidWindow(MainWindow):
@@ -225,6 +253,9 @@ class AnnolidWindow(MainWindow):
         self.event_type = None
         self._time_stamp = ''
         self.behavior_controller = BehaviorController(self._get_rgb_by_label)
+        self.project_schema: Optional[ProjectSchema] = None
+        self.project_schema_path: Optional[Path] = None
+        self.behavior_controller.configure_from_schema(self.project_schema)
         self.annotation_dir = None
         self.step_size = 5
         self.stepSizeWidget = StepSizeWidget(5)
@@ -1401,6 +1432,21 @@ class AnnolidWindow(MainWindow):
         an optional shift offset. Otherwise, if manual mapping is provided use that mapping;
         if neither is available, fall back to a default shape color.
         """
+        schema = getattr(self, "project_schema", None)
+        if schema is not None:
+            behavior = schema.behavior_map().get(label)
+            if behavior is None:
+                behavior = next(
+                    (beh for beh in schema.behaviors if beh.name.lower() == label.lower()),
+                    None,
+                )
+            if behavior is not None and behavior.category_id:
+                category = schema.category_map().get(behavior.category_id)
+                if category and category.color:
+                    rgb = _hex_to_rgb(category.color)
+                    if rgb is not None:
+                        return rgb
+
         config = self._config
         if config.get("shape_color") == "auto":
             # Normalize label (strip whitespace and lowercase)
@@ -3061,22 +3107,35 @@ class AnnolidWindow(MainWindow):
         # Fallback to NTSC-like default if FPS is not known
         return frame_number / 29.97 if frame_number is not None else None
 
-    def record_behavior_event(self,
-                              behavior: str,
-                              event_label: str,
-                              frame_number: Optional[int] = None,
-                              timestamp: Optional[float] = None,
-                              trial_time: Optional[float] = None,
-                              subject: Optional[str] = None,
-                              highlight: bool = True) -> Optional[BehaviorEvent]:
+    def record_behavior_event(
+        self,
+        behavior: str,
+        event_label: str,
+        frame_number: Optional[int] = None,
+        timestamp: Optional[float] = None,
+        trial_time: Optional[float] = None,
+        subject: Optional[str] = None,
+        modifiers: Optional[Iterable[str]] = None,
+        highlight: bool = True,
+    ) -> Optional[BehaviorEvent]:
         if frame_number is None:
             frame_number = self.frame_number
         if timestamp is None:
             timestamp = self._estimate_recording_time(frame_number)
         if trial_time is None:
             trial_time = timestamp
+
+        auto_subject = False
         if subject is None:
-            subject = "Subject 1"
+            subject = self._subject_from_selected_shape()
+            auto_subject = subject is not None
+        if subject is None:
+            subject = self._current_subject_name()
+
+        if modifiers is None:
+            modifiers = self._selected_modifiers_for_behavior(behavior)
+        if not modifiers:
+            modifiers = self._default_modifiers_for_behavior(behavior)
 
         event = self.behavior_controller.record_event(
             behavior,
@@ -3085,6 +3144,7 @@ class AnnolidWindow(MainWindow):
             timestamp=timestamp,
             trial_time=trial_time,
             subject=subject,
+            modifiers=modifiers,
             highlight=highlight,
         )
         if event is None:
@@ -3094,10 +3154,69 @@ class AnnolidWindow(MainWindow):
                 behavior,
             )
             return None
+
+        if auto_subject:
+            self.statusBar().showMessage(
+                self.tr(
+                    "Auto-selected subject '%s' from polygon selection") % subject,
+                2500,
+            )
+
         self.pinned_flags.setdefault(behavior, False)
         fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
         self.behavior_log_widget.append_event(event, fps=fps_for_log)
         return event
+
+    def _populate_behavior_controls_from_schema(
+        self, schema: Optional[ProjectSchema]
+    ) -> None:
+        # Placeholder for richer UI (subject dropdown, modifier checkboxes).
+        # For now, nothing is required because the auto-subject and default modifier
+        # logic runs directly from the schema when recording events.
+        return
+
+    def _update_modifier_controls_for_behavior(self, behavior: Optional[str]) -> None:
+        # Placeholder hook to keep interface parity with future UI upgrades.
+        return
+
+    def _subject_from_selected_shape(self) -> Optional[str]:
+        selected = getattr(self.canvas, "selectedShapes", None)
+        if not selected:
+            return None
+        label = selected[0].label
+        if not label:
+            return None
+        label_name = str(label).strip()
+        if not label_name:
+            return None
+        if self.project_schema:
+            candidates = {
+                subj.name: subj.name for subj in self.project_schema.subjects}
+            candidates.update(
+                {subj.id: subj.name or subj.id for subj in self.project_schema.subjects})
+            lowered = {key.lower(): value for key, value in candidates.items()}
+            match = lowered.get(label_name.lower())
+            if match:
+                return match
+        return label_name
+
+    def _current_subject_name(self) -> str:
+        if self.project_schema and self.project_schema.subjects:
+            subject = self.project_schema.subjects[0]
+            return subject.name or subject.id or "Subject 1"
+        return "Subject 1"
+
+    def _selected_modifiers_for_behavior(self, behavior: Optional[str]) -> List[str]:
+        # Placeholder for future UI-based modifier selection.
+        return []
+
+    def _default_modifiers_for_behavior(self, behavior: Optional[str]) -> List[str]:
+        if not behavior or not self.project_schema:
+            return []
+        behavior_def = self.project_schema.behavior_map().get(behavior)
+        if behavior_def and behavior_def.modifier_ids:
+            return list(behavior_def.modifier_ids)
+        return []
 
     def _jump_to_frame_from_log(self, frame: int) -> None:
         if self.seekbar is None or self.num_frames is None:
@@ -3334,6 +3453,15 @@ class AnnolidWindow(MainWindow):
             return
 
         warnings: List[str] = local_warnings + compute_warnings
+        schema_for_dialog = self.project_schema
+        category_summary: List[Tuple[str, float, int]] = []
+        if schema_for_dialog is not None and summary:
+            try:
+                category_summary = summarize_by_category(
+                    summary, schema_for_dialog)
+            except Exception as exc:
+                logger.warning("Failed to summarize categories: %s", exc)
+                category_summary = []
 
         if not summary:
             message = self.tr(
@@ -3349,7 +3477,8 @@ class AnnolidWindow(MainWindow):
             )
             return
 
-        report_text = format_time_budget_table(summary)
+        report_text = format_time_budget_table(
+            summary, schema=schema_for_dialog)
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(self.tr("Behavior Time Budget"))
@@ -3376,6 +3505,19 @@ class AnnolidWindow(MainWindow):
             warning_view.setStyleSheet("background-color: #fff4e5;")
             layout.addWidget(warning_view)
 
+        if schema_for_dialog is not None and category_summary:
+            category_label = QtWidgets.QLabel(self.tr("Category Summary:"))
+            category_label.setStyleSheet("font-weight: bold;")
+            layout.addWidget(category_label)
+            category_view = QtWidgets.QPlainTextEdit()
+            category_view.setReadOnly(True)
+            category_view.setFont(QtGui.QFontDatabase.systemFont(
+                QtGui.QFontDatabase.FixedFont))
+            category_view.setPlainText(
+                format_category_summary(category_summary))
+            category_view.setMaximumHeight(160)
+            layout.addWidget(category_view)
+
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Close)
         button_box.rejected.connect(dialog.reject)
@@ -3396,7 +3538,20 @@ class AnnolidWindow(MainWindow):
             if not path_str:
                 return
             try:
-                write_time_budget_csv(summary, Path(path_str))
+                output_path = Path(path_str)
+                write_time_budget_csv(
+                    summary, output_path, schema=schema_for_dialog)
+                if schema_for_dialog is not None and category_summary:
+                    category_path = output_path.with_name(
+                        output_path.stem + "_categories" + output_path.suffix
+                    )
+                    with category_path.open("w", newline="", encoding="utf-8") as handle:
+                        writer = csv.writer(handle)
+                        writer.writerow(
+                            ["Category", "TotalSeconds", "Occurrences"])
+                        for name, total, occurrences in category_summary:
+                            writer.writerow(
+                                [name, f"{total:.6f}", occurrences])
             except OSError as exc:
                 QtWidgets.QMessageBox.critical(
                     self,
@@ -3513,6 +3668,37 @@ class AnnolidWindow(MainWindow):
 
         self.loadShapes(shapes)
 
+    def _configure_project_schema_for_video(self, video_path: str) -> None:
+        """Load optional project schema metadata located near the video."""
+        schema_path = find_schema_near_video(Path(video_path))
+        schema: Optional[ProjectSchema] = None
+        if schema_path:
+            try:
+                schema = load_project_schema(schema_path)
+                warnings = validate_project_schema(schema)
+                for warning in warnings:
+                    logger.warning("Schema warning (%s): %s",
+                                   schema_path.name, warning)
+            except Exception as exc:
+                logger.error("Failed to load project schema %s: %s",
+                             schema_path, exc)
+        if schema_path:
+            self.project_schema_path = schema_path
+        else:
+            default_path = Path(video_path).with_suffix(
+                "") / DEFAULT_SCHEMA_FILENAME
+            self.project_schema_path = default_path
+        if schema is None:
+            logger.debug(
+                "No project schema found near %s; using default configuration.",
+                video_path,
+            )
+            schema = default_schema()
+        self.project_schema = schema
+        self.behavior_controller.configure_from_schema(schema)
+        self._populate_behavior_controls_from_schema(schema)
+        self._update_modifier_controls_for_behavior(self.event_type)
+
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Load behavior events from CSV and populate the slider timeline.
 
@@ -3583,6 +3769,48 @@ class AnnolidWindow(MainWindow):
         )
         self.pinned_flags.update(
             {behavior: False for behavior in self.behavior_controller.behavior_names})
+
+    def open_project_schema_dialog(self) -> None:
+        """Open the schema editor dialog and persist changes."""
+        schema = self.project_schema or default_schema()
+        dialog = ProjectDialog(schema, parent=self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            new_schema = dialog.get_schema()
+            self.project_schema = new_schema
+            self.behavior_controller.configure_from_schema(new_schema)
+            self._populate_behavior_controls_from_schema(new_schema)
+            self._update_modifier_controls_for_behavior(self.event_type)
+
+            target_path = self.project_schema_path
+            if target_path is None:
+                default_dir = Path(self.video_file).with_suffix(
+                    "") if self.video_file else Path.cwd()
+                default_dir.mkdir(parents=True, exist_ok=True)
+                default_path = default_dir / DEFAULT_SCHEMA_FILENAME
+                path_str, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    self,
+                    self.tr("Save Project Schema"),
+                    str(default_path),
+                    self.tr("Schema Files (*.json *.yaml *.yml)"),
+                )
+                if not path_str:
+                    return
+                target_path = Path(path_str)
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                save_project_schema(new_schema, target_path)
+                self.project_schema_path = target_path
+            except OSError as exc:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    self.tr("Project Schema"),
+                    self.tr("Failed to save schema:\n%s") % exc,
+                )
+            else:
+                self.statusBar().showMessage(
+                    self.tr("Project schema saved to %s") % target_path.name,
+                    4000,
+                )
 
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
@@ -3661,6 +3889,7 @@ class AnnolidWindow(MainWindow):
                 self.video_file = None
                 self.video_loader = None
                 return
+            self._configure_project_schema_for_video(video_filename)
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
             self.behavior_log_widget.set_fps(self.fps)
