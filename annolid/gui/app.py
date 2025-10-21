@@ -234,6 +234,8 @@ class AnnolidWindow(MainWindow):
         self._df_deeplabcut_columns = None
         self._df_deeplabcut_bodyparts = None
         self._df_deeplabcut_animal_ids = None
+        self._df_deeplabcut_multi_animal = False
+        self._df_deeplabcut_multi_animal = False
         self.label_stats = {}
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
@@ -3604,7 +3606,11 @@ class AnnolidWindow(MainWindow):
         """Checks if a behavior is active at a given frame."""
         return self.behavior_controller.is_behavior_active(frame_number, behavior)
 
-    def _load_deeplabcut_results(self, frame_number: int, is_multi_animal: bool = False):
+    def _load_deeplabcut_results(
+        self,
+        frame_number: int,
+        is_multi_animal: Optional[bool] = None,
+    ) -> None:
         """
         Load DeepLabCut tracking results for a given frame and convert them into shape objects.
 
@@ -3613,8 +3619,7 @@ class AnnolidWindow(MainWindow):
 
         Args:
             frame_number (int): The index of the frame to extract tracking data from.
-            is_multi_animal (bool, optional): Whether the dataset contains multiple animals.
-                Defaults to False.
+            is_multi_animal (bool, optional): Force multi-animal parsing. Auto-detected when None.
 
         Notes:
             - Assumes self._df_deeplabcut is a multi-index Pandas DataFrame.
@@ -3625,7 +3630,31 @@ class AnnolidWindow(MainWindow):
             KeyError: If expected columns are missing.
             Exception: For unexpected errors during shape extraction.
         """
-        if self._df_deeplabcut is None:
+        if self._df_deeplabcut is None or self._df_deeplabcut.empty:
+            return
+
+        if is_multi_animal is None:
+            is_multi_animal = getattr(
+                self, "_df_deeplabcut_multi_animal", False)
+
+        try:
+            row = self._df_deeplabcut.loc[frame_number]
+        except KeyError:
+            if 0 <= frame_number < len(self._df_deeplabcut.index):
+                row = self._df_deeplabcut.iloc[frame_number]
+            else:
+                logger.debug(
+                    "Frame %s is outside the DeepLabCut table bounds (%s rows).",
+                    frame_number,
+                    len(self._df_deeplabcut.index),
+                )
+                return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error(
+                "Unexpected error accessing DeepLabCut frame %s: %s",
+                frame_number,
+                exc,
+            )
             return
 
         shapes = []
@@ -3645,7 +3674,6 @@ class AnnolidWindow(MainWindow):
             if self._df_deeplabcut_bodyparts is None:
                 self._df_deeplabcut_bodyparts = self._df_deeplabcut.columns.get_level_values(
                     'bodyparts').unique()
-            row = self._df_deeplabcut.loc[frame_number]
 
             for animal_id in self._df_deeplabcut_animal_ids:
                 for bodypart in self._df_deeplabcut_bodyparts:
@@ -3705,23 +3733,27 @@ class AnnolidWindow(MainWindow):
         Args:
             behavior_csv_file (str): Path to the CSV file containing behavior data.
         """
-        # Load the CSV file into a DataFrame
         df_behaviors = pd.read_csv(behavior_csv_file)
+        required_columns = {"Recording time", "Event", "Behavior"}
 
-        rows: List[Tuple[float, float, str, str, str]] = []
+        if not required_columns.issubset(df_behaviors.columns):
+            # Fall back to DeepLabCut multi-index CSVs.
+            del df_behaviors
+            if not self._load_deeplabcut_table(behavior_csv_file):
+                logger.debug(
+                    "Skipped loading '%s' because it is neither a behavior log nor a DeepLabCut export.",
+                    Path(behavior_csv_file).name,
+                )
+            return
+
+        rows: List[Tuple[float, float, Optional[str], str, str]] = []
 
         for _, row in df_behaviors.iterrows():
-            try:
-                raw_timestamp = row["Recording time"]
-                event_label = str(row["Event"])
-                behavior = str(row["Behavior"])
-                raw_subject = row.get("Subject")
-                raw_trial_time = row.get("Trial time")
-            except KeyError:
-                del df_behaviors
-                self._df_deeplabcut = pd.read_csv(
-                    behavior_csv_file, header=[0, 1, 2], index_col=0)
-                return
+            raw_timestamp = row.get("Recording time")
+            event_label = str(row.get("Event"))
+            behavior = str(row.get("Behavior"))
+            raw_subject = row.get("Subject")
+            raw_trial_time = row.get("Trial time")
 
             try:
                 timestamp_value = float(raw_timestamp)
@@ -3769,6 +3801,72 @@ class AnnolidWindow(MainWindow):
         )
         self.pinned_flags.update(
             {behavior: False for behavior in self.behavior_controller.behavior_names})
+
+    def _load_deeplabcut_table(self, behavior_csv_file: str) -> bool:
+        """Load DeepLabCut tracking results stored as a multi-index CSV.
+
+        Returns:
+            bool: True if DeepLabCut data was successfully loaded, False otherwise.
+        """
+        try:
+            df_dlc = pd.read_csv(
+                behavior_csv_file,
+                header=[0, 1, 2],
+                index_col=0,
+            )
+        except (ValueError, pd.errors.ParserError) as exc:
+            logger.debug(
+                "Skipping %s: not a DeepLabCut multi-index CSV (%s).",
+                Path(behavior_csv_file).name,
+                exc,
+            )
+            self._df_deeplabcut = None
+            self._df_deeplabcut_columns = None
+            self._df_deeplabcut_scorer = None
+            self._df_deeplabcut_bodyparts = None
+            self._df_deeplabcut_animal_ids = None
+            self._df_deeplabcut_multi_animal = False
+            return False
+
+        nlevels = df_dlc.columns.nlevels
+        if nlevels == 4:
+            expected_names = ["scorer", "animal", "bodyparts", "coords"]
+            self._df_deeplabcut_multi_animal = True
+        elif nlevels == 3:
+            expected_names = ["scorer", "bodyparts", "coords"]
+            self._df_deeplabcut_multi_animal = False
+        else:
+            logger.debug(
+                "Skipping %s: expected 3 or 4 column levels, found %s.",
+                Path(behavior_csv_file).name,
+                nlevels,
+            )
+            self._df_deeplabcut = None
+            self._df_deeplabcut_columns = None
+            self._df_deeplabcut_scorer = None
+            self._df_deeplabcut_bodyparts = None
+            self._df_deeplabcut_animal_ids = None
+            self._df_deeplabcut_multi_animal = False
+            return False
+
+        df_dlc.columns = df_dlc.columns.set_names(expected_names)
+
+        index_numeric = pd.to_numeric(df_dlc.index, errors="coerce")
+        if index_numeric.isna().any():
+            logger.debug(
+                "DeepLabCut table %s has non-numeric frame index; using positional indices.",
+                Path(behavior_csv_file).name,
+            )
+            df_dlc.reset_index(drop=True, inplace=True)
+        else:
+            df_dlc.index = index_numeric.astype(int)
+
+        self._df_deeplabcut = df_dlc
+        self._df_deeplabcut_columns = df_dlc.columns
+        self._df_deeplabcut_scorer = None
+        self._df_deeplabcut_bodyparts = None
+        self._df_deeplabcut_animal_ids = None
+        return True
 
     def open_project_schema_dialog(self) -> None:
         """Open the schema editor dialog and persist changes."""
