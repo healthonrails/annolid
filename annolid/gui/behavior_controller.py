@@ -5,21 +5,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from qtpy import QtGui
 
+from annolid.behavior.event_utils import normalize_event_label
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
-
-
-def normalize_event_label(event_label: Optional[str]) -> Optional[str]:
-    """Return a canonical event label ("start" or "end") if recognized."""
-
-    if not event_label:
-        return None
-
-    label = event_label.lower()
-    if "start" in label or "begin" in label or "onset" in label:
-        return "start"
-    if "end" in label or "stop" in label or "offset" in label:
-        return "end"
-    return None
 
 
 @dataclass(frozen=True)

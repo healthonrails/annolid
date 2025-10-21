@@ -56,9 +56,56 @@ class TrackingDataController:
                 logger.error(
                     "Error loading main tracking file %s: %s", main_tracking_file, exc)
 
+        def _discover_behavior_files(search_root: Path) -> list[Path]:
+            candidates: list[Path] = []
+            video_name_lower = video_name.lower()
+            for candidate in search_root.glob(f"{video_name}*.csv"):
+                name_lower = candidate.name.lower()
+                if name_lower == f"{video_name_lower}_tracking.csv":
+                    continue
+                if name_lower == f"{video_name_lower}_labels.csv":
+                    continue
+                candidates.append(candidate)
+            return sorted(candidates)
+
+        behavior_candidates: list[Path] = []
         if timestamps_file.is_file():
-            logger.info("Loading behavior data from: %s", timestamps_file)
-            w._load_behavior(timestamps_file)
+            behavior_candidates.append(timestamps_file)
+        else:
+            behavior_candidates.extend(_discover_behavior_files(cur_video_folder))
+            results_dir = getattr(w, "video_results_folder", None)
+            if isinstance(results_dir, Path) and results_dir.exists() and results_dir != cur_video_folder:
+                behavior_candidates.extend(_discover_behavior_files(results_dir))
+
+        seen_paths: set[Path] = set()
+        unique_candidates: list[Path] = []
+        for candidate in behavior_candidates:
+            if candidate not in seen_paths:
+                unique_candidates.append(candidate)
+                seen_paths.add(candidate)
+        behavior_candidates = unique_candidates
+
+        loaded_behavior = False
+        for candidate in behavior_candidates:
+            try:
+                logger.info("Loading behavior data from: %s", candidate)
+                w._load_behavior(str(candidate))
+                loaded_behavior = True
+                break
+            except Exception as exc:
+                logger.error("Failed to load behavior data from %s: %s", candidate, exc)
+
+        if not loaded_behavior and behavior_candidates:
+            logger.warning(
+                "Behavior CSV files were discovered for '%s' but could not be loaded.",
+                video_name,
+            )
+        elif not behavior_candidates:
+            logger.debug(
+                "No behavior CSV detected for '%s'. Looking for '%s' or similarly named files.",
+                video_name,
+                f"{video_name}_timestamps.csv",
+            )
 
         if labels_file_path.is_file():
             logger.info("Loading labels data from: %s", labels_file_path)

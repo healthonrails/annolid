@@ -133,6 +133,12 @@ class MenuController:
                 "tip": w.tr("Generate tracking reports for the selected video"),
             },
             {
+                "name": "behavior_time_budget",
+                "text": w.tr("&Behavior Time Budget"),
+                "slot": w.show_behavior_time_budget_dialog,
+                "tip": w.tr("Summarise recorded behavior events"),
+            },
+            {
                 "name": "convert_csv",
                 "text": w.tr("&Save CSV"),
                 "slot": w.convert_labelme_json_to_csv,
@@ -389,6 +395,7 @@ class MenuController:
         utils.addActions(w.menus.file, (actions["quality_control"],))
         utils.addActions(w.menus.file, (actions["downsample_video"],))
         utils.addActions(w.menus.file, (actions["tracking_reports"],))
+        utils.addActions(w.menus.file, (actions["behavior_time_budget"],))
         w.menus.file.addSeparator()
         utils.addActions(w.menus.file, (actions["convert_csv"],))
         utils.addActions(w.menus.file, (actions["extract_shape_keypoints"],))
