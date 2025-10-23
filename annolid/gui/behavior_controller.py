@@ -21,6 +21,8 @@ class BehaviorEvent:
     trial_time: Optional[float] = None
     subject: Optional[str] = None
     raw_event: Optional[str] = None
+    modifiers: Tuple[str, ...] = ()
+    category: Optional[str] = None
 
     @property
     def mark_key(self) -> Tuple[int, str, str]:
@@ -69,6 +71,8 @@ class BehaviorTimeline:
         subject: Optional[str] = None,
         raw_event: Optional[str] = None,
         rebuild: bool = True,
+        modifiers: Optional[Iterable[str]] = None,
+        category: Optional[str] = None,
     ) -> Optional[BehaviorEvent]:
         canonical = event_label if event_label in {
             "start", "end"} else normalize_event_label(event_label)
@@ -83,6 +87,8 @@ class BehaviorTimeline:
             trial_time=trial_time,
             subject=subject,
             raw_event=raw_event or event_label,
+            modifiers=tuple(modifiers or ()),
+            category=category,
         )
 
         if event.mark_key in self._events:
@@ -473,6 +479,8 @@ class BehaviorController:
         raw_event: Optional[str] = None,
         rebuild: bool = True,
         highlight: bool = True,
+        modifiers: Optional[Iterable[str]] = None,
+        category: Optional[str] = None,
     ) -> Optional[BehaviorEvent]:
         event = self.timeline.record_event(
             behavior,
@@ -483,6 +491,8 @@ class BehaviorController:
             subject=subject,
             raw_event=raw_event,
             rebuild=rebuild,
+            modifiers=modifiers,
+            category=category,
         )
         if event is None:
             return None
@@ -605,6 +615,8 @@ class BehaviorController:
                 subject=subject,
                 rebuild=False,
                 highlight=False,
+                modifiers=None,
+                category=None,
             )
 
         if rebuild:

@@ -76,12 +76,31 @@ class FlagsController(QtCore.QObject):
         """Mark a flag as active and optionally record a start event."""
         if not flag_name:
             return
+        if self._window.project_schema:
+            behavior_def = self._window.project_schema.behavior_map().get(
+                flag_name)
+            if behavior_def and behavior_def.exclusive_with:
+                active_conflicts = [
+                    name
+                    for name, value in self.pinned_flags.items()
+                    if value and name in behavior_def.exclusive_with
+                ]
+                if active_conflicts:
+                    message = (
+                        f"Behavior '{flag_name}' conflicts with "
+                        f"{', '.join(sorted(active_conflicts))}."
+                    )
+                    logger.warning(message)
+                    self._widget._update_row_value(flag_name, False)
+                    self._window.statusBar().showMessage(message, 4000)
+                    return
         if record_event and self._window.seekbar:
             self._window.record_behavior_event(
                 flag_name, "start", frame_number=self._window.frame_number
             )
         self._window.canvas.setBehaviorText(flag_name)
         self._window.event_type = flag_name
+        self._window._update_modifier_controls_for_behavior(flag_name)
         self.pinned_flags.setdefault(flag_name, False)
         self.pinned_flags[flag_name] = True
         existing = self._widget._get_existing_flag_names()
@@ -100,6 +119,8 @@ class FlagsController(QtCore.QObject):
             )
         if self._window.event_type == flag_name:
             self._window.event_type = None
+        self._window._update_modifier_controls_for_behavior(
+            self._window.event_type)
         self.pinned_flags.setdefault(flag_name, False)
         self.pinned_flags[flag_name] = False
         existing = self._widget._get_existing_flag_names()
@@ -136,6 +157,7 @@ class FlagsController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     def _handle_row_selected(self, flag_name: str) -> None:
         self._window.event_type = flag_name
+        self._window._update_modifier_controls_for_behavior(flag_name)
 
     def _handle_flag_toggled(self, flag_name: str, state: bool) -> None:
         if state:

@@ -75,6 +75,7 @@ from annolid.behavior.time_budget import (
     write_time_budget_csv,
 )
 from annolid.gui.widgets.project_dialog import ProjectDialog
+from annolid.gui.widgets.behavior_controls import BehaviorControlsWidget
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
 from annolid.gui.widgets import TrainModelDialog
@@ -264,6 +265,8 @@ class AnnolidWindow(MainWindow):
         self.prev_shapes = None
         self.pred_worker = None
         self.video_processor = None
+        self._active_subject_name: Optional[str] = None
+        self._behavior_modifier_state: Dict[str, Set[str]] = {}
         self.realtime_perception_worker = None
         self.realtime_subscriber_worker = None
         self.realtime_running = False
@@ -352,6 +355,24 @@ class AnnolidWindow(MainWindow):
                                            QtWidgets.QDockWidget.DockWidgetClosable |
                                            QtWidgets.QDockWidget.DockWidgetFloatable)
         self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_log_dock)
+
+        self.behavior_controls_widget = BehaviorControlsWidget(self)
+        self.behavior_controls_widget.subjectChanged.connect(
+            self._on_active_subject_changed)
+        self.behavior_controls_widget.modifierToggled.connect(
+            self._on_modifier_toggled)
+        self.behavior_controls_dock = QtWidgets.QDockWidget(
+            "Behavior Controls", self)
+        self.behavior_controls_dock.setObjectName('behaviorControlsDock')
+        self.behavior_controls_dock.setWidget(self.behavior_controls_widget)
+        self.behavior_controls_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable |
+            QtWidgets.QDockWidget.DockWidgetClosable |
+            QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(Qt.RightDockWidgetArea,
+                           self.behavior_controls_dock)
+        self.tabifyDockWidget(
+            self.behavior_log_dock, self.behavior_controls_dock)
 
         self.realtime_control_dialog = QtWidgets.QDialog(self)
         self.realtime_control_dialog.setWindowTitle(
@@ -834,6 +855,15 @@ class AnnolidWindow(MainWindow):
         self.pred_worker = None
         self.stop_prediction_flag = False
         self.imageData = None
+        self._behavior_modifier_state.clear()
+        self._active_subject_name = None
+        if hasattr(self, "behavior_controls_widget"):
+            self.behavior_controls_widget.set_modifier_states(
+                [],
+                allowed=self._modifier_ids_from_schema(),
+            )
+            self.behavior_controls_widget.set_category_badge(None, None)
+            self.behavior_controls_widget.show_warning(None)
         self._stop_frame_loader()
         self.frame_loader = LoadFrameThread()
         if self.video_processor is not None and hasattr(self.video_processor, "cutie_processor"):
@@ -3139,6 +3169,16 @@ class AnnolidWindow(MainWindow):
         if not modifiers:
             modifiers = self._default_modifiers_for_behavior(behavior)
 
+        category_label: Optional[str] = None
+        if self.project_schema:
+            behavior_def = self.project_schema.behavior_map().get(behavior)
+            if behavior_def:
+                if behavior_def.category_id:
+                    category = self.project_schema.category_map().get(
+                        behavior_def.category_id)
+                    if category:
+                        category_label = category.name or category.id
+
         event = self.behavior_controller.record_event(
             behavior,
             event_label,
@@ -3147,6 +3187,7 @@ class AnnolidWindow(MainWindow):
             trial_time=trial_time,
             subject=subject,
             modifiers=modifiers,
+            category=category_label,
             highlight=highlight,
         )
         if event is None:
@@ -3172,14 +3213,159 @@ class AnnolidWindow(MainWindow):
     def _populate_behavior_controls_from_schema(
         self, schema: Optional[ProjectSchema]
     ) -> None:
-        # Placeholder for richer UI (subject dropdown, modifier checkboxes).
-        # For now, nothing is required because the auto-subject and default modifier
-        # logic runs directly from the schema when recording events.
-        return
+        if not hasattr(self, "behavior_controls_widget"):
+            return
+
+        self._behavior_modifier_state.clear()
+
+        if schema is None:
+            self.behavior_controls_widget.clear()
+            self._active_subject_name = None
+            return
+
+        stored_subject = self._active_subject_name or self.settings.value(
+            "behavior/last_subject", type=str)
+        subjects = list(schema.subjects)
+        self.behavior_controls_widget.set_subjects(
+            subjects, selected=stored_subject)
+        self._active_subject_name = self.behavior_controls_widget.current_subject()
+
+        self.behavior_controls_widget.set_modifiers(list(schema.modifiers))
+        for behavior in schema.behaviors:
+            if behavior.modifier_ids:
+                self._behavior_modifier_state[behavior.code] = set(
+                    behavior.modifier_ids)
+
+        self.behavior_controls_widget.set_category_badge(None, None)
+        self.behavior_controls_widget.set_modifier_states(
+            [],
+            allowed=self._modifier_ids_from_schema(),
+        )
+        self.behavior_controls_widget.show_warning(None)
+        self._update_modifier_controls_for_behavior(self.event_type)
+
+    def _modifier_ids_from_schema(self) -> Set[str]:
+        if not self.project_schema:
+            return set()
+        return {
+            modifier.id
+            for modifier in self.project_schema.modifiers
+            if modifier.id
+        }
+
+    def _allowed_modifiers_for_behavior(self, behavior: Optional[str]) -> Set[str]:
+        if not self.project_schema:
+            return set()
+        schema_modifiers = self._modifier_ids_from_schema()
+        if not behavior:
+            return schema_modifiers
+        behavior_def = self.project_schema.behavior_map().get(behavior)
+        if behavior_def and behavior_def.modifier_ids:
+            return {modifier_id for modifier_id in behavior_def.modifier_ids if modifier_id in schema_modifiers}
+        return schema_modifiers
+
+    def _update_behavior_conflict_warning(self, behavior: Optional[str]) -> None:
+        if not hasattr(self, "behavior_controls_widget"):
+            return
+        if not behavior or not self.project_schema:
+            self.behavior_controls_widget.show_warning(None)
+            return
+
+        behavior_def = self.project_schema.behavior_map().get(behavior)
+        if not behavior_def or not behavior_def.exclusive_with:
+            self.behavior_controls_widget.show_warning(None)
+            return
+
+        active_conflicts = [
+            name
+            for name, value in (self.flags_controller.pinned_flags or {}).items()
+            if value and name in behavior_def.exclusive_with and name != behavior
+        ]
+        if active_conflicts:
+            message = self.tr(
+                "Behavior '%s' excludes %s. Stop them before recording."
+            ) % (
+                behavior,
+                ", ".join(sorted(active_conflicts)),
+            )
+            self.behavior_controls_widget.show_warning(message)
+            self.statusBar().showMessage(message, 4000)
+        else:
+            self.behavior_controls_widget.show_warning(None)
 
     def _update_modifier_controls_for_behavior(self, behavior: Optional[str]) -> None:
-        # Placeholder hook to keep interface parity with future UI upgrades.
-        return
+        if not hasattr(self, "behavior_controls_widget"):
+            return
+
+        schema = self.project_schema
+        if schema is None:
+            self.behavior_controls_widget.clear()
+            return
+
+        allowed_modifiers = self._allowed_modifiers_for_behavior(behavior)
+        if not behavior:
+            self.behavior_controls_widget.set_category_badge(None, None)
+            self.behavior_controls_widget.set_modifier_states(
+                [],
+                allowed=allowed_modifiers,
+            )
+            self.behavior_controls_widget.show_warning(None)
+            return
+
+        behavior_def = schema.behavior_map().get(behavior)
+        category_label: Optional[str] = None
+        category_color: Optional[str] = None
+        if behavior_def and behavior_def.category_id:
+            category = schema.category_map().get(behavior_def.category_id)
+            if category:
+                category_label = category.name or category.id
+                category_color = category.color
+
+        selected_modifiers = self._behavior_modifier_state.get(behavior)
+        if selected_modifiers is None:
+            if behavior_def and behavior_def.modifier_ids:
+                selected_modifiers = set(
+                    modifier_id for modifier_id in behavior_def.modifier_ids if modifier_id in allowed_modifiers)
+                self._behavior_modifier_state[behavior] = set(
+                    selected_modifiers)
+            else:
+                selected_modifiers = set()
+        else:
+            selected_modifiers = {
+                modifier_id for modifier_id in selected_modifiers if modifier_id in allowed_modifiers}
+            self._behavior_modifier_state[behavior] = set(selected_modifiers)
+            if not selected_modifiers and behavior_def and behavior_def.modifier_ids:
+                selected_modifiers = {
+                    modifier_id for modifier_id in behavior_def.modifier_ids if modifier_id in allowed_modifiers}
+                self._behavior_modifier_state[behavior] = set(
+                    selected_modifiers)
+
+        self.behavior_controls_widget.set_category_badge(
+            category_label,
+            category_color,
+        )
+        self.behavior_controls_widget.set_modifier_states(
+            selected_modifiers,
+            allowed=allowed_modifiers,
+        )
+        self._update_behavior_conflict_warning(behavior)
+
+    def _on_active_subject_changed(self, subject_name: str) -> None:
+        subject_name = subject_name.strip()
+        if subject_name:
+            self._active_subject_name = subject_name
+            self.settings.setValue("behavior/last_subject", subject_name)
+
+    def _on_modifier_toggled(self, modifier_id: str, state: bool) -> None:
+        behavior = self.event_type
+        if not behavior:
+            return
+        modifier_set = self._behavior_modifier_state.setdefault(
+            behavior, set())
+        if state:
+            modifier_set.add(modifier_id)
+        else:
+            modifier_set.discard(modifier_id)
 
     def _subject_from_selected_shape(self) -> Optional[str]:
         selected = getattr(self.canvas, "selectedShapes", None)
@@ -3203,13 +3389,33 @@ class AnnolidWindow(MainWindow):
         return label_name
 
     def _current_subject_name(self) -> str:
+        if self._active_subject_name:
+            return self._active_subject_name
+        if hasattr(self, "behavior_controls_widget"):
+            subject = self.behavior_controls_widget.current_subject()
+            if subject:
+                self._active_subject_name = subject
+                return subject
         if self.project_schema and self.project_schema.subjects:
             subject = self.project_schema.subjects[0]
             return subject.name or subject.id or "Subject 1"
         return "Subject 1"
 
     def _selected_modifiers_for_behavior(self, behavior: Optional[str]) -> List[str]:
-        # Placeholder for future UI-based modifier selection.
+        if not behavior:
+            return []
+        selected = self._behavior_modifier_state.get(behavior)
+        if selected:
+            return list(selected)
+        defaults = self._default_modifiers_for_behavior(behavior)
+        if defaults:
+            allowed = self._allowed_modifiers_for_behavior(behavior)
+            if allowed:
+                defaults = [
+                    modifier_id for modifier_id in defaults if modifier_id in allowed]
+        if defaults:
+            self._behavior_modifier_state[behavior] = set(defaults)
+            return list(defaults)
         return []
 
     def _default_modifiers_for_behavior(self, behavior: Optional[str]) -> List[str]:
