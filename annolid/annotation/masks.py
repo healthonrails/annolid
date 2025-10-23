@@ -1,9 +1,8 @@
-import cv2
 import ast
+import cv2
 import numpy as np
-from scipy import ndimage
 import pycocotools.mask as mask_util
-from simplification.cutil import simplify_coords_vwp
+from scipy import ndimage
 
 
 def binary_mask_to_coco_rle(binary_mask):
@@ -40,12 +39,31 @@ def mask_to_polygons(mask,
     has_holes = (hierarchy.reshape(-1, 4)[:, 3] >= 0).sum() > 0
 
     res = res[-2]
-    try:
-        res_simp = simplify_coords_vwp(np.array(res[0]).reshape(-1, 2), 30.0)
-        res_simp = np.array(res_simp)
-        res = [np.expand_dims(res_simp, axis=1)]
-    except ValueError as e:
-        print('Failed to simplify the points:', str(e))
+
+    simplified_contours = []
+    for contour in res:
+        if contour.size == 0:
+            continue
+        contour = np.asarray(contour, dtype=np.float32)
+        if contour.ndim == 2:
+            contour = contour.reshape(-1, 1, 2)
+
+        if contour.shape[0] < 3:
+            simplified_contours.append(contour)
+            continue
+
+        perimeter = cv2.arcLength(contour, True)
+        # Use a perimeter-proportional epsilon so large contours are simplified
+        # aggressively while preserving detail on small shapes.
+        epsilon = max(0.01 * perimeter, 0.5)
+
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        if approx.shape[0] < 3:
+            approx = contour
+        simplified_contours.append(approx)
+
+    if simplified_contours:
+        res = simplified_contours
 
     if use_convex_hull:
         hull = []

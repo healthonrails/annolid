@@ -2135,11 +2135,22 @@ class AnnolidWindow(MainWindow):
         elif isinstance(self.imageData, Image.Image):
             pil_image = self.imageData
         # 2. Check for the most common case: a QImage from the video loader
-        elif isinstance(self.imageData, QtGui.QImage):
-            pil_image = ImageQt.fromqimage(self.imageData)
-        # 3. Handle the special ImageQt.Image wrapper type
-        elif isinstance(self.imageData, ImageQt.ImageQt):
-            pil_image = self.imageData
+        elif isinstance(self.imageData, tuple(filter(None, (
+            QtGui.QImage,
+            getattr(ImageQt, "ImageQt", None),
+        )))):
+            qimage = QtGui.QImage(self.imageData)
+            image_bytes = self._qimage_to_bytes(qimage)
+            if image_bytes is None:
+                logger.error("Failed to serialize QImage to bytes for saving.")
+                return None
+            try:
+                with io.BytesIO(image_bytes) as buffer:
+                    pil_image = Image.open(buffer)
+                    pil_image.load()
+            except Exception as e:
+                logger.error(f"Failed to convert QImage to PIL Image: {e}")
+                return None
         else:
             logger.warning(
                 f"self.imageData is of an unexpected type ({type(self.imageData)}). "

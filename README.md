@@ -32,6 +32,8 @@ Annolid is a deep learning toolkit for animal behavior analysis that brings anno
 
 Use Annolid to classify behavioral states such as freezing, digging, pup huddling, or social interaction while maintaining fine-grained tracking of individuals and body parts across long video sessions.
 
+> **Python support:** Annolid runs on Python 3.8–3.13. The toolkit is not yet validated on Python 3.14, where several binary wheels (PyQt, Pillow) are still pending upstream releases.
+
 ## Key Features
 - Markerless multiple-animal tracking from a single annotated frame.
 - Instance segmentation powered by modern foundation models and transfer learning.
@@ -86,6 +88,19 @@ pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
 annolid
 ```
 This route works well on machines without Conda, but you remain responsible for installing system dependencies such as `ffmpeg`.
+
+### uv (lightweight venv + installer)
+Use [uv](https://docs.astral.sh/uv/) if you prefer fast virtualenv creation and dependency resolution:
+```bash
+pip install --user uv  # or grab the standalone binary
+git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+cd annolid
+uv venv .venv --python 3.11
+source .venv/bin/activate
+uv pip install -e .
+annolid
+```
+Generate a lock file for reproducible installs with `uv pip compile pyproject.toml -o uv.lock`, then reproduce the environment elsewhere via `uv pip sync uv.lock`. Ensure `ffmpeg`/`ffprobe` is available on your PATH (`brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Ubuntu) so timestamp tools work correctly.
 
 ### Apple Silicon (macOS M1/M2)
 Some Intel-specific libraries can trigger MKL errors on Apple Silicon. If you observe messages such as:
