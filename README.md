@@ -43,7 +43,7 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
 
 ## Documentation & Support
 - Latest documentation and user guide: [https://annolid.com](https://annolid.com) (mirror: [https://cplab.science/annolid](https://cplab.science/annolid))
-- Community updates and tutorials are shared on the [Annolid YouTube channel](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc).
+- Community updates and tutorials are shared on the [Annolid YouTube channel](https://www.youtube.com/@annolid/videos).
 - Sample datasets, posters, and publications are available in the `docs/` folder of this repository.
 - Join the discussion on the [Annolid Google Group](https://groups.google.com/g/annolid).
 
@@ -248,7 +248,7 @@ If you use Annolid in your research, please cite:
 - **Example dataset (COCO format):** [Download from Google Drive](https://drive.google.com/file/d/1fUXCLnoJ5SwXg54mj0NBKGzidsV8ALVR/view?usp=sharing).
 - **Pretrained models:** Available in the [shared Google Drive folder](https://drive.google.com/drive/folders/1t1eXxoSN2irKRBJ8I7i3LHkjdGev7whF?usp=sharing).
 - **Feature requests & bug reports:** Open an issue at [github.com/healthonrails/annolid/issues](https://github.com/healthonrails/annolid/issues).
-- **Additional videos:** Visit the [Annolid YouTube channel](https://www.youtube.com/@annolid) for demonstrations and talks.
+- **Additional videos:** Visit the [Annolid YouTube channel](https://www.youtube.com/@annolid/videos) for demonstrations and talks.
 
 ## Acknowledgements
 Annolid's tracking module integrates **Cutie** for enhanced video object segmentation. If you use this feature, please cite *Putting the Object Back into Video Object Segmentation* (Cheng *et al.*, 2023) and the [Cutie repository](https://github.com/hkchengrex/Cutie).
