@@ -25,6 +25,7 @@ parts:
       - file: tutorials/Place_preference.md
       - file: tutorials/Behavior_classification.md
       - file: tutorials/Freezing_and motion_assays.md
+      - file: tutorials/DINOv3_keypoint_tracking.md
       
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_2_Train_a_Model
