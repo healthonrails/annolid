@@ -54,7 +54,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
         self.model_path_edit = QtWidgets.QLineEdit()
         self.model_path_edit.setPlaceholderText(
-            self.tr("Select or enter a YOLO model file (*.pt, *.engine)"))
+            self.tr(
+                "Select or enter a YOLO model file (*.pt, *.onnx, *.engine, *.mlpackage)"
+            )
+        )
         browse_model_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         browse_model_btn.clicked.connect(self._browse_model_file)
 
@@ -248,7 +251,9 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             self,
             self.tr("Select YOLO Model"),
             last_path,
-            self.tr("YOLO Models (*.pt *.onnx *.engine);;All Files (*.*)")
+            self.tr(
+                "YOLO Models (*.pt *.onnx *.engine *.mlpackage);;All Files (*.*)"
+            ),
         )
         if selected:
             self._custom_model_path = Path(selected)

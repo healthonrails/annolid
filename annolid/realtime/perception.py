@@ -1007,8 +1007,10 @@ class PerceptionProcess:
 
         # Verify model exists or download
         model_path = Path(self.config.model_base_name)
-        if not model_path.is_file():
-            logger.info(f"Model '{model_path}' not found, downloading...")
+        if not (model_path.is_file() or model_path.is_dir()):
+            logger.info(
+                f"Model '{model_path}' not found locally, attempting Ultralytics resolution..."
+            )
             await asyncio.to_thread(YOLO, self.config.model_base_name)
 
         # Initialize video source

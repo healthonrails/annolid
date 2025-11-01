@@ -26,6 +26,7 @@ class InferenceProcessor:
         """
         self.model_type = model_type
         self.model_name = self._find_best_model(model_name)
+        self._is_coreml = self._detect_coreml_export(self.model_name)
         self.model = self._load_model(self.model_name, class_names)
         self.frame_count: int = 0
         self.track_history = defaultdict(list)
@@ -39,6 +40,18 @@ class InferenceProcessor:
             keypoint_config = get_config(keypoint_config_file)
             self.keypoint_names = keypoint_config['KEYPOINTS'].split(" ")
             logging.info(f"Keypoint names: {self.keypoint_names}")
+
+    @staticmethod
+    def _detect_coreml_export(model_name: str) -> bool:
+        """
+        Detect whether the provided model reference points to a CoreML export.
+        """
+        path = Path(model_name)
+        suffix = path.suffix.lower()
+        if suffix == ".mlpackage":
+            return True
+        # Handle cases where the path might not yet exist on disk but still ends with .mlpackage
+        return str(model_name).lower().endswith(".mlpackage")
 
     def _find_best_model(self, model_name: str) -> str:
         """
@@ -146,7 +159,11 @@ class InferenceProcessor:
                 logging.error("Error during visual prompt prediction: %s", e)
                 return f"Error: {e}"
         else:
-            results = self.model.track(source, persist=True, stream=True)
+            if self._is_coreml:
+                logging.info("Detected CoreML export; using predict() instead of track().")
+                results = self.model.predict(source, stream=True)
+            else:
+                results = self.model.track(source, persist=True, stream=True)
 
         for result in results:
             if result.boxes and len(result.boxes) > 0:

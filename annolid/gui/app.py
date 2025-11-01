@@ -676,6 +676,31 @@ class AnnolidWindow(MainWindow):
             self.setDirty)      # Mark as dirty
         self.caption_widget.captionChanged.connect(
             self.canvas.setCaption)  # Update canvas
+        self.caption_widget.imageGenerated.connect(
+            self.display_generated_image)
+
+    @QtCore.Slot(str)
+    def display_generated_image(self, image_path: str) -> None:
+        pixmap = QtGui.QPixmap(image_path)
+        if pixmap.isNull():
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Image generation failed"),
+                self.tr("Could not load generated image:\n%s") % image_path,
+            )
+            return
+
+        self.canvas.loadPixmap(pixmap, clear_shapes=True)
+        try:
+            self.imageData = imgviz.io.imread(image_path)
+        except Exception:
+            self.imageData = None
+
+        self.imagePath = image_path
+        self.filename = os.path.basename(image_path)
+        self.statusBar().showMessage(
+            self.tr("Generated image loaded: %s") % image_path
+        )
 
     def set_advanced_params(self):
         advanced_params_dialog = AdvancedParametersDialog(
@@ -1709,7 +1734,8 @@ class AnnolidWindow(MainWindow):
             return False
 
         # Many custom YOLO exports rely on generic names such as "best.pt".
-        if weight.endswith((".pt", ".pth")):
+        yolo_extensions = (".pt", ".pth", ".onnx", ".engine", ".mlpackage")
+        if weight.endswith(yolo_extensions):
             return True
 
         return False

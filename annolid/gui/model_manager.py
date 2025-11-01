@@ -151,11 +151,12 @@ class AIModelManager(QtCore.QObject):
         dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
         dialog.setNameFilters(
             [
-                self.tr("YOLO Weights (*.pt *.pth)"),
+                self.tr(
+                    "YOLO Models (*.pt *.pth *.onnx *.engine *.mlpackage)"),
                 self.tr("All Files (*)"),
             ]
         )
-        dialog.setWindowTitle(self.tr("Select YOLO Weights"))
+        dialog.setWindowTitle(self.tr("Select YOLO Model"))
 
         if not dialog.exec_():
             return
@@ -165,11 +166,15 @@ class AIModelManager(QtCore.QObject):
             return
 
         weight_path = Path(selected_files[0]).expanduser().resolve()
-        if not weight_path.is_file():
+        is_model_path = weight_path.is_file() or (
+            weight_path.is_dir() and weight_path.suffix == ".mlpackage"
+        )
+        if not is_model_path:
             QtWidgets.QMessageBox.warning(
                 parent_widget,
-                self.tr("Invalid weights"),
-                self.tr("Selected file is not a valid YOLO weight file."),
+                self.tr("Invalid model selection"),
+                self.tr(
+                    "Selected path is not a compatible YOLO model export."),
             )
             return
 
