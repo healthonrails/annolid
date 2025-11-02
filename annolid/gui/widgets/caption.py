@@ -17,7 +17,9 @@ import io
 import base64
 import mimetypes
 import uuid
-from typing import Any, Dict, List
+import html
+import re
+from typing import Any, Dict, List, Tuple, Match
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.utils.llm_settings import (
@@ -36,6 +38,11 @@ except ImportError:
         "For more information, visit the GitHub repository:\n"
         "    https://github.com/ollama/ollama-python"
     )
+
+try:
+    import markdown  # type: ignore
+except ImportError:
+    markdown = None
 
 
 class CaptionWidget(QtWidgets.QWidget):
@@ -74,6 +81,7 @@ class CaptionWidget(QtWidgets.QWidget):
             self.on_voice_recording_finished)  # Connect signal
         self.is_streaming_chat = False  # Flag to indicate if chat is streaming
         self.current_ai_span_id = None  # Tracks current AI response span
+        self._message_buffers: Dict[str, str] = {}
 
     def _default_model_for(self, provider: str) -> str:
         defaults = {
@@ -324,25 +332,18 @@ class CaptionWidget(QtWidgets.QWidget):
 
         # Create a QTextEdit for editing captions
         self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(False)  # Make it read-only for chat display
+        self.text_edit.setReadOnly(False)  # Keep editable so captions can be refined
         # Style the QTextEdit to have a light background
         self.text_edit.setStyleSheet("""
             QTextEdit {
-                background-color: #f0f0f0;          // Very light gray background
-                border: 1px solid #c0c0c0;          // Light gray border
-
-                color: #e0e0e0;                   // Light blue text (or white if very light background)
-                hover:color: #d0d0d0;              // Slightly darker on hover for better UX
-                text-indent: -1em;               // Indent lines for better readability
-
-                font-family: monospace;           // Consistent character spacing, especially useful for code
-                line-height: 1.6;                // Comfortable line height for reading
-
-                -|:after {
-                    content: '';
-                    color: #666666;                // Subtle gray line between lines
-                    font-size: 0.7em;
-                }
+                background-color: #f7f7f8;
+                border: 1px solid #d0d7de;
+                border-radius: 10px;
+                padding: 12px;
+                color: #1f2328;
+                font-family: 'Segoe UI', 'Helvetica Neue', sans-serif;
+                font-size: 13px;
+                line-height: 1.55em;
             }
         """)
         self.layout.addWidget(self.text_edit)
@@ -545,6 +546,7 @@ class CaptionWidget(QtWidgets.QWidget):
             self.append_to_chat_history(
                 f"{provider_label} is generating an image…",
                 is_user=False,
+                header_label=provider_label,
             )
 
             self.chat_button.setEnabled(False)
@@ -597,7 +599,11 @@ class CaptionWidget(QtWidgets.QWidget):
             self.selected_provider, "AI")
         self.current_ai_span_id = f"ai-response-{uuid.uuid4().hex}"
         self.append_to_chat_history(
-            f"{provider_label}:", is_user=False, message_id=self.current_ai_span_id)
+            "",
+            is_user=False,
+            message_id=self.current_ai_span_id,
+            header_label=provider_label,
+        )
 
         self.chat_button.setEnabled(False)
         self.is_streaming_chat = True
@@ -619,12 +625,18 @@ class CaptionWidget(QtWidgets.QWidget):
         self.chat_button.setEnabled(True)
         self.is_streaming_chat = False
         note = message.strip() if message else ""
+        header = self.provider_labels.get(self.selected_provider, "AI")
         if note:
-            self.append_to_chat_history(note, is_user=False)
+            self.append_to_chat_history(
+                note,
+                is_user=False,
+                header_label=header,
+            )
         else:
             self.append_to_chat_history(
                 f"Generated an image: {os.path.basename(image_path)}",
                 is_user=False,
+                header_label=header,
             )
         self.imageGenerated.emit(image_path)
 
@@ -636,9 +648,18 @@ class CaptionWidget(QtWidgets.QWidget):
         self.append_to_chat_history(
             f"Image generation failed: {error_message}",
             is_user=False,
+            header_label=self.provider_labels.get(
+                self.selected_provider, "AI"
+            ),
         )
 
-    def append_to_chat_history(self, message, is_user=False, message_id=None):
+    def append_to_chat_history(
+        self,
+        message,
+        is_user=False,
+        message_id=None,
+        header_label=None,
+    ):
         """
         Appends a message to the chat history display with styled ChatGPT-style message boxes.
 
@@ -646,42 +667,63 @@ class CaptionWidget(QtWidgets.QWidget):
             message (str): The message to append.
             is_user (bool): Whether the message is from the user. Defaults to False (AI message).
             message_id (str | None): Optional span identifier for streaming updates.
+            header_label (str | None): Optional label to display above the message bubble.
         """
         # Define styles
         styles = {
-            "text_color": "#202124",
-            "background_user": "#E8F0FE",  # Light blue
-            "background_model": "#F1F3F4",  # Light gray
-            "border_radius": "12px",
-            "box_shadow": "0 1px 3px rgba(0,0,0,0.1)",
-            "max_width": "60%",
-            "padding": "12px 16px",
+            "text_color": "#1f2328",
+            "label_color": "#57606a",
+            "background_user": "#dcfce7",
+            "background_model": "#ffffff",
+            "border_radius": "16px",
+            "box_shadow": "0 8px 24px rgba(15, 23, 42, 0.08)",
+            "max_width": "640px",
+            "min_width": "160px",
+            "padding": "14px 18px",
         }
 
         # Determine message styles
         background_color = styles["background_user"] if is_user else styles["background_model"]
-        sender_label = "User: " if is_user else "AI "
         alignment = "right" if is_user else "left"
-        span_markup = (
-            f"<span id='{message_id}' style='color: {styles['text_color']};'></span>"
-            if message_id and not is_user
-            else ""
-        )
+        header_text = header_label or ("You" if is_user else "AI")
+
+        content_sections: List[str] = []
+        rendered_message = self._rich_text_from_markdown(message or "")
+        if rendered_message:
+            content_sections.append(rendered_message)
+
+        if message_id and not is_user:
+            placeholder = f"<!-- START {message_id} --><!-- END {message_id} -->"
+            content_sections.append(placeholder)
+            self._message_buffers[message_id] = ""
+
+        content_html = "".join(content_sections).strip() or "&nbsp;"
 
         # Construct the HTML for the message
         message_html = f"""
-            <div style="margin-bottom: 12px; text-align: {alignment};">
+            <div style="margin-bottom: 14px; text-align: {alignment};">
                 <div style="
                     display: inline-block;
-                    /*color: {styles['text_color']};
-                    background-color: {background_color};*/
+                    background-color: {background_color};
                     padding: {styles['padding']};
                     border-radius: {styles['border_radius']};
-                    word-wrap: break-word;
+                    word-break: break-word;
                     max-width: {styles['max_width']};
                     box-shadow: {styles['box_shadow']};
+                    text-align: left;
+                    min-width: {styles['min_width']};
                 ">
-                    <span background-color:{background_color};><strong>{sender_label}</strong></span>{self.escape_html(message)}{span_markup}
+                    <div style="
+                        font-weight: 600;
+                        font-size: 12px;
+                        letter-spacing: 0.03em;
+                        text-transform: uppercase;
+                        color: {styles['label_color']};
+                        margin-bottom: 6px;
+                    ">{self.escape_html(header_text)}</div>
+                    <div style="font-size: 14px; line-height: 1.65; color: {styles['text_color']};">
+                        {content_html}
+                    </div>
                 </div>
             </div>
         """
@@ -708,6 +750,7 @@ class CaptionWidget(QtWidgets.QWidget):
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message, is_error):
         """Handles the chat response and appends to chat history."""
+        span_id = self.current_ai_span_id
         if is_error:
             # Keep error message simple
             # Stream error message
@@ -719,6 +762,8 @@ class CaptionWidget(QtWidgets.QWidget):
             pass
 
         # Reset UI and streaming flag
+        if span_id:
+            self._message_buffers.pop(span_id, None)
         self.chat_button.setEnabled(True)
         self.is_streaming_chat = False
         self.current_ai_span_id = None
@@ -757,12 +802,21 @@ class CaptionWidget(QtWidgets.QWidget):
 
         self.previous_text = current_text
 
-    def latex_to_image_base64(self, latex_string, fontsize=12, dpi=100):
-        """Renders LaTeX string to a base64 encoded PNG image."""
+    def latex_to_image_base64(self, latex_string, fontsize=12, dpi=100, inline=False):
+        """Renders a LaTeX string to a transparent PNG encoded as base64."""
         try:
             plt.clf()  # Clear previous plots
-            # Adjust figure size as needed
-            fig = plt.figure(figsize=(6, 2), dpi=dpi)
+            if inline:
+                width = max(1.6, 0.085 * len(latex_string) + 0.6)
+                height = 0.8
+            else:
+                width = max(2.8, 0.12 * len(latex_string) + 1.2)
+                line_breaks = latex_string.count("\\\\") + \
+                    latex_string.count("\n")
+                height = max(1.2, 0.9 + 0.25 * line_breaks)
+
+            fig = plt.figure(figsize=(width, height), dpi=dpi)
+            fig.patch.set_alpha(0.0)
             # Use r'' for raw string and $..$ for inline math
             fig.text(0.5, 0.5, rf'${latex_string}$',
                      fontsize=fontsize, ha='center', va='center')
@@ -780,32 +834,377 @@ class CaptionWidget(QtWidgets.QWidget):
             print(f"Error rendering LaTeX: {e}")
             return None
 
+    def _render_latex_html(self, latex_string: str, inline: bool) -> str:
+        """Return HTML snippet for a LaTeX expression rendered as an image."""
+        base64_data = self.latex_to_image_base64(
+            latex_string,
+            fontsize=14 if inline else 20,
+            dpi=220,
+            inline=inline,
+        )
+        if base64_data:
+            alt_text = self.escape_html(latex_string)
+            if inline:
+                return (
+                    f"<img alt=\"{alt_text}\" src=\"data:image/png;base64,{base64_data}\" "
+                    "style=\"vertical-align: middle; height: 1.45em;\"/>"
+                )
+            return (
+                "<div style=\"display:flex; justify-content:center; margin: 12px 0;\">"
+                f"<img alt=\"{alt_text}\" src=\"data:image/png;base64,{base64_data}\" "
+                "style=\"max-width: 100%;\"/>"
+                "</div>"
+            )
+
+        return (
+            "<span style=\"color:#d93025;\">"
+            f"⚠ Unable to render LaTeX: {self.escape_html(latex_string)}"
+            "</span>"
+        )
+
+    def _extract_math_placeholders(
+        self, text: str
+    ) -> Tuple[str, Dict[str, Dict[str, Any]]]:
+        """Replace LaTeX math segments with placeholders and keep rendered HTML."""
+        placeholders: Dict[str, Dict[str, Any]] = {}
+        counter = 0
+
+        def store(expr: str, inline: bool) -> str:
+            nonlocal counter
+            token = f"__MATH_{counter}__"
+            counter += 1
+            placeholders[token] = {
+                "html": self._render_latex_html(expr, inline=inline),
+                "block": not inline,
+            }
+            return token
+
+        def replace_block(match: Match[str]) -> str:
+            return store(match.group(1).strip(), inline=False)
+
+        def replace_inline(match: Match[str]) -> str:
+            return store(match.group(1).strip(), inline=True)
+
+        text = re.sub(
+            r"(?<!\\)\$\$(.+?)(?<!\\)\$\$",
+            replace_block,
+            text,
+            flags=re.DOTALL,
+        )
+        text = re.sub(
+            r"(?<!\\)\\\[(.+?)(?<!\\)\\\]",
+            replace_block,
+            text,
+            flags=re.DOTALL,
+        )
+        text = re.sub(
+            r"(?<!\\)\$(?!\$)(.+?)(?<!\\)\$",
+            replace_inline,
+            text,
+            flags=re.DOTALL,
+        )
+        text = re.sub(
+            r"(?<!\\)\\\((.+?)(?<!\\)\\\)",
+            replace_inline,
+            text,
+            flags=re.DOTALL,
+        )
+        return text, placeholders
+
+    def _basic_markdown_to_html(self, text: str) -> str:
+        """Robust minimal Markdown handling with safe HTML output.
+
+        Supports:
+        - Headings (# .. ######)
+        - Bold/Italic/Strikethrough (***, **, *, __, _ , ~~)
+        - Inline code (`code`)
+        - Links [text](url) and bare autolinks
+        - Images ![alt](url)
+        - Paragraph breaks on blank lines
+        """
+        def escape_segment(segment: str) -> str:
+            return html.escape(segment, quote=False)
+
+        # Handle code spans first to shield inner content
+        token_map: Dict[str, str] = {}
+
+        def replace_code(match: Match[str]) -> str:
+            token = f"<<ANNOLID_CODE_{len(token_map)}>>"
+            token_map[token] = f"<code>{escape_segment(match.group(1))}</code>"
+            return token
+
+        protected = re.sub(r"`([^`]+)`", replace_code, text)
+
+        # Images (safe URL subset)
+        def sanitize_url(url: str) -> str:
+            url = url.strip()
+            if url.startswith("http://") or url.startswith("https://"):
+                return html.escape(url, quote=True)
+            return "#"
+
+        def replace_image(match: Match[str]) -> str:
+            alt = escape_segment(match.group(1))
+            url = sanitize_url(match.group(2))
+            token = f"<<ANNOLID_IMG_{len(token_map)}>>"
+            token_map[token] = f"<img alt=\"{alt}\" src=\"{url}\"/>"
+            return token
+
+        protected = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_image, protected)
+
+        def replace_bold(match: Match[str]) -> str:
+            token = f"<<ANNOLID_BOLD_{len(token_map)}>>"
+            token_map[token] = f"<strong>{escape_segment(match.group(1))}</strong>"
+            return token
+
+        # strong+em first, then strong, then em
+        protected = re.sub(r"\*\*\*(.+?)\*\*\*", lambda m: f"<<ANNOLID_SMSTR_{len(token_map)}>>" if not token_map.setdefault(f"<<ANNOLID_SMSTR_{len(token_map)}>>", f"<strong><em>{escape_segment(m.group(1))}</em></strong>") else None or list(token_map.keys())[-1], protected)
+        protected = re.sub(r"___(.+?)___", lambda m: f"<<ANNOLID_SMSTR_{len(token_map)}>>" if not token_map.setdefault(f"<<ANNOLID_SMSTR_{len(token_map)}>>", f"<strong><em>{escape_segment(m.group(1))}</em></strong>") else None or list(token_map.keys())[-1], protected)
+        protected = re.sub(r"\*\*(.+?)\*\*", replace_bold, protected)
+        protected = re.sub(r"__(.+?)__", replace_bold, protected)
+
+        def replace_italic(match: Match[str]) -> str:
+            token = f"<<ANNOLID_EM_{len(token_map)}>>"
+            token_map[token] = f"<em>{escape_segment(match.group(1))}</em>"
+            return token
+
+        protected = re.sub(r"(?<!\*)\*(?!\*)([^\n*][\s\S]*?[^\n*])\*(?!\*)",
+                           replace_italic, protected)
+        protected = re.sub(r"(?<!_)_(?!_)([^\n_][\s\S]*?[^\n_])_(?!_)",
+                           replace_italic, protected)
+
+        # Strikethrough
+        protected = re.sub(r"~~(.+?)~~", lambda m: f"<del>{escape_segment(m.group(1))}</del>", protected)
+
+        def replace_link(match: Match[str]) -> str:
+            label = escape_segment(match.group(1))
+            url = sanitize_url(match.group(2))
+            return f"<a href=\"{url}\">{label}</a>"
+
+        protected = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, protected)
+
+        # Autolinks
+        protected = re.sub(
+            r"(?P<url>https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+)",
+            lambda m: f"<a href=\"{sanitize_url(m.group('url'))}\">{escape_segment(m.group('url'))}</a>",
+            protected,
+        )
+        # Headings
+        def replace_heading(m: Match[str]) -> str:
+            level = len(m.group(1))
+            content = escape_segment(m.group(2).strip())
+            return f"<h{level}>{content}</h{level}>"
+
+        protected = re.sub(r"^(#{1,6})\s+(.+)$", replace_heading, protected, flags=re.MULTILINE)
+
+        # Paragraphs on blank lines
+        blocks = []
+        buf: list[str] = []
+        def flush_buf():
+            if not buf:
+                return
+            paragraph = "<br/>".join(escape_segment(x) for x in buf)
+            blocks.append(f"<p>{paragraph}</p>")
+            buf.clear()
+
+        for line in protected.splitlines():
+            if not line.strip():
+                flush_buf()
+                continue
+            # Blockquotes (simple)
+            if line.lstrip().startswith(">"):
+                flush_buf()
+                content = line.lstrip()[1:].lstrip()
+                blocks.append(f"<blockquote>{escape_segment(content)}</blockquote>")
+                continue
+            buf.append(line)
+        flush_buf()
+
+        html_out = "".join(blocks) if blocks else escape_segment(protected)
+
+        # Restore tokens
+        for token, html_snippet in token_map.items():
+            html_out = html_out.replace(html.escape(token, quote=False), html_snippet)
+            html_out = html_out.replace(token, html_snippet)
+
+        return html_out
+
+    def _convert_markdown_to_html(self, text: str, raw_text: str) -> str:
+        """Convert Markdown text to HTML using the best available backend."""
+        doc_cls = getattr(QtGui, "QTextDocument", None)
+        if doc_cls is not None:
+            document = doc_cls()
+            set_markdown = getattr(document, "setMarkdown", None)
+            if callable(set_markdown):
+                try:
+                    set_markdown(text)
+                    html_content = document.toHtml()
+                    if html_content:
+                        return html_content
+                except Exception:
+                    pass
+            fragment_ctor = getattr(QtGui.QTextDocumentFragment,
+                                    "fromMarkdown", None)
+            if fragment_ctor is not None:
+                try:
+                    fragment = fragment_ctor(text)
+                    html_content = fragment.toHtml()
+                    if html_content:
+                        return html_content
+                except Exception:
+                    pass
+
+        if markdown is not None:
+            try:
+                return markdown.markdown(
+                    text,
+                    extensions=[
+                        "extra",
+                        "sane_lists",
+                        "tables",
+                        "fenced_code",
+                    ],
+                    output_format="html5",
+                )
+            except Exception:
+                pass
+
+        return self._basic_markdown_to_html(raw_text)
+
+    def _style_rich_html(self, html_content: str) -> str:
+        """Apply inline styling for code fences and inline code."""
+        pre_style = (
+            "background-color:#f5f5f5; border-radius:8px; padding:12px; "
+            "font-family:'JetBrains Mono','Consolas','Courier New',monospace; "
+            "font-size:13px; overflow-x:auto;"
+        )
+        code_style = (
+            "background-color:#f0f0f0; border-radius:4px; padding:2px 4px; "
+            "font-family:'JetBrains Mono','Consolas','Courier New',monospace;"
+        )
+        blockquote_style = (
+            "margin: 8px 0; padding: 6px 12px; border-left: 4px solid #d0d7de; "
+            "color:#57606a; background-color:#f6f8fa; border-radius: 0 6px 6px 0;"
+        )
+        list_style = (
+            "margin: 6px 0 6px 18px;"
+        )
+        html_content = re.sub(
+            r"<pre(?![^>]*style=)([^>]*)>",
+            lambda match: f"<pre{match.group(1)} style=\"{pre_style}\">",
+            html_content,
+        )
+        html_content = re.sub(
+            r"<code(?![^>]*style=)([^>]*)>",
+            lambda match: f"<code{match.group(1)} style=\"{code_style}\">",
+            html_content,
+        )
+        html_content = re.sub(
+            r"<blockquote(?![^>]*style=)([^>]*)>",
+            lambda m: f"<blockquote{m.group(1)} style=\"{blockquote_style}\">",
+            html_content,
+        )
+        html_content = re.sub(
+            r"<(ul|ol)(?![^>]*style=)([^>]*)>",
+            lambda m: f"<{m.group(1)}{m.group(2)} style=\"{list_style}\">",
+            html_content,
+        )
+        return html_content
+
+    def _preprocess_markdown(self, text: str) -> Tuple[str, Dict[str, str]]:
+        """Preprocess markdown to neutralize literals that break formatting."""
+        if not text:
+            return "", {}
+
+        replacements: Dict[str, str] = {}
+
+        def replace_parenthesized_star(match: Match[str]) -> str:
+            spacing = match.group(1) or ""
+            # Convert a parenthesized bullet marker like "(* " into a clean bullet
+            # e.g. "(* **Item** ...)" -> "(• **Item** ...)"
+            return f"({spacing}•"
+
+        sanitized = re.sub(
+            r"(?<!\\)\((\s*)\*(?!\*)",
+            replace_parenthesized_star,
+            text,
+        )
+
+        # Also handle the case "(* **" (no space after the asterisk) inside parentheses
+        sanitized = re.sub(
+            r"(?<=\()\*(?=\s*\*\*)",
+            "•",
+            sanitized,
+        )
+        return sanitized, replacements
+
+    def _rich_text_from_markdown(self, text: str) -> str:
+        """Render Markdown with LaTeX support into styled HTML."""
+        if not text:
+            return ""
+
+        sanitized_text, literal_tokens = self._preprocess_markdown(text)
+        processed_text, placeholders = self._extract_math_placeholders(
+            sanitized_text)
+        html_content = self._convert_markdown_to_html(
+            processed_text, raw_text=sanitized_text)
+
+        for token, data in placeholders.items():
+            if data["block"]:
+                pattern = re.compile(
+                    rf"<p[^>]*>\s*{re.escape(token)}\s*</p>", re.IGNORECASE
+                )
+                html_content, replaced = pattern.subn(data["html"], html_content)
+                if not replaced:
+                    html_content = html_content.replace(token, data["html"])
+            else:
+                html_content = html_content.replace(token, data["html"])
+
+        html_content = self._style_rich_html(html_content)
+
+        for token, value in literal_tokens.items():
+            html_content = html_content.replace(token, value)
+            html_content = html_content.replace(
+                html.escape(token, quote=False), value)
+
+        return html_content
+
+    def _update_marker_content(self, message_id: str, html_fragment: str) -> bool:
+        """Replace the HTML between comment markers for a streaming chat message."""
+        start_marker = f"<!-- START {message_id} -->"
+        end_marker = f"<!-- END {message_id} -->"
+        current_html = self.text_edit.toHtml()
+
+        start_idx = current_html.find(start_marker)
+        end_idx = current_html.find(end_marker, start_idx)
+        if start_idx == -1 or end_idx == -1:
+            return False
+
+        new_html = (
+            current_html[: start_idx + len(start_marker)]
+            + html_fragment
+            + current_html[end_idx:]
+        )
+        self.text_edit.setHtml(new_html)
+        return True
+
     def set_caption(self, caption_text):
-        """Sets the caption text in the QTextEdit, rendering LaTeX formulas as images."""
+        """Sets the caption text with Markdown and LaTeX rendered content."""
         self.previous_text = ""
-        html_content = ""
-        parts = caption_text.split("$$")  # Split by LaTeX delimiters
-
-        for i, part in enumerate(parts):
-            if i % 2 == 0:  # Non-LaTeX part
-                # Escape HTML special characters
-                html_content += self.escape_html(part)
-            else:  # LaTeX part
-                base64_data = self.latex_to_image_base64(part)
-                if base64_data:
-                    # vertical-align:middle to align images with text
-                    html_content += f'<img src="data:image/png;base64,{base64_data}" style="vertical-align:middle;"/>'
-                else:
-                    # Display error if rendering fails, escape LaTeX for display
-                    html_content += f'<span style="color:red;">Error rendering LaTeX: $${self.escape_html(part)}$$</span>'
-
-        # Enclose in body for consistent HTML structure
-        self.text_edit.setHtml(f"<body>{html_content}</body>")
+        content_html = self._rich_text_from_markdown(caption_text)
+        wrapped_html = (
+            "<body style=\"font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; "
+            "font-size: 14px; line-height: 1.6; color: #1f2328;\">"
+            f"{content_html}"
+            "</body>"
+        )
+        self.text_edit.setHtml(wrapped_html)
         self.previous_text = caption_text
 
     def escape_html(self, text):
         """Escapes HTML special characters to prevent rendering issues."""
-        return text.replace('&', '&').replace('<', '<').replace('>', '>')
+        if text is None:
+            return ""
+        return html.escape(text, quote=False)
 
     def clear_caption(self):
         """Clears the caption."""
@@ -1082,41 +1481,30 @@ class CaptionWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def stream_chat_chunk(self, chunk):
-        """Streams a chunk of the chat response by appending to the last Ollama message's span."""
-        current_html = self.text_edit.toHtml()
-        chunk_escaped = self.escape_html(chunk)
+        """Streams a chunk of the chat response by re-rendering Markdown content."""
+        if chunk is None or chunk == "":
+            return
 
         span_id = self.current_ai_span_id
         if not span_id:
-            # Fallback: append to end if span is unknown
+            # Fallback: append raw text if span tracking failed
             self.text_edit.moveCursor(QtGui.QTextCursor.End)
             self.text_edit.insertPlainText(chunk)
             return
 
-        span_marker = f"id='{span_id}'"
-        last_span_index = current_html.lower().rfind(span_marker.lower())
+        updated_buffer = self._message_buffers.get(span_id, "") + chunk
+        self._message_buffers[span_id] = updated_buffer
 
-        if last_span_index != -1:
-            insertion_index = current_html.lower().find(
-                "</span>", last_span_index)
-            if insertion_index != -1:
-                # Reconstruct HTML by inserting chunk content
-                new_html = current_html[:insertion_index] + \
-                    chunk_escaped + current_html[insertion_index:]
-                self.text_edit.setHtml(new_html)
-            else:
-                print("Error: Closing </span> tag for AI response span not found.")
-                # Fallback: Append to end of QTextEdit if span structure is broken
-                self.text_edit.moveCursor(QtGui.QTextCursor.End)
-                self.text_edit.insertPlainText(chunk)
-        else:
-            # Fallback: Append to end of QTextEdit if marker span is missing
+        rendered_html = self._rich_text_from_markdown(updated_buffer)
+        if not self._update_marker_content(span_id, rendered_html):
+            # Fallback: append raw text to avoid losing information
             self.text_edit.moveCursor(QtGui.QTextCursor.End)
             self.text_edit.insertPlainText(chunk)
 
         # Ensure scrollbar is at the bottom
         self.text_edit.verticalScrollBar().setValue(
-            self.text_edit.verticalScrollBar().maximum())
+            self.text_edit.verticalScrollBar().maximum()
+        )
 
 
 class GeminiImageGenerationTask(QRunnable):
