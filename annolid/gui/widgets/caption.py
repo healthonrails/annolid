@@ -19,7 +19,7 @@ import mimetypes
 import uuid
 import html
 import re
-from typing import Any, Dict, List, Tuple, Match
+from typing import Any, Dict, List, Tuple, Match, Optional
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.utils.llm_settings import (
@@ -81,6 +81,8 @@ class CaptionWidget(QtWidgets.QWidget):
             self.on_voice_recording_finished)  # Connect signal
         self.is_streaming_chat = False  # Flag to indicate if chat is streaming
         self.current_ai_span_id = None  # Tracks current AI response span
+        self.canvas_widget: Optional[QtWidgets.QWidget] = None
+        self._canvas_snapshot_paths: List[str] = []
         self._message_buffers: Dict[str, str] = {}
 
     def _default_model_for(self, provider: str) -> str:
@@ -1211,13 +1213,71 @@ class CaptionWidget(QtWidgets.QWidget):
         self.set_caption("")
         self.clear_label.setText("Clear caption")
 
+    def set_canvas(self, canvas: Optional[QtWidgets.QWidget]) -> None:
+        """Attach the canvas widget so we can snapshot it when needed."""
+        self.canvas_widget = canvas
+
     def set_image_path(self, image_path):
         """Sets the image path."""
         self.image_path = image_path
 
     def get_image_path(self):
         """Returns the image path."""
+        if self.image_path and os.path.exists(self.image_path):
+            return self.image_path
+
+        for path in reversed(self._canvas_snapshot_paths):
+            if os.path.exists(path):
+                return path
+
         return self.image_path
+
+    def _cleanup_canvas_snapshots(self) -> None:
+        """Remove temporary canvas snapshots when they are no longer needed."""
+        stale_paths = list(self._canvas_snapshot_paths)
+        self._canvas_snapshot_paths.clear()
+        for snapshot_path in stale_paths:
+            try:
+                if snapshot_path and os.path.exists(snapshot_path):
+                    os.remove(snapshot_path)
+            except OSError:
+                pass
+
+    def _snapshot_canvas_to_tempfile(self) -> Optional[str]:
+        """Capture the current canvas pixmap into a temporary PNG file."""
+        canvas = self.canvas_widget
+        if canvas is None:
+            return None
+
+        pixmap = getattr(canvas, "pixmap", None)
+        if pixmap is None or getattr(pixmap, "isNull", lambda: True)():
+            try:
+                pixmap = canvas.grab()
+            except Exception:
+                pixmap = None
+
+        if pixmap is None or pixmap.isNull():
+            return None
+
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="annolid_canvas_", suffix=".png")
+            os.close(fd)
+            if not pixmap.save(tmp_path, "PNG"):
+                os.remove(tmp_path)
+                return None
+            self._canvas_snapshot_paths.append(tmp_path)
+            return tmp_path
+        except Exception as exc:
+            print(f"Failed to snapshot canvas: {exc}")
+            return None
+
+    def _resolve_image_for_description(self) -> Optional[str]:
+        """Determine the best image path for description, falling back to the canvas."""
+        stored_path = self.get_image_path()
+        if stored_path and os.path.exists(stored_path):
+            return stored_path
+
+        return self._snapshot_canvas_to_tempfile()
 
     def read_caption_async(self):
         """Reads the caption in a background thread."""
@@ -1286,25 +1346,30 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def on_describe_clicked(self):
         """Handles the Describe button click and starts the background task."""
-        image_path = self.get_image_path()
-        if image_path:
-            if self.selected_provider != "ollama":
-                self.update_description_status(
-                    "Image description currently supports Ollama models. Please switch provider.",
-                    True,
-                )
-                return
-            self.describe_label.setText("Describing image...")
-            task = DescribeImageTask(
-                image_path,
-                self,
-                model=self.selected_model,
-                provider=self.selected_provider,
-                settings=self.llm_settings,
-            )  # Pass selected model
-            self.thread_pool.start(task)
-        else:
-            self.set_caption("No image selected for description.")
+        if self.selected_provider != "ollama":
+            self.update_description_status(
+                "Image description currently supports Ollama models. Please switch provider.",
+                True,
+            )
+            return
+
+        image_path = self._resolve_image_for_description()
+        if not image_path:
+            self.update_description_status(
+                "No image available for description. Load or draw on the canvas first.",
+                True,
+            )
+            return
+
+        self.describe_label.setText("Describing image...")
+        task = DescribeImageTask(
+            image_path,
+            self,
+            model=self.selected_model,
+            provider=self.selected_provider,
+            settings=self.llm_settings,
+        )
+        self.thread_pool.start(task)
 
     @QtCore.Slot(str, bool)
     def update_description_status(self, message, is_error):
