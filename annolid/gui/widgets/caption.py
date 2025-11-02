@@ -84,6 +84,10 @@ class CaptionWidget(QtWidgets.QWidget):
         self.canvas_widget: Optional[QtWidgets.QWidget] = None
         self._canvas_snapshot_paths: List[str] = []
         self._message_buffers: Dict[str, str] = {}
+        self._last_nonempty_caption: str = ""
+        self._allow_empty_caption: bool = False
+        self._last_emitted_caption: Optional[str] = None
+        self._description_buffer: str = ""
 
     def _default_model_for(self, provider: str) -> str:
         defaults = {
@@ -1139,12 +1143,20 @@ class CaptionWidget(QtWidgets.QWidget):
         )
         return sanitized, replacements
 
+    def _extract_special_tags(self, text: str) -> Tuple[str, Dict[str, str]]:
+        """Preserve special XML-like tags (e.g., <think>) as literal text."""
+        if not text:
+            return "", {}
+
+        return text, {}
+
     def _rich_text_from_markdown(self, text: str) -> str:
         """Render Markdown with LaTeX support into styled HTML."""
         if not text:
             return ""
 
         sanitized_text, literal_tokens = self._preprocess_markdown(text)
+        sanitized_text, special_tokens = self._extract_special_tags(sanitized_text)
         processed_text, placeholders = self._extract_math_placeholders(
             sanitized_text)
         html_content = self._convert_markdown_to_html(
@@ -1164,6 +1176,11 @@ class CaptionWidget(QtWidgets.QWidget):
         html_content = self._style_rich_html(html_content)
 
         for token, value in literal_tokens.items():
+            html_content = html_content.replace(token, value)
+            html_content = html_content.replace(
+                html.escape(token, quote=False), value)
+
+        for token, value in special_tokens.items():
             html_content = html_content.replace(token, value)
             html_content = html_content.replace(
                 html.escape(token, quote=False), value)
@@ -1210,6 +1227,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def clear_caption(self):
         """Clears the caption."""
+        self._allow_empty_caption = True
         self.set_caption("")
         self.clear_label.setText("Clear caption")
 
@@ -1219,6 +1237,8 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def set_image_path(self, image_path):
         """Sets the image path."""
+        if image_path and image_path not in self._canvas_snapshot_paths:
+            self._cleanup_canvas_snapshots()
         self.image_path = image_path
 
     def get_image_path(self):
@@ -1344,6 +1364,25 @@ class CaptionWidget(QtWidgets.QWidget):
         finally:
             self.readCaptionFinished.emit()
 
+    @QtCore.Slot()
+    def begin_description_stream(self, intro_text: str = "Describing image…") -> None:
+        """Prepare UI state for an incoming streaming description."""
+        self._description_buffer = ""
+        self._allow_empty_caption = True
+        if intro_text:
+            self.set_caption(intro_text)
+        else:
+            self.set_caption("")
+
+    @QtCore.Slot(str)
+    def append_description_stream_chunk(self, chunk: str) -> None:
+        """Append a streamed chunk from the describe-image task."""
+        if not chunk:
+            return
+        self._description_buffer += chunk
+        self._allow_empty_caption = False
+        self.set_caption(self._description_buffer)
+
     def on_describe_clicked(self):
         """Handles the Describe button click and starts the background task."""
         if self.selected_provider != "ollama":
@@ -1362,6 +1401,7 @@ class CaptionWidget(QtWidgets.QWidget):
             return
 
         self.describe_label.setText("Describing image...")
+        self.begin_description_stream()
         task = DescribeImageTask(
             image_path,
             self,
@@ -1377,14 +1417,36 @@ class CaptionWidget(QtWidgets.QWidget):
         if is_error:
             self.set_caption(message)
             self.describe_label.setText("Description failed.")
+            self._description_buffer = ""
+            self._allow_empty_caption = False
         else:
             self.set_caption(message)
             self.describe_label.setText("Describe the image")
+            self._description_buffer = message
+            self._allow_empty_caption = False
 
     def emit_caption_changed(self):
         """Emits the captionChanged signal with the current caption."""
-        self.captionChanged.emit(
-            self.text_edit.toPlainText())  # emit plain text caption
+        current_plain = self.text_edit.toPlainText()
+        current_stripped = current_plain.strip()
+
+        if current_stripped:
+            target_caption = current_plain
+            self._last_nonempty_caption = current_plain
+            self._allow_empty_caption = False
+        else:
+            if self._allow_empty_caption or self.text_edit.hasFocus():
+                target_caption = ""
+                self._last_nonempty_caption = ""
+                self._allow_empty_caption = False
+            else:
+                target_caption = self._last_nonempty_caption
+
+        if target_caption == self._last_emitted_caption:
+            return
+
+        self._last_emitted_caption = target_caption
+        self.captionChanged.emit(target_caption)
 
     def get_caption(self):
         """Returns the current caption text (plain text, not HTML)."""
@@ -1969,39 +2031,84 @@ class DescribeImageTask(QRunnable):
                 raise ImportError(
                     "The python 'ollama' package is not installed.")
 
+            prev_host_present = "OLLAMA_HOST" in os.environ
+            prev_host_value = os.environ.get("OLLAMA_HOST")
             host = self.settings.get("ollama", {}).get("host")
             if host:
                 os.environ["OLLAMA_HOST"] = host
+            else:
+                os.environ.pop("OLLAMA_HOST", None)
 
-            response = ollama_module.chat(
-                model=self.model,
-                messages=[{
+            chat_request = {
+                "model": self.model,
+                "messages": [{
                     'role': 'user',
                     'content': self.prompt,
                     'images': [self.image_path]
-                }]
-            )
+                }],
+                "stream": True,
+            }
 
-            # Access response content safely
-            if "message" in response and "content" in response["message"]:
-                description = response["message"]["content"]
+            description_chunks: List[str] = []
+            response_stream = ollama_module.chat(**chat_request)
+
+            if isinstance(response_stream, dict):
+                # Some Ollama builds ignore stream flag and return a dict directly.
+                message = response_stream.get("message", {})
+                description = message.get("content", "")
+                if not description:
+                    raise ValueError(
+                        "Unexpected response format: 'message' or 'content' key missing.")
                 QtCore.QMetaObject.invokeMethod(
-                    self.widget, "update_description_status", QtCore.Qt.QueuedConnection,
+                    self.widget,
+                    "update_description_status",
+                    QtCore.Qt.QueuedConnection,
                     QtCore.Q_ARG(str, description),
                     QtCore.Q_ARG(bool, False)
                 )
-            else:
-                raise ValueError(
-                    "Unexpected response format: 'message' or 'content' key missing.")
+                return
+
+            for part in response_stream:
+                if 'message' in part and 'content' in part['message']:
+                    chunk = part['message']['content']
+                    if chunk:
+                        description_chunks.append(chunk)
+                        QtCore.QMetaObject.invokeMethod(
+                            self.widget,
+                            "append_description_stream_chunk",
+                            QtCore.Qt.QueuedConnection,
+                            QtCore.Q_ARG(str, chunk),
+                        )
+                elif 'error' in part:
+                    raise RuntimeError(part['error'])
+
+            description = "".join(description_chunks).strip()
+            if not description:
+                raise RuntimeError("No description received from Ollama.")
+
+            QtCore.QMetaObject.invokeMethod(
+                self.widget,
+                "update_description_status",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, description),
+                QtCore.Q_ARG(bool, False)
+            )
 
         except Exception as e:
-            error_message = f"An error occurred while describing the image: {e}.\n"
-            error_message += "Please save the video frame to disk by clicking the 'Save' button or pressing Ctrl/Cmd + S."
+            error_message = (
+                f"An error occurred while describing the image: {e}.\n"
+                "Make sure an image is visible or saved, then try again."
+            )
             QtCore.QMetaObject.invokeMethod(
                 self.widget, "update_description_status", QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, error_message),
                 QtCore.Q_ARG(bool, True)
             )
+        finally:
+            if prev_host_present:
+                os.environ["OLLAMA_HOST"] = prev_host_value  # type: ignore[arg-type]
+            else:
+                os.environ.pop("OLLAMA_HOST", None)
 
 
 class ReadCaptionTask(QRunnable):
