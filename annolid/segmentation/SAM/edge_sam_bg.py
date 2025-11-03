@@ -225,7 +225,7 @@ class VideoProcessor:
     def process_video_with_cutite(self, frames_to_propagate=100,
                                   mem_every=5,
                                   has_occlusion=False,
-                                  ):
+                                  start_frame=0):
         seed_frames = CutieVideoProcessor.discover_seed_frames(
             self.video_path, self.results_folder)
         if not seed_frames:
@@ -258,6 +258,7 @@ class VideoProcessor:
 
         message = self.cutie_processor.process_video_from_seeds(
             end_frame=target_end,
+            start_frame=start_frame,
             pred_worker=self.pred_worker,
             recording=self.save_video_with_color_mask,
             output_video_path=None,

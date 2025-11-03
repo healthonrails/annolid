@@ -4,9 +4,9 @@ import torch
 import gdown
 import json
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 from PIL import Image
 from annolid.gui.shape import MaskShape, Shape
 from annolid.annotation.keypoints import save_labels
@@ -128,6 +128,12 @@ class CutieVideoProcessor:
         self._seed_segment_lookup: Dict[int, SeedSegment] = {}
         self._committed_seed_frames: Set[int] = set()
         self._cached_labeled_frames: Optional[Set[int]] = None
+        self._seed_object_counts: Dict[int, int] = {}
+        self._global_object_ids: List[int] = []
+        self._global_label_names: Dict[int, str] = {}
+        self._video_seed_cache: Dict[str, Dict[str, Any]] = {}
+        self._current_video_cache_key: Optional[str] = None
+        self._video_active_object_ids: Set[int] = set()
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -260,6 +266,88 @@ class CutieVideoProcessor:
 
         self._cached_labeled_frames = labeled_frames
         return labeled_frames
+
+    def _apply_seed_cache(self, cache: Dict[str, Any]) -> None:
+        """Populate instance seed metadata from a cached entry."""
+        self._current_video_cache_key = cache["video_key"]
+        self._seed_segment_lookup = cache["segments"]
+        self._seed_object_counts = cache["object_counts"]
+        self._global_object_ids = list(cache["object_ids"])
+        self._global_label_names = dict(cache["label_names"])
+
+    def _prepare_seed_segments(self, seeds: List[SeedFrame]) -> None:
+        """Parse every seed frame for the current video and cache the results."""
+        video_key = str(Path(self.video_folder).resolve())
+        segments: Dict[int, SeedSegment] = {}
+        object_counts: Dict[int, int] = {}
+        global_label_names: Dict[int, str] = {}
+        global_object_ids: Set[int] = set()
+        frame_indices: List[int] = []
+
+        for seed in seeds:
+            segment = self._load_seed_mask(seed)
+            if segment is None:
+                continue
+
+            segments[seed.frame_index] = segment
+            object_counts[seed.frame_index] = len(segment.active_labels)
+            frame_indices.append(seed.frame_index)
+
+            for label, value in segment.labels_map.items():
+                if label == "_background_":
+                    continue
+                global_label_names.setdefault(value, label)
+                global_object_ids.add(value)
+
+        cache_entry = {
+            "video_key": video_key,
+            "segments": segments,
+            "object_counts": object_counts,
+            "object_ids": sorted(global_object_ids),
+            "label_names": global_label_names,
+            "frame_indices": sorted(frame_indices),
+        }
+        self._video_seed_cache[video_key] = cache_entry
+        self._apply_seed_cache(cache_entry)
+        logger.info(
+            "Cached %d seed frame(s) for video '%s'; discovered %d object id(s).",
+            len(segments),
+            self.video_name,
+            len(global_object_ids),
+        )
+
+    def _ensure_seed_cache(self, seeds: List[SeedFrame]) -> None:
+        """Ensure the active video has an up-to-date seed cache."""
+        video_key = str(Path(self.video_folder).resolve())
+        required_frames = sorted(seed.frame_index for seed in seeds)
+        cache_entry = self._video_seed_cache.get(video_key)
+        cache_frames = cache_entry.get("frame_indices") if cache_entry else None
+
+        if (
+            cache_entry is None
+            or cache_frames is None
+            or not set(required_frames).issubset(cache_frames)
+            or set(cache_frames) != set(required_frames)  # detect removed seeds
+        ):
+            self._prepare_seed_segments(seeds)
+        else:
+            self._apply_seed_cache(cache_entry)
+
+    def _register_active_objects(self, object_ids: Iterable[int]) -> None:
+        """Track which object ids have appeared so far in the current video."""
+        updated = False
+        for obj_id in object_ids or []:
+            if obj_id is None:
+                continue
+            normalized = int(obj_id)
+            if normalized not in self._video_active_object_ids:
+                self._video_active_object_ids.add(normalized)
+                updated = True
+        if updated or not self.num_tracking_instances:
+            self.num_tracking_instances = max(
+                self.num_tracking_instances,
+                len(self._video_active_object_ids),
+            )
 
     @staticmethod
     def _segment_already_completed(segment: SeedSegment,
@@ -540,11 +628,26 @@ class CutieVideoProcessor:
                              requested_end: Optional[int]) -> List[SeedSegment]:
         """Create contiguous segments from discovered seeds."""
         segments: List[SeedSegment] = []
-        self._seed_segment_lookup = {}
         for idx, seed in enumerate(seeds):
-            segment = self._load_seed_mask(seed)
-            if segment is None:
-                continue
+            cached_segment = self._seed_segment_lookup.get(seed.frame_index)
+            if cached_segment is None:
+                cached_segment = self._load_seed_mask(seed)
+                if cached_segment is None:
+                    continue
+                self._seed_segment_lookup[seed.frame_index] = cached_segment
+                self._seed_object_counts[seed.frame_index] = len(
+                    cached_segment.active_labels)
+                for label, value in cached_segment.labels_map.items():
+                    if label == "_background_":
+                        continue
+                    if value not in self._global_label_names:
+                        self._global_label_names[value] = label
+                        self._global_object_ids.append(value)
+                self._global_object_ids.sort()
+
+            segment = replace(cached_segment)
+            segment.start_frame = seed.frame_index
+            segment.end_frame = None
 
             next_seed_frame = None
             if idx + 1 < len(seeds):
@@ -565,8 +668,6 @@ class CutieVideoProcessor:
                 continue
 
             segments.append(segment)
-            if segment.seed is not None:
-                self._seed_segment_lookup[segment.seed.frame_index] = segment
 
         if requested_end is not None and segments:
             # Ensure the final segment honours requested_end.
@@ -578,7 +679,8 @@ class CutieVideoProcessor:
 
     def commit_masks_into_permanent_memory(self, frame_number, labels_dict,
                                            seed_frames: Optional[List[SeedFrame]] = None,
-                                           seed_segment_lookup: Optional[Dict[int, SeedSegment]] = None):
+                                           seed_segment_lookup: Optional[Dict[int, SeedSegment]] = None,
+                                           segment_end: Optional[int] = None):
         """
         Commit masks into permanent memory for inference.
 
@@ -601,10 +703,14 @@ class CutieVideoProcessor:
                         continue
                     if seed.frame_index in self._committed_seed_frames:
                         continue
+                    if segment_end is not None and seed.frame_index > segment_end:
+                        continue
 
                     segment = None
                     if seed_segment_lookup:
                         segment = seed_segment_lookup.get(seed.frame_index)
+                    if segment is None:
+                        segment = self._seed_segment_lookup.get(seed.frame_index)
                     if segment is None:
                         segment = self._load_seed_mask(seed)
                         if segment and segment.seed is not None:
@@ -631,11 +737,14 @@ class CutieVideoProcessor:
                         segment.mask)
                     if mask_tensor is None or not active_ids:
                         continue
+                    self._register_active_objects(active_ids)
                     mask_tensor = mask_tensor.to(self.device)
                     self.processor.step(
-                        frame_torch, mask_tensor,
+                        frame_torch,
+                        mask_tensor,
+                        objects=active_ids,
                         idx_mask=False,
-                        force_permanent=True
+                        force_permanent=True,
                     )
                     self._committed_seed_frames.add(segment.seed.frame_index)
                     logger.info(
@@ -791,7 +900,9 @@ class CutieVideoProcessor:
                 segment.start_frame,
                 labels_dict,
                 seed_frames=seed_frames,
-                seed_segment_lookup=seed_segment_lookup)
+                seed_segment_lookup=seed_segment_lookup,
+                segment_end=end_frame,
+            )
             labels_dict.update(_labels_dict)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.info(exc)
@@ -805,10 +916,12 @@ class CutieVideoProcessor:
             return (f"No valid polygon found in seed frame #{segment.start_frame}", True)
 
         mask_tensor = mask_tensor.to(self.device)
-        self.num_tracking_instances = len(segment.active_labels)
+        self._register_active_objects(active_ids)
         value_to_label_names = {
             value: label for label, value in self.label_registry.items()
         }
+        if self._global_label_names:
+            value_to_label_names.update(self._global_label_names)
         instance_names = set(segment.active_labels)
 
         current_frame_index = segment.start_frame
@@ -842,9 +955,11 @@ class CutieVideoProcessor:
                     if current_frame_index == segment.start_frame:
                         try:
                             prediction = self.processor.step(
-                                frame_torch, mask_tensor,
+                                frame_torch,
+                                mask_tensor,
+                                objects=active_ids,
                                 idx_mask=False,
-                                force_permanent=True
+                                force_permanent=True,
                             )
                             prediction = torch_prob_to_numpy_mask(prediction)
                             global_prediction = self._map_local_prediction_to_global(
@@ -947,6 +1062,7 @@ class CutieVideoProcessor:
         self.label_registry = {"_background_": 0}
         self._committed_seed_frames.clear()
         self._seed_segment_lookup = {}
+        self._video_active_object_ids = set()
         self._seed_frames = seed_frames or []
 
         ordered_labels = sorted(
@@ -987,6 +1103,7 @@ class CutieVideoProcessor:
 
     def process_video_from_seeds(self,
                                  end_frame: Optional[int] = None,
+                                 start_frame: int = 0,
                                  pred_worker=None,
                                  recording: bool = False,
                                  output_video_path: Optional[str] = None,
@@ -996,7 +1113,7 @@ class CutieVideoProcessor:
 
         self.label_registry = {"_background_": 0}
         self._committed_seed_frames.clear()
-        self._seed_segment_lookup = {}
+        self._video_active_object_ids = set()
         self._seed_frames = self.discover_seed_frames(
             self.video_name, self.video_folder)
         if not self._seed_frames:
@@ -1006,6 +1123,30 @@ class CutieVideoProcessor:
             if pred_worker is not None:
                 pred_worker.stop_signal.emit()
             return message
+
+        self._ensure_seed_cache(self._seed_frames)
+        if not self._seed_segment_lookup:
+            message = "No valid seed masks were parsed for this video."
+            logger.info(message)
+            if pred_worker is not None:
+                pred_worker.stop_signal.emit()
+            return message
+
+        self._seed_frames = [
+            seed for seed in self._seed_frames
+            if seed.frame_index in self._seed_segment_lookup
+            and seed.frame_index >= start_frame
+        ]
+        if not self._seed_frames:
+            message = (
+                "No seed frames available at or after the requested start frame."
+            )
+            logger.info(message)
+            if pred_worker is not None:
+                pred_worker.stop_signal.emit()
+            return message
+
+        self.num_tracking_instances = len(self._video_active_object_ids)
 
         segments = self._build_seed_segments(self._seed_frames, end_frame)
         if not segments:
