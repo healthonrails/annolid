@@ -121,6 +121,15 @@ class MenuController:
                 "tip": w.tr("Open Caption"),
             },
             {
+                "name": "open_florence2",
+                "text": w.tr("Florence-&2 Assistant"),
+                "slot": w.openFlorence2,
+                "tip": w.tr(
+                    "Florence-2 captioning and segmentation panel for the current project"
+                ),
+                "icon_name": "objects",
+            },
+            {
                 "name": "downsample_video",
                 "text": w.tr("&Downsample Videos"),
                 "slot": w.downsample_videos,
@@ -373,6 +382,7 @@ class MenuController:
         tool_actions.append(actions["quality_control"])
         tool_actions.append(actions["colab"])
         tool_actions.append(actions["visualization"])
+        tool_actions.append(actions["open_florence2"])
         tool_actions.append(w.patch_similarity_action)
         tool_actions.append(w.pca_map_action)
         tool_actions.append(w.recording_widget.record_action)
@@ -392,6 +402,7 @@ class MenuController:
         utils.addActions(w.menus.file, (actions["open_video"],))
         utils.addActions(w.menus.file, (actions["open_audio"],))
         utils.addActions(w.menus.file, (actions["open_caption"],))
+        utils.addActions(w.menus.file, (actions["open_florence2"],))
         utils.addActions(w.menus.file, (actions["colab"],))
         utils.addActions(w.menus.file, (actions["save_labels"],))
         utils.addActions(w.menus.file, (actions["coco"],))
