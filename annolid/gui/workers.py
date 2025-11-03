@@ -282,54 +282,129 @@ class TrackAllWorker(QThread):
 
     def process_single_video(self, video_path, idx, total_videos):
         """Process a single video either via saved segments or whole-video tracking."""
-        video_name = Path(video_path).stem
-        output_folder = Path(video_path).with_suffix('')
+        video_path = Path(video_path)
+        video_path_str = str(video_path)
+        video_name = video_path.stem
+        output_folder = video_path.with_suffix('')
         output_folder.mkdir(exist_ok=True, parents=True)
         self.logger.info(
             f"Processing {video_name}: Output folder = {output_folder}")
 
-        self.video_processing_started.emit(video_path, str(output_folder))
+        self.video_processing_started.emit(video_path_str, str(output_folder))
 
-        device = self.select_device()
+        candidate_devices = [self.select_device()]
+        if candidate_devices[0].type == "cuda":
+            candidate_devices.append(torch.device("cpu"))
+
+        result = False
+        final_error = None
+
+        for attempt_index, device in enumerate(candidate_devices):
+            if attempt_index > 0:
+                self.logger.info(
+                    f"Retrying {video_name} on {device.type.upper()} after GPU failure."
+                )
+            try:
+                result = self._process_single_video_attempt(
+                    video_path=video_path,
+                    idx=idx,
+                    total_videos=total_videos,
+                    device=device,
+                    output_folder=output_folder,
+                )
+                final_error = None
+                break
+            except RuntimeError as exc:
+                if (
+                    device.type == "cuda"
+                    and self._should_retry_on_cpu(exc)
+                    and attempt_index + 1 < len(candidate_devices)
+                ):
+                    final_error = str(exc)
+                    self.logger.error(
+                        f"CUDA failure while processing {video_name}: {exc}",
+                        exc_info=True,
+                    )
+                    progress_value = max(
+                        0, int(((idx - 1) / max(total_videos, 1)) * 100)
+                    )
+                    self.progress.emit(
+                        progress_value,
+                        f"{video_name}: CUDA failure detected, retrying on CPU.",
+                    )
+                    continue
+
+                final_error = str(exc)
+                self.logger.error(f"Processing error: {exc}", exc_info=True)
+                break
+            except Exception as exc:
+                final_error = str(exc)
+                self.logger.error(f"Processing error: {exc}", exc_info=True)
+                break
+
+        if final_error and not result:
+            self.error.emit(f"Failed to process {video_name}: {final_error}")
+
+        self.video_processing_finished.emit(video_path_str)
+        return result
+
+    def _process_single_video_attempt(
+        self,
+        video_path: Path,
+        idx: int,
+        total_videos: int,
+        device: torch.device,
+        output_folder: Path,
+    ) -> bool:
+        """Run the single-video pipeline on a specific device."""
+        video_name = video_path.stem
         self.logger.info(f"Using device: {device} for {video_name}")
-        self.log_gpu_memory(video_name, "Before")
+        self.log_gpu_memory(video_name, f"Before ({device.type})")
 
-        segments = self._load_saved_segments(Path(video_path))
+        segments = self._load_saved_segments(video_path)
         processor = None
 
         try:
             if segments:
                 return self._process_segments_for_video(
-                    Path(video_path), segments, idx, total_videos, device)
+                    video_path,
+                    segments,
+                    idx,
+                    total_videos,
+                    device,
+                )
 
             json_files = find_manual_labeled_json_files(str(output_folder))
             if not json_files:
                 self.progress.emit(
                     int((idx / total_videos) * 100),
-                    f"Skipping {video_name}: No JSON label file found."
+                    f"Skipping {video_name}: No JSON label file found.",
                 )
                 return False
 
-            json_file = Path(output_folder) / sorted(json_files)[-1]
+            json_file = output_folder / sorted(json_files)[-1]
             try:
-                labeled_frame_number = get_frame_number_from_json(
-                    str(json_file))
+                labeled_frame_number = get_frame_number_from_json(str(json_file))
                 label_file = LabelFile(str(json_file), is_video_frame=True)
                 valid_shapes = [
-                    shape for shape in label_file.shapes
-                    if shape.get('shape_type') == 'polygon' and len(shape.get('points', [])) >= 3
+                    shape
+                    for shape in label_file.shapes
+                    if shape.get("shape_type") == "polygon"
+                    and len(shape.get("points", [])) >= 3
                 ]
                 if not valid_shapes:
                     self.progress.emit(
                         int((idx / total_videos) * 100),
-                        f"Skipping {video_name}: JSON file {json_file.name} has no valid polygons (≥3 points)."
+                        f"Skipping {video_name}: JSON file {json_file.name} has no valid polygons (≥3 points).",
                     )
                     return False
-            except Exception as e:
+            except Exception as exc:
                 self.error.emit(
-                    f"Invalid JSON file for {video_name}: {str(e)}")
+                    f"Invalid JSON file for {video_name}: {str(exc)}"
+                )
                 self.logger.error(
-                    f"JSON error for {video_name}: {str(e)}", exc_info=True)
+                    f"JSON error for {video_name}: {str(exc)}", exc_info=True
+                )
                 return False
 
             try:
@@ -339,55 +414,64 @@ class TrackAllWorker(QThread):
                     save_image_to_disk=False,
                     device=device,
                     results_folder=str(output_folder),
-                    **self.config
+                    **self.config,
                 )
                 self.logger.info(
-                    f"Initialized VideoProcessor for {video_name} with video_path: {video_path}")
+                    f"Initialized VideoProcessor for {video_name} with video_path: {video_path}"
+                )
             except Exception as exc:
                 self.error.emit(
-                    f"Failed to initialize VideoProcessor for {video_name}: {exc}")
+                    f"Failed to initialize VideoProcessor for {video_name}: {exc}"
+                )
                 self.logger.error(
-                    f"Initialization error for {video_name}: {exc}", exc_info=True)
+                    f"Initialization error for {video_name}: {exc}", exc_info=True
+                )
                 return False
 
             total_frames = processor.get_total_frames()
-            if self.is_video_finished(video_path, total_frames):
+            if self.is_video_finished(str(video_path), total_frames):
                 self.progress.emit(
                     int((idx / total_videos) * 100),
-                    f"Skipping {video_name}: Video already processed."
+                    f"Skipping {video_name}: Video already processed.",
                 )
                 return False
 
             pred_worker = PredictionWorker()
             self.logger.info(
-                f"Created new pred_worker for {video_name}: {id(pred_worker)}")
+                f"Created new pred_worker for {video_name}: {id(pred_worker)}"
+            )
             try:
                 processor.video_path = str(video_path)
                 processor.set_pred_worker(pred_worker)
-            except Exception as e:
+            except Exception as exc:
                 self.error.emit(
-                    f"Failed to set pred_worker for {video_name}: {str(e)}")
+                    f"Failed to set pred_worker for {video_name}: {str(exc)}"
+                )
                 self.logger.error(
-                    f"pred_worker error: {str(e)}", exc_info=True)
+                    f"pred_worker error: {str(exc)}", exc_info=True
+                )
                 return False
 
             try:
                 processor.reset_cutie_processor(
-                    mem_every=self.config['mem_every'])
+                    mem_every=self.config["mem_every"]
+                )
                 self.logger.info(f"Reset Cutie processor for {video_name}")
             except AttributeError:
                 self.logger.warning(
-                    f"reset_cutie_processor not implemented for {video_name}")
+                    f"reset_cutie_processor not implemented for {video_name}"
+                )
                 processor.cutie_processor = None
 
             self.progress.emit(
                 int((idx / total_videos) * 100),
-                f"Processing {video_name}..."
+                f"Processing {video_name}...",
             )
             start_frame = labeled_frame_number + 1
             end_frame = total_frames - 1
             self.logger.info(
-                f"Processing {video_name} from frame {start_frame} to {end_frame}")
+                f"Processing {video_name} from frame {start_frame} to {end_frame}"
+            )
 
             with torch.no_grad():
                 message = processor.process_video_frames(
@@ -395,10 +479,12 @@ class TrackAllWorker(QThread):
                     end_frame=end_frame,
                     step=1,
                     is_cutie=True,
-                    mem_every=self.config['mem_every'],
+                    mem_every=self.config["mem_every"],
                     point_tracking=False,
-                    has_occlusion=self.config['has_occlusion'],
-                    save_video_with_color_mask=self.config['save_video_with_color_mask']
+                    has_occlusion=self.config["has_occlusion"],
+                    save_video_with_color_mask=self.config[
+                        "save_video_with_color_mask"
+                    ],
                 )
             if "No valid polygon" in message or "No label file" in message:
                 self.error.emit(f"Failed to process {video_name}: {message}")
@@ -406,27 +492,36 @@ class TrackAllWorker(QThread):
 
             try:
                 convert_json_to_csv(str(output_folder))
-            except Exception as e:
+            except Exception as exc:
                 self.error.emit(
-                    f"Failed to convert JSON to CSV for {video_name}: {str(e)}")
+                    f"Failed to convert JSON to CSV for {video_name}: {str(exc)}"
+                )
                 self.logger.error(
-                    f"CSV conversion error: {str(e)}", exc_info=True)
+                    f"CSV conversion error: {str(exc)}", exc_info=True
+                )
                 return False
 
             self.progress.emit(
                 int((idx / total_videos) * 100),
-                f"Completed tracking for {video_name}."
+                f"Completed tracking for {video_name}.",
             )
             return True
 
-        except Exception as e:
-            self.error.emit(f"Failed to process {video_name}: {str(e)}")
-            self.logger.error(f"Processing error: {str(e)}", exc_info=True)
-            return False
         finally:
             self.cleanup_processor(processor, device)
-            self.log_gpu_memory(video_name, "After")
-            self.video_processing_finished.emit(video_path)
+            self.log_gpu_memory(video_name, f"After ({device.type})")
+
+    @staticmethod
+    def _should_retry_on_cpu(exc: RuntimeError) -> bool:
+        """Determine if a CUDA failure warrants retrying on CPU."""
+        message = str(exc).lower()
+        keywords = (
+            "cuda error",
+            "cublas",
+            "device-side assert",
+            "out of memory",
+        )
+        return any(keyword in message for keyword in keywords)
 
     def run(self):
         """Process videos sequentially, ensuring one processor per video."""
