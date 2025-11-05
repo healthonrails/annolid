@@ -12,16 +12,13 @@ from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject
 import threading
 import os
 import tempfile
-import matplotlib.pyplot as plt
-import io
-import base64
 import mimetypes
 import uuid
-import html
-import re
-from typing import Any, Dict, List, Tuple, Match, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
+from annolid.gui.widgets.provider_registry import ProviderRegistry
+from annolid.gui.widgets.rich_text_renderer import RichTextRenderer
 from annolid.utils.llm_settings import (
     load_llm_settings,
     save_llm_settings,
@@ -39,11 +36,6 @@ except ImportError:
         "    https://github.com/ollama/ollama-python"
     )
 
-try:
-    import markdown  # type: ignore
-except ImportError:
-    markdown = None
-
 
 class CaptionWidget(QtWidgets.QWidget):
     """A widget for editing and displaying image captions, supporting LaTeX."""
@@ -58,17 +50,25 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._renderer = RichTextRenderer()
         self.llm_settings = load_llm_settings()
-        self.llm_settings.setdefault("last_models", {})
+        self._providers = ProviderRegistry(
+            self.llm_settings,
+            save_llm_settings,
+            ollama_module=globals().get("ollama"),
+        )
         self.provider_labels: Dict[str, str] = {
             "ollama": "Ollama (local)",
             "openai": "OpenAI GPT",
             "gemini": "Google Gemini",
         }
-        self.selected_provider = self.llm_settings.get("provider", "ollama")
-        self._ollama_error_reported = False
-        self.available_models = self.get_available_models(self.selected_provider)
-        self.selected_model = self._resolve_initial_model(self.selected_provider)
+        self.selected_provider = self._providers.current_provider()
+        self.available_models = self._providers.available_models(
+            self.selected_provider
+        )
+        self.selected_model = self._providers.resolve_initial_model(
+            self.selected_provider, self.available_models
+        )
         self._suppress_model_updates = False
         self._suppress_provider_updates = False
 
@@ -88,98 +88,6 @@ class CaptionWidget(QtWidgets.QWidget):
         self._allow_empty_caption: bool = False
         self._last_emitted_caption: Optional[str] = None
         self._description_buffer: str = ""
-
-    def _default_model_for(self, provider: str) -> str:
-        defaults = {
-            "ollama": "llama3.2-vision:latest",
-            "openai": "gpt-4o-mini",
-            "gemini": "gemini-2.5-pro",
-        }
-        return defaults.get(provider, "")
-
-    def _resolve_initial_model(self, provider: str) -> str:
-        last_models = self.llm_settings.get("last_models", {})
-        last_model = last_models.get(provider)
-        if last_model and last_model in self.available_models:
-            return last_model
-
-        if self.available_models:
-            return self.available_models[0]
-
-        fallback = self._default_model_for(provider)
-        if fallback and fallback not in self.available_models:
-            self.available_models.append(fallback)
-        return fallback
-
-    def get_available_models(self, provider: str) -> List[str]:
-        """Return known models for the given provider."""
-        if provider == "ollama":
-            models = self._fetch_ollama_models()
-            pinned = self.llm_settings.get("ollama", {}).get(
-                "preferred_models", [])
-            for model in pinned:
-                if model and model not in models:
-                    models.append(model)
-            if not models:
-                fallback = self._default_model_for("ollama")
-                if fallback:
-                    models.append(fallback)
-            elif models != pinned:
-                self.llm_settings.setdefault("ollama", {})[
-                    "preferred_models"] = models
-                save_llm_settings(self.llm_settings)
-            return models
-
-        provider_settings = self.llm_settings.get(provider, {})
-        return provider_settings.get("preferred_models", [])
-
-    def _fetch_ollama_models(self) -> List[str]:
-        """Fetch available Ollama models respecting the configured host."""
-        host = self.llm_settings.get("ollama", {}).get("host")
-        prev_host_present = "OLLAMA_HOST" in os.environ
-        prev_host_value = os.environ.get("OLLAMA_HOST")
-
-        ollama_module = globals().get("ollama")
-        if ollama_module is None:
-            return []
-
-        try:
-            if host:
-                os.environ["OLLAMA_HOST"] = host
-            else:
-                os.environ.pop("OLLAMA_HOST", None)
-
-            model_list = ollama_module.list()
-
-            # Check if models are in the original format (list of dicts)
-            if isinstance(model_list['models'], list) and all(isinstance(model, dict) for model in model_list['models']):
-                self._ollama_error_reported = False
-                return [model['name'] for model in model_list['models']]
-
-            # Handle the case where models are returned as objects with detailed attributes
-            elif isinstance(model_list['models'], list) and all(hasattr(model, 'model') for model in model_list['models']):
-                self._ollama_error_reported = False
-                return [model.model for model in model_list['models']]
-
-            # If the format is unexpected, raise a descriptive error
-            else:
-                raise ValueError("Unexpected model format in response.")
-
-        except Exception as e:
-            if not self._ollama_error_reported:
-                friendly_host = host or prev_host_value or "http://localhost:11434"
-                print(
-                    "Unable to reach the Ollama server to list models. "
-                    f"Check that Ollama is running at {friendly_host}. "
-                    f"Original error: {e}"
-                )
-                self._ollama_error_reported = True
-            return []
-        finally:
-            if prev_host_present:
-                os.environ["OLLAMA_HOST"] = prev_host_value  # type: ignore[arg-type]
-            else:
-                os.environ.pop("OLLAMA_HOST", None)
 
     def _determine_image_model(self) -> str:
         """Choose an appropriate Gemini model for image generation."""
@@ -255,10 +163,10 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def _persist_state(self) -> None:
         """Save the current provider and last selected models."""
-        self.llm_settings["provider"] = self.selected_provider
-        self.llm_settings.setdefault("last_models", {})
-        self.llm_settings["last_models"][self.selected_provider] = self.selected_model
-        save_llm_settings(self.llm_settings)
+        self._providers.set_current_provider(self.selected_provider)
+        self._providers.remember_last_model(
+            self.selected_provider, self.selected_model
+        )
 
     def _update_model_selector(self) -> None:
         """Refresh the model selector combo box contents."""
@@ -296,51 +204,54 @@ class CaptionWidget(QtWidgets.QWidget):
     def init_ui(self):
         """Initializes the UI components."""
         self.layout = QVBoxLayout(self)
+        self.layout.addLayout(self._build_provider_controls())
+        self.layout.addLayout(self._build_model_controls())
+        self.text_edit = self._build_caption_editor()
+        self.layout.addWidget(self.text_edit)
+        self.layout.addLayout(self._build_action_buttons())
+        self.layout.addLayout(self._build_prompt_controls())
+        self.setLayout(self.layout)
+        self._wire_caption_signals()
 
-        # Provider selection dropdown
-        provider_layout = QHBoxLayout()
+    def _build_provider_controls(self) -> QHBoxLayout:
+        layout = QHBoxLayout()
         self.provider_label = QLabel("Provider:")
         self.provider_selector = QComboBox()
         for key, label in self.provider_labels.items():
             self.provider_selector.addItem(label, userData=key)
-        provider_index = self.provider_selector.findData(
-            self.selected_provider)
+        provider_index = self.provider_selector.findData(self.selected_provider)
         if provider_index != -1:
             self.provider_selector.setCurrentIndex(provider_index)
-        provider_layout.addWidget(self.provider_label)
-        provider_layout.addWidget(self.provider_selector)
+        layout.addWidget(self.provider_label)
+        layout.addWidget(self.provider_selector)
 
         self.configure_models_button = QPushButton("Configure…")
-        self.configure_models_button.clicked.connect(
-            self.open_llm_settings_dialog)
-        provider_layout.addWidget(self.configure_models_button)
-        provider_layout.addStretch(1)
-        self.layout.addLayout(provider_layout)
+        self.configure_models_button.clicked.connect(self.open_llm_settings_dialog)
+        layout.addWidget(self.configure_models_button)
+        layout.addStretch(1)
 
-        self.provider_selector.currentIndexChanged.connect(
-            self.on_provider_changed)
+        self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
+        return layout
 
-        # Model selection dropdown
+    def _build_model_controls(self) -> QHBoxLayout:
+        layout = QHBoxLayout()
         self.model_label = QLabel("Model:")
         self.model_selector = QComboBox()
         self.model_selector.setEditable(True)
         self.model_selector.setInsertPolicy(QComboBox.NoInsert)
         self._update_model_selector()
-
-        model_layout = QHBoxLayout()
-        model_layout.addWidget(self.model_label)
-        model_layout.addWidget(self.model_selector)
-        self.layout.addLayout(model_layout)
+        layout.addWidget(self.model_label)
+        layout.addWidget(self.model_selector)
 
         self.model_selector.currentIndexChanged.connect(self.on_model_changed)
-        self.model_selector.editTextChanged.connect(
-            self.on_model_text_edited)
+        self.model_selector.editTextChanged.connect(self.on_model_text_edited)
+        return layout
 
-        # Create a QTextEdit for editing captions
-        self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(False)  # Keep editable so captions can be refined
-        # Style the QTextEdit to have a light background
-        self.text_edit.setStyleSheet("""
+    def _build_caption_editor(self) -> QTextEdit:
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(False)
+        text_edit.setStyleSheet(
+            """
             QTextEdit {
                 background-color: #f7f7f8;
                 border: 1px solid #d0d7de;
@@ -351,131 +262,99 @@ class CaptionWidget(QtWidgets.QWidget):
                 font-size: 13px;
                 line-height: 1.55em;
             }
-        """)
-        self.layout.addWidget(self.text_edit)
+            """
+        )
+        return text_edit
 
-        # Create a horizontal layout for the buttons and labels
-        button_layout = QHBoxLayout()
+    def _build_action_buttons(self) -> QHBoxLayout:
+        layout = QHBoxLayout()
 
-        # Create the record button with its label below
         self.record_button = self.create_button(
             icon_name="microphone",
             color="#ff4d4d",
-            hover_color="#e60000"
+            hover_color="#e60000",
         )
-        self.record_label = QLabel("Tap to record")
-        self.record_label.setAlignment(Qt.AlignCenter)
-        record_button_layout = QVBoxLayout()
-        record_button_layout.addWidget(
-            self.record_button, alignment=Qt.AlignCenter)
-        record_button_layout.addWidget(
-            self.record_label, alignment=Qt.AlignCenter)
+        record_layout, self.record_label = self._stack_button_with_label(
+            self.record_button, "Tap to record"
+        )
 
-        # Create the describe button with its label below
+        self.improve_button = self.create_button(
+            icon_name="draw-arrow-forward",
+            color="#ccccff",
+            hover_color="#9999ff",
+        )
+        improve_layout, self.improve_label = self._stack_button_with_label(
+            self.improve_button, "Improve Caption"
+        )
+
         self.describe_button = self.create_button(
-            icon_name="view-preview",  # Adjust this icon as needed
+            icon_name="view-preview",
             color="#4d94ff",
-            hover_color="#0040ff"
+            hover_color="#0040ff",
         )
-        self.describe_label = QLabel("Describe the image")
-        self.describe_label.setAlignment(Qt.AlignCenter)
-        describe_button_layout = QVBoxLayout()
-        describe_button_layout.addWidget(
-            self.describe_button, alignment=Qt.AlignCenter)
-        describe_button_layout.addWidget(
-            self.describe_label, alignment=Qt.AlignCenter)
+        describe_layout, self.describe_label = self._stack_button_with_label(
+            self.describe_button, "Describe the image"
+        )
 
-        # Add the clear caption button
+        self.read_button = self.create_button(
+            icon_name="media-playback-start",
+            color="#99ff99",
+            hover_color="#66ff66",
+        )
+        read_layout, self.read_label = self._stack_button_with_label(
+            self.read_button, "Read caption"
+        )
+
         self.clear_button = self.create_button(
-            icon_name="edit-clear",  # Adjust icon as needed
+            icon_name="edit-clear",
             color="#ffcc99",
-            hover_color="#ff9900"
+            hover_color="#ff9900",
         )
-        self.clear_label = QLabel("Clear caption")
-        self.clear_label.setAlignment(Qt.AlignCenter)
-        clear_button_layout = QVBoxLayout()
-        clear_button_layout.addWidget(
-            self.clear_button, alignment=Qt.AlignCenter)
-        clear_button_layout.addWidget(
-            self.clear_label, alignment=Qt.AlignCenter)
+        clear_layout, self.clear_label = self._stack_button_with_label(
+            self.clear_button, "Clear caption"
+        )
 
-        # Connect the buttons to their respective methods
+        self.record_button.clicked.connect(self.toggle_recording)
+        self.improve_button.clicked.connect(self.improve_caption_async)
+        self.describe_button.clicked.connect(self.on_describe_clicked)
+        self.read_button.clicked.connect(self.read_caption_async)
         self.clear_button.clicked.connect(self.clear_caption)
 
-        # Add the read caption button
-        self.read_button = self.create_button(
-            icon_name="media-playback-start",  # Adjust icon as needed
-            color="#99ff99",
-            hover_color="#66ff66"
-        )
-        self.read_label = QLabel("Read caption")
-        self.read_label.setAlignment(Qt.AlignCenter)
-        read_button_layout = QVBoxLayout()
-        read_button_layout.addWidget(
-            self.read_button, alignment=Qt.AlignCenter)
-        read_button_layout.addWidget(
-            self.read_label, alignment=Qt.AlignCenter)
+        for sub_layout in (
+            record_layout,
+            improve_layout,
+            describe_layout,
+            read_layout,
+            clear_layout,
+        ):
+            layout.addLayout(sub_layout)
+        return layout
 
-        # Add the improve caption button
-        self.improve_button = self.create_button(
-            icon_name="draw-arrow-forward",  # Example icon, adjust as needed
-            color="#ccccff",
-            hover_color="#9999ff"
-        )
-        self.improve_label = QLabel("Improve Caption")
-        self.improve_label.setAlignment(Qt.AlignCenter)
-        improve_button_layout = QVBoxLayout()
-        improve_button_layout.addWidget(
-            self.improve_button, alignment=Qt.AlignCenter)
-        improve_button_layout.addWidget(
-            self.improve_label, alignment=Qt.AlignCenter)
-
-        # Connect improve button
-        self.improve_button.clicked.connect(self.improve_caption_async)
-
-        # Connect read button to the read_caption_async method
-        self.read_button.clicked.connect(self.read_caption_async)
-
-        # Add both button layouts to the horizontal layout
-        button_layout.addLayout(record_button_layout)
-        button_layout.addLayout(improve_button_layout)
-        button_layout.addLayout(describe_button_layout)
-        button_layout.addLayout(read_button_layout)
-        # (Add read button layout to the main button layout)
-        button_layout.addLayout(clear_button_layout)
-
-        # Connect describe button signal
-        self.describe_button.clicked.connect(self.on_describe_clicked)
-
-        # Connect signals and slots
-        self.text_edit.textChanged.connect(self.emit_caption_changed)
-        self.text_edit.textChanged.connect(self.monitor_text_change)
-        self.record_button.clicked.connect(self.toggle_recording)
-        # Connect the signal to the slot
-        self.readCaptionFinished.connect(self.on_read_caption_finished)
-
-        # Horizontal layout for the prompt text edit and chat button
-        self.input_layout = QtWidgets.QHBoxLayout()
-
-        # Prompt text editor for user input
+    def _build_prompt_controls(self) -> QHBoxLayout:
+        layout = QtWidgets.QHBoxLayout()
         self.prompt_text_edit = QtWidgets.QLineEdit(self)
-        self.prompt_text_edit.setPlaceholderText(
-            "Type your chat prompt here...")
-        self.input_layout.addWidget(self.prompt_text_edit)
+        self.prompt_text_edit.setPlaceholderText("Type your chat prompt here...")
+        layout.addWidget(self.prompt_text_edit)
 
-        # Chat button (also triggers image generation when applicable)
         self.chat_button = QtWidgets.QPushButton("Chat", self)
         self.chat_button.clicked.connect(self.chat_with_model)
-        self.input_layout.addWidget(self.chat_button)
+        layout.addWidget(self.chat_button)
+        return layout
 
-        # Add the input layout to the main layout
-        self.layout.addLayout(self.input_layout)
+    def _wire_caption_signals(self) -> None:
+        self.text_edit.textChanged.connect(self.emit_caption_changed)
+        self.text_edit.textChanged.connect(self.monitor_text_change)
+        self.readCaptionFinished.connect(self.on_read_caption_finished)
 
-        # Add the button layout to the main layout
-        self.layout.addLayout(button_layout)
-
-        # Integrate existing layouts
-        self.setLayout(self.layout)
+    def _stack_button_with_label(
+        self, button: QPushButton, label_text: str
+    ) -> Tuple[QVBoxLayout, QLabel]:
+        label = QLabel(label_text)
+        label.setAlignment(Qt.AlignCenter)
+        layout = QVBoxLayout()
+        layout.addWidget(button, alignment=Qt.AlignCenter)
+        layout.addWidget(label, alignment=Qt.AlignCenter)
+        return layout, label
 
     def on_model_changed(self, index):
         """Updates the selected model when the combo box changes."""
@@ -500,9 +379,12 @@ class CaptionWidget(QtWidgets.QWidget):
         if not provider:
             return
         self.selected_provider = provider
-        self.available_models = self.get_available_models(provider)
+        self._providers.set_current_provider(provider)
+        self.available_models = self._providers.available_models(provider)
         if self.selected_model not in self.available_models:
-            self.selected_model = self._resolve_initial_model(provider)
+            self.selected_model = self._providers.resolve_initial_model(
+                provider, self.available_models
+            )
         self._update_model_selector()
         self._persist_state()
 
@@ -514,6 +396,11 @@ class CaptionWidget(QtWidgets.QWidget):
             settings.setdefault("last_models", self.llm_settings.get(
                 "last_models", {}))
             self.llm_settings = settings
+            self._providers = ProviderRegistry(
+                self.llm_settings,
+                save_llm_settings,
+                ollama_module=globals().get("ollama"),
+            )
             new_provider = self.llm_settings.get(
                 "provider", self.selected_provider)
             self._suppress_provider_updates = True
@@ -527,10 +414,12 @@ class CaptionWidget(QtWidgets.QWidget):
                 self._suppress_provider_updates = False
 
             self.selected_provider = self.provider_selector.currentData()
-            self.available_models = self.get_available_models(
-                self.selected_provider)
-            self.selected_model = self._resolve_initial_model(
-                self.selected_provider)
+            self.available_models = self._providers.available_models(
+                self.selected_provider
+            )
+            self.selected_model = self._providers.resolve_initial_model(
+                self.selected_provider, self.available_models
+            )
             self._update_model_selector()
             self._persist_state()
 
@@ -726,7 +615,7 @@ class CaptionWidget(QtWidgets.QWidget):
                         text-transform: uppercase;
                         color: {styles['label_color']};
                         margin-bottom: 6px;
-                    ">{self.escape_html(header_text)}</div>
+                    ">{self._renderer.escape_html(header_text)}</div>
                     <div style="font-size: 14px; line-height: 1.65; color: {styles['text_color']};">
                         {content_html}
                     </div>
@@ -808,384 +697,9 @@ class CaptionWidget(QtWidgets.QWidget):
 
         self.previous_text = current_text
 
-    def latex_to_image_base64(self, latex_string, fontsize=12, dpi=100, inline=False):
-        """Renders a LaTeX string to a transparent PNG encoded as base64."""
-        try:
-            plt.clf()  # Clear previous plots
-            if inline:
-                width = max(1.6, 0.085 * len(latex_string) + 0.6)
-                height = 0.8
-            else:
-                width = max(2.8, 0.12 * len(latex_string) + 1.2)
-                line_breaks = latex_string.count("\\\\") + \
-                    latex_string.count("\n")
-                height = max(1.2, 0.9 + 0.25 * line_breaks)
-
-            fig = plt.figure(figsize=(width, height), dpi=dpi)
-            fig.patch.set_alpha(0.0)
-            # Use r'' for raw string and $..$ for inline math
-            fig.text(0.5, 0.5, rf'${latex_string}$',
-                     fontsize=fontsize, ha='center', va='center')
-            plt.axis('off')
-
-            buf = io.BytesIO()
-            # Save with tight bbox and transparent background
-            plt.savefig(buf, format='png', bbox_inches='tight',
-                        pad_inches=0.1, transparent=True)
-            buf.seek(0)
-            image_base64 = base64.b64encode(buf.read()).decode('utf-8')
-            plt.close(fig)  # Close the figure to free memory
-            return image_base64
-        except Exception as e:
-            print(f"Error rendering LaTeX: {e}")
-            return None
-
-    def _render_latex_html(self, latex_string: str, inline: bool) -> str:
-        """Return HTML snippet for a LaTeX expression rendered as an image."""
-        base64_data = self.latex_to_image_base64(
-            latex_string,
-            fontsize=14 if inline else 20,
-            dpi=220,
-            inline=inline,
-        )
-        if base64_data:
-            alt_text = self.escape_html(latex_string)
-            if inline:
-                return (
-                    f"<img alt=\"{alt_text}\" src=\"data:image/png;base64,{base64_data}\" "
-                    "style=\"vertical-align: middle; height: 1.45em;\"/>"
-                )
-            return (
-                "<div style=\"display:flex; justify-content:center; margin: 12px 0;\">"
-                f"<img alt=\"{alt_text}\" src=\"data:image/png;base64,{base64_data}\" "
-                "style=\"max-width: 100%;\"/>"
-                "</div>"
-            )
-
-        return (
-            "<span style=\"color:#d93025;\">"
-            f"⚠ Unable to render LaTeX: {self.escape_html(latex_string)}"
-            "</span>"
-        )
-
-    def _extract_math_placeholders(
-        self, text: str
-    ) -> Tuple[str, Dict[str, Dict[str, Any]]]:
-        """Replace LaTeX math segments with placeholders and keep rendered HTML."""
-        placeholders: Dict[str, Dict[str, Any]] = {}
-        counter = 0
-
-        def store(expr: str, inline: bool) -> str:
-            nonlocal counter
-            token = f"__MATH_{counter}__"
-            counter += 1
-            placeholders[token] = {
-                "html": self._render_latex_html(expr, inline=inline),
-                "block": not inline,
-            }
-            return token
-
-        def replace_block(match: Match[str]) -> str:
-            return store(match.group(1).strip(), inline=False)
-
-        def replace_inline(match: Match[str]) -> str:
-            return store(match.group(1).strip(), inline=True)
-
-        text = re.sub(
-            r"(?<!\\)\$\$(.+?)(?<!\\)\$\$",
-            replace_block,
-            text,
-            flags=re.DOTALL,
-        )
-        text = re.sub(
-            r"(?<!\\)\\\[(.+?)(?<!\\)\\\]",
-            replace_block,
-            text,
-            flags=re.DOTALL,
-        )
-        text = re.sub(
-            r"(?<!\\)\$(?!\$)(.+?)(?<!\\)\$",
-            replace_inline,
-            text,
-            flags=re.DOTALL,
-        )
-        text = re.sub(
-            r"(?<!\\)\\\((.+?)(?<!\\)\\\)",
-            replace_inline,
-            text,
-            flags=re.DOTALL,
-        )
-        return text, placeholders
-
-    def _basic_markdown_to_html(self, text: str) -> str:
-        """Robust minimal Markdown handling with safe HTML output.
-
-        Supports:
-        - Headings (# .. ######)
-        - Bold/Italic/Strikethrough (***, **, *, __, _ , ~~)
-        - Inline code (`code`)
-        - Links [text](url) and bare autolinks
-        - Images ![alt](url)
-        - Paragraph breaks on blank lines
-        """
-        def escape_segment(segment: str) -> str:
-            return html.escape(segment, quote=False)
-
-        # Handle code spans first to shield inner content
-        token_map: Dict[str, str] = {}
-
-        def replace_code(match: Match[str]) -> str:
-            token = f"<<ANNOLID_CODE_{len(token_map)}>>"
-            token_map[token] = f"<code>{escape_segment(match.group(1))}</code>"
-            return token
-
-        protected = re.sub(r"`([^`]+)`", replace_code, text)
-
-        # Images (safe URL subset)
-        def sanitize_url(url: str) -> str:
-            url = url.strip()
-            if url.startswith("http://") or url.startswith("https://"):
-                return html.escape(url, quote=True)
-            return "#"
-
-        def replace_image(match: Match[str]) -> str:
-            alt = escape_segment(match.group(1))
-            url = sanitize_url(match.group(2))
-            token = f"<<ANNOLID_IMG_{len(token_map)}>>"
-            token_map[token] = f"<img alt=\"{alt}\" src=\"{url}\"/>"
-            return token
-
-        protected = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_image, protected)
-
-        def replace_bold(match: Match[str]) -> str:
-            token = f"<<ANNOLID_BOLD_{len(token_map)}>>"
-            token_map[token] = f"<strong>{escape_segment(match.group(1))}</strong>"
-            return token
-
-        # strong+em first, then strong, then em
-        protected = re.sub(r"\*\*\*(.+?)\*\*\*", lambda m: f"<<ANNOLID_SMSTR_{len(token_map)}>>" if not token_map.setdefault(f"<<ANNOLID_SMSTR_{len(token_map)}>>", f"<strong><em>{escape_segment(m.group(1))}</em></strong>") else None or list(token_map.keys())[-1], protected)
-        protected = re.sub(r"___(.+?)___", lambda m: f"<<ANNOLID_SMSTR_{len(token_map)}>>" if not token_map.setdefault(f"<<ANNOLID_SMSTR_{len(token_map)}>>", f"<strong><em>{escape_segment(m.group(1))}</em></strong>") else None or list(token_map.keys())[-1], protected)
-        protected = re.sub(r"\*\*(.+?)\*\*", replace_bold, protected)
-        protected = re.sub(r"__(.+?)__", replace_bold, protected)
-
-        def replace_italic(match: Match[str]) -> str:
-            token = f"<<ANNOLID_EM_{len(token_map)}>>"
-            token_map[token] = f"<em>{escape_segment(match.group(1))}</em>"
-            return token
-
-        protected = re.sub(r"(?<!\*)\*(?!\*)([^\n*][\s\S]*?[^\n*])\*(?!\*)",
-                           replace_italic, protected)
-        protected = re.sub(r"(?<!_)_(?!_)([^\n_][\s\S]*?[^\n_])_(?!_)",
-                           replace_italic, protected)
-
-        # Strikethrough
-        protected = re.sub(r"~~(.+?)~~", lambda m: f"<del>{escape_segment(m.group(1))}</del>", protected)
-
-        def replace_link(match: Match[str]) -> str:
-            label = escape_segment(match.group(1))
-            url = sanitize_url(match.group(2))
-            return f"<a href=\"{url}\">{label}</a>"
-
-        protected = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, protected)
-
-        # Autolinks
-        protected = re.sub(
-            r"(?P<url>https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+)",
-            lambda m: f"<a href=\"{sanitize_url(m.group('url'))}\">{escape_segment(m.group('url'))}</a>",
-            protected,
-        )
-        # Headings
-        def replace_heading(m: Match[str]) -> str:
-            level = len(m.group(1))
-            content = escape_segment(m.group(2).strip())
-            return f"<h{level}>{content}</h{level}>"
-
-        protected = re.sub(r"^(#{1,6})\s+(.+)$", replace_heading, protected, flags=re.MULTILINE)
-
-        # Paragraphs on blank lines
-        blocks = []
-        buf: list[str] = []
-        def flush_buf():
-            if not buf:
-                return
-            paragraph = "<br/>".join(escape_segment(x) for x in buf)
-            blocks.append(f"<p>{paragraph}</p>")
-            buf.clear()
-
-        for line in protected.splitlines():
-            if not line.strip():
-                flush_buf()
-                continue
-            # Blockquotes (simple)
-            if line.lstrip().startswith(">"):
-                flush_buf()
-                content = line.lstrip()[1:].lstrip()
-                blocks.append(f"<blockquote>{escape_segment(content)}</blockquote>")
-                continue
-            buf.append(line)
-        flush_buf()
-
-        html_out = "".join(blocks) if blocks else escape_segment(protected)
-
-        # Restore tokens
-        for token, html_snippet in token_map.items():
-            html_out = html_out.replace(html.escape(token, quote=False), html_snippet)
-            html_out = html_out.replace(token, html_snippet)
-
-        return html_out
-
-    def _convert_markdown_to_html(self, text: str, raw_text: str) -> str:
-        """Convert Markdown text to HTML using the best available backend."""
-        doc_cls = getattr(QtGui, "QTextDocument", None)
-        if doc_cls is not None:
-            document = doc_cls()
-            set_markdown = getattr(document, "setMarkdown", None)
-            if callable(set_markdown):
-                try:
-                    set_markdown(text)
-                    html_content = document.toHtml()
-                    if html_content:
-                        return html_content
-                except Exception:
-                    pass
-            fragment_ctor = getattr(QtGui.QTextDocumentFragment,
-                                    "fromMarkdown", None)
-            if fragment_ctor is not None:
-                try:
-                    fragment = fragment_ctor(text)
-                    html_content = fragment.toHtml()
-                    if html_content:
-                        return html_content
-                except Exception:
-                    pass
-
-        if markdown is not None:
-            try:
-                return markdown.markdown(
-                    text,
-                    extensions=[
-                        "extra",
-                        "sane_lists",
-                        "tables",
-                        "fenced_code",
-                    ],
-                    output_format="html5",
-                )
-            except Exception:
-                pass
-
-        return self._basic_markdown_to_html(raw_text)
-
-    def _style_rich_html(self, html_content: str) -> str:
-        """Apply inline styling for code fences and inline code."""
-        pre_style = (
-            "background-color:#f5f5f5; border-radius:8px; padding:12px; "
-            "font-family:'JetBrains Mono','Consolas','Courier New',monospace; "
-            "font-size:13px; overflow-x:auto;"
-        )
-        code_style = (
-            "background-color:#f0f0f0; border-radius:4px; padding:2px 4px; "
-            "font-family:'JetBrains Mono','Consolas','Courier New',monospace;"
-        )
-        blockquote_style = (
-            "margin: 8px 0; padding: 6px 12px; border-left: 4px solid #d0d7de; "
-            "color:#57606a; background-color:#f6f8fa; border-radius: 0 6px 6px 0;"
-        )
-        list_style = (
-            "margin: 6px 0 6px 18px;"
-        )
-        html_content = re.sub(
-            r"<pre(?![^>]*style=)([^>]*)>",
-            lambda match: f"<pre{match.group(1)} style=\"{pre_style}\">",
-            html_content,
-        )
-        html_content = re.sub(
-            r"<code(?![^>]*style=)([^>]*)>",
-            lambda match: f"<code{match.group(1)} style=\"{code_style}\">",
-            html_content,
-        )
-        html_content = re.sub(
-            r"<blockquote(?![^>]*style=)([^>]*)>",
-            lambda m: f"<blockquote{m.group(1)} style=\"{blockquote_style}\">",
-            html_content,
-        )
-        html_content = re.sub(
-            r"<(ul|ol)(?![^>]*style=)([^>]*)>",
-            lambda m: f"<{m.group(1)}{m.group(2)} style=\"{list_style}\">",
-            html_content,
-        )
-        return html_content
-
-    def _preprocess_markdown(self, text: str) -> Tuple[str, Dict[str, str]]:
-        """Preprocess markdown to neutralize literals that break formatting."""
-        if not text:
-            return "", {}
-
-        replacements: Dict[str, str] = {}
-
-        def replace_parenthesized_star(match: Match[str]) -> str:
-            spacing = match.group(1) or ""
-            # Convert a parenthesized bullet marker like "(* " into a clean bullet
-            # e.g. "(* **Item** ...)" -> "(• **Item** ...)"
-            return f"({spacing}•"
-
-        sanitized = re.sub(
-            r"(?<!\\)\((\s*)\*(?!\*)",
-            replace_parenthesized_star,
-            text,
-        )
-
-        # Also handle the case "(* **" (no space after the asterisk) inside parentheses
-        sanitized = re.sub(
-            r"(?<=\()\*(?=\s*\*\*)",
-            "•",
-            sanitized,
-        )
-        return sanitized, replacements
-
-    def _extract_special_tags(self, text: str) -> Tuple[str, Dict[str, str]]:
-        """Preserve special XML-like tags (e.g., <think>) as literal text."""
-        if not text:
-            return "", {}
-
-        return text, {}
-
     def _rich_text_from_markdown(self, text: str) -> str:
         """Render Markdown with LaTeX support into styled HTML."""
-        if not text:
-            return ""
-
-        sanitized_text, literal_tokens = self._preprocess_markdown(text)
-        sanitized_text, special_tokens = self._extract_special_tags(sanitized_text)
-        processed_text, placeholders = self._extract_math_placeholders(
-            sanitized_text)
-        html_content = self._convert_markdown_to_html(
-            processed_text, raw_text=sanitized_text)
-
-        for token, data in placeholders.items():
-            if data["block"]:
-                pattern = re.compile(
-                    rf"<p[^>]*>\s*{re.escape(token)}\s*</p>", re.IGNORECASE
-                )
-                html_content, replaced = pattern.subn(data["html"], html_content)
-                if not replaced:
-                    html_content = html_content.replace(token, data["html"])
-            else:
-                html_content = html_content.replace(token, data["html"])
-
-        html_content = self._style_rich_html(html_content)
-
-        for token, value in literal_tokens.items():
-            html_content = html_content.replace(token, value)
-            html_content = html_content.replace(
-                html.escape(token, quote=False), value)
-
-        for token, value in special_tokens.items():
-            html_content = html_content.replace(token, value)
-            html_content = html_content.replace(
-                html.escape(token, quote=False), value)
-
-        return html_content
+        return self._renderer.render(text)
 
     def _update_marker_content(self, message_id: str, html_fragment: str) -> bool:
         """Replace the HTML between comment markers for a streaming chat message."""
@@ -1221,9 +735,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def escape_html(self, text):
         """Escapes HTML special characters to prevent rendering issues."""
-        if text is None:
-            return ""
-        return html.escape(text, quote=False)
+        return self._renderer.escape_html(text)
 
     def clear_caption(self):
         """Clears the caption."""
