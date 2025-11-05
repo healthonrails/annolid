@@ -169,13 +169,18 @@ class RichTextRenderer:
                 "blockquote",
             }
         )
-        allowed_attrs = {
-            **bleach.sanitizer.ALLOWED_ATTRIBUTES,
-            "img": ["src", "alt", "style"],
-            "a": ["href", "title", "rel"],
-            "td": ["align"],
-            "th": ["align"],
-        }
+        base_attrs = dict(bleach.sanitizer.ALLOWED_ATTRIBUTES)
+        def _extend(tag: str, attrs):
+            base_attrs[tag] = sorted(set(base_attrs.get(tag, []) + attrs))
+
+        for tag in ("div", "span", "p", "code", "pre"):
+            _extend(tag, ["class", "style"])
+        _extend("img", ["src", "alt", "style", "class"])
+        _extend("a", ["href", "title", "rel", "class", "style"])
+        _extend("td", ["align", "class", "style"])
+        _extend("th", ["align", "class", "style"])
+
+        allowed_attrs = base_attrs
         return bleach.clean(
             html_content,
             tags=allowed_tags,
@@ -236,19 +241,20 @@ class RichTextRenderer:
             alt_text = self.escape_html(latex_string)
             if inline:
                 return (
-                    f"<img alt=\"{alt_text}\" "
-                    f"src=\"data:image/png;base64,{base64_data}\" "
-                    "style=\"vertical-align: middle; height: 1.45em;\"/>"
+                    "<span class=\"math-inline\">"
+                    f"<img class=\"math-img\" alt=\"{alt_text}\" "
+                    f"src=\"data:image/png;base64,{base64_data}\"/>"
+                    "</span>"
                 )
             return (
-                "<div style=\"display:flex; justify-content:center; margin: 12px 0;\">"
-                f"<img alt=\"{alt_text}\" "
-                f"src=\"data:image/png;base64,{base64_data}\" style=\"max-width: 100%;\"/>"
+                "<div class=\"math-block\">"
+                f"<img class=\"math-img\" alt=\"{alt_text}\" "
+                f"src=\"data:image/png;base64,{base64_data}\"/>"
                 "</div>"
             )
 
         return (
-            "<span style=\"color:#d93025;\">"
+            "<span class=\"math-error\">"
             f"⚠ Unable to render LaTeX: {self.escape_html(latex_string)}"
             "</span>"
         )

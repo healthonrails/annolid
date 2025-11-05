@@ -729,6 +729,11 @@ class CaptionWidget(QtWidgets.QWidget):
             "th{background:#f6f8fa;font-weight:600;}"
             "hr{border:0;height:1px;background:#d0d7de;margin:12px 0;}"
             "img{max-width:100%;height:auto;}"
+            ".math-inline{display:inline-flex;align-items:center;margin:0 2px;}"
+            ".math-block{display:flex;justify-content:center;margin:12px 0;}"
+            ".math-img{max-width:100%;height:auto;}"
+            ".math-inline .math-img{height:1.45em;}"
+            ".math-error{color:#d93025;font-style:italic;}"
         )
         try:
             self.text_edit.document().setDefaultStyleSheet(css)
