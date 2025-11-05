@@ -151,7 +151,7 @@ from annolid.gui.controllers import (
 
 
 __appname__ = 'Annolid'
-__version__ = "1.2.2"
+__version__ = "1.3.0"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
