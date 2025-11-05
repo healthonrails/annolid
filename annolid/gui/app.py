@@ -735,8 +735,31 @@ class AnnolidWindow(MainWindow):
     def _update_audio_playhead(self, frame_number: int) -> None:
         """Align cached audio playback position with the given frame number."""
         audio_loader = self._active_audio_loader()
-        if audio_loader:
-            audio_loader.set_playhead_frame(frame_number)
+        if not audio_loader:
+            return
+
+        set_playhead = getattr(audio_loader, "set_playhead_frame", None)
+        if callable(set_playhead):
+            try:
+                set_playhead(frame_number)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to align audio playhead for frame %s: %s",
+                    frame_number,
+                    exc,
+                )
+            return
+
+        frame_to_sample = getattr(audio_loader, "_frame_to_sample_index", None)
+        if callable(frame_to_sample) and hasattr(audio_loader, "_playhead_sample"):
+            try:
+                audio_loader._playhead_sample = frame_to_sample(frame_number)
+            except Exception as exc:
+                logger.debug(
+                    "Failed fallback audio playhead update for frame %s: %s",
+                    frame_number,
+                    exc,
+                )
 
     def openCaption(self):
         # Caption dock (created but initially hidden)

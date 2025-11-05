@@ -3,10 +3,13 @@ Modified from here:
 https://github.com/ZQPei/deep_sort_pytorch/blob/master/utils/draw.py
 
 """
+import logging
 import numpy as np
 import cv2
 from pathlib import Path
 from annolid.utils.config import get_config
+
+logger = logging.getLogger(__name__)
 
 
 def get_keypoint_connection_rules(keypoint_cfg_file=None):
@@ -23,23 +26,47 @@ def get_keypoint_connection_rules(keypoint_cfg_file=None):
             'configs' / 'keypoints.yaml'
 
     keypoints_connection_rules = []
+    head_rules = {}
+    body_rules = {}
+    name_rules = []
+    event_rules = []
+    zone_rules = []
+
     if keypoint_cfg_file.exists():
-        key_points_rules = get_config(
-            str(keypoint_cfg_file)
-        )
-        # color is a placehold for future customization
-        for k, v in key_points_rules['HEAD'].items():
-            v, r, g, b = v.split(',')
-            color = (int(r), int(g), int(b))
-            keypoints_connection_rules.append((k, v, color))
-        for k, v in key_points_rules['BODY'].items():
-            v, r, g, b = v.split(',')
-            color = (int(r), int(g), int(b))
-            keypoints_connection_rules.append((k, v, color))
+        try:
+            loaded_rules = get_config(str(keypoint_cfg_file))
+            if isinstance(loaded_rules, dict):
+                head_rules = dict(loaded_rules.get("HEAD", {}))
+                body_rules = dict(loaded_rules.get("BODY", {}))
+                name_rules = list(loaded_rules.get("NAME", []))
+                event_rules = list(loaded_rules.get("EVENTS", []))
+                zone_rules = list(loaded_rules.get("ZONES", []))
+        except Exception as exc:
+            logger.debug(
+                "Failed to load keypoint config from %s: %s",
+                keypoint_cfg_file,
+                exc,
+            )
+    # Fallback to empty collections when the file is missing or invalid.
+    head_rules = head_rules or {}
+    body_rules = body_rules or {}
+    name_rules = name_rules or []
+    event_rules = event_rules or []
+    zone_rules = zone_rules or []
+
+    # color is a placeholder for future customization
+    for k, v in head_rules.items():
+        v, r, g, b = v.split(',')
+        color = (int(r), int(g), int(b))
+        keypoints_connection_rules.append((k, v, color))
+    for k, v in body_rules.items():
+        v, r, g, b = v.split(',')
+        color = (int(r), int(g), int(b))
+        keypoints_connection_rules.append((k, v, color))
     return (keypoints_connection_rules,
-            key_points_rules['NAME'],
-            key_points_rules['EVENTS'],
-            key_points_rules['ZONES'])
+            name_rules,
+            event_rules,
+            zone_rules)
 
 
 def _keypoint_color():
