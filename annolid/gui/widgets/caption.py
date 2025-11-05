@@ -85,6 +85,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self.canvas_widget: Optional[QtWidgets.QWidget] = None
         self._canvas_snapshot_paths: List[str] = []
         self._message_buffers: Dict[str, str] = {}
+        self._chat_mode_active: bool = False
+        self._chat_entries: List[Dict[str, Any]] = []
         self._last_nonempty_caption: str = ""
         self._allow_empty_caption: bool = False
         self._last_emitted_caption: Optional[str] = None
@@ -553,6 +555,58 @@ class CaptionWidget(QtWidgets.QWidget):
             ),
         )
 
+    def _ensure_chat_mode(self) -> None:
+        if self._chat_mode_active:
+            return
+        self._chat_mode_active = True
+        self._chat_entries = []
+        self._message_buffers.clear()
+        self._apply_editor_style()
+        self.text_edit.setHtml('<div class="chat-log" data-chat-log="true"></div>')
+        self._update_cache_from_editor()
+        self._last_emitted_caption = ""
+
+    def _render_chat_messages(self) -> None:
+        if not self._chat_mode_active:
+            return
+        fragments: List[str] = []
+        for entry in self._chat_entries:
+            classes = ["chat-bubble", "user" if entry["is_user"] else "model"]
+            label = self._renderer.escape_html(entry["header"])
+            body_html = entry["body_html"] or "&nbsp;"
+            data_attr = (
+                f' data-stream-id="{entry["id"]}"'
+                if entry.get("id")
+                else ""
+            )
+            fragments.append(
+                "<div class=\"%s\">"
+                "<div class=\"chat-label\">%s</div>"
+                "<div class=\"chat-body\"%s>%s</div>"
+                "</div>"
+                % (" ".join(classes), label, data_attr, body_html)
+            )
+        html = (
+            '<div class="chat-log" data-chat-log="true">'
+            + "".join(fragments)
+            + "</div>"
+        )
+        self._apply_editor_style()
+        self.text_edit.setHtml(html)
+        self._update_cache_from_editor()
+        self._last_emitted_caption = self._current_caption_raw
+        self.text_edit.verticalScrollBar().setValue(
+            self.text_edit.verticalScrollBar().maximum()
+        )
+
+    def _update_stream_entry(self, message_id: str, body_html: str) -> bool:
+        for entry in self._chat_entries:
+            if entry.get("id") == message_id:
+                entry["body_html"] = body_html
+                self._render_chat_messages()
+                return True
+        return False
+
     def append_to_chat_history(
         self,
         message,
@@ -560,93 +614,24 @@ class CaptionWidget(QtWidgets.QWidget):
         message_id=None,
         header_label=None,
     ):
-        """
-        Appends a message to the chat history display with styled ChatGPT-style message boxes.
+        """Append a chat bubble to the history."""
+        self._ensure_chat_mode()
 
-        Args:
-            message (str): The message to append.
-            is_user (bool): Whether the message is from the user. Defaults to False (AI message).
-            message_id (str | None): Optional span identifier for streaming updates.
-            header_label (str | None): Optional label to display above the message bubble.
-        """
-        # Define styles
-        styles = {
-            "text_color": "#1f2328",
-            "label_color": "#57606a",
-            "background_user": "#dcfce7",
-            "background_model": "#ffffff",
-            "border_radius": "16px",
-            "box_shadow": "0 8px 24px rgba(15, 23, 42, 0.08)",
-            "max_width": "640px",
-            "min_width": "160px",
-            "padding": "14px 18px",
+        header_text = header_label or ("You" if is_user else "AI")
+        rendered_message = self._rich_text_from_markdown(message or "")
+
+        entry = {
+            "id": message_id if not is_user else None,
+            "is_user": is_user,
+            "header": header_text,
+            "body_html": rendered_message,
         }
 
-        # Determine message styles
-        background_color = styles["background_user"] if is_user else styles["background_model"]
-        alignment = "right" if is_user else "left"
-        header_text = header_label or ("You" if is_user else "AI")
-
-        content_sections: List[str] = []
-        rendered_message = self._rich_text_from_markdown(message or "")
-        if rendered_message:
-            content_sections.append(rendered_message)
-
         if message_id and not is_user:
-            placeholder = f"<!-- START {message_id} --><!-- END {message_id} -->"
-            content_sections.append(placeholder)
-            self._message_buffers[message_id] = ""
+            self._message_buffers[message_id] = message or ""
 
-        content_html = "".join(content_sections).strip() or "&nbsp;"
-
-        # Construct the HTML for the message
-        message_html = f"""
-            <div style="margin-bottom: 14px; text-align: {alignment};">
-                <div style="
-                    display: inline-block;
-                    background-color: {background_color};
-                    padding: {styles['padding']};
-                    border-radius: {styles['border_radius']};
-                    word-break: break-word;
-                    max-width: {styles['max_width']};
-                    box-shadow: {styles['box_shadow']};
-                    text-align: left;
-                    min-width: {styles['min_width']};
-                ">
-                    <div style="
-                        font-weight: 600;
-                        font-size: 12px;
-                        letter-spacing: 0.03em;
-                        text-transform: uppercase;
-                        color: {styles['label_color']};
-                        margin-bottom: 6px;
-                    ">{self._renderer.escape_html(header_text)}</div>
-                    <div style="font-size: 14px; line-height: 1.65; color: {styles['text_color']};">
-                        {content_html}
-                    </div>
-                </div>
-            </div>
-        """
-
-        # Update the chat history HTML
-        current_html = self.text_edit.toHtml()
-        body_close_tag_index = current_html.lower().rfind("</body>")
-        if body_close_tag_index != -1:
-            new_html = (
-                current_html[:body_close_tag_index]
-                + message_html
-                + current_html[body_close_tag_index:]
-            )
-        else:
-            new_html = current_html + message_html
-
-        self.text_edit.setHtml(new_html)
-        self._update_cache_from_editor()
-
-        # Ensure the scrollbar is at the bottom after updating the chat
-        self.text_edit.verticalScrollBar().setValue(
-            self.text_edit.verticalScrollBar().maximum()
-        )
+        self._chat_entries.append(entry)
+        self._render_chat_messages()
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message, is_error):
@@ -665,6 +650,12 @@ class CaptionWidget(QtWidgets.QWidget):
         # Reset UI and streaming flag
         if span_id:
             self._message_buffers.pop(span_id, None)
+            for entry in self._chat_entries:
+                if entry.get("id") == span_id:
+                    entry["id"] = None
+                    break
+            if self._chat_mode_active:
+                self._render_chat_messages()
         self.chat_button.setEnabled(True)
         self.is_streaming_chat = False
         self.current_ai_span_id = None
@@ -707,36 +698,37 @@ class CaptionWidget(QtWidgets.QWidget):
         """Render Markdown with LaTeX support into styled HTML."""
         return self._renderer.render(text)
 
-    def _update_marker_content(self, message_id: str, html_fragment: str) -> bool:
-        """Replace the HTML between comment markers for a streaming chat message."""
-        start_marker = f"<!-- START {message_id} -->"
-        end_marker = f"<!-- END {message_id} -->"
-        current_html = self.text_edit.toHtml()
-
-        start_idx = current_html.find(start_marker)
-        end_idx = current_html.find(end_marker, start_idx)
-        if start_idx == -1 or end_idx == -1:
-            return False
-
-        new_html = (
-            current_html[: start_idx + len(start_marker)]
-            + html_fragment
-            + current_html[end_idx:]
-        )
-        self.text_edit.setHtml(new_html)
-        self._update_cache_from_editor()
-        return True
 
     def _apply_editor_style(self) -> None:
         """Apply a default stylesheet to the QTextDocument (avoids brittle <body> wrappers)."""
         css = (
             "body{font-family:'Helvetica Neue','Arial',sans-serif;"
             "font-size:14px;line-height:1.6;color:#1f2328;}"
+            ".chat-log{display:flex;flex-direction:column;gap:12px;}"
+            ".chat-bubble{display:flex;flex-direction:column;gap:6px;"
+            "padding:14px 18px;border-radius:16px;box-shadow:0 8px 24px rgba(15,23,42,0.08);"
+            "max-width:640px;word-break:break-word;background:#ffffff;}"
+            ".chat-bubble.user{align-self:flex-end;background:#dcfce7;}"
+            ".chat-bubble.model{align-self:flex-start;background:#ffffff;}"
+            ".chat-label{font-weight:600;font-size:12px;letter-spacing:0.03em;"
+            "text-transform:uppercase;color:#57606a;margin-bottom:6px;}"
+            ".chat-body{font-size:14px;line-height:1.65;color:#1f2328;overflow-x:auto;}"
+            "h1{font-size:1.6em;margin:0.6em 0 0.4em;}"
+            "h2{font-size:1.4em;margin:0.6em 0 0.4em;}"
+            "h3{font-size:1.2em;margin:0.6em 0 0.4em;}"
+            "h4,h5,h6{margin:0.5em 0 0.3em;}"
+            "p{margin:0.4em 0;}"
             "code{background:#f0f0f0;border-radius:4px;padding:2px 4px;}"
-            "pre{background:#f5f5f5;border-radius:8px;padding:12px;}"
+            "pre{background:#f5f5f5;border-radius:8px;padding:12px;overflow-x:auto;}"
+            "pre code{background:transparent;padding:0;}"
             "ul,ol{margin:6px 0 6px 18px;}"
             "blockquote{margin:8px 0;padding:6px 12px;border-left:4px solid #d0d7de;"
             "color:#57606a;background:#f6f8fa;border-radius:0 6px 6px 0;}"
+            "table{border-collapse:collapse;width:100%;margin:8px 0;}"
+            "th,td{border:1px solid #d0d7de;padding:6px 10px;vertical-align:top;}"
+            "th{background:#f6f8fa;font-weight:600;}"
+            "hr{border:0;height:1px;background:#d0d7de;margin:12px 0;}"
+            "img{max-width:100%;height:auto;}"
         )
         try:
             self.text_edit.document().setDefaultStyleSheet(css)
@@ -748,6 +740,7 @@ class CaptionWidget(QtWidgets.QWidget):
         try:
             self._current_caption_raw = self.text_edit.toPlainText()
             self._current_caption_html = self.text_edit.toHtml()
+            self.previous_text = self._current_caption_raw
         except Exception:
             pass
 
@@ -758,10 +751,13 @@ class CaptionWidget(QtWidgets.QWidget):
         self._is_restoring_caption = True
         try:
             self.text_edit.blockSignals(True)
-            self._apply_editor_style()
-            self.text_edit.setHtml(self._current_caption_html)
-            self.previous_text = self._current_caption_raw
-            self._last_emitted_caption = self._current_caption_raw
+            if self._chat_mode_active:
+                self._render_chat_messages()
+            else:
+                self._apply_editor_style()
+                self.text_edit.setHtml(self._current_caption_html)
+                self.previous_text = self._current_caption_raw
+                self._last_emitted_caption = self._current_caption_raw
         finally:
             self.text_edit.blockSignals(False)
             self._is_restoring_caption = False
@@ -771,6 +767,9 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def set_caption(self, caption_text):
         """Sets the caption text with Markdown and LaTeX rendered content."""
+        self._chat_mode_active = False
+        self._chat_entries = []
+        self._message_buffers.clear()
         caption_text = caption_text or ""
         self._current_caption_raw = caption_text
         self.previous_text = ""
@@ -779,6 +778,7 @@ class CaptionWidget(QtWidgets.QWidget):
         self.text_edit.setHtml(content_html)
         self._update_cache_from_editor()
         self.previous_text = caption_text
+        self._last_emitted_caption = caption_text
 
     def escape_html(self, text):
         """Escapes HTML special characters to prevent rendering issues."""
@@ -1222,20 +1222,25 @@ class CaptionWidget(QtWidgets.QWidget):
             # Fallback: append raw text if span tracking failed
             self.text_edit.moveCursor(QtGui.QTextCursor.End)
             self.text_edit.insertPlainText(chunk)
-            self._current_caption_raw = self.text_edit.toPlainText()
-            self._current_caption_html = self.text_edit.toHtml()
+            self._update_cache_from_editor()
             return
 
         updated_buffer = self._message_buffers.get(span_id, "") + chunk
         self._message_buffers[span_id] = updated_buffer
 
         rendered_html = self._rich_text_from_markdown(updated_buffer)
-        if not self._update_marker_content(span_id, rendered_html):
-            # Fallback: append raw text to avoid losing information
-            self.text_edit.moveCursor(QtGui.QTextCursor.End)
-            self.text_edit.insertPlainText(chunk)
-            self._current_caption_raw = self.text_edit.toPlainText()
-            self._current_caption_html = self.text_edit.toHtml()
+        if not self._update_stream_entry(span_id, rendered_html):
+            # Fallback: append a fresh model entry to avoid losing information
+            header = self.provider_labels.get(self.selected_provider, "AI")
+            self._chat_entries.append(
+                {
+                    "id": span_id,
+                    "is_user": False,
+                    "header": header,
+                    "body_html": rendered_html,
+                }
+            )
+            self._render_chat_messages()
 
         # Ensure scrollbar is at the bottom
         self.text_edit.verticalScrollBar().setValue(

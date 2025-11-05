@@ -686,6 +686,7 @@ class AnnolidWindow(MainWindow):
         self.caption_widget = CaptionWidget()
         self.caption_widget.set_canvas(self.canvas)
         self.caption_dock.setWidget(self.caption_widget)
+        self.caption_dock.installEventFilter(self.caption_widget)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.caption_dock)
 
         self.caption_widget.charInserted.connect(

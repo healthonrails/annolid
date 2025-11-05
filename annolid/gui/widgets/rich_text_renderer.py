@@ -61,9 +61,23 @@ class RichTextRenderer:
                     "text-align",
                     "margin",
                     "padding",
-                    "border",
+                    "border", 
                     "border-radius",
                     "line-height",
+                    "border-collapse",
+                    "border-spacing",
+                    "width",
+                    "max-width",
+                    "height",
+                    "max-height",
+                    "overflow",
+                    "overflow-x",
+                    "display",
+                    "flex-direction",
+                    "gap",
+                    "align-self",
+                    "justify-content",
+                    "white-space",
                 },
                 allow_hyphenated_properties=True,
             )
@@ -556,4 +570,6 @@ class RichTextRenderer:
     def _extract_special_tags(self, text: str) -> Tuple[str, Dict[str, str]]:
         if not text:
             return "", {}
+        # Drop non-HTML tags leaked by some models (e.g., <think> ... </think>)
+        text = re.sub(r"</?think[^>]*>", "", text, flags=re.IGNORECASE)
         return text, {}
