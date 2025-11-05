@@ -18,7 +18,8 @@ a = Analysis(
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    # Prevent PyInstaller from loading alternate Qt bindings; project uses PyQt5.
+    excludes=['PySide6', 'PySide2', 'PyQt6'],
 )
 pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(

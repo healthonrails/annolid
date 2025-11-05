@@ -14,6 +14,11 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.id }}
+      release_url: ${{ steps.create_release.outputs.html_url }}
+
     steps:
       - name: Build Changelog
         id: github_release
@@ -27,15 +32,6 @@ jobs:
         with:
           body: ${{steps.github_release.outputs.CHANGELOG}}
 
-      - name: Create release URL file
-        run: echo "${{ steps.create_release.outputs.upload_url }}" > release_url.txt
-
-      - name: Save release URL file for publish
-        uses: actions/upload-artifact@v4
-        with:
-          name: release_url
-          path: release_url.txt
-
   publish:
     needs: [release]
 
@@ -46,35 +42,25 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
       - uses: conda-incubator/setup-miniconda@v2
         with:
           auto-update-conda: true
           python-version: '3.11'
 
-      - name: Install main
+      - name: Install project and build tooling
         shell: bash -l {0}
         run: |
-          pip install .
+          pip install --upgrade pip
+          pip install . pyinstaller
 
       - name: Run pyinstaller
         shell: bash -l {0}
         run: |
-          pip install pyinstaller
           pyinstaller annolid.spec
-
-      - name: Load release URL file from release job
-        uses: actions/download-artifact@v4
-        with:
-          name: release_url
-
-      - name: Get release file name & upload URL
-        id: get_release_info
-        run: |
-          echo "::set-output name=upload_url::$(cat release_url/release_url.txt)"
 
       - name: Upload release executable on macOS & Linux
         id: upload_release_executable_macos_linux
@@ -82,7 +68,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          upload_url: ${{ needs.release.outputs.upload_url }}
           asset_path: ./dist/annolid
           asset_name: annolid-${{ runner.os }}
           asset_content_type: application/octet-stream
@@ -94,7 +80,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          upload_url: ${{ needs.release.outputs.upload_url }}
           asset_path: ./dist/annolid.exe
           asset_name: Annolid.exe
           asset_content_type: application/octet-stream
@@ -114,20 +100,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          upload_url: ${{ needs.release.outputs.upload_url }}
           asset_path: ./dist/Annolid.dmg
           asset_name: Annolid.dmg
           asset_content_type: application/octet-stream
         if: runner.os == 'macOS'
-
-      - name: Upload release executable on Windows
-        id: upload_release_executable_windows_2
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
-          asset_path: ./dist/annolid.exe
-          asset_name: Annolid.exe
-          asset_content_type: application/octet-stream
-        if: runner.os == 'Windows'
