@@ -8,12 +8,13 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QComboBox,
 )
-from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject
+from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject, QTimer
 import threading
 import os
 import tempfile
 import mimetypes
 import uuid
+import base64
 from typing import Any, Dict, List, Tuple, Optional
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
@@ -88,6 +89,9 @@ class CaptionWidget(QtWidgets.QWidget):
         self._allow_empty_caption: bool = False
         self._last_emitted_caption: Optional[str] = None
         self._description_buffer: str = ""
+        self._current_caption_raw: str = ""
+        self._current_caption_html: str = ""
+        self._is_restoring_caption: bool = False
 
     def _determine_image_model(self) -> str:
         """Choose an appropriate Gemini model for image generation."""
@@ -258,12 +262,13 @@ class CaptionWidget(QtWidgets.QWidget):
                 border-radius: 10px;
                 padding: 12px;
                 color: #1f2328;
-                font-family: 'Segoe UI', 'Helvetica Neue', sans-serif;
+                font-family: 'Helvetica Neue', 'Arial', sans-serif;
                 font-size: 13px;
                 line-height: 1.55em;
             }
             """
         )
+        text_edit.installEventFilter(self)
         return text_edit
 
     def _build_action_buttons(self) -> QHBoxLayout:
@@ -636,6 +641,7 @@ class CaptionWidget(QtWidgets.QWidget):
             new_html = current_html + message_html
 
         self.text_edit.setHtml(new_html)
+        self._update_cache_from_editor()
 
         # Ensure the scrollbar is at the bottom after updating the chat
         self.text_edit.verticalScrollBar().setValue(
@@ -718,19 +724,60 @@ class CaptionWidget(QtWidgets.QWidget):
             + current_html[end_idx:]
         )
         self.text_edit.setHtml(new_html)
+        self._update_cache_from_editor()
         return True
+
+    def _apply_editor_style(self) -> None:
+        """Apply a default stylesheet to the QTextDocument (avoids brittle <body> wrappers)."""
+        css = (
+            "body{font-family:'Helvetica Neue','Arial',sans-serif;"
+            "font-size:14px;line-height:1.6;color:#1f2328;}"
+            "code{background:#f0f0f0;border-radius:4px;padding:2px 4px;}"
+            "pre{background:#f5f5f5;border-radius:8px;padding:12px;}"
+            "ul,ol{margin:6px 0 6px 18px;}"
+            "blockquote{margin:8px 0;padding:6px 12px;border-left:4px solid #d0d7de;"
+            "color:#57606a;background:#f6f8fa;border-radius:0 6px 6px 0;}"
+        )
+        try:
+            self.text_edit.document().setDefaultStyleSheet(css)
+        except Exception:
+            pass
+
+    def _update_cache_from_editor(self) -> None:
+        """Snapshot editor state into raw/html caches."""
+        try:
+            self._current_caption_raw = self.text_edit.toPlainText()
+            self._current_caption_html = self.text_edit.toHtml()
+        except Exception:
+            pass
+
+    def _force_restore(self) -> None:
+        """Unconditionally restore last rendered HTML (signals blocked)."""
+        if not self._current_caption_html:
+            return
+        self._is_restoring_caption = True
+        try:
+            self.text_edit.blockSignals(True)
+            self._apply_editor_style()
+            self.text_edit.setHtml(self._current_caption_html)
+            self.previous_text = self._current_caption_raw
+            self._last_emitted_caption = self._current_caption_raw
+        finally:
+            self.text_edit.blockSignals(False)
+            self._is_restoring_caption = False
+
+    def _schedule_restore(self) -> None:
+        QTimer.singleShot(0, self._restore_caption_if_needed)
 
     def set_caption(self, caption_text):
         """Sets the caption text with Markdown and LaTeX rendered content."""
+        caption_text = caption_text or ""
+        self._current_caption_raw = caption_text
         self.previous_text = ""
         content_html = self._rich_text_from_markdown(caption_text)
-        wrapped_html = (
-            "<body style=\"font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; "
-            "font-size: 14px; line-height: 1.6; color: #1f2328;\">"
-            f"{content_html}"
-            "</body>"
-        )
-        self.text_edit.setHtml(wrapped_html)
+        self._apply_editor_style()
+        self.text_edit.setHtml(content_html)
+        self._update_cache_from_editor()
         self.previous_text = caption_text
 
     def escape_html(self, text):
@@ -742,6 +789,32 @@ class CaptionWidget(QtWidgets.QWidget):
         self._allow_empty_caption = True
         self.set_caption("")
         self.clear_label.setText("Clear caption")
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        if self._current_caption_html:
+            self._schedule_restore()
+
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if obj is self.text_edit and event.type() in (
+            QtCore.QEvent.ParentChange,
+            QtCore.QEvent.Show,
+            QtCore.QEvent.Hide,
+            QtCore.QEvent.ZOrderChange,
+            QtCore.QEvent.WindowActivate,
+        ):
+            if getattr(self, "_current_caption_html", ""):
+                self._schedule_restore()
+        return super().eventFilter(obj, event)
+
+    def _restore_caption_if_needed(self) -> None:
+        if self._is_restoring_caption or not self._current_caption_html:
+            return
+        # If empty or got cleared by Qt during docking, restore.
+        current_html = self.text_edit.toHtml() or ""
+        if current_html.strip() == self._current_caption_html.strip():
+            return
+        self._force_restore()
 
     def set_canvas(self, canvas: Optional[QtWidgets.QWidget]) -> None:
         """Attach the canvas widget so we can snapshot it when needed."""
@@ -939,8 +1012,24 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def emit_caption_changed(self):
         """Emits the captionChanged signal with the current caption."""
+        if self._is_restoring_caption:
+            return
+
         current_plain = self.text_edit.toPlainText()
         current_stripped = current_plain.strip()
+
+        if (
+            not current_plain
+            and self._current_caption_raw
+            and not self._allow_empty_caption
+            and not self.text_edit.hasFocus()
+        ):
+            self._is_restoring_caption = True
+            try:
+                self.set_caption(self._current_caption_raw)
+            finally:
+                self._is_restoring_caption = False
+            return
 
         if current_stripped:
             target_caption = current_plain
@@ -953,6 +1042,10 @@ class CaptionWidget(QtWidgets.QWidget):
                 self._allow_empty_caption = False
             else:
                 target_caption = self._last_nonempty_caption
+
+        self._current_caption_raw = target_caption
+        if target_caption or self._allow_empty_caption:
+            self._current_caption_html = self.text_edit.toHtml()
 
         if target_caption == self._last_emitted_caption:
             return
@@ -1129,6 +1222,8 @@ class CaptionWidget(QtWidgets.QWidget):
             # Fallback: append raw text if span tracking failed
             self.text_edit.moveCursor(QtGui.QTextCursor.End)
             self.text_edit.insertPlainText(chunk)
+            self._current_caption_raw = self.text_edit.toPlainText()
+            self._current_caption_html = self.text_edit.toHtml()
             return
 
         updated_buffer = self._message_buffers.get(span_id, "") + chunk
@@ -1139,6 +1234,8 @@ class CaptionWidget(QtWidgets.QWidget):
             # Fallback: append raw text to avoid losing information
             self.text_edit.moveCursor(QtGui.QTextCursor.End)
             self.text_edit.insertPlainText(chunk)
+            self._current_caption_raw = self.text_edit.toPlainText()
+            self._current_caption_html = self.text_edit.toHtml()
 
         # Ensure scrollbar is at the bottom
         self.text_edit.verticalScrollBar().setValue(

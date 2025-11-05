@@ -24,8 +24,10 @@ except ImportError:  # pragma: no cover - optional dependency
 
 try:
     import bleach  # type: ignore
+    from bleach.sanitizer import CSSSanitizer  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     bleach = None  # type: ignore
+    CSSSanitizer = None  # type: ignore
 
 
 class RichTextRenderer:
@@ -47,6 +49,27 @@ class RichTextRenderer:
             "color:#57606a; background-color:#f6f8fa; border-radius: 0 6px 6px 0;"
         )
         self._md = self._build_markdown_engine()
+        self._css_sanitizer = (
+            CSSSanitizer(
+                allowed_css_properties={
+                    "color",
+                    "background-color",
+                    "font-family",
+                    "font-size",
+                    "font-weight",
+                    "font-style",
+                    "text-align",
+                    "margin",
+                    "padding",
+                    "border",
+                    "border-radius",
+                    "line-height",
+                },
+                allow_hyphenated_properties=True,
+            )
+            if CSSSanitizer is not None
+            else None
+        )
 
     # ------------------------------------------------------------------ public
     def render(self, text: str) -> str:
@@ -139,7 +162,12 @@ class RichTextRenderer:
             "td": ["align"],
             "th": ["align"],
         }
-        return bleach.clean(html_content, tags=allowed_tags, attributes=allowed_attrs)
+        return bleach.clean(
+            html_content,
+            tags=allowed_tags,
+            attributes=allowed_attrs,
+            css_sanitizer=self._css_sanitizer,
+        )
 
     # ----------------------------------------------------------- latex helpers
     def _latex_to_image_base64(
