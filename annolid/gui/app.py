@@ -105,6 +105,7 @@ from annolid.annotation import labelme2csv
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
+from annolid.data.audios import AudioLoader
 from annolid.gui.widgets.caption import CaptionWidget
 from annolid.gui.widgets.florence2_widget import (
     Florence2Request,
@@ -424,6 +425,8 @@ class AnnolidWindow(MainWindow):
         self.seekbar = None
         self.audio_widget = None
         self.audio_dock = None
+        self._audio_loader: Optional[AudioLoader] = None
+        self._suppress_audio_seek = False
         self.caption_widget = None
 
         self.frame_worker = QtCore.QThread()
@@ -672,12 +675,68 @@ class AnnolidWindow(MainWindow):
 
     def openAudio(self):
         from annolid.gui.widgets.audio import AudioWidget
-        if self.video_file:
-            self.audio_widget = AudioWidget(self.video_file)
-            self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
-            self.audio_dock.setObjectName("Audio")
-            self.audio_dock.setWidget(self.audio_widget)
-            self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+        if not self.video_file:
+            return
+
+        if self._audio_loader is None:
+            self._configure_audio_for_video(self.video_file, self.fps)
+
+        if self._audio_loader is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Audio"),
+                self.tr("No audio track available for this video."),
+            )
+            return
+
+        self.audio_widget = AudioWidget(
+            self.video_file, audio_loader=self._audio_loader
+        )
+        self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
+        self.audio_dock.setObjectName("Audio")
+        self.audio_dock.setWidget(self.audio_widget)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+
+    def _configure_audio_for_video(
+        self, video_path: Optional[str], fps: Optional[float]
+    ) -> None:
+        """Prepare audio playback for the active video if an audio track exists."""
+        self._release_audio_loader()
+
+        if not video_path:
+            return
+
+        effective_fps = fps if fps and fps > 0 else 29.97
+        try:
+            self._audio_loader = AudioLoader(video_path, fps=effective_fps)
+        except Exception as exc:
+            logger.debug(
+                "Skipping audio playback for %s: %s",
+                video_path,
+                exc,
+            )
+            self._audio_loader = None
+
+    def _release_audio_loader(self) -> None:
+        """Stop and discard any cached audio loader."""
+        if self._audio_loader is None:
+            return
+
+        with contextlib.suppress(Exception):
+            self._audio_loader.stop()
+        self._audio_loader = None
+
+    def _active_audio_loader(self) -> Optional[AudioLoader]:
+        """Return the audio loader currently associated with playback."""
+        if self.audio_widget and self.audio_widget.audio_loader:
+            return self.audio_widget.audio_loader
+        return self._audio_loader
+
+    def _update_audio_playhead(self, frame_number: int) -> None:
+        """Align cached audio playback position with the given frame number."""
+        audio_loader = self._active_audio_loader()
+        if audio_loader:
+            audio_loader.set_playhead_frame(frame_number)
 
     def openCaption(self):
         # Caption dock (created but initially hidden)
@@ -1017,8 +1076,9 @@ class AnnolidWindow(MainWindow):
         if self.isPlaying:
             self.timer = QtCore.QTimer()
             self.timer.timeout.connect(self.openNextImg)
-            if self.audio_widget is not None and self.audio_widget.audio_loader is not None:
-                self.audio_widget.audio_loader.play()
+            audio_loader = self._active_audio_loader()
+            if audio_loader:
+                audio_loader.play(start_frame=self.frame_number)
             if self.fps is not None and self.fps > 0:
                 self.timer.start(int(1000/self.fps))
             else:
@@ -1028,8 +1088,9 @@ class AnnolidWindow(MainWindow):
         else:
             self.timer.stop()
             # Stop audio playback when video playback stops
-            if self.audio_widget is not None and self.audio_widget.audio_loader is not None:
-                self.audio_widget.audio_loader.stop()
+            audio_loader = self._active_audio_loader()
+            if audio_loader:
+                audio_loader.stop()
 
     def startPlaying(self):
         self.playVideo(isPlaying=True)
@@ -1079,8 +1140,9 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.num_frames = None
         self.video_file = None
+        self._release_audio_loader()
         if self.audio_widget:
-            self.audio_widget.audio_loader = None
+            self.audio_widget.set_audio_loader(None)
             self.audio_widget.close()
         self.audio_widget = None
         if self.audio_dock:
@@ -4075,6 +4137,11 @@ class AnnolidWindow(MainWindow):
         if frame_number >= self.num_frames or frame_number < 0:
             return
         self.frame_number = frame_number
+        self._update_audio_playhead(frame_number)
+        if self.isPlaying and not self._suppress_audio_seek:
+            audio_loader = self._active_audio_loader()
+            if audio_loader:
+                audio_loader.play(start_frame=frame_number)
         self.filename = self.video_results_folder / \
             f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
         self.current_frame_time_stamp = self.video_loader.get_time_stamp()
@@ -4477,6 +4544,7 @@ class AnnolidWindow(MainWindow):
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
             self.behavior_log_widget.set_fps(self.fps)
+            self._configure_audio_for_video(self.video_file, self.fps)
             if self.seekbar:
                 self.statusBar().removeWidget(self.seekbar)
             if self.playButton:
@@ -5170,9 +5238,13 @@ class AnnolidWindow(MainWindow):
             else:
                 self.frame_number = self.num_frames
                 self.togglePlay()
-            self.set_frame_number(self.frame_number)
-            # update the seekbar value
-            self.seekbar.setValue(self.frame_number)
+            self._suppress_audio_seek = True
+            try:
+                self.set_frame_number(self.frame_number)
+                # update the seekbar value
+                self.seekbar.setValue(self.frame_number)
+            finally:
+                self._suppress_audio_seek = False
             self.uniqLabelList.itemSelectionChanged.connect(
                 self.handle_uniq_label_list_selection_change)
 

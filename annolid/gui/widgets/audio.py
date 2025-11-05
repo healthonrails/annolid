@@ -1,22 +1,31 @@
 import sys
+from typing import Optional
+
 import numpy as np
 from qtpy import QtWidgets
-from qtpy.QtWidgets import QVBoxLayout, QGridLayout
+from qtpy.QtWidgets import QGridLayout
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from annolid.data.audios import AudioLoader
 from qtpy.QtCore import Qt
+
+from annolid.data.audios import AudioLoader
 
 
 class AudioWidget(QtWidgets.QWidget):
     """A QWidget that displays audio waveform and spectrum using Matplotlib."""
 
-    def __init__(self, audio_path, parent=None):
+    def __init__(
+        self,
+        audio_path: str,
+        audio_loader: Optional[AudioLoader] = None,
+        parent=None,
+    ):
         """
         Constructor for the AudioWidget class.
 
         Args:
             audio_path (str): Path to the audio file.
+            audio_loader (AudioLoader | None): Optional preloaded audio loader.
             parent (QWidget): Optional parent widget.
         """
         super().__init__(parent)
@@ -29,20 +38,29 @@ class AudioWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.canvas_waveform, 0, 0)
         self.layout.addWidget(self.canvas_spectrum, 1, 0)
         self.setLayout(self.layout)
-        try:
-            self.audio_loader = AudioLoader(audio_path)
-        except Exception as e:
-            self.audio_loader = None
+        self.audio_loader: Optional[AudioLoader] = audio_loader
+        if self.audio_loader is None and audio_path:
+            try:
+                self.audio_loader = AudioLoader(audio_path)
+            except Exception:
+                self.audio_loader = None
         self.canvas_waveform.mpl_connect(
             'button_press_event', self.on_canvas_clicked)
         self.canvas_spectrum.mpl_connect(
             'button_press_event', self.on_canvas_clicked)
 
+        self._refresh_plots()
+
+    def _refresh_plots(self):
+        """Refresh the plotted data to reflect the current audio loader."""
         if self.audio_loader:
             self.plot()
+        else:
+            self.clear()
 
     def plot(self):
         """Plot the audio waveform and spectrum."""
+        self.figure_waveform.clear()
         # Waveform plot
         ax_waveform = self.figure_waveform.add_subplot(111)
         y = self.audio_loader.audio_data
@@ -53,6 +71,7 @@ class AudioWidget(QtWidgets.QWidget):
         ax_waveform.set_title('Audio Waveform')
 
         # Spectrum plot
+        self.figure_spectrum.clear()
         ax_spectrum = self.figure_spectrum.add_subplot(111)
         spectrum, frequencies, times, _ = ax_spectrum.specgram(
             y, Fs=self.audio_loader.sample_rate)
@@ -66,6 +85,23 @@ class AudioWidget(QtWidgets.QWidget):
         self.canvas_waveform.draw()
         self.canvas_spectrum.draw()
 
+    def clear(self):
+        """Clear any plotted data."""
+        self.figure_waveform.clear()
+        self.figure_spectrum.clear()
+        self.canvas_waveform.draw()
+        self.canvas_spectrum.draw()
+
+    def set_audio_loader(self, audio_loader: Optional[AudioLoader]):
+        """
+        Update the widget with a new audio loader and redraw the plots.
+
+        Args:
+            audio_loader (AudioLoader | None): New loader to visualize.
+        """
+        self.audio_loader = audio_loader
+        self._refresh_plots()
+
     def on_canvas_clicked(self, event):
         """
         Handle the mouse press event on the canvas.
@@ -73,7 +109,7 @@ class AudioWidget(QtWidgets.QWidget):
         Args:
             event (matplotlib.backend_bases.MouseEvent): Mouse event object.
         """
-        if event.button == Qt.LeftButton:
+        if event.button == Qt.LeftButton and self.audio_loader:
             x = event.xdata
             if x is not None:
                 x_start = x
