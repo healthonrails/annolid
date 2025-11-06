@@ -96,6 +96,7 @@ from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets import CanvasScreenshotWidget
+from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
 from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
@@ -446,7 +447,9 @@ class AnnolidWindow(MainWindow):
 
         self.canvas_screenshot_widget = CanvasScreenshotWidget(
             canvas=self.canvas, here=Path(__file__).resolve().parent)
+        self.pdf_import_widget = PdfImportWidget(self)
         self._setup_canvas_screenshot_action()
+        self._setup_open_pdf_action()
 
         self.populateModeActions()
 
@@ -500,6 +503,21 @@ class AnnolidWindow(MainWindow):
             enabled=True
         )
         self.menus.file.addAction(self.save_canvas_screenshot_action)
+
+    def _setup_open_pdf_action(self):
+        """Adds an 'Open PDF' entry to the File menu."""
+        action = functools.partial(newAction, self)
+        self.open_pdf_action = action(
+            self.tr("Open &PDF..."),
+            self.pdf_import_widget.open_pdf,
+            None,
+            "open",
+            self.tr("Convert PDF pages to images and load them"),
+            enabled=True,
+        )
+        file_menu = getattr(self.menus, "file", None)
+        if file_menu is not None:
+            file_menu.addAction(self.open_pdf_action)
 
     def _save_canvas_screenshot(self):
         """ Calls CanvasScreenshotWidget and passes in the current filename"""
