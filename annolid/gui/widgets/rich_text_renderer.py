@@ -105,7 +105,9 @@ class RichTextRenderer:
                 pattern = re.compile(
                     rf"<p[^>]*>\s*{re.escape(token)}\s*</p>", re.IGNORECASE
                 )
-                html_content, replaced = pattern.subn(data["html"], html_content)
+                html_content, replaced = pattern.subn(
+                    lambda _match: data["html"], html_content
+                )
                 if not replaced:
                     html_content = html_content.replace(token, data["html"])
             else:
