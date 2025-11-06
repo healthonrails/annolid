@@ -1,4 +1,5 @@
 import warnings
+from typing import Optional
 try:
     import sounddevice as sd
 except ImportError:
@@ -37,6 +38,23 @@ class AudioLoader:
         self.audio_data = audio_data
         self.sample_rate = sample_rate
         self.fps = fps
+        self._playhead_sample = 0
+
+    def _frame_to_sample_index(self, frame_number: int) -> int:
+        """
+        Convert a video frame index to the closest audio sample index.
+
+        Args:
+            frame_number (int): Frame number to convert; negative values clamp to zero.
+
+        Returns:
+            int: Sample index within the audio buffer.
+        """
+        if frame_number is None:
+            return 0
+        frame_number = max(int(frame_number), 0)
+        sample_index = int(round(frame_number / self.fps * self.sample_rate))
+        return max(0, min(sample_index, len(self.audio_data)))
 
     def load_audio_for_frame(self, frame_number):
         """
@@ -50,7 +68,7 @@ class AudioLoader:
         - audio_frame (ndarray): Numpy array containing the audio samples for the given frame.
         """
         # Calculate the corresponding audio sample index
-        audio_sample_index = int(frame_number / self.fps * self.sample_rate)
+        audio_sample_index = self._frame_to_sample_index(frame_number)
 
         # Calculate the audio duration corresponding to a single video frame
         audio_frame_duration = 1 / self.fps
@@ -59,16 +77,39 @@ class AudioLoader:
         audio_frame_samples = int(audio_frame_duration * self.sample_rate)
 
         # Extract the audio samples for the given video frame
-        audio_frame = self.audio_data[audio_sample_index:
-                                      audio_sample_index + audio_frame_samples]
+        end_index = audio_sample_index + audio_frame_samples
+        audio_frame = self.audio_data[audio_sample_index:end_index]
 
         return audio_frame
 
-    def play(self):
+    def set_playhead_frame(self, frame_number: int) -> None:
         """
-        Play the entire audio file.
+        Set the internal playhead to align playback with a specific video frame.
+
+        Args:
+            frame_number (int): Frame number that should align with the playhead.
         """
-        sd.play(self.audio_data, self.sample_rate, blocking=False)
+        self._playhead_sample = self._frame_to_sample_index(frame_number)
+
+    def play(self, start_frame: Optional[int] = None):
+        """
+        Play the audio from the current or specified frame position.
+
+        Args:
+            start_frame (int | None): Optional frame index from which to start playback.
+        """
+        if start_frame is not None:
+            self.set_playhead_frame(start_frame)
+
+        if self._playhead_sample >= len(self.audio_data):
+            # Nothing to play from beyond the buffer length.
+            return
+
+        sd.play(
+            self.audio_data[self._playhead_sample:],
+            self.sample_rate,
+            blocking=False,
+        )
 
     def play_selected_part(self, x_start, x_end):
         """
@@ -87,6 +128,7 @@ class AudioLoader:
 
         # Play the selected audio using sounddevice
         sd.play(selected_audio, self.sample_rate, blocking=True)
+        self._playhead_sample = start_index
 
     def stop(self):
         """

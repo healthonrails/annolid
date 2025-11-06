@@ -2,8 +2,8 @@
 import os  # noqa
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # noqa
 
-import re
 import csv
+import re
 import os.path as osp
 import time
 import html
@@ -98,6 +98,7 @@ from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDi
 from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
+from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
@@ -4496,6 +4497,12 @@ class AnnolidWindow(MainWindow):
         if not video_path:
             return
         self.openVideo(from_video_list=True, video_path=video_path)
+
+    def open_youtube_video(self):
+        """Launch the YouTube download dialog and open the selected video."""
+        dialog = YouTubeVideoDialog(self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.downloaded_path:
+            self.openVideo(from_video_list=True, video_path=str(dialog.downloaded_path))
 
     def handle_extracted_frames(self, dirpath):
         self.importDirImages(dirpath)

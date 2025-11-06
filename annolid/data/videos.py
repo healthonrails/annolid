@@ -331,6 +331,96 @@ def key_frames(video_file=None,
     return out_dir
 
 
+def download_youtube_video(
+    url: str,
+    output_dir: str | Path | None = None,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """
+    Download a YouTube video and return the local file path.
+
+    The download relies on `yt-dlp` and saves the media as an MP4 file.
+
+    Args:
+        url: Public YouTube URL.
+        output_dir: Optional directory to store the downloaded file. Defaults to
+            ``~/annolid_youtube``.
+        overwrite: When False, a previously downloaded copy is reused if present.
+
+    Returns:
+        Path: The path to the downloaded (or cached) video file.
+
+    Raises:
+        ValueError: If the URL is empty.
+        RuntimeError: If `yt-dlp` is missing or the download fails.
+    """
+    if not url or not url.strip():
+        raise ValueError("YouTube URL must not be empty.")
+
+    try:
+        from yt_dlp import YoutubeDL
+    except ImportError as exc:  # pragma: no cover - defensive path
+        raise RuntimeError(
+            "The 'yt-dlp' package is required to download YouTube videos."
+        ) from exc
+
+    destination_root = Path(output_dir) if output_dir else Path.home() / "annolid_youtube"
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    ydl_opts = {
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+        "outtmpl": str(destination_root / "%(title)s-%(id)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "overwrites": overwrite,
+    }
+
+    with YoutubeDL(ydl_opts) as ydl:
+        # Extract metadata first to allow cache reuse without re-downloading.
+        info = ydl.extract_info(url, download=False)
+        expected_output = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
+        if expected_output.exists() and not overwrite:
+            return expected_output
+
+        download_info = ydl.extract_info(url, download=True)
+
+    candidate_paths = []
+
+    requested_downloads = download_info.get("requested_downloads")
+    if requested_downloads:
+        candidate_paths.extend(
+            Path(item["filepath"])
+            for item in requested_downloads
+            if isinstance(item, dict) and item.get("filepath")
+        )
+
+    primary_filepath = download_info.get("filepath")
+    if primary_filepath:
+        candidate_paths.append(Path(primary_filepath))
+
+    legacy_filename = download_info.get("_filename")
+    if legacy_filename:
+        candidate_paths.append(Path(legacy_filename))
+
+    candidate_paths.append(expected_output)
+
+    valid_suffixes = {".mp4", ".mov", ".mkv", ".avi"}
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        if candidate.exists():
+            if candidate.suffix.lower() in valid_suffixes:
+                return candidate
+            mp4_candidate = candidate.with_suffix(".mp4")
+            if mp4_candidate.exists():
+                return mp4_candidate
+
+    raise RuntimeError("Failed to download YouTube video.")
+
+
 def video_loader(video_file=None):
     """
     Backward-compatible helper that returns a CV2Video instance.

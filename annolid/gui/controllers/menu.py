@@ -103,6 +103,12 @@ class MenuController:
                 "icon_path": here / "icons/open_video.png",
             },
             {
+                "name": "open_youtube_video",
+                "text": w.tr("Open &YouTube Video"),
+                "slot": w.open_youtube_video,
+                "tip": w.tr("Download a YouTube video and open it in Annolid"),
+            },
+            {
                 "name": "advance_params",
                 "text": w.tr("&Advanced Parameters"),
                 "slot": w.set_advanced_params,
@@ -400,6 +406,7 @@ class MenuController:
                 text = self._format_tool_button_text(action.text())
                 button.setText(text)
         utils.addActions(w.menus.file, (actions["open_video"],))
+        utils.addActions(w.menus.file, (actions["open_youtube_video"],))
         utils.addActions(w.menus.file, (actions["open_audio"],))
         utils.addActions(w.menus.file, (actions["open_caption"],))
         utils.addActions(w.menus.file, (actions["open_florence2"],))

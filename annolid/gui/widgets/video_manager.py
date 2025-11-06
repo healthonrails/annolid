@@ -2,7 +2,8 @@ from pathlib import Path
 import os
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QTableWidget, QFileDialog,
-    QTableWidgetItem, QProgressBar, QMessageBox, QAbstractItemView, QHBoxLayout, QTextEdit
+    QTableWidgetItem, QProgressBar, QMessageBox, QAbstractItemView,
+    QHBoxLayout, QTextEdit
 )
 from qtpy.QtCore import Signal, Qt, Slot
 from annolid.data.videos import extract_frames_from_videos
