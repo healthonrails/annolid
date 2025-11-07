@@ -8,11 +8,6 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QTimeEdit,
-    QFormLayout,
-    QPlainTextEdit,
 )
 from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject, QTimer
 import threading
@@ -27,13 +22,13 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.rich_text_renderer import RichTextRenderer
-from annolid.behavior import prompting as behavior_prompting
 from annolid.utils.llm_settings import (
     load_llm_settings,
     save_llm_settings,
     resolve_llm_config,
     ensure_provider_env,
 )
+from annolid.gui.widgets.behavior_describe_widget import BehaviorDescribeWidget
 
 try:
     import ollama
@@ -99,16 +94,10 @@ class CaptionWidget(QtWidgets.QWidget):
         self._allow_empty_caption: bool = False
         self._last_emitted_caption: Optional[str] = None
         self._description_buffer: str = ""
-        self._behavior_buffer: str = ""
-        self._behavior_segment_notes: str = ""
-        self._segment_snapshot_paths: List[str] = []
-        self._video_duration_ms: int = 0
-        self._video_path: Optional[str] = None
-        self._video_fps: float = 0.0
-        self._video_num_frames: int = 0
         self._current_caption_raw: str = ""
         self._current_caption_html: str = ""
         self._is_restoring_caption: bool = False
+        self.behavior_widget: Optional["BehaviorDescribeWidget"] = None
 
     def _determine_image_model(self) -> str:
         """Choose an appropriate Gemini model for image generation."""
@@ -318,14 +307,7 @@ class CaptionWidget(QtWidgets.QWidget):
             self.describe_button, "Describe the image"
         )
 
-        self.behavior_button = self.create_button(
-            icon_name="dialog-information",
-            color="#6f42c1",
-            hover_color="#4c2880",
-        )
-        behavior_layout, self.behavior_label = self._stack_button_with_label(
-            self.behavior_button, "Describe behavior"
-        )
+        self.behavior_widget = BehaviorDescribeWidget(self)
 
         self.read_button = self.create_button(
             icon_name="media-playback-start",
@@ -348,7 +330,6 @@ class CaptionWidget(QtWidgets.QWidget):
         self.record_button.clicked.connect(self.toggle_recording)
         self.improve_button.clicked.connect(self.improve_caption_async)
         self.describe_button.clicked.connect(self.on_describe_clicked)
-        self.behavior_button.clicked.connect(self.on_behavior_describe_clicked)
         self.read_button.clicked.connect(self.read_caption_async)
         self.clear_button.clicked.connect(self.clear_caption)
 
@@ -356,7 +337,12 @@ class CaptionWidget(QtWidgets.QWidget):
             record_layout,
             improve_layout,
             describe_layout,
-            behavior_layout,
+        ):
+            layout.addLayout(sub_layout)
+
+        layout.addWidget(self.behavior_widget)
+
+        for sub_layout in (
             read_layout,
             clear_layout,
         ):
@@ -864,16 +850,8 @@ class CaptionWidget(QtWidgets.QWidget):
         num_frames: Optional[int],
     ) -> None:
         """Provide video metadata so segments can access multiple frames."""
-        self._video_path = video_path
-        self._video_fps = float(fps or 0.0)
-        self._video_num_frames = int(num_frames or 0)
-        if self._video_fps > 0 and self._video_num_frames > 0:
-            self._video_duration_ms = int(
-                (self._video_num_frames / self._video_fps) * 1000
-            )
-        else:
-            self._video_duration_ms = 0
-        self._cleanup_segment_snapshots()
+        if self.behavior_widget:
+            self.behavior_widget.set_video_context(video_path, fps, num_frames)
 
     def get_image_path(self):
         """Returns the image path."""
@@ -890,17 +868,6 @@ class CaptionWidget(QtWidgets.QWidget):
         """Remove temporary canvas snapshots when they are no longer needed."""
         stale_paths = list(self._canvas_snapshot_paths)
         self._canvas_snapshot_paths.clear()
-        for snapshot_path in stale_paths:
-            try:
-                if snapshot_path and os.path.exists(snapshot_path):
-                    os.remove(snapshot_path)
-            except OSError:
-                pass
-
-    def _cleanup_segment_snapshots(self) -> None:
-        """Remove temporary segment frame snapshots."""
-        stale_paths = list(self._segment_snapshot_paths)
-        self._segment_snapshot_paths.clear()
         for snapshot_path in stale_paths:
             try:
                 if snapshot_path and os.path.exists(snapshot_path):
@@ -1068,211 +1035,6 @@ class CaptionWidget(QtWidgets.QWidget):
             self.set_caption(message)
             self.describe_label.setText("Describe the image")
         self._description_buffer = message
-
-    def begin_behavior_stream(self, intro_text: str = "Describing behavior…") -> None:
-        """Prepare caption area for streamed behavior JSON output."""
-        self._behavior_buffer = ""
-        self._allow_empty_caption = True
-        self.set_caption(intro_text)
-
-    @QtCore.Slot(str)
-    def append_behavior_stream_chunk(self, chunk: str) -> None:
-        """Append a streamed chunk from the behavior JSON task."""
-        if not chunk:
-            return
-        self._behavior_buffer += chunk
-        self._allow_empty_caption = False
-        self.set_caption(self._behavior_buffer)
-
-    def _default_segment_times(self) -> Tuple[QtCore.QTime, QtCore.QTime]:
-        """Return default start/end times (entire video)."""
-        start = QtCore.QTime(0, 0, 0)
-        if self._video_duration_ms > 0:
-            clamped_ms = min(
-                self._video_duration_ms, (24 * 60 * 60 * 1000) - 1
-            )
-            end = start.addMSecs(clamped_ms)
-        else:
-            end = start
-        if not end.isValid():
-            end = QtCore.QTime(23, 59, 59)
-        return start, end
-
-    def _prompt_behavior_segment(self) -> Optional[Tuple[str, str, QtCore.QTime, QtCore.QTime]]:
-        start_time, end_time = self._default_segment_times()
-        default_descriptor = BehaviorSegmentDialog.compose_descriptor(
-            start_time, end_time, self._behavior_segment_notes or ""
-        )
-        default_prompt = behavior_prompting.build_behavior_narrative_prompt(
-            segment_label=default_descriptor
-        )
-        dialog = BehaviorSegmentDialog(
-            parent=self,
-            start_time=start_time,
-            end_time=end_time,
-            notes=self._behavior_segment_notes,
-            prompt_text=default_prompt,
-        )
-        if dialog.exec() != QtWidgets.QDialog.Accepted:
-            return None
-        self._behavior_segment_notes = dialog.notes()
-        descriptor = dialog.segment_descriptor()
-        prompt_text = dialog.prompt_text().strip()
-        if not prompt_text:
-            prompt_text = behavior_prompting.build_behavior_narrative_prompt(
-                segment_label=descriptor
-            )
-        return descriptor, prompt_text, dialog.start_time(), dialog.end_time()
-
-    def _time_to_frame_index(self, time_val: QtCore.QTime) -> int:
-        if not time_val.isValid() or self._video_fps <= 0:
-            return 0
-        msecs = time_val.msecsSinceStartOfDay()
-        frame = int(round((msecs / 1000.0) * self._video_fps))
-        return max(0, min(frame, max(0, self._video_num_frames - 1)))
-
-    def _segment_frame_indices(
-        self,
-        start_time: QtCore.QTime,
-        end_time: QtCore.QTime,
-        max_samples: int = 5,
-    ) -> List[int]:
-        if self._video_fps <= 0 or self._video_num_frames <= 0:
-            return []
-        start_frame = self._time_to_frame_index(start_time)
-        end_frame = self._time_to_frame_index(end_time)
-        if end_frame < start_frame:
-            start_frame, end_frame = end_frame, start_frame
-        if start_frame == end_frame:
-            return [start_frame]
-        span = end_frame - start_frame
-        samples = max(2, min(max_samples, span + 1))
-        step = span / (samples - 1)
-        frames = []
-        for i in range(samples):
-            idx = int(round(start_frame + i * step))
-            idx = max(start_frame, min(end_frame, idx))
-            frames.append(idx)
-        return sorted(set(frames))
-
-    def _extract_video_frames(self, frame_indices: Sequence[int]) -> List[str]:
-        if not self._video_path:
-            return []
-        try:
-            cap = cv2.VideoCapture(self._video_path)
-        except Exception:
-            return []
-        if not cap or not cap.isOpened():
-            return []
-        extracted: List[str] = []
-        try:
-            for frame_idx in frame_indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    continue
-                fd, tmp_path = tempfile.mkstemp(
-                    prefix="annolid_segment_", suffix=".png"
-                )
-                os.close(fd)
-                success = cv2.imwrite(tmp_path, frame)
-                if success:
-                    self._segment_snapshot_paths.append(tmp_path)
-                    extracted.append(tmp_path)
-                else:
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-        finally:
-            cap.release()
-        return extracted
-
-    def _resolve_behavior_image_paths(
-        self, start_time: QtCore.QTime, end_time: QtCore.QTime
-    ) -> List[str]:
-        if (
-            self._video_path
-            and self._video_fps > 0
-            and self._video_num_frames > 0
-        ):
-            self._cleanup_segment_snapshots()
-            frames = self._segment_frame_indices(start_time, end_time)
-            if frames:
-                images = self._extract_video_frames(frames)
-                if images:
-                    return images
-        fallback = self._resolve_image_for_description()
-        return [fallback] if fallback else []
-
-    def on_behavior_describe_clicked(self):
-        """Generate a natural-language behavior description using the selected Ollama model."""
-        if self.selected_provider != "ollama":
-            self.update_behavior_status(
-                "Behavior description currently supports Ollama models. Please switch provider.",
-                True,
-            )
-            return
-
-        image_path = self._resolve_image_for_description()
-        if not image_path:
-            self.update_behavior_status(
-                "No image available for behavior description. Load or draw on the canvas first.",
-                True,
-            )
-            return
-
-        if not self.selected_model:
-            self.update_behavior_status(
-                "Select an Ollama model (e.g., qwen3-vl) before describing behavior.",
-                True,
-            )
-            return
-
-        segment_info = self._prompt_behavior_segment()
-        if segment_info is None:
-            self.behavior_label.setText("Describe behavior")
-            return
-        segment_descriptor, prompt, seg_start, seg_end = segment_info
-
-        self.behavior_label.setText("Describing…")
-        self.behavior_button.setEnabled(False)
-        self.begin_behavior_stream()
-
-        image_paths = self._resolve_behavior_image_paths(seg_start, seg_end)
-        if not image_paths:
-            fallback_image = image_path or self._resolve_image_for_description()
-            if fallback_image:
-                image_paths = [fallback_image]
-            else:
-                self.update_behavior_status(
-                    "Unable to capture frames for this segment.", True
-                )
-                return
-
-        task = BehaviorNarrativeTask(
-            image_paths=image_paths,
-            widget=self,
-            prompt=prompt,
-            model=self.selected_model,
-            provider=self.selected_provider,
-            settings=self.llm_settings,
-        )
-        self.thread_pool.start(task)
-
-    @QtCore.Slot(str, bool)
-    def update_behavior_status(self, message: str, is_error: bool) -> None:
-        """Update UI after the behavior JSON task completes."""
-        if is_error:
-            self.set_caption(message)
-            self.behavior_label.setText("Describe behavior")
-            self._behavior_buffer = ""
-        else:
-            self.set_caption(message)
-            self.behavior_label.setText("Describe behavior")
-            self._behavior_buffer = message
-        self.behavior_button.setEnabled(True)
-        self._allow_empty_caption = False
 
     def emit_caption_changed(self):
         """Emits the captionChanged signal with the current caption."""
@@ -1999,244 +1761,6 @@ class ReadCaptionTask(QRunnable):
     def run(self):
         """Runs the read_caption method in the background."""
         self.widget.read_caption()
-
-
-class BehaviorSegmentDialog(QDialog):
-    """Collect start/end times, optional notes, and allow prompt editing."""
-
-    def __init__(
-        self,
-        parent: Optional[QtWidgets.QWidget],
-        *,
-        start_time: QtCore.QTime,
-        end_time: QtCore.QTime,
-        notes: Optional[str],
-        prompt_text: str,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Describe behavior segment")
-        self.setModal(True)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(
-            QtWidgets.QLabel(
-                "Specify the video segment to describe (HH:MM:SS)."
-                " Use identical start/end times to describe a single frame."
-            )
-        )
-
-        form_layout = QtWidgets.QFormLayout()
-        self.start_edit = QTimeEdit(start_time if start_time.isValid() else QtCore.QTime(0, 0, 0))
-        self.start_edit.setDisplayFormat("HH:mm:ss")
-        self.end_edit = QTimeEdit(end_time if end_time.isValid() else QtCore.QTime(0, 0, 0))
-        self.end_edit.setDisplayFormat("HH:mm:ss")
-        form_layout.addRow("Start time:", self.start_edit)
-        form_layout.addRow("End time:", self.end_edit)
-        layout.addLayout(form_layout)
-
-        self.notes_edit = QLineEdit()
-        self.notes_edit.setPlaceholderText("Optional notes or context")
-        self.notes_edit.setText(notes or "")
-        layout.addWidget(self.notes_edit)
-
-        layout.addWidget(QtWidgets.QLabel("Prompt sent to the model (edit as needed):"))
-        self.prompt_edit = QPlainTextEdit()
-        self.prompt_edit.setPlaceholderText("Describe the behavior here…")
-        self._prompt_updating = False
-        self._user_modified_prompt = False
-        self._set_prompt_text(prompt_text)
-        layout.addWidget(self.prompt_edit)
-
-        reset_row = QtWidgets.QHBoxLayout()
-        reset_row.addStretch()
-        reset_btn = QPushButton("Use template")
-        reset_btn.clicked.connect(lambda: self._maybe_autofill_prompt(force=True))
-        reset_row.addWidget(reset_btn)
-        layout.addLayout(reset_row)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self._handle_accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-
-        self.start_edit.timeChanged.connect(self._maybe_autofill_prompt)
-        self.end_edit.timeChanged.connect(self._maybe_autofill_prompt)
-        self.notes_edit.textChanged.connect(self._maybe_autofill_prompt)
-        self.prompt_edit.textChanged.connect(self._on_prompt_changed)
-
-    @staticmethod
-    def compose_descriptor(start: QtCore.QTime, end: QtCore.QTime, note: str) -> str:
-        start_text = start.toString("HH:mm:ss")
-        end_text = end.toString("HH:mm:ss")
-        base = start_text if start_text == end_text else f"{start_text}-{end_text}"
-        note = (note or "").strip()
-        if note:
-            return f"{base} ({note})"
-        return base
-
-    def _render_template(self) -> str:
-        return behavior_prompting.build_behavior_narrative_prompt(
-            segment_label=self.segment_descriptor()
-        )
-
-    def _set_prompt_text(self, text: str) -> None:
-        self._prompt_updating = True
-        self.prompt_edit.setPlainText(text)
-        self._prompt_updating = False
-        self._user_modified_prompt = False
-
-    def _maybe_autofill_prompt(self, *_, force: bool = False) -> None:
-        if not force and self._user_modified_prompt:
-            return
-        self._set_prompt_text(self._render_template())
-
-    def _on_prompt_changed(self) -> None:
-        if self._prompt_updating:
-            return
-        self._user_modified_prompt = True
-
-    def start_time(self) -> QtCore.QTime:
-        return self.start_edit.time()
-
-    def end_time(self) -> QtCore.QTime:
-        return self.end_edit.time()
-
-    def notes(self) -> str:
-        return self.notes_edit.text().strip()
-
-    def prompt_text(self) -> str:
-        return self.prompt_edit.toPlainText().strip()
-
-    def segment_descriptor(self) -> str:
-        return self.compose_descriptor(self.start_time(), self.end_time(), self.notes())
-
-    def _handle_accept(self) -> None:
-        if self.end_time() < self.start_time():
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Invalid segment",
-                "End time must be equal to or later than the start time.",
-            )
-            return
-        self.accept()
-
-
-class BehaviorNarrativeTask(QRunnable):
-    """Generate a natural-language behavior description via Ollama."""
-
-    def __init__(
-        self,
-        image_paths: Sequence[str],
-        widget: "CaptionWidget",
-        prompt: str,
-        model: str = "qwen3-vl",
-        provider: str = "ollama",
-        settings: Optional[Dict[str, Any]] = None,
-    ):
-        super().__init__()
-        self.image_paths = [path for path in image_paths if path]
-        self.widget = widget
-        self.prompt = prompt
-        self.model = model
-        self.provider = provider
-        self.settings = settings or {}
-        self._prev_host_present = False
-        self._prev_host_value: Optional[str] = None
-
-    def run(self) -> None:
-        try:
-            if self.provider != "ollama":
-                raise ValueError(
-                    "Behavior description is currently available only for Ollama providers."
-                )
-            if not self.image_paths:
-                raise ValueError("No images were provided for behavior description.")
-
-            ollama_module = globals().get("ollama")
-            if ollama_module is None:
-                raise ImportError(
-                    "The python 'ollama' package is not installed."
-                )
-
-            self._prev_host_present = "OLLAMA_HOST" in os.environ
-            self._prev_host_value = os.environ.get("OLLAMA_HOST")
-            host = self.settings.get("ollama", {}).get("host")
-            if host:
-                os.environ["OLLAMA_HOST"] = host
-            else:
-                os.environ.pop("OLLAMA_HOST", None)
-
-            messages = behavior_prompting.qwen_messages(
-                self.image_paths,
-                self.prompt,
-            )
-
-            response_stream = ollama_module.chat(
-                model=self.model,
-                messages=messages,
-                stream=True,
-            )
-
-            chunks: List[str] = []
-
-            if isinstance(response_stream, dict):
-                message = response_stream.get("message", {})
-                content = message.get("content", "")
-                if not content:
-                    raise ValueError(
-                        "Unexpected response format: missing 'message.content' field."
-                    )
-                QtCore.QMetaObject.invokeMethod(
-                    self.widget,
-                    "update_behavior_status",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, content),
-                    QtCore.Q_ARG(bool, False),
-                )
-                return
-
-            for part in response_stream:
-                if "message" in part and "content" in part["message"]:
-                    chunk = part["message"]["content"]
-                    if chunk:
-                        chunks.append(chunk)
-                        QtCore.QMetaObject.invokeMethod(
-                            self.widget,
-                            "append_behavior_stream_chunk",
-                            QtCore.Qt.QueuedConnection,
-                            QtCore.Q_ARG(str, chunk),
-                        )
-                elif "error" in part:
-                    raise RuntimeError(part["error"])
-
-            behavior_text = "".join(chunks).strip()
-            if not behavior_text:
-                raise RuntimeError("No behavior description received from Ollama.")
-
-            QtCore.QMetaObject.invokeMethod(
-                self.widget,
-                "update_behavior_status",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, behavior_text),
-                QtCore.Q_ARG(bool, False),
-            )
-
-        except Exception as exc:
-            error_message = (
-                f"An error occurred while generating the behavior description: {exc}."
-            )
-            QtCore.QMetaObject.invokeMethod(
-                self.widget,
-                "update_behavior_status",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, error_message),
-                QtCore.Q_ARG(bool, True),
-            )
-        finally:
-            if self._prev_host_present and self._prev_host_value is not None:
-                os.environ["OLLAMA_HOST"] = self._prev_host_value  # type: ignore[arg-type]
-            else:
-                os.environ.pop("OLLAMA_HOST", None)
 
 
 # Generalised chat task supporting multiple providers
