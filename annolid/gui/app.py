@@ -1182,6 +1182,8 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.num_frames = None
         self.video_file = None
+        if self.caption_widget is not None:
+            self.caption_widget.set_video_context(None, None, None)
         self._release_audio_loader()
         if self.audio_widget:
             self.audio_widget.set_audio_loader(None)
@@ -4592,6 +4594,12 @@ class AnnolidWindow(MainWindow):
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
             self.behavior_log_widget.set_fps(self.fps)
+            if self.caption_widget is not None:
+                self.caption_widget.set_video_context(
+                    video_filename,
+                    self.fps,
+                    self.num_frames,
+                )
             self._configure_audio_for_video(self.video_file, self.fps)
             if self.seekbar:
                 self.statusBar().removeWidget(self.seekbar)
