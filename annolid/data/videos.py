@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import random
 import subprocess
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Sequence
 from pathlib import Path
 from collections import deque
 from annolid.segmentation.maskrcnn import inference
@@ -826,6 +826,81 @@ def extract_video_metadata(cap):
     return meta_data
 
 
+def extract_frames_from_video(
+    video_path: str,
+    output_folder: Optional[str] = None,
+    *,
+    frame_indices: Optional[Sequence[int]] = None,
+    num_frames: int = 5,
+    image_format: str = "png",
+    name_pattern: Optional[str] = None,
+) -> List[str]:
+    """Extract specific frames (or evenly sampled ones) from a single video.
+
+    Args:
+        video_path: Path to the video file.
+        output_folder: Directory to store the extracted frames. If omitted, a
+            folder named after the video will be created beside the source file.
+        frame_indices: Explicit frame indices to extract. If provided, they take
+            precedence over the ``num_frames`` sampling logic.
+        num_frames: Number of evenly sampled frames when ``frame_indices`` is
+            not supplied. Defaults to 5.
+        image_format: Image format/extension (e.g., ``"png"``).
+
+    Returns:
+        List[str]: Paths to the extracted frame images (may be empty).
+    """
+
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    if output_folder is None:
+        output_folder = video_path.with_suffix("" ).as_posix()
+    os.makedirs(output_folder, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap or not cap.isOpened():
+        raise RuntimeError(f"Unable to open video: {video_path}")
+
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    if frame_count <= 0:
+        cap.release()
+        return []
+
+    if frame_indices:
+        indices = sorted({idx for idx in frame_indices if 0 <= idx < frame_count})
+    else:
+        if num_frames <= 1:
+            indices = [frame_count // 2]
+        else:
+            num_frames = min(num_frames, frame_count)
+            indices = [
+                int(round(i * (frame_count - 1) / (num_frames - 1)))
+                for i in range(num_frames)
+            ] if frame_count > 1 else [0]
+
+    saved_paths: List[str] = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
+        if name_pattern:
+            try:
+                filename = name_pattern.format(video_stem=video_path.stem, frame=idx)
+            except Exception:
+                filename = f"{video_path.stem}_{idx:09d}.{image_format}"
+        else:
+            filename = f"{video_path.stem}_frame{idx:09d}.{image_format}"
+        out_path = Path(output_folder) / filename
+        if cv2.imwrite(str(out_path), frame):
+            saved_paths.append(str(out_path))
+
+    cap.release()
+    return saved_paths
+
+
 def extract_frames_from_videos(input_folder, output_folder=None, num_frames=5):
     """
     Extract specified number of frames from each video in the folder and save as PNG files.
@@ -848,40 +923,11 @@ def extract_frames_from_videos(input_folder, output_folder=None, num_frames=5):
         if not video_file.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.mpg')):
             continue  # Skip non-video files
 
-        # Open the video
-        cap = cv2.VideoCapture(video_path)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if frame_count < 1:
-            print(f"Skipping {video_file}: Unable to determine frame count.")
-            cap.release()
-            continue
-
-        indices = []
-        if frame_count >= num_frames:
-            indices = [int(i * (frame_count - 1) / (num_frames - 1))
-                       for i in range(num_frames)]
-        elif frame_count > 0:  # Handle edge case for short videos
-            indices = list(range(frame_count))
-        else:
-            print(f"Skipping {video_file}: No frames found.")
-            continue
-
-        # Determine the frame indices to extract
-        if num_frames == 1:
-            indices = [frame_count // 2]
-        else:
-            indices = [int(i * (frame_count - 1) / (num_frames - 1))
-                       for i in range(num_frames)]
-
-        # Extract frames and save as PNG
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if ret:
-                frame_filename = f"{os.path.splitext(video_file)[0]}_frame{idx}.png"
-                frame_path = os.path.join(output_folder, frame_filename)
-                cv2.imwrite(frame_path, frame)
-            else:
-                print(f"Warning: Failed to read frame {idx} from {video_file}")
-
-        cap.release()
+        try:
+            extract_frames_from_video(
+                video_path,
+                output_folder,
+                num_frames=num_frames,
+            )
+        except Exception as exc:
+            print(f"Skipping {video_file}: {exc}")

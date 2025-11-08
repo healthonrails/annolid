@@ -1,5 +1,6 @@
 from pathlib import Path
 from qtpy import QtWidgets, QtGui, QtCore
+import logging
 from qtpy.QtWidgets import (
     QVBoxLayout,
     QTextEdit,
@@ -29,6 +30,7 @@ from annolid.utils.llm_settings import (
     ensure_provider_env,
 )
 from annolid.gui.widgets.behavior_describe_widget import BehaviorDescribeWidget
+from annolid.jobs.tracking_jobs import TrackingSegment
 
 try:
     import ollama
@@ -98,6 +100,11 @@ class CaptionWidget(QtWidgets.QWidget):
         self._current_caption_html: str = ""
         self._is_restoring_caption: bool = False
         self.behavior_widget: Optional["BehaviorDescribeWidget"] = None
+        self._video_context: Tuple[Optional[str], Optional[float], Optional[int]] = (
+            None,
+            None,
+            None,
+        )
 
     def _determine_image_model(self) -> str:
         """Choose an appropriate Gemini model for image generation."""
@@ -850,8 +857,27 @@ class CaptionWidget(QtWidgets.QWidget):
         num_frames: Optional[int],
     ) -> None:
         """Provide video metadata so segments can access multiple frames."""
+        self._video_context = (video_path, fps, num_frames)
+        try:
+            logging.getLogger(__name__).info(
+                "CaptionWidget video context set: path=%s fps=%s frames=%s",
+                video_path,
+                fps,
+                num_frames,
+            )
+        except Exception:
+            pass
         if self.behavior_widget:
             self.behavior_widget.set_video_context(video_path, fps, num_frames)
+
+    def set_video_segments(
+        self, segments: Optional[Sequence[TrackingSegment]]
+    ) -> None:
+        if self.behavior_widget:
+            self.behavior_widget.set_video_segments(segments)
+
+    def video_context(self) -> Tuple[Optional[str], Optional[float], Optional[int]]:
+        return self._video_context
 
     def get_image_path(self):
         """Returns the image path."""

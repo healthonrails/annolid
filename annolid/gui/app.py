@@ -483,6 +483,10 @@ class AnnolidWindow(MainWindow):
             logger.info(
                 f"Segment Editor OK. {len(self._current_video_defined_segments)} segments stored.")
             self._save_segments_for_active_video()  # Persist
+            if self.caption_widget is not None:
+                self.caption_widget.set_video_segments(
+                    self._current_video_defined_segments
+                )
         else:  # User clicked "Cancel" or closed dialog
             logger.info("Segment Editor Cancelled/Closed.")
 
@@ -1184,6 +1188,7 @@ class AnnolidWindow(MainWindow):
         self.video_file = None
         if self.caption_widget is not None:
             self.caption_widget.set_video_context(None, None, None)
+            self.caption_widget.set_video_segments([])
         self._release_audio_loader()
         if self.audio_widget:
             self.audio_widget.set_audio_loader(None)
@@ -2695,6 +2700,12 @@ class AnnolidWindow(MainWindow):
         title = __appname__
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(self.filename)
+            # Inform behavior widget of the live frame index for quick selection in dialogs
+            if getattr(self.caption_widget, "behavior_widget", None) is not None:
+                try:
+                    self.caption_widget.behavior_widget.set_current_frame(self.frame_number)
+                except Exception:
+                    pass
         _filename = os.path.basename(self.filename)
         if self.video_loader:
             if self.frame_number:
@@ -4666,6 +4677,10 @@ class AnnolidWindow(MainWindow):
                 self.open_segment_editor_action.setEnabled(True)
                 # Load persisted segments for the new video
                 self._load_segments_for_active_video()
+                if self.caption_widget is not None:
+                    self.caption_widget.set_video_segments(
+                        self._current_video_defined_segments
+                    )
                 if not programmatic_call:
                     self._emit_live_frame_update()
                 logger.info(
@@ -4673,6 +4688,8 @@ class AnnolidWindow(MainWindow):
             else:
                 self.open_segment_editor_action.setEnabled(False)
                 self._current_video_defined_segments = []
+                if self.caption_widget is not None:
+                    self.caption_widget.set_video_segments([])
 
     def jump_to_frame(self):
         """
@@ -5412,6 +5429,10 @@ class AnnolidWindow(MainWindow):
             except Exception as e:
                 logger.error(
                     f"Failed to load segments from {sidecar_path}: {e}")
+        if self.caption_widget is not None:
+            self.caption_widget.set_video_segments(
+                self._current_video_defined_segments
+            )
 
     # --- Handler for Tracking Initiated by SegmentEditorDialog ---
 
