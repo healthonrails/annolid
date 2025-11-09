@@ -4918,12 +4918,14 @@ class AnnolidWindow(MainWindow):
             pass
 
         if not tiff_path:
-            # Prompt user to select a TIFF/OME-TIFF
+            # Prompt user to select a 3D volume source (TIFF/NIfTI/DICOM)
             start_dir = str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
-            filters = self.tr("TIFF files (*.tif *.tiff *.ome.tif *.ome.tiff);;All files (*.*)")
+            filters = self.tr(
+                "3D volumes (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.ima *.IMA);;All files (*.*)"
+            )
             res = QtWidgets.QFileDialog.getOpenFileName(
                 self,
-                self.tr("Choose TIFF Stack"),
+                self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM)"),
                 start_dir,
                 filters,
             )
@@ -4932,7 +4934,16 @@ class AnnolidWindow(MainWindow):
             else:
                 tiff_path = res
             if not tiff_path:
-                return
+                # Optionally ask for a DICOM folder
+                dicom_dir = QtWidgets.QFileDialog.getExistingDirectory(
+                    self,
+                    self.tr("Choose DICOM Folder (optional)"),
+                    start_dir,
+                )
+                if dicom_dir:
+                    tiff_path = dicom_dir
+                else:
+                    return
 
         # Prefer true 3D (VTK) if available, else fallback to slice/MIP viewer
         vtk_missing = False

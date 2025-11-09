@@ -25,7 +25,12 @@ from vtkmodules.vtkInteractionStyle import (
     vtkInteractorStyleUser,
 )
 from vtkmodules.util.numpy_support import numpy_to_vtk
-from vtkmodules.vtkIOImage import vtkPNGWriter
+from vtkmodules.vtkIOImage import vtkPNGWriter, vtkNIFTIImageReader, vtkDICOMImageReader
+try:  # Prefer GDCM when available (more robust series handling)
+    from vtkmodules.vtkIOImage import vtkGDCMImageReader  # type: ignore
+    _HAS_GDCM = True
+except Exception:  # pragma: no cover
+    _HAS_GDCM = False
 
 
 class VTKVolumeViewerDialog(QtWidgets.QDialog):
@@ -37,11 +42,11 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
     - Simple UI controls for opacity scaling and shading toggle
     """
 
-    def __init__(self, tiff_path: str | Path, parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(self, src_path: str | Path, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("3D Volume Renderer (VTK)")
         self.resize(900, 700)
-        self._path = Path(tiff_path)
+        self._path = Path(src_path)
 
         # Main layout
         layout = QtWidgets.QVBoxLayout(self)
@@ -182,7 +187,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.interactor.AddObserver("KeyPressEvent", self._vtk_on_key_press)
 
     def _load_volume(self):
-        volume = self._read_tiff_stack()
+        volume, spacing = self._read_volume_any()
         # Convert color stack to luminance for volume rendering if needed
         if volume.ndim == 4 and volume.shape[-1] in (3, 4):
             volume = np.dot(volume[..., :3], [0.299, 0.587, 0.114]).astype(volume.dtype)
@@ -193,7 +198,11 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
         vtk_img = vtkImageData()
         vtk_img.SetDimensions(int(x), int(y), int(z))
-        vtk_img.SetSpacing(1.0, 1.0, 1.0)
+        # Apply spacing from source if available
+        if spacing is not None and len(spacing) == 3:
+            vtk_img.SetSpacing(float(spacing[0]), float(spacing[1]), float(spacing[2]))
+        else:
+            vtk_img.SetSpacing(1.0, 1.0, 1.0)
         vtk_img.SetOrigin(0.0, 0.0, 0.0)
 
         # Map numpy dtype to VTK scalars
@@ -228,24 +237,83 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.property.SetSpecular(0.2)
 
         self.mapper.SetInputData(vtk_img)
+        # If spacing provided, reflect it in UI
+        if spacing is not None and len(spacing) == 3:
+            try:
+                self.spacing_x.blockSignals(True)
+                self.spacing_y.blockSignals(True)
+                self.spacing_z.blockSignals(True)
+                self.spacing_x.setValue(float(spacing[0]))
+                self.spacing_y.setValue(float(spacing[1]))
+                self.spacing_z.setValue(float(spacing[2]))
+            finally:
+                self.spacing_x.blockSignals(False)
+                self.spacing_y.blockSignals(False)
+                self.spacing_z.blockSignals(False)
+
         self._update_opacity()
         self._update_shading()
         self._update_blend_mode()
 
-    def _read_tiff_stack(self) -> np.ndarray:
-        img = Image.open(str(self._path))
-        n = getattr(img, "n_frames", 1)
-        if not n or n <= 0:
-            n = 1
-        frames = []
-        for i in range(n):
-            img.seek(i)
-            frames.append(np.array(img))
-        vol = np.stack(frames, axis=0)  # (Z, Y, X[, C])
+    def _read_volume_any(self) -> tuple[np.ndarray, Optional[tuple[float, float, float]]]:
+        """Read a 3D volume from TIFF/NIfTI/DICOM or directory (DICOM series).
 
-        # Normalize volume to float32 in [0, 1] to avoid huge GL transfer
-        # function textures on large integer ranges (prevents VTK warnings
-        # about unsupported 1D texture sizes and ensures stable rendering).
+        Returns (volume, spacing). Volume is (Z, Y, X[, C]) float32 in [0, 1].
+        Spacing is a (x, y, z) tuple if available, else None.
+        """
+        path = self._path
+        spacing: Optional[tuple[float, float, float]] = None
+
+        try:
+            if path.is_dir():
+                # DICOM series directory: prefer GDCM if present
+                return self._read_dicom_series(path)
+
+            suffix = path.suffix.lower()
+            name_lower = path.name.lower()
+            if name_lower.endswith('.nii') or name_lower.endswith('.nii.gz'):
+                # NIfTI via VTK reader
+                reader = vtkNIFTIImageReader()
+                reader.SetFileName(str(path))
+                reader.Update()
+                vtk_img = reader.GetOutput()
+                vol = self._vtk_image_to_numpy(vtk_img)
+                s = vtk_img.GetSpacing()
+                spacing = (s[0], s[1], s[2])
+                vol = self._normalize_to_float01(vol)
+                return vol, spacing
+            if suffix in ('.dcm', '.ima', '.dicom'):
+                # Treat as a DICOM series from the containing folder
+                return self._read_dicom_series(path.parent)
+
+            # Default: try multi-page TIFF via PIL
+            img = Image.open(str(path))
+            n = getattr(img, "n_frames", 1)
+            if not n or n <= 0:
+                n = 1
+            frames = []
+            for i in range(n):
+                img.seek(i)
+                frames.append(np.array(img))
+            vol = np.stack(frames, axis=0)  # (Z, Y, X[, C])
+            vol = self._normalize_to_float01(vol)
+            return vol, None
+        except Exception as e:
+            # Re-raise with context so upper layer shows a concise message
+            raise RuntimeError(f"Failed to read volume from '{path}': {e}")
+
+    def _vtk_image_to_numpy(self, vtk_img) -> np.ndarray:
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+        dims = vtk_img.GetDimensions()  # (x, y, z)
+        scalars = vtk_img.GetPointData().GetScalars()
+        if scalars is None:
+            raise RuntimeError("No scalar data in volume.")
+        arr = vtk_to_numpy(scalars)
+        # VTK stores as x-fastest; reshape and permute to (Z, Y, X)
+        arr = arr.reshape(dims[2], dims[1], dims[0])
+        return arr
+
+    def _normalize_to_float01(self, vol: np.ndarray) -> np.ndarray:
         if np.issubdtype(vol.dtype, np.integer):
             vmin = float(vol.min())
             vmax = float(vol.max())
@@ -257,6 +325,28 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             vol = vol.astype(np.float32)
             vol = np.clip(vol, 0.0, 1.0)
         return vol
+
+    def _read_dicom_series(self, directory: Path) -> tuple[np.ndarray, Optional[tuple[float, float, float]]]:
+        # First try GDCM (if present), then fallback to VTK's basic reader
+        reader = None
+        if _HAS_GDCM:
+            try:
+                reader = vtkGDCMImageReader()  # type: ignore[name-defined]
+                reader.SetDirectoryName(str(directory))
+                reader.Update()
+            except Exception:
+                reader = None
+        if reader is None:
+            reader = vtkDICOMImageReader()
+            reader.SetDirectoryName(str(directory))
+            reader.Update()
+
+        vtk_img = reader.GetOutput()
+        vol = self._vtk_image_to_numpy(vtk_img)
+        s = vtk_img.GetSpacing()
+        spacing = (s[0], s[1], s[2])
+        vol = self._normalize_to_float01(vol)
+        return vol, spacing
 
     def _update_opacity(self):
         # Adjust overall opacity scaling via unit distance
