@@ -10,6 +10,7 @@ from typing import Generator, List, Optional, Sequence
 from pathlib import Path
 from collections import deque
 from annolid.segmentation.maskrcnn import inference
+from PIL import Image, ImageSequence
 
 
 def get_video_fps(video_path: str) -> float | None:
@@ -551,6 +552,130 @@ class CV2Video:
     def release(self):
         if getattr(self, "cap", None) is not None and self.cap.isOpened():
             self.cap.release()
+
+    def __del__(self):
+        self.release()
+
+
+class TiffStackVideo:
+    """
+    Treat a multi-page TIFF (including simple 3D stacks) as a read-only video.
+
+    This loader provides the same interface used by the GUI (`CV2Video`) so
+    3D TIFF stacks can be navigated frame-by-frame like a video. It favors
+    on-demand reading via PIL to avoid loading the whole volume into memory.
+
+    Notes:
+    - Frames are returned as RGB uint8 arrays for consistent display.
+    - If the source is grayscale or higher bit-depth (e.g., uint16), it is
+      converted to 8-bit for viewing purposes.
+    - FPS is set to 1.0 by default.
+    """
+
+    def __init__(self, tiff_path: str | Path, *, fps: float = 1.0):
+        self.tiff_path = Path(tiff_path).resolve()
+        if not self.tiff_path.exists():
+            raise FileNotFoundError(f"TIFF file not found: {self.tiff_path}")
+
+        # Keep a PIL handle for on-demand access
+        self._pil = Image.open(str(self.tiff_path))
+        try:
+            self.frame_count = getattr(self._pil, "n_frames", 1)
+        except Exception:
+            # Some images do not expose n_frames; treat as single-frame
+            self.frame_count = 1
+
+        # Cache first frame to establish dimensions
+        self.first_frame = self._load_frame_rgb(0)
+        self.height, self.width = self.first_frame.shape[:2]
+
+        self._last_frame_index: Optional[int] = None
+        self.current_frame_timestamp: Optional[float] = None  # milliseconds
+        self._fps = float(fps) if fps and fps > 0 else 1.0
+
+    def _load_frame_rgb(self, index: int) -> np.ndarray:
+        if index < 0 or index >= self.total_frames():
+            raise KeyError(f"Frame index out of bounds: {index}")
+
+        # Seeking is cheap for TIFFs; PIL handles page offsets internally.
+        try:
+            self._pil.seek(index)
+            img = self._pil
+        except Exception as e:
+            raise KeyError(f"Cannot seek to frame {index}: {e}")
+
+        # Convert to display-friendly RGB uint8.
+        # This handles grayscale, palette, or high bit-depth images.
+        try:
+            # Convert using PIL to ensure 8-bit viewable data
+            if img.mode != "RGB":
+                # For typical 16-bit grayscale ('I;16') or others, this will
+                # map to 8-bit display. For scientific fidelity consider
+                # adding normalization; here we prioritize display.
+                img = img.convert("RGB")
+            arr = np.array(img, copy=True)
+            if arr.dtype != np.uint8:
+                # Defensive: ensure uint8 for GUI
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+            return arr
+        except Exception as e:
+            raise KeyError(f"Failed to convert frame {index} to RGB array: {e}")
+
+    def get_first_frame(self) -> np.ndarray:
+        return self.first_frame
+
+    def get_width(self) -> int:
+        return self.width
+
+    def get_height(self) -> int:
+        return self.height
+
+    def get_fps(self) -> float:
+        return self._fps
+
+    def load_frame(self, frame_number: int) -> np.ndarray:
+        frame = self._load_frame_rgb(frame_number)
+        self._last_frame_index = frame_number
+        # Synthesize timestamp in milliseconds from frame index and fps
+        self.current_frame_timestamp = (frame_number / self._fps) * 1000.0
+        return frame
+
+    def get_time_stamp(self) -> Optional[float]:
+        return self.current_frame_timestamp
+
+    def total_frames(self) -> int:
+        return int(self.frame_count)
+
+    def get_frames_in_batches(self, start_frame: int,
+                              end_frame: int,
+                              batch_size: int) -> Generator[np.ndarray, None, None]:
+        if start_frame >= end_frame:
+            raise ValueError("Start frame must be less than end frame.")
+
+        end_frame = min(end_frame, self.total_frames())
+        if end_frame - start_frame < batch_size:
+            batch_size = end_frame - start_frame
+
+        for batch_start in range(start_frame, end_frame, batch_size):
+            batch_end = min(batch_start + batch_size, end_frame)
+            for frame_number in range(batch_start, batch_end):
+                yield self.load_frame(frame_number)
+
+    def get_frames_between(self, start_frame: int, end_frame: int) -> List[np.ndarray]:
+        if start_frame >= end_frame:
+            raise ValueError("Start frame must be less than end frame.")
+        end_frame = min(end_frame, self.total_frames())
+        frames: List[np.ndarray] = []
+        for frame_number in range(start_frame, end_frame):
+            frames.append(self.load_frame(frame_number))
+        return np.stack(frames)
+
+    def release(self):
+        try:
+            if getattr(self, "_pil", None) is not None:
+                self._pil.close()
+        except Exception:
+            pass
 
     def __del__(self):
         self.release()

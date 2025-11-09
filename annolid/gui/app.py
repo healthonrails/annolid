@@ -1243,6 +1243,7 @@ class AnnolidWindow(MainWindow):
             )
             self.behavior_controls_widget.set_category_badge(None, None)
             self.behavior_controls_widget.show_warning(None)
+        # 3D viewer menu remains enabled; no action needed here
         self._stop_frame_loader()
         self.frame_loader = LoadFrameThread()
         if self.video_processor is not None and hasattr(self.video_processor, "cutie_processor"):
@@ -4593,14 +4594,20 @@ class AnnolidWindow(MainWindow):
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
             try:
-                self.video_loader = videos.CV2Video(video_filename)
+                suffix_lower = Path(video_filename).suffix.lower()
+                # Support TIFF stacks by treating them as videos (one slice per frame)
+                if suffix_lower in {'.tif', '.tiff'} or video_filename.lower().endswith(('.ome.tif', '.ome.tiff')):
+                    self.video_loader = videos.TiffStackVideo(video_filename)
+                else:
+                    self.video_loader = videos.CV2Video(video_filename)
             except Exception:
                 QtWidgets.QMessageBox.about(self,
-                                            "Not a valid video file",
-                                            f"Please check and open a correct video file.")
+                                            "Not a valid media file",
+                                            f"Please check and open a valid video or TIFF stack file.")
                 self.video_file = None
                 self.video_loader = None
                 return
+            # 3D viewer menu is always available regardless of media type
             self._configure_project_schema_for_video(video_filename)
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
@@ -4892,6 +4899,55 @@ class AnnolidWindow(MainWindow):
 
     def _open_pca_map_settings(self):
         self.dino_controller.open_pca_map_settings()
+
+    # ---------------------------------------------------------------
+    # 3D Viewer
+    # ---------------------------------------------------------------
+    def open_3d_viewer(self):
+        """Open Annolid's built-in 3D stack viewer.
+
+        If a TIFF stack is already open in the main UI, it will be used.
+        Otherwise, prompt the user to select a TIFF file.
+        """
+        tiff_path = None
+        try:
+            from annolid.data import videos as _videos_mod
+            if isinstance(self.video_loader, _videos_mod.TiffStackVideo) and self.video_file:
+                tiff_path = str(self.video_file)
+        except Exception:
+            pass
+
+        if not tiff_path:
+            # Prompt user to select a TIFF/OME-TIFF
+            start_dir = str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
+            filters = self.tr("TIFF files (*.tif *.tiff *.ome.tif *.ome.tiff);;All files (*.*)")
+            res = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                self.tr("Choose TIFF Stack"),
+                start_dir,
+                filters,
+            )
+            if isinstance(res, tuple):
+                tiff_path = res[0]
+            else:
+                tiff_path = res
+            if not tiff_path:
+                return
+
+        try:
+            from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
+            dlg = VolumeViewerDialog(tiff_path, parent=self)
+            dlg.setModal(False)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("3D Viewer"),
+                self.tr(f"Unable to open 3D viewer: {e}"),
+            )
+            return
 
     def _on_pca_map_started(self):
         self.statusBar().showMessage(self.tr("Computing PCA feature map…"))

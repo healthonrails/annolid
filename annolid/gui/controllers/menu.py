@@ -342,6 +342,13 @@ class MenuController:
 
         registry["create_ai_polygon_mode"] = create_ai_polygon_mode
 
+        # 3D Viewer action
+        w.open_3d_viewer_action = self._action_factory(
+            w.tr("Open 3D Viewer…"),
+            w.open_3d_viewer,
+            tip=w.tr("Open a 3D viewer for TIFF stacks"),
+        )
+
     def _create_action_from_spec(self, spec: dict) -> QtWidgets.QAction:
         action = self._action_factory(
             spec["text"],
@@ -437,6 +444,7 @@ class MenuController:
         utils.addActions(w.menus.view, (actions["visualization"],))
         utils.addActions(w.menus.view, (w.patch_similarity_action,))
         utils.addActions(w.menus.view, (w.pca_map_action,))
+        utils.addActions(w.menus.view, (w.open_3d_viewer_action,))
         utils.addActions(w.menus.view, (w.realtime_control_action,))
         utils.addActions(
             w.menus.view,
