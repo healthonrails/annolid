@@ -4934,6 +4934,24 @@ class AnnolidWindow(MainWindow):
             if not tiff_path:
                 return
 
+        # Prefer true 3D (VTK) if available, else fallback to slice/MIP viewer
+        vtk_missing = False
+        try:
+            from annolid.gui.widgets.vtk_volume_viewer import VTKVolumeViewerDialog  # type: ignore
+            dlg = VTKVolumeViewerDialog(tiff_path, parent=self)
+            dlg.setModal(False)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return
+        except ModuleNotFoundError:
+            vtk_missing = True
+        except ImportError:
+            vtk_missing = True
+        except Exception:
+            # Any other VTK/runtime error will fall back silently
+            pass
+
         try:
             from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
             dlg = VolumeViewerDialog(tiff_path, parent=self)
@@ -4948,6 +4966,19 @@ class AnnolidWindow(MainWindow):
                 self.tr(f"Unable to open 3D viewer: {e}"),
             )
             return
+
+        # If VTK was missing, offer install guidance (non-blocking info)
+        if vtk_missing:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("True 3D Rendering (Optional)"),
+                self.tr(
+                    "For interactive 3D volume rendering, install VTK:\n\n"
+                    "Conda:  conda install -c conda-forge vtk\n"
+                    "Pip:    pip install vtk\n\n"
+                    "You are currently using the built-in slice/MIP viewer."
+                ),
+            )
 
     def _on_pca_map_started(self):
         self.statusBar().showMessage(self.tr("Computing PCA feature map…"))
