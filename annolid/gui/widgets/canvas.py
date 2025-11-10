@@ -1397,10 +1397,12 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             self.update()
 
             # Get the label of the rectangle
-            rect_label = rect_shape.label
-            if rect_shape.description is None or len(rect_shape.description) == 0:
-                rect_shape.description = f"0.23"  # default confidence value
-            if rect_shape.description and rect_shape.description.startswith('0'):
+            rect_label = rect_shape.label            
+            # Launch CountGD if the description is not None and indicates exemplar, count, or starts with '0'
+            if rect_shape.description is not None and \
+               ("exemplar" in rect_shape.description.lower() or \
+                "count" in rect_shape.description.lower() or \
+                rect_shape.description.startswith('0')):
                 rect_shape.description = f"used_{rect_shape.description}"
                 self.createMode = "grounding_sam"
                 # Call predictAiRectangle with the rectangle shape and its label
