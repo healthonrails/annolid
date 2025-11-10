@@ -19,6 +19,8 @@ from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPolyData, vtkCellArray
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonCore import vtkPoints
+from vtkmodules.vtkCommonCore import vtkStringArray
+from vtkmodules.vtkRenderingCore import vtkPointPicker
 from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
 from vtkmodules.vtkRenderingCore import vtkColorTransferFunction
 from vtkmodules.vtkInteractionStyle import (
@@ -205,6 +207,12 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             self.renderer.AddVolume(self.volume)
             self.renderer.ResetCamera()
         self.renderer.SetBackground(0.1, 0.1, 0.12)
+
+        # Setup for interactive point picking
+        self._picker = vtkPointPicker()
+        self._picker.SetTolerance(0.005) # Adjust sensitivity
+        self._last_picked_id = -1
+        self._last_picked_actor = None
 
         # Setup interactive window/level mode and key/mouse bindings
         self._wl_mode = False
@@ -479,39 +487,98 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self._wl_drag = False
 
     def _vtk_on_mouse_move(self, obj, evt):
-        if not getattr(self, "_has_volume", False) or not (self._wl_mode and self._wl_drag):
+        """Handles mouse movement for both window/level adjustment and point picking."""
+        # --- BRANCH 1: Window/Level Drag Interaction ---
+        # This logic takes precedence if the user is in W/L mode and dragging.
+        if self._wl_mode and self._wl_drag:
+            x, y = self.interactor.GetEventPosition()
+            last_x, last_y = self._wl_last
+            dx = x - last_x
+            dy = y - last_y
+            self._wl_last = (x, y)
+
+            # Adjust window/level based on mouse delta
+            wmin = float(self.min_spin.value())
+            wmax = float(self.max_spin.value())
+            window = max(1e-6, wmax - wmin)
+            level = (wmax + wmin) * 0.5
+
+            # Horizontal movement adjusts window width, vertical adjusts level/center
+            new_window = max(1e-6, window * (1.0 + dx * 0.01))
+            new_level = level + (-dy) * (window * 0.005) # Invert dy for natural feel
+
+            vmin = new_level - new_window * 0.5
+            vmax = new_level + new_window * 0.5
+
+            # Clamp the new values to the full data range
+            vmin = max(self._vmin, min(vmin, self._vmax - 1e-6))
+            vmax = max(vmin + 1e-6, min(vmax, self._vmax))
+
+            # Update the UI widgets without emitting signals to avoid loops
+            self.min_spin.blockSignals(True)
+            self.max_spin.blockSignals(True)
+            self.min_spin.setValue(vmin)
+            self.max_spin.setValue(vmax)
+            self.min_spin.blockSignals(False)
+            self.max_spin.blockSignals(False)
+
+            self._update_transfer_functions()
+            self.vtk_widget.GetRenderWindow().Render()
+            
+            # End processing for this event; do not proceed to picking logic
             return
+
+        # --- BRANCH 2: Point Picking and Tooltip Interaction ---
+        # This runs during normal mouse movement when not dragging in W/L mode.
+        # We also prevent picking if the W/L mode checkbox is checked, even if not dragging.
+        if self._wl_mode:
+            return
+
         x, y = self.interactor.GetEventPosition()
-        last_x, last_y = self._wl_last
-        dx = x - last_x
-        dy = y - last_y
-        self._wl_last = (x, y)
+        self._picker.Pick(x, y, 0, self.renderer)
+        
+        actor = self._picker.GetActor()
+        point_id = self._picker.GetPointId()
 
-        # Adjust window/level based on mouse delta
-        wmin = float(self.min_spin.value())
-        wmax = float(self.max_spin.value())
-        window = max(1e-6, wmax - wmin)
-        level = (wmax + wmin) * 0.5
+        # Check if we successfully picked a point on a valid point cloud actor
+        if point_id > -1 and hasattr(self, "_point_actors") and actor in self._point_actors:
+            # To prevent flickering, only update the tooltip if the picked point is new
+            if point_id != self._last_picked_id or actor != self._last_picked_actor:
+                self._last_picked_id = point_id
+                self._last_picked_actor = actor
+                
+                polydata = actor.GetMapper().GetInput()
+                
+                # Attempt to retrieve the region label data array
+                label_array_abstract = polydata.GetPointData().GetAbstractArray("RegionLabel")
+                
+                tooltip_parts = []
+                # If the array exists, get the string value for the picked point
+                if label_array_abstract:
+                    # The array must be safely cast to a vtkStringArray to get its value
+                    label_array = vtkStringArray.SafeDownCast(label_array_abstract)
+                    if label_array:
+                        region_name = label_array.GetValue(point_id)
+                        tooltip_parts.append(f"<b>Region:</b> {region_name}")
 
-        # Horizontal expands window, vertical shifts level (invert sign for natural feel)
-        new_window = max(1e-6, window * (1.0 + dx * 0.01))
-        new_level = level + (-dy) * (window * 0.005)
+                # Always add point ID and coordinates to the tooltip
+                coords = self._picker.GetPickPosition()
+                tooltip_parts.append(f"<b>Point ID:</b> {point_id}")
+                tooltip_parts.append(f"<b>Coords:</b> ({coords[0]:.2f}, {coords[1]:.2f}, {coords[2]:.2f})")
+                
+                tooltip_text = "<br>".join(tooltip_parts)
 
-        vmin = new_level - new_window * 0.5
-        vmax = new_level + new_window * 0.5
+                # Show the rich-text tooltip at the current cursor position
+                QtWidgets.QToolTip.showText(
+                    QtGui.QCursor.pos(), tooltip_text, self.vtk_widget
+                )
 
-        # Clamp to data range
-        vmin = max(self._vmin, min(vmin, self._vmax - 1e-6))
-        vmax = max(vmin + 1e-6, min(vmax, self._vmax))
-
-        self.min_spin.blockSignals(True)
-        self.max_spin.blockSignals(True)
-        self.min_spin.setValue(vmin)
-        self.max_spin.setValue(vmax)
-        self.min_spin.blockSignals(False)
-        self.max_spin.blockSignals(False)
-        self._update_transfer_functions()
-        self.vtk_widget.GetRenderWindow().Render()
+        else:
+            # If the cursor is not over a point (or moved off a point), hide the tooltip
+            if self._last_picked_id != -1:
+                QtWidgets.QToolTip.hideText()
+                self._last_picked_id = -1
+                self._last_picked_actor = None
 
     def _vtk_on_key_press(self, obj, evt):
         key = self.interactor.GetKeySym().lower()
@@ -769,6 +836,16 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                     g = (g * 255.0).astype(np.uint8)
                     colors = np.stack([g, g, g], axis=1)
 
+            # Parse region labels if specified
+            region_labels = None
+            label_col = m.get('label_by')
+            if label_col:
+                try:
+                    # Ensure labels are strings for the tooltip
+                    region_labels = get('label_by').astype(str).to_numpy()
+                except Exception as e:
+                    print(f"Warning: Could not parse region labels from column '{label_col}': {e}")
+
         if pts is None or len(pts) == 0:
             raise RuntimeError("No points parsed")
 
@@ -795,6 +872,16 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             poly2.GetPointData().SetScalars(c_arr)
             mapper.SetColorModeToDefault()
             mapper.ScalarVisibilityOn()
+
+        # Add region label data if available
+        if region_labels is not None and len(region_labels) == len(pts):
+            label_array = vtkStringArray()
+            label_array.SetName("RegionLabel")
+            label_array.SetNumberOfValues(len(region_labels))
+            for i, label in enumerate(region_labels):
+                label_array.SetValue(i, label)
+            poly2.GetPointData().AddArray(label_array)
+            
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetPointSize(self.point_size_slider.value())

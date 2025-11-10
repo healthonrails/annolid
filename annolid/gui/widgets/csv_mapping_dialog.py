@@ -5,7 +5,7 @@ class CSVPointCloudMappingDialog(QtWidgets.QDialog):
     def __init__(self, columns, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Map CSV Columns to Point Cloud")
-        self.resize(480, 280)
+        self.resize(480, 380)
         cols = list(columns)
 
         form = QtWidgets.QFormLayout()
@@ -22,6 +22,7 @@ class CSVPointCloudMappingDialog(QtWidgets.QDialog):
         self.z_cb = combo()
         self.intensity_cb = combo(with_none=True)
         self.color_cb = combo(with_none=True)
+        self.label_cb = combo(with_none=True)
 
         # Best-effort autopick
         lower = {c.lower(): c for c in cols}
@@ -34,12 +35,17 @@ class CSVPointCloudMappingDialog(QtWidgets.QDialog):
         for key, cb in (("label", self.color_cb), ("class", self.color_cb), ("color", self.color_cb)):
             if key in lower:
                 cb.setCurrentText(lower[key])
+        # autopick for region labels
+        for key, cb in (("region", self.label_cb), ("name", self.label_cb), ("area", self.label_cb), ("label", self.label_cb)):
+             if key in lower and cb.currentText() == "<None>": # only if not already picked
+                cb.setCurrentText(lower[key])
 
         form.addRow("X column", self.x_cb)
         form.addRow("Y column", self.y_cb)
         form.addRow("Z column", self.z_cb)
         form.addRow("Intensity (optional)", self.intensity_cb)
         form.addRow("Color by (optional)", self.color_cb)
+        form.addRow("Region label (optional)", self.label_cb)
 
         # Scale controls (apply spacing before loading)
         scale_row = QtWidgets.QHBoxLayout()
@@ -85,6 +91,7 @@ class CSVPointCloudMappingDialog(QtWidgets.QDialog):
             "z": self.z_cb.currentText(),
             "intensity": val(self.intensity_cb),
             "color_by": val(self.color_cb),
+            "label_by": val(self.label_cb),
             "color_mode": "categorical" if self.mode_cat.isChecked() else "continuous",
             "sx": float(self.sx.value()),
             "sy": float(self.sy.value()),
