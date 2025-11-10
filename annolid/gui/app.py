@@ -4921,7 +4921,7 @@ class AnnolidWindow(MainWindow):
             # Prompt user to select a 3D volume source (TIFF/NIfTI/DICOM)
             start_dir = str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
             filters = self.tr(
-                "3D volumes (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.ima *.IMA);;All files (*.*)"
+                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz);;All files (*.*)"
             )
             res = QtWidgets.QFileDialog.getOpenFileName(
                 self,
@@ -4947,6 +4947,7 @@ class AnnolidWindow(MainWindow):
 
         # Prefer true 3D (VTK) if available, else fallback to slice/MIP viewer
         vtk_missing = False
+        vtk_error = None
         try:
             from annolid.gui.widgets.vtk_volume_viewer import VTKVolumeViewerDialog  # type: ignore
             dlg = VTKVolumeViewerDialog(tiff_path, parent=self)
@@ -4955,14 +4956,66 @@ class AnnolidWindow(MainWindow):
             dlg.raise_()
             dlg.activateWindow()
             return
-        except ModuleNotFoundError:
+        except ModuleNotFoundError as exc:
+            vtk_error = exc
             vtk_missing = True
-        except ImportError:
+        except ImportError as exc:
+            vtk_error = exc
             vtk_missing = True
-        except Exception:
-            # Any other VTK/runtime error will fall back silently
-            pass
+        except Exception as exc:
+            # Any other VTK/runtime error; keep error for messaging
+            vtk_error = exc
 
+        # Decide on fallback only for raster volumes; point clouds require VTK
+        try:
+            suffix = Path(tiff_path).suffix.lower() if tiff_path else ''
+            name_lower = Path(tiff_path).name.lower() if tiff_path else ''
+        except Exception:
+            suffix = ''
+            name_lower = ''
+
+        is_point_cloud = suffix in {'.ply', '.csv', '.xyz'}
+
+        # Re-check VTK availability independently of the viewer import error
+        def _vtk_available() -> tuple[bool, str | None]:
+            try:
+                try:
+                    import vtkmodules  # noqa: F401
+                except Exception:
+                    import vtk  # noqa: F401
+                # Also ensure Qt interactor exists
+                from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor  # noqa: F401
+                return True, None
+            except Exception as exc:
+                return False, str(exc)
+
+        _ok, _probe = _vtk_available()
+        vtk_missing = not _ok
+
+        if is_point_cloud:
+            # No raster fallback; inform user about VTK requirement
+            if vtk_missing:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    self.tr("Point Cloud Viewer Requires VTK"),
+                    self.tr(
+                        "CSV/PLY/XYZ point clouds require VTK with Qt support.\n\n"
+                        f"Details: {_probe or 'Unknown import error'}\n\n"
+                        "Conda:  conda install -c conda-forge vtk\n"
+                        "Pip:    pip install vtk"
+                    ),
+                )
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("Point Cloud Viewer"),
+                    self.tr("Failed to open the VTK point cloud viewer.\n%s") % (
+                        str(vtk_error) if vtk_error else ""
+                    ),
+                )
+            return
+
+        # Fallback to slice/MIP raster viewer for TIFF and similar
         try:
             from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
             dlg = VolumeViewerDialog(tiff_path, parent=self)
@@ -4984,7 +5037,7 @@ class AnnolidWindow(MainWindow):
                 self,
                 self.tr("True 3D Rendering (Optional)"),
                 self.tr(
-                    "For interactive 3D volume rendering, install VTK:\n\n"
+                    "For interactive 3D volume rendering, install VTK with Qt support.\n\n"
                     "Conda:  conda install -c conda-forge vtk\n"
                     "Pip:    pip install vtk\n\n"
                     "You are currently using the built-in slice/MIP viewer."
