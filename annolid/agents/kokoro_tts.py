@@ -107,13 +107,13 @@ def text_to_speech(text, voice="af_sarah", speed=1.0, lang="en-us", output_path=
 
 def play_audio(samples, sample_rate):
     """Plays audio data using sounddevice."""
-    if samples is not None and sample_rate is not None:
+    if samples is not None and sample_rate is not None and samples.size > 0:
         print("Playing audio...")
         sd.play(samples, sample_rate)
         sd.wait()  # Block until audio playback is finished
         print("Audio playback finished.")
     else:
-        print("No audio data to play.")
+        print("No audio data to play or audio data is empty.")
 
 
 # --- Main execution (Example usage) ---

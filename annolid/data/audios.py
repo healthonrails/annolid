@@ -105,8 +105,12 @@ class AudioLoader:
             # Nothing to play from beyond the buffer length.
             return
 
+        audio_to_play = self.audio_data[self._playhead_sample:]
+        if audio_to_play.size == 0:
+            return
+
         sd.play(
-            self.audio_data[self._playhead_sample:],
+            audio_to_play,
             self.sample_rate,
             blocking=False,
         )
@@ -125,6 +129,10 @@ class AudioLoader:
 
         # Extract the selected part of the audio
         selected_audio = self.audio_data[start_index:end_index]
+
+        if selected_audio.size == 0:
+            print("Warning: Selected audio part is empty.")
+            return
 
         # Play the selected audio using sounddevice
         sd.play(selected_audio, self.sample_rate, blocking=True)

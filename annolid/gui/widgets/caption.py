@@ -988,6 +988,9 @@ class CaptionWidget(QtWidgets.QWidget):
                         audio = AudioSegment.from_file(
                             temp_file_path, format="mp3")
                         samples = np.array(audio.get_array_of_samples())
+                        if samples.size == 0:
+                            print("Warning: Attempted to play empty audio.")
+                            return
                         if audio.channels == 2:
                             samples = samples.reshape((-1, 2))
                         sd.play(samples, samplerate=audio.frame_rate)
