@@ -32,7 +32,7 @@ from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
-from qtpy.QtCore import QFileSystemWatcher
+from qtpy.QtCore import QEvent
 from pycocotools import mask as maskUtils
 
 from annolid.gui.widgets.video_manager import VideoManagerWidget
@@ -5160,6 +5160,17 @@ class AnnolidWindow(MainWindow):
         quit_and_wait(self.seg_pred_thread, "Bye!")
         if hasattr(self, "yolo_training_manager") and self.yolo_training_manager:
             self.yolo_training_manager.cleanup()
+
+    def showEvent(self, event: QEvent) -> None:
+        """Override to pre-activate menu bar for reliable hover/click on Windows/Linux."""
+        super().showEvent(event)
+        if sys.platform in ('win32', 'linux'):
+            menubar = self.menuBar()
+            if menubar and menubar.actions():  # Ensure actions exist (post-setup)
+                # Activate the first action (e.g., File menu) to prime the bar
+                menubar.setActiveAction(menubar.actions()[0])
+                # Optional: Clear active action after a tick to avoid persistent highlight
+                QtCore.QTimer.singleShot(0, lambda: menubar.setActiveAction(None))
 
     def loadLabels(self, shapes):
         s = []
