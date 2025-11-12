@@ -3111,21 +3111,14 @@ class AnnolidWindow(MainWindow):
 
     def _setup_prediction_folder_watcher(self, folder_path_to_watch):
         if self.prediction_progress_watcher is None:
-            self.prediction_progress_watcher = QFileSystemWatcher(self)
-            self.prediction_progress_watcher.directoryChanged.connect(
+            self.prediction_progress_watcher = QtCore.QTimer(self)
+            self.prediction_progress_watcher.timeout.connect(
                 self._handle_prediction_folder_change
             )
-            # You can also watch for file additions specifically if directoryChanged is too broad
-            # self.prediction_progress_watcher.fileChanged.connect(...)
-
-        # Remove any existing paths
-        if self.prediction_progress_watcher.directories():
-            self.prediction_progress_watcher.removePaths(
-                self.prediction_progress_watcher.directories())
 
         if osp.isdir(folder_path_to_watch):
             self.prediction_start_timestamp = time.time()
-            self.prediction_progress_watcher.addPath(str(folder_path_to_watch))
+            self.prediction_progress_watcher.start(1000)  # Poll every 1000 ms
             logger.info(
                 f"Prediction progress watcher started for: {folder_path_to_watch}")
             # Initial scan when watcher starts
@@ -3254,18 +3247,16 @@ class AnnolidWindow(MainWindow):
             logger.error(
                 f"Error scanning prediction folder for slider marks: {e}", exc_info=True)
 
-    @QtCore.Slot(str)
-    def _handle_prediction_folder_change(self, path):
-        logger.debug(f"Prediction folder changed: {path}. Re-scanning.")
-        self._scan_prediction_folder(path)
+    @QtCore.Slot()
+    def _handle_prediction_folder_change(self):
+        path = self.video_results_folder
+        if path:
+            logger.debug(f"Scanning prediction folder: {path}.")
+            self._scan_prediction_folder(str(path))
 
     def _stop_prediction_folder_watcher(self):
         if self.prediction_progress_watcher:
-            if self.prediction_progress_watcher.directories():
-                self.prediction_progress_watcher.removePaths(
-                    self.prediction_progress_watcher.directories())
-            # self.prediction_progress_watcher.directoryChanged.disconnect(self._handle_prediction_folder_change)
-            # self.prediction_progress_watcher = None # Or just keep it around
+            self.prediction_progress_watcher.stop()
             logger.info("Prediction progress watcher stopped.")
         self.last_known_predicted_frame = -1  # Reset
         self.prediction_start_timestamp = 0.0
