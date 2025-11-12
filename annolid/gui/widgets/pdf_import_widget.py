@@ -15,7 +15,7 @@ class PdfImportWidget(QtWidgets.QWidget):
     """Handle importing PDF pages as images with captions."""
 
     def __init__(self, window: "AnnolidWindow") -> None:
-        super().__init__(window)
+        super().__init__()
         self._window = window
 
     def open_pdf(self) -> None:
@@ -30,7 +30,8 @@ class PdfImportWidget(QtWidgets.QWidget):
         elif not window.mayContinue():
             return
 
-        start_dir = Path(window.lastOpenDir) if window.lastOpenDir else Path.home()
+        start_dir = Path(
+            window.lastOpenDir) if window.lastOpenDir else Path.home()
         pdf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
             window,
             window.tr("Select PDF File"),
@@ -58,7 +59,8 @@ class PdfImportWidget(QtWidgets.QWidget):
         try:
             pdf_doc = fitz.open(pdf_file)
         except Exception as exc:
-            logger.error("Failed to open PDF %s: %s", pdf_file, exc, exc_info=True)
+            logger.error("Failed to open PDF %s: %s",
+                         pdf_file, exc, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 window,
                 window.tr("Failed to Open PDF"),
@@ -80,11 +82,13 @@ class PdfImportWidget(QtWidgets.QWidget):
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             pdf_doc.close()
-            logger.error("Failed to create directory %s: %s", output_dir, exc, exc_info=True)
+            logger.error("Failed to create directory %s: %s",
+                         output_dir, exc, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 window,
                 window.tr("Directory Error"),
-                window.tr("Could not create a directory for PDF pages:\n%s") % output_dir,
+                window.tr(
+                    "Could not create a directory for PDF pages:\n%s") % output_dir,
             )
             return
 
@@ -105,7 +109,8 @@ class PdfImportWidget(QtWidgets.QWidget):
                 try:
                     page = pdf_doc.load_page(page_index)
                     pixmap = page.get_pixmap(matrix=matrix)
-                    image_path = output_dir / f"{pdf_path.stem}_page_{page_index + 1:04}.png"
+                    image_path = output_dir / \
+                        f"{pdf_path.stem}_page_{page_index + 1:04}.png"
                     pixmap.save(image_path.as_posix())
                     caption_text = (page.get_text("text") or "").strip()
                     self._write_caption_file(
@@ -139,7 +144,8 @@ class PdfImportWidget(QtWidgets.QWidget):
         window.status(window.tr("Loaded PDF pages from %s") % pdf_path.name)
 
         if errors:
-            preview = "\n".join(f"Page {page}: {err}" for page, err in errors[:3])
+            preview = "\n".join(
+                f"Page {page}: {err}" for page, err in errors[:3])
             QtWidgets.QMessageBox.warning(
                 window,
                 window.tr("Partial Conversion"),

@@ -32,7 +32,6 @@ from qtpy import QtWidgets
 from qtpy import QtGui
 from labelme import PY2
 from labelme import QT5
-from qtpy.QtCore import QEvent
 from pycocotools import mask as maskUtils
 
 from annolid.gui.widgets.video_manager import VideoManagerWidget
@@ -2704,7 +2703,8 @@ class AnnolidWindow(MainWindow):
             # Inform behavior widget of the live frame index for quick selection in dialogs
             if getattr(self.caption_widget, "behavior_widget", None) is not None:
                 try:
-                    self.caption_widget.behavior_widget.set_current_frame(self.frame_number)
+                    self.caption_widget.behavior_widget.set_current_frame(
+                        self.frame_number)
                 except Exception:
                     pass
         _filename = os.path.basename(self.filename)
@@ -4525,7 +4525,8 @@ class AnnolidWindow(MainWindow):
         """Launch the YouTube download dialog and open the selected video."""
         dialog = YouTubeVideoDialog(self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.downloaded_path:
-            self.openVideo(from_video_list=True, video_path=str(dialog.downloaded_path))
+            self.openVideo(from_video_list=True,
+                           video_path=str(dialog.downloaded_path))
 
     def handle_extracted_frames(self, dirpath):
         self.importDirImages(dirpath)
@@ -4910,7 +4911,8 @@ class AnnolidWindow(MainWindow):
 
         if not tiff_path:
             # Prompt user to select a 3D volume source (TIFF/NIfTI/DICOM)
-            start_dir = str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
+            start_dir = str(Path(self.filename).parent) if getattr(
+                self, "filename", None) else "."
             filters = self.tr(
                 "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz);;All files (*.*)"
             )
@@ -5160,17 +5162,6 @@ class AnnolidWindow(MainWindow):
         quit_and_wait(self.seg_pred_thread, "Bye!")
         if hasattr(self, "yolo_training_manager") and self.yolo_training_manager:
             self.yolo_training_manager.cleanup()
-
-    def showEvent(self, event: QEvent) -> None:
-        """Override to pre-activate menu bar for reliable hover/click on Windows/Linux."""
-        super().showEvent(event)
-        if sys.platform in ('win32', 'linux'):
-            menubar = self.menuBar()
-            if menubar and menubar.actions():  # Ensure actions exist (post-setup)
-                # Activate the first action (e.g., File menu) to prime the bar
-                menubar.setActiveAction(menubar.actions()[0])
-                # Optional: Clear active action after a tick to avoid persistent highlight
-                QtCore.QTimer.singleShot(0, lambda: menubar.setActiveAction(None))
 
     def loadLabels(self, shapes):
         s = []
