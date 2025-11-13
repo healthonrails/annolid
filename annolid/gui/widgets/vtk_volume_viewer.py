@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -67,7 +67,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         # Blend mode
         controls.addWidget(QtWidgets.QLabel("Blend:"), 0, 0)
         self.blend_combo = QtWidgets.QComboBox()
-        self.blend_combo.addItems(["Composite", "MIP-Max", "MIP-Min", "Additive"])
+        self.blend_combo.addItems(
+            ["Composite", "MIP-Max", "MIP-Min", "Additive"])
         self.blend_combo.currentIndexChanged.connect(self._update_blend_mode)
         controls.addWidget(self.blend_combo, 0, 1)
 
@@ -75,7 +76,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         controls.addWidget(QtWidgets.QLabel("Colormap:"), 0, 2)
         self.cmap_combo = QtWidgets.QComboBox()
         self.cmap_combo.addItems(["Grayscale", "Invert Gray", "Hot"])
-        self.cmap_combo.currentIndexChanged.connect(self._update_transfer_functions)
+        self.cmap_combo.currentIndexChanged.connect(
+            self._update_transfer_functions)
         controls.addWidget(self.cmap_combo, 0, 3)
 
         # Intensity window (min/max)
@@ -109,7 +111,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         controls.addWidget(QtWidgets.QLabel("Interpolation:"), 3, 0)
         self.interp_combo = QtWidgets.QComboBox()
         self.interp_combo.addItems(["Linear", "Nearest"])
-        self.interp_combo.currentIndexChanged.connect(self._update_interpolation)
+        self.interp_combo.currentIndexChanged.connect(
+            self._update_interpolation)
         controls.addWidget(self.interp_combo, 3, 1)
 
         # Spacing (X, Y, Z)
@@ -147,6 +150,10 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.load_pc_btn.clicked.connect(self._load_point_cloud_dialog)
         self.clear_pc_btn = QtWidgets.QPushButton("Clear Points")
         self.clear_pc_btn.clicked.connect(self._clear_point_clouds)
+        self.load_mesh_btn = QtWidgets.QPushButton("Load Mesh…")
+        self.load_mesh_btn.clicked.connect(self._load_mesh_dialog)
+        self.clear_mesh_btn = QtWidgets.QPushButton("Clear Meshes")
+        self.clear_mesh_btn.clicked.connect(self._clear_meshes)
         self.point_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.point_size_slider.setRange(1, 12)
         self.point_size_slider.setValue(3)
@@ -158,6 +165,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         btns.addWidget(self.point_size_slider)
         btns.addWidget(self.load_pc_btn)
         btns.addWidget(self.clear_pc_btn)
+        btns.addWidget(self.load_mesh_btn)
+        btns.addWidget(self.clear_mesh_btn)
         btns.addWidget(self.reset_cam_btn)
         btns.addWidget(self.snapshot_btn)
 
@@ -210,7 +219,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
         # Setup for interactive point picking
         self._picker = vtkPointPicker()
-        self._picker.SetTolerance(0.005) # Adjust sensitivity
+        self._picker.SetTolerance(0.005)  # Adjust sensitivity
         self._last_picked_id = -1
         self._last_picked_actor = None
 
@@ -223,6 +232,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.vtk_widget.Initialize()
         self.vtk_widget.Start()
         self._point_actors: list[vtkActor] = []
+        self._mesh_actors: list[vtkActor] = []
 
         # If the provided path is a point cloud, add it now
         if src_path and not _loaded_volume and self._is_point_cloud_candidate(self._path):
@@ -237,14 +247,23 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 self.vtk_widget.GetRenderWindow().Render()
             except Exception:
                 pass
+        elif src_path and not _loaded_volume and self._is_mesh_candidate(self._path):
+            try:
+                self._load_mesh_file(str(self._path))
+                self.renderer.ResetCamera()
+                self.vtk_widget.GetRenderWindow().Render()
+            except Exception:
+                pass
 
         # Enable/disable volume-related controls based on whether a volume was loaded
         self._set_volume_controls_enabled(_loaded_volume)
 
     def _install_interaction_bindings(self):
         # Mouse + key handlers
-        self.interactor.AddObserver("LeftButtonPressEvent", self._vtk_on_left_press)
-        self.interactor.AddObserver("LeftButtonReleaseEvent", self._vtk_on_left_release)
+        self.interactor.AddObserver(
+            "LeftButtonPressEvent", self._vtk_on_left_press)
+        self.interactor.AddObserver(
+            "LeftButtonReleaseEvent", self._vtk_on_left_release)
         self.interactor.AddObserver("MouseMoveEvent", self._vtk_on_mouse_move)
         self.interactor.AddObserver("KeyPressEvent", self._vtk_on_key_press)
 
@@ -273,7 +292,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         volume, spacing = self._read_volume_any()
         # Convert color stack to luminance for volume rendering if needed
         if volume.ndim == 4 and volume.shape[-1] in (3, 4):
-            volume = np.dot(volume[..., :3], [0.299, 0.587, 0.114]).astype(volume.dtype)
+            volume = np.dot(volume[..., :3], [
+                            0.299, 0.587, 0.114]).astype(volume.dtype)
 
         # Ensure C-contiguous
         volume = np.ascontiguousarray(volume)
@@ -283,7 +303,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         vtk_img.SetDimensions(int(x), int(y), int(z))
         # Apply spacing from source if available
         if spacing is not None and len(spacing) == 3:
-            vtk_img.SetSpacing(float(spacing[0]), float(spacing[1]), float(spacing[2]))
+            vtk_img.SetSpacing(float(spacing[0]), float(
+                spacing[1]), float(spacing[2]))
         else:
             vtk_img.SetSpacing(1.0, 1.0, 1.0)
         vtk_img.SetOrigin(0.0, 0.0, 0.0)
@@ -360,7 +381,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 try:
                     from vtkmodules.vtkIOImage import vtkNIFTIImageReader
                 except Exception as exc:
-                    raise RuntimeError("VTK NIFTI reader is not available in this build.") from exc
+                    raise RuntimeError(
+                        "VTK NIFTI reader is not available in this build.") from exc
                 reader = vtkNIFTIImageReader()
                 reader.SetFileName(str(path))
                 reader.Update()
@@ -428,7 +450,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             try:
                 from vtkmodules.vtkIOImage import vtkDICOMImageReader
             except Exception as exc:
-                raise RuntimeError("VTK DICOM reader is not available in this build.") from exc
+                raise RuntimeError(
+                    "VTK DICOM reader is not available in this build.") from exc
             reader = vtkDICOMImageReader()
             reader.SetDirectoryName(str(directory))
             reader.Update()
@@ -505,7 +528,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
             # Horizontal movement adjusts window width, vertical adjusts level/center
             new_window = max(1e-6, window * (1.0 + dx * 0.01))
-            new_level = level + (-dy) * (window * 0.005) # Invert dy for natural feel
+            # Invert dy for natural feel
+            new_level = level + (-dy) * (window * 0.005)
 
             vmin = new_level - new_window * 0.5
             vmax = new_level + new_window * 0.5
@@ -524,7 +548,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
             self._update_transfer_functions()
             self.vtk_widget.GetRenderWindow().Render()
-            
+
             # End processing for this event; do not proceed to picking logic
             return
 
@@ -536,7 +560,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
         x, y = self.interactor.GetEventPosition()
         self._picker.Pick(x, y, 0, self.renderer)
-        
+
         actor = self._picker.GetActor()
         point_id = self._picker.GetPointId()
 
@@ -546,17 +570,18 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             if point_id != self._last_picked_id or actor != self._last_picked_actor:
                 self._last_picked_id = point_id
                 self._last_picked_actor = actor
-                
+
                 polydata = actor.GetMapper().GetInput()
-                
+
                 # Attempt to retrieve the region label data array
                 label_array_abstract = polydata.GetPointData().GetAbstractArray("RegionLabel")
-                
+
                 tooltip_parts = []
                 # If the array exists, get the string value for the picked point
                 if label_array_abstract:
                     # The array must be safely cast to a vtkStringArray to get its value
-                    label_array = vtkStringArray.SafeDownCast(label_array_abstract)
+                    label_array = vtkStringArray.SafeDownCast(
+                        label_array_abstract)
                     if label_array:
                         region_name = label_array.GetValue(point_id)
                         tooltip_parts.append(f"<b>Region:</b> {region_name}")
@@ -564,8 +589,9 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 # Always add point ID and coordinates to the tooltip
                 coords = self._picker.GetPickPosition()
                 tooltip_parts.append(f"<b>Point ID:</b> {point_id}")
-                tooltip_parts.append(f"<b>Coords:</b> ({coords[0]:.2f}, {coords[1]:.2f}, {coords[2]:.2f})")
-                
+                tooltip_parts.append(
+                    f"<b>Coords:</b> ({coords[0]:.2f}, {coords[1]:.2f}, {coords[2]:.2f})")
+
                 tooltip_text = "<br>".join(tooltip_parts)
 
                 # Show the rich-text tooltip at the current cursor position
@@ -585,13 +611,16 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         if key == 'r':
             self._reset_camera()
         elif key == 'w':
-            self.wl_mode_checkbox.setChecked(not self.wl_mode_checkbox.isChecked())
+            self.wl_mode_checkbox.setChecked(
+                not self.wl_mode_checkbox.isChecked())
         elif key == 'c':
             self.shade_checkbox.setChecked(not self.shade_checkbox.isChecked())
         elif key == '+':
-            self.opacity_slider.setValue(min(100, self.opacity_slider.value() + 5))
+            self.opacity_slider.setValue(
+                min(100, self.opacity_slider.value() + 5))
         elif key == '-':
-            self.opacity_slider.setValue(max(1, self.opacity_slider.value() - 5))
+            self.opacity_slider.setValue(
+                max(1, self.opacity_slider.value() - 5))
 
     def _update_interpolation(self):
         if not getattr(self, "_has_volume", False):
@@ -619,7 +648,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _save_snapshot(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Snapshot", str(self._path.with_suffix('.png')), "PNG Files (*.png)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Snapshot", str(
+            self._path.with_suffix('.png')), "PNG Files (*.png)")
         if not path:
             return
         w2i = vtkWindowToImageFilter()
@@ -629,7 +659,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         writer.SetFileName(path)
         writer.SetInputConnection(w2i.GetOutputPort())
         writer.Write()
-        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved: {Path(path).name}")
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(), f"Saved: {Path(path).name}")
 
     def _on_window_changed(self):
         # Ensure min <= max
@@ -667,8 +698,10 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         if not getattr(self, "_has_volume", False) or self._opacity_tf is None or self._color_tf is None:
             return
         # Build opacity and color TF based on window and colormap
-        vmin = float(self.min_spin.value()) if hasattr(self, 'min_spin') else self._vmin
-        vmax = float(self.max_spin.value()) if hasattr(self, 'max_spin') else self._vmax
+        vmin = float(self.min_spin.value()) if hasattr(
+            self, 'min_spin') else self._vmin
+        vmax = float(self.max_spin.value()) if hasattr(
+            self, 'max_spin') else self._vmax
         if vmax <= vmin:
             vmax = vmin + 1e-3
 
@@ -679,7 +712,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self._opacity_tf.AddPoint(vmax, 0.9)
 
         # Color map
-        cmap = self.cmap_combo.currentText() if hasattr(self, 'cmap_combo') else "Grayscale"
+        cmap = self.cmap_combo.currentText() if hasattr(
+            self, 'cmap_combo') else "Grayscale"
         self._color_tf.RemoveAllPoints()
         if cmap == "Grayscale":
             self._color_tf.AddRGBPoint(vmin, 0.0, 0.0, 0.0)
@@ -690,12 +724,15 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         elif cmap == "Hot":
             # Rough "hot" ramp: black -> red -> yellow -> white
             self._color_tf.AddRGBPoint(vmin, 0.0, 0.0, 0.0)
-            self._color_tf.AddRGBPoint(vmin + (vmax - vmin) * 0.33, 1.0, 0.0, 0.0)
-            self._color_tf.AddRGBPoint(vmin + (vmax - vmin) * 0.66, 1.0, 1.0, 0.0)
+            self._color_tf.AddRGBPoint(
+                vmin + (vmax - vmin) * 0.33, 1.0, 0.0, 0.0)
+            self._color_tf.AddRGBPoint(
+                vmin + (vmax - vmin) * 0.66, 1.0, 1.0, 0.0)
             self._color_tf.AddRGBPoint(vmax, 1.0, 1.0, 1.0)
 
     def _update_blend_mode(self):
-        mode = self.blend_combo.currentText() if hasattr(self, 'blend_combo') else "Composite"
+        mode = self.blend_combo.currentText() if hasattr(
+            self, 'blend_combo') else "Composite"
         try:
             if mode == "MIP-Max":
                 self.mapper.SetBlendModeToMaximumIntensity()
@@ -712,7 +749,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
     # -------------------- Point cloud support --------------------
     def _load_point_cloud_dialog(self):
-        start_dir = str(self._path.parent) if getattr(self, "_path", None) and self._path.exists() else "."
+        start_dir = str(self._path.parent) if getattr(
+            self, "_path", None) and self._path.exists() else "."
         filters = "Point clouds (*.csv *.CSV *.ply *.PLY *.xyz *.XYZ);;All files (*.*)"
         res = QtWidgets.QFileDialog.getOpenFileName(
             self,
@@ -735,7 +773,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             self._update_point_sizes()
             self.vtk_widget.GetRenderWindow().Render()
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Point Cloud", f"Failed to load: {e}")
+            QtWidgets.QMessageBox.warning(
+                self, "Point Cloud", f"Failed to load: {e}")
 
     def _add_point_cloud_ply(self, path: str):
         try:
@@ -792,16 +831,19 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             if dlg.exec_() != QtWidgets.QDialog.Accepted:
                 return
             m = dlg.mapping()
+
             def get(name):
                 col = m.get(name)
                 return None if col is None else df[col]
             try:
-                pts = np.stack([get('x').to_numpy(), get('y').to_numpy(), get('z').to_numpy()], axis=1).astype(np.float32)
+                pts = np.stack([get('x').to_numpy(), get('y').to_numpy(), get(
+                    'z').to_numpy()], axis=1).astype(np.float32)
             except Exception:
                 raise RuntimeError("Invalid X/Y/Z column mapping")
             # Apply scale from dialog
             try:
-                sx, sy, sz = float(m.get('sx', 1.0)), float(m.get('sy', 1.0)), float(m.get('sz', 1.0))
+                sx, sy, sz = float(m.get('sx', 1.0)), float(
+                    m.get('sy', 1.0)), float(m.get('sz', 1.0))
                 pts *= np.array([sx, sy, sz], dtype=np.float32)
             except Exception:
                 pass
@@ -844,7 +886,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                     # Ensure labels are strings for the tooltip
                     region_labels = get('label_by').astype(str).to_numpy()
                 except Exception as e:
-                    print(f"Warning: Could not parse region labels from column '{label_col}': {e}")
+                    print(
+                        f"Warning: Could not parse region labels from column '{label_col}': {e}")
 
         if pts is None or len(pts) == 0:
             raise RuntimeError("No points parsed")
@@ -881,7 +924,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             for i, label in enumerate(region_labels):
                 label_array.SetValue(i, label)
             poly2.GetPointData().AddArray(label_array)
-            
+
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetPointSize(self.point_size_slider.value())
@@ -912,7 +955,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         norm = np.clip(norm, 0.0, 1.0)
         c0 = np.array([30, 70, 200], dtype=np.float32)
         c1 = np.array([200, 50, 50], dtype=np.float32)
-        rgb = (c0[None, :] * (1.0 - norm[:, None]) + c1[None, :] * norm[:, None])
+        rgb = (c0[None, :] * (1.0 - norm[:, None]) +
+               c1[None, :] * norm[:, None])
         return np.clip(rgb, 0, 255).astype(np.uint8)
 
     def _colors_for_categories(self, vals: np.ndarray) -> np.ndarray:
@@ -963,7 +1007,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         w = QtWidgets.QWidget(dlg)
         w.setLayout(row)
         form.addRow("Scale X/Y/Z", w)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addWidget(buttons)
@@ -1006,6 +1051,95 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self._point_actors = []
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _load_mesh_dialog(self):
+        start_dir = str(self._path.parent) if getattr(
+            self, "_path", None) and self._path.exists() else "."
+        filters = "Meshes (*.stl *.STL *.obj *.OBJ *.ply *.PLY);;All files (*.*)"
+        res = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Mesh",
+            start_dir,
+            filters,
+        )
+        path = res[0] if isinstance(res, tuple) else res
+        if not path:
+            return
+        path = str(path)
+        try:
+            self._load_mesh_file(path)
+            self.renderer.ResetCamera()
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(
+                self, "Mesh Viewer", f"Failed to load: {e}")
+
+    def _load_mesh_file(self, path: str):
+        ext = Path(path).suffix.lower()
+        if ext == ".stl":
+            poly = self._read_stl_mesh(path)
+        elif ext == ".obj":
+            poly = self._read_obj_mesh(path)
+        elif ext == ".ply":
+            poly = self._read_ply_mesh(path)
+        else:
+            raise RuntimeError(f"Unsupported mesh format: {ext}")
+        self._add_mesh_actor(poly)
+
+    def _add_mesh_actor(self, poly: vtkPolyData):
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(poly)
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetRepresentationToSurface()
+        actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        self.renderer.AddActor(actor)
+        self._mesh_actors.append(actor)
+
+    def _clear_meshes(self):
+        for actor in getattr(self, "_mesh_actors", []):
+            try:
+                self.renderer.RemoveActor(actor)
+            except Exception:
+                pass
+        self._mesh_actors = []
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _read_stl_mesh(self, path: str) -> vtkPolyData:
+        try:
+            from vtkmodules.vtkIOGeometry import vtkSTLReader
+        except Exception as exc:
+            raise RuntimeError(
+                "VTK STL reader module is not available. Install VTK with IOGeometry support."
+            ) from exc
+        return self._read_polydata_from_reader(vtkSTLReader, path)
+
+    def _read_obj_mesh(self, path: str) -> vtkPolyData:
+        try:
+            from vtkmodules.vtkIOGeometry import vtkOBJReader
+        except Exception as exc:
+            raise RuntimeError(
+                "VTK OBJ reader module is not available. Install VTK with IOGeometry support."
+            ) from exc
+        return self._read_polydata_from_reader(vtkOBJReader, path)
+
+    def _read_ply_mesh(self, path: str) -> vtkPolyData:
+        try:
+            from vtkmodules.vtkIOGeometry import vtkPLYReader
+        except Exception as exc:
+            raise RuntimeError(
+                "VTK PLY reader module is not available. Install VTK with IOGeometry support."
+            ) from exc
+        return self._read_polydata_from_reader(vtkPLYReader, path)
+
+    def _read_polydata_from_reader(self, reader_cls: Callable[[], object], path: str) -> vtkPolyData:
+        reader = reader_cls()
+        reader.SetFileName(path)
+        reader.Update()
+        poly = reader.GetOutput()
+        if poly is None or poly.GetNumberOfPoints() == 0:
+            raise RuntimeError("Mesh contains no points")
+        return poly
+
     # -------------------- Source type helpers --------------------
     def _is_volume_candidate(self, path: Path) -> bool:
         if path.is_dir():
@@ -1022,3 +1156,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
     def _is_point_cloud_candidate(self, path: Path) -> bool:
         ext = path.suffix.lower()
         return ext in ('.ply', '.csv', '.xyz')
+
+    def _is_mesh_candidate(self, path: Path) -> bool:
+        ext = path.suffix.lower()
+        return ext in ('.stl', '.obj')

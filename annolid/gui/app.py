@@ -4914,7 +4914,7 @@ class AnnolidWindow(MainWindow):
             start_dir = str(Path(self.filename).parent) if getattr(
                 self, "filename", None) else "."
             filters = self.tr(
-                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz);;All files (*.*)"
+                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ);;All files (*.*)"
             )
             res = QtWidgets.QFileDialog.getOpenFileName(
                 self,
@@ -4967,7 +4967,9 @@ class AnnolidWindow(MainWindow):
             suffix = ''
             name_lower = ''
 
-        is_point_cloud = suffix in {'.ply', '.csv', '.xyz'}
+        point_cloud_suffixes = {'.ply', '.csv', '.xyz'}
+        mesh_suffixes = {'.stl', '.obj'}
+        requires_vtk = suffix in point_cloud_suffixes or suffix in mesh_suffixes
 
         # Re-check VTK availability independently of the viewer import error
         def _vtk_available() -> tuple[bool, str | None]:
@@ -4985,14 +4987,14 @@ class AnnolidWindow(MainWindow):
         _ok, _probe = _vtk_available()
         vtk_missing = not _ok
 
-        if is_point_cloud:
+        if requires_vtk:
             # No raster fallback; inform user about VTK requirement
             if vtk_missing:
                 QtWidgets.QMessageBox.information(
                     self,
-                    self.tr("Point Cloud Viewer Requires VTK"),
+                    self.tr("Mesh/Point Cloud Viewer Requires VTK"),
                     self.tr(
-                        "CSV/PLY/XYZ point clouds require VTK with Qt support.\n\n"
+                        "PLY/CSV/XYZ point clouds and STL/OBJ meshes require VTK with Qt support.\n\n"
                         f"Details: {_probe or 'Unknown import error'}\n\n"
                         "Conda:  conda install -c conda-forge vtk\n"
                         "Pip:    pip install vtk"
@@ -5001,8 +5003,8 @@ class AnnolidWindow(MainWindow):
             else:
                 QtWidgets.QMessageBox.warning(
                     self,
-                    self.tr("Point Cloud Viewer"),
-                    self.tr("Failed to open the VTK point cloud viewer.\n%s") % (
+                    self.tr("Mesh/Point Cloud Viewer"),
+                    self.tr("Failed to open the VTK mesh/point cloud viewer.\n%s") % (
                         str(vtk_error) if vtk_error else ""
                     ),
                 )
