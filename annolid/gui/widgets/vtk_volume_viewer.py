@@ -14,22 +14,27 @@ from vtkmodules.vtkRenderingCore import (
     vtkVolume,
     vtkVolumeProperty,
     vtkWindowToImageFilter,
+    vtkTexture,
+    vtkPointPicker,
+    vtkColorTransferFunction,
+    vtkPolyDataMapper,
+    vtkActor,
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPolyData, vtkCellArray
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonCore import vtkStringArray
-from vtkmodules.vtkRenderingCore import vtkPointPicker
-from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
-from vtkmodules.vtkRenderingCore import vtkColorTransferFunction
 from vtkmodules.vtkInteractionStyle import (
     vtkInteractorStyleTrackballCamera,
     vtkInteractorStyleUser,
 )
 from vtkmodules.util.numpy_support import numpy_to_vtk
-from vtkmodules.vtkIOImage import vtkPNGWriter
-from vtkmodules.vtkRenderingCore import vtkPolyDataMapper, vtkActor
+from vtkmodules.vtkIOImage import vtkPNGWriter, vtkImageReader2Factory
+try:
+    from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLPolyDataMapper
+except Exception:  # pragma: no cover - optional renderer
+    vtkOpenGLPolyDataMapper = None
 try:  # Prefer GDCM when available (more robust series handling)
     from vtkmodules.vtkIOImage import vtkGDCMImageReader  # type: ignore
     _HAS_GDCM = True
@@ -154,25 +159,45 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.load_mesh_btn.clicked.connect(self._load_mesh_dialog)
         self.clear_mesh_btn = QtWidgets.QPushButton("Clear Meshes")
         self.clear_mesh_btn.clicked.connect(self._clear_meshes)
+        self.load_diffuse_tex_btn = QtWidgets.QPushButton(
+            "Load Diffuse Texture…")
+        self.load_diffuse_tex_btn.clicked.connect(self._load_diffuse_texture)
+        self.load_normal_tex_btn = QtWidgets.QPushButton("Load Normal Map…")
+        self.load_normal_tex_btn.clicked.connect(self._load_normal_texture)
         self.point_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.point_size_slider.setRange(1, 12)
         self.point_size_slider.setValue(3)
         self.point_size_slider.setToolTip("Point size")
         self.point_size_slider.valueChanged.connect(self._update_point_sizes)
+        mesh_group = QtWidgets.QGroupBox("Mesh")
+        mesh_layout = QtWidgets.QHBoxLayout()
+        mesh_layout.setContentsMargins(4, 2, 4, 2)
+        mesh_layout.addWidget(self.load_mesh_btn)
+        mesh_layout.addWidget(self.clear_mesh_btn)
+        mesh_group.setLayout(mesh_layout)
+        texture_group = QtWidgets.QGroupBox("Textures")
+        texture_layout = QtWidgets.QHBoxLayout()
+        texture_layout.setContentsMargins(4, 2, 4, 2)
+        texture_layout.addWidget(self.load_diffuse_tex_btn)
+        texture_layout.addWidget(self.load_normal_tex_btn)
+        texture_group.setLayout(texture_layout)
         btns.addWidget(self.wl_mode_checkbox)
         btns.addStretch(1)
         btns.addWidget(QtWidgets.QLabel("Point Size:"))
         btns.addWidget(self.point_size_slider)
-        btns.addWidget(self.load_pc_btn)
-        btns.addWidget(self.clear_pc_btn)
-        btns.addWidget(self.load_mesh_btn)
-        btns.addWidget(self.clear_mesh_btn)
+        btns.addWidget(mesh_group)
+        btns.addWidget(texture_group)
         btns.addWidget(self.reset_cam_btn)
         btns.addWidget(self.snapshot_btn)
 
         controls_box = QtWidgets.QVBoxLayout()
         controls_box.addLayout(controls)
         controls_box.addLayout(btns)
+        status_row = QtWidgets.QHBoxLayout()
+        self.mesh_status_label = QtWidgets.QLabel("Mesh: none loaded")
+        status_row.addWidget(self.mesh_status_label)
+        status_row.addStretch(1)
+        controls_box.addLayout(status_row)
         layout.addLayout(controls_box)
 
         # Build pipeline
@@ -233,6 +258,9 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.vtk_widget.Start()
         self._point_actors: list[vtkActor] = []
         self._mesh_actors: list[vtkActor] = []
+        self._mesh_textures: dict[int, dict[str, dict[str, object]]] = {}
+        self._mesh_actor_names: dict[int, str] = {}
+        self._active_mesh_actor: Optional[vtkActor] = None
 
         # If the provided path is a point cloud, add it now
         if src_path and not _loaded_volume and self._is_point_cloud_candidate(self._path):
@@ -257,6 +285,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
         # Enable/disable volume-related controls based on whether a volume was loaded
         self._set_volume_controls_enabled(_loaded_volume)
+        self._update_mesh_status_label()
 
     def _install_interaction_bindings(self):
         # Mouse + key handlers
@@ -1073,20 +1102,83 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self, "Mesh Viewer", f"Failed to load: {e}")
 
+    def _load_diffuse_texture(self):
+        self._load_texture_dialog("diffuse")
+
+    def _load_normal_texture(self):
+        self._load_texture_dialog("normal")
+
     def _load_mesh_file(self, path: str):
-        ext = Path(path).suffix.lower()
+        path_obj = Path(path)
+        ext = path_obj.suffix.lower()
+        textures: dict[str, str] = {}
         if ext == ".stl":
             poly = self._read_stl_mesh(path)
         elif ext == ".obj":
             poly = self._read_obj_mesh(path)
+            textures = self._parse_obj_mtl_textures(path_obj)
         elif ext == ".ply":
             poly = self._read_ply_mesh(path)
         else:
             raise RuntimeError(f"Unsupported mesh format: {ext}")
-        self._add_mesh_actor(poly)
+        actor = self._add_mesh_actor(poly, path_obj.name)
+        if textures.get("diffuse"):
+            self._apply_texture_from_path(
+                actor, "diffuse", textures["diffuse"])
+        if textures.get("normal"):
+            self._apply_texture_from_path(actor, "normal", textures["normal"])
 
-    def _add_mesh_actor(self, poly: vtkPolyData):
-        mapper = vtkPolyDataMapper()
+    def _parse_obj_mtl_textures(self, obj_path: Path) -> dict[str, str]:
+        textures: dict[str, str] = {}
+        mtl_files: list[Path] = []
+        try:
+            with open(obj_path, "r", encoding="utf-8", errors="ignore") as obj_file:
+                for line in obj_file:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    parts = stripped.split(maxsplit=1)
+                    if parts[0].lower() != "mtllib" or len(parts) < 2:
+                        continue
+                    for name in parts[1].split():
+                        candidate = obj_path.parent / name
+                        mtl_files.append(candidate)
+        except Exception:
+            return textures
+        for mtl_path in mtl_files:
+            if not mtl_path.exists():
+                continue
+            try:
+                with open(mtl_path, "r", encoding="utf-8", errors="ignore") as mtl_file:
+                    for line in mtl_file:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        tokens = line.split(maxsplit=1)
+                        if len(tokens) < 2:
+                            continue
+                        key = tokens[0].lower()
+                        raw = tokens[1].split("#", 1)[0].strip()
+                        if not raw:
+                            continue
+                        file_name = raw.split()[-1]
+                        if not file_name:
+                            continue
+                        file_path = (mtl_path.parent / file_name).resolve()
+                        if not file_path.exists():
+                            continue
+                        if key == "map_kd" and "diffuse" not in textures:
+                            textures["diffuse"] = str(file_path)
+                        elif key in {"map_bump", "bump", "norm"} and "normal" not in textures:
+                            textures["normal"] = str(file_path)
+                        if "diffuse" in textures and "normal" in textures:
+                            return textures
+            except Exception:
+                continue
+        return textures
+
+    def _add_mesh_actor(self, poly: vtkPolyData, source_name: str) -> vtkActor:
+        mapper = self._create_mesh_mapper()
         mapper.SetInputData(poly)
         actor = vtkActor()
         actor.SetMapper(mapper)
@@ -1094,6 +1186,11 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         actor.GetProperty().SetColor(1.0, 1.0, 1.0)
         self.renderer.AddActor(actor)
         self._mesh_actors.append(actor)
+        self._mesh_textures[id(actor)] = {}
+        self._mesh_actor_names[id(actor)] = source_name
+        self._active_mesh_actor = actor
+        self._update_mesh_status_label()
+        return actor
 
     def _clear_meshes(self):
         for actor in getattr(self, "_mesh_actors", []):
@@ -1102,7 +1199,109 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._mesh_actors = []
+        self._mesh_textures.clear()
+        self._mesh_actor_names.clear()
+        self._active_mesh_actor = None
         self.vtk_widget.GetRenderWindow().Render()
+        self._update_mesh_status_label()
+
+    def _load_texture_dialog(self, kind: str):
+        actor = self._current_mesh_actor()
+        if actor is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Mesh Texture",
+                "Load a mesh before applying textures.",
+            )
+            return
+        filters = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;All files (*.*)"
+        res = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            f"Open {kind.capitalize()} Texture",
+            str(self._path.parent) if getattr(self, "_path", None) else ".",
+            filters,
+        )
+        path = res[0] if isinstance(res, tuple) else res
+        if not path:
+            return
+        try:
+            self._apply_texture_from_path(actor, kind, path)
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Mesh Texture",
+                f"Failed to load {kind} texture: {exc}",
+            )
+
+    def _current_mesh_actor(self) -> Optional[vtkActor]:
+        actor = self._active_mesh_actor
+        if actor not in self._mesh_actors:
+            actor = self._mesh_actors[-1] if self._mesh_actors else None
+        if actor is not None:
+            self._active_mesh_actor = actor
+        return actor
+
+    def _apply_texture_from_path(self, actor: vtkActor, kind: str, path: str):
+        texture = self._create_texture_from_file(path)
+        self._apply_texture_to_actor(actor, texture, kind, path)
+
+    def _create_texture_from_file(self, path: str) -> vtkTexture:
+        factory = vtkImageReader2Factory()
+        reader = factory.CreateImageReader2(path)
+        if reader is None:
+            raise RuntimeError("Unsupported texture format")
+        reader.SetFileName(path)
+        reader.Update()
+        image = reader.GetOutput()
+        if image is None:
+            raise RuntimeError("Texture image could not be read")
+        texture = vtkTexture()
+        texture.SetInputData(image)
+        texture.InterpolateOn()
+        return texture
+
+    def _apply_texture_to_actor(
+        self,
+        actor: vtkActor,
+        texture: vtkTexture,
+        kind: str,
+        path: Optional[str] = None,
+    ):
+        actor.SetTexture(texture)
+        self._mesh_textures.setdefault(id(actor), {})[kind] = {
+            "texture": texture,
+            "path": path,
+        }
+        if kind == "normal":
+            mapper = actor.GetMapper()
+            if hasattr(mapper, "SetNormalTexture"):
+                mapper.SetNormalTexture(texture)
+            if hasattr(mapper, "SetUseNormalTexture"):
+                mapper.SetUseNormalTexture(True)
+        self._update_mesh_status_label()
+
+    def _create_mesh_mapper(self) -> vtkPolyDataMapper:
+        if vtkOpenGLPolyDataMapper is not None:
+            return vtkOpenGLPolyDataMapper()
+        return vtkPolyDataMapper()
+
+    def _update_mesh_status_label(self):
+        if not hasattr(self, "mesh_status_label"):
+            return
+        actor = self._current_mesh_actor()
+        if actor is None:
+            self.mesh_status_label.setText("Mesh: none loaded")
+            return
+        name = self._mesh_actor_names.get(id(actor), "mesh")
+        textures = self._mesh_textures.get(id(actor), {})
+        parts = [f"Mesh: {name}"]
+        for kind_label, key in (("Diffuse", "diffuse"), ("Normal", "normal")):
+            entry = textures.get(key)
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if path:
+                parts.append(f"{kind_label}: {Path(path).name}")
+        self.mesh_status_label.setText(" | ".join(parts))
 
     def _read_stl_mesh(self, path: str) -> vtkPolyData:
         try:
