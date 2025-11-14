@@ -290,7 +290,7 @@ class MenuController:
         w.aiRectangle = AiRectangleWidget()
         w.aiRectangle._aiRectanglePrompt.returnPressed.connect(
             w._grounding_sam)
-        w.recording_widget = RecordingWidget(w.canvas)
+        w.recording_widget = RecordingWidget(lambda: w.canvas)
 
         w.patch_similarity_action = self._action_factory(
             w.tr("Patch Similarity"),
