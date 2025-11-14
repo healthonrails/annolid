@@ -21,7 +21,12 @@ from vtkmodules.vtkRenderingCore import (
     vtkActor,
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
-from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPolyData, vtkCellArray
+from vtkmodules.vtkCommonDataModel import (
+    vtkImageData,
+    vtkPolyData,
+    vtkCellArray,
+    vtkPiecewiseFunction,
+)
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonCore import vtkStringArray
