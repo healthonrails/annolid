@@ -295,6 +295,7 @@ def run_video_depth_anything(
     streaming: bool = True,
     save_depth_video: bool = False,
     save_depth_frames: bool = False,
+    save_point_clouds: bool = False,
 ) -> Dict[str, Optional[List[str]]]:
     """Run depth estimation on ``input_video`` and save the outputs."""
 
@@ -455,28 +456,32 @@ def run_video_depth_anything(
     if depths is not None and len(depths):
         width, height = depths[0].shape[-1], depths[0].shape[-2]
         x, y = np.meshgrid(np.arange(width), np.arange(height))
-        x = (x - width / 2) / focal_length_x
-        y = (y - height / 2) / focal_length_y
-        point_csv_paths: List[str] = []
-        ply_dir = output_dir_path / "point_clouds"
-        for idx, (color_image, depth_map) in enumerate(zip(frames, depths)):
-            z = depth_map.astype(np.float32)
-            points = np.stack(
-                (
-                    np.multiply(x, z),
-                    np.multiply(y, z),
-                    z,
-                ),
-                axis=-1,
-            ).reshape(-1, 3)
-            colors = np.array(color_image).reshape(-1, 3)
-            csv_path = ply_dir / f"point_{idx:04d}.csv"
-            _write_point_cloud_csv(
-                csv_path, points, z.reshape(-1, 1), colors=colors
-            )
-            point_csv_paths.append(str(csv_path))
-        if point_csv_paths:
-            result["point_cloud_csv"] = point_csv_paths
+    if save_point_clouds:
+        if depths is not None and len(depths):
+            width, height = depths[0].shape[-1], depths[0].shape[-2]
+            x, y = np.meshgrid(np.arange(width), np.arange(height))
+            x = (x - width / 2) / focal_length_x
+            y = (y - height / 2) / focal_length_y
+            point_csv_paths: List[str] = []
+            ply_dir = output_dir_path / "point_clouds"
+            for idx, (color_image, depth_map) in enumerate(zip(frames, depths)):
+                z = depth_map.astype(np.float32)
+                points = np.stack(
+                    (
+                        np.multiply(x, z),
+                        np.multiply(y, z),
+                        z,
+                    ),
+                    axis=-1,
+                ).reshape(-1, 3)
+                colors = np.array(color_image).reshape(-1, 3)
+                csv_path = ply_dir / f"point_{idx:04d}.csv"
+                _write_point_cloud_csv(
+                    csv_path, points, z.reshape(-1, 1), colors=colors
+                )
+                point_csv_paths.append(str(csv_path))
+            if point_csv_paths:
+                result["point_cloud_csv"] = point_csv_paths
 
     if fp32 and device.type == "cuda":
         torch.cuda.empty_cache()

@@ -5904,6 +5904,7 @@ class AnnolidWindow(MainWindow):
             save_npz=save_npz,
             save_exr=save_exr,
             streaming=streaming,
+            save_point_clouds=depth_cfg.get("save_point_clouds", False),
             progress_callback=None,
             preview_callback=None,
             save_depth_video=save_depth_video,
