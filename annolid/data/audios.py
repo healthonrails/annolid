@@ -1,15 +1,14 @@
 import warnings
 from typing import Optional
 try:
-    import sounddevice as sd
-except ImportError:
-    print("The 'sounddevice' module is required for audio playback.")
-    print("Please install it by running: pip install sounddevice")
-try:
     import librosa
 except ImportError:
     print("The 'librosa' module is required for audio loading.")
     print("Please install it by running: pip install librosa")
+from annolid.utils.audio_playback import (
+    play_audio_buffer,
+    stop_audio_playback,
+)
 # Suppress the Warnings
 warnings.filterwarnings("ignore")
 
@@ -109,11 +108,7 @@ class AudioLoader:
         if audio_to_play.size == 0:
             return
 
-        sd.play(
-            audio_to_play,
-            self.sample_rate,
-            blocking=False,
-        )
+        play_audio_buffer(audio_to_play, self.sample_rate, blocking=False)
 
     def play_selected_part(self, x_start, x_end):
         """
@@ -135,11 +130,11 @@ class AudioLoader:
             return
 
         # Play the selected audio using sounddevice
-        sd.play(selected_audio, self.sample_rate, blocking=True)
+        play_audio_buffer(selected_audio, self.sample_rate, blocking=True)
         self._playhead_sample = start_index
 
     def stop(self):
         """
         Stop the currently playing audio.
         """
-        sd.stop()
+        stop_audio_playback()

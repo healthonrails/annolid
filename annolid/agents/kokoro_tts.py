@@ -10,18 +10,7 @@ except ImportError:
         "   pip install kokoro-onnx\n"
     )
 
-# --- Handle ImportError for sounddevice ---
-try:
-    import sounddevice as sd
-except ImportError:
-    print(
-        "\nError: sounddevice library is not installed.\n"
-        "Please install it using pip:\n"
-        "   pip install sounddevice\n"
-        "\nNote: sounddevice often requires system-level audio libraries (like PortAudio).\n"
-        "Installation can be OS-specific. See:\n"
-        "   https://python-sounddevice.readthedocs.io/en/latest/install.html\n"
-    )
+from annolid.utils.audio_playback import play_audio_buffer
 
 # --- Configuration ---
 MODEL_FILENAME = "kokoro-v0_19.onnx"
@@ -109,9 +98,10 @@ def play_audio(samples, sample_rate):
     """Plays audio data using sounddevice."""
     if samples is not None and sample_rate is not None and samples.size > 0:
         print("Playing audio...")
-        sd.play(samples, sample_rate)
-        sd.wait()  # Block until audio playback is finished
-        print("Audio playback finished.")
+        if play_audio_buffer(samples, sample_rate, blocking=True):
+            print("Audio playback finished.")
+        else:
+            print("Audio playback skipped because no usable audio device was detected.")
     else:
         print("No audio data to play or audio data is empty.")
 

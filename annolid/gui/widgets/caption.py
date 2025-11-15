@@ -31,6 +31,7 @@ from annolid.utils.llm_settings import (
 )
 from annolid.gui.widgets.behavior_describe_widget import BehaviorDescribeWidget
 from annolid.jobs.tracking_jobs import TrackingSegment
+from annolid.utils.audio_playback import play_audio_buffer
 
 try:
     import ollama
@@ -968,7 +969,6 @@ class CaptionWidget(QtWidgets.QWidget):
                 print("\nText-to-speech conversion failed.")
         except Exception as e:
             from gtts import gTTS
-            import sounddevice as sd
             from pydub import AudioSegment
             import numpy as np
             try:
@@ -993,8 +993,14 @@ class CaptionWidget(QtWidgets.QWidget):
                             return
                         if audio.channels == 2:
                             samples = samples.reshape((-1, 2))
-                        sd.play(samples, samplerate=audio.frame_rate)
-                        sd.wait()
+                        played = play_audio_buffer(
+                            samples, audio.frame_rate, blocking=True
+                        )
+                        if not played:
+                            print(
+                                "Audio playback skipped while reading caption "
+                                "because no usable audio device was detected."
+                            )
 
                     except Exception as e:
                         # More specific error message
