@@ -266,6 +266,19 @@ class MenuController:
                 "icon_path": here / "icons/visualization.png",
             },
             {
+                "name": "video_depth_anything",
+                "text": w.tr("Video Depth Anything..."),
+                "slot": w.run_video_depth_anything,
+                "tip": w.tr("Estimate depth for a video with Video-Depth-Anything"),
+                "icon_name": "visualization",
+            },
+            {
+                "name": "depth_settings",
+                "text": w.tr("Depth Settings..."),
+                "slot": w.configure_video_depth_settings,
+                "tip": w.tr("Configure Video-Depth-Anything defaults"),
+            },
+            {
                 "name": "colab",
                 "text": w.tr("&Open in Colab"),
                 "slot": w.train_on_colab,
@@ -394,7 +407,9 @@ class MenuController:
         tool_actions.append(actions["save_labels"])
         tool_actions.append(actions["quality_control"])
         tool_actions.append(actions["colab"])
+        tool_actions.append(actions["video_depth_anything"])
         tool_actions.append(actions["visualization"])
+        tool_actions.append(actions["depth_settings"])
         tool_actions.append(actions["open_florence2"])
         tool_actions.append(w.patch_similarity_action)
         tool_actions.append(w.pca_map_action)
@@ -441,6 +456,9 @@ class MenuController:
         utils.addActions(w.menus.file, (actions["advance_params"],))
 
         utils.addActions(w.menus.view, (actions["glitter2"],))
+        utils.addActions(
+            w.menus.view, (actions["video_depth_anything"],))
+        utils.addActions(w.menus.view, (actions["depth_settings"],))
         utils.addActions(w.menus.view, (actions["visualization"],))
         utils.addActions(w.menus.view, (w.patch_similarity_action,))
         utils.addActions(w.menus.view, (w.pca_map_action,))

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 from qtpy import QtCore, QtWidgets, QtGui
 
@@ -46,6 +47,13 @@ try:  # Prefer GDCM when available (more robust series handling)
 except Exception:  # pragma: no cover
     _HAS_GDCM = False
 
+from annolid.utils.logger import logger
+
+POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
+MESH_EXTS = (".stl", ".obj")
+VOLUME_FILE_EXTS = (".tif", ".tiff", ".nii", ".nii.gz")
+DICOM_EXTS = (".dcm", ".dicom", ".ima")
+
 
 class VTKVolumeViewerDialog(QtWidgets.QDialog):
     """
@@ -60,10 +68,19 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("3D Volume Renderer (VTK)")
         self.resize(900, 700)
-        try:
-            self._path = Path(src_path) if src_path else Path('.')
-        except Exception:
-            self._path = Path('.')
+        self._source_path: Optional[Path] = None
+        self._path = Path(".")
+        if src_path:
+            try:
+                candidate = Path(src_path).expanduser()
+            except Exception:
+                candidate = Path(src_path)
+            try:
+                candidate = candidate.resolve()
+            except Exception:
+                pass
+            self._source_path = candidate
+            self._path = self._resolve_initial_source(candidate)
 
         # Main layout
         layout = QtWidgets.QVBoxLayout(self)
@@ -157,7 +174,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.snapshot_btn = QtWidgets.QPushButton("Save Snapshot…")
         self.snapshot_btn.clicked.connect(self._save_snapshot)
         self.load_pc_btn = QtWidgets.QPushButton("Load Point Cloud…")
-        self.load_pc_btn.clicked.connect(self._load_point_cloud_dialog)
+        self.load_pc_btn.clicked.connect(self._load_point_cloud_folder)
         self.clear_pc_btn = QtWidgets.QPushButton("Clear Points")
         self.clear_pc_btn.clicked.connect(self._clear_point_clouds)
         self.load_mesh_btn = QtWidgets.QPushButton("Load Mesh…")
@@ -188,6 +205,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         texture_group.setLayout(texture_layout)
         btns.addWidget(self.wl_mode_checkbox)
         btns.addStretch(1)
+        btns.addWidget(self.load_pc_btn)
+        btns.addWidget(self.clear_pc_btn)
         btns.addWidget(QtWidgets.QLabel("Point Size:"))
         btns.addWidget(self.point_size_slider)
         btns.addWidget(mesh_group)
@@ -782,33 +801,41 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.vtk_widget.GetRenderWindow().Render()
 
     # -------------------- Point cloud support --------------------
-    def _load_point_cloud_dialog(self):
+    def _load_point_cloud_folder(self):
         start_dir = str(self._path.parent) if getattr(
             self, "_path", None) and self._path.exists() else "."
-        filters = "Point clouds (*.csv *.CSV *.ply *.PLY *.xyz *.XYZ);;All files (*.*)"
-        res = QtWidgets.QFileDialog.getOpenFileName(
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "Open Point Cloud",
+            "Open Point Cloud Folder",
             start_dir,
-            filters,
         )
-        path = res[0] if isinstance(res, tuple) else res
-        if not path:
+        if not folder:
             return
-        path = str(path)
-        ext = Path(path).suffix.lower()
-        try:
-            if ext == ".ply":
-                self._add_point_cloud_ply(path)
-            elif ext in (".csv", ".xyz"):
-                self._add_point_cloud_csv_or_xyz(path)
-            else:
-                raise RuntimeError(f"Unsupported point cloud format: {ext}")
-            self._update_point_sizes()
-            self.vtk_widget.GetRenderWindow().Render()
-        except Exception as e:
+        directory = Path(folder)
+        csv_files = sorted(directory.glob("*.csv"))
+        if not csv_files:
             QtWidgets.QMessageBox.warning(
-                self, "Point Cloud", f"Failed to load: {e}")
+                self,
+                "Point Cloud",
+                "No CSV point clouds found in that directory.",
+            )
+            return
+        self._clear_point_clouds()
+        combined_bounds = None
+        for csv_path in csv_files:
+            try:
+                bounds = self._add_point_cloud_csv_or_xyz(
+                    str(csv_path), focus=False
+                )
+                combined_bounds = self._union_bounds(combined_bounds, bounds)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load point cloud '%s': %s", csv_path, exc
+                )
+        if combined_bounds:
+            self._focus_on_bounds(combined_bounds)
+        self._update_point_sizes()
+        self.vtk_widget.GetRenderWindow().Render()
 
     def _add_point_cloud_ply(self, path: str):
         try:
@@ -838,11 +865,14 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         actor.GetProperty().SetPointSize(self.point_size_slider.value())
         self.renderer.AddActor(actor)
         self._point_actors.append(actor)
+        self._focus_on_bounds(poly2.GetBounds())
 
-    def _add_point_cloud_csv_or_xyz(self, path: str):
+    def _add_point_cloud_csv_or_xyz(self, path: str, focus: bool = True):
         import numpy as np
         pts = None
         colors = None
+        intensity = None
+        region_labels = None
         if path.lower().endswith(".xyz"):
             data = np.loadtxt(path)
             if data.ndim != 2 or data.shape[1] < 3:
@@ -858,73 +888,100 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             if scale is not None:
                 pts *= np.array(scale, dtype=np.float32)
         else:  # CSV with mapping dialog
-            import pandas as pd
             from .csv_mapping_dialog import CSVPointCloudMappingDialog
             df = pd.read_csv(path)
-            dlg = CSVPointCloudMappingDialog(df.columns, parent=self)
-            if dlg.exec_() != QtWidgets.QDialog.Accepted:
-                return
-            m = dlg.mapping()
-
-            def get(name):
-                col = m.get(name)
-                return None if col is None else df[col]
-            try:
-                pts = np.stack([get('x').to_numpy(), get('y').to_numpy(), get(
-                    'z').to_numpy()], axis=1).astype(np.float32)
-            except Exception:
-                raise RuntimeError("Invalid X/Y/Z column mapping")
-            # Apply scale from dialog
-            try:
-                sx, sy, sz = float(m.get('sx', 1.0)), float(
-                    m.get('sy', 1.0)), float(m.get('sz', 1.0))
-                pts *= np.array([sx, sy, sz], dtype=np.float32)
-            except Exception:
-                pass
-
-            # Build colors
-            color_by = m.get('color_by')
-            mode = m.get('color_mode')
-            if color_by:
-                series = get('color_by')
-                if mode == 'categorical' or (series.dtype == object):
-                    vals = series.astype(str).to_numpy()
-                    colors = self._colors_for_categories(vals)
-                else:
-                    raw = series.to_numpy(dtype=float)
-                    v = raw[np.isfinite(raw)] if raw.size else raw
-                    vmin = float(np.nanmin(v)) if v.size else 0.0
-                    vmax = float(np.nanmax(v)) if v.size else 1.0
-                    if vmax <= vmin:
-                        vmax = vmin + 1e-6
-                    norm = (raw - vmin) / (vmax - vmin)
-                    norm = np.clip(norm, 0.0, 1.0)
-                    colors = self._gradient_blue_red(norm)
+            parsed = self._auto_parse_point_cloud_csv(df)
+            if parsed is not None:
+                pts, colors, intensity, region_labels = parsed
             else:
-                inten_series = get('intensity')
-                if inten_series is not None:
-                    inten = inten_series.to_numpy(dtype=float)
-                    imax = np.nanmax(inten) if inten.size else 1.0
-                    imin = np.nanmin(inten) if inten.size else 0.0
-                    if imax <= imin:
-                        imax = imin + 1e-6
-                    g = np.clip((inten - imin) / (imax - imin), 0.0, 1.0)
-                    g = (g * 255.0).astype(np.uint8)
-                    colors = np.stack([g, g, g], axis=1)
+                dlg = CSVPointCloudMappingDialog(df.columns, parent=self)
+                if dlg.exec_() != QtWidgets.QDialog.Accepted:
+                    return
+                m = dlg.mapping()
 
-            # Parse region labels if specified
-            region_labels = None
-            label_col = m.get('label_by')
-            if label_col:
+                def get(name):
+                    col = m.get(name)
+                    return None if col is None else df[col]
                 try:
-                    # Ensure labels are strings for the tooltip
-                    region_labels = get('label_by').astype(str).to_numpy()
-                except Exception as e:
-                    print(
-                        f"Warning: Could not parse region labels from column '{label_col}': {e}")
+                    pts = np.stack([get('x').to_numpy(), get('y').to_numpy(), get(
+                        'z').to_numpy()], axis=1).astype(np.float32)
+                except Exception:
+                    raise RuntimeError("Invalid X/Y/Z column mapping")
+                # Apply scale from dialog
+                try:
+                    sx, sy, sz = float(m.get('sx', 1.0)), float(
+                        m.get('sy', 1.0)), float(m.get('sz', 1.0))
+                    pts *= np.array([sx, sy, sz], dtype=np.float32)
+                except Exception:
+                    pass
+
+                # Build colors
+                color_by = m.get('color_by')
+                mode = m.get('color_mode')
+                if color_by:
+                    series = get('color_by')
+                    if mode == 'categorical' or (series.dtype == object):
+                        vals = series.astype(str).to_numpy()
+                        colors = self._colors_for_categories(vals)
+                    else:
+                        raw = series.to_numpy(dtype=float)
+                        v = raw[np.isfinite(raw)] if raw.size else raw
+                        vmin = float(np.nanmin(v)) if v.size else 0.0
+                        vmax = float(np.nanmax(v)) if v.size else 1.0
+                        if vmax <= vmin:
+                            vmax = vmin + 1e-6
+                        norm = (raw - vmin) / (vmax - vmin)
+                        norm = np.clip(norm, 0.0, 1.0)
+                        colors = self._gradient_blue_red(norm)
+                else:
+                    inten_series = get('intensity')
+                    if inten_series is not None:
+                        inten = inten_series.to_numpy(dtype=float)
+                        imax = np.nanmax(inten) if inten.size else 1.0
+                        imin = np.nanmin(inten) if inten.size else 0.0
+                        if imax <= imin:
+                            imax = imin + 1e-6
+                        g = np.clip((inten - imin) / (imax - imin), 0.0, 1.0)
+                        g = (g * 255.0).astype(np.uint8)
+                        colors = np.stack([g, g, g], axis=1)
+
+                # Parse region labels if specified
+                region_labels = None
+                label_col = m.get('label_by')
+                if label_col:
+                    try:
+                        # Ensure labels are strings for the tooltip
+                        region_labels = get('label_by').astype(str).to_numpy()
+                    except Exception as e:
+                        print(
+                            f"Warning: Could not parse region labels from column '{label_col}': {e}")
 
         if pts is None or len(pts) == 0:
             raise RuntimeError("No points parsed")
+
+        if intensity is not None:
+            intensity_values = intensity.astype(float)
+        else:
+            intensity_values = pts[:, 2].astype(float)
+
+        if colors is None:
+            vals = intensity_values
+            finite_vals = vals[np.isfinite(vals)] if vals.size else vals
+            vmin = float(np.nanmin(finite_vals)) if finite_vals.size else 0.0
+            vmax = float(np.nanmax(finite_vals)) if finite_vals.size else 1.0
+            if vmax <= vmin:
+                vmax = vmin + 1e-6
+            norm = (vals - vmin) / (vmax - vmin)
+            norm = np.clip(norm, 0.0, 1.0)
+            colors = self._gradient_blue_red(norm)
+        bounds = (
+            float(np.nanmin(pts[:, 0])),
+            float(np.nanmax(pts[:, 0])),
+            float(np.nanmin(pts[:, 1])),
+            float(np.nanmax(pts[:, 1])),
+            float(np.nanmin(pts[:, 2])),
+            float(np.nanmax(pts[:, 2])),
+        )
 
         # Build VTK polydata with vertices
         vpoints = vtkPoints()
@@ -939,7 +996,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         mapper.SetInputData(poly2)
         if colors is not None:
             from vtkmodules.util.numpy_support import numpy_to_vtk
-            c_arr = numpy_to_vtk(colors, deep=True)
+            safe_colors = np.clip(colors, 0.0, 255.0).astype(np.uint8)
+            c_arr = numpy_to_vtk(safe_colors, deep=True)
             # Ensure 3 components (RGB)
             try:
                 c_arr.SetNumberOfComponents(3)
@@ -947,8 +1005,10 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 pass
             c_arr.SetName("Colors")
             poly2.GetPointData().SetScalars(c_arr)
-            mapper.SetColorModeToDefault()
+            mapper.SetColorModeToDirectScalars()
             mapper.ScalarVisibilityOn()
+            mapper.SetScalarModeToUsePointData()
+            mapper.SelectColorArray("Colors")
 
         # Add region label data if available
         if region_labels is not None and len(region_labels) == len(pts):
@@ -964,6 +1024,9 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         actor.GetProperty().SetPointSize(self.point_size_slider.value())
         self.renderer.AddActor(actor)
         self._point_actors.append(actor)
+        if focus:
+            self._focus_on_bounds(bounds)
+        return bounds
 
     def _ensure_vertices(self, poly: vtkPolyData) -> vtkPolyData:
         """Create a polydata with Verts so that points render as glyphs.
@@ -1050,6 +1113,43 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             return None
         return float(sx.value()), float(sy.value()), float(sz.value())
 
+    def _auto_parse_point_cloud_csv(
+        self, df: "pd.DataFrame"
+    ) -> Optional[tuple[np.ndarray, Optional[np.ndarray], np.ndarray, None]]:
+        lookup = {col.lower(): col for col in df.columns}
+        lower_cols = set(lookup)
+        allowed = {"x", "y", "z", "intensity", "red", "green", "blue"}
+        if not lower_cols.issubset(allowed):
+            return None
+        if not all(name in lower_cols for name in ("x", "y", "z")):
+            return None
+
+        try:
+            coords = np.stack(
+                [
+                    df[lookup["x"]].to_numpy(dtype=float),
+                    df[lookup["y"]].to_numpy(dtype=float),
+                    df[lookup["z"]].to_numpy(dtype=float),
+                ],
+                axis=1,
+            ).astype(np.float32)
+        except Exception:
+            return None
+
+        intensity = None
+        if "intensity" in lookup:
+            intensity = df[lookup["intensity"]].to_numpy(dtype=float)
+        else:
+            intensity = coords[:, 2]
+
+        colors = None
+        color_keys = ("red", "green", "blue")
+        if all(key in lookup for key in color_keys):
+            colors = np.stack(
+                [df[lookup[key]].to_numpy(dtype=float) for key in color_keys], axis=1
+            )
+        return coords, colors, intensity.astype(np.float32), None
+
     def _scale_poly_points(self, poly: vtkPolyData, scale: Tuple[float, float, float]) -> vtkPolyData:
         """Return a copy of poly with points multiplied by scale per axis."""
         pts = poly.GetPoints()
@@ -1069,6 +1169,47 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         return out
+
+    def _focus_on_bounds(self, bounds: Optional[Tuple[float, float, float, float, float, float]]) -> None:
+        """Adjust the camera to frame the provided bounds."""
+        if not bounds:
+            return
+        values = np.array(bounds, dtype=float)
+        if not np.all(np.isfinite(values)):
+            return
+        xmin, xmax, ymin, ymax, zmin, zmax = values
+        center = (
+            (xmin + xmax) * 0.5,
+            (ymin + ymax) * 0.5,
+            (zmin + zmax) * 0.5,
+        )
+        radius = max(xmax - xmin, ymax - ymin, zmax - zmin)
+        if not np.isfinite(radius) or radius <= 0:
+            radius = 1.0
+        distance = radius * 2.5
+        camera = self.renderer.GetActiveCamera()
+        camera.SetFocalPoint(*center)
+        camera.SetPosition(center[0], center[1] - distance, center[2] + distance)
+        camera.SetViewUp(0.0, 0.0, 1.0)
+        self.renderer.ResetCameraClippingRange()
+
+    def _union_bounds(
+        self,
+        first: Optional[Tuple[float, float, float, float, float, float]],
+        second: Optional[Tuple[float, float, float, float, float, float]],
+    ) -> Optional[Tuple[float, float, float, float, float, float]]:
+        if first is None:
+            return second
+        if second is None:
+            return first
+        return (
+            min(first[0], second[0]),
+            max(first[1], second[1]),
+            min(first[2], second[2]),
+            max(first[3], second[3]),
+            min(first[4], second[4]),
+            max(first[5], second[5]),
+        )
 
     def _update_point_sizes(self):
         size = int(self.point_size_slider.value())
@@ -1345,22 +1486,80 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         return poly
 
     # -------------------- Source type helpers --------------------
+    def _resolve_initial_source(self, path: Path) -> Path:
+        """If a directory was provided, auto-pick the first supported file."""
+        try:
+            if not path.exists():
+                return path
+        except Exception:
+            return path
+        if not path.is_dir():
+            return path
+
+        try:
+            entries = sorted(path.iterdir())
+        except Exception:
+            return path
+
+        # DICOM or other volume directories should remain directories
+        for entry in entries:
+            if entry.is_file() and entry.suffix.lower() in DICOM_EXTS:
+                return path
+
+        def _find(exts: Tuple[str, ...]) -> Optional[Path]:
+            for entry in entries:
+                if entry.is_file() and entry.suffix.lower() in exts:
+                    return entry
+            return None
+
+        for ext_group in (POINT_CLOUD_EXTS, MESH_EXTS, VOLUME_FILE_EXTS):
+            candidate = _find(ext_group)
+            if candidate is not None:
+                logger.info(
+                    "VTK viewer: auto-selecting '%s' inside '%s'.",
+                    candidate.name,
+                    path,
+                )
+                return candidate
+        return path
+
     def _is_volume_candidate(self, path: Path) -> bool:
         if path.is_dir():
-            return True
+            try:
+                return any(
+                    entry.is_file() and entry.suffix.lower() in DICOM_EXTS
+                    for entry in path.iterdir()
+                )
+            except Exception:
+                return False
         ext = path.suffix.lower()
         name = path.name.lower()
         return (
-            ext in ('.tif', '.tiff', '.dcm', '.dicom', '.ima')
+            ext in VOLUME_FILE_EXTS
+            or ext in DICOM_EXTS
             or name.endswith('.ome.tif')
             or name.endswith('.nii')
             or name.endswith('.nii.gz')
         )
 
     def _is_point_cloud_candidate(self, path: Path) -> bool:
-        ext = path.suffix.lower()
-        return ext in ('.ply', '.csv', '.xyz')
+        if path.is_dir():
+            try:
+                return any(
+                    entry.is_file() and entry.suffix.lower() in POINT_CLOUD_EXTS
+                    for entry in path.iterdir()
+                )
+            except Exception:
+                return False
+        return path.suffix.lower() in POINT_CLOUD_EXTS
 
     def _is_mesh_candidate(self, path: Path) -> bool:
-        ext = path.suffix.lower()
-        return ext in ('.stl', '.obj')
+        if path.is_dir():
+            try:
+                return any(
+                    entry.is_file() and entry.suffix.lower() in MESH_EXTS
+                    for entry in path.iterdir()
+                )
+            except Exception:
+                return False
+        return path.suffix.lower() in MESH_EXTS

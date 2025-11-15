@@ -75,10 +75,12 @@ from annolid.behavior.time_budget import (
 )
 from annolid.gui.widgets.project_dialog import ProjectDialog
 from annolid.gui.widgets.behavior_controls import BehaviorControlsWidget
+from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ConvertCOODialog
 from annolid.gui.widgets import TrainModelDialog
 from annolid.gui.widgets import Glitter2Dialog
+from annolid.depth import run_video_depth_anything as depth_run
 from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import TrackDialog
 from annolid.gui.widgets import SystemInfoDialog
@@ -97,9 +99,14 @@ from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDi
 from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
 from annolid.gui.widgets import RealtimeControlWidget
+from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
+import base64
+import io
+import imageio
+
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.annotation import labelme2csv
@@ -271,6 +278,7 @@ class AnnolidWindow(MainWindow):
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
+        self._depth_ndjson_records: Dict[int, Dict[str, object]] = {}
         self.isPlaying = False
         self.event_type = None
         self._time_stamp = ''
@@ -279,11 +287,14 @@ class AnnolidWindow(MainWindow):
         self.project_schema_path: Optional[Path] = None
         self.behavior_controller.configure_from_schema(self.project_schema)
         self.annotation_dir = None
+        self._depth_preview_active = False
         self.step_size = 5
         self.stepSizeWidget = StepSizeWidget(5)
         self.prev_shapes = None
         self.pred_worker = None
         self.video_processor = None
+        self._video_depth_worker = None
+        self._video_depth_worker_thread = None
         self._active_subject_name: Optional[str] = None
         self._behavior_modifier_state: Dict[str, Set[str]] = {}
         self.realtime_perception_worker = None
@@ -4585,6 +4596,7 @@ class AnnolidWindow(MainWindow):
             )
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
+            self._load_depth_ndjson_records()
             try:
                 suffix_lower = Path(video_filename).suffix.lower()
                 # Support TIFF stacks by treating them as videos (one slice per frame)
@@ -4736,7 +4748,13 @@ class AnnolidWindow(MainWindow):
         self.imageData = qimage
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
-        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage))
+        pixmap = QtGui.QPixmap.fromImage(qimage)
+        self.canvas.loadPixmap(pixmap)
+        try:
+            frame_rgb = convert_qt_image_to_rgb_cv_image(qimage).copy()
+        except Exception:
+            frame_rgb = None
+        self._update_depth_overlay_for_frame(frame_number, frame_rgb)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
@@ -5822,6 +5840,323 @@ class AnnolidWindow(MainWindow):
             pretrained_model=pretrained_model,
             subject_names=subject_names,
             behavior_names=behavior_names
+        )
+
+    def run_video_depth_anything(self):
+        """Run Video-Depth-Anything using the currently loaded video."""
+        if not self.video_file:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("No video loaded"),
+                self.tr("Please open a video before running Video-Depth-Anything."),
+            )
+            return
+
+        if self._video_depth_worker_thread and self._video_depth_worker_thread.isRunning():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Already running"),
+                self.tr("Video Depth Anything is already processing a video."),
+            )
+            return
+
+        video_path = Path(self.video_file).expanduser().resolve()
+        if self.canvas:
+            try:
+                self.canvas.setDepthPreviewOverlay(None)
+            except Exception:
+                pass
+        depth_cfg = self._config.get("video_depth_anything", {})
+        encoder = depth_cfg.get("encoder", "vits")
+        input_size = depth_cfg.get("input_size", 518)
+        max_res = depth_cfg.get("max_res", 1280)
+        max_len = depth_cfg.get("max_len", -1)
+        target_fps = depth_cfg.get("target_fps", -1)
+        metric = depth_cfg.get("metric", False)
+        fp32 = depth_cfg.get("fp32", False)
+        grayscale = depth_cfg.get("grayscale", False)
+        save_npz = depth_cfg.get("save_npz", False)
+        save_exr = depth_cfg.get("save_exr", False)
+        streaming = depth_cfg.get("streaming", True)
+        save_depth_video = depth_cfg.get("save_depth_video", False)
+        save_depth_frames = depth_cfg.get("save_depth_frames", False)
+        show_preview = depth_cfg.get("show_preview", True)
+
+        custom_output = depth_cfg.get("output_dir")
+        if custom_output:
+            output_dir = Path(custom_output).expanduser().resolve()
+        else:
+            output_dir = video_path.parent / f"{video_path.stem}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        worker = FlexibleWorker(
+            depth_run,
+            str(video_path),
+            str(output_dir),
+            encoder=encoder,
+            input_size=input_size,
+            max_res=max_res,
+            max_len=max_len,
+            target_fps=target_fps,
+            metric=metric,
+            fp32=fp32,
+            grayscale=grayscale,
+            save_npz=save_npz,
+            save_exr=save_exr,
+            streaming=streaming,
+            progress_callback=None,
+            preview_callback=None,
+            save_depth_video=save_depth_video,
+            save_depth_frames=save_depth_frames,
+        )
+        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(percent)
+        worker.progress_signal.connect(
+            lambda percent: self.statusBar().showMessage(
+                self.tr("Video Depth Anything %d%%") % percent, 2000
+            )
+        )
+        if show_preview:
+            worker._kwargs["preview_callback"] = lambda payload: worker.preview_signal.emit(payload)
+            worker.preview_signal.connect(self._handle_depth_preview)
+
+        worker_thread = QtCore.QThread(self)
+        worker.moveToThread(worker_thread)
+        worker.finished_signal.connect(
+            functools.partial(
+                self._handle_video_depth_finished,
+                output_dir=str(output_dir),
+                worker_thread=worker_thread,
+            )
+        )
+        worker.finished_signal.connect(worker_thread.quit)
+        worker_thread.started.connect(worker.run)
+        worker_thread.start()
+
+        self._video_depth_worker = worker
+        self._video_depth_worker_thread = worker_thread
+
+        self.statusBar().showMessage(
+            self.tr("Video Depth Anything running..."), 5000
+        )
+
+    def configure_video_depth_settings(self):
+        dialog = DepthSettingsDialog(
+            parent=self,
+            config=self._config.get("video_depth_anything", {}),
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        values = dialog.values()
+        self._config.setdefault("video_depth_anything", {}).update(values)
+        if isinstance(self.settings, QtCore.QSettings):
+            self.settings.setValue("video_depth_anything", values)
+
+    def _handle_depth_preview(self, payload: object) -> None:
+        try:
+            overlay_image = None
+            frame_index = None
+            if isinstance(payload, dict):
+                overlay_image = payload.get("overlay")
+                frame_index = payload.get("frame_index")
+            depth_stats = payload.get("depth_stats") if isinstance(payload, dict) else None
+            if self.canvas and overlay_image is not None:
+                qimage = QtGui.QImage(
+                    overlay_image.data,
+                    overlay_image.shape[1],
+                    overlay_image.shape[0],
+                    overlay_image.strides[0],
+                    QtGui.QImage.Format_RGB888,
+                )
+                pixmap = QtGui.QPixmap.fromImage(qimage)
+                self.canvas.loadPixmap(pixmap, clear_shapes=True)
+            if frame_index is not None:
+                self._set_depth_preview_frame(int(frame_index))
+                self.statusBar().showMessage(
+                    self.tr("Video Depth Anything frame %d") % int(frame_index),
+                    1000,
+                )
+            if depth_stats is not None and frame_index is not None:
+                logger.debug(
+                    "Depth preview frame %d stats: min=%.5f max=%.5f mean=%.5f display=[%.5f, %.5f]",
+                    frame_index,
+                    depth_stats.get("min", 0.0),
+                    depth_stats.get("max", 0.0),
+                    depth_stats.get("mean", 0.0),
+                    depth_stats.get("display_min", 0.0),
+                    depth_stats.get("display_max", 0.0),
+                )
+        except Exception:
+            pass
+
+    def _set_depth_preview_frame(self, frame_index: int) -> None:
+        self.frame_number = frame_index
+        if hasattr(self, "seekbar") and self.seekbar is not None:
+            blocker = QtCore.QSignalBlocker(self.seekbar)
+            blocker.__enter__()
+            self.seekbar.setValue(frame_index)
+            blocker.__exit__(None, None, None)
+
+    def _depth_ndjson_path(self) -> Optional[Path]:
+        if not self.video_file:
+            return None
+        video_path = Path(self.video_file)
+        return video_path.parent / video_path.stem / "depth.ndjson"
+
+    def _load_depth_ndjson_records(self) -> None:
+        path = self._depth_ndjson_path()
+        records: Dict[int, Dict[str, object]] = {}
+        if not path or not path.exists():
+            self._depth_ndjson_records = records
+            return
+
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    frame_index = int(data.get("frame_index", -1))
+                    if frame_index >= 0:
+                        records[frame_index] = data
+        except Exception:
+            records = {}
+        self._depth_ndjson_records = records
+
+    def _build_depth_overlay(self, frame_rgb: np.ndarray, depth_map: np.ndarray) -> np.ndarray:
+        depth = depth_map.astype(np.float32)
+        finite = depth[np.isfinite(depth)]
+        if finite.size == 0:
+            d_min, d_max = 0.0, 1.0
+        else:
+            d_min = float(np.percentile(finite, 1.0))
+            d_max = float(np.percentile(finite, 99.0))
+            if d_max - d_min < 1e-6:
+                d_min = float(finite.min())
+                d_max = float(finite.max())
+                if d_max - d_min < 1e-6:
+                    d_max = d_min + 1e-6
+        clipped = np.clip(depth, d_min, d_max)
+        normalized = (clipped - d_min) / (d_max - d_min + 1e-9)
+        vis_u8 = (normalized * 255).astype(np.uint8)
+        color = cv2.applyColorMap(vis_u8, cv2.COLORMAP_INFERNO)
+        color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        overlay = color.astype(np.uint8)
+        alpha = np.full((overlay.shape[0], overlay.shape[1], 1), 200, dtype=np.uint8)
+        return np.concatenate([overlay, alpha], axis=2)
+
+    def _restore_canvas_frame(self) -> None:
+        if not self.filename:
+            return
+        qimg = QtGui.QImage(self.filename)
+        if qimg.isNull():
+            return
+        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimg), clear_shapes=False)
+        if self.video_loader:
+            try:
+                self.video_loader.load_frame(self.frame_number)
+            except Exception:
+                pass
+        self.loadPredictShapes(self.frame_number, self.filename)
+
+    def _load_depth_overlay_from_json(
+        self, json_path: Path, frame_rgb: Optional[np.ndarray]
+    ) -> Optional[np.ndarray]:
+        return None
+    def _load_depth_overlay_from_record(
+        self, record: Dict[str, object], frame_rgb: Optional[np.ndarray]
+    ) -> Optional[np.ndarray]:
+        depth_info = (record.get("otherData") or {}).get("depth_map")
+        if not depth_info:
+            return None
+
+        image_data = depth_info.get("image_data")
+        if not image_data:
+            return None
+
+        scale = depth_info.get("scale") or {}
+        d_min = float(scale.get("min", 0.0))
+        d_max = float(scale.get("max", 1.0))
+        try:
+            img_bytes = base64.b64decode(image_data)
+        except Exception:
+            return None
+        buffer = io.BytesIO(img_bytes)
+        quantized = imageio.imread(buffer)
+        if quantized.ndim == 3:
+            quantized = quantized[..., 0]
+        quantized = quantized.astype(np.float32)
+        depth = quantized / 65535.0
+        depth = depth * (d_max - d_min) + d_min
+        if frame_rgb is None:
+            frame_rgb = self._current_frame_rgb()
+        if frame_rgb is None:
+            return None
+        height, width = frame_rgb.shape[:2]
+        if depth.shape != (height, width):
+            depth = cv2.resize(depth, (width, height), interpolation=cv2.INTER_LINEAR)
+        return self._build_depth_overlay(frame_rgb, depth)
+
+    def _current_frame_rgb(self) -> Optional[np.ndarray]:
+        pixmap = getattr(self.canvas, "pixmap", None)
+        if pixmap is None or pixmap.isNull():
+            return None
+        qimg = pixmap.toImage()
+        try:
+            return convert_qt_image_to_rgb_cv_image(qimg).copy()
+        except Exception:
+            return None
+
+    def _update_depth_overlay_for_frame(
+        self, frame_number: int, frame_rgb: Optional[np.ndarray] = None
+    ) -> None:
+        if not self.canvas:
+            return
+        record = self._depth_ndjson_records.get(frame_number)
+        if record is None:
+            self.canvas.setDepthPreviewOverlay(None)
+            return
+        overlay = self._load_depth_overlay_from_record(record, frame_rgb)
+        self.canvas.setDepthPreviewOverlay(overlay)
+
+    def _handle_video_depth_finished(
+        self,
+        result,
+        *,
+        output_dir: str,
+        worker_thread: QtCore.QThread,
+    ) -> None:
+        try:
+            if self.canvas:
+                self.canvas.setDepthPreviewOverlay(None)
+        except Exception:
+            pass
+        worker_thread.quit()
+        worker_thread.wait()
+        self._video_depth_worker = None
+        self._video_depth_worker_thread = None
+
+        if isinstance(result, Exception):
+            QtWidgets.QMessageBox.critical(
+                self,
+                self.tr("Video Depth Anything"),
+                self.tr("Video Depth Anything failed:\n%s") % str(result),
+            )
+            self.statusBar().showMessage(
+                self.tr("Video Depth Anything failed."), 5000
+            )
+            return
+
+        self._load_depth_ndjson_records()
+        self._depth_preview_active = False
+        self._restore_canvas_frame()
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tr("Video Depth Anything"),
+            self.tr("Depth outputs saved to %s.") % output_dir,
+        )
+        self.statusBar().showMessage(
+            self.tr("Video Depth Anything complete."), 5000
         )
 
 

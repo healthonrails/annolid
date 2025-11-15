@@ -36,6 +36,7 @@ dependencies = [
     'pycocotools>=2.0.2',
     'tensorboard>=2.3.0',
     'imageio>=2.8.0',
+    'tqdm>=4.64.0',
     'shapely>=2.0.2',
     'imageio-ffmpeg>=0.4.2',
     'qimage2ndarray>=1.8',
@@ -55,6 +56,7 @@ dependencies = [
     'chardet>=5.2.0',
     'transformers>=4.45.1',
     'ultralytics>=8.3.34',
+    'huggingface-hub>=0.22.0',
     "segment-anything @ git+https://github.com/SysCV/sam-hq.git",
     "dataclasses>=0.6; python_version < '3.7'",
 ]

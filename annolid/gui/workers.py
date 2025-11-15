@@ -696,6 +696,7 @@ class FlexibleWorker(QtCore.QObject):
     result_signal = QtCore.Signal(object)
     stop_signal = QtCore.Signal()
     progress_signal = QtCore.Signal(int)
+    preview_signal = QtCore.Signal(object)
 
     def __init__(self, task_function, *args, **kwargs):
         """

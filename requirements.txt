@@ -14,3 +14,4 @@ tokenizers
 labelme==5.5.0
 omegaconf
 hydra-core
+huggingface-hub>=0.22.0
