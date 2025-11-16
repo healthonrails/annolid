@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,14 @@ POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
 MESH_EXTS = (".stl", ".obj")
 VOLUME_FILE_EXTS = (".tif", ".tiff", ".nii", ".nii.gz")
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
+
+
+@dataclass
+class _RegionSelectionEntry:
+    item: QtWidgets.QListWidgetItem
+    checkbox: QtWidgets.QCheckBox
+    color_button: QtWidgets.QToolButton
+    display_text: str
 
 
 class VTKVolumeViewerDialog(QtWidgets.QDialog):
@@ -229,8 +238,6 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.region_list_widget.setSelectionMode(
             QtWidgets.QAbstractItemView.NoSelection)
         self.region_list_widget.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.region_list_widget.itemChanged.connect(
-            self._on_region_item_changed)
         region_layout.addWidget(self.region_list_widget)
         self.region_group.setLayout(region_layout)
         self.region_group.setEnabled(False)
@@ -370,7 +377,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.vtk_widget.Start()
         self._point_actors: list[vtkActor] = []
         self._region_actors: dict[str, vtkActor] = {}
-        self._region_items: dict[str, QtWidgets.QListWidgetItem] = {}
+        self._region_entries: dict[str, _RegionSelectionEntry] = {}
+        self._region_colors: dict[str, QtGui.QColor] = {}
         self._mesh_actors: list[vtkActor] = []
         self._mesh_textures: dict[int, dict[str, dict[str, object]]] = {}
         self._mesh_actor_names: dict[int, str] = {}
@@ -1079,6 +1087,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         )
 
         self._region_actors = {}
+        region_default_colors: dict[str, QtGui.QColor] = {}
         region_label_list: list[str] | None = None
         if region_labels is not None and len(region_labels) == len(pts):
             region_label_list = [str(label) for label in region_labels]
@@ -1099,13 +1108,16 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 self.renderer.AddActor(actor)
                 self._point_actors.append(actor)
                 self._region_actors[label] = actor
+                region_default_colors[label] = self._infer_region_color(
+                    subset_colors)
         else:
             actor = self._create_point_actor(safe_pts, colors)
             if actor is not None:
                 self.renderer.AddActor(actor)
                 self._point_actors.append(actor)
 
-        self._populate_region_selection(list(self._region_actors.keys()))
+        self._populate_region_selection(
+            list(self._region_actors.keys()), region_default_colors)
         self._update_point_controls_visibility()
         if focus:
             self._focus_on_bounds(bounds)
@@ -1375,7 +1387,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.region_list_widget.blockSignals(False)
         self.region_list_widget.setEnabled(False)
         self.region_group.setEnabled(False)
-        self._region_items.clear()
+        self._region_entries.clear()
+        self._region_colors.clear()
         if hasattr(self, "region_search"):
             self.region_search.blockSignals(True)
             self.region_search.clear()
@@ -1424,7 +1437,11 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             return True
         return False
 
-    def _populate_region_selection(self, labels: Sequence[str]) -> None:
+    def _populate_region_selection(
+        self,
+        labels: Sequence[str],
+        default_colors: Mapping[str, QtGui.QColor] | None = None,
+    ) -> None:
         if not labels:
             self._clear_region_selection()
             return
@@ -1437,15 +1454,50 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
 
         self.region_list_widget.blockSignals(True)
         self.region_list_widget.clear()
-        self._region_items.clear()
+        self._region_entries.clear()
+        self._region_colors.clear()
+        default_colors = default_colors or {}
         for label in ordered:
             display_text = self._format_region_display(label)
-            item = QtWidgets.QListWidgetItem(display_text)
+            item = QtWidgets.QListWidgetItem()
             item.setData(QtCore.Qt.UserRole, label)
-            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.Checked)
+            item.setFlags(QtCore.Qt.ItemIsEnabled)
             self.region_list_widget.addItem(item)
-            self._region_items[label] = item
+
+            widget = QtWidgets.QWidget()
+            widget_layout = QtWidgets.QHBoxLayout(widget)
+            widget_layout.setContentsMargins(2, 1, 2, 1)
+            widget_layout.setSpacing(4)
+            color_button = QtWidgets.QToolButton()
+            color_button.setAutoRaise(True)
+            color_button.setFixedSize(20, 20)
+            color_button.clicked.connect(
+                lambda _, lbl=label: self._pick_region_color(lbl)
+            )
+            checkbox = QtWidgets.QCheckBox(display_text)
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(
+                lambda state, lbl=label: self._set_region_visibility(
+                    lbl, state == QtCore.Qt.Checked
+                )
+            )
+            widget_layout.addWidget(color_button)
+            widget_layout.addWidget(checkbox)
+            widget_layout.addStretch(1)
+            self.region_list_widget.setItemWidget(item, widget)
+            item.setSizeHint(widget.sizeHint())
+
+            entry = _RegionSelectionEntry(
+                item=item, checkbox=checkbox, color_button=color_button,
+                display_text=display_text,
+            )
+            self._region_entries[label] = entry
+
+            color = default_colors.get(label)
+            if color is None:
+                color = QtGui.QColor(255, 255, 255)
+            self._region_colors[label] = color
+            self._update_region_color_button(label, color)
         self.region_list_widget.blockSignals(False)
         self.region_group.setEnabled(True)
         self.region_list_widget.setEnabled(True)
@@ -1456,35 +1508,95 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             query = self.region_search.text()
         query = (query or "").strip().lower()
         should_filter = bool(query)
-        for item in self._region_items.values():
-            display = item.text().lower()
-            item.setHidden(should_filter and query not in display)
-
-    def _on_region_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
-        label = item.data(QtCore.Qt.UserRole)
-        if label is None:
-            label = item.text()
-        actor = self._region_actors.get(label)
-        if actor:
-            actor.SetVisibility(item.checkState() == QtCore.Qt.Checked)
-            self.vtk_widget.GetRenderWindow().Render()
+        for entry in self._region_entries.values():
+            display = entry.display_text.lower()
+            entry.item.setHidden(should_filter and query not in display)
 
     def _set_region_check_states(self, checked: bool) -> None:
-        if not self._region_items:
+        if not self._region_entries:
             return
-        state = QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked
         self.region_list_widget.blockSignals(True)
-        for item in self._region_items.values():
-            item.setCheckState(state)
+        for entry in self._region_entries.values():
+            entry.checkbox.blockSignals(True)
+            entry.checkbox.setChecked(checked)
+            entry.checkbox.blockSignals(False)
         self.region_list_widget.blockSignals(False)
         self._refresh_region_visibilities()
 
     def _refresh_region_visibilities(self) -> None:
-        for label, item in self._region_items.items():
+        for label, entry in self._region_entries.items():
             actor = self._region_actors.get(label)
             if actor:
-                actor.SetVisibility(item.checkState() == QtCore.Qt.Checked)
+                actor.SetVisibility(entry.checkbox.isChecked())
         self.vtk_widget.GetRenderWindow().Render()
+
+    def _set_region_visibility(self, label: str, visible: bool) -> None:
+        actor = self._region_actors.get(label)
+        if actor:
+            actor.SetVisibility(visible)
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _pick_region_color(self, label: str) -> None:
+        current = self._region_colors.get(label, QtGui.QColor(255, 255, 255))
+        color = QtWidgets.QColorDialog.getColor(
+            current, self, "Pick region color")
+        if not color.isValid():
+            return
+        self._region_colors[label] = color
+        self._update_region_color_button(label, color)
+        self._apply_region_color(label, color)
+
+    def _update_region_color_button(self, label: str, color: QtGui.QColor) -> None:
+        entry = self._region_entries.get(label)
+        if entry is None:
+            return
+        size = QtCore.QSize(16, 16)
+        pixmap = QtGui.QPixmap(size)
+        pixmap.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setBrush(QtGui.QBrush(color))
+        painter.setPen(QtGui.QPen(QtGui.QColor(60, 60, 60), 1))
+        painter.drawRect(1, 1, size.width() - 3, size.height() - 3)
+        painter.end()
+        entry.color_button.setIcon(QtGui.QIcon(pixmap))
+        entry.color_button.setIconSize(size)
+        entry.color_button.setToolTip(color.name())
+
+    def _apply_region_color(self, label: str, color: QtGui.QColor) -> None:
+        actor = self._region_actors.get(label)
+        if actor is None:
+            return
+        prop = actor.GetProperty()
+        prop.SetColor(color.redF(), color.greenF(), color.blueF())
+        mapper = actor.GetMapper()
+        if hasattr(mapper, "ScalarVisibilityOff"):
+            mapper.ScalarVisibilityOff()
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _infer_region_color(
+        self, colors: Optional[np.ndarray]
+    ) -> QtGui.QColor:
+        fallback = QtGui.QColor(255, 255, 255)
+        if colors is None or len(colors) == 0:
+            return fallback
+        arr = np.asarray(colors, dtype=float)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if arr.size == 0:
+            return fallback
+        if arr.shape[1] < 3:
+            arr = np.pad(arr, ((0, 0), (0, 3 - arr.shape[1])), constant_values=0.0)
+        arr = arr[:, :3]
+        if arr.size == 0:
+            return fallback
+        max_val = np.nanmax(arr)
+        if max_val <= 1.0:
+            arr = arr * 255.0
+        arr = np.nan_to_num(arr, nan=0.0, posinf=255.0, neginf=0.0)
+        mean = np.nanmean(arr, axis=0)
+        rgb = np.clip(mean, 0.0, 255.0).astype(int)
+        return QtGui.QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
     def _load_mesh_dialog(self):
         start_dir = str(self._path.parent) if getattr(
