@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
+from collections import OrderedDict
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -83,32 +85,42 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             self._path = self._resolve_initial_source(candidate)
 
         # Main layout
-        layout = QtWidgets.QVBoxLayout(self)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(6)
         # QVTK widget
         self.vtk_widget = QVTKRenderWindowInteractor(self)
         layout.addWidget(self.vtk_widget, 1)
 
-        # Controls area (user-friendly)
-        controls = QtWidgets.QGridLayout()
+        # Controls panel on the right
+        controls_panel = QtWidgets.QWidget()
+        controls_layout = QtWidgets.QVBoxLayout(controls_panel)
+        controls_layout.setAlignment(QtCore.Qt.AlignTop)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        self.volume_group = QtWidgets.QGroupBox("Volume Controls")
+        volume_layout = QtWidgets.QGridLayout()
+        self.volume_group.setLayout(volume_layout)
 
         # Blend mode
-        controls.addWidget(QtWidgets.QLabel("Blend:"), 0, 0)
+        volume_layout.addWidget(QtWidgets.QLabel("Blend:"), 0, 0)
         self.blend_combo = QtWidgets.QComboBox()
         self.blend_combo.addItems(
             ["Composite", "MIP-Max", "MIP-Min", "Additive"])
         self.blend_combo.currentIndexChanged.connect(self._update_blend_mode)
-        controls.addWidget(self.blend_combo, 0, 1)
+        volume_layout.addWidget(self.blend_combo, 0, 1)
 
         # Colormap
-        controls.addWidget(QtWidgets.QLabel("Colormap:"), 0, 2)
+        volume_layout.addWidget(QtWidgets.QLabel("Colormap:"), 0, 2)
         self.cmap_combo = QtWidgets.QComboBox()
         self.cmap_combo.addItems(["Grayscale", "Invert Gray", "Hot"])
         self.cmap_combo.currentIndexChanged.connect(
             self._update_transfer_functions)
-        controls.addWidget(self.cmap_combo, 0, 3)
+        volume_layout.addWidget(self.cmap_combo, 0, 3)
 
         # Intensity window (min/max)
-        controls.addWidget(QtWidgets.QLabel("Window:"), 1, 0)
+        volume_layout.addWidget(QtWidgets.QLabel("Window:"), 1, 0)
         self.min_spin = QtWidgets.QDoubleSpinBox()
         self.max_spin = QtWidgets.QDoubleSpinBox()
         for spin in (self.min_spin, self.max_spin):
@@ -116,34 +128,34 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             spin.setKeyboardTracking(False)
         self.min_spin.valueChanged.connect(self._on_window_changed)
         self.max_spin.valueChanged.connect(self._on_window_changed)
-        controls.addWidget(self.min_spin, 1, 1)
-        controls.addWidget(self.max_spin, 1, 2)
+        volume_layout.addWidget(self.min_spin, 1, 1)
+        volume_layout.addWidget(self.max_spin, 1, 2)
         self.auto_window_btn = QtWidgets.QPushButton("Auto")
         self.auto_window_btn.clicked.connect(self._auto_window)
-        controls.addWidget(self.auto_window_btn, 1, 3)
+        volume_layout.addWidget(self.auto_window_btn, 1, 3)
 
         # Density (global opacity) and shading
-        controls.addWidget(QtWidgets.QLabel("Density:"), 2, 0)
+        volume_layout.addWidget(QtWidgets.QLabel("Density:"), 2, 0)
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.opacity_slider.setRange(1, 100)
         self.opacity_slider.setValue(30)
         self.opacity_slider.valueChanged.connect(self._update_opacity)
-        controls.addWidget(self.opacity_slider, 2, 1, 1, 2)
+        volume_layout.addWidget(self.opacity_slider, 2, 1, 1, 2)
         self.shade_checkbox = QtWidgets.QCheckBox("Shading")
         self.shade_checkbox.setChecked(True)
         self.shade_checkbox.stateChanged.connect(self._update_shading)
-        controls.addWidget(self.shade_checkbox, 2, 3)
+        volume_layout.addWidget(self.shade_checkbox, 2, 3)
 
         # Interpolation
-        controls.addWidget(QtWidgets.QLabel("Interpolation:"), 3, 0)
+        volume_layout.addWidget(QtWidgets.QLabel("Interpolation:"), 3, 0)
         self.interp_combo = QtWidgets.QComboBox()
         self.interp_combo.addItems(["Linear", "Nearest"])
         self.interp_combo.currentIndexChanged.connect(
             self._update_interpolation)
-        controls.addWidget(self.interp_combo, 3, 1)
+        volume_layout.addWidget(self.interp_combo, 3, 1)
 
         # Spacing (X, Y, Z)
-        controls.addWidget(QtWidgets.QLabel("Spacing X/Y/Z:"), 3, 2)
+        volume_layout.addWidget(QtWidgets.QLabel("Spacing X/Y/Z:"), 3, 2)
         self.spacing_x = QtWidgets.QDoubleSpinBox()
         self.spacing_y = QtWidgets.QDoubleSpinBox()
         self.spacing_z = QtWidgets.QDoubleSpinBox()
@@ -158,25 +170,77 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         spacing_box.addWidget(self.spacing_z)
         spacing_widget = QtWidgets.QWidget()
         spacing_widget.setLayout(spacing_box)
-        controls.addWidget(spacing_widget, 3, 3)
+        volume_layout.addWidget(spacing_widget, 3, 3)
 
-        # Window/Level drag mode toggle
-        self.wl_mode_checkbox = QtWidgets.QCheckBox("Window/Level Mode")
-        self.wl_mode_checkbox.setToolTip(
-            "Enable to adjust intensity window by left-drag; camera interaction is paused"
-        )
-        self.wl_mode_checkbox.stateChanged.connect(self._toggle_wl_mode)
+        controls_layout.addWidget(self.volume_group)
 
-        # Buttons
-        btns = QtWidgets.QHBoxLayout()
-        self.reset_cam_btn = QtWidgets.QPushButton("Reset Camera")
-        self.reset_cam_btn.clicked.connect(self._reset_camera)
-        self.snapshot_btn = QtWidgets.QPushButton("Save Snapshot…")
-        self.snapshot_btn.clicked.connect(self._save_snapshot)
+        # Point cloud controls
         self.load_pc_btn = QtWidgets.QPushButton("Load Point Cloud…")
         self.load_pc_btn.clicked.connect(self._load_point_cloud_folder)
         self.clear_pc_btn = QtWidgets.QPushButton("Clear Points")
         self.clear_pc_btn.clicked.connect(self._clear_point_clouds)
+        self.point_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.point_size_slider.setRange(1, 12)
+        self.point_size_slider.setValue(3)
+        self.point_size_slider.setToolTip("Point size")
+        self.point_size_slider.valueChanged.connect(self._update_point_sizes)
+
+        self.point_group = QtWidgets.QGroupBox("Point Cloud")
+        point_layout = QtWidgets.QVBoxLayout()
+        point_layout.setContentsMargins(4, 4, 4, 4)
+        load_row = QtWidgets.QHBoxLayout()
+        load_row.addWidget(self.load_pc_btn)
+        load_row.addStretch(1)
+        point_layout.addLayout(load_row)
+
+        self.point_detail_widget = QtWidgets.QWidget()
+        point_detail_layout = QtWidgets.QVBoxLayout(self.point_detail_widget)
+        point_detail_layout.setContentsMargins(0, 0, 0, 0)
+        point_detail_layout.setSpacing(6)
+        clear_row = QtWidgets.QHBoxLayout()
+        clear_row.addWidget(self.clear_pc_btn)
+        clear_row.addStretch(1)
+        point_detail_layout.addLayout(clear_row)
+        size_row = QtWidgets.QHBoxLayout()
+        size_row.addWidget(QtWidgets.QLabel("Point Size:"))
+        size_row.addWidget(self.point_size_slider)
+        size_row.addStretch(1)
+        point_detail_layout.addLayout(size_row)
+
+        self.region_group = QtWidgets.QGroupBox("Point Cloud Regions")
+        region_layout = QtWidgets.QVBoxLayout()
+        region_layout.setSpacing(4)
+        region_btn_row = QtWidgets.QHBoxLayout()
+        self.select_all_regions_btn = QtWidgets.QPushButton("Select All")
+        self.deselect_all_regions_btn = QtWidgets.QPushButton("Deselect All")
+        region_btn_row.addWidget(self.select_all_regions_btn)
+        region_btn_row.addWidget(self.deselect_all_regions_btn)
+        region_btn_row.addStretch(1)
+        region_layout.addLayout(region_btn_row)
+        self.select_all_regions_btn.clicked.connect(
+            lambda: self._set_region_check_states(True))
+        self.deselect_all_regions_btn.clicked.connect(
+            lambda: self._set_region_check_states(False))
+        self.region_search = QtWidgets.QLineEdit()
+        self.region_search.setPlaceholderText("Filter regions…")
+        self.region_search.textChanged.connect(self._filter_region_items)
+        region_layout.addWidget(self.region_search)
+        self.region_list_widget = QtWidgets.QListWidget()
+        self.region_list_widget.setSelectionMode(
+            QtWidgets.QAbstractItemView.NoSelection)
+        self.region_list_widget.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.region_list_widget.itemChanged.connect(
+            self._on_region_item_changed)
+        region_layout.addWidget(self.region_list_widget)
+        self.region_group.setLayout(region_layout)
+        self.region_group.setEnabled(False)
+        point_detail_layout.addWidget(self.region_group)
+        self.point_detail_widget.setVisible(False)
+        point_layout.addWidget(self.point_detail_widget)
+        self.point_group.setLayout(point_layout)
+        controls_layout.addWidget(self.point_group)
+
+        # Mesh controls
         self.load_mesh_btn = QtWidgets.QPushButton("Load Mesh…")
         self.load_mesh_btn.clicked.connect(self._load_mesh_dialog)
         self.clear_mesh_btn = QtWidgets.QPushButton("Clear Meshes")
@@ -186,43 +250,67 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.load_diffuse_tex_btn.clicked.connect(self._load_diffuse_texture)
         self.load_normal_tex_btn = QtWidgets.QPushButton("Load Normal Map…")
         self.load_normal_tex_btn.clicked.connect(self._load_normal_texture)
-        self.point_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.point_size_slider.setRange(1, 12)
-        self.point_size_slider.setValue(3)
-        self.point_size_slider.setToolTip("Point size")
-        self.point_size_slider.valueChanged.connect(self._update_point_sizes)
-        mesh_group = QtWidgets.QGroupBox("Mesh")
-        mesh_layout = QtWidgets.QHBoxLayout()
-        mesh_layout.setContentsMargins(4, 2, 4, 2)
-        mesh_layout.addWidget(self.load_mesh_btn)
-        mesh_layout.addWidget(self.clear_mesh_btn)
-        mesh_group.setLayout(mesh_layout)
+
+        self.mesh_group = QtWidgets.QGroupBox("Mesh")
+        mesh_layout = QtWidgets.QVBoxLayout()
+        mesh_layout.setContentsMargins(4, 4, 4, 4)
+        mesh_load_row = QtWidgets.QHBoxLayout()
+        mesh_load_row.addWidget(self.load_mesh_btn)
+        mesh_load_row.addStretch(1)
+        mesh_layout.addLayout(mesh_load_row)
+        self.mesh_detail_widget = QtWidgets.QWidget()
+        mesh_detail_layout = QtWidgets.QVBoxLayout(self.mesh_detail_widget)
+        mesh_detail_layout.setContentsMargins(0, 0, 0, 0)
+        mesh_detail_layout.setSpacing(6)
+        mesh_clear_row = QtWidgets.QHBoxLayout()
+        mesh_clear_row.addWidget(self.clear_mesh_btn)
+        mesh_clear_row.addStretch(1)
+        mesh_detail_layout.addLayout(mesh_clear_row)
         texture_group = QtWidgets.QGroupBox("Textures")
         texture_layout = QtWidgets.QHBoxLayout()
         texture_layout.setContentsMargins(4, 2, 4, 2)
         texture_layout.addWidget(self.load_diffuse_tex_btn)
         texture_layout.addWidget(self.load_normal_tex_btn)
         texture_group.setLayout(texture_layout)
-        btns.addWidget(self.wl_mode_checkbox)
-        btns.addStretch(1)
-        btns.addWidget(self.load_pc_btn)
-        btns.addWidget(self.clear_pc_btn)
-        btns.addWidget(QtWidgets.QLabel("Point Size:"))
-        btns.addWidget(self.point_size_slider)
-        btns.addWidget(mesh_group)
-        btns.addWidget(texture_group)
-        btns.addWidget(self.reset_cam_btn)
-        btns.addWidget(self.snapshot_btn)
+        mesh_detail_layout.addWidget(texture_group)
+        mesh_detail_layout.addStretch(1)
+        self.mesh_detail_widget.setLayout(mesh_detail_layout)
+        self.mesh_detail_widget.setVisible(False)
+        mesh_layout.addWidget(self.mesh_detail_widget)
+        self.mesh_group.setLayout(mesh_layout)
+        controls_layout.addWidget(self.mesh_group)
 
-        controls_box = QtWidgets.QVBoxLayout()
-        controls_box.addLayout(controls)
-        controls_box.addLayout(btns)
+        self.reset_cam_btn = QtWidgets.QPushButton("Reset Camera")
+        self.reset_cam_btn.clicked.connect(self._reset_camera)
+        self.snapshot_btn = QtWidgets.QPushButton("Save Snapshot…")
+        self.snapshot_btn.clicked.connect(self._save_snapshot)
+        self.wl_mode_checkbox = QtWidgets.QCheckBox("Window/Level Mode")
+        self.wl_mode_checkbox.setToolTip(
+            "Enable to adjust intensity window by left-drag; camera interaction is paused"
+        )
+        self.wl_mode_checkbox.stateChanged.connect(self._toggle_wl_mode)
+
+        self.general_group = QtWidgets.QGroupBox("General")
+        general_layout = QtWidgets.QVBoxLayout()
+        wl_layout = QtWidgets.QHBoxLayout()
+        wl_layout.addWidget(self.wl_mode_checkbox)
+        wl_layout.addStretch(1)
+        general_layout.addLayout(wl_layout)
+        general_buttons_layout = QtWidgets.QHBoxLayout()
+        general_buttons_layout.addWidget(self.reset_cam_btn)
+        general_buttons_layout.addWidget(self.snapshot_btn)
+        general_buttons_layout.addStretch(1)
+        general_layout.addLayout(general_buttons_layout)
+        self.general_group.setLayout(general_layout)
+        controls_layout.addWidget(self.general_group)
+
         status_row = QtWidgets.QHBoxLayout()
         self.mesh_status_label = QtWidgets.QLabel("Mesh: none loaded")
         status_row.addWidget(self.mesh_status_label)
         status_row.addStretch(1)
-        controls_box.addLayout(status_row)
-        layout.addLayout(controls_box)
+        controls_layout.addLayout(status_row)
+        controls_layout.addStretch(1)
+        layout.addWidget(controls_panel)
 
         # Build pipeline
         self.renderer = vtkRenderer()
@@ -281,6 +369,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.vtk_widget.Initialize()
         self.vtk_widget.Start()
         self._point_actors: list[vtkActor] = []
+        self._region_actors: dict[str, vtkActor] = {}
+        self._region_items: dict[str, QtWidgets.QListWidgetItem] = {}
         self._mesh_actors: list[vtkActor] = []
         self._mesh_textures: dict[int, dict[str, dict[str, object]]] = {}
         self._mesh_actor_names: dict[int, str] = {}
@@ -340,6 +430,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 w.setEnabled(enabled)
             except Exception:
                 pass
+        self.volume_group.setVisible(enabled)
+        self.wl_mode_checkbox.setVisible(enabled)
 
     def _load_volume(self):
         volume, spacing = self._read_volume_any()
@@ -866,6 +958,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.renderer.AddActor(actor)
         self._point_actors.append(actor)
         self._focus_on_bounds(poly2.GetBounds())
+        self._update_point_controls_visibility()
 
     def _add_point_cloud_csv_or_xyz(self, path: str, focus: bool = True):
         import numpy as np
@@ -974,56 +1067,46 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             norm = (vals - vmin) / (vmax - vmin)
             norm = np.clip(norm, 0.0, 1.0)
             colors = self._gradient_blue_red(norm)
+
+        safe_pts = np.asarray(pts, dtype=np.float32)
         bounds = (
-            float(np.nanmin(pts[:, 0])),
-            float(np.nanmax(pts[:, 0])),
-            float(np.nanmin(pts[:, 1])),
-            float(np.nanmax(pts[:, 1])),
-            float(np.nanmin(pts[:, 2])),
-            float(np.nanmax(pts[:, 2])),
+            float(np.nanmin(safe_pts[:, 0])),
+            float(np.nanmax(safe_pts[:, 0])),
+            float(np.nanmin(safe_pts[:, 1])),
+            float(np.nanmax(safe_pts[:, 1])),
+            float(np.nanmin(safe_pts[:, 2])),
+            float(np.nanmax(safe_pts[:, 2])),
         )
 
-        # Build VTK polydata with vertices
-        vpoints = vtkPoints()
-        vpoints.SetNumberOfPoints(int(pts.shape[0]))
-        for i, (x, y, z) in enumerate(pts):
-            vpoints.SetPoint(i, float(x), float(y), float(z))
-        poly = vtkPolyData()
-        poly.SetPoints(vpoints)
-        poly2 = self._ensure_vertices(poly)
-
-        mapper = vtkPolyDataMapper()
-        mapper.SetInputData(poly2)
-        if colors is not None:
-            from vtkmodules.util.numpy_support import numpy_to_vtk
-            safe_colors = np.clip(colors, 0.0, 255.0).astype(np.uint8)
-            c_arr = numpy_to_vtk(safe_colors, deep=True)
-            # Ensure 3 components (RGB)
-            try:
-                c_arr.SetNumberOfComponents(3)
-            except Exception:
-                pass
-            c_arr.SetName("Colors")
-            poly2.GetPointData().SetScalars(c_arr)
-            mapper.SetColorModeToDirectScalars()
-            mapper.ScalarVisibilityOn()
-            mapper.SetScalarModeToUsePointData()
-            mapper.SelectColorArray("Colors")
-
-        # Add region label data if available
+        self._region_actors = {}
+        region_label_list: list[str] | None = None
         if region_labels is not None and len(region_labels) == len(pts):
-            label_array = vtkStringArray()
-            label_array.SetName("RegionLabel")
-            label_array.SetNumberOfValues(len(region_labels))
-            for i, label in enumerate(region_labels):
-                label_array.SetValue(i, label)
-            poly2.GetPointData().AddArray(label_array)
+            region_label_list = [str(label) for label in region_labels]
 
-        actor = vtkActor()
-        actor.SetMapper(mapper)
-        actor.GetProperty().SetPointSize(self.point_size_slider.value())
-        self.renderer.AddActor(actor)
-        self._point_actors.append(actor)
+        if region_label_list:
+            groups: dict[str, list[int]] = OrderedDict()
+            for idx, label in enumerate(region_label_list):
+                groups.setdefault(label, []).append(idx)
+
+            for label, idxs in groups.items():
+                indices = np.asarray(idxs, dtype=np.intp)
+                subset_pts = safe_pts[indices]
+                subset_colors = colors[indices] if colors is not None else None
+                actor = self._create_point_actor(
+                    subset_pts, subset_colors, region_label=label)
+                if actor is None:
+                    continue
+                self.renderer.AddActor(actor)
+                self._point_actors.append(actor)
+                self._region_actors[label] = actor
+        else:
+            actor = self._create_point_actor(safe_pts, colors)
+            if actor is not None:
+                self.renderer.AddActor(actor)
+                self._point_actors.append(actor)
+
+        self._populate_region_selection(list(self._region_actors.keys()))
+        self._update_point_controls_visibility()
         if focus:
             self._focus_on_bounds(bounds)
         return bounds
@@ -1046,6 +1129,51 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         except Exception:
             pass
         return out
+
+    def _create_point_actor(
+        self,
+        pts: np.ndarray,
+        colors: Optional[np.ndarray],
+        region_label: Optional[str] = None,
+    ) -> Optional[vtkActor]:
+        if pts is None or len(pts) == 0:
+            return None
+        vpoints = vtkPoints()
+        vpoints.SetNumberOfPoints(len(pts))
+        for i, (x, y, z) in enumerate(pts):
+            vpoints.SetPoint(i, float(x), float(y), float(z))
+        poly = vtkPolyData()
+        poly.SetPoints(vpoints)
+        poly2 = self._ensure_vertices(poly)
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(poly2)
+        if colors is not None and len(colors):
+            safe_colors = np.clip(colors, 0.0, 255.0).astype(np.uint8)
+            c_arr = numpy_to_vtk(safe_colors, deep=True)
+            try:
+                c_arr.SetNumberOfComponents(3)
+            except Exception:
+                pass
+            c_arr.SetName("Colors")
+            poly2.GetPointData().SetScalars(c_arr)
+            mapper.SetColorModeToDirectScalars()
+            mapper.ScalarVisibilityOn()
+            mapper.SetScalarModeToUsePointData()
+            mapper.SelectColorArray("Colors")
+
+        if region_label is not None:
+            label_array = vtkStringArray()
+            label_array.SetName("RegionLabel")
+            label_array.SetNumberOfValues(len(pts))
+            for i in range(len(pts)):
+                label_array.SetValue(i, region_label)
+            poly2.GetPointData().AddArray(label_array)
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetPointSize(self.point_size_slider.value())
+        return actor
 
     def _gradient_blue_red(self, norm: np.ndarray) -> np.ndarray:
         norm = np.nan_to_num(norm, nan=0.0, posinf=1.0, neginf=0.0)
@@ -1217,6 +1345,16 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             actor.GetProperty().SetPointSize(size)
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _update_point_controls_visibility(self) -> None:
+        has_points = bool(getattr(self, "_point_actors", []))
+        self.point_detail_widget.setVisible(has_points)
+        if not has_points:
+            self._clear_region_selection()
+
+    def _update_mesh_controls_visibility(self) -> None:
+        has_mesh = bool(getattr(self, "_mesh_actors", []))
+        self.mesh_detail_widget.setVisible(has_mesh)
+
     def _clear_point_clouds(self):
         for actor in getattr(self, "_point_actors", []):
             try:
@@ -1224,6 +1362,128 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._point_actors = []
+        self._region_actors = {}
+        self._clear_region_selection()
+        self._update_point_controls_visibility()
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _clear_region_selection(self) -> None:
+        if not hasattr(self, "region_list_widget"):
+            return
+        self.region_list_widget.blockSignals(True)
+        self.region_list_widget.clear()
+        self.region_list_widget.blockSignals(False)
+        self.region_list_widget.setEnabled(False)
+        self.region_group.setEnabled(False)
+        self._region_items.clear()
+        if hasattr(self, "region_search"):
+            self.region_search.blockSignals(True)
+            self.region_search.clear()
+            self.region_search.blockSignals(False)
+
+    def _format_region_display(self, label: str) -> str:
+        acronym, name = self._split_region_label(label)
+        if acronym and name and acronym != name:
+            return f"{acronym} - {name}"
+        if acronym:
+            return acronym
+        if name:
+            return name
+        return str(label or "")
+
+    def _split_region_label(self, label: str) -> tuple[str, str]:
+        text = (label or "").strip()
+        if not text:
+            return "", ""
+        paren_match = re.search(r"\(([^)]+)\)\s*$", text)
+        if paren_match:
+            acronym = paren_match.group(1).strip()
+            name = text[:paren_match.start()].strip()
+            if not name:
+                name = text
+            return acronym, name
+        for delim in (":", "—", "-", "–"):
+            if delim in text:
+                left, right = [part.strip() for part in text.split(delim, 1)]
+                if left and right:
+                    if self._looks_like_region_acronym(left):
+                        return left, right
+                    if self._looks_like_region_acronym(right):
+                        return right, left
+        return "", text
+
+    def _looks_like_region_acronym(self, segment: str) -> bool:
+        seg = (segment or "").strip()
+        if not seg:
+            return False
+        if seg.isupper() and len(seg) <= 8:
+            return True
+        upper_digit_count = sum(
+            1 for c in seg if c.isupper() or c.isdigit())
+        if upper_digit_count >= 2 and len(seg) <= 6:
+            return True
+        return False
+
+    def _populate_region_selection(self, labels: Sequence[str]) -> None:
+        if not labels:
+            self._clear_region_selection()
+            return
+        seen = set()
+        ordered = []
+        for label in labels:
+            if label not in seen:
+                seen.add(label)
+                ordered.append(label)
+
+        self.region_list_widget.blockSignals(True)
+        self.region_list_widget.clear()
+        self._region_items.clear()
+        for label in ordered:
+            display_text = self._format_region_display(label)
+            item = QtWidgets.QListWidgetItem(display_text)
+            item.setData(QtCore.Qt.UserRole, label)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Checked)
+            self.region_list_widget.addItem(item)
+            self._region_items[label] = item
+        self.region_list_widget.blockSignals(False)
+        self.region_group.setEnabled(True)
+        self.region_list_widget.setEnabled(True)
+        self._filter_region_items()
+
+    def _filter_region_items(self, query: str | None = None) -> None:
+        if query is None and hasattr(self, "region_search"):
+            query = self.region_search.text()
+        query = (query or "").strip().lower()
+        should_filter = bool(query)
+        for item in self._region_items.values():
+            display = item.text().lower()
+            item.setHidden(should_filter and query not in display)
+
+    def _on_region_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
+        label = item.data(QtCore.Qt.UserRole)
+        if label is None:
+            label = item.text()
+        actor = self._region_actors.get(label)
+        if actor:
+            actor.SetVisibility(item.checkState() == QtCore.Qt.Checked)
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _set_region_check_states(self, checked: bool) -> None:
+        if not self._region_items:
+            return
+        state = QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked
+        self.region_list_widget.blockSignals(True)
+        for item in self._region_items.values():
+            item.setCheckState(state)
+        self.region_list_widget.blockSignals(False)
+        self._refresh_region_visibilities()
+
+    def _refresh_region_visibilities(self) -> None:
+        for label, item in self._region_items.items():
+            actor = self._region_actors.get(label)
+            if actor:
+                actor.SetVisibility(item.checkState() == QtCore.Qt.Checked)
         self.vtk_widget.GetRenderWindow().Render()
 
     def _load_mesh_dialog(self):
@@ -1336,6 +1596,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self._mesh_actor_names[id(actor)] = source_name
         self._active_mesh_actor = actor
         self._update_mesh_status_label()
+        self._update_mesh_controls_visibility()
         return actor
 
     def _clear_meshes(self):
@@ -1348,6 +1609,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self._mesh_textures.clear()
         self._mesh_actor_names.clear()
         self._active_mesh_actor = None
+        self._update_mesh_controls_visibility()
         self.vtk_widget.GetRenderWindow().Render()
         self._update_mesh_status_label()
 
