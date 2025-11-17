@@ -2449,6 +2449,7 @@ class AnnolidWindow(MainWindow):
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
+        self._finalize_prediction_progress("Manual prediction worker finished.")
 
     def reset_predict_button(self):
         """Reset the predict button text and style"""
@@ -3109,9 +3110,11 @@ class AnnolidWindow(MainWindow):
         if hasattr(self, 'progress_bar') and self.progress_bar.isVisible():
             self.statusBar().removeWidget(self.progress_bar)
         self._stop_prediction_folder_watcher()
-        # Clear "predicted" marks from the slider
+        # Clear prediction-related marks from the slider
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")  # Use the new method
+            self.seekbar.removeMarksByType("prediction_progress")
+            self._prediction_progress_mark = None
 
         # Reset button state (already in predict_is_ready and lost_tracking_instance)
         self.stepSizeWidget.predict_button.setText("Pred")

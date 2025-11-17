@@ -284,6 +284,9 @@ class TrackingController(QtCore.QObject):
     def _on_track_all_finished(self, completion_message: str) -> None:
         self._window.statusBar().showMessage(completion_message, 5000)
         self._window.set_tracking_ui_state(is_tracking=False)
+        self._window._finalize_prediction_progress(
+            "Track All run finished."
+        )
         worker = self._track_all_worker
         if worker:
             self._disconnect_track_all_worker(worker)
