@@ -1,6 +1,6 @@
 # Video Depth Anything Tutorial
 
-Annolid bundles the [Video-Depth-Anything](https://github.com/depth-anything/Video-Depth-Anything) suite so you can estimate per-frame depth without leaving the GUI or writing a complex pipeline. The helper exposed as `annolid.depth.run_video_depth_anything` can be used in scripts, while the GUI exposes the same functionality under **Tools → Video Depth Anything**.
+Annolid bundles the [Video-Depth-Anything](https://github.com/DepthAnything/Video-Depth-Anything) suite so you can estimate per-frame depth without leaving the GUI or writing a complex pipeline. The helper exposed as `annolid.depth.run_video_depth_anything` can be used in scripts, while the GUI exposes the same functionality under **View → Video Depth Anything**.
 
 ## 1. Prerequisites
 
@@ -20,8 +20,8 @@ If you only need a specific encoder, replace `--all` with repeated `--model` fla
 ## 3. Run inside the GUI
 
 1. Load a video (File → Open Video).
-2. Use **Tools → Depth Settings…** (or the widget inside the depth view) to tweak the defaults (encoder, resolution, grayscale overlay, point cloud export, etc.). Changes saved here immediately affect the next depth run, so you never have to open a CLI shell once you fine-tune your preferences.
-3. Choose **Tools → Video Depth Anything…** to start a background worker. The status bar shows progress and an overlay is painted on the canvas.
+2. Use **View → Depth Settings…** (or the widget inside the depth settings) to tweak the defaults (encoder, resolution, grayscale overlay, point cloud export, etc.). Changes saved here immediately affect the next depth run, so you never have to open a CLI shell once you fine-tune your preferences.
+3. Choose **View → Video Depth Anything…** to start a background worker. The status bar shows progress and an overlay is painted on the canvas.
 
 Streaming mode (default) feeds one frame at a time through the model, which keeps memory usage low and lets you preview intermediate results via the overlay. The dialog keeps `streaming`, `save_depth_video`, `save_depth_frames`, `save_point_clouds`, and other toggles in sync with the call to `run_video_depth_anything`, so updating the settings in the view propagates automatically when you click the menu action.
 
