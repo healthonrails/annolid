@@ -39,6 +39,9 @@ class DepthSettingsDialog(QtWidgets.QDialog):
         self.save_point_cloud_chk = QtWidgets.QCheckBox(
             self.tr("Save point cloud CSVs")
         )
+        self.include_region_chk = QtWidgets.QCheckBox(
+            self.tr("Include tracking regions in point cloud CSVs")
+        )
         self.streaming_chk = QtWidgets.QCheckBox(self.tr("Streaming mode"))
         self.streaming_chk.setChecked(True)
 
@@ -49,6 +52,7 @@ class DepthSettingsDialog(QtWidgets.QDialog):
         flag_layout.addWidget(self.save_video_chk)
         flag_layout.addWidget(self.save_frames_chk)
         flag_layout.addWidget(self.save_point_cloud_chk)
+        flag_layout.addWidget(self.include_region_chk)
         flag_layout.addWidget(self.streaming_chk)
         layout.addRow(self.tr("Options"), flag_layout)
 
@@ -76,6 +80,7 @@ class DepthSettingsDialog(QtWidgets.QDialog):
         self.save_point_cloud_chk.setChecked(
             cfg.get("save_point_clouds", False)
         )
+        self.include_region_chk.setChecked(cfg.get("include_region_labels", False))
         self.streaming_chk.setChecked(cfg.get("streaming", True))
 
     def values(self):
@@ -91,5 +96,6 @@ class DepthSettingsDialog(QtWidgets.QDialog):
             "save_depth_video": self.save_video_chk.isChecked(),
             "save_depth_frames": self.save_frames_chk.isChecked(),
             "save_point_clouds": self.save_point_cloud_chk.isChecked(),
+            "include_region_labels": self.include_region_chk.isChecked(),
             "streaming": self.streaming_chk.isChecked(),
         }

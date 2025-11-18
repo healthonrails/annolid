@@ -16,6 +16,7 @@ import torch
 from matplotlib import cm
 
 from annolid.utils.logger import logger
+from annolid.utils.annotation_store import AnnotationStore
 
 _INFERNO_PALETTE = (
     cm.get_cmap("inferno", 256)(np.linspace(0.0, 1.0, 256))[:, :3] * 255.0
@@ -165,30 +166,195 @@ def _save_depth_frames(depths: np.ndarray, output_dir: Path, grayscale: bool) ->
     return result_paths
 
 
+def _safe_int(value: Optional[object]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _tracking_frame_json_path(results_dir: Path, frame_index: int) -> Path:
+    return results_dir / f"{results_dir.name}_{frame_index:09d}.json"
+
+
+def _read_shapes_from_json(
+    frame_path: Path,
+) -> Tuple[Optional[List[Dict[str, object]]], Optional[int], Optional[int]]:
+    if not frame_path.is_file():
+        return None, None, None
+    try:
+        payload = json.loads(frame_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to read tracking JSON %s: %s", frame_path, exc)
+        return None, None, None
+    shapes = payload.get("shapes") or []
+    width = _safe_int(payload.get("imageWidth"))
+    height = _safe_int(payload.get("imageHeight"))
+    return shapes, width, height
+
+
+def _load_shapes_for_frame(
+    results_dir: Path, frame_index: int
+) -> Tuple[List[Dict[str, object]], Optional[int], Optional[int]]:
+    frame_path = _tracking_frame_json_path(results_dir, frame_index)
+    shapes, width, height = _read_shapes_from_json(frame_path)
+    if shapes is not None:
+        return shapes, width, height
+    try:
+        store = AnnotationStore.for_frame_path(frame_path)
+        record = store.get_frame(frame_index)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Unable to read annotation store for frame %d: %s", frame_index, exc
+        )
+        return [], None, None
+    if not record:
+        return [], None, None
+    shapes = record.get("shapes") or []
+    width = _safe_int(record.get("imageWidth"))
+    height = _safe_int(record.get("imageHeight"))
+    return shapes, width, height
+
+
+def _scaled_polygon_from_shape(
+    shape: Dict[str, object], scale_x: float, scale_y: float
+) -> Optional[np.ndarray]:
+    points = shape.get("points")
+    if not points:
+        return None
+    arr = np.asarray(points, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return None
+    shape_type = shape.get("shape_type")
+    if shape_type == "rectangle" and arr.shape[0] >= 2:
+        top_left, bottom_right = arr[0], arr[1]
+        polygon = np.array(
+            [
+                [top_left[0], top_left[1]],
+                [bottom_right[0], top_left[1]],
+                [bottom_right[0], bottom_right[1]],
+                [top_left[0], bottom_right[1]],
+            ],
+            dtype=np.float32,
+        )
+    else:
+        if arr.shape[0] < 3:
+            return None
+        polygon = arr.copy()
+    polygon[:, 0] *= scale_x
+    polygon[:, 1] *= scale_y
+    return np.round(polygon).astype(np.int32)
+
+
+def _rasterize_shape_labels(
+    shapes: List[Dict[str, object]],
+    height: int,
+    width: int,
+    source_width: Optional[int],
+    source_height: Optional[int],
+) -> np.ndarray:
+    num_pixels = height * width
+    labels = np.full(num_pixels, "", dtype=object)
+    if num_pixels == 0:
+        return labels
+    occupied = np.zeros((height, width), dtype=bool)
+    scale_x = float(width) / float(source_width) if source_width else 1.0
+    scale_y = float(height) / float(source_height) if source_height else 1.0
+    for shape in shapes:
+        label = shape.get("label")
+        if not label:
+            continue
+        polygon = _scaled_polygon_from_shape(shape, scale_x, scale_y)
+        if polygon is None or polygon.shape[0] < 3:
+            continue
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, [polygon], 1)
+        mask_bool = mask.astype(bool)
+        assign_mask = mask_bool & ~occupied
+        if not assign_mask.any():
+            continue
+        assigned_indices = assign_mask.reshape(-1)
+        labels[assigned_indices] = str(label)
+        occupied |= assign_mask
+    return labels
+
+
+def _frame_region_labels(
+    tracking_dir: Path,
+    frame_index: int,
+    height: int,
+    width: int,
+    cache: Dict[int, Optional[np.ndarray]],
+) -> Optional[np.ndarray]:
+    frame_key = int(frame_index)
+    if frame_key in cache:
+        return cache[frame_key]
+    shapes, src_width, src_height = _load_shapes_for_frame(tracking_dir, frame_key)
+    if not shapes:
+        cache[frame_key] = None
+        return None
+    labels = _rasterize_shape_labels(
+        shapes, height, width, src_width, src_height
+    )
+    cache[frame_key] = labels
+    return labels
+
+
 def _write_point_cloud_csv(
     path: Path,
     points: np.ndarray,
     intensity: np.ndarray,
     colors: Optional[np.ndarray] = None,
+    region_labels: Optional[np.ndarray] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     flattened = intensity.reshape(-1)
     with path.open("w", encoding="utf-8") as fh:
-        header = "x,y,z,intensity"
+        header_parts = ["x", "y", "z", "intensity"]
         color_arr = None
         if colors is not None:
-            header += ",red,green,blue"
             color_arr = np.asarray(colors, dtype=np.float32).reshape(-1, 3)
             if color_arr.size and color_arr.max() <= 1.0:
                 color_arr = color_arr * 255.0
             color_arr = np.clip(color_arr, 0.0, 255.0).astype(np.uint8)
-        fh.write(header + "\n")
+        include_region_column = False
+        region_arr = None
+        if region_labels is not None:
+            region_arr = np.asarray(region_labels).reshape(-1)
+            if region_arr.shape[0] != points.shape[0]:
+                logger.warning(
+                    "Region labels count %d differs from point count %d for %s",
+                    region_arr.shape[0],
+                    points.shape[0],
+                    path,
+                )
+                region_arr = None
+            else:
+                include_region_column = True
+                header_parts.append("region")
+        if color_arr is not None:
+            header_parts.extend(["red", "green", "blue"])
+        fh.write(",".join(header_parts) + "\n")
         for idx, ((x, y, z), val) in enumerate(zip(points, flattened)):
-            line = f"{x:.6f},{y:.6f},{z:.6f},{float(val):.6f}"
+            row_items = [
+                f"{x:.6f}",
+                f"{y:.6f}",
+                f"{z:.6f}",
+                f"{float(val):.6f}",
+            ]
+            if include_region_column and region_arr is not None:
+                raw_label = region_arr[idx]
+                region_text = ""
+                if raw_label not in (None, ""):
+                    escaped = str(raw_label).replace('"', '""')
+                    region_text = f"\"{escaped}\""
+                row_items.append(region_text)
             if color_arr is not None:
                 r, g, b = color_arr[idx]
-                line += f",{int(r)},{int(g)},{int(b)}"
-            fh.write(line + "\n")
+                row_items.extend([str(int(r)), str(int(g)), str(int(b))])
+            fh.write(",".join(row_items) + "\n")
 
 
 def _create_depth_preview_overlay(
@@ -296,6 +462,7 @@ def run_video_depth_anything(
     save_depth_video: bool = False,
     save_depth_frames: bool = False,
     save_point_clouds: bool = False,
+    include_region_labels: bool = False,
 ) -> Dict[str, Optional[List[str]]]:
     """Run depth estimation on ``input_video`` and save the outputs."""
 
@@ -306,6 +473,13 @@ def run_video_depth_anything(
 
     output_dir_path = Path(output_dir).expanduser().resolve()
     output_dir_path.mkdir(parents=True, exist_ok=True)
+
+    tracking_results_dir_path: Optional[Path] = None
+    region_cache: Dict[int, Optional[np.ndarray]] = {}
+    if include_region_labels:
+        tracking_candidate = input_path.with_suffix("")
+        if tracking_candidate.is_dir():
+            tracking_results_dir_path = tracking_candidate
 
     base_name = input_path.stem
     depth_vis_path = output_dir_path / f"{base_name}_vis.mp4"
@@ -476,8 +650,22 @@ def run_video_depth_anything(
                 ).reshape(-1, 3)
                 colors = np.array(color_image).reshape(-1, 3)
                 csv_path = ply_dir / f"point_{idx:04d}.csv"
+                frame_index = int(frame_indices[idx]) if idx < len(frame_indices) else idx
+                region_labels = None
+                if include_region_labels and tracking_results_dir_path is not None:
+                    region_labels = _frame_region_labels(
+                        tracking_results_dir_path,
+                        frame_index,
+                        depth_map.shape[0],
+                        depth_map.shape[1],
+                        region_cache,
+                    )
                 _write_point_cloud_csv(
-                    csv_path, points, z.reshape(-1, 1), colors=colors
+                    csv_path,
+                    points,
+                    z.reshape(-1, 1),
+                    colors=colors,
+                    region_labels=region_labels,
                 )
                 point_csv_paths.append(str(csv_path))
             if point_csv_paths:

@@ -5883,6 +5883,7 @@ class AnnolidWindow(MainWindow):
         streaming = depth_cfg.get("streaming", True)
         save_depth_video = depth_cfg.get("save_depth_video", False)
         save_depth_frames = depth_cfg.get("save_depth_frames", False)
+        include_region_labels = depth_cfg.get("include_region_labels", False)
         show_preview = depth_cfg.get("show_preview", True)
 
         custom_output = depth_cfg.get("output_dir")
@@ -5908,6 +5909,7 @@ class AnnolidWindow(MainWindow):
             save_exr=save_exr,
             streaming=streaming,
             save_point_clouds=depth_cfg.get("save_point_clouds", False),
+            include_region_labels=include_region_labels,
             progress_callback=None,
             preview_callback=None,
             save_depth_video=save_depth_video,
