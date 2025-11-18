@@ -1,7 +1,9 @@
 from __future__ import annotations
 from annolid.utils.logger import logger
 
+import os
 import re
+import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +69,15 @@ POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
 MESH_EXTS = (".stl", ".obj")
 VOLUME_FILE_EXTS = (".tif", ".tiff", ".nii", ".nii.gz")
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
+TIFF_SUFFIXES = (".tif", ".tiff")
+OME_TIFF_SUFFIXES = (".ome.tif", ".ome.tiff")
+_auto_ooc_raw = os.environ.get(
+    "ANNOLID_VTK_OUT_OF_CORE_THRESHOLD_MB", "2048") or ""
+try:
+    AUTO_OUT_OF_CORE_MB = float(
+        _auto_ooc_raw.strip()) if _auto_ooc_raw else 0.0
+except Exception:
+    AUTO_OUT_OF_CORE_MB = 0.0
 
 PLANE_DEFS = (
     (0, "Axial (Z)", "SetPlaneOrientationToZAxes"),
@@ -95,6 +106,17 @@ class _SlicePlaneControl:
     slider: QtWidgets.QSlider
     checkbox: QtWidgets.QCheckBox
     label: QtWidgets.QLabel
+
+
+@dataclass
+class _VolumeData:
+    array: np.ndarray
+    spacing: Optional[Tuple[float, float, float]]
+    vmin: float
+    vmax: float
+    is_grayscale: bool = True
+    is_out_of_core: bool = False
+    backing_path: Optional[Path] = None
 
 
 class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
@@ -135,6 +157,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._volume_shape: tuple[int, int, int] = (0, 0, 0)
         self._slice_plane_widgets: dict[int, vtkImagePlaneWidget] = {}
         self._slice_clipping_planes: dict[int, vtkPlane] = {}
+        self._out_of_core_active = False
+        self._out_of_core_backing_path: Optional[Path] = None
+        self._out_of_core_array: Optional[np.memmap] = None
 
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
@@ -346,6 +371,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         self.reset_cam_btn = QtWidgets.QPushButton("Reset Camera")
         self.reset_cam_btn.clicked.connect(self._reset_camera)
+        self.reload_volume_btn = QtWidgets.QPushButton("Reload Volume")
+        self.reload_volume_btn.setToolTip(
+            "Re-read the active volume from disk. Use this after toggling the "
+            "out-of-core TIFF option."
+        )
+        self.reload_volume_btn.clicked.connect(self._reload_volume)
         self.snapshot_btn = QtWidgets.QPushButton("Save Snapshot…")
         self.snapshot_btn.clicked.connect(self._save_snapshot)
         self.wl_mode_checkbox = QtWidgets.QCheckBox("Window/Level Mode")
@@ -362,6 +393,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         general_layout.addLayout(wl_layout)
         general_buttons_layout = QtWidgets.QHBoxLayout()
         general_buttons_layout.addWidget(self.reset_cam_btn)
+        general_buttons_layout.addWidget(self.reload_volume_btn)
         general_buttons_layout.addWidget(self.snapshot_btn)
         general_buttons_layout.addStretch(1)
         general_layout.addLayout(general_buttons_layout)
@@ -402,6 +434,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._configure_plane_controls()
 
         status_row = QtWidgets.QHBoxLayout()
+        self.volume_io_label = QtWidgets.QLabel("Volume I/O: in-memory")
+        status_row.addWidget(self.volume_io_label)
         self.mesh_status_label = QtWidgets.QLabel("Mesh: none loaded")
         status_row.addWidget(self.mesh_status_label)
         status_row.addStretch(1)
@@ -543,15 +577,51 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if not enabled:
             self._clear_slice_clipping_planes()
 
-    def _load_volume(self):
-        volume, spacing = self._read_volume_any()
-        # Convert color stack to luminance for volume rendering if needed
-        if volume.ndim == 4 and volume.shape[-1] in (3, 4):
-            volume = np.dot(volume[..., :3], [
-                            0.299, 0.587, 0.114]).astype(volume.dtype)
+    def _reload_volume(self):
+        if not self._is_volume_candidate(getattr(self, "_path", Path("."))):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Reload Volume",
+                "No volume source is associated with this viewer.",
+            )
+            return
+        try:
+            self._teardown_slice_planes()
+            self._clear_slice_clipping_planes()
+            self._volume_shape = (0, 0, 0)
+            self._volume_np = None
+            self._vtk_img = None
+            self._has_volume = False
+            self._load_volume()
+            self.renderer.ResetCamera()
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Reload Volume",
+                f"Failed to reload volume:\n{exc}",
+            )
 
-        # Ensure C-contiguous
-        volume = np.ascontiguousarray(volume)
+    def _load_volume(self):
+        old_array = self._out_of_core_array
+        old_path = self._out_of_core_backing_path
+        self._out_of_core_array = None
+        self._out_of_core_backing_path = None
+        volume_data = self._read_volume_any()
+        volume = volume_data.array
+        spacing = volume_data.spacing
+        # Convert color stack to luminance for volume rendering if needed
+        if (
+            not volume_data.is_grayscale
+            and volume.ndim == 4
+            and volume.shape[-1] in (3, 4)
+        ):
+            volume = np.dot(
+                volume[..., :3],
+                [0.299, 0.587, 0.114],
+            ).astype(volume.dtype)
+        if not volume.flags.c_contiguous:
+            volume = np.ascontiguousarray(volume)
         z, y, x = volume.shape
         self._volume_shape = (int(z), int(y), int(x))
 
@@ -566,14 +636,22 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         vtk_img.SetOrigin(0.0, 0.0, 0.0)
 
         # Map numpy dtype to VTK scalars
-        vtk_array = numpy_to_vtk(num_array=volume.reshape(-1), deep=True)
+        vtk_array = numpy_to_vtk(
+            num_array=volume.reshape(-1),
+            deep=not volume_data.is_out_of_core,
+        )
         vtk_img.GetPointData().SetScalars(vtk_array)
 
         # Keep handles and stats
         self._vtk_img = vtk_img
         self._volume_np = volume
-        self._vmin = float(volume.min())
-        self._vmax = float(volume.max())
+        self._out_of_core_active = volume_data.is_out_of_core
+        if volume_data.is_out_of_core:
+            self._out_of_core_array = volume  # keep memmap alive
+            self._out_of_core_backing_path = volume_data.backing_path
+        self._vmin = volume_data.vmin
+        self._vmax = volume_data.vmax
+        self._update_volume_io_label(self._out_of_core_active)
 
         # Initialize window controls
         for spin in (self.min_spin, self.max_spin):
@@ -618,20 +696,48 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._update_shading()
         self._update_blend_mode()
         self._has_volume = True
+        self._cleanup_out_of_core_backing(old_array, old_path)
 
-    def _read_volume_any(self) -> tuple[np.ndarray, Optional[Tuple[float, float, float]]]:
-        """Read a 3D volume from TIFF/NIfTI/DICOM or directory (DICOM series).
+    def _cleanup_out_of_core_backing(
+        self,
+        array: Optional[np.memmap] = None,
+        path: Optional[Path] = None,
+    ):
+        if array is None and path is None:
+            array = self._out_of_core_array
+            path = self._out_of_core_backing_path
+            self._out_of_core_array = None
+            self._out_of_core_backing_path = None
+        if array is not None:
+            try:
+                mmap_obj = getattr(array, "_mmap", None)
+                if mmap_obj is not None:
+                    mmap_obj.close()
+            except Exception:
+                pass
+        if path:
+            try:
+                Path(path).unlink(missing_ok=True)  # type: ignore[arg-type]
+            except TypeError:
+                try:
+                    Path(path).unlink()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
-        Returns (volume, spacing). Volume is (Z, Y, X[, C]) float32 in [0, 1].
-        Spacing is a (x, y, z) tuple if available, else None.
-        """
+    def _read_volume_any(self) -> _VolumeData:
+        """Read a 3D volume from TIFF/NIfTI/DICOM or directory (DICOM series)."""
         path = self._path
-        spacing: Optional[Tuple[float, float, float]] = None
-
         try:
             if path.is_dir():
-                # DICOM series directory: prefer GDCM if present
-                return self._read_dicom_series(path)
+                volume, spacing = self._read_dicom_series(path)
+                return _VolumeData(
+                    volume,
+                    spacing,
+                    float(volume.min()),
+                    float(volume.max()),
+                )
 
             suffix = path.suffix.lower()
             name_lower = path.name.lower()
@@ -650,26 +756,198 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 s = vtk_img.GetSpacing()
                 spacing = (s[0], s[1], s[2])
                 vol = self._normalize_to_float01(vol)
-                return vol, spacing
+                return _VolumeData(
+                    vol,
+                    spacing,
+                    float(vol.min()),
+                    float(vol.max()),
+                )
             if suffix in ('.dcm', '.ima', '.dicom'):
                 # Treat as a DICOM series from the containing folder
-                return self._read_dicom_series(path.parent)
+                volume, spacing = self._read_dicom_series(path.parent)
+                return _VolumeData(
+                    volume,
+                    spacing,
+                    float(volume.min()),
+                    float(volume.max()),
+                )
 
-            # Default: try multi-page TIFF via PIL
-            img = Image.open(str(path))
-            n = getattr(img, "n_frames", 1)
-            if not n or n <= 0:
-                n = 1
-            frames = []
-            for i in range(n):
-                img.seek(i)
-                frames.append(np.array(img))
-            vol = np.stack(frames, axis=0)  # (Z, Y, X[, C])
-            vol = self._normalize_to_float01(vol)
-            return vol, None
+            if self._is_tiff_candidate(path):
+                preferred_out_of_core = self._should_use_out_of_core_tiff(path)
+                if preferred_out_of_core:
+                    return self._read_tiff_out_of_core(path)
+                try:
+                    return self._read_tiff_eager(path)
+                except MemoryError as exc:
+                    logger.warning(
+                        "Standard TIFF loading failed (%s). Retrying with out-of-core caching.",
+                        exc,
+                    )
+                    return self._read_tiff_out_of_core(path)
+
+            raise RuntimeError(f"Unsupported volume format: {path}")
         except Exception as e:
             # Re-raise with context so upper layer shows a concise message
             raise RuntimeError(f"Failed to read volume from '{path}': {e}")
+
+    def _is_tiff_candidate(self, path: Path) -> bool:
+        name_lower = path.name.lower()
+        suffix = path.suffix.lower()
+        if suffix in TIFF_SUFFIXES:
+            return True
+        return any(name_lower.endswith(ext) for ext in OME_TIFF_SUFFIXES)
+
+    def _should_use_out_of_core_tiff(self, path: Path) -> bool:
+        size_bytes = self._safe_file_size(path)
+        avail_bytes = self._available_memory_bytes()
+        logger.debug(
+            "VTK viewer source size=%s bytes, available RAM=%s bytes",
+            size_bytes,
+            avail_bytes,
+        )
+        if avail_bytes > 0 and size_bytes > 0 and size_bytes >= avail_bytes:
+            logger.info(
+                "TIFF stack (%s) is larger than available RAM; enabling out-of-core caching.",
+                path,
+            )
+            return True
+        if AUTO_OUT_OF_CORE_MB > 0 and size_bytes > 0:
+            if size_bytes >= AUTO_OUT_OF_CORE_MB * 1024 * 1024:
+                logger.info(
+                    "TIFF stack (%s) exceeds configured threshold (%.0f MB); enabling out-of-core caching.",
+                    path,
+                    AUTO_OUT_OF_CORE_MB,
+                )
+                return True
+        return False
+
+    def _safe_file_size(self, path: Path) -> int:
+        try:
+            return int(path.stat().st_size)
+        except Exception:
+            return 0
+
+    def _available_memory_bytes(self) -> int:
+        try:
+            import psutil  # type: ignore
+        except Exception:
+            return 0
+        try:
+            mem = psutil.virtual_memory()
+        except Exception:
+            return 0
+        return int(getattr(mem, "available", 0) or 0)
+
+    def _read_tiff_eager(self, path: Path) -> _VolumeData:
+        frames: list[np.ndarray] = []
+        with Image.open(str(path)) as img:
+            n = max(1, int(getattr(img, "n_frames", 1) or 1))
+            for i in range(n):
+                img.seek(i)
+                frames.append(np.array(img))
+        if not frames:
+            raise RuntimeError("No frames found in TIFF stack.")
+        vol = np.stack(frames, axis=0)
+        vol = self._normalize_to_float01(vol)
+        return _VolumeData(
+            vol,
+            None,
+            float(vol.min()),
+            float(vol.max()),
+            is_grayscale=vol.ndim == 3,
+            is_out_of_core=False,
+        )
+
+    def _read_tiff_out_of_core(self, path: Path) -> _VolumeData:
+        with Image.open(str(path)) as img:
+            n_frames = max(1, int(getattr(img, "n_frames", 1) or 1))
+            img.seek(0)
+            first = np.array(img)
+            convert_color = first.ndim == 3 and first.shape[-1] in (3, 4)
+            if convert_color:
+                target_dtype = first.dtype
+                first_plane = self._convert_frame_to_plane(first, target_dtype)
+            else:
+                target_dtype = first.dtype
+                first_plane = np.asarray(first, dtype=target_dtype)
+                if first_plane.ndim == 3 and first_plane.shape[-1] == 1:
+                    first_plane = first_plane[..., 0]
+            if first_plane.ndim != 2:
+                raise RuntimeError("Only grayscale TIFF stacks are supported.")
+            plane_shape = first_plane.shape
+            fd, tmp_path = tempfile.mkstemp(
+                prefix="annolid_vtk_", suffix=".mmap")
+            os.close(fd)
+            backing_path = Path(tmp_path)
+            try:
+                writer = np.memmap(
+                    backing_path,
+                    mode="w+",
+                    dtype=target_dtype,
+                    shape=(n_frames, plane_shape[0], plane_shape[1]),
+                )
+                min_val = float(np.min(first_plane))
+                max_val = float(np.max(first_plane))
+                writer[0] = first_plane
+                for idx in range(1, n_frames):
+                    img.seek(idx)
+                    arr = np.array(img)
+                    if convert_color:
+                        arr = self._convert_frame_to_plane(arr, target_dtype)
+                    else:
+                        arr = np.asarray(arr, dtype=target_dtype)
+                        if arr.ndim == 3 and arr.shape[-1] == 1:
+                            arr = arr[..., 0]
+                    writer[idx] = arr
+                    min_val = min(min_val, float(np.min(arr)))
+                    max_val = max(max_val, float(np.max(arr)))
+                writer.flush()
+            except Exception:
+                try:
+                    backing_path.unlink()
+                except Exception:
+                    pass
+                raise
+            finally:
+                try:
+                    del writer
+                except UnboundLocalError:
+                    pass
+        reader = np.memmap(
+            backing_path,
+            mode="r+",
+            dtype=target_dtype,
+            shape=(n_frames, plane_shape[0], plane_shape[1]),
+        )
+        return _VolumeData(
+            reader,
+            None,
+            min_val,
+            max_val,
+            is_grayscale=True,
+            is_out_of_core=True,
+            backing_path=backing_path,
+        )
+
+    def _convert_frame_to_plane(self, frame: np.ndarray, dtype: np.dtype) -> np.ndarray:
+        arr = np.asarray(frame)
+        if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+            rgb = arr[..., :3].astype(np.float32)
+            gray = np.dot(rgb, [0.299, 0.587, 0.114])
+            if np.issubdtype(dtype, np.bool_):
+                gray = (gray > 0.5).astype(dtype)
+            elif np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                gray = np.clip(np.round(gray), info.min,
+                               info.max).astype(dtype)
+            else:
+                gray = gray.astype(dtype)
+            return gray
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = arr[..., 0]
+        if arr.dtype != dtype:
+            arr = arr.astype(dtype)
+        return arr
 
     def _vtk_image_to_numpy(self, vtk_img) -> np.ndarray:
         from vtkmodules.util.numpy_support import vtk_to_numpy
@@ -778,8 +1056,20 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         prop.SetInterpolationToFlat()
         return prop
 
-    def _setup_slice_plane(self):
+    def _teardown_slice_planes(self):
+        for widget in self._slice_plane_widgets.values():
+            try:
+                widget.SetEnabled(False)
+            except Exception:
+                pass
+            try:
+                widget.SetInteractor(None)
+            except Exception:
+                pass
         self._slice_plane_widgets.clear()
+
+    def _setup_slice_plane(self):
+        self._teardown_slice_planes()
         if not _HAS_PLANE_WIDGET or self._vtk_img is None:
             return
         for axis, _, orientation_name in PLANE_DEFS:
@@ -2059,6 +2349,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         texture.InterpolateOn()
         return texture
 
+    def closeEvent(self, event):  # type: ignore[override]
+        try:
+            self._teardown_slice_planes()
+        except Exception:
+            pass
+        self._cleanup_out_of_core_backing()
+        super().closeEvent(event)
+
     def _apply_texture_to_actor(
         self,
         actor: vtkActor,
@@ -2100,6 +2398,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if path:
                 parts.append(f"{kind_label}: {Path(path).name}")
         self.mesh_status_label.setText(" | ".join(parts))
+
+    def _update_volume_io_label(self, out_of_core: bool):
+        if not hasattr(self, "volume_io_label"):
+            return
+        if out_of_core:
+            text = "Volume I/O: out-of-core (auto)"
+        else:
+            text = "Volume I/O: in-memory"
+        self.volume_io_label.setText(text)
 
     def _read_stl_mesh(self, path: str) -> vtkPolyData:
         try:
