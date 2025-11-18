@@ -1,10 +1,12 @@
 from __future__ import annotations
+from annolid.utils.logger import logger
 
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence, Tuple
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -23,6 +25,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkColorTransferFunction,
     vtkPolyDataMapper,
     vtkActor,
+    vtkProperty,
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.vtkCommonDataModel import (
@@ -30,6 +33,7 @@ from vtkmodules.vtkCommonDataModel import (
     vtkPolyData,
     vtkCellArray,
     vtkPiecewiseFunction,
+    vtkPlane,
 )
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonCore import vtkPoints
@@ -49,13 +53,31 @@ try:  # Prefer GDCM when available (more robust series handling)
     _HAS_GDCM = True
 except Exception:  # pragma: no cover
     _HAS_GDCM = False
+try:
+    from vtkmodules.vtkInteractionWidgets import vtkImagePlaneWidget
+except Exception:
+    try:
+        from vtkmodules.vtkInteractionImage import vtkImagePlaneWidget
+    except Exception:  # pragma: no cover
+        vtkImagePlaneWidget = None
+_HAS_PLANE_WIDGET = vtkImagePlaneWidget is not None
 
-from annolid.utils.logger import logger
 
 POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
 MESH_EXTS = (".stl", ".obj")
 VOLUME_FILE_EXTS = (".tif", ".tiff", ".nii", ".nii.gz")
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
+
+PLANE_DEFS = (
+    (0, "Axial (Z)", "SetPlaneOrientationToZAxes"),
+    (1, "Coronal (Y)", "SetPlaneOrientationToYAxes"),
+    (2, "Sagittal (X)", "SetPlaneOrientationToXAxes"),
+)
+PLANE_COLORS: dict[int, tuple[float, float, float]] = {
+    0: (0.9, 0.2, 0.2),
+    1: (0.2, 0.9, 0.2),
+    2: (0.2, 0.2, 0.9),
+}
 
 
 @dataclass
@@ -66,7 +88,16 @@ class _RegionSelectionEntry:
     display_text: str
 
 
-class VTKVolumeViewerDialog(QtWidgets.QDialog):
+@dataclass
+class _SlicePlaneControl:
+    axis: int
+    name: str
+    slider: QtWidgets.QSlider
+    checkbox: QtWidgets.QCheckBox
+    label: QtWidgets.QLabel
+
+
+class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     """
     True 3D volume renderer using VTK's GPU volume mapper.
 
@@ -93,20 +124,45 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
             self._source_path = candidate
             self._path = self._resolve_initial_source(candidate)
 
-        # Main layout
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(6)
-        # QVTK widget
-        self.vtk_widget = QVTKRenderWindowInteractor(self)
-        layout.addWidget(self.vtk_widget, 1)
+        # Volume state placeholders
+        self._has_volume: bool = False
+        self._volume_np: Optional[np.ndarray] = None
+        self._vtk_img = None
+        self._vmin = 0.0
+        self._vmax = 1.0
+        self._opacity_tf = None
+        self._color_tf = None
+        self._volume_shape: tuple[int, int, int] = (0, 0, 0)
+        self._slice_plane_widgets: dict[int, vtkImagePlaneWidget] = {}
+        self._slice_clipping_planes: dict[int, vtkPlane] = {}
 
-        # Controls panel on the right
+        central_widget = QtWidgets.QWidget(self)
+        self.setCentralWidget(central_widget)
+        central_layout = QtWidgets.QVBoxLayout(central_widget)
+        central_layout.setContentsMargins(2, 2, 2, 2)
+        central_layout.setSpacing(6)
+        self.vtk_widget = QVTKRenderWindowInteractor(central_widget)
+        central_layout.addWidget(self.vtk_widget, 1)
+
+        # Controls panel (dockable)
         controls_panel = QtWidgets.QWidget()
+        controls_panel.setMinimumWidth(260)
+        controls_panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         controls_layout = QtWidgets.QVBoxLayout(controls_panel)
         controls_layout.setAlignment(QtCore.Qt.AlignTop)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(6)
+        self._controls_dock = QtWidgets.QDockWidget("Controls", self)
+        self._controls_dock.setWidget(controls_panel)
+        self._controls_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        self._controls_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+        )
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._controls_dock)
 
         self.volume_group = QtWidgets.QGroupBox("Volume Controls")
         volume_layout = QtWidgets.QGridLayout()
@@ -311,13 +367,45 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.general_group.setLayout(general_layout)
         controls_layout.addWidget(self.general_group)
 
+        self.slice_group = QtWidgets.QGroupBox("Slice Planes")
+        slice_layout = QtWidgets.QVBoxLayout()
+        slice_layout.setContentsMargins(4, 4, 4, 4)
+        slice_layout.setSpacing(4)
+        self._slice_plane_controls: dict[int, _SlicePlaneControl] = {}
+        for axis, name, _ in PLANE_DEFS:
+            row = QtWidgets.QHBoxLayout()
+            label = QtWidgets.QLabel(f"{name}: -/-")
+            slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            slider.setRange(0, 0)
+            slider.setEnabled(False)
+            slider.valueChanged.connect(
+                partial(self._on_plane_slider_changed, axis))
+            checkbox = QtWidgets.QCheckBox("Show")
+            checkbox.setEnabled(False)
+            checkbox.setToolTip(f"Show the {name} slice plane.")
+            checkbox.stateChanged.connect(
+                partial(self._on_plane_checkbox_changed, axis))
+            row.addWidget(label)
+            row.addWidget(slider, 2)
+            row.addWidget(checkbox)
+            slice_layout.addLayout(row)
+            self._slice_plane_controls[axis] = _SlicePlaneControl(
+                axis=axis,
+                name=name,
+                slider=slider,
+                checkbox=checkbox,
+                label=label,
+            )
+        self.slice_group.setLayout(slice_layout)
+        controls_layout.addWidget(self.slice_group)
+        self._configure_plane_controls()
+
         status_row = QtWidgets.QHBoxLayout()
         self.mesh_status_label = QtWidgets.QLabel("Mesh: none loaded")
         status_row.addWidget(self.mesh_status_label)
         status_row.addStretch(1)
         controls_layout.addLayout(status_row)
         controls_layout.addStretch(1)
-        layout.addWidget(controls_panel)
 
         # Build pipeline
         self.renderer = vtkRenderer()
@@ -334,15 +422,6 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.property = vtkVolumeProperty()
         self.property.ShadeOn()
         self.property.SetInterpolationTypeToLinear()
-
-        # Volume state/placeholders (for point-cloud only sessions these remain unset)
-        self._has_volume: bool = False
-        self._volume_np: Optional[np.ndarray] = None
-        self._vtk_img = None
-        self._vmin = 0.0
-        self._vmax = 1.0
-        self._opacity_tf = None
-        self._color_tf = None
 
         # Conditionally load volume if path looks like a volume source
         _loaded_volume = False
@@ -409,6 +488,10 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self._set_volume_controls_enabled(_loaded_volume)
         self._update_mesh_status_label()
 
+    def setModal(self, modal: bool):
+        """QMainWindow cannot be modal; keep compatibility with QDialog API."""
+        return
+
     def _install_interaction_bindings(self):
         # Mouse + key handlers
         self.interactor.AddObserver(
@@ -440,6 +523,13 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
                 pass
         self.volume_group.setVisible(enabled)
         self.wl_mode_checkbox.setVisible(enabled)
+        self.slice_group.setVisible(enabled)
+        for axis, control in self._slice_plane_controls.items():
+            available = self._plane_is_available(axis)
+            control.slider.setEnabled(enabled and available)
+            control.checkbox.setEnabled(enabled and available)
+        if not enabled:
+            self._clear_slice_clipping_planes()
 
     def _load_volume(self):
         volume, spacing = self._read_volume_any()
@@ -451,6 +541,7 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         # Ensure C-contiguous
         volume = np.ascontiguousarray(volume)
         z, y, x = volume.shape
+        self._volume_shape = (int(z), int(y), int(x))
 
         vtk_img = vtkImageData()
         vtk_img.SetDimensions(int(x), int(y), int(z))
@@ -494,6 +585,9 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         self.property.SetSpecular(0.2)
 
         self.mapper.SetInputData(vtk_img)
+        self._clear_slice_clipping_planes()
+        self._setup_slice_plane()
+        self._configure_plane_controls()
         # If spacing provided, reflect it in UI
         if spacing is not None and len(spacing) == 3:
             try:
@@ -634,6 +728,176 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         else:
             self.property.ShadeOff()
         self.vtk_widget.GetRenderWindow().Render()
+
+    def _configure_plane_controls(self):
+        for axis, control in self._slice_plane_controls.items():
+            total = self._plane_total(axis)
+            available = total > 0 and axis in self._slice_plane_widgets
+            control.slider.blockSignals(True)
+            if available:
+                control.slider.setRange(0, max(0, total - 1))
+                control.slider.setValue(total // 2)
+            else:
+                control.slider.setRange(0, 0)
+                control.slider.setValue(0)
+            control.slider.blockSignals(False)
+            control.slider.setEnabled(available)
+            control.checkbox.blockSignals(True)
+            control.checkbox.setEnabled(available)
+            if not available:
+                control.checkbox.setChecked(False)
+                if axis in self._slice_plane_widgets:
+                    self._slice_plane_widgets[axis].SetEnabled(False)
+            control.checkbox.blockSignals(False)
+            self._update_plane_label(axis, control.slider.value(), total)
+            if available:
+                self._apply_plane_slice(
+                    axis, control.slider.value(), render=False, update_slider=False
+                )
+
+    def _plane_property(self, axis: int) -> vtkProperty:
+        prop = vtkProperty()
+        color = PLANE_COLORS.get(axis, (0.8, 0.8, 0.2))
+        prop.SetColor(*color)
+        prop.SetOpacity(0.65)
+        prop.SetAmbient(1.0)
+        prop.SetDiffuse(0.0)
+        prop.SetSpecular(0.0)
+        prop.SetInterpolationToFlat()
+        return prop
+
+    def _setup_slice_plane(self):
+        self._slice_plane_widgets.clear()
+        if not _HAS_PLANE_WIDGET or self._vtk_img is None:
+            return
+        for axis, _, orientation_name in PLANE_DEFS:
+            try:
+                widget = vtkImagePlaneWidget()
+            except Exception:
+                continue
+            widget.SetInteractor(self.interactor)
+            widget.SetInputData(self._vtk_img)
+            orient_fn = getattr(widget, orientation_name, None)
+            if callable(orient_fn):
+                orient_fn()
+            widget.TextureInterpolateOn()
+            widget.DisplayTextOn()
+            widget.SetEnabled(False)
+            if getattr(self, "renderer", None) is not None:
+                try:
+                    widget.SetDefaultRenderer(self.renderer)
+                except Exception:
+                    pass
+            try:
+                widget.AlwaysOnTopOn()
+            except Exception:
+                pass
+            widget.SetPlaneProperty(self._plane_property(axis))
+            try:
+                widget.SetResliceInterpolateToLinear()
+            except Exception:
+                pass
+            self._slice_plane_widgets[axis] = widget
+
+    def _plane_total(self, axis: int) -> int:
+        if axis < len(self._volume_shape):
+            return self._volume_shape[axis]
+        return 0
+
+    def _plane_is_available(self, axis: int) -> bool:
+        return axis in self._slice_plane_widgets and self._plane_total(axis) > 0
+
+    def _clear_slice_clipping_planes(self):
+        if not getattr(self, "mapper", None):
+            self._slice_clipping_planes.clear()
+            return
+        for plane in self._slice_clipping_planes.values():
+            try:
+                self.mapper.RemoveClippingPlane(plane)
+            except Exception:
+                pass
+        self._slice_clipping_planes.clear()
+
+    def _update_plane_label(self, axis: int, index: int, total: int):
+        control = self._slice_plane_controls.get(axis)
+        if control is None:
+            return
+        if total <= 0:
+            control.label.setText(f"{control.name}: -/-")
+        else:
+            control.label.setText(f"{control.name}: {index + 1}/{total}")
+
+    def _apply_plane_slice(
+        self, axis: int, index: int, render: bool = True, update_slider: bool = True
+    ):
+        control = self._slice_plane_controls.get(axis)
+        if control is None:
+            return
+        total = self._plane_total(axis)
+        if total <= 0:
+            return
+        sanitized = max(0, min(index, total - 1))
+        if update_slider:
+            control.slider.blockSignals(True)
+            control.slider.setValue(sanitized)
+            control.slider.blockSignals(False)
+        self._update_plane_label(axis, sanitized, total)
+        widget = self._slice_plane_widgets.get(axis)
+        if widget:
+            widget.SetSliceIndex(sanitized)
+            widget.SetEnabled(control.checkbox.isChecked())
+        self._update_clipping_for_plane(axis, control.checkbox.isChecked())
+        if render:
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _on_plane_slider_changed(self, axis: int, value: int):
+        control = self._slice_plane_controls.get(axis)
+        if control and not control.checkbox.isChecked():
+            control.checkbox.blockSignals(True)
+            control.checkbox.setChecked(True)
+            control.checkbox.blockSignals(False)
+            self._on_plane_checkbox_changed(axis)
+            return
+        self._apply_plane_slice(axis, value)
+
+    def _on_plane_checkbox_changed(self, axis: int, *_):
+        widget = self._slice_plane_widgets.get(axis)
+        control = self._slice_plane_controls.get(axis)
+        if widget is None or control is None:
+            return
+        enabled = control.checkbox.isChecked()
+        widget.SetEnabled(enabled)
+        if enabled:
+            self._apply_plane_slice(axis, control.slider.value())
+        else:
+            self._update_clipping_for_plane(axis, False)
+            self.vtk_widget.GetRenderWindow().Render()
+
+    def _update_clipping_for_plane(self, axis: int, enabled: bool):
+        plane = self._slice_clipping_planes.get(axis)
+        if not enabled:
+            if plane is not None:
+                try:
+                    self.mapper.RemoveClippingPlane(plane)
+                except Exception:
+                    pass
+                self._slice_clipping_planes.pop(axis, None)
+            return
+        widget = self._slice_plane_widgets.get(axis)
+        control = self._slice_plane_controls.get(axis)
+        if widget is None or control is None:
+            return
+        if plane is None:
+            plane = vtkPlane()
+            self._slice_clipping_planes[axis] = plane
+            try:
+                self.mapper.AddClippingPlane(plane)
+            except Exception:
+                pass
+        origin = widget.GetCenter()
+        normal = widget.GetNormal()
+        plane.SetOrigin(origin)
+        plane.SetNormal(normal)
 
     # -------------------- Interaction helpers --------------------
     def _toggle_wl_mode(self):
@@ -1329,7 +1593,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         distance = radius * 2.5
         camera = self.renderer.GetActiveCamera()
         camera.SetFocalPoint(*center)
-        camera.SetPosition(center[0], center[1] - distance, center[2] + distance)
+        camera.SetPosition(center[0], center[1] -
+                           distance, center[2] + distance)
         camera.SetViewUp(0.0, 0.0, 1.0)
         self.renderer.ResetCameraClippingRange()
 
@@ -1586,7 +1851,8 @@ class VTKVolumeViewerDialog(QtWidgets.QDialog):
         if arr.size == 0:
             return fallback
         if arr.shape[1] < 3:
-            arr = np.pad(arr, ((0, 0), (0, 3 - arr.shape[1])), constant_values=0.0)
+            arr = np.pad(
+                arr, ((0, 0), (0, 3 - arr.shape[1])), constant_values=0.0)
         arr = arr[:, :3]
         if arr.size == 0:
             return fallback
