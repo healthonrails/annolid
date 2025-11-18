@@ -146,7 +146,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         # Controls panel (dockable)
         controls_panel = QtWidgets.QWidget()
-        controls_panel.setMinimumWidth(260)
+        controls_panel.setMinimumWidth(180)
         controls_panel.setSizePolicy(
             QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         controls_layout = QtWidgets.QVBoxLayout(controls_panel)
@@ -163,6 +163,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             | QtWidgets.QDockWidget.DockWidgetClosable
         )
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._controls_dock)
+        self._apply_default_dock_width()
 
         self.volume_group = QtWidgets.QGroupBox("Volume Controls")
         volume_layout = QtWidgets.QGridLayout()
@@ -491,6 +492,17 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def setModal(self, modal: bool):
         """QMainWindow cannot be modal; keep compatibility with QDialog API."""
         return
+
+    def _apply_default_dock_width(self):
+        if not hasattr(self, "_controls_dock") or not self._controls_dock:
+            return
+        try:
+            total_width = max(1, self.width())
+            preferred = max(160, min(260, int(total_width * 0.25)))
+            self.resizeDocks([self._controls_dock], [
+                             preferred], QtCore.Qt.Horizontal)
+        except Exception:
+            pass
 
     def _install_interaction_bindings(self):
         # Mouse + key handlers
