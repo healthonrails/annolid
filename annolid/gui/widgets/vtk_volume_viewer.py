@@ -266,6 +266,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_axis = 0
         self._slice_vmin = 0.0
         self._slice_vmax = 1.0
+        self._slice_gamma = 1.0
 
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
@@ -516,6 +517,34 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         slice_view_layout.addWidget(self.slice_hint_label)
         self.slice_status_label = QtWidgets.QLabel("Slice: -/-")
         slice_view_layout.addWidget(self.slice_status_label)
+        contrast_row = QtWidgets.QHBoxLayout()
+        contrast_row.addWidget(QtWidgets.QLabel("Window min/max:"))
+        self.slice_min_spin = QtWidgets.QDoubleSpinBox()
+        self.slice_max_spin = QtWidgets.QDoubleSpinBox()
+        for spin in (self.slice_min_spin, self.slice_max_spin):
+            spin.setDecimals(3)
+            spin.setRange(-1e9, 1e9)
+            spin.setKeyboardTracking(False)
+        self.slice_min_spin.valueChanged.connect(
+            lambda _: self._on_slice_window_changed())
+        self.slice_max_spin.valueChanged.connect(
+            lambda _: self._on_slice_window_changed())
+        contrast_row.addWidget(self.slice_min_spin)
+        contrast_row.addWidget(self.slice_max_spin)
+        self.slice_auto_btn = QtWidgets.QPushButton("Auto")
+        self.slice_auto_btn.clicked.connect(self._slice_auto_window)
+        contrast_row.addWidget(self.slice_auto_btn)
+        slice_view_layout.addLayout(contrast_row)
+        gamma_row = QtWidgets.QHBoxLayout()
+        self.slice_gamma_label = QtWidgets.QLabel("Gamma: 1.00")
+        self.slice_gamma_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slice_gamma_slider.setRange(10, 400)  # 0.1 - 4.0
+        self.slice_gamma_slider.setValue(100)
+        self.slice_gamma_slider.valueChanged.connect(
+            self._on_slice_gamma_changed)
+        gamma_row.addWidget(self.slice_gamma_label)
+        gamma_row.addWidget(self.slice_gamma_slider)
+        slice_view_layout.addLayout(gamma_row)
         self.slice_index_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slice_index_slider.setRange(0, 0)
         self.slice_index_slider.setEnabled(False)
@@ -588,8 +617,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         _loaded_volume = False
         if src_path and self._is_volume_candidate(self._path):
             try:
-                self._load_volume()
-                _loaded_volume = True
+                _loaded_volume = self._load_volume()
             except Exception:
                 _loaded_volume = False
 
@@ -704,7 +732,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._clear_slice_clipping_planes()
         if hasattr(self, "slice_group"):
             self.slice_group.setVisible(enabled)
-        if hasattr(self, "slice_view_group") and enabled:
+        if hasattr(self, "slice_view_group") and enabled and not self._slice_mode:
             self.slice_view_group.setVisible(False)
 
     def _reload_volume(self):
@@ -723,8 +751,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._volume_np = None
             self._vtk_img = None
             self._has_volume = False
-            self._load_volume()
-            self.renderer.ResetCamera()
+            loaded = self._load_volume()
+            if loaded:
+                self.renderer.ResetCamera()
             self.vtk_widget.GetRenderWindow().Render()
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
@@ -733,7 +762,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 f"Failed to reload volume:\n{exc}",
             )
 
-    def _load_volume(self):
+    def _load_volume(self) -> bool:
         old_array = self._out_of_core_array
         old_path = self._out_of_core_backing_path
         self._out_of_core_array = None
@@ -742,7 +771,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if volume_data.slice_mode:
             self._init_slice_mode(volume_data)
             self._cleanup_out_of_core_backing(old_array, old_path)
-            return
+            return False
         volume = volume_data.array
         if volume is None:
             raise RuntimeError("Volume source returned no data.")
@@ -834,6 +863,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._update_blend_mode()
         self._has_volume = True
         self._cleanup_out_of_core_backing(old_array, old_path)
+        return True
 
     def _init_slice_mode(self, volume_data: _VolumeData):
         self._teardown_slice_mode()
@@ -854,6 +884,24 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if hasattr(self, "slice_group"):
             self.slice_group.setVisible(False)
         self.slice_view_group.setVisible(True)
+        blank = vtkImageData()
+        blank.SetDimensions(1, 1, 1)
+        blank.SetSpacing(1.0, 1.0, 1.0)
+        blank.SetOrigin(0.0, 0.0, 0.0)
+        vtk_blank = numpy_to_vtk(np.zeros(1, dtype=np.float32), deep=True)
+        blank.GetPointData().SetScalars(vtk_blank)
+        try:
+            self.mapper.SetInputData(blank)
+        except Exception:
+            pass
+        try:
+            self.renderer.RemoveVolume(self.volume)
+        except Exception:
+            pass
+        try:
+            self.volume.VisibilityOff()
+        except Exception:
+            pass
         total = self._slice_loader.total_slices() if self._slice_loader else 0
         self.slice_index_slider.blockSignals(True)
         self.slice_index_slider.setRange(0, max(0, total - 1))
@@ -861,6 +909,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.slice_index_slider.setEnabled(total > 1)
         self.slice_index_slider.blockSignals(False)
         self._update_slice_status_label(0, total)
+        self._slice_gamma = 1.0
+        self.slice_gamma_slider.blockSignals(True)
+        self.slice_gamma_slider.setValue(100)
+        self.slice_gamma_slider.blockSignals(False)
+        self._update_slice_gamma_label()
+        self._configure_slice_window_controls()
         if self._slice_actor is None:
             self._slice_actor = vtkImageActor()
         try:
@@ -890,6 +944,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         span = max(1e-6, self._slice_vmax - self._slice_vmin)
         norm = (norm - self._slice_vmin) / span
         norm = np.clip(norm, 0.0, 1.0)
+        gamma = max(0.1, float(self._slice_gamma))
+        if abs(gamma - 1.0) > 1e-6:
+            norm = np.power(norm, gamma)
         h, w = norm.shape
         vtk_img = vtkImageData()
         vtk_img.SetDimensions(int(w), int(h), 1)
@@ -903,6 +960,68 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.renderer.ResetCamera()
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _configure_slice_window_controls(self):
+        if not hasattr(self, "slice_min_spin"):
+            return
+        vmin = float(self._slice_vmin)
+        vmax = float(self._slice_vmax)
+        if vmax <= vmin:
+            vmax = vmin + 1e-3
+        for spin in (self.slice_min_spin, self.slice_max_spin):
+            spin.blockSignals(True)
+            spin.setRange(vmin - 1e6, vmax + 1e6)
+        self.slice_min_spin.setValue(vmin)
+        self.slice_max_spin.setValue(vmax)
+        for spin in (self.slice_min_spin, self.slice_max_spin):
+            spin.blockSignals(False)
+
+    def _on_slice_window_changed(self):
+        if not self._slice_mode:
+            return
+        vmin = float(min(self.slice_min_spin.value(),
+                         self.slice_max_spin.value()))
+        vmax = float(max(self.slice_min_spin.value(),
+                         self.slice_max_spin.value()))
+        if vmax <= vmin:
+            vmax = vmin + 1e-3
+        self.slice_min_spin.blockSignals(True)
+        self.slice_max_spin.blockSignals(True)
+        self.slice_min_spin.setValue(vmin)
+        self.slice_max_spin.setValue(vmax)
+        self.slice_min_spin.blockSignals(False)
+        self.slice_max_spin.blockSignals(False)
+        self._slice_vmin = vmin
+        self._slice_vmax = vmax
+        self._load_slice_image(self._slice_current_index)
+
+    def _slice_auto_window(self):
+        if not self._slice_mode or not self._slice_loader:
+            return
+        idx = self._slice_current_index
+        sample = self._slice_loader.read_slice(self._slice_axis, idx)
+        arr = np.asarray(sample).astype(np.float32)
+        if arr.size == 0:
+            return
+        p2 = float(np.percentile(arr, 2))
+        p98 = float(np.percentile(arr, 98))
+        if p98 <= p2:
+            p2 = float(arr.min())
+            p98 = float(arr.max())
+        self._slice_vmin = p2
+        self._slice_vmax = p98
+        self._configure_slice_window_controls()
+        self._load_slice_image(idx)
+
+    def _on_slice_gamma_changed(self, value: int):
+        self._slice_gamma = max(0.1, float(value) / 100.0)
+        self._update_slice_gamma_label()
+        if self._slice_mode:
+            self._load_slice_image(self._slice_current_index)
+
+    def _update_slice_gamma_label(self):
+        if hasattr(self, "slice_gamma_label"):
+            self.slice_gamma_label.setText(f"Gamma: {self._slice_gamma:.2f}")
+
     def _on_slice_index_changed(self, value: int):
         if not self._slice_mode:
             return
@@ -915,6 +1034,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.slice_status_label.setText("Slice: -/-")
         else:
             self.slice_status_label.setText(f"Slice: {index + 1}/{total}")
+        if total > 0:
+            self.slice_hint_label.setText(
+                "Large TIFF in slice mode. Adjust contrast or switch slices as needed."
+            )
 
     def _teardown_slice_mode(self):
         self._slice_mode = False
@@ -932,6 +1055,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.slice_index_slider.blockSignals(False)
         self._update_slice_status_label(0, 0)
         self._close_slice_loader()
+        self._slice_vmin = 0.0
+        self._slice_vmax = 1.0
+        self._slice_gamma = 1.0
+        self._update_slice_gamma_label()
 
     def _close_slice_loader(self):
         if self._slice_loader is None:
@@ -977,10 +1104,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if path.is_dir():
                 volume, spacing = self._read_dicom_series(path)
                 return _VolumeData(
-                    volume,
-                    spacing,
-                    float(volume.min()),
-                    float(volume.max()),
+                    array=volume,
+                    spacing=spacing,
+                    vmin=float(volume.min()),
+                    vmax=float(volume.max()),
+                    is_grayscale=volume.ndim == 3,
+                    is_out_of_core=False,
+                    volume_shape=tuple(int(x) for x in volume.shape[:3]),
                 )
 
             suffix = path.suffix.lower()
@@ -1001,19 +1131,25 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 spacing = (s[0], s[1], s[2])
                 vol = self._normalize_to_float01(vol)
                 return _VolumeData(
-                    vol,
-                    spacing,
-                    float(vol.min()),
-                    float(vol.max()),
+                    array=vol,
+                    spacing=spacing,
+                    vmin=float(vol.min()),
+                    vmax=float(vol.max()),
+                    is_grayscale=vol.ndim == 3,
+                    is_out_of_core=False,
+                    volume_shape=tuple(int(x) for x in vol.shape[:3]),
                 )
             if suffix in ('.dcm', '.ima', '.dicom'):
                 # Treat as a DICOM series from the containing folder
                 volume, spacing = self._read_dicom_series(path.parent)
                 return _VolumeData(
-                    volume,
-                    spacing,
-                    float(volume.min()),
-                    float(volume.max()),
+                    array=volume,
+                    spacing=spacing,
+                    vmin=float(volume.min()),
+                    vmax=float(volume.max()),
+                    is_grayscale=volume.ndim == 3,
+                    is_out_of_core=False,
+                    volume_shape=tuple(int(x) for x in volume.shape[:3]),
                 )
 
             if self._is_tiff_candidate(path):
@@ -1094,12 +1230,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         vol = np.stack(frames, axis=0)
         vol = self._normalize_to_float01(vol)
         return _VolumeData(
-            vol,
-            None,
-            float(vol.min()),
-            float(vol.max()),
+            array=vol,
+            spacing=None,
+            vmin=float(vol.min()),
+            vmax=float(vol.max()),
             is_grayscale=vol.ndim == 3,
             is_out_of_core=False,
+            volume_shape=tuple(int(x) for x in vol.shape[:3]),
         )
 
     def _read_tiff_out_of_core(self, path: Path) -> _VolumeData:
@@ -1771,6 +1908,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _auto_window(self):
+        if self._slice_mode:
+            self._slice_auto_window()
+            return
         if not getattr(self, "_has_volume", False) or self._volume_np is None:
             return
         # 2-98 percentile auto window on current volume
@@ -1788,6 +1928,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _update_transfer_functions(self):
+        if self._slice_mode:
+            return
         if not getattr(self, "_has_volume", False) or self._opacity_tf is None or self._color_tf is None:
             return
         # Build opacity and color TF based on window and colormap
