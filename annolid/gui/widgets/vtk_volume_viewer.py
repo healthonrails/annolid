@@ -859,6 +859,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         )
 
     def _read_tiff_out_of_core(self, path: Path) -> _VolumeData:
+        native = self._try_native_tiff_memmap(path)
+        if native is not None:
+            return native
         with Image.open(str(path)) as img:
             n_frames = max(1, int(getattr(img, "n_frames", 1) or 1))
             img.seek(0)
@@ -928,6 +931,52 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             is_out_of_core=True,
             backing_path=backing_path,
         )
+
+    def _try_native_tiff_memmap(self, path: Path) -> Optional[_VolumeData]:
+        try:
+            import tifffile  # type: ignore
+        except Exception:
+            return None
+        try:
+            try:
+                reader = tifffile.memmap(str(path), mode="r+")
+            except PermissionError:
+                reader = tifffile.memmap(str(path), mode="r")
+        except Exception:
+            return None
+        if reader.ndim not in (3, 4):
+            return None
+        if reader.ndim == 4 and reader.shape[-1] == 1:
+            reader = reader[..., 0]
+        if reader.ndim != 3:
+            return None
+        if not reader.flags.c_contiguous:
+            reader = np.ascontiguousarray(reader)
+        vmin, vmax = self._dtype_value_range(reader.dtype)
+        logger.info(
+            "Using tifffile.memmap for TIFF stack '%s' (shape=%s, dtype=%s)",
+            path,
+            reader.shape,
+            reader.dtype,
+        )
+        return _VolumeData(
+            reader,
+            None,
+            vmin,
+            vmax,
+            is_grayscale=True,
+            is_out_of_core=True,
+        )
+
+    def _dtype_value_range(self, dtype: np.dtype) -> tuple[float, float]:
+        if np.issubdtype(dtype, np.bool_):
+            return 0.0, 1.0
+        if np.issubdtype(dtype, np.integer):
+            info = np.iinfo(dtype)
+            return float(info.min), float(info.max)
+        if np.issubdtype(dtype, np.floating):
+            return 0.0, 1.0
+        return 0.0, 1.0
 
     def _convert_frame_to_plane(self, frame: np.ndarray, dtype: np.dtype) -> np.ndarray:
         arr = np.asarray(frame)
