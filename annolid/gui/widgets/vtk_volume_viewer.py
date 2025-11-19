@@ -267,6 +267,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_vmin = 0.0
         self._slice_vmax = 1.0
         self._slice_gamma = 1.0
+        self._slice_window_override = False
+        self._slice_last_data_min = 0.0
+        self._slice_last_data_max = 1.0
 
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
@@ -875,6 +878,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_axis = volume_data.slice_axis or 0
         self._slice_vmin = volume_data.vmin
         self._slice_vmax = volume_data.vmax
+        self._slice_window_override = False
         if hasattr(self, "volume"):
             try:
                 self.renderer.RemoveVolume(self.volume)
@@ -940,9 +944,36 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             arr = np.squeeze(arr)
             if arr.ndim != 2:
                 arr = arr[..., 0]
+        raw_min = float(np.min(arr))
+        raw_max = float(np.max(arr))
+        self._slice_last_data_min = raw_min
+        self._slice_last_data_max = raw_max
+        need_window_update = False
+        if not self._slice_window_override:
+            self._slice_vmin = raw_min
+            self._slice_vmax = raw_max
+            need_window_update = True
+        display_min = self._slice_vmin
+        display_max = self._slice_vmax
+        if display_max <= display_min:
+            display_max = display_min + 1e-3
+            need_window_update = True
+        if raw_max <= display_min:
+            display_min = raw_min
+            display_max = max(raw_min + 1e-3, raw_max)
+            need_window_update = True
+        elif raw_min >= display_max:
+            display_min = raw_min
+            display_max = max(raw_max, raw_min + 1e-3)
+            need_window_update = True
+        if need_window_update:
+            self._slice_vmin = display_min
+            self._slice_vmax = display_max
+            self._configure_slice_window_controls()
         norm = arr.astype(np.float32)
-        span = max(1e-6, self._slice_vmax - self._slice_vmin)
-        norm = (norm - self._slice_vmin) / span
+        span = float(display_max - display_min)
+        span = max(span, 1e-6)
+        norm = (norm - display_min) / span
         norm = np.clip(norm, 0.0, 1.0)
         gamma = max(0.1, float(self._slice_gamma))
         if abs(gamma - 1.0) > 1e-6:
@@ -974,6 +1005,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.slice_max_spin.setValue(vmax)
         for spin in (self.slice_min_spin, self.slice_max_spin):
             spin.blockSignals(False)
+        self._slice_vmin = vmin
+        self._slice_vmax = vmax
 
     def _on_slice_window_changed(self):
         if not self._slice_mode:
@@ -992,6 +1025,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.slice_max_spin.blockSignals(False)
         self._slice_vmin = vmin
         self._slice_vmax = vmax
+        self._slice_window_override = True
         self._load_slice_image(self._slice_current_index)
 
     def _slice_auto_window(self):
@@ -1009,6 +1043,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             p98 = float(arr.max())
         self._slice_vmin = p2
         self._slice_vmax = p98
+        self._slice_window_override = True
         self._configure_slice_window_controls()
         self._load_slice_image(idx)
 
@@ -1016,6 +1051,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_gamma = max(0.1, float(value) / 100.0)
         self._update_slice_gamma_label()
         if self._slice_mode:
+            self._slice_window_override = True
             self._load_slice_image(self._slice_current_index)
 
     def _update_slice_gamma_label(self):
@@ -1059,6 +1095,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_vmax = 1.0
         self._slice_gamma = 1.0
         self._update_slice_gamma_label()
+        self._slice_window_override = False
 
     def _close_slice_loader(self):
         if self._slice_loader is None:
