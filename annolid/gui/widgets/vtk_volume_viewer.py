@@ -28,6 +28,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkPolyDataMapper,
     vtkActor,
     vtkProperty,
+    vtkImageActor,
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.vtkCommonDataModel import (
@@ -78,6 +79,19 @@ try:
         _auto_ooc_raw.strip()) if _auto_ooc_raw else 0.0
 except Exception:
     AUTO_OUT_OF_CORE_MB = 0.0
+_max_voxels_raw = os.environ.get(
+    "ANNOLID_VTK_MAX_VOLUME_VOXELS", "134217728") or ""
+try:
+    MAX_VOLUME_VOXELS = int(float(_max_voxels_raw.strip()))
+except Exception:
+    MAX_VOLUME_VOXELS = 134217728
+_slice_mode_bytes_raw = os.environ.get(
+    "ANNOLID_VTK_SLICE_MODE_BYTES", "68719476736"
+) or ""
+try:
+    SLICE_MODE_BYTES = float(_slice_mode_bytes_raw.strip())
+except Exception:
+    SLICE_MODE_BYTES = 68719476736.0
 
 PLANE_DEFS = (
     (0, "Axial (Z)", "SetPlaneOrientationToZAxes"),
@@ -110,13 +124,98 @@ class _SlicePlaneControl:
 
 @dataclass
 class _VolumeData:
-    array: np.ndarray
+    array: Optional[np.ndarray]
     spacing: Optional[Tuple[float, float, float]]
     vmin: float
     vmax: float
     is_grayscale: bool = True
     is_out_of_core: bool = False
     backing_path: Optional[Path] = None
+    vtk_image: Optional[vtkImageData] = None  # type: ignore[name-defined]
+    slice_mode: bool = False
+    slice_loader: Optional["_BaseSliceLoader"] = None
+    slice_axis: int = 0
+    volume_shape: Optional[tuple[int, int, int]] = None
+
+
+class _BaseSliceLoader:
+    """Abstract loader that can retrieve 2D slices on demand."""
+
+    def total_slices(self) -> int:
+        raise NotImplementedError
+
+    def shape(self) -> tuple[int, int, int]:
+        raise NotImplementedError
+
+    def dtype(self) -> np.dtype:
+        raise NotImplementedError
+
+    def read_slice(self, axis: int, index: int) -> np.ndarray:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        return
+
+
+class _MemmapSliceLoader(_BaseSliceLoader):
+    def __init__(self, array: np.ndarray):
+        self._array = array
+        if self._array.ndim == 2:
+            self._array = self._array[np.newaxis, ...]
+
+    def total_slices(self) -> int:
+        return int(self._array.shape[0])
+
+    def shape(self) -> tuple[int, int, int]:
+        shp = self._array.shape
+        if len(shp) == 2:
+            return (1, int(shp[0]), int(shp[1]))
+        return (int(shp[0]), int(shp[1]), int(shp[2]))
+
+    def dtype(self) -> np.dtype:
+        return self._array.dtype
+
+    def read_slice(self, axis: int, index: int) -> np.ndarray:
+        if axis != 0:
+            raise NotImplementedError(
+                "Memmap loader currently supports axial slices only.")
+        index = max(0, min(int(index), self.total_slices() - 1))
+        return np.array(self._array[index], copy=True)
+
+    def close(self) -> None:
+        self._array = None  # type: ignore[assignment]
+
+
+class _TiffSliceLoader(_BaseSliceLoader):
+    def __init__(self, path: Path, shape: tuple[int, int, int], dtype: np.dtype):
+        import tifffile  # local import to avoid hard dependency at module load
+
+        self._path = str(path)
+        self._tif = tifffile.TiffFile(self._path)
+        self._shape = (int(shape[0]), int(shape[1]), int(shape[2]))
+        self._dtype = np.dtype(dtype)
+
+    def total_slices(self) -> int:
+        return self._shape[0]
+
+    def shape(self) -> tuple[int, int, int]:
+        return self._shape
+
+    def dtype(self) -> np.dtype:
+        return self._dtype
+
+    def read_slice(self, axis: int, index: int) -> np.ndarray:
+        if axis != 0:
+            raise NotImplementedError(
+                "TIFF slice loader currently supports axial slices only.")
+        idx = max(0, min(int(index), self.total_slices() - 1))
+        return self._tif.pages[idx].asarray()
+
+    def close(self) -> None:
+        try:
+            self._tif.close()
+        except Exception:
+            pass
 
 
 class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
@@ -160,6 +259,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._out_of_core_active = False
         self._out_of_core_backing_path: Optional[Path] = None
         self._out_of_core_array: Optional[np.memmap] = None
+        self._slice_mode = False
+        self._slice_loader: Optional[_BaseSliceLoader] = None
+        self._slice_actor: Optional[vtkImageActor] = None
+        self._slice_current_index = 0
+        self._slice_axis = 0
+        self._slice_vmin = 0.0
+        self._slice_vmax = 1.0
 
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
@@ -400,6 +506,26 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.general_group.setLayout(general_layout)
         controls_layout.addWidget(self.general_group)
 
+        self.slice_view_group = QtWidgets.QGroupBox("Slice Viewer")
+        slice_view_layout = QtWidgets.QVBoxLayout()
+        slice_view_layout.setContentsMargins(4, 4, 4, 4)
+        slice_view_layout.setSpacing(4)
+        self.slice_hint_label = QtWidgets.QLabel(
+            "Large TIFF detected. Showing on-demand axial slices.")
+        self.slice_hint_label.setWordWrap(True)
+        slice_view_layout.addWidget(self.slice_hint_label)
+        self.slice_status_label = QtWidgets.QLabel("Slice: -/-")
+        slice_view_layout.addWidget(self.slice_status_label)
+        self.slice_index_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slice_index_slider.setRange(0, 0)
+        self.slice_index_slider.setEnabled(False)
+        self.slice_index_slider.valueChanged.connect(
+            self._on_slice_index_changed)
+        slice_view_layout.addWidget(self.slice_index_slider)
+        self.slice_view_group.setLayout(slice_view_layout)
+        self.slice_view_group.setVisible(False)
+        controls_layout.addWidget(self.slice_view_group)
+
         self.slice_group = QtWidgets.QGroupBox("Slice Planes")
         slice_layout = QtWidgets.QVBoxLayout()
         slice_layout.setContentsMargins(4, 4, 4, 4)
@@ -576,6 +702,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             control.checkbox.setEnabled(enabled and available)
         if not enabled:
             self._clear_slice_clipping_planes()
+        if hasattr(self, "slice_group"):
+            self.slice_group.setVisible(enabled)
+        if hasattr(self, "slice_view_group") and enabled:
+            self.slice_view_group.setVisible(False)
 
     def _reload_volume(self):
         if not self._is_volume_candidate(getattr(self, "_path", Path("."))):
@@ -587,6 +717,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return
         try:
             self._teardown_slice_planes()
+            self._teardown_slice_mode()
             self._clear_slice_clipping_planes()
             self._volume_shape = (0, 0, 0)
             self._volume_np = None
@@ -608,7 +739,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._out_of_core_array = None
         self._out_of_core_backing_path = None
         volume_data = self._read_volume_any()
+        if volume_data.slice_mode:
+            self._init_slice_mode(volume_data)
+            self._cleanup_out_of_core_backing(old_array, old_path)
+            return
         volume = volume_data.array
+        if volume is None:
+            raise RuntimeError("Volume source returned no data.")
         spacing = volume_data.spacing
         # Convert color stack to luminance for volume rendering if needed
         if (
@@ -697,6 +834,113 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._update_blend_mode()
         self._has_volume = True
         self._cleanup_out_of_core_backing(old_array, old_path)
+
+    def _init_slice_mode(self, volume_data: _VolumeData):
+        self._teardown_slice_mode()
+        if volume_data.slice_loader is None:
+            raise RuntimeError(
+                "Slice loader is not available for this volume.")
+        self._slice_mode = True
+        self._slice_loader = volume_data.slice_loader
+        self._slice_axis = volume_data.slice_axis or 0
+        self._slice_vmin = volume_data.vmin
+        self._slice_vmax = volume_data.vmax
+        if hasattr(self, "volume"):
+            try:
+                self.renderer.RemoveVolume(self.volume)
+            except Exception:
+                pass
+        self._set_volume_controls_enabled(False)
+        if hasattr(self, "slice_group"):
+            self.slice_group.setVisible(False)
+        self.slice_view_group.setVisible(True)
+        total = self._slice_loader.total_slices() if self._slice_loader else 0
+        self.slice_index_slider.blockSignals(True)
+        self.slice_index_slider.setRange(0, max(0, total - 1))
+        self.slice_index_slider.setValue(0)
+        self.slice_index_slider.setEnabled(total > 1)
+        self.slice_index_slider.blockSignals(False)
+        self._update_slice_status_label(0, total)
+        if self._slice_actor is None:
+            self._slice_actor = vtkImageActor()
+        try:
+            self.renderer.RemoveActor(self._slice_actor)
+        except Exception:
+            pass
+        self.renderer.AddActor(self._slice_actor)
+        self._volume_shape = volume_data.volume_shape or (total, 0, 0)
+        self._load_slice_image(0)
+        self._update_volume_io_label(True)
+
+    def _load_slice_image(self, index: int):
+        if not self._slice_loader or self._slice_actor is None:
+            return
+        total = max(1, self._slice_loader.total_slices())
+        sanitized = max(0, min(int(index), total - 1))
+        slice_array = self._slice_loader.read_slice(
+            self._slice_axis, sanitized)
+        arr = np.asarray(slice_array)
+        if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+            arr = self._convert_frame_to_plane(arr, arr.dtype)
+        if arr.ndim != 2:
+            arr = np.squeeze(arr)
+            if arr.ndim != 2:
+                arr = arr[..., 0]
+        norm = arr.astype(np.float32)
+        span = max(1e-6, self._slice_vmax - self._slice_vmin)
+        norm = (norm - self._slice_vmin) / span
+        norm = np.clip(norm, 0.0, 1.0)
+        h, w = norm.shape
+        vtk_img = vtkImageData()
+        vtk_img.SetDimensions(int(w), int(h), 1)
+        vtk_img.SetSpacing(1.0, 1.0, 1.0)
+        vtk_img.SetOrigin(0.0, 0.0, 0.0)
+        vtk_array = numpy_to_vtk(norm.reshape(-1), deep=True)
+        vtk_img.GetPointData().SetScalars(vtk_array)
+        self._slice_actor.SetInputData(vtk_img)
+        self._slice_current_index = sanitized
+        self._update_slice_status_label(sanitized, total)
+        self.renderer.ResetCamera()
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _on_slice_index_changed(self, value: int):
+        if not self._slice_mode:
+            return
+        self._load_slice_image(int(value))
+
+    def _update_slice_status_label(self, index: int, total: int):
+        if not hasattr(self, "slice_status_label"):
+            return
+        if total <= 0:
+            self.slice_status_label.setText("Slice: -/-")
+        else:
+            self.slice_status_label.setText(f"Slice: {index + 1}/{total}")
+
+    def _teardown_slice_mode(self):
+        self._slice_mode = False
+        if self._slice_actor is not None:
+            try:
+                self.renderer.RemoveActor(self._slice_actor)
+            except Exception:
+                pass
+            self._slice_actor = None
+        self.slice_view_group.setVisible(False)
+        self.slice_index_slider.blockSignals(True)
+        self.slice_index_slider.setRange(0, 0)
+        self.slice_index_slider.setValue(0)
+        self.slice_index_slider.setEnabled(False)
+        self.slice_index_slider.blockSignals(False)
+        self._update_slice_status_label(0, 0)
+        self._close_slice_loader()
+
+    def _close_slice_loader(self):
+        if self._slice_loader is None:
+            return
+        try:
+            self._slice_loader.close()
+        except Exception:
+            pass
+        self._slice_loader = None
 
     def _cleanup_out_of_core_backing(
         self,
@@ -859,9 +1103,49 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         )
 
     def _read_tiff_out_of_core(self, path: Path) -> _VolumeData:
-        native = self._try_native_tiff_memmap(path)
-        if native is not None:
-            return native
+        meta = self._probe_tiff_metadata(path)
+        shape = meta[0] if meta else None
+        dtype = meta[1] if meta else None
+        memmap_arr = self._open_tiff_memmap(path)
+        if memmap_arr is not None:
+            mem_shape = tuple(int(x) for x in memmap_arr.shape)
+            shape = shape or mem_shape
+            dtype = dtype or memmap_arr.dtype
+            if shape and dtype and self._should_use_slice_mode(shape, dtype):
+                loader = _MemmapSliceLoader(memmap_arr)
+                logger.info(
+                    "Slice mode (memmap) for TIFF stack '%s' (shape=%s, dtype=%s)",
+                    path,
+                    loader.shape(),
+                    loader.dtype(),
+                )
+                return self._make_slice_volume_data(loader)
+            vmin, vmax = self._dtype_value_range(memmap_arr.dtype)
+            logger.info(
+                "Using tifffile.memmap for TIFF stack '%s' (shape=%s, dtype=%s)",
+                path,
+                mem_shape,
+                memmap_arr.dtype,
+            )
+            return _VolumeData(
+                array=memmap_arr,
+                spacing=None,
+                vmin=vmin,
+                vmax=vmax,
+                is_grayscale=True,
+                is_out_of_core=True,
+                backing_path=None,
+                volume_shape=mem_shape,
+            )
+        if shape and dtype and self._should_use_slice_mode(shape, dtype):
+            loader = _TiffSliceLoader(path, shape, dtype)
+            logger.info(
+                "Slice mode (paged) for TIFF stack '%s' (shape=%s, dtype=%s)",
+                path,
+                shape,
+                dtype,
+            )
+            return self._make_slice_volume_data(loader)
         with Image.open(str(path)) as img:
             n_frames = max(1, int(getattr(img, "n_frames", 1) or 1))
             img.seek(0)
@@ -925,14 +1209,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         return _VolumeData(
             reader,
             None,
-            min_val,
-            max_val,
+            float(min_val),
+            float(max_val),
             is_grayscale=True,
             is_out_of_core=True,
             backing_path=backing_path,
+            volume_shape=(n_frames, plane_shape[0], plane_shape[1]),
         )
 
-    def _try_native_tiff_memmap(self, path: Path) -> Optional[_VolumeData]:
+    def _open_tiff_memmap(self, path: Path) -> Optional[np.ndarray]:
         try:
             import tifffile  # type: ignore
         except Exception:
@@ -952,21 +1237,61 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return None
         if not reader.flags.c_contiguous:
             reader = np.ascontiguousarray(reader)
-        vmin, vmax = self._dtype_value_range(reader.dtype)
-        logger.info(
-            "Using tifffile.memmap for TIFF stack '%s' (shape=%s, dtype=%s)",
-            path,
-            reader.shape,
-            reader.dtype,
-        )
+        return reader
+
+    def _make_slice_volume_data(self, loader: _BaseSliceLoader) -> _VolumeData:
+        shape = loader.shape()
+        dtype = loader.dtype()
+        vmin, vmax = self._dtype_value_range(dtype)
         return _VolumeData(
-            reader,
-            None,
-            vmin,
-            vmax,
+            array=None,
+            spacing=None,
+            vmin=vmin,
+            vmax=vmax,
             is_grayscale=True,
             is_out_of_core=True,
+            slice_mode=True,
+            slice_loader=loader,
+            slice_axis=0,
+            volume_shape=shape,
         )
+
+    def _probe_tiff_metadata(
+        self, path: Path
+    ) -> Optional[tuple[tuple[int, int, int], np.dtype]]:
+        try:
+            import tifffile  # type: ignore
+        except Exception:
+            return None
+        try:
+            with tifffile.TiffFile(str(path)) as tif:
+                series = tif.series[0]
+                shape = tuple(int(x) for x in series.shape)
+                dtype = np.dtype(series.dtype)
+        except Exception:
+            return None
+        if len(shape) == 2:
+            shape = (1, shape[0], shape[1])
+        elif len(shape) > 3:
+            shape = shape[:3]
+        return shape, dtype
+
+    def _should_use_slice_mode(
+        self, shape: tuple[int, int, int], dtype: np.dtype
+    ) -> bool:
+        if not shape or len(shape) < 3:
+            return False
+        total_voxels = int(shape[0]) * int(shape[1]) * int(shape[2])
+        itemsize = max(1, np.dtype(dtype).itemsize)
+        size_bytes = total_voxels * itemsize
+        if MAX_VOLUME_VOXELS > 0 and total_voxels > MAX_VOLUME_VOXELS:
+            return True
+        if SLICE_MODE_BYTES > 0 and size_bytes >= SLICE_MODE_BYTES:
+            return True
+        available = self._available_memory_bytes()
+        if available > 0 and size_bytes >= available * 0.8:
+            return True
+        return False
 
     def _dtype_value_range(self, dtype: np.dtype) -> tuple[float, float]:
         if np.issubdtype(dtype, np.bool_):
@@ -2403,6 +2728,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._teardown_slice_planes()
         except Exception:
             pass
+        try:
+            self._teardown_slice_mode()
+        except Exception:
+            pass
         self._cleanup_out_of_core_backing()
         super().closeEvent(event)
 
@@ -2451,7 +2780,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def _update_volume_io_label(self, out_of_core: bool):
         if not hasattr(self, "volume_io_label"):
             return
-        if out_of_core:
+        if self._slice_mode:
+            text = "Volume I/O: slice viewer (on-demand)"
+        elif out_of_core:
             text = "Volume I/O: out-of-core (auto)"
         else:
             text = "Volume I/O: in-memory"
