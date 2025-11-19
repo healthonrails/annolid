@@ -70,6 +70,10 @@ POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
 MESH_EXTS = (".stl", ".obj")
 VOLUME_FILE_EXTS = (".tif", ".tiff", ".nii", ".nii.gz")
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
+VOLUME_SOURCE_FILTERS = (
+    "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff "
+    "*.nii *.nii.gz *.dcm *.dicom *.ima *.IMA);;All files (*.*)"
+)
 TIFF_SUFFIXES = (".tif", ".tiff")
 OME_TIFF_SUFFIXES = (".ome.tif", ".ome.tiff")
 _auto_ooc_raw = os.environ.get(
@@ -136,6 +140,16 @@ class _VolumeData:
     slice_loader: Optional["_BaseSliceLoader"] = None
     slice_axis: int = 0
     volume_shape: Optional[tuple[int, int, int]] = None
+
+
+@dataclass
+class _OverlayVolumeEntry:
+    path: Path
+    actor: vtkVolume
+    mapper: vtkSmartVolumeMapper
+    property: vtkVolumeProperty
+    label: str
+    visible: bool = True
 
 
 class _BaseSliceLoader:
@@ -259,6 +273,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._out_of_core_active = False
         self._out_of_core_backing_path: Optional[Path] = None
         self._out_of_core_array: Optional[np.memmap] = None
+        self._volume_visible = True
+        self._point_cloud_visible = True
         self._slice_mode = False
         self._slice_loader: Optional[_BaseSliceLoader] = None
         self._slice_actor: Optional[vtkImageActor] = None
@@ -267,6 +283,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_vmin = 0.0
         self._slice_vmax = 1.0
         self._slice_gamma = 1.0
+        self._slice_window_override = False
+        self._slice_last_data_min = 0.0
+        self._slice_last_data_max = 1.0
+        self._overlay_volumes: list[_OverlayVolumeEntry] = []
+        self._overlay_list_updating = False
         self._slice_window_override = False
         self._slice_last_data_min = 0.0
         self._slice_last_data_max = 1.0
@@ -377,7 +398,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         # Point cloud controls
         self.load_pc_btn = QtWidgets.QPushButton("Load Point Cloud…")
-        self.load_pc_btn.clicked.connect(self._load_point_cloud_folder)
+        self.load_pc_btn.clicked.connect(self._load_point_cloud_dialog)
         self.clear_pc_btn = QtWidgets.QPushButton("Clear Points")
         self.clear_pc_btn.clicked.connect(self._clear_point_clouds)
         self.point_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -481,6 +502,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         self.reset_cam_btn = QtWidgets.QPushButton("Reset Camera")
         self.reset_cam_btn.clicked.connect(self._reset_camera)
+        self.load_volume_btn = QtWidgets.QPushButton("Load Volume…")
+        self.load_volume_btn.clicked.connect(self._load_volume_dialog)
         self.reload_volume_btn = QtWidgets.QPushButton("Reload Volume")
         self.reload_volume_btn.setToolTip(
             "Re-read the active volume from disk. Use this after toggling the "
@@ -501,14 +524,52 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         wl_layout.addWidget(self.wl_mode_checkbox)
         wl_layout.addStretch(1)
         general_layout.addLayout(wl_layout)
+        visibility_layout = QtWidgets.QHBoxLayout()
+        self.show_volume_checkbox = QtWidgets.QCheckBox("Show Volume")
+        self.show_volume_checkbox.setChecked(True)
+        self.show_volume_checkbox.stateChanged.connect(
+            self._on_volume_visibility_changed)
+        visibility_layout.addWidget(self.show_volume_checkbox)
+        self.show_point_cloud_checkbox = QtWidgets.QCheckBox(
+            "Show Point Cloud")
+        self.show_point_cloud_checkbox.setChecked(True)
+        self.show_point_cloud_checkbox.stateChanged.connect(
+            self._on_point_cloud_visibility_changed)
+        visibility_layout.addWidget(self.show_point_cloud_checkbox)
+        visibility_layout.addStretch(1)
+        general_layout.addLayout(visibility_layout)
         general_buttons_layout = QtWidgets.QHBoxLayout()
         general_buttons_layout.addWidget(self.reset_cam_btn)
+        general_buttons_layout.addWidget(self.load_volume_btn)
         general_buttons_layout.addWidget(self.reload_volume_btn)
         general_buttons_layout.addWidget(self.snapshot_btn)
         general_buttons_layout.addStretch(1)
         general_layout.addLayout(general_buttons_layout)
         self.general_group.setLayout(general_layout)
         controls_layout.addWidget(self.general_group)
+
+        self.overlay_group = QtWidgets.QGroupBox("Overlay Volumes")
+        overlay_layout = QtWidgets.QVBoxLayout()
+        overlay_layout.setContentsMargins(4, 4, 4, 4)
+        overlay_layout.setSpacing(4)
+        self.overlay_list = QtWidgets.QListWidget()
+        self.overlay_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.overlay_list.itemChanged.connect(self._on_overlay_item_changed)
+        overlay_layout.addWidget(self.overlay_list)
+        overlay_btn_row = QtWidgets.QHBoxLayout()
+        self.overlay_remove_btn = QtWidgets.QPushButton("Remove Selected")
+        self.overlay_remove_btn.clicked.connect(
+            self._remove_selected_overlays)
+        self.overlay_clear_btn = QtWidgets.QPushButton("Clear Overlays")
+        self.overlay_clear_btn.clicked.connect(self._clear_overlay_volumes)
+        overlay_btn_row.addWidget(self.overlay_remove_btn)
+        overlay_btn_row.addWidget(self.overlay_clear_btn)
+        overlay_btn_row.addStretch(1)
+        overlay_layout.addLayout(overlay_btn_row)
+        self.overlay_group.setLayout(overlay_layout)
+        self.overlay_group.setVisible(False)
+        controls_layout.addWidget(self.overlay_group)
 
         self.slice_view_group = QtWidgets.QGroupBox("Slice Viewer")
         slice_view_layout = QtWidgets.QVBoxLayout()
@@ -750,6 +811,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._teardown_slice_planes()
             self._teardown_slice_mode()
             self._clear_slice_clipping_planes()
+            self._clear_overlay_volumes()
             self._volume_shape = (0, 0, 0)
             self._volume_np = None
             self._vtk_img = None
@@ -765,6 +827,108 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 f"Failed to reload volume:\n{exc}",
             )
 
+    def _load_volume_dialog(self):
+        start_dir = str(self._path.parent) if getattr(
+            self, "_path", None) and self._path.exists() else "."
+        res = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "Open 3D Volume",
+            start_dir,
+            VOLUME_SOURCE_FILTERS,
+        )
+        if isinstance(res, tuple):
+            paths = res[0]
+        else:
+            paths = res
+        if isinstance(paths, str):
+            paths = [paths] if paths else []
+        candidates = []
+        for raw in paths:
+            if not raw:
+                continue
+            try:
+                candidate = Path(raw).expanduser()
+            except Exception:
+                candidate = Path(raw)
+            try:
+                candidate = candidate.resolve()
+            except Exception:
+                pass
+            candidates.append(candidate)
+        if not candidates:
+            return
+        replace_primary = False
+        if self._has_volume:
+            resp = QtWidgets.QMessageBox.question(
+                self,
+                "Load Volume",
+                "Replace the current primary volume with the first selection?\n"
+                "Choose No to keep the current volume visible and add all selections as overlays.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            replace_primary = resp == QtWidgets.QMessageBox.Yes
+        for idx, candidate in enumerate(candidates):
+            if idx == 0 and (not self._has_volume or replace_primary):
+                self._source_path = candidate
+                self._path = self._resolve_initial_source(candidate)
+                self._reload_volume()
+            else:
+                self._add_overlay_volume(candidate)
+
+    def _add_overlay_volume(self, source_path: Path):
+        if not self._has_volume or self._slice_mode:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Overlay Volume",
+                "Load a primary volume first before adding overlays.",
+            )
+            return
+        try:
+            volume_data = self._read_volume_any(source_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Overlay Volume",
+                f"Failed to read overlay volume:\n{exc}",
+            )
+            return
+        if volume_data.slice_mode:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Overlay Volume",
+                "Overlay volumes must fit into memory; streaming-only volumes are not supported.",
+            )
+            return
+        vtk_img, _ = self._prepare_vtk_image(volume_data)
+        mapper = vtkSmartVolumeMapper()
+        mapper.SetInputData(vtk_img)
+        prop = vtkVolumeProperty()
+        prop.ShadeOn()
+        prop.SetInterpolationTypeToLinear()
+        prop.SetScalarOpacityUnitDistance(
+            self.property.GetScalarOpacityUnitDistance())
+        prop.SetScalarOpacity(
+            self._opacity_tf if self._opacity_tf else vtkPiecewiseFunction())
+        prop.SetColor(
+            self._color_tf if self._color_tf else vtkColorTransferFunction())
+        actor = vtkVolume()
+        actor.SetMapper(mapper)
+        actor.SetProperty(prop)
+        actor.SetVisibility(self._volume_visible)
+        self.renderer.AddVolume(actor)
+        entry = _OverlayVolumeEntry(
+            path=source_path,
+            actor=actor,
+            mapper=mapper,
+            property=prop,
+            label=source_path.name,
+            visible=True,
+        )
+        self._overlay_volumes.append(entry)
+        self._refresh_overlay_list()
+        self.vtk_widget.GetRenderWindow().Render()
+
     def _load_volume(self) -> bool:
         old_array = self._out_of_core_array
         old_path = self._out_of_core_backing_path
@@ -775,45 +939,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._init_slice_mode(volume_data)
             self._cleanup_out_of_core_backing(old_array, old_path)
             return False
-        volume = volume_data.array
-        if volume is None:
-            raise RuntimeError("Volume source returned no data.")
+        vtk_img, volume_array = self._prepare_vtk_image(volume_data)
         spacing = volume_data.spacing
-        # Convert color stack to luminance for volume rendering if needed
-        if (
-            not volume_data.is_grayscale
-            and volume.ndim == 4
-            and volume.shape[-1] in (3, 4)
-        ):
-            volume = np.dot(
-                volume[..., :3],
-                [0.299, 0.587, 0.114],
-            ).astype(volume.dtype)
-        if not volume.flags.c_contiguous:
-            volume = np.ascontiguousarray(volume)
-        z, y, x = volume.shape
+        z, y, x = volume_array.shape
         self._volume_shape = (int(z), int(y), int(x))
-
-        vtk_img = vtkImageData()
-        vtk_img.SetDimensions(int(x), int(y), int(z))
-        # Apply spacing from source if available
-        if spacing is not None and len(spacing) == 3:
-            vtk_img.SetSpacing(float(spacing[0]), float(
-                spacing[1]), float(spacing[2]))
-        else:
-            vtk_img.SetSpacing(1.0, 1.0, 1.0)
-        vtk_img.SetOrigin(0.0, 0.0, 0.0)
-
-        # Map numpy dtype to VTK scalars
-        vtk_array = numpy_to_vtk(
-            num_array=volume.reshape(-1),
-            deep=not volume_data.is_out_of_core,
-        )
-        vtk_img.GetPointData().SetScalars(vtk_array)
 
         # Keep handles and stats
         self._vtk_img = vtk_img
-        self._volume_np = volume
+        self._volume_np = volume_array
         self._out_of_core_active = volume_data.is_out_of_core
         if volume_data.is_out_of_core:
             self._out_of_core_array = volume  # keep memmap alive
@@ -825,7 +958,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         # Initialize window controls
         for spin in (self.min_spin, self.max_spin):
             spin.blockSignals(True)
-        self.min_spin.setRange(self._vmin, self._vmax)
+        self.min_spin.setRange(self._vmin, max(self._vmin + 1e-6, self._vmax))
         self.max_spin.setRange(self._vmin, self._vmax)
         self.min_spin.setValue(self._vmin)
         self.max_spin.setValue(self._vmax)
@@ -866,7 +999,40 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._update_blend_mode()
         self._has_volume = True
         self._cleanup_out_of_core_backing(old_array, old_path)
+        self._set_volume_actor_visibility(self._volume_visible, force=True)
         return True
+
+    def _prepare_vtk_image(self, volume_data: _VolumeData) -> tuple[vtkImageData, np.ndarray]:
+        volume = volume_data.array
+        if volume is None:
+            raise RuntimeError("Volume source returned no data.")
+        if (
+            not volume_data.is_grayscale
+            and volume.ndim == 4
+            and volume.shape[-1] in (3, 4)
+        ):
+            volume = np.dot(
+                volume[..., :3],
+                [0.299, 0.587, 0.114],
+            ).astype(volume.dtype)
+        if not volume.flags.c_contiguous:
+            volume = np.ascontiguousarray(volume)
+        z, y, x = volume.shape
+        vtk_img = vtkImageData()
+        vtk_img.SetDimensions(int(x), int(y), int(z))
+        spacing = volume_data.spacing
+        if spacing is not None and len(spacing) == 3:
+            vtk_img.SetSpacing(float(spacing[0]), float(
+                spacing[1]), float(spacing[2]))
+        else:
+            vtk_img.SetSpacing(1.0, 1.0, 1.0)
+        vtk_img.SetOrigin(0.0, 0.0, 0.0)
+        vtk_array = numpy_to_vtk(
+            num_array=volume.reshape(-1),
+            deep=not volume_data.is_out_of_core,
+        )
+        vtk_img.GetPointData().SetScalars(vtk_array)
+        return vtk_img, volume
 
     def _init_slice_mode(self, volume_data: _VolumeData):
         self._teardown_slice_mode()
@@ -879,6 +1045,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_vmin = volume_data.vmin
         self._slice_vmax = volume_data.vmax
         self._slice_window_override = False
+        if self._overlay_volumes:
+            self._clear_overlay_volumes()
         if hasattr(self, "volume"):
             try:
                 self.renderer.RemoveVolume(self.volume)
@@ -1140,9 +1308,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-    def _read_volume_any(self) -> _VolumeData:
+    def _read_volume_any(self, source: Optional[Path] = None) -> _VolumeData:
         """Read a 3D volume from TIFF/NIfTI/DICOM or directory (DICOM series)."""
-        path = self._path
+        path = source or self._path
         try:
             if path.is_dir():
                 volume, spacing = self._read_dicom_series(path)
@@ -2045,18 +2213,54 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 "No CSV point clouds found in that directory.",
             )
             return
+        self._load_point_cloud_files([str(path) for path in csv_files])
+
+    def _load_point_cloud_dialog(self):
+        start_dir = str(self._path.parent) if getattr(
+            self, "_path", None) and self._path.exists() else "."
+        files = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "Open Point Cloud Files",
+            start_dir,
+            "Point Clouds (*.csv *.CSV *.xyz *.XYZ *.ply *.PLY);;All files (*.*)",
+        )
+        if isinstance(files, tuple):
+            selected = files[0]
+        else:
+            selected = files
+        if not selected:
+            return
+        paths = [str(p) for p in selected if p]
+        if not paths:
+            return
+        self._load_point_cloud_files(paths)
+
+    def _load_point_cloud_files(self, paths: list[str]):
+        if not paths:
+            return
         self._clear_point_clouds()
         combined_bounds = None
-        for csv_path in csv_files:
+        for path in paths:
+            lowered = path.lower()
             try:
-                bounds = self._add_point_cloud_csv_or_xyz(
-                    str(csv_path), focus=False
-                )
+                if lowered.endswith(".ply"):
+                    self._add_point_cloud_ply(path)
+                    bounds = self._point_actors[-1].GetBounds(
+                    ) if self._point_actors else None
+                elif lowered.endswith(".csv") or lowered.endswith(".xyz"):
+                    bounds = self._add_point_cloud_csv_or_xyz(
+                        path, focus=False)
+                else:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "Point Cloud",
+                        f"Unsupported point cloud format: {path}",
+                    )
+                    continue
                 combined_bounds = self._union_bounds(combined_bounds, bounds)
             except Exception as exc:
                 logger.warning(
-                    "Failed to load point cloud '%s': %s", csv_path, exc
-                )
+                    "Failed to load point cloud '%s': %s", path, exc)
         if combined_bounds:
             self._focus_on_bounds(combined_bounds)
         self._update_point_sizes()
@@ -2088,8 +2292,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetPointSize(self.point_size_slider.value())
+        actor.SetVisibility(self._point_cloud_visible)
         self.renderer.AddActor(actor)
         self._point_actors.append(actor)
+        if hasattr(self, "show_point_cloud_checkbox"):
+            self.show_point_cloud_checkbox.blockSignals(True)
+            self.show_point_cloud_checkbox.setChecked(True)
+            self.show_point_cloud_checkbox.blockSignals(False)
+            self._point_cloud_visible = True
         self._focus_on_bounds(poly2.GetBounds())
         self._update_point_controls_visibility()
 
@@ -2240,6 +2450,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if actor is not None:
                 self.renderer.AddActor(actor)
                 self._point_actors.append(actor)
+                if hasattr(self, "show_point_cloud_checkbox"):
+                    self.show_point_cloud_checkbox.blockSignals(True)
+                    self.show_point_cloud_checkbox.setChecked(True)
+                    self.show_point_cloud_checkbox.blockSignals(False)
+                    self._point_cloud_visible = True
 
         self._populate_region_selection(
             list(self._region_actors.keys()), region_default_colors)
@@ -2310,6 +2525,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetPointSize(self.point_size_slider.value())
+        actor.SetVisibility(self._point_cloud_visible)
         return actor
 
     def _gradient_blue_red(self, norm: np.ndarray) -> np.ndarray:
@@ -2494,6 +2710,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.mesh_detail_widget.setVisible(has_mesh)
 
     def _clear_point_clouds(self):
+        self._set_point_cloud_visibility(False)
         for actor in getattr(self, "_point_actors", []):
             try:
                 self.renderer.RemoveActor(actor)
@@ -2504,6 +2721,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._clear_region_selection()
         self._update_point_controls_visibility()
         self.vtk_widget.GetRenderWindow().Render()
+        self._point_cloud_visible = False
+        if hasattr(self, "show_point_cloud_checkbox"):
+            self.show_point_cloud_checkbox.blockSignals(True)
+            self.show_point_cloud_checkbox.setChecked(False)
+            self.show_point_cloud_checkbox.blockSignals(False)
 
     def _clear_region_selection(self) -> None:
         if not hasattr(self, "region_list_widget"):
@@ -2917,6 +3139,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._teardown_slice_mode()
         except Exception:
             pass
+        try:
+            self._clear_overlay_volumes()
+        except Exception:
+            pass
         self._cleanup_out_of_core_backing()
         super().closeEvent(event)
 
@@ -2961,6 +3187,124 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if path:
                 parts.append(f"{kind_label}: {Path(path).name}")
         self.mesh_status_label.setText(" | ".join(parts))
+
+    def _on_volume_visibility_changed(self, state: int):
+        visible = state == QtCore.Qt.Checked
+        self._volume_visible = visible
+        self._set_volume_actor_visibility(visible, force=True)
+
+    def _on_point_cloud_visibility_changed(self, state: int):
+        visible = state == QtCore.Qt.Checked
+        self._point_cloud_visible = visible
+        self._set_point_cloud_visibility(visible)
+
+    def _set_volume_actor_visibility(self, visible: bool, force: bool = False):
+        if self._slice_mode and not force:
+            visible = False
+        if not hasattr(self, "volume") or self.volume is None:
+            base_actor = None
+        else:
+            base_actor = self.volume
+        if base_actor is not None:
+            try:
+                base_actor.SetVisibility(
+                    visible and getattr(self, "_has_volume", False) and not self._slice_mode)
+            except Exception:
+                pass
+        for entry in getattr(self, "_overlay_volumes", []):
+            try:
+                entry.actor.SetVisibility(
+                    visible and entry.visible and not self._slice_mode)
+            except Exception:
+                pass
+        try:
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception:
+            pass
+
+    def _set_point_cloud_visibility(self, visible: bool):
+        for actor in getattr(self, "_point_actors", []):
+            try:
+                actor.SetVisibility(visible)
+            except Exception:
+                pass
+        try:
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception:
+            pass
+
+    def _refresh_overlay_list(self):
+        if not hasattr(self, "overlay_list"):
+            return
+        self._overlay_list_updating = True
+        try:
+            self.overlay_list.clear()
+        except Exception:
+            self._overlay_list_updating = False
+            return
+        for idx, entry in enumerate(self._overlay_volumes):
+            item = QtWidgets.QListWidgetItem(entry.label)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable |
+                          QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            item.setCheckState(
+                QtCore.Qt.Checked if entry.visible else QtCore.Qt.Unchecked)
+            item.setData(QtCore.Qt.UserRole, idx)
+            self.overlay_list.addItem(item)
+        if hasattr(self, "overlay_group"):
+            self.overlay_group.setVisible(bool(self._overlay_volumes))
+        self._overlay_list_updating = False
+
+    def _on_overlay_item_changed(self, item: QtWidgets.QListWidgetItem):
+        if self._overlay_list_updating:
+            return
+        idx = item.data(QtCore.Qt.UserRole)
+        if idx is None:
+            return
+        try:
+            entry = self._overlay_volumes[int(idx)]
+        except (IndexError, ValueError):
+            return
+        entry.visible = item.checkState() == QtCore.Qt.Checked
+        self._set_volume_actor_visibility(self._volume_visible, force=True)
+
+    def _remove_selected_overlays(self):
+        if not getattr(self, "_overlay_volumes", None):
+            return
+        selected = self.overlay_list.selectedIndexes()
+        if not selected:
+            return
+        indexes = sorted({idx.row() for idx in selected}, reverse=True)
+        for idx in indexes:
+            self._remove_overlay_at_index(idx)
+        self._refresh_overlay_list()
+
+    def _remove_overlay_at_index(self, idx: int):
+        if idx < 0 or idx >= len(self._overlay_volumes):
+            return
+        entry = self._overlay_volumes.pop(idx)
+        try:
+            self.renderer.RemoveVolume(entry.actor)
+        except Exception:
+            pass
+        try:
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception:
+            pass
+
+    def _clear_overlay_volumes(self):
+        if not getattr(self, "_overlay_volumes", None):
+            return
+        for entry in self._overlay_volumes:
+            try:
+                self.renderer.RemoveVolume(entry.actor)
+            except Exception:
+                pass
+        self._overlay_volumes = []
+        self._refresh_overlay_list()
+        try:
+            self.vtk_widget.GetRenderWindow().Render()
+        except Exception:
+            pass
 
     def _update_volume_io_label(self, out_of_core: bool):
         if not hasattr(self, "volume_io_label"):
