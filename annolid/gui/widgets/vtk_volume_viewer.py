@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 from collections import OrderedDict
+import itertools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence, Tuple
@@ -2193,6 +2194,67 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             pass
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _maybe_align_point_cloud_to_volume(self, pts: np.ndarray) -> np.ndarray:
+        """Reorder axes/offset grid-derived points to match the active volume."""
+        if pts is None or len(pts) == 0:
+            return pts
+        if not getattr(self, "_has_volume", False):
+            return pts
+        if not getattr(self, "_volume_shape", None) or len(self._volume_shape) < 3:
+            return pts
+        if any(ax <= 0 for ax in self._volume_shape[:3]):
+            return pts
+
+        spacing = np.array(
+            self._vtk_img.GetSpacing(), dtype=float) if getattr(self, "_vtk_img", None) else np.array([1.0, 1.0, 1.0])
+        if spacing.shape != (3,):
+            spacing = np.array([1.0, 1.0, 1.0])
+        expected_counts = np.array(
+            [self._volume_shape[2], self._volume_shape[1], self._volume_shape[0]],
+            dtype=float,
+        )
+        expected_world = expected_counts * spacing
+
+        best_perm: tuple[int, int, int] | None = None
+        best_err: float | None = None
+        for perm in itertools.permutations((0, 1, 2)):
+            perm_pts = pts[:, perm]
+            span = perm_pts.max(axis=0) - perm_pts.min(axis=0)
+            if not np.all(np.isfinite(span)):
+                continue
+            err_pix = np.mean(
+                np.abs(span - expected_counts) / (expected_counts + 1e-6))
+            err_world = np.mean(
+                np.abs(span - expected_world) / (expected_world + 1e-6))
+            err = min(err_pix, err_world)
+            if best_err is None or err < best_err:
+                best_err = err
+                best_perm = perm
+
+        if best_perm is None or best_err is None or best_err > 0.25:
+            return pts
+
+        aligned = np.array(pts[:, best_perm], copy=True)
+        origin = np.array(self._vtk_img.GetOrigin(), dtype=float) if getattr(
+            self, "_vtk_img", None) else np.zeros(3, dtype=float)
+        mins = aligned.min(axis=0)
+        offset = None
+        if np.all(np.abs(mins - origin) <= spacing * 1.5):
+            offset = origin - mins
+        elif np.all(np.abs(mins - (origin + spacing * 0.5)) <= spacing * 1.5):
+            offset = origin + spacing * 0.5 - mins
+        if offset is not None:
+            aligned += offset
+
+        if best_perm != (0, 1, 2) or offset is not None:
+            logger.info(
+                "Auto-aligned point cloud to volume (perm=%s, err=%.3f, offset=%s)",
+                best_perm,
+                best_err,
+                None if offset is None else tuple(float(x) for x in offset),
+            )
+        return aligned
+
     # -------------------- Point cloud support --------------------
     def _load_point_cloud_folder(self):
         start_dir = str(self._path.parent) if getattr(
@@ -2283,6 +2345,18 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         scale = self._prompt_point_scale()
         if scale is not None:
             poly = self._scale_poly_points(poly, scale)
+        try:
+            pts_np = np.array([poly.GetPoint(
+                i) for i in range(poly.GetNumberOfPoints())], dtype=np.float32)
+            aligned_pts = self._maybe_align_point_cloud_to_volume(pts_np)
+            if aligned_pts.shape == pts_np.shape and not np.allclose(aligned_pts, pts_np):
+                vpts = vtkPoints()
+                vpts.SetNumberOfPoints(len(aligned_pts))
+                for i, (x, y, z) in enumerate(aligned_pts):
+                    vpts.SetPoint(i, float(x), float(y), float(z))
+                poly.SetPoints(vpts)
+        except Exception:
+            pass
         # Ensure vertices exist without vtkVertexGlyphFilter
         poly2 = self._ensure_vertices(poly)
         mapper = vtkPolyDataMapper()
@@ -2412,6 +2486,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             colors = self._gradient_blue_red(norm)
 
         safe_pts = np.asarray(pts, dtype=np.float32)
+        safe_pts = self._maybe_align_point_cloud_to_volume(safe_pts)
         bounds = (
             float(np.nanmin(safe_pts[:, 0])),
             float(np.nanmax(safe_pts[:, 0])),
