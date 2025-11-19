@@ -949,7 +949,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._volume_np = volume_array
         self._out_of_core_active = volume_data.is_out_of_core
         if volume_data.is_out_of_core:
-            self._out_of_core_array = volume  # keep memmap alive
+            self._out_of_core_array = volume_array  # keep memmap alive
             self._out_of_core_backing_path = volume_data.backing_path
         self._vmin = volume_data.vmin
         self._vmax = volume_data.vmax
