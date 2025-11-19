@@ -986,6 +986,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         vtk_array = numpy_to_vtk(norm.reshape(-1), deep=True)
         vtk_img.GetPointData().SetScalars(vtk_array)
         self._slice_actor.SetInputData(vtk_img)
+
+        # FIX: tell VTK our intensities are in [0, 1]
+        img_prop = self._slice_actor.GetProperty()
+        img_prop.SetColorWindow(1.0)  # max - min of the displayed range
+        img_prop.SetColorLevel(0.5)  # center of the displayed range
+
         self._slice_current_index = sanitized
         self._update_slice_status_label(sanitized, total)
         self.renderer.ResetCamera()
