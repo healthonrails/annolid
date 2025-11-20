@@ -694,10 +694,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._label_volume_active = False
         self._slice_start_index_hint: Optional[int] = None
         self._ply_color_cache: dict[str, np.ndarray] = {}
+        # Cache gaussian PLY vertex fields keyed by file path to avoid reparsing.
+        self._gaussian_field_cache: dict[str, dict[str, object]] = {}
         self._gaussian_actor_data: dict[int, dict[str, object]] = {}
         self._gaussian_scale_mult: float = 1.0
         self._gaussian_opacity_mult: float = 1.0
-        self._gaussian_glyph_res: int = 12
+        self._gaussian_glyph_res: int = 16
         self._scene_light: Optional[vtkLight] = None
         self._light_intensity: float = 1.0
 
@@ -1118,6 +1120,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         # Build pipeline
         self.renderer = vtkRenderer()
         self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
+        self._configure_render_quality()
 
         self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
         # Camera interaction style (rotate/pan/zoom)
@@ -1208,6 +1211,30 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             preferred = max(160, min(260, int(total_width * 0.25)))
             self.resizeDocks([self._controls_dock], [
                              preferred], QtCore.Qt.Horizontal)
+        except Exception:
+            pass
+
+    def _configure_render_quality(self) -> None:
+        """Tune render window for better translucent gaussian splat compositing."""
+        rw = self.vtk_widget.GetRenderWindow()
+        try:
+            rw.SetAlphaBitPlanes(1)
+        except Exception:
+            pass
+        # Depth peeling improves alpha blending for dense, semi-transparent splats.
+        try:
+            rw.SetMultiSamples(0)
+        except Exception:
+            pass
+        try:
+            self.renderer.SetUseDepthPeeling(True)
+            self.renderer.SetMaximumNumberOfPeels(50)
+            self.renderer.SetOcclusionRatio(0.1)
+        except Exception:
+            pass
+        # FXAA keeps edges smooth when MSAA is disabled for depth peeling.
+        try:
+            rw.SetUseFXAA(True)
         except Exception:
             pass
 
@@ -3686,6 +3713,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception:
             scales = np.ones((len(pts), 3), dtype=np.float32)
 
+        quaternion_array: Optional[np.ndarray] = None
+        orientation_deg: Optional[np.ndarray]
         try:
             quats = np.stack(
                 [
@@ -3696,8 +3725,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 ],
                 axis=1,
             )
-            orientation_deg = self._quaternion_to_euler_deg(quats)
+            quats = self._normalize_quaternions(quats)
+            quaternion_array = np.ascontiguousarray(quats, dtype=np.float32)
+            orientation_deg = self._quaternion_to_euler_deg(quaternion_array)
         except Exception:
+            quaternion_array = None
             orientation_deg = np.zeros((len(pts), 3), dtype=np.float32)
 
         colors = self._colors_from_gaussian_field_data(field_data, len(pts))
@@ -3720,10 +3752,18 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         out.GetPointData().AddArray(scale_arr)
 
         orient_arr = numpy_to_vtk(np.ascontiguousarray(
-            orientation_deg, dtype=np.float32), deep=True)
+            orientation_deg if orientation_deg is not None else np.zeros(
+                (len(pts), 3), dtype=np.float32),
+            dtype=np.float32,
+        ), deep=True)
         orient_arr.SetNumberOfComponents(3)
         orient_arr.SetName("Orientation")
         out.GetPointData().AddArray(orient_arr)
+        if quaternion_array is not None and quaternion_array.size:
+            quat_arr = numpy_to_vtk(quaternion_array, deep=True)
+            quat_arr.SetNumberOfComponents(4)
+            quat_arr.SetName("Quaternion")
+            out.GetPointData().AddArray(quat_arr)
 
         if colors is not None:
             vtk_colors = numpy_to_vtk(colors, deep=True)
@@ -3737,8 +3777,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         sphere = vtkSphereSource()
         sphere.SetRadius(1.0)
-        sphere.SetThetaResolution(12)
-        sphere.SetPhiResolution(12)
+        sphere.SetThetaResolution(self._gaussian_glyph_res)
+        sphere.SetPhiResolution(self._gaussian_glyph_res)
 
         mapper = vtkGlyph3DMapper()
         mapper.SetInputData(out)
@@ -3757,6 +3797,21 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             mapper.SetOrientationModeToRotation()
         except Exception:
             pass
+        if quaternion_array is not None and quaternion_array.size:
+            applied_quaternion = False
+            if hasattr(mapper, "SetOrientationModeToQuaternion"):
+                try:
+                    mapper.SetOrientationArray("Quaternion")
+                    mapper.SetOrientationModeToQuaternion()
+                    applied_quaternion = True
+                except Exception:
+                    applied_quaternion = False
+            if not applied_quaternion:
+                mapper.SetOrientationArray("Orientation")
+                try:
+                    mapper.SetOrientationModeToRotation()
+                except Exception:
+                    pass
         if colors is not None:
             mapper.ScalarVisibilityOn()
             mapper.SetScalarModeToUsePointFieldData()
@@ -3770,6 +3825,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         actor = vtkActor()
         actor.SetMapper(mapper)
+        try:
+            prop = actor.GetProperty()
+            prop.ShadingOn()
+            prop.SetInterpolationToPhong()
+        except Exception:
+            pass
         actor.SetVisibility(self._point_cloud_visible)
         self._register_gaussian_actor(
             actor, scales, colors, sphere, out, mapper)
@@ -4016,11 +4077,43 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         return np.clip(alpha, 0.0, 1.0)
 
     def _read_gaussian_ply_fields(self, path: str, required: Sequence[str]) -> Optional[dict[str, np.ndarray]]:
-        """Return the requested vertex fields via plyfile when available or a manual parser."""
-        data = self._read_gaussian_ply_fields_with_library(path, required)
-        if data:
-            return data
-        return self._read_gaussian_ply_fields_manual(path, required)
+        """Return requested vertex fields with a simple on-disk cache to avoid reparsing."""
+        if not required:
+            return {}
+        cache = getattr(self, "_gaussian_field_cache", None)
+        if cache is None:
+            self._gaussian_field_cache = {}
+            cache = self._gaussian_field_cache
+        signature = self._gaussian_ply_signature(path)
+        entry = cache.get(path)
+        if entry:
+            cached_sig = entry.get("sig")
+            if cached_sig is not None and signature is not None and cached_sig != signature:
+                cache.pop(path, None)
+                entry = None
+        if entry is None:
+            entry = {"sig": signature, "data": {}}
+            cache[path] = entry
+        fields: dict[str, np.ndarray] = entry["data"]  # type: ignore[index]
+        missing = [name for name in required if name not in fields]
+        if missing:
+            data = self._read_gaussian_ply_fields_with_library(path, missing)
+            if not data:
+                data = self._read_gaussian_ply_fields_manual(path, missing)
+            if not data:
+                return None
+            fields.update(data)
+            entry["sig"] = signature
+        if all(name in fields for name in required):
+            return {name: fields[name] for name in required}
+        return None
+
+    def _gaussian_ply_signature(self, path: str) -> Optional[tuple[float, int]]:
+        try:
+            stat_res = os.stat(path)
+        except OSError:
+            return None
+        return (stat_res.st_mtime, stat_res.st_size)
 
     def _read_gaussian_ply_fields_with_library(
         self, path: str, required: Sequence[str]
@@ -4114,6 +4207,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if name in data.dtype.names:
                 result[name] = np.asarray(data[name])
         return result if result else None
+
+    def _normalize_quaternions(self, quats: np.ndarray) -> np.ndarray:
+        """Return normalized quaternions to avoid drift and improve glyph orientation."""
+        if quats.ndim != 2 or quats.shape[1] < 4:
+            return quats
+        norms = np.linalg.norm(quats[:, :4], axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normalized = quats / norms
+        return normalized.astype(np.float32, copy=False)
 
     def _quaternion_to_euler_deg(self, quats: np.ndarray) -> np.ndarray:
         """Convert quaternions [w, x, y, z] to Euler angles (deg) for VTK rotation arrays."""
@@ -4575,6 +4677,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.gaussian_group.setEnabled(has_gaussian)
         if not has_points:
             self._clear_region_selection()
+        # Release cached gaussian data when points are cleared to free memory.
+        self._ply_color_cache.clear()
+        self._gaussian_field_cache.clear()
 
     def _update_mesh_controls_visibility(self) -> None:
         has_mesh = bool(getattr(self, "_mesh_actors", []))
