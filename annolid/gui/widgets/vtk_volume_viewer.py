@@ -1952,7 +1952,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 shape,
                 dtype,
             )
-            return self._make_slice_volume_data(loader, spacing)
+            return self._make_slice_volume_data(loader, spacing=None)
         with Image.open(str(path)) as img:
             n_frames = max(1, int(getattr(img, "n_frames", 1) or 1))
             img.seek(0)
