@@ -2043,6 +2043,133 @@ class AnnolidWindow(MainWindow):
                 f"Exception while saving seed image {image_filename}: {exc}")
         return image_filename
 
+    def _save_ai_mask_renders(self, image_filename: str) -> None:
+        """
+        Persist a masked version of the current frame (and per-mask cutouts)
+        where everything outside the AI mask shapes is painted black.
+        """
+        if not image_filename or self.labelList is None:
+            return
+
+        def _qimage_to_np(qimage_obj):
+            try:
+                return convert_qt_image_to_rgb_cv_image(qimage_obj).copy()
+            except Exception:
+                return None
+
+        base_image = None
+        try:
+            if isinstance(self.imageData, QtGui.QImage):
+                base_image = _qimage_to_np(self.imageData)
+            elif isinstance(self.imageData, (bytes, bytearray)):
+                base_image = utils.img_data_to_arr(
+                    self.imageData).copy()
+            elif isinstance(self.imageData, np.ndarray):
+                base_image = np.asarray(self.imageData).copy()
+        except Exception as exc:
+            logger.warning(
+                f"Unable to convert image for AI mask export: {exc}")
+
+        if base_image is None:
+            canvas_pixmap = getattr(self.canvas, "pixmap", None)
+            if canvas_pixmap is not None and not canvas_pixmap.isNull():
+                base_image = _qimage_to_np(canvas_pixmap.toImage())
+
+        if base_image is None:
+            logger.debug(
+                "Skipping AI mask render save: unsupported image data.")
+            return
+
+        mask_shapes = []
+
+        def _maybe_add_shape(shape):
+            if (
+                shape is not None
+                and getattr(shape, "shape_type", None) == "mask"
+                and getattr(shape, "mask", None) is not None
+                and len(getattr(shape, "points", [])) >= 1
+            ):
+                mask_shapes.append(shape)
+
+        try:
+            if self.labelList:
+                for item in self.labelList:
+                    shape_obj = item.shape() if item is not None else None
+                    _maybe_add_shape(shape_obj)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to collect AI mask shapes from label list: {exc}")
+
+        if not mask_shapes and getattr(self.canvas, "shapes", None):
+            for shape in self.canvas.shapes:
+                _maybe_add_shape(shape)
+
+        if not mask_shapes:
+            return
+
+        def paste_mask(mask_arr, top_left_point, canvas):
+            mask_arr = np.asarray(mask_arr).astype(np.uint8)
+            if mask_arr.size == 0:
+                return
+            if mask_arr.ndim > 2:
+                mask_arr = mask_arr[..., 0]
+            x1 = max(int(round(top_left_point.x())), 0)
+            y1 = max(int(round(top_left_point.y())), 0)
+            if x1 >= canvas.shape[1] or y1 >= canvas.shape[0]:
+                return
+            h, w = mask_arr.shape[:2]
+            x2 = min(x1 + w, canvas.shape[1])
+            y2 = min(y1 + h, canvas.shape[0])
+            if x2 <= x1 or y2 <= y1:
+                return
+            crop_w = x2 - x1
+            crop_h = y2 - y1
+            canvas[y1:y2, x1:x2] = np.maximum(
+                canvas[y1:y2, x1:x2],
+                mask_arr[:crop_h, :crop_w].astype(np.uint8),
+            )
+
+        combined_mask = np.zeros(base_image.shape[:2], dtype=np.uint8)
+        for shape in mask_shapes:
+            paste_mask(shape.mask, shape.points[0], combined_mask)
+
+        if not combined_mask.any():
+            return
+
+        stem = Path(image_filename).stem
+        base_dir = Path(image_filename).parent
+
+        def save_masked_image(mask_array, suffix):
+            masked_image = np.zeros_like(base_image)
+            mask_bool = mask_array.astype(bool)
+            masked_image[mask_bool] = base_image[mask_bool]
+            if suffix:
+                out_name = f"{stem}_{suffix}_mask.png"
+            else:
+                out_name = f"{stem}_mask.png"
+            out_path = base_dir / out_name
+            try:
+                Image.fromarray(masked_image).save(str(out_path))
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to save AI mask render {out_path}: {exc}")
+
+        # Save combined masked frame.
+        save_masked_image(combined_mask, "")
+
+        # Save per-shape masked frames to make individual cutouts.
+        for idx, shape in enumerate(mask_shapes):
+            per_mask = np.zeros_like(combined_mask)
+            paste_mask(shape.mask, shape.points[0], per_mask)
+            if not per_mask.any():
+                continue
+            safe_label = re.sub(
+                r"[^0-9A-Za-z_-]", "_", shape.label or ""
+            )
+            if not safe_label:
+                safe_label = f"mask_{idx+1}"
+            save_masked_image(per_mask, f"{safe_label}")
+
     def _get_current_model_config(self):
         """Return the ModelConfig for the currently selected model, if any."""
         return self.ai_model_manager.get_current_model()
@@ -2449,7 +2576,8 @@ class AnnolidWindow(MainWindow):
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
-        self._finalize_prediction_progress("Manual prediction worker finished.")
+        self._finalize_prediction_progress(
+            "Manual prediction worker finished.")
 
     def reset_predict_button(self):
         """Reset the predict button text and style"""
@@ -2664,6 +2792,7 @@ class AnnolidWindow(MainWindow):
                 _ = self._saveImageFile(
                     str(changed_filename).replace('.json', '.png'))
             image_filename = self._saveImageFile(filename)
+            self._save_ai_mask_renders(image_filename)
             self.imageList.append(image_filename)
             self.addRecentFile(filename)
             label_file = self._getLabelFile(filename)
@@ -5935,14 +6064,16 @@ class AnnolidWindow(MainWindow):
             save_depth_video=save_depth_video,
             save_depth_frames=save_depth_frames,
         )
-        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(percent)
+        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(
+            percent)
         worker.progress_signal.connect(
             lambda percent: self.statusBar().showMessage(
                 self.tr("Video Depth Anything %d%%") % percent, 2000
             )
         )
         if show_preview:
-            worker._kwargs["preview_callback"] = lambda payload: worker.preview_signal.emit(payload)
+            worker._kwargs["preview_callback"] = lambda payload: worker.preview_signal.emit(
+                payload)
             worker.preview_signal.connect(self._handle_depth_preview)
 
         worker_thread = QtCore.QThread(self)
@@ -5984,7 +6115,8 @@ class AnnolidWindow(MainWindow):
             if isinstance(payload, dict):
                 overlay_image = payload.get("overlay")
                 frame_index = payload.get("frame_index")
-            depth_stats = payload.get("depth_stats") if isinstance(payload, dict) else None
+            depth_stats = payload.get("depth_stats") if isinstance(
+                payload, dict) else None
             if self.canvas and overlay_image is not None:
                 qimage = QtGui.QImage(
                     overlay_image.data,
@@ -5998,7 +6130,8 @@ class AnnolidWindow(MainWindow):
             if frame_index is not None:
                 self._set_depth_preview_frame(int(frame_index))
                 self.statusBar().showMessage(
-                    self.tr("Video Depth Anything frame %d") % int(frame_index),
+                    self.tr("Video Depth Anything frame %d") % int(
+                        frame_index),
                     1000,
                 )
             if depth_stats is not None and frame_index is not None:
@@ -6068,7 +6201,8 @@ class AnnolidWindow(MainWindow):
         color = cv2.applyColorMap(vis_u8, cv2.COLORMAP_INFERNO)
         color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
         overlay = color.astype(np.uint8)
-        alpha = np.full((overlay.shape[0], overlay.shape[1], 1), 200, dtype=np.uint8)
+        alpha = np.full(
+            (overlay.shape[0], overlay.shape[1], 1), 200, dtype=np.uint8)
         return np.concatenate([overlay, alpha], axis=2)
 
     def _restore_canvas_frame(self) -> None:
@@ -6077,7 +6211,8 @@ class AnnolidWindow(MainWindow):
         qimg = QtGui.QImage(self.filename)
         if qimg.isNull():
             return
-        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimg), clear_shapes=False)
+        self.canvas.loadPixmap(
+            QtGui.QPixmap.fromImage(qimg), clear_shapes=False)
         if self.video_loader:
             try:
                 self.video_loader.load_frame(self.frame_number)
@@ -6089,6 +6224,7 @@ class AnnolidWindow(MainWindow):
         self, json_path: Path, frame_rgb: Optional[np.ndarray]
     ) -> Optional[np.ndarray]:
         return None
+
     def _load_depth_overlay_from_record(
         self, record: Dict[str, object], frame_rgb: Optional[np.ndarray]
     ) -> Optional[np.ndarray]:
@@ -6120,7 +6256,8 @@ class AnnolidWindow(MainWindow):
             return None
         height, width = frame_rgb.shape[:2]
         if depth.shape != (height, width):
-            depth = cv2.resize(depth, (width, height), interpolation=cv2.INTER_LINEAR)
+            depth = cv2.resize(depth, (width, height),
+                               interpolation=cv2.INTER_LINEAR)
         return self._build_depth_overlay(frame_rgb, depth)
 
     def _current_frame_rgb(self) -> Optional[np.ndarray]:
