@@ -4935,29 +4935,49 @@ class AnnolidWindow(MainWindow):
             start_dir = str(Path(self.filename).parent) if getattr(
                 self, "filename", None) else "."
             filters = self.tr(
-                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ);;All files (*.*)"
+                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
             )
-            res = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM)"),
-                start_dir,
-                filters,
-            )
-            if isinstance(res, tuple):
-                tiff_path = res[0]
-            else:
-                tiff_path = res
-            if not tiff_path:
-                # Optionally ask for a DICOM folder
-                dicom_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            dialog = QtWidgets.QFileDialog(
+                self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)"))
+            dialog.setDirectory(start_dir)
+            dialog.setNameFilter(filters)
+            dialog.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
+            dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
+            dialog.setOption(QtWidgets.QFileDialog.ReadOnly, True)
+            paths: list[str] = []
+            if dialog.exec_() == QtWidgets.QDialog.Accepted:
+                paths = dialog.selectedFiles()
+            if not paths:
+                # Optionally select a folder (DICOM or Zarr)
+                folder = QtWidgets.QFileDialog.getExistingDirectory(
                     self,
-                    self.tr("Choose DICOM Folder (optional)"),
+                    self.tr("Choose Volume Folder (DICOM/Zarr)"),
                     start_dir,
+                    QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.ReadOnly,
                 )
-                if dicom_dir:
-                    tiff_path = dicom_dir
+                if folder:
+                    paths = [folder]
                 else:
                     return
+            if paths:
+                def _normalize_volume_selection(raw: str) -> str:
+                    try:
+                        p = Path(raw)
+                        if p.is_file():
+                            if p.name.lower() == "zarr.json":
+                                return str(p.parent)
+                            if (p.parent / ".zarray").exists():
+                                return str(p.parent)
+                        cur = p
+                        for _ in range(3):
+                            if cur.name.lower().endswith(".zarr") or (cur / ".zarray").exists() or (cur / "zarr.json").exists():
+                                return str(cur)
+                            cur = cur.parent
+                    except Exception:
+                        pass
+                    return raw
+
+                tiff_path = _normalize_volume_selection(paths[0])
 
         # Prefer true 3D (VTK) if available, else fallback to slice/MIP viewer
         vtk_missing = False
