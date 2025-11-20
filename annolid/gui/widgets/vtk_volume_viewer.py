@@ -33,6 +33,8 @@ from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkProperty,
     vtkImageActor,
+    vtkLight,
+    vtkGlyph3DMapper,
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.vtkCommonDataModel import (
@@ -45,12 +47,14 @@ from vtkmodules.vtkCommonDataModel import (
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonCore import vtkStringArray
+from vtkmodules.vtkCommonCore import vtkFloatArray
 from vtkmodules.vtkInteractionStyle import (
     vtkInteractorStyleTrackballCamera,
     vtkInteractorStyleUser,
 )
 from vtkmodules.util.numpy_support import numpy_to_vtk, get_vtk_array_type
 from vtkmodules.vtkIOImage import vtkPNGWriter, vtkImageReader2Factory
+from vtkmodules.vtkFiltersSources import vtkSphereSource
 try:
     from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLPolyDataMapper
 except Exception:  # pragma: no cover - optional renderer
@@ -285,11 +289,11 @@ class _ZarrSliceLoader(_BaseSliceLoader):
         self._arr = zarr_array
         self._zyx_axes = zyx_axes
         self._fixed_indices = fixed_indices or {}
-        
+
         # Cache shape and dtype to avoid repeated attribute access on slow backends
         full_shape = getattr(zarr_array, "shape", ())
         self._full_shape = full_shape
-        
+
         # The visible 3D shape
         self._shape = (
             int(full_shape[zyx_axes[0]]),
@@ -310,23 +314,23 @@ class _ZarrSliceLoader(_BaseSliceLoader):
     def read_slice(self, axis: int, index: int) -> np.ndarray:
         # Clamp index
         idx = max(0, min(int(index), self.total_slices() - 1))
-        
+
         # Build slicer for N-dimensions
         slicer: list[object] = [0] * len(self._full_shape)
-        
+
         # 1. Apply fixed indices (e.g. Time=0, Channel=0)
         for dim, val in self._fixed_indices.items():
             slicer[dim] = val
-            
+
         # 2. Apply the active ZYX mapping
         # For the slice mode, we are usually iterating over the Z axis (zyx_axes[0])
         # and fetching the whole YX plane.
         z_dim, y_dim, x_dim = self._zyx_axes
-        
+
         slicer[z_dim] = idx         # The slice index
-        slicer[y_dim] = slice(None) # Keep full Y
-        slicer[x_dim] = slice(None) # Keep full X
-        
+        slicer[y_dim] = slice(None)  # Keep full Y
+        slicer[x_dim] = slice(None)  # Keep full X
+
         # 3. Retrieve data (this triggers the specific chunk read)
         try:
             arr = np.array(self._arr[tuple(slicer)])
@@ -339,11 +343,11 @@ class _ZarrSliceLoader(_BaseSliceLoader):
         # But we must preserve exactly 2 dimensions.
         if arr.ndim > 2:
             arr = arr.squeeze()
-        
+
         # If squeezing reduced it too much (e.g. 1x1 pixel), reshape back
         if arr.ndim < 2:
-             arr = arr.reshape(self._shape[1], self._shape[2])
-             
+            arr = arr.reshape(self._shape[1], self._shape[2])
+
         return arr
 
     def close(self) -> None:
@@ -377,7 +381,8 @@ class _ZarrV3Array:
         )
         self._chunk_separator = encoding_conf.get("separator", "/") or "/"
         self._codecs = list(metadata.get("codecs", []) or [])
-        self._chunk_cache: OrderedDict[tuple[int, ...], np.ndarray] = OrderedDict()
+        self._chunk_cache: OrderedDict[tuple[int, ...],
+                                       np.ndarray] = OrderedDict()
         # Cache a modest number of chunks to speed repeated slice access.
         self._cache_limit = 32
         self._chunk_root = self._path / "c"
@@ -404,9 +409,11 @@ class _ZarrV3Array:
                 start, stop, step = idx, idx + 1, 1
                 squeeze_axes.append(axis)
             else:
-                raise TypeError(f"Unsupported index type for Zarr data: {type(k)}")
+                raise TypeError(
+                    f"Unsupported index type for Zarr data: {type(k)}")
             if step not in (None, 1):
-                raise ValueError("Zarr reader currently supports step=1 slices only.")
+                raise ValueError(
+                    "Zarr reader currently supports step=1 slices only.")
             norm_slices.append(slice(start, stop, 1))
 
         out_shape = [sl.stop - sl.start for sl in norm_slices]
@@ -426,10 +433,12 @@ class _ZarrV3Array:
                 for axis in range(self.ndim)
             ]
             chunk_shape = [
-                min(self._chunk_shape[axis], self.shape[axis] - chunk_start[axis])
+                min(self._chunk_shape[axis],
+                    self.shape[axis] - chunk_start[axis])
                 for axis in range(self.ndim)
             ]
-            chunk_arr = self._read_chunk(tuple(int(c) for c in chunk_idx), chunk_shape)
+            chunk_arr = self._read_chunk(
+                tuple(int(c) for c in chunk_idx), chunk_shape)
             if chunk_arr is None:
                 continue
 
@@ -480,7 +489,8 @@ class _ZarrV3Array:
         try:
             with open(chunk_path, "rb") as f:
                 raw = f.read()
-            arr = self._decode_chunk_bytes(raw, tuple(int(x) for x in expected_shape))
+            arr = self._decode_chunk_bytes(
+                raw, tuple(int(x) for x in expected_shape))
         except Exception as exc:
             logger.error("Failed to read Zarr chunk %s: %s", chunk_path, exc)
             arr = np.full(expected_shape, self._fill_value, dtype=self.dtype)
@@ -490,12 +500,14 @@ class _ZarrV3Array:
     def _decode_chunk_bytes(
         self, raw: bytes, expected_shape: tuple[int, ...]
     ) -> np.ndarray:
-        expected_bytes = int(np.prod(expected_shape)) * max(1, self.dtype.itemsize)
+        expected_bytes = int(np.prod(expected_shape)) * \
+            max(1, self.dtype.itemsize)
         data: object = raw
         last_error: Optional[Exception] = None
         for codec in reversed(self._codecs):
             name = codec.get("name") if isinstance(codec, Mapping) else None
-            conf = codec.get("configuration", {}) if isinstance(codec, Mapping) else {}
+            conf = codec.get("configuration", {}) if isinstance(
+                codec, Mapping) else {}
             try:
                 if name == "zstd":
                     data = self._decode_zstd(data, expected_bytes)
@@ -503,7 +515,8 @@ class _ZarrV3Array:
                     data = zlib.decompress(data)  # type: ignore[arg-type]
                 elif name == "bytes":
                     endian = conf.get("endian", "<")
-                    dt = self.dtype.newbyteorder("<" if endian in ("little", "<") else ">")
+                    dt = self.dtype.newbyteorder(
+                        "<" if endian in ("little", "<") else ">")
                     data = np.frombuffer(data, dtype=dt)
                 else:
                     raise RuntimeError(f"Unsupported Zarr codec: {name}")
@@ -512,7 +525,8 @@ class _ZarrV3Array:
                 break
 
         if last_error is not None:
-            raise RuntimeError(f"Zarr codec pipeline failed: {last_error}") from last_error
+            raise RuntimeError(
+                f"Zarr codec pipeline failed: {last_error}") from last_error
 
         if isinstance(data, (bytes, bytearray)):
             arr = np.frombuffer(data, dtype=self.dtype)
@@ -545,7 +559,8 @@ class _ZarrV3Array:
             import zstandard as zstd  # type: ignore
 
             dctx = zstd.ZstdDecompressor()
-            return dctx.decompress(data, max_output_size=max_out)  # type: ignore[arg-type]
+            # type: ignore[arg-type]
+            return dctx.decompress(data, max_output_size=max_out)
         except Exception as exc:  # pragma: no cover - optional dependency
             last_error = exc
 
@@ -559,7 +574,8 @@ class _ZarrV3Array:
                 decoder = Zstd()
             except Exception:
                 try:
-                    decoder = numcodecs.get_codec({"id": "zstd"})  # type: ignore[attr-defined]
+                    # type: ignore[attr-defined]
+                    decoder = numcodecs.get_codec({"id": "zstd"})
                 except Exception:
                     decoder = None
             if decoder is not None:
@@ -576,7 +592,8 @@ class _ZarrV3Array:
 
     def first_nonempty_index(self, axis: int = 0) -> int:
         """Best-effort estimate of the first non-empty chunk along an axis."""
-        chunk_size = self._chunk_shape[axis] if axis < len(self._chunk_shape) else 1
+        chunk_size = self._chunk_shape[axis] if axis < len(
+            self._chunk_shape) else 1
         if axis != 0:
             return 0
         try:
@@ -596,7 +613,26 @@ class _ZarrV3Array:
             return 0
         return 0
 
+
 class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
+    _PLY_DTYPE_MAP: Mapping[str, str] = {
+        "char": "i1",
+        "uchar": "u1",
+        "int8": "i1",
+        "uint8": "u1",
+        "short": "i2",
+        "ushort": "u2",
+        "int16": "i2",
+        "uint16": "u2",
+        "int": "i4",
+        "uint": "u4",
+        "int32": "i4",
+        "uint32": "u4",
+        "float": "f4",
+        "float32": "f4",
+        "double": "f8",
+        "float64": "f8",
+    }
     """
     True 3D volume renderer using VTK's GPU volume mapper.
 
@@ -657,6 +693,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_last_data_max = 1.0
         self._label_volume_active = False
         self._slice_start_index_hint: Optional[int] = None
+        self._ply_color_cache: dict[str, np.ndarray] = {}
+        self._gaussian_actor_data: dict[int, dict[str, object]] = {}
+        self._gaussian_scale_mult: float = 1.0
+        self._gaussian_opacity_mult: float = 1.0
+        self._gaussian_glyph_res: int = 12
+        self._scene_light: Optional[vtkLight] = None
+        self._light_intensity: float = 1.0
 
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
@@ -795,6 +838,50 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         size_row.addWidget(self.point_size_slider)
         size_row.addStretch(1)
         point_detail_layout.addLayout(size_row)
+
+        brightness_row = QtWidgets.QHBoxLayout()
+        brightness_row.addWidget(QtWidgets.QLabel("Scene Brightness:"))
+        self.light_intensity_spin = QtWidgets.QDoubleSpinBox()
+        self.light_intensity_spin.setRange(0.0, 3.0)
+        self.light_intensity_spin.setSingleStep(0.05)
+        self.light_intensity_spin.setValue(self._light_intensity)
+        self.light_intensity_spin.valueChanged.connect(
+            self._update_light_intensity)
+        brightness_row.addWidget(self.light_intensity_spin)
+        brightness_row.addStretch(1)
+        point_detail_layout.addLayout(brightness_row)
+
+        self.gaussian_group = QtWidgets.QGroupBox("Gaussian Splat")
+        g_layout = QtWidgets.QGridLayout()
+        g_layout.setContentsMargins(6, 6, 6, 6)
+        g_layout.addWidget(QtWidgets.QLabel("Scale ×"), 0, 0)
+        self.gaussian_scale_spin = QtWidgets.QDoubleSpinBox()
+        self.gaussian_scale_spin.setRange(0.05, 5.0)
+        self.gaussian_scale_spin.setSingleStep(0.05)
+        self.gaussian_scale_spin.setValue(self._gaussian_scale_mult)
+        self.gaussian_scale_spin.valueChanged.connect(
+            self._update_gaussian_scale)
+        g_layout.addWidget(self.gaussian_scale_spin, 0, 1)
+
+        g_layout.addWidget(QtWidgets.QLabel("Opacity ×"), 1, 0)
+        self.gaussian_opacity_spin = QtWidgets.QDoubleSpinBox()
+        self.gaussian_opacity_spin.setRange(0.0, 3.0)
+        self.gaussian_opacity_spin.setSingleStep(0.05)
+        self.gaussian_opacity_spin.setValue(self._gaussian_opacity_mult)
+        self.gaussian_opacity_spin.valueChanged.connect(
+            self._update_gaussian_opacity)
+        g_layout.addWidget(self.gaussian_opacity_spin, 1, 1)
+
+        g_layout.addWidget(QtWidgets.QLabel("Glyph resolution"), 2, 0)
+        self.gaussian_res_spin = QtWidgets.QSpinBox()
+        self.gaussian_res_spin.setRange(6, 48)
+        self.gaussian_res_spin.setValue(self._gaussian_glyph_res)
+        self.gaussian_res_spin.valueChanged.connect(
+            self._update_gaussian_resolution)
+        g_layout.addWidget(self.gaussian_res_spin, 2, 1)
+        self.gaussian_group.setLayout(g_layout)
+        self.gaussian_group.setEnabled(False)
+        point_detail_layout.addWidget(self.gaussian_group)
 
         self.region_group = QtWidgets.QGroupBox("Point Cloud Regions")
         region_layout = QtWidgets.QVBoxLayout()
@@ -1065,6 +1152,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._picker.SetTolerance(0.005)  # Adjust sensitivity
         self._last_picked_id = -1
         self._last_picked_actor = None
+        self._ensure_scene_light()
 
         # Setup interactive window/level mode and key/mouse bindings
         self._wl_mode = False
@@ -2023,7 +2111,6 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             backing_path=backing_path,
             volume_shape=(n_frames, plane_shape[0], plane_shape[1]),
         )
-    
 
     def _first_3d_array_from_group(self, grp):
         """Breadth-first search for the first array with >=3 dimensions."""
@@ -2045,7 +2132,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                             try:
                                 logger.info(
                                     "VTK viewer: BFS picked array '%s' (shape=%s)",
-                                    getattr(arr, "path", None) or getattr(arr, "name", None),
+                                    getattr(arr, "path", None) or getattr(
+                                        arr, "name", None),
                                     shp,
                                 )
                             except Exception:
@@ -2097,7 +2185,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if not np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.bool_):
             return False
         tokens = ("label", "mask", "annot", "seg")
-        name = str(getattr(arr_obj, "path", "") or getattr(arr_obj, "name", "")).lower()
+        name = str(getattr(arr_obj, "path", "")
+                   or getattr(arr_obj, "name", "")).lower()
         if any(tok in name for tok in tokens):
             return True
         if any(tok in source_path.name.lower() for tok in tokens):
@@ -2105,7 +2194,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         attrs = getattr(arr_obj, "attrs", None)
         if attrs:
             try:
-                keys = [str(k).lower() for k in getattr(attrs, "keys", lambda: [])()]
+                keys = [str(k).lower()
+                        for k in getattr(attrs, "keys", lambda: [])()]
                 if any(tok in k for k in keys for tok in tokens):
                     return True
                 for key in (
@@ -2397,9 +2487,6 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 is_label_map=is_label_volume,
             )
 
-
-
-
     def _open_tiff_memmap(self, path: Path) -> Optional[np.ndarray]:
         try:
             import tifffile  # type: ignore
@@ -2558,8 +2645,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     if isinstance(item, Array) and item.ndim >= 3:
                         return item
                     if isinstance(item, Group):
-                         # Recurse once if we found a 'data' group
-                         return self._select_zarr_array(item)
+                        # Recurse once if we found a 'data' group
+                        return self._select_zarr_array(item)
 
         return obj
 
@@ -2648,21 +2735,22 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         """
         ndim = arr.ndim
         shape = arr.shape
-        
+
         # Default to last 3 dimensions as Z, Y, X
         z_ix, y_ix, x_ix = ndim - 3, ndim - 2, ndim - 1
-        
+
         # Try to find OME-Zarr axis names
         axes_meta = None
         if hasattr(arr, 'attrs') and 'multiscales' in arr.attrs:
-             try:
-                 axes_meta = arr.attrs['multiscales'][0].get('axes')
-             except Exception:
-                 pass
-        
+            try:
+                axes_meta = arr.attrs['multiscales'][0].get('axes')
+            except Exception:
+                pass
+
         # If we found metadata names, map them
         if axes_meta and len(axes_meta) == ndim:
-            names = [x['name'].lower() if isinstance(x, dict) else x.lower() for x in axes_meta]
+            names = [x['name'].lower() if isinstance(x, dict) else x.lower()
+                     for x in axes_meta]
             if 'z' in names and 'y' in names and 'x' in names:
                 z_ix = names.index('z')
                 y_ix = names.index('y')
@@ -2670,9 +2758,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         # Handle edge case: 2D array (treat as 1 slice Z)
         if ndim == 2:
-             # We can't really handle 2D in a 3D viewer easily without faking Z
-             # This assumes the data will be reshaped upstream or handled by loader
-             return (0, 0, 1), {}
+            # We can't really handle 2D in a 3D viewer easily without faking Z
+            # This assumes the data will be reshaped upstream or handled by loader
+            return (0, 0, 1), {}
 
         # Identify "Extra" axes (Time, Channel)
         # We usually fix them to index 0 (first timepoint, first channel)
@@ -2681,9 +2769,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if i not in (z_ix, y_ix, x_ix):
                 # Default to the middle of the range? No, usually index 0 is safer.
                 fixed_indices[i] = 0
-                
+
         return (z_ix, y_ix, x_ix), fixed_indices
-    
+
     def _zarr_to_numpy_zyx(
         self,
         arr,
@@ -2715,26 +2803,26 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def _open_zarr_store(self, path: Path, zarr_mod):
         """Robustly open Zarr path, handling consolidated metadata automatically."""
         path_str = str(path)
-        
+
         # Attempt 1: Consolidated (Optimized for OME-Zarr)
         try:
             return zarr_mod.open_consolidated(path_str, mode='r')
         except Exception:
             pass
-            
+
         # Attempt 2: Standard Group/Array open
         try:
             return zarr_mod.open(path_str, mode='r')
         except Exception:
             pass
-            
+
         # Attempt 3: Check for nested 'data' folder (common in some exports)
         if (path / "data").exists():
             try:
                 return zarr_mod.open(str(path / "data"), mode='r')
             except Exception:
                 pass
-                
+
         return None
 
     def _vtk_image_to_numpy(self, vtk_img) -> np.ndarray:
@@ -3414,10 +3502,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _add_point_cloud_ply(self, path: str):
         try:
-            from vtkmodules.vtkIOGeometry import vtkPLYReader  # lazy import
+            from vtkmodules.vtkIOPLY import vtkPLYReader  # lazy import
         except Exception as exc:  # pragma: no cover - optional module
             raise RuntimeError(
-                "VTK PLY reader module is not available. Install a VTK build with IOGeometry support."
+                "VTK PLY reader module is not available. Install a VTK build with IOPLY support."
             ) from exc
         reader = vtkPLYReader()
         reader.SetFileName(path)
@@ -3425,6 +3513,24 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         poly = reader.GetOutput()
         if poly is None or poly.GetNumberOfPoints() == 0:
             raise RuntimeError("PLY contains no points")
+        # If this is a gaussian-splat PLY, render with oriented glyphs first.
+        if self._is_gaussian_splat_ply(path):
+            try:
+                actor = self._create_gaussian_splat_actor(path, poly)
+                if actor is not None:
+                    self.renderer.AddActor(actor)
+                    self._point_actors.append(actor)
+                    if hasattr(self, "show_point_cloud_checkbox"):
+                        self.show_point_cloud_checkbox.blockSignals(True)
+                        self.show_point_cloud_checkbox.setChecked(True)
+                        self.show_point_cloud_checkbox.blockSignals(False)
+                        self._point_cloud_visible = True
+                    self._focus_on_bounds(actor.GetBounds())
+                    self._update_point_controls_visibility()
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "Falling back to point renderer for gaussian PLY '%s': %s", path, exc)
         # Ask user for scale factors (default to 1, or volume spacing if available)
         scale = self._prompt_point_scale()
         if scale is not None:
@@ -3443,10 +3549,25 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             pass
         # Ensure vertices exist without vtkVertexGlyphFilter
         poly2 = self._ensure_vertices(poly)
+        self._ensure_ply_point_colors(poly2, path)
         mapper = vtkPolyDataMapper()
         mapper.SetInputData(poly2)
         # Use embedded PLY colors if present
-        mapper.ScalarVisibilityOn()
+        scalars = None
+        try:
+            scalars = poly2.GetPointData().GetScalars()
+        except Exception:
+            scalars = None
+        if scalars is not None and scalars.GetNumberOfComponents() >= 3:
+            mapper.SetColorModeToDirectScalars()
+            mapper.SetScalarModeToUsePointData()
+            try:
+                mapper.SelectColorArray(scalars.GetName() or "Colors")
+            except Exception:
+                pass
+            mapper.ScalarVisibilityOn()
+        else:
+            mapper.ScalarVisibilityOff()
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetPointSize(self.point_size_slider.value())
@@ -3460,6 +3581,561 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._point_cloud_visible = True
         self._focus_on_bounds(poly2.GetBounds())
         self._update_point_controls_visibility()
+
+    def _ensure_ply_point_colors(self, poly: vtkPolyData, path: str) -> None:
+        """Ensure the provided polydata has RGB(A) scalars, synthesizing them if needed."""
+        if poly is None:
+            return
+        point_data = poly.GetPointData()
+        if point_data is None:
+            return
+        try:
+            scalars = point_data.GetScalars()
+        except Exception:
+            scalars = None
+        if scalars is not None and scalars.GetNumberOfComponents() >= 3:
+            if scalars.GetNumberOfTuples() == poly.GetNumberOfPoints():
+                return
+        colors = self._decode_gaussian_ply_colors(
+            path, poly.GetNumberOfPoints())
+        if colors is None:
+            return
+        vtk_colors = numpy_to_vtk(colors, deep=True)
+        try:
+            vtk_colors.SetNumberOfComponents(colors.shape[1])
+        except Exception:
+            pass
+        vtk_colors.SetName("Colors")
+        point_data.SetScalars(vtk_colors)
+        try:
+            point_data.SetActiveScalars(vtk_colors.GetName())
+        except Exception:
+            pass
+
+    def _is_gaussian_splat_ply(self, path: str) -> bool:
+        required = (
+            "f_dc_0",
+            "f_dc_1",
+            "f_dc_2",
+            "opacity",
+            "scale_0",
+            "scale_1",
+            "scale_2",
+            "rot_0",
+            "rot_1",
+            "rot_2",
+            "rot_3",
+        )
+        data = self._read_gaussian_ply_fields(path, required)
+        return data is not None and all(k in data for k in required)
+
+    def _create_gaussian_splat_actor(self, path: str, poly: vtkPolyData) -> Optional[vtkActor]:
+        """Render gaussian-splat PLYs with oriented, scaled glyphs instead of flat points."""
+        required = (
+            "x",
+            "y",
+            "z",
+            "scale_0",
+            "scale_1",
+            "scale_2",
+            "rot_0",
+            "rot_1",
+            "rot_2",
+            "rot_3",
+            "f_dc_0",
+            "f_dc_1",
+            "f_dc_2",
+            "opacity",
+        )
+        field_data = self._read_gaussian_ply_fields(path, required)
+        if not field_data:
+            return None
+        try:
+            pts = np.stack(
+                [
+                    np.asarray(field_data["x"], dtype=np.float32),
+                    np.asarray(field_data["y"], dtype=np.float32),
+                    np.asarray(field_data["z"], dtype=np.float32),
+                ],
+                axis=1,
+            )
+        except Exception:
+            return None
+        if pts.size == 0:
+            return None
+        # Apply optional auto-alignment to an active volume
+        try:
+            aligned = self._maybe_align_point_cloud_to_volume(
+                np.array(pts, copy=True))
+            if aligned.shape == pts.shape:
+                pts = aligned
+        except Exception:
+            pass
+
+        try:
+            scales = np.stack(
+                [
+                    np.asarray(field_data["scale_0"], dtype=np.float32),
+                    np.asarray(field_data["scale_1"], dtype=np.float32),
+                    np.asarray(field_data["scale_2"], dtype=np.float32),
+                ],
+                axis=1,
+            )
+            # Gaussian splat scales are stored in log space; exponentiate to get radii.
+            scales = np.exp(scales)
+        except Exception:
+            scales = np.ones((len(pts), 3), dtype=np.float32)
+
+        try:
+            quats = np.stack(
+                [
+                    np.asarray(field_data["rot_0"], dtype=np.float32),
+                    np.asarray(field_data["rot_1"], dtype=np.float32),
+                    np.asarray(field_data["rot_2"], dtype=np.float32),
+                    np.asarray(field_data["rot_3"], dtype=np.float32),
+                ],
+                axis=1,
+            )
+            orientation_deg = self._quaternion_to_euler_deg(quats)
+        except Exception:
+            orientation_deg = np.zeros((len(pts), 3), dtype=np.float32)
+
+        colors = self._colors_from_gaussian_field_data(field_data, len(pts))
+        if colors is None:
+            colors = self._decode_gaussian_ply_colors(path, len(pts))
+
+        vpoints = vtkPoints()
+        vpoints.SetData(numpy_to_vtk(
+            np.ascontiguousarray(pts, dtype=np.float32), deep=True))
+
+        out = vtkPolyData()
+        out.SetPoints(vpoints)
+        # Add dummy verts so bounds work even without glyphs
+        out = self._ensure_vertices(out)
+
+        scale_arr = numpy_to_vtk(np.ascontiguousarray(
+            scales, dtype=np.float32), deep=True)
+        scale_arr.SetNumberOfComponents(3)
+        scale_arr.SetName("Scale")
+        out.GetPointData().AddArray(scale_arr)
+
+        orient_arr = numpy_to_vtk(np.ascontiguousarray(
+            orientation_deg, dtype=np.float32), deep=True)
+        orient_arr.SetNumberOfComponents(3)
+        orient_arr.SetName("Orientation")
+        out.GetPointData().AddArray(orient_arr)
+
+        if colors is not None:
+            vtk_colors = numpy_to_vtk(colors, deep=True)
+            vtk_colors.SetName("Colors")
+            try:
+                vtk_colors.SetNumberOfComponents(
+                    colors.shape[1] if colors.ndim > 1 else 3)
+            except Exception:
+                pass
+            out.GetPointData().SetScalars(vtk_colors)
+
+        sphere = vtkSphereSource()
+        sphere.SetRadius(1.0)
+        sphere.SetThetaResolution(12)
+        sphere.SetPhiResolution(12)
+
+        mapper = vtkGlyph3DMapper()
+        mapper.SetInputData(out)
+        mapper.SetSourceConnection(sphere.GetOutputPort())
+        mapper.SetScaling(True)
+        try:
+            mapper.SetScaleModeToScaleByComponents()
+        except Exception:
+            try:
+                mapper.SetScaleMode(2)  # 2 == SCALE_BY_COMPONENTS
+            except Exception:
+                pass
+        mapper.SetScaleArray("Scale")
+        mapper.SetOrientationArray("Orientation")
+        try:
+            mapper.SetOrientationModeToRotation()
+        except Exception:
+            pass
+        if colors is not None:
+            mapper.ScalarVisibilityOn()
+            mapper.SetScalarModeToUsePointFieldData()
+            try:
+                mapper.SetColorModeToDirectScalars()
+            except Exception:
+                pass
+            mapper.SelectColorArray("Colors")
+        else:
+            mapper.ScalarVisibilityOff()
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetVisibility(self._point_cloud_visible)
+        self._register_gaussian_actor(
+            actor, scales, colors, sphere, out, mapper)
+        return actor
+
+    def _register_gaussian_actor(
+        self,
+        actor: vtkActor,
+        base_scales: np.ndarray,
+        base_colors: Optional[np.ndarray],
+        sphere: object,
+        poly: vtkPolyData,
+        mapper: vtkGlyph3DMapper,
+    ) -> None:
+        if not hasattr(self, "_gaussian_actor_data"):
+            self._gaussian_actor_data = {}
+        self._gaussian_actor_data[id(actor)] = {
+            "actor": actor,
+            "base_scales": np.array(base_scales, copy=True),
+            "base_colors": None if base_colors is None else np.array(base_colors, copy=True),
+            "sphere": sphere,
+            "poly": poly,
+            "mapper": mapper,
+        }
+        self._apply_gaussian_scale_to_actor(actor)
+        self._apply_gaussian_opacity_to_actor(actor)
+        self._apply_gaussian_resolution_to_actor(actor)
+        self._update_gaussian_controls_visibility()
+
+    def _update_gaussian_controls_visibility(self) -> None:
+        if hasattr(self, "gaussian_group"):
+            has_gaussian = bool(getattr(self, "_gaussian_actor_data", {}))
+            self.gaussian_group.setEnabled(has_gaussian)
+
+    def _apply_gaussian_scale_to_actor(self, actor: vtkActor, multiplier: Optional[float] = None) -> None:
+        if not getattr(self, "_gaussian_actor_data", None):
+            return
+        data = self._gaussian_actor_data.get(id(actor))
+        if not data:
+            return
+        m = float(self._gaussian_scale_mult if multiplier is None else multiplier)
+        base = np.asarray(data.get("base_scales"))
+        poly: vtkPolyData = data.get("poly")  # type: ignore[assignment]
+        if base.size == 0 or poly is None:
+            return
+        scaled = np.ascontiguousarray(base * m, dtype=np.float32)
+        v = numpy_to_vtk(scaled, deep=True)
+        v.SetName("Scale")
+        v.SetNumberOfComponents(3)
+        pd = poly.GetPointData()
+        try:
+            pd.RemoveArray("Scale")
+        except Exception:
+            pass
+        pd.AddArray(v)
+        try:
+            pd.SetActiveVectors("Scale")
+        except Exception:
+            pass
+        poly.Modified()
+        try:
+            mapper = data.get("mapper")
+            if mapper is not None:
+                mapper.Modified()
+        except Exception:
+            pass
+
+    def _apply_gaussian_opacity_to_actor(self, actor: vtkActor, multiplier: Optional[float] = None) -> None:
+        if not getattr(self, "_gaussian_actor_data", None):
+            return
+        data = self._gaussian_actor_data.get(id(actor))
+        if not data:
+            return
+        base_colors = data.get("base_colors")
+        if base_colors is None:
+            return
+        m = float(self._gaussian_opacity_mult if multiplier is None else multiplier)
+        colors = np.array(base_colors, copy=True)
+        if colors.ndim == 1:
+            colors = colors.reshape(-1, 1)
+        if colors.shape[1] >= 4:
+            alpha = np.clip(colors[:, 3].astype(np.float32) * m, 0.0, 255.0)
+            colors[:, 3] = alpha.astype(np.uint8)
+        else:
+            colors = np.clip(colors.astype(np.float32) * m,
+                             0.0, 255.0).astype(np.uint8)
+        poly: vtkPolyData = data.get("poly")  # type: ignore[assignment]
+        vtk_colors = numpy_to_vtk(np.ascontiguousarray(colors), deep=True)
+        vtk_colors.SetName("Colors")
+        try:
+            vtk_colors.SetNumberOfComponents(
+                colors.shape[1] if colors.ndim > 1 else 3)
+        except Exception:
+            pass
+        pd = poly.GetPointData()
+        pd.SetScalars(vtk_colors)
+        try:
+            pd.SetActiveScalars("Colors")
+        except Exception:
+            pass
+        poly.Modified()
+        try:
+            mapper = data.get("mapper")
+            if mapper is not None:
+                mapper.Modified()
+        except Exception:
+            pass
+
+    def _apply_gaussian_resolution_to_actor(self, actor: vtkActor, res: Optional[int] = None) -> None:
+        if not getattr(self, "_gaussian_actor_data", None):
+            return
+        data = self._gaussian_actor_data.get(id(actor))
+        if not data:
+            return
+        sphere = data.get("sphere")
+        if sphere is None:
+            return
+        r = int(self._gaussian_glyph_res if res is None else res)
+        try:
+            sphere.SetThetaResolution(r)
+            sphere.SetPhiResolution(r)
+        except Exception:
+            pass
+        try:
+            mapper = data.get("mapper")
+            if mapper is not None:
+                mapper.Modified()
+        except Exception:
+            pass
+
+    def _apply_gaussian_scale_to_all(self) -> None:
+        for data_id, data in list(getattr(self, "_gaussian_actor_data", {}).items()):
+            actor = data.get("actor")
+            if actor is None:
+                continue
+            self._apply_gaussian_scale_to_actor(
+                actor, self._gaussian_scale_mult)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _apply_gaussian_opacity_to_all(self) -> None:
+        for data_id, data in list(getattr(self, "_gaussian_actor_data", {}).items()):
+            actor = data.get("actor")
+            if actor is None:
+                continue
+            self._apply_gaussian_opacity_to_actor(
+                actor, self._gaussian_opacity_mult)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _apply_gaussian_resolution_to_all(self) -> None:
+        for data_id, data in list(getattr(self, "_gaussian_actor_data", {}).items()):
+            actor = data.get("actor")
+            if actor is None:
+                continue
+            self._apply_gaussian_resolution_to_actor(
+                actor, self._gaussian_glyph_res)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _decode_gaussian_ply_colors(self, path: str, expected_points: int) -> Optional[np.ndarray]:
+        """Decode gaussian-splat style color fields from a PLY file if RGB is missing."""
+        cache = getattr(self, "_ply_color_cache", None)
+        if cache:
+            cached = cache.get(path)
+            if cached is not None and len(cached) == expected_points:
+                return cached
+        required_fields = ("f_dc_0", "f_dc_1", "f_dc_2", "opacity")
+        field_data = self._read_gaussian_ply_fields(path, required_fields)
+        if not field_data or not all(name in field_data for name in ("f_dc_0", "f_dc_1", "f_dc_2")):
+            return None
+        try:
+            coeffs = np.stack(
+                [
+                    np.asarray(field_data["f_dc_0"], dtype=np.float32),
+                    np.asarray(field_data["f_dc_1"], dtype=np.float32),
+                    np.asarray(field_data["f_dc_2"], dtype=np.float32),
+                ],
+                axis=1,
+            )
+        except Exception:
+            return None
+        rgb = self._gaussian_dc_to_rgb(coeffs)
+        if rgb is None or rgb.shape[0] == 0:
+            return None
+        if rgb.shape[0] != expected_points:
+            logger.warning(
+                "PLY color count (%d) does not match point count (%d); skipping color attachment.",
+                rgb.shape[0],
+                expected_points,
+            )
+            return None
+        rgba = rgb
+        if "opacity" in field_data:
+            alpha = self._gaussian_opacity_to_alpha(field_data["opacity"])
+            if alpha is not None and alpha.shape[0] == rgb.shape[0]:
+                alpha_bytes = np.clip(alpha * 255.0, 0.0,
+                                      255.0).astype(np.uint8)
+                rgba = np.concatenate([rgb, alpha_bytes[:, None]], axis=1)
+        colors = np.ascontiguousarray(rgba.astype(np.uint8))
+        if cache is not None and len(colors) == expected_points:
+            cache[path] = colors
+        return colors
+
+    def _colors_from_gaussian_field_data(self, field_data: Mapping[str, np.ndarray], expected_points: int) -> Optional[np.ndarray]:
+        if not field_data:
+            return None
+        try:
+            coeffs = np.stack(
+                [
+                    np.asarray(field_data["f_dc_0"], dtype=np.float32),
+                    np.asarray(field_data["f_dc_1"], dtype=np.float32),
+                    np.asarray(field_data["f_dc_2"], dtype=np.float32),
+                ],
+                axis=1,
+            )
+        except Exception:
+            return None
+        rgb = self._gaussian_dc_to_rgb(coeffs)
+        if rgb is None or rgb.shape[0] != expected_points:
+            return None
+        rgba = rgb
+        if "opacity" in field_data:
+            alpha = self._gaussian_opacity_to_alpha(field_data["opacity"])
+            if alpha is not None and alpha.shape[0] == rgb.shape[0]:
+                alpha_bytes = np.clip(alpha * 255.0, 0.0,
+                                      255.0).astype(np.uint8)
+                rgba = np.concatenate([rgb, alpha_bytes[:, None]], axis=1)
+        return np.ascontiguousarray(rgba.astype(np.uint8))
+
+    def _gaussian_dc_to_rgb(self, coeffs: np.ndarray) -> Optional[np.ndarray]:
+        if coeffs is None or coeffs.ndim != 2 or coeffs.shape[1] < 3:
+            return None
+        sh_c0 = 0.28209479177387814  # Spherical harmonics constant for l=0,m=0
+        rgb = 0.5 + sh_c0 * coeffs[:, :3]
+        return np.clip(rgb, 0.0, 1.0) * 255.0
+
+    def _gaussian_opacity_to_alpha(self, opacity: np.ndarray) -> Optional[np.ndarray]:
+        if opacity is None:
+            return None
+        raw = np.asarray(opacity, dtype=np.float32)
+        if raw.size == 0:
+            return None
+        clipped = np.clip(raw, -50.0, 50.0)
+        # Stored opacity is logit-space; convert back to [0, 1]
+        alpha = 1.0 / (1.0 + np.exp(-clipped))
+        return np.clip(alpha, 0.0, 1.0)
+
+    def _read_gaussian_ply_fields(self, path: str, required: Sequence[str]) -> Optional[dict[str, np.ndarray]]:
+        """Return the requested vertex fields via plyfile when available or a manual parser."""
+        data = self._read_gaussian_ply_fields_with_library(path, required)
+        if data:
+            return data
+        return self._read_gaussian_ply_fields_manual(path, required)
+
+    def _read_gaussian_ply_fields_with_library(
+        self, path: str, required: Sequence[str]
+    ) -> Optional[dict[str, np.ndarray]]:
+        try:
+            from plyfile import PlyData  # type: ignore
+        except Exception:
+            return None
+        try:
+            ply = PlyData.read(path)
+        except Exception as exc:
+            logger.debug("plyfile failed to parse '%s': %s", path, exc)
+            return None
+        if "vertex" not in ply.elements:
+            return None
+        vertex = ply["vertex"].data
+        if vertex.dtype.names is None:
+            return None
+        out: dict[str, np.ndarray] = {}
+        for name in required:
+            if name in vertex.dtype.names:
+                try:
+                    out[name] = np.asarray(vertex[name])
+                except Exception:
+                    return None
+        return out if out else None
+
+    def _read_gaussian_ply_fields_manual(
+        self, path: str, required: Sequence[str]
+    ) -> Optional[dict[str, np.ndarray]]:
+        """Manual PLY vertex reader for gaussian splats when plyfile is unavailable."""
+        try:
+            with open(path, "rb") as fh:
+                format_spec = None
+                vertex_count = 0
+                vertex_props: list[tuple[str, str]] = []
+                reading_vertex = False
+                while True:
+                    line = fh.readline()
+                    if not line:
+                        return None
+                    decoded = line.decode("ascii", errors="ignore").strip()
+                    if not decoded:
+                        continue
+                    if decoded.startswith("format"):
+                        parts = decoded.split()
+                        if len(parts) >= 2:
+                            format_spec = parts[1]
+                    elif decoded.startswith("element"):
+                        parts = decoded.split()
+                        if len(parts) >= 3:
+                            reading_vertex = parts[1] == "vertex"
+                            if reading_vertex:
+                                try:
+                                    vertex_count = int(float(parts[2]))
+                                except Exception:
+                                    vertex_count = 0
+                        else:
+                            reading_vertex = False
+                    elif reading_vertex and decoded.startswith("property"):
+                        tokens = decoded.split()
+                        if len(tokens) == 3:
+                            _, ply_type, name = tokens
+                            vertex_props.append((name, ply_type))
+                        else:
+                            return None
+                    elif decoded == "end_header":
+                        break
+                if format_spec not in ("binary_little_endian", "binary_little_endian1.0", "binary_little_endian1"):
+                    logger.warning(
+                        "PLY '%s' uses unsupported format '%s' for gaussian colors.",
+                        path,
+                        format_spec or "unknown",
+                    )
+                    return None
+                if vertex_count <= 0 or not vertex_props:
+                    return None
+                dtype_fields = []
+                for name, ply_type in vertex_props:
+                    code = self._PLY_DTYPE_MAP.get(ply_type)
+                    if code is None:
+                        return None
+                    dtype_fields.append((name, "<" + code))
+                dtype = np.dtype(dtype_fields)
+                data = np.fromfile(fh, dtype=dtype, count=vertex_count)
+        except Exception as exc:
+            logger.warning("Manual PLY parsing failed for '%s': %s", path, exc)
+            return None
+        result: dict[str, np.ndarray] = {}
+        for name in required:
+            if name in data.dtype.names:
+                result[name] = np.asarray(data[name])
+        return result if result else None
+
+    def _quaternion_to_euler_deg(self, quats: np.ndarray) -> np.ndarray:
+        """Convert quaternions [w, x, y, z] to Euler angles (deg) for VTK rotation arrays."""
+        if quats.ndim != 2 or quats.shape[1] < 4:
+            return np.zeros((len(quats), 3), dtype=np.float32)
+        w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
+        t0 = 2.0 * (w * x + y * z)
+        t1 = 1.0 - 2.0 * (x * x + y * y)
+        roll = np.degrees(np.arctan2(t0, t1))
+
+        t2 = 2.0 * (w * y - z * x)
+        t2 = np.clip(t2, -1.0, 1.0)
+        pitch = np.degrees(np.arcsin(t2))
+
+        t3 = 2.0 * (w * z + x * y)
+        t4 = 1.0 - 2.0 * (y * y + z * z)
+        yaw = np.degrees(np.arctan2(t3, t4))
+        angles = np.stack([roll, pitch, yaw], axis=1).astype(np.float32)
+        if not np.all(np.isfinite(angles)):
+            angles = np.nan_to_num(
+                angles, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        return angles
 
     def _add_point_cloud_csv_or_xyz(self, path: str, focus: bool = True):
         import numpy as np
@@ -3858,9 +4534,45 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             actor.GetProperty().SetPointSize(size)
         self.vtk_widget.GetRenderWindow().Render()
 
+    def _ensure_scene_light(self) -> None:
+        if getattr(self, "_scene_light", None) is None:
+            light = vtkLight()
+            try:
+                light.SetLightTypeToHeadlight()
+            except Exception:
+                pass
+            light.SetIntensity(self._light_intensity)
+            self.renderer.AddLight(light)
+            self._scene_light = light
+
+    def _update_light_intensity(self, value: float) -> None:
+        self._light_intensity = float(value)
+        self._ensure_scene_light()
+        try:
+            self._scene_light.SetIntensity(
+                self._light_intensity)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _update_gaussian_scale(self, value: float):
+        self._gaussian_scale_mult = float(value)
+        self._apply_gaussian_scale_to_all()
+
+    def _update_gaussian_opacity(self, value: float):
+        self._gaussian_opacity_mult = float(value)
+        self._apply_gaussian_opacity_to_all()
+
+    def _update_gaussian_resolution(self, value: int):
+        self._gaussian_glyph_res = int(value)
+        self._apply_gaussian_resolution_to_all()
+
     def _update_point_controls_visibility(self) -> None:
         has_points = bool(getattr(self, "_point_actors", []))
         self.point_detail_widget.setVisible(has_points)
+        has_gaussian = bool(getattr(self, "_gaussian_actor_data", {}))
+        if hasattr(self, "gaussian_group"):
+            self.gaussian_group.setEnabled(has_gaussian)
         if not has_points:
             self._clear_region_selection()
 
@@ -3876,6 +4588,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._point_actors = []
+        self._gaussian_actor_data = {}
         self._region_actors = {}
         self._clear_region_selection()
         self._update_point_controls_visibility()
@@ -4518,10 +5231,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _read_ply_mesh(self, path: str) -> vtkPolyData:
         try:
-            from vtkmodules.vtkIOGeometry import vtkPLYReader
+            from vtkmodules.vtkIOPLY import vtkPLYReader
         except Exception as exc:
             raise RuntimeError(
-                "VTK PLY reader module is not available. Install VTK with IOGeometry support."
+                "VTK PLY reader module is not available. Install VTK with IOPLY support."
             ) from exc
         return self._read_polydata_from_reader(vtkPLYReader, path)
 
