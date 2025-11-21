@@ -155,11 +155,41 @@ class Sam3DBackend:
                 f"and PYTHONPATH includes {repo_path}. Original error: {exc}"
             ) from exc
 
+        # Compatibility: some older builds may miss run_layout_model. Provide a no-op.
+        try:
+            import sam3d_objects.pipeline.inference_pipeline_pointmap as _ipp  # type: ignore
+
+            if not hasattr(_ipp.InferencePipelinePointMap, "run_layout_model"):  # pragma: no cover - compat
+                def _run_layout_model_stub(self, *_args, **_kwargs):
+                    return {}
+                logger.warning(
+                    "SAM 3D InferencePipelinePointMap missing run_layout_model; "
+                    "install/upgrade SAM 3D to avoid degraded output."
+                )
+                setattr(_ipp.InferencePipelinePointMap,
+                        "run_layout_model", _run_layout_model_stub)
+        except Exception:
+            # Non-fatal; continue and let initialization raise if needed
+            pass
+
         try:
             self._inference = sam3d_inference.Inference(
                 str(pipeline),
                 compile=self.cfg.compile,
             )
+            # Safety: ensure pipeline has run_layout_model
+            try:
+                pipeline_obj = getattr(self._inference, "_pipeline", None)
+                if pipeline_obj and not hasattr(pipeline_obj, "run_layout_model"):  # pragma: no cover - compat
+                    def _run_layout_model_stub(*_args, **_kwargs):
+                        return {}
+                    logger.warning(
+                        "SAM 3D pipeline missing run_layout_model; continuing without layout postprocess."
+                    )
+                    setattr(pipeline_obj, "run_layout_model",
+                            _run_layout_model_stub)
+            except Exception:
+                pass
         except Exception as exc:  # pragma: no cover - external dependency
             raise Sam3DBackendError(
                 f"Failed to initialize SAM 3D: {exc}") from exc
