@@ -782,6 +782,13 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             propagate_action = menu.addAction("Propagate Selected Shape")
             propagate_action.triggered.connect(
                 lambda: self.propagateSelectedShapeFromCanvas())
+            # Optional SAM 3D action if the main window exposes it
+            main_window = self.window()
+            if hasattr(main_window, "run_sam3d_reconstruction"):
+                sam3d_action = menu.addAction("Reconstruct 3D (SAM 3D)")
+                sam3d_action.triggered.connect(
+                    lambda: main_window.run_sam3d_reconstruction()
+                )
             menu.exec_(event.globalPos())
         else:
             # Otherwise, call the base class implementation.
@@ -1417,12 +1424,12 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             self.update()
 
             # Get the label of the rectangle
-            rect_label = rect_shape.label            
+            rect_label = rect_shape.label
             # Launch CountGD if the description is not None and indicates exemplar, count, or starts with '0'
             if rect_shape.description is not None and \
-               ("exemplar" in rect_shape.description.lower() or \
-                "count" in rect_shape.description.lower() or \
-                rect_shape.description.startswith('0')):
+               ("exemplar" in rect_shape.description.lower() or
+                "count" in rect_shape.description.lower() or
+                    rect_shape.description.startswith('0')):
                 rect_shape.description = f"used_{rect_shape.description}"
                 self.createMode = "grounding_sam"
                 # Call predictAiRectangle with the rectangle shape and its label
