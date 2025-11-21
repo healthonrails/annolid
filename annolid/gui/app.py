@@ -24,6 +24,7 @@ from pathlib import Path
 from datetime import datetime
 import functools
 import subprocess
+import threading
 
 from labelme.ai import MODELS
 from qtpy import QtCore
@@ -6189,6 +6190,7 @@ class AnnolidWindow(MainWindow):
             self.statusBar().showMessage(
                 self.tr("SAM 3D complete: %s") % str(result.ply_path), 5000
             )
+            self._maybe_offer_gradio_model3d(str(result.ply_path))
             return
         # Unknown type
         self.statusBar().showMessage(self.tr("SAM 3D finished"), 3000)
@@ -6204,6 +6206,42 @@ class AnnolidWindow(MainWindow):
         self._config.setdefault("sam3d", {}).update(values)
         if isinstance(self.settings, QtCore.QSettings):
             self.settings.setValue("sam3d", values)
+            # Store as JSON string too for compatibility
+            try:
+                self.settings.setValue("sam3d_json", json.dumps(values))
+            except Exception:
+                pass
+
+    def _maybe_offer_gradio_model3d(self, ply_path: str) -> None:
+        """Offer to open the PLY in a Gradio Model3D viewer if available."""
+        try:
+            import gradio as gr  # type: ignore
+        except Exception:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            self.tr("Open in Gradio?"),
+            self.tr("Open the reconstructed PLY in a Gradio Model3D viewer?"),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+
+        def _launch():
+            try:
+                with gr.Blocks() as demo:
+                    gr.Markdown("# SAM 3D Reconstruction")
+                    gr.Model3D(value=ply_path, label="PLY")
+                demo.launch(
+                    share=False,
+                    inbrowser=True,
+                    prevent_thread_lock=True,
+                    show_error=True,
+                )
+            except Exception as exc:  # pragma: no cover - UI path
+                logger.warning("Gradio viewer failed: %s", exc)
+
+        threading.Thread(target=_launch, daemon=True).start()
 
     def run_video_depth_anything(self):
         """Run Video-Depth-Anything using the currently loaded video."""
