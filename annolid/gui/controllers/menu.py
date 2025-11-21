@@ -273,10 +273,23 @@ class MenuController:
                 "icon_name": "visualization",
             },
             {
+                "name": "sam3d_reconstruct",
+                "text": w.tr("Reconstruct 3D (SAM 3D)..."),
+                "slot": w.run_sam3d_reconstruction,
+                "tip": w.tr("Generate a 3D Gaussian splat using SAM 3D Objects"),
+                "icon_name": "objects",
+            },
+            {
                 "name": "depth_settings",
                 "text": w.tr("Depth Settings..."),
                 "slot": w.configure_video_depth_settings,
                 "tip": w.tr("Configure Video-Depth-Anything defaults"),
+            },
+            {
+                "name": "sam3d_settings",
+                "text": w.tr("SAM 3D Settings..."),
+                "slot": w.configure_sam3d_settings,
+                "tip": w.tr("Configure SAM 3D repository, checkpoints, and Python env"),
             },
             {
                 "name": "colab",
@@ -408,6 +421,7 @@ class MenuController:
         tool_actions.append(actions["quality_control"])
         tool_actions.append(actions["colab"])
         tool_actions.append(actions["video_depth_anything"])
+        tool_actions.append(actions["sam3d_reconstruct"])
         tool_actions.append(actions["visualization"])
         tool_actions.append(actions["depth_settings"])
         tool_actions.append(actions["open_florence2"])
@@ -458,6 +472,9 @@ class MenuController:
         utils.addActions(w.menus.view, (actions["glitter2"],))
         utils.addActions(
             w.menus.view, (actions["video_depth_anything"],))
+        utils.addActions(
+            w.menus.view, (actions["sam3d_reconstruct"],))
+        utils.addActions(w.menus.view, (actions["sam3d_settings"],))
         utils.addActions(w.menus.view, (actions["depth_settings"],))
         utils.addActions(w.menus.view, (actions["visualization"],))
         utils.addActions(w.menus.view, (w.patch_similarity_action,))

@@ -100,6 +100,7 @@ from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
 from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
+from annolid.gui.widgets.sam3d_settings_dialog import Sam3DSettingsDialog
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
@@ -119,6 +120,8 @@ from annolid.gui.widgets.florence2_widget import (
     Florence2Request,
     Florence2Widget,
 )
+from annolid.three_d import sam3d_client
+from annolid.three_d.sam3d_backend import Sam3DBackendError
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.model_manager import AIModelManager
 from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
@@ -225,6 +228,8 @@ class AnnolidWindow(MainWindow):
         self._running_florence_request: Optional[Florence2Request] = None
         self.florence_widget: Optional[Florence2Widget] = None
         self.florence_dock: Optional[QtWidgets.QDockWidget] = None
+        self._sam3d_worker = None
+        self._sam3d_worker_thread: Optional[QtCore.QThread] = None
 
         self.tracking_controller = TrackingController(self)
 
@@ -5993,6 +5998,199 @@ class AnnolidWindow(MainWindow):
             subject_names=subject_names,
             behavior_names=behavior_names
         )
+
+    # ---------------------------------------------------------------
+    # SAM 3D Objects (optional, post-processing)
+    # ---------------------------------------------------------------
+    def _sam3d_client_config(self) -> sam3d_client.Sam3DClientConfig:
+        cfg_block = {}
+        try:
+            cfg_block = dict((self._config or {}).get("sam3d", {}) or {})
+        except Exception:
+            cfg_block = {}
+        repo_path = cfg_block.get("repo_path") or os.environ.get(
+            "SAM3D_HOME", "sam-3d-objects"
+        )
+        checkpoints_dir = cfg_block.get("checkpoints_dir")
+        return sam3d_client.Sam3DClientConfig(
+            repo_path=Path(repo_path),
+            checkpoints_dir=Path(checkpoints_dir)
+            if checkpoints_dir
+            else None,
+            checkpoint_tag=cfg_block.get("checkpoint_tag", "hf"),
+            compile=bool(cfg_block.get("compile", False)),
+            seed=cfg_block.get("seed"),
+            python_executable=cfg_block.get("python_executable")
+            or os.environ.get("SAM3D_PYTHON"),
+            timeout_s=cfg_block.get("timeout_s"),
+        )
+
+    def run_sam3d_reconstruction(self):
+        """Run SAM 3D on the current frame and selected instance mask."""
+        if not self.video_file:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("No video loaded"),
+                self.tr(
+                    "Open a video and select an instance before running SAM 3D."),
+            )
+            return
+        selected = getattr(self.canvas, "selectedShapes", None)
+        if not selected:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("No shape selected"),
+                self.tr("Select an instance to reconstruct in 3D."),
+            )
+            return
+        frame_rgb = self._current_frame_rgb()
+        if frame_rgb is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Frame unavailable"),
+                self.tr("Unable to read the current frame for SAM 3D."),
+            )
+            return
+        shape = selected[0]
+        pts = []
+        for pt in shape.points:
+            try:
+                pts.append((pt.x(), pt.y()))
+            except Exception:
+                try:
+                    pts.append((pt[0], pt[1]))
+                except Exception:
+                    pass
+        if not pts:
+            QtWidgets.QMessageBox.warning(
+                self, self.tr("Invalid shape"), self.tr(
+                    "No points found on shape.")
+            )
+            return
+        mask = utils.shape_to_mask(frame_rgb.shape[:2], pts, shape.shape_type)
+        try:
+            cfg = self._sam3d_client_config()
+            availability = sam3d_client.sam3d_available(cfg, mode="auto")
+        except Exception as exc:
+            availability = sam3d_client.Sam3DAvailability(
+                ok=False, reason=str(exc), mode="auto"
+            )
+        if not availability.ok:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("SAM 3D unavailable"),
+                self.tr(
+                    "SAM 3D Objects is not available.\n%s"
+                )
+                % (availability.reason or self.tr("Install SAM 3D and set SAM3D_HOME.")),
+            )
+            return
+
+        video_path = Path(self.video_file)
+        out_dir_cfg = (self._config or {}).get(
+            "sam3d", {}).get("output_dir", None)
+        output_dir = (
+            Path(out_dir_cfg).expanduser()
+            if out_dir_cfg
+            else video_path.parent / f"{video_path.stem}_sam3d"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        basename = f"{video_path.stem}_f{self.frame_number:06d}_{shape.label or 'instance'}"
+        metadata = {
+            "video": str(video_path),
+            "frame_index": int(self.frame_number),
+            "label": str(shape.label),
+        }
+        job = sam3d_client.Sam3DJobSpec(
+            image=frame_rgb,
+            mask=mask,
+            output_dir=output_dir,
+            basename=basename,
+            metadata=metadata,
+        )
+        runner = (
+            sam3d_client.run_subprocess
+            if cfg.python_executable
+            else sam3d_client.run_inprocess
+        )
+        worker = FlexibleWorker(runner, cfg, job)
+        worker_thread = QtCore.QThread(self)
+        worker.moveToThread(worker_thread)
+        worker.finished_signal.connect(
+            functools.partial(self._handle_sam3d_finished,
+                              worker_thread=worker_thread)
+        )
+        worker.finished_signal.connect(worker_thread.quit)
+        worker_thread.started.connect(worker.run)
+        worker_thread.start()
+        self._sam3d_worker = worker
+        self._sam3d_worker_thread = worker_thread
+        self.statusBar().showMessage(self.tr("SAM 3D reconstruction started..."), 5000)
+
+    def _handle_sam3d_finished(self, result, *, worker_thread: QtCore.QThread):
+        try:
+            worker_thread.quit()
+            worker_thread.wait()
+        except Exception:
+            pass
+        self._sam3d_worker = None
+        self._sam3d_worker_thread = None
+
+        if isinstance(result, Sam3DBackendError):
+            msg = str(result)
+            QtWidgets.QMessageBox.critical(
+                self, self.tr("SAM 3D failed"), self.tr(
+                    "SAM 3D failed:\n%s") % msg
+            )
+            self.statusBar().showMessage(self.tr("SAM 3D failed"), 5000)
+            return
+        if isinstance(result, Exception):
+            msg = str(result)
+            QtWidgets.QMessageBox.critical(
+                self, self.tr("SAM 3D failed"), self.tr(
+                    "SAM 3D failed:\n%s") % msg
+            )
+            self.statusBar().showMessage(self.tr("SAM 3D failed"), 5000)
+            return
+        if isinstance(result, sam3d_client.Sam3DResult):
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("SAM 3D complete"),
+                self.tr("PLY saved to:\n%s") % str(result.ply_path),
+            )
+            # Try to open the PLY in the VTK viewer for convenience
+            try:
+                from annolid.gui.widgets.vtk_volume_viewer import (  # type: ignore
+                    VTKVolumeViewerDialog,
+                )
+
+                dlg = VTKVolumeViewerDialog(str(result.ply_path), parent=self)
+                dlg.setModal(False)
+                dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+            except Exception as exc:
+                # Non-fatal: viewer not available or failed to load
+                logger.debug(
+                    "Unable to open VTK viewer for SAM3D result: %s", exc)
+            self.statusBar().showMessage(
+                self.tr("SAM 3D complete: %s") % str(result.ply_path), 5000
+            )
+            return
+        # Unknown type
+        self.statusBar().showMessage(self.tr("SAM 3D finished"), 3000)
+
+    def configure_sam3d_settings(self):
+        dialog = Sam3DSettingsDialog(
+            parent=self,
+            config=(self._config or {}).get("sam3d", {}),
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        values = dialog.values()
+        self._config.setdefault("sam3d", {}).update(values)
+        if isinstance(self.settings, QtCore.QSettings):
+            self.settings.setValue("sam3d", values)
 
     def run_video_depth_anything(self):
         """Run Video-Depth-Anything using the currently loaded video."""
