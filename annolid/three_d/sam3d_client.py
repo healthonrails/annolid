@@ -77,6 +77,10 @@ def sam3d_available(cfg: Sam3DClientConfig, mode: str = "auto") -> Sam3DAvailabi
 
     # In-process probe: import mildly
     try:
+        repo_dir = cfg.repo_path
+        notebook_dir = cfg.repo_path / "notebook"
+        if str(repo_dir) not in sys.path:
+            sys.path.insert(0, str(repo_dir))
         if str(notebook_dir) not in sys.path:
             sys.path.insert(0, str(notebook_dir))
         importlib.import_module("inference")  # type: ignore

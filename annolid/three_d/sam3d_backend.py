@@ -140,13 +140,20 @@ class Sam3DBackend:
                 f"SAM 3D notebook directory missing: {notebook_path}"
             )
 
+        # Ensure both repo root (for utils3d, etc.) and notebook are importable
+        repo_path = self.cfg.repo_path.resolve()
+        if str(repo_path) not in sys.path:
+            sys.path.insert(0, str(repo_path))
         if str(notebook_path) not in sys.path:
             sys.path.insert(0, str(notebook_path))
         try:
             import inference as sam3d_inference  # type: ignore
         except Exception as exc:  # pragma: no cover - external dependency
             raise Sam3DBackendError(
-                f"Unable to import SAM 3D inference: {exc}") from exc
+                "Unable to import SAM 3D inference. "
+                "Verify the SAM 3D repo is present, installed (pip install -e .), "
+                f"and PYTHONPATH includes {repo_path}. Original error: {exc}"
+            ) from exc
 
         try:
             self._inference = sam3d_inference.Inference(
