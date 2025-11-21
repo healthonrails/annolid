@@ -190,10 +190,11 @@ def run_subprocess(cfg: Sam3DClientConfig, job: Sam3DJobSpec) -> Sam3DResult:
                 f"SAM3D subprocess failed ({proc.returncode}): {stdout or stderr}"
             )
         try:
-            payload = json.loads(stdout or "{}")
+            payload = _parse_runner_output(stdout, stderr)
         except Exception as exc:
             raise Sam3DBackendError(
-                f"Failed to parse subprocess output: {exc}") from exc
+                f"Failed to parse subprocess output: {exc}\nstdout: {stdout[:400]}\nstderr: {stderr[:400]}"
+            ) from exc
         if not payload.get("ok"):
             raise Sam3DBackendError(payload.get(
                 "error") or "Unknown SAM3D error")
@@ -215,3 +216,25 @@ def _runner_env() -> Dict[str, str]:
         f"{repo_root}{os.pathsep}{existing}" if existing else str(repo_root)
     )
     return env
+
+
+def _parse_runner_output(stdout: str, stderr: str) -> Dict[str, Any]:
+    """Try to parse JSON from the runner output, tolerant of extra logs."""
+    if stdout:
+        try:
+            return json.loads(stdout)
+        except Exception:
+            # Try last non-empty line
+            lines = [ln for ln in stdout.splitlines() if ln.strip()]
+            if lines:
+                return json.loads(lines[-1])
+    # Sometimes all output is in stderr
+    if stderr:
+        lines = [ln for ln in stderr.splitlines() if ln.strip()]
+        for ln in reversed(lines):
+            try:
+                return json.loads(ln)
+            except Exception:
+                continue
+    # If nothing parsed, raise
+    raise ValueError("runner output did not contain JSON")

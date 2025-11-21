@@ -6008,6 +6008,19 @@ class AnnolidWindow(MainWindow):
             cfg_block = dict((self._config or {}).get("sam3d", {}) or {})
         except Exception:
             cfg_block = {}
+        # Merge persisted QSettings (dict or JSON string)
+        try:
+            persisted = self.settings.value(
+                "sam3d") if hasattr(self, "settings") else None
+            if isinstance(persisted, str):
+                try:
+                    persisted = json.loads(persisted)
+                except Exception:
+                    persisted = None
+            if isinstance(persisted, dict):
+                cfg_block.update(persisted)
+        except Exception:
+            pass
         repo_path = cfg_block.get("repo_path") or os.environ.get(
             "SAM3D_HOME", "sam-3d-objects"
         )
