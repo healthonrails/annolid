@@ -61,6 +61,7 @@ This breakthrough is driven by an innovative data engine that has automatically 
 - **Video outputs are written to `<video_name>_annotations.ndjson`** by default for consistent downstream consumption.
 - **Fallback and recovery**: If SAM3 produces gaps (frames with no masks), Annolid re-runs those frames using text + visual prompts in a single lightweight session to recover missing masks more quickly.
 - **Device flexibility**: Annolid auto-selects CUDA/MPS/CPU, retries on CPU after MPS OOM, and respects `SAM3_CKPT_PATH` if you want to supply a local checkpoint instead of auto-downloading.
+- **Dependencies**: Install SAM3 extras via `pip install ".[sam3]"` (requires `iopath` and `ftfy`) when running inside Annolid.
 
 ### Quickstart in Annolid (video)
 

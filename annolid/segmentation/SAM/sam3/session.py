@@ -15,15 +15,26 @@ from .aliases import ensure_sam3_aliases
 from .sam3.utils import set_default_device
 
 SAM3_IMPORT_ERROR: Optional[Exception] = None
+_SAM3_REQUIRED_MODULES = ("iopath", "ftfy")
 
-try:
-    ensure_sam3_aliases()
-    importlib.import_module("annolid.segmentation.SAM.sam3.sam3")
-    from annolid.segmentation.SAM.sam3.sam3.model.sam3_video_predictor import (
-        Sam3VideoPredictor,
-    )
-except Exception as exc:  # pragma: no cover - import guard
-    SAM3_IMPORT_ERROR = exc
+for _mod in _SAM3_REQUIRED_MODULES:
+    try:
+        importlib.import_module(_mod)
+    except Exception as exc:  # pragma: no cover - import guard
+        SAM3_IMPORT_ERROR = ImportError(
+            f"SAM3 requires '{_mod}'. Install via `pip install .[sam3]` or `pip install iopath ftfy`."
+        ) from exc
+        break
+
+if SAM3_IMPORT_ERROR is None:
+    try:
+        ensure_sam3_aliases()
+        importlib.import_module("annolid.segmentation.SAM.sam3.sam3")
+        from annolid.segmentation.SAM.sam3.sam3.model.sam3_video_predictor import (
+            Sam3VideoPredictor,
+        )
+    except Exception as exc:  # pragma: no cover - import guard
+        SAM3_IMPORT_ERROR = exc
 
 
 def _default_bpe_path() -> Path:
@@ -90,7 +101,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
     ):
         if SAM3_IMPORT_ERROR:
             raise RuntimeError(
-                "SAM3 dependencies are missing; check and install thre quired packages."
+                f"SAM3 dependencies are missing; install the required packages "
+                f"(pip install .[sam3]) and retry. Root cause: {SAM3_IMPORT_ERROR}"
             ) from SAM3_IMPORT_ERROR
 
         cfg = _resolve_session_config(

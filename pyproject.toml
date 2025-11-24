@@ -61,6 +61,12 @@ dependencies = [
     "dataclasses>=0.6; python_version < '3.7'",
 ]
 
+[project.optional-dependencies]
+sam3 = [
+    "iopath>=0.1.9",
+    "ftfy>=6.1.1",
+]
+
 [project.urls]
 Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"
