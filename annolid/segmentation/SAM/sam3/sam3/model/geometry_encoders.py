@@ -39,7 +39,8 @@ def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False
     seq1_length, batch_size, hidden_size = seq1.shape
     seq2_length, batch_size, hidden_size = seq2.shape
 
-    assert batch_size == seq1.size(1) == seq2.size(1) == mask1.size(0) == mask2.size(0)
+    assert batch_size == seq1.size(1) == seq2.size(
+        1) == mask1.size(0) == mask2.size(0)
     assert hidden_size == seq1.size(2) == seq2.size(2)
     assert seq1_length == mask1.size(1)
     assert seq2_length == mask2.size(1)
@@ -53,7 +54,8 @@ def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False
     final_lengths = actual_seq1_lengths + actual_seq2_lengths
     max_length = seq1_length + seq2_length
     concatenated_mask = (
-        torch.arange(max_length, device=seq2.device)[None].repeat(batch_size, 1)
+        torch.arange(max_length, device=seq2.device)[
+            None].repeat(batch_size, 1)
         >= final_lengths[:, None]
     )
 
@@ -66,7 +68,8 @@ def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False
     # At this point, the element of seq1 are in the right place
     # We just need to shift the elements of seq2
 
-    index = torch.arange(seq2_length, device=seq2.device)[:, None].repeat(1, batch_size)
+    index = torch.arange(seq2_length, device=seq2.device)[
+        :, None].repeat(1, batch_size)
     index = index + actual_seq1_lengths[None]
 
     concatenated_sequence = concatenated_sequence.scatter(
@@ -295,9 +298,11 @@ class Prompt:
         if box_embeddings is None:
             box_embeddings = torch.zeros(box_seq_len, bs, 4, device=device)
         if box_labels is None:
-            box_labels = torch.ones(box_seq_len, bs, device=device, dtype=torch.long)
+            box_labels = torch.ones(
+                box_seq_len, bs, device=device, dtype=torch.long)
         if box_mask is None:
-            box_mask = torch.zeros(bs, box_seq_len, device=device, dtype=torch.bool)
+            box_mask = torch.zeros(
+                bs, box_seq_len, device=device, dtype=torch.bool)
         return box_embeddings, box_labels, box_mask
 
     def _init_point(
@@ -313,7 +318,8 @@ class Prompt:
                 point_seq_len, bs, device=device, dtype=torch.long
             )
         if point_mask is None:
-            point_mask = torch.zeros(bs, point_seq_len, device=device, dtype=torch.bool)
+            point_mask = torch.zeros(
+                bs, point_seq_len, device=device, dtype=torch.bool)
         return point_embeddings, point_labels, point_mask
 
     def _init_mask(
@@ -323,9 +329,11 @@ class Prompt:
         # In case we append new mask, we check that its resolution matches exisiting ones (if any).
         # In case mask_embeddings is None, we should never encode it.
         if mask_labels is None:
-            mask_labels = torch.ones(mask_seq_len, bs, device=device, dtype=torch.long)
+            mask_labels = torch.ones(
+                mask_seq_len, bs, device=device, dtype=torch.long)
         if mask_mask is None:
-            mask_mask = torch.zeros(bs, mask_seq_len, device=device, dtype=torch.bool)
+            mask_mask = torch.zeros(
+                bs, mask_seq_len, device=device, dtype=torch.bool)
         return mask_embeddings, mask_labels, mask_mask
 
     def append_boxes(self, boxes, labels, mask=None):
@@ -367,7 +375,8 @@ class Prompt:
             )
 
         self.point_labels, _ = concat_padded_sequences(
-            self.point_labels.unsqueeze(-1), self.point_mask, labels.unsqueeze(-1), mask
+            self.point_labels.unsqueeze(
+                -1), self.point_mask, labels.unsqueeze(-1), mask
         )
         self.point_labels = self.point_labels.squeeze(-1)
         self.point_embeddings, self.point_mask = concat_padded_sequences(
@@ -464,7 +473,7 @@ class FusedMaskEncoder(MaskEncoder):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         masks = self.mask_downsampler(masks)
 
-        ## Fuse pix_feats and downsampled masks
+        # Fuse pix_feats and downsampled masks
         # in case the visual features are on CPU, cast them to CUDA
         pix_feat = pix_feat.to(masks.device)
 
@@ -568,7 +577,8 @@ class SequenceGeometryEncoder(nn.Module):
                     self.d_model, self.d_model, self.roi_size
                 )
             if boxes_pos_enc:
-                self.boxes_pos_enc_project = nn.Linear(self.d_model + 2, self.d_model)
+                self.boxes_pos_enc_project = nn.Linear(
+                    self.d_model + 2, self.d_model)
 
         self.final_proj = None
         if add_post_encode_proj:
@@ -600,6 +610,12 @@ class SequenceGeometryEncoder(nn.Module):
     def _encode_points(self, points, points_mask, points_labels, img_feats):
         points_embed = None
         n_points, bs = points.shape[:2]
+
+        if n_points == 0:
+            empty = torch.zeros(
+                0, bs, self.d_model, device=img_feats.device, dtype=img_feats.dtype
+            )
+            return empty, points_mask
 
         if self.points_direct_project is not None:
             proj = self.points_direct_project(points)
@@ -720,7 +736,8 @@ class SequenceGeometryEncoder(nn.Module):
         masks = masks.view(n_masks, bs, *masks.shape[1:]).flatten(
             -2
         )  # n_masks x bs x C x H*W
-        masks = masks.permute(0, 3, 1, 2).flatten(0, 1)  # n_masks * H*W x bs x C
+        masks = masks.permute(0, 3, 1, 2).flatten(
+            0, 1)  # n_masks * H*W x bs x C
         attn_mask = attn_mask.repeat_interleave(n_tokens_per_mask, dim=1)
         if self.add_mask_label:
             masks = masks + self.mask_label_embed(mask_labels.long())
@@ -821,7 +838,8 @@ class SequenceGeometryEncoder(nn.Module):
         bs = final_embeds.shape[1]
         assert final_mask.shape[0] == bs
         if self.cls_embed is not None:
-            cls = self.cls_embed.weight.view(1, 1, self.d_model).repeat(1, bs, 1)
+            cls = self.cls_embed.weight.view(
+                1, 1, self.d_model).repeat(1, bs, 1)
             cls_mask = torch.zeros(
                 bs, 1, dtype=final_mask.dtype, device=final_mask.device
             )

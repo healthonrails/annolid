@@ -55,6 +55,7 @@ class Sam3SessionConfig:
     device: Optional[str] = None
     score_threshold_detection: Optional[float] = None
     new_det_thresh: Optional[float] = None
+    async_loading_frames: bool = False  # keep memory usage low; no preloading
 
 
 def _resolve_session_config(
@@ -69,6 +70,7 @@ def _resolve_session_config(
     device: Optional[str],
     score_threshold_detection: Optional[float],
     new_det_thresh: Optional[float],
+    async_loading_frames: bool,
 ) -> Sam3SessionConfig:
     """Allow legacy kwargs or a config object to drive initialization."""
     if config is not None:
@@ -83,6 +85,7 @@ def _resolve_session_config(
         device=device,
         score_threshold_detection=score_threshold_detection,
         new_det_thresh=new_det_thresh,
+        async_loading_frames=async_loading_frames,
     )
 
 
@@ -106,6 +109,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         device: Optional[str] = None,
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
+        async_loading_frames: bool = False,
         config: Optional[Sam3SessionConfig] = None,
     ):
         if SAM3_IMPORT_ERROR:
@@ -125,6 +129,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             device=device,
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
+            async_loading_frames=async_loading_frames,
         )
 
         self.text_prompt = cfg.text_prompt
@@ -159,6 +164,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.default_device = cfg.device
         self.score_threshold_detection = cfg.score_threshold_detection
         self.new_det_thresh = cfg.new_det_thresh
+        self.async_loading_frames = cfg.async_loading_frames
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -186,7 +192,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             apply_temporal_disambiguation=True,
             device=device,
             offload_video_to_cpu=True,
-            async_loading_frames=True,
+            async_loading_frames=self.async_loading_frames,
             score_threshold_detection=self.score_threshold_detection,
             new_det_thresh=self.new_det_thresh,
         )
@@ -441,7 +447,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             if label_hints and idx < len(label_hints):
                 hint = label_hints[idx]
             if hint is None and self.text_prompt:
-                hint = self.text_prompt
+                # Use the text prompt plus object id to disambiguate multiple instances,
+                # e.g., "fish_3" when prompting with "fish".
+                hint = f"{self.text_prompt}_{int(obj_id)}"
             if hint is not None:
                 self.obj_id_to_label[key] = hint
                 try:
