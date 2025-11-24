@@ -231,6 +231,10 @@ class AnnolidWindow(MainWindow):
         self.florence_dock: Optional[QtWidgets.QDockWidget] = None
         self._sam3d_worker = None
         self._sam3d_worker_thread: Optional[QtCore.QThread] = None
+        # SAM3 session manager (initialized lazily when a SAM3 model is selected).
+        self.sam3_session = None
+        # Track the frame index where the last SAM3 prompt was added (for partial propagation).
+        self._sam3_last_prompt_frame: Optional[int] = None
 
         self.tracking_controller = TrackingController(self)
 
@@ -577,6 +581,20 @@ class AnnolidWindow(MainWindow):
                 self.flags_controller.clear_flags()
         else:
             self.canvas.predictAiRectangle(prompt_text)
+
+    def _current_text_prompt(self) -> Optional[str]:
+        """Return the current AI text prompt (trimmed) if available."""
+        prompt = None
+        try:
+            if hasattr(self, "aiRectangle") and hasattr(
+                self.aiRectangle, "_aiRectanglePrompt"
+            ):
+                widget = self.aiRectangle._aiRectanglePrompt
+                if widget:
+                    prompt = widget.text().strip() or None
+        except Exception:
+            prompt = None
+        return prompt
 
     def update_step_size(self, value):
         self.step_size = value
@@ -1764,6 +1782,11 @@ class AnnolidWindow(MainWindow):
         except Exception as exc:  # pragma: no cover - shutdown best effort
             logger.error("Error stopping realtime inference on exit: %s",
                          exc, exc_info=True)
+        try:
+            if getattr(self, "sam3_session", None):
+                self.sam3_session.close_session()
+        except Exception as exc:  # pragma: no cover - shutdown best effort
+            logger.warning("Error closing SAM3 session on exit: %s", exc)
         super().closeEvent(event)
 
     def toolbar(self, title, actions=None):
@@ -2244,6 +2267,11 @@ class AnnolidWindow(MainWindow):
         weight = weight.lower()
         return "sam2_hiera" in identifier or "sam2_hiera" in weight
 
+    @staticmethod
+    def _is_sam3_model(identifier: str, weight: str) -> bool:
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return "sam3" in key
+
     def _resolve_sam2_model_config(self, identifier: str, weight: str) -> str:
         """
         Resolve the SAM2 config file name based on the selected identifier or weight.
@@ -2300,6 +2328,25 @@ class AnnolidWindow(MainWindow):
             if fallback_candidate.exists():
                 return str(fallback_candidate)
 
+        return None
+
+    def _resolve_sam3_checkpoint_path(self, weight: str) -> Optional[str]:
+        """
+        Resolve a SAM3 checkpoint if the provided weight path exists.
+        Otherwise return None to allow the SAM3 package to auto-download
+        (requires HF auth and GPU).
+        """
+        if not weight:
+            return None
+        candidate = Path(weight).expanduser()
+        if candidate.is_file():
+            return str(candidate)
+        # If a directory was provided, try to locate a pt file inside.
+        if candidate.is_dir():
+            pt_files = sorted(candidate.glob("*.pt"))
+            if pt_files:
+                return str(pt_files[0])
+            return None
         return None
 
     def stop_prediction(self):
@@ -2368,6 +2415,54 @@ class AnnolidWindow(MainWindow):
         # Convert arrays to plain Python lists to avoid pop() errors in YOLOE.
         return {"bboxes": bboxes, "cls": cls_list}
 
+    def extract_sam3_prompts_from_canvas(self) -> dict:
+        """
+        Extract SAM3-friendly prompts (boxes and points) from current canvas shapes.
+
+        Returns a dict with:
+          - frame_idx: current frame
+          - boxes_abs: list of [x, y, w, h] in pixel space
+          - box_labels: list of int labels (defaults to 1)
+          - points_abs: list of [x, y]
+          - point_labels: list of int labels (defaults to 1 for positive clicks)
+        """
+        frame_idx = max(self.frame_number, 0)
+        boxes_abs = []
+        box_labels = []
+        points_abs = []
+        point_labels = []
+        for shape in self.canvas.shapes:
+            if shape.shape_type == "rectangle" and len(shape.points) == 2:
+                p1, p2 = shape.points
+                x1, y1 = p1.x(), p1.y()
+                x2, y2 = p2.x(), p2.y()
+                w = x2 - x1
+                h = y2 - y1
+                boxes_abs.append([x1, y1, w, h])
+                box_labels.append(1)
+            elif shape.shape_type == "polygon" and shape.points:
+                xs = [pt.x() for pt in shape.points]
+                ys = [pt.y() for pt in shape.points]
+                x1, y1 = min(xs), min(ys)
+                x2, y2 = max(xs), max(ys)
+                w = x2 - x1
+                h = y2 - y1
+                boxes_abs.append([x1, y1, w, h])
+                box_labels.append(1)
+            elif shape.shape_type in ["points", "point"]:
+                labels = shape.point_labels if shape.point_labels else [1] * len(
+                    shape.points)
+                for pt, lbl in zip(shape.points, labels):
+                    points_abs.append([pt.x(), pt.y()])
+                    point_labels.append(lbl if lbl is not None else 1)
+        return {
+            "frame_idx": frame_idx,
+            "boxes_abs": boxes_abs,
+            "box_labels": box_labels,
+            "points_abs": points_abs,
+            "point_labels": point_labels,
+        }
+
     def predict_from_next_frame(self, to_frame=60):
         """
         Updated prediction routine that extracts visual prompts from the canvas.
@@ -2376,10 +2471,14 @@ class AnnolidWindow(MainWindow):
         """
         model_config, model_identifier, model_weight = self._resolve_model_identity()
         model_name = model_identifier or model_weight
+        text_prompt = self._current_text_prompt()
         if self.pred_worker and self.stop_prediction_flag:
             self.stop_prediction()
             return
-        elif len(self.canvas.shapes) <= 0 and not self._is_yolo_model(model_name, model_weight):
+        elif len(self.canvas.shapes) <= 0 and not (
+            self._is_yolo_model(model_name, model_weight)
+            or (self._is_sam3_model(model_name, model_weight) and text_prompt)
+        ):
             QtWidgets.QMessageBox.about(self,
                                         "No Shapes or Labeled Frames",
                                         "Please label this frame")
@@ -2428,6 +2527,126 @@ class AnnolidWindow(MainWindow):
                     model_config=sam2_config,
                     epsilon_for_polygon=self.epsilon_for_polygon,
                 )
+            elif self._is_sam3_model(model_name, model_weight):
+                try:
+                    from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
+                    from annolid.segmentation.SAM.sam_v2 import (
+                        load_annotations_from_video,
+                    )
+                except Exception as exc:  # pragma: no cover - import guard
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "SAM3 import error",
+                        f"Failed to load SAM3 packages.\n{exc}",
+                    )
+                    return
+
+                sam3_checkpoint = self._resolve_sam3_checkpoint_path(
+                    model_weight)
+                # Reuse the free-form AI prompt if available (optional).
+                text_prompt = text_prompt or self._current_text_prompt()
+
+                logger.info(
+                    "Using SAM3 with checkpoint '%s'",
+                    sam3_checkpoint if sam3_checkpoint else "auto-download",
+                )
+                # Attempt to load per-frame annotations; allow text-only fallback.
+                try:
+                    annotations, id_to_labels = load_annotations_from_video(
+                        self.video_file
+                    )
+                except FileNotFoundError:
+                    annotations, id_to_labels = [], {}
+                    logger.info(
+                        "SAM3: no per-frame JSON annotations found under %s; "
+                        "continuing with text-only prompt if provided.",
+                        self.video_file,
+                    )
+
+                if not annotations and not text_prompt:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "SAM3 prompts missing",
+                        "No per-frame annotations were found and no text prompt was "
+                        "provided. Please add a prompt and try again.",
+                    )
+                    return
+
+                sam3_cfg = dict((self._config or {}).get("sam3", {}) or {})
+                propagation_direction = sam3_cfg.get(
+                    "propagation_direction", "both"
+                )
+                max_frame_num_to_track = sam3_cfg.get("max_frame_num_to_track")
+                device_override = sam3_cfg.get("device")
+                try:
+                    if isinstance(max_frame_num_to_track, str):
+                        max_frame_num_to_track = int(max_frame_num_to_track)
+                except Exception:
+                    max_frame_num_to_track = None
+
+                # If no label annotations are present, try to seed prompts from the canvas.
+                if not annotations:
+                    prompts = self.extract_sam3_prompts_from_canvas()
+                    if prompts["boxes_abs"] or prompts["points_abs"]:
+                        # Normalize and seed the session directly when it starts.
+                        annotations = []
+                        # Attach prompts later via session manager once started.
+                        self._sam3_initial_prompts = prompts
+                    else:
+                        self._sam3_initial_prompts = None
+                else:
+                    self._sam3_initial_prompts = None
+
+                try:
+                    self.sam3_session = sam3_adapter.SAM3VideoProcessor(
+                        video_dir=self.video_file,
+                        id_to_labels=id_to_labels,
+                        annotations=annotations,
+                        checkpoint_path=sam3_checkpoint,
+                        text_prompt=text_prompt,
+                        epsilon_for_polygon=self.epsilon_for_polygon,
+                        propagation_direction=propagation_direction,
+                        max_frame_num_to_track=max_frame_num_to_track,
+                        device=device_override,
+                    )
+                    self._sam3_last_prompt_frame = None
+                except Exception as exc:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "SAM3 init error",
+                        f"Failed to initialise SAM3 session.\n{exc}",
+                    )
+                    return
+
+                def _run_sam3_with_canvas_prompts():
+                    # If we collected canvas prompts (no JSON annotations), inject them before propagate.
+                    if getattr(self, "_sam3_initial_prompts", None):
+                        prompts = self._sam3_initial_prompts
+                        try:
+                            if prompts["boxes_abs"]:
+                                self.sam3_session.add_prompt_boxes_abs(
+                                    prompts["frame_idx"],
+                                    prompts["boxes_abs"],
+                                    prompts["box_labels"] or [1] *
+                                    len(prompts["boxes_abs"]),
+                                    text=text_prompt,
+                                )
+                                self._sam3_last_prompt_frame = prompts["frame_idx"]
+                            if prompts["points_abs"]:
+                                self.sam3_session.add_prompt_points_abs(
+                                    prompts["frame_idx"],
+                                    prompts["points_abs"],
+                                    prompts["point_labels"] or [1] *
+                                    len(prompts["points_abs"]),
+                                    text=text_prompt,
+                                )
+                                self._sam3_last_prompt_frame = prompts["frame_idx"]
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to add SAM3 canvas prompts: %s", exc)
+                    return self.sam3_session.run()
+
+                self.video_processor = _run_sam3_with_canvas_prompts
             elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
                 # Instead of using a hard-coded prompt, extract visual prompts from canvas.
@@ -2492,6 +2711,10 @@ class AnnolidWindow(MainWindow):
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
                 )
+            elif self._is_sam3_model(model_name, model_weight):
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor,
+                )
             elif self._is_yolo_model(model_name, model_weight):
                 # Pass visual_prompts to run_inference if extracted successfully.
                 self.pred_worker = FlexibleWorker(
@@ -2552,6 +2775,14 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
         try:
+            if isinstance(messege, Exception):
+                logger.exception("Prediction worker failed", exc_info=messege)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Prediction failed",
+                    f"Prediction failed with error:\n{messege}",
+                )
+                return
             if messege is not None and "last frame" in str(messege):
                 QtWidgets.QMessageBox.information(
                     self, "Stop early",
