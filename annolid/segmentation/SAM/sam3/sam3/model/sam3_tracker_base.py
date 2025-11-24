@@ -168,11 +168,11 @@ class Sam3TrackerBase(torch.nn.Module):
         # use pinned memory + non_blocking transfer; for CPU or other devices we
         # avoid pin_memory to prevent cross-device storage errors.
         if isinstance(device, torch.device) and device.type == "cuda":
-            pos = torch.tensor(rel_pos_list).pin_memory().to(
-                device=device, non_blocking=True
-            )
+            # Always build on CPU first; pin + transfer to GPU non-blocking.
+            pos_cpu = torch.as_tensor(rel_pos_list, device="cpu")
+            pos = pos_cpu.pin_memory().to(device=device, non_blocking=True)
         else:
-            pos = torch.tensor(rel_pos_list, device=device)
+            pos = torch.as_tensor(rel_pos_list, device=device)
         pos_enc = pos / t_diff_max
         tpos_dim = self.hidden_dim
         pos_enc = get_1d_sine_pe(pos_enc, dim=tpos_dim)

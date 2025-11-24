@@ -483,7 +483,9 @@ class Sam3VideoInference(Sam3VideoBase):
                     obj_ids_to_hide.extend(unconfirmed_obj_ids)
                 if len(obj_ids_to_hide) > 0:
                     obj_ids_to_hide_t = torch.tensor(
-                        obj_ids_to_hide, dtype=torch.int64
+                        obj_ids_to_hide,
+                        dtype=torch.int64,
+                        device=out_obj_ids.device,
                     )
                     keep &= ~torch.isin(out_obj_ids, obj_ids_to_hide_t)
 
