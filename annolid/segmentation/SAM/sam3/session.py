@@ -22,8 +22,9 @@ for _mod in _SAM3_REQUIRED_MODULES:
         importlib.import_module(_mod)
     except Exception as exc:  # pragma: no cover - import guard
         SAM3_IMPORT_ERROR = ImportError(
-            f"SAM3 requires '{_mod}'. Install via `pip install .[sam3]` or `pip install iopath ftfy`."
-        ) from exc
+            f"SAM3 requires '{_mod}'. Install via `pip install .[sam3]` or "
+            f"`pip install iopath ftfy`. Original error: {exc}"
+        )
         break
 
 if SAM3_IMPORT_ERROR is None:
