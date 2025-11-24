@@ -235,6 +235,9 @@ class AnnolidWindow(MainWindow):
         self.sam3_session = None
         # Track the frame index where the last SAM3 prompt was added (for partial propagation).
         self._sam3_last_prompt_frame: Optional[int] = None
+        # Runtime-adjustable SAM3 detection thresholds (can be set via Advanced Parameters dialog).
+        self.sam3_score_threshold_detection: Optional[float] = None
+        self.sam3_new_det_thresh: Optional[float] = None
 
         self.tracking_controller = TrackingController(self)
 
@@ -1103,6 +1106,17 @@ class AnnolidWindow(MainWindow):
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():
             setattr(self.tracker_runtime_config, key, value)
+
+        sam3_thresholds = advanced_params_dialog.get_sam3_thresholds()
+        self.sam3_score_threshold_detection = sam3_thresholds.get(
+            "score_threshold_detection"
+        )
+        self.sam3_new_det_thresh = sam3_thresholds.get("new_det_thresh")
+        logger.info(
+            "SAM3 thresholds updated: score=%.4f, new_det=%.4f",
+            float(self.sam3_score_threshold_detection or 0.0),
+            float(self.sam3_new_det_thresh or 0.0),
+        )
 
         logger.info("Computing optical flow is %s .",
                     self.compute_optical_flow)
@@ -2578,11 +2592,38 @@ class AnnolidWindow(MainWindow):
                 )
                 max_frame_num_to_track = sam3_cfg.get("max_frame_num_to_track")
                 device_override = sam3_cfg.get("device")
+                score_threshold_detection = sam3_cfg.get(
+                    "score_threshold_detection")
+                new_det_thresh = sam3_cfg.get("new_det_thresh")
                 try:
                     if isinstance(max_frame_num_to_track, str):
                         max_frame_num_to_track = int(max_frame_num_to_track)
                 except Exception:
                     max_frame_num_to_track = None
+                for name, val in (
+                    ("score_threshold_detection", score_threshold_detection),
+                    ("new_det_thresh", new_det_thresh),
+                ):
+                    try:
+                        if isinstance(val, str):
+                            parsed = float(val)
+                        elif val is None:
+                            parsed = None
+                        else:
+                            parsed = float(val)
+                        if name == "score_threshold_detection":
+                            score_threshold_detection = parsed
+                        else:
+                            new_det_thresh = parsed
+                    except Exception:
+                        if name == "score_threshold_detection":
+                            score_threshold_detection = None
+                        else:
+                            new_det_thresh = None
+                if score_threshold_detection is None:
+                    score_threshold_detection = self.sam3_score_threshold_detection
+                if new_det_thresh is None:
+                    new_det_thresh = self.sam3_new_det_thresh
 
                 # If no label annotations are present, try to seed prompts from the canvas.
                 if not annotations:
@@ -2608,6 +2649,8 @@ class AnnolidWindow(MainWindow):
                         propagation_direction=propagation_direction,
                         max_frame_num_to_track=max_frame_num_to_track,
                         device=device_override,
+                        score_threshold_detection=score_threshold_detection,
+                        new_det_thresh=new_det_thresh,
                     )
                     self._sam3_last_prompt_frame = None
                 except Exception as exc:

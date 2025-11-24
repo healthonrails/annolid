@@ -19,7 +19,6 @@ from annolid.utils.logger import logger
 from sam3.utils import select_device
 
 
-
 class Sam3VideoPredictor:
     # a global dictionary that holds all inference states for this model (key is session_id)
     _ALL_INFERENCE_STATES = {}
@@ -36,6 +35,8 @@ class Sam3VideoPredictor:
         video_loader_type="cv2",
         apply_temporal_disambiguation: bool = True,
         device: Optional[torch.device | str] = None,
+        score_threshold_detection: Optional[float] = None,
+        new_det_thresh: Optional[float] = None,
     ):
         self.async_loading_frames = async_loading_frames
         self.offload_video_to_cpu = offload_video_to_cpu
@@ -51,6 +52,8 @@ class Sam3VideoPredictor:
             strict_state_dict_loading=strict_state_dict_loading,
             apply_temporal_disambiguation=apply_temporal_disambiguation,
             device=self.device,
+            score_threshold_detection=score_threshold_detection,
+            new_det_thresh=new_det_thresh,
         )
         if self.device.type == "cpu":
             # Ensure CPU inference uses float32 to avoid dtype mismatches.
@@ -97,9 +100,11 @@ class Sam3VideoPredictor:
         if request_type == "propagate_in_video":
             yield from self.propagate_in_video(
                 session_id=request["session_id"],
-                propagation_direction=request.get("propagation_direction", "both"),
+                propagation_direction=request.get(
+                    "propagation_direction", "both"),
                 start_frame_idx=request.get("start_frame_index", None),
-                max_frame_num_to_track=request.get("max_frame_num_to_track", None),
+                max_frame_num_to_track=request.get(
+                    "max_frame_num_to_track", None),
             )
         else:
             raise RuntimeError(f"invalid request type: {request_type}")
@@ -253,7 +258,8 @@ class Sam3VideoPredictor:
         else:
             del session
             gc.collect()
-            logger.info(f"removed session {session_id}; {self._get_session_stats()}")
+            logger.info(
+                f"removed session {session_id}; {self._get_session_stats()}")
         return {"is_success": True}
 
     def _get_session(self, session_id):
@@ -309,7 +315,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         if IS_MAIN_PROCESS:
             gpus_to_use = sorted(set(gpus_to_use))
             logger.info(f"using the following GPU IDs: {gpus_to_use}")
-            assert len(gpus_to_use) > 0 and all(isinstance(i, int) for i in gpus_to_use)
+            assert len(gpus_to_use) > 0 and all(isinstance(i, int)
+                                                for i in gpus_to_use)
             assert all(0 <= i < torch.cuda.device_count() for i in gpus_to_use)
             os.environ["MASTER_ADDR"] = "localhost"
             os.environ["MASTER_PORT"] = f"{self._find_free_port()}"
@@ -326,7 +333,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         if self.rank == 0:
             logger.info("\n\n\n\t*** START loading model on all ranks ***\n\n")
 
-        logger.info(f"loading model on {self.rank_str} -- this could take a while ...")
+        logger.info(
+            f"loading model on {self.rank_str} -- this could take a while ...")
         super().__init__(*model_args, **model_kwargs)
         logger.info(f"loading model on {self.rank_str} -- DONE locally")
 
@@ -335,7 +343,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
             # so that the main process can run torch.compile and fill the cache first
             self._start_worker_processes(*model_args, **model_kwargs)
             for rank in range(1, self.world_size):
-                self.command_queues[rank].put(("start_nccl_process_group", None))
+                self.command_queues[rank].put(
+                    ("start_nccl_process_group", None))
             self._start_nccl_process_group()
 
         if self.rank == 0:
@@ -388,12 +397,15 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         logger.info(f"spawning {world_size - 1} worker processes")
         # Use "spawn" (instead of "fork") for different PyTorch or CUDA context
         mp_ctx = mp.get_context("spawn")
-        self.command_queues = {rank: mp_ctx.Queue() for rank in range(1, world_size)}
-        self.result_queues = {rank: mp_ctx.Queue() for rank in range(1, world_size)}
+        self.command_queues = {rank: mp_ctx.Queue()
+                               for rank in range(1, world_size)}
+        self.result_queues = {rank: mp_ctx.Queue()
+                              for rank in range(1, world_size)}
         parent_pid = os.getpid()
         for rank in range(1, world_size):
             # set the environment variables for each worker process
-            os.environ["IS_MAIN_PROCESS"] = "0"  # mark this as a worker process
+            # mark this as a worker process
+            os.environ["IS_MAIN_PROCESS"] = "0"
             os.environ["RANK"] = f"{rank}"
             worker_process = mp_ctx.Process(
                 target=Sam3VideoPredictorMultiGPU._worker_process_command_loop,
@@ -427,7 +439,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         if world_size == 1:
             return
 
-        logger.debug(f"starting NCCL process group on {rank=} with {world_size=}")
+        logger.debug(
+            f"starting NCCL process group on {rank=} with {world_size=}")
         assert not torch.distributed.is_initialized()
         # use the "env://" init method with environment variables set in start_worker_processes
         # a short 3-min timeout to quickly detect any synchronization failures
@@ -442,7 +455,8 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
         # warm-up the NCCL process group by running a dummy all-reduce
         tensor = torch.ones(1024, 1024, device=self.device)
         torch.distributed.all_reduce(tensor)
-        logger.debug(f"started NCCL process group on {rank=} with {world_size=}")
+        logger.debug(
+            f"started NCCL process group on {rank=} with {world_size=}")
 
     def _find_free_port(self) -> int:
         """
@@ -495,10 +509,12 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
                 if request == "shutdown":
                     logger.info(f"worker {rank=} shutting down")
                     torch.distributed.destroy_process_group()
-                    result_queue.put(("shutdown", True))  # acknowledge the shutdown
+                    # acknowledge the shutdown
+                    result_queue.put(("shutdown", True))
                     sys.exit(0)
 
-                logger.debug(f"worker {rank=} received request {request['type']=}")
+                logger.debug(
+                    f"worker {rank=} received request {request['type']=}")
                 if is_stream_request:
                     for _ in predictor.handle_stream_request(request):
                         pass  # handle stream requests in a generator fashion
@@ -521,12 +537,14 @@ class Sam3VideoPredictorMultiGPU(Sam3VideoPredictor):
     def shutdown(self):
         """Shutdown all worker processes."""
         if self.rank == 0 and self.world_size > 1:
-            logger.info(f"shutting down {self.world_size - 1} worker processes")
+            logger.info(
+                f"shutting down {self.world_size - 1} worker processes")
             for rank in range(1, self.world_size):
                 self.command_queues[rank].put(("shutdown", False))
             torch.distributed.destroy_process_group()
             for rank in range(1, self.world_size):
-                self.result_queues[rank].get()  # wait for the worker to acknowledge
+                # wait for the worker to acknowledge
+                self.result_queues[rank].get()
             logger.info(f"shut down {self.world_size - 1} worker processes")
         self.has_shutdown = True
 

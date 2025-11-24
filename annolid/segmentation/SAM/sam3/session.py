@@ -53,6 +53,8 @@ class Sam3SessionConfig:
     max_frame_num_to_track: Optional[int] = None
     propagation_direction: str = "both"
     device: Optional[str] = None
+    score_threshold_detection: Optional[float] = None
+    new_det_thresh: Optional[float] = None
 
 
 def _resolve_session_config(
@@ -65,6 +67,8 @@ def _resolve_session_config(
     max_frame_num_to_track: Optional[int],
     propagation_direction: str,
     device: Optional[str],
+    score_threshold_detection: Optional[float],
+    new_det_thresh: Optional[float],
 ) -> Sam3SessionConfig:
     """Allow legacy kwargs or a config object to drive initialization."""
     if config is not None:
@@ -77,6 +81,8 @@ def _resolve_session_config(
         max_frame_num_to_track=max_frame_num_to_track,
         propagation_direction=propagation_direction,
         device=device,
+        score_threshold_detection=score_threshold_detection,
+        new_det_thresh=new_det_thresh,
     )
 
 
@@ -98,6 +104,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         max_frame_num_to_track: Optional[int] = None,
         propagation_direction: str = "both",
         device: Optional[str] = None,
+        score_threshold_detection: Optional[float] = None,
+        new_det_thresh: Optional[float] = None,
         config: Optional[Sam3SessionConfig] = None,
     ):
         if SAM3_IMPORT_ERROR:
@@ -115,6 +123,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             max_frame_num_to_track=max_frame_num_to_track,
             propagation_direction=propagation_direction,
             device=device,
+            score_threshold_detection=score_threshold_detection,
+            new_det_thresh=new_det_thresh,
         )
 
         self.text_prompt = cfg.text_prompt
@@ -147,6 +157,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # Default propagation settings (can be overridden per-call).
         self.propagation_direction = cfg.propagation_direction or "both"
         self.default_device = cfg.device
+        self.score_threshold_detection = cfg.score_threshold_detection
+        self.new_det_thresh = cfg.new_det_thresh
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -175,6 +187,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             device=device,
             offload_video_to_cpu=True,
             async_loading_frames=True,
+            score_threshold_detection=self.score_threshold_detection,
+            new_det_thresh=self.new_det_thresh,
         )
 
     def start_session(self, target_device: Optional[torch.device | str] = None) -> str:

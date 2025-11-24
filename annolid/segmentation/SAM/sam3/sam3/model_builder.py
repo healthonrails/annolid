@@ -805,6 +805,8 @@ def _resolve_video_config(
     apply_temporal_disambiguation,
     device,
     compile,
+    score_threshold_detection,
+    new_det_thresh,
 ) -> Sam3VideoConfig:
     """Combine legacy args with an optional config object."""
     if config is not None:
@@ -819,6 +821,8 @@ def _resolve_video_config(
         apply_temporal_disambiguation=apply_temporal_disambiguation,
         device=device,
         compile=compile,
+        score_threshold_detection=score_threshold_detection,
+        new_det_thresh=new_det_thresh,
     )
 
 
@@ -833,6 +837,8 @@ def build_sam3_video_model(
     device=None,
     compile=False,
     config: Optional[Sam3VideoConfig] = None,
+    score_threshold_detection: Optional[float] = None,
+    new_det_thresh: Optional[float] = None,
 ) -> Sam3VideoInferenceWithInstanceInteractivity:
     """
     Build SAM3 dense tracking model.
@@ -855,6 +861,8 @@ def build_sam3_video_model(
         apply_temporal_disambiguation=apply_temporal_disambiguation,
         device=device,
         compile=compile,
+        score_threshold_detection=score_threshold_detection,
+        new_det_thresh=new_det_thresh,
     )
 
     device = select_device(cfg.device)

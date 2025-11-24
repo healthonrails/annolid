@@ -33,6 +33,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
         propagation_direction: str = "both",
         max_frame_num_to_track: Optional[int] = None,
         device: Optional[str] = None,
+        score_threshold_detection: Optional[float] = None,
+        new_det_thresh: Optional[float] = None,
     ):
         self.annotations = annotations or []
         self.target_device = device
@@ -44,6 +46,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
             max_frame_num_to_track=max_frame_num_to_track,
             propagation_direction=propagation_direction,
             device=device,
+            score_threshold_detection=score_threshold_detection,
+            new_det_thresh=new_det_thresh,
         )
         super().__init__(
             video_dir=video_dir,

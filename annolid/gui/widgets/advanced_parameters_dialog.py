@@ -36,14 +36,18 @@ class AdvancedParametersDialog(QDialog):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
+        self.sam3_score_threshold_detection = 0.05
+        self.sam3_new_det_thresh = 0.06
 
         layout = QVBoxLayout()
         layout.setSpacing(8)
 
         layout.addLayout(self._build_polygon_controls())
         layout.addWidget(self._build_tracker_group())
+        layout.addWidget(self._build_sam3_group())
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -70,7 +74,8 @@ class AdvancedParametersDialog(QDialog):
         self.t_max_spinbox.setSingleStep(1)
         self.t_max_spinbox.setValue(self.t_max_value)
 
-        self.automatic_pause_checkbox = QCheckBox("Automatic Pause on Error Detection")
+        self.automatic_pause_checkbox = QCheckBox(
+            "Automatic Pause on Error Detection")
         self.automatic_pause_checkbox.setChecked(self.automatic_pause_enabled)
 
         self.cpu_only_checkbox = QCheckBox("Use CPU Only")
@@ -93,7 +98,8 @@ class AdvancedParametersDialog(QDialog):
         self.compute_optical_flow_checkbox = QCheckBox(
             "Compute Motion Index based on optical flow over instance mask"
         )
-        self.compute_optical_flow_checkbox.setChecked(self.compute_optical_flow)
+        self.compute_optical_flow_checkbox.setChecked(
+            self.compute_optical_flow)
 
         form.addRow(epsilon_label)
         form.addRow(self.epsilon_spinbox)
@@ -112,7 +118,8 @@ class AdvancedParametersDialog(QDialog):
         tracker_form.setHorizontalSpacing(12)
         tracker_form.setVerticalSpacing(6)
 
-        self.mask_enforce_checkbox = QCheckBox("Clamp keypoints to instance mask")
+        self.mask_enforce_checkbox = QCheckBox(
+            "Clamp keypoints to instance mask")
         self.mask_enforce_checkbox.setChecked(
             bool(self._tracker_config.mask_enforce_position)
         )
@@ -209,22 +216,61 @@ class AdvancedParametersDialog(QDialog):
         )
 
         tracker_form.addRow(self.mask_enforce_checkbox)
-        tracker_form.addRow("Mask snap radius (px)", self.mask_enforce_radius_spinbox)
+        tracker_form.addRow("Mask snap radius (px)",
+                            self.mask_enforce_radius_spinbox)
         tracker_form.addRow(self.mask_enforce_reject_checkbox)
-        tracker_form.addRow("Search tighten", self.motion_search_tighten_spinbox)
+        tracker_form.addRow(
+            "Search tighten", self.motion_search_tighten_spinbox)
         tracker_form.addRow("Velocity gain", self.motion_search_gain_spinbox)
         tracker_form.addRow("Flow gain", self.motion_search_flow_gain_spinbox)
-        tracker_form.addRow("Min radius", self.motion_search_min_radius_spinbox)
-        tracker_form.addRow("Max radius", self.motion_search_max_radius_spinbox)
-        tracker_form.addRow("Miss boost", self.motion_search_miss_boost_spinbox)
-        tracker_form.addRow("Motion prior weight", self.motion_prior_penalty_weight_spinbox)
-        tracker_form.addRow("Motion prior soft radius", self.motion_prior_soft_radius_spinbox)
-        tracker_form.addRow("Motion prior radius factor", self.motion_prior_radius_factor_spinbox)
-        tracker_form.addRow("Motion prior miss relief", self.motion_prior_miss_relief_spinbox)
-        tracker_form.addRow("Flow relief", self.motion_prior_flow_relief_spinbox)
+        tracker_form.addRow(
+            "Min radius", self.motion_search_min_radius_spinbox)
+        tracker_form.addRow(
+            "Max radius", self.motion_search_max_radius_spinbox)
+        tracker_form.addRow(
+            "Miss boost", self.motion_search_miss_boost_spinbox)
+        tracker_form.addRow("Motion prior weight",
+                            self.motion_prior_penalty_weight_spinbox)
+        tracker_form.addRow("Motion prior soft radius",
+                            self.motion_prior_soft_radius_spinbox)
+        tracker_form.addRow("Motion prior radius factor",
+                            self.motion_prior_radius_factor_spinbox)
+        tracker_form.addRow("Motion prior miss relief",
+                            self.motion_prior_miss_relief_spinbox)
+        tracker_form.addRow(
+            "Flow relief", self.motion_prior_flow_relief_spinbox)
 
         tracker_group.setLayout(tracker_form)
         return tracker_group
+
+    def _build_sam3_group(self) -> QGroupBox:
+        """Controls specific to SAM3 detector thresholds."""
+        sam3_group = QGroupBox("SAM3 detection thresholds")
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(6)
+
+        self.sam3_score_thresh_spinbox = QDoubleSpinBox()
+        self.sam3_score_thresh_spinbox.setRange(0.0, 1.0)
+        self.sam3_score_thresh_spinbox.setSingleStep(0.01)
+        self.sam3_score_thresh_spinbox.setValue(
+            self.sam3_score_threshold_detection)
+
+        self.sam3_new_det_thresh_spinbox = QDoubleSpinBox()
+        self.sam3_new_det_thresh_spinbox.setRange(0.0, 1.0)
+        self.sam3_new_det_thresh_spinbox.setSingleStep(0.01)
+        self.sam3_new_det_thresh_spinbox.setValue(self.sam3_new_det_thresh)
+
+        form.addRow(
+            "Score threshold (SAM3_SCORE_THRESH)", self.sam3_score_thresh_spinbox
+        )
+        form.addRow(
+            "New detection threshold (SAM3_NEW_DET_THRESH)",
+            self.sam3_new_det_thresh_spinbox,
+        )
+
+        sam3_group.setLayout(form)
+        return sam3_group
 
     def accept(self) -> None:  # pragma: no cover - dialog delegate
         self._collect_values()
@@ -261,6 +307,8 @@ class AdvancedParametersDialog(QDialog):
             "motion_prior_miss_relief": self.motion_prior_miss_relief_spinbox.value(),
             "motion_prior_flow_relief": self.motion_prior_flow_relief_spinbox.value(),
         }
+        self.sam3_score_threshold_detection = self.sam3_score_thresh_spinbox.value()
+        self.sam3_new_det_thresh = self.sam3_new_det_thresh_spinbox.value()
 
     def get_epsilon_value(self) -> float:
         return self.epsilon_value
@@ -285,3 +333,9 @@ class AdvancedParametersDialog(QDialog):
 
     def get_tracker_settings(self) -> Dict[str, object]:
         return dict(self._tracker_settings)
+
+    def get_sam3_thresholds(self) -> Dict[str, float]:
+        return {
+            "score_threshold_detection": float(self.sam3_score_threshold_detection),
+            "new_det_thresh": float(self.sam3_new_det_thresh),
+        }
