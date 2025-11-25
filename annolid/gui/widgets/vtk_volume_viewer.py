@@ -699,7 +699,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._gaussian_actor_data: dict[int, dict[str, object]] = {}
         self._gaussian_scale_mult: float = 1.0
         self._gaussian_opacity_mult: float = 1.0
-        self._gaussian_glyph_res: int = 16
+        # Use a higher default glyph resolution for smoother gaussian ellipsoids.
+        self._gaussian_glyph_res: int = 24
         self._scene_light: Optional[vtkLight] = None
         self._light_intensity: float = 1.0
 
@@ -3710,6 +3711,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             )
             # Gaussian splat scales are stored in log space; exponentiate to get radii.
             scales = np.exp(scales)
+            # Guard against degenerate or runaway radii that create rendering artifacts.
+            scales = np.clip(scales, 1e-4, 1e4)
         except Exception:
             scales = np.ones((len(pts), 3), dtype=np.float32)
 
@@ -3827,8 +3830,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         actor.SetMapper(mapper)
         try:
             prop = actor.GetProperty()
-            prop.ShadingOn()
-            prop.SetInterpolationToPhong()
+            # Gaussian splats should be emissive; avoid harsh specular highlights.
+            prop.ShadingOff()
+            prop.SetInterpolationToFlat()
+            prop.SetAmbient(1.0)
+            prop.SetDiffuse(0.0)
+            prop.SetSpecular(0.0)
         except Exception:
             pass
         actor.SetVisibility(self._point_cloud_visible)
@@ -4058,12 +4065,22 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 rgba = np.concatenate([rgb, alpha_bytes[:, None]], axis=1)
         return np.ascontiguousarray(rgba.astype(np.uint8))
 
+    def _linear_to_srgb(self, rgb: np.ndarray) -> np.ndarray:
+        """Convert linear RGB in [0,1] to sRGB for more faithful color output."""
+        clipped = np.clip(rgb, 0.0, 1.0)
+        return np.where(
+            clipped <= 0.0031308,
+            clipped * 12.92,
+            1.055 * np.power(clipped, 1.0 / 2.4) - 0.055,
+        )
+
     def _gaussian_dc_to_rgb(self, coeffs: np.ndarray) -> Optional[np.ndarray]:
         if coeffs is None or coeffs.ndim != 2 or coeffs.shape[1] < 3:
             return None
         sh_c0 = 0.28209479177387814  # Spherical harmonics constant for l=0,m=0
         rgb = 0.5 + sh_c0 * coeffs[:, :3]
-        return np.clip(rgb, 0.0, 1.0) * 255.0
+        srgb = self._linear_to_srgb(rgb)
+        return np.clip(srgb, 0.0, 1.0) * 255.0
 
     def _gaussian_opacity_to_alpha(self, opacity: np.ndarray) -> Optional[np.ndarray]:
         if opacity is None:
