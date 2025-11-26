@@ -4,8 +4,6 @@ import base64
 import os
 from typing import Any, Optional
 
-from openai import OpenAI
-
 
 def get_image_base64_and_mime(image_path):
     """Convert image file to base64 string and get MIME type"""
@@ -50,6 +48,15 @@ def send_generate_request(
     Returns:
         str: The generated response text from the server.
     """
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        print(
+            "OpenAI client is required for agent mode. "
+            "Install it with `pip install openai`."
+        )
+        raise
+
     # Process messages to convert image paths to base64
     processed_messages = []
     for message in messages:
@@ -89,10 +96,12 @@ def send_generate_request(
                         )
 
                     except FileNotFoundError:
-                        print(f"Warning: Image file not found: {new_image_path}")
+                        print(
+                            f"Warning: Image file not found: {new_image_path}")
                         continue
                     except Exception as e:
-                        print(f"Warning: Error processing image {new_image_path}: {e}")
+                        print(
+                            f"Warning: Error processing image {new_image_path}: {e}")
                         continue
                 else:
                     processed_content.append(c)
