@@ -13,6 +13,7 @@ from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.logger import logger
 from .aliases import ensure_sam3_aliases
 from .sam3.utils import set_default_device
+from .video_window_inference import run_video_sliding_window
 
 SAM3_IMPORT_ERROR: Optional[Exception] = None
 _SAM3_REQUIRED_MODULES = ("iopath", "ftfy")
@@ -56,6 +57,9 @@ class Sam3SessionConfig:
     score_threshold_detection: Optional[float] = None
     new_det_thresh: Optional[float] = None
     async_loading_frames: bool = False  # keep memory usage low; no preloading
+    sliding_window_size: int = 5  # frames per window for text-only runs
+    sliding_window_stride: Optional[int] = None
+    use_sliding_window_for_text_prompt: bool = True
 
 
 def _resolve_session_config(
@@ -71,6 +75,9 @@ def _resolve_session_config(
     score_threshold_detection: Optional[float],
     new_det_thresh: Optional[float],
     async_loading_frames: bool,
+    sliding_window_size: int,
+    sliding_window_stride: Optional[int],
+    use_sliding_window_for_text_prompt: bool,
 ) -> Sam3SessionConfig:
     """Allow legacy kwargs or a config object to drive initialization."""
     if config is not None:
@@ -86,6 +93,9 @@ def _resolve_session_config(
         score_threshold_detection=score_threshold_detection,
         new_det_thresh=new_det_thresh,
         async_loading_frames=async_loading_frames,
+        sliding_window_size=sliding_window_size,
+        sliding_window_stride=sliding_window_stride,
+        use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
     )
 
 
@@ -110,6 +120,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
         async_loading_frames: bool = False,
+        sliding_window_size: int = 5,
+        sliding_window_stride: Optional[int] = None,
+        use_sliding_window_for_text_prompt: bool = True,
         config: Optional[Sam3SessionConfig] = None,
     ):
         if SAM3_IMPORT_ERROR:
@@ -130,6 +143,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
             async_loading_frames=async_loading_frames,
+            sliding_window_size=sliding_window_size,
+            sliding_window_stride=sliding_window_stride,
+            use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
         )
 
         self.text_prompt = cfg.text_prompt
@@ -165,6 +181,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.score_threshold_detection = cfg.score_threshold_detection
         self.new_det_thresh = cfg.new_det_thresh
         self.async_loading_frames = cfg.async_loading_frames
+        self.sliding_window_size = cfg.sliding_window_size
+        self.sliding_window_stride = cfg.sliding_window_stride
+        self.use_sliding_window_for_text_prompt = cfg.use_sliding_window_for_text_prompt
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -547,6 +566,45 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         return _propagate()
 
+    def _propagate_text_prompt_with_sliding_window(
+        self,
+        *,
+        text_prompt: str,
+        target_device: Optional[torch.device | str],
+    ) -> Tuple[int, int]:
+        """
+        Low-RAM propagation path for text-only runs: keep only a small window
+        of frames in memory while still writing masks/metadata through the
+        usual annotation pipeline.
+        """
+        device_str = (
+            str(target_device) if target_device is not None else None)
+        total_frames = self.total_frames_estimate()
+        yielded_frames = 0
+        total_masks = 0
+
+        for frame_idx, outputs in run_video_sliding_window(
+            video_path=str(self.video_path),
+            mode="sam3",
+            text_prompt=text_prompt,
+            window_size=self.sliding_window_size,
+            stride=self.sliding_window_stride,
+            device=device_str,
+        ):
+            yielded_frames += 1
+            masks_in_frame, _ = self._handle_frame_outputs(
+                frame_idx=frame_idx,
+                outputs=outputs,
+                total_frames=total_frames,
+                yielded_frames=yielded_frames,
+            )
+            total_masks += masks_in_frame
+
+        if yielded_frames == 0:
+            raise RuntimeError(
+                "SAM3 sliding-window propagation yielded no frames")
+        return yielded_frames, total_masks
+
     def _prepare_prompts(
         self, annotations: Iterable[dict], text_prompt: Optional[str]
     ) -> Tuple[Optional[int], List[List[float]], List[int], List[int]]:
@@ -660,6 +718,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             # Reset tracking sets for this run.
             self._frames_processed.clear()
             self._frames_with_masks.clear()
+
+            if (
+                self.use_sliding_window_for_text_prompt
+                and self.text_prompt
+                and not boxes
+            ):
+                logger.info(
+                    "SAM3: running sliding-window text propagation "
+                    "(window_size=%d, stride=%s) to keep memory low.",
+                    self.sliding_window_size,
+                    self.sliding_window_stride or self.sliding_window_size,
+                )
+                return self._propagate_text_prompt_with_sliding_window(
+                    text_prompt=self.text_prompt,
+                    target_device=target_device,
+                )
 
             with self._session_scope(target_device) as _:
                 # Clear SAM3 action history so the first propagation performs a full
