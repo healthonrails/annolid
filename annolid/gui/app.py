@@ -238,6 +238,15 @@ class AnnolidWindow(MainWindow):
         # Runtime-adjustable SAM3 detection thresholds (can be set via Advanced Parameters dialog).
         self.sam3_score_threshold_detection: Optional[float] = None
         self.sam3_new_det_thresh: Optional[float] = None
+        self.sam3_propagation_direction: Optional[str] = None
+        self.sam3_max_frame_num_to_track: Optional[int] = None
+        self.sam3_device_override: Optional[str] = None
+        self.sam3_sliding_window_size: Optional[int] = None
+        self.sam3_sliding_window_stride: Optional[int] = None
+        self.sam3_agent_det_thresh: Optional[float] = None
+        self.sam3_agent_window_size: Optional[int] = None
+        self.sam3_agent_stride: Optional[int] = None
+        self.sam3_agent_output_dir: Optional[str] = None
 
         self.tracking_controller = TrackingController(self)
 
@@ -1091,6 +1100,31 @@ class AnnolidWindow(MainWindow):
         advanced_params_dialog = AdvancedParametersDialog(
             self,
             tracker_config=self.tracker_runtime_config,
+            sam3_runtime={
+                "score_threshold_detection": self.sam3_score_threshold_detection,
+                "new_det_thresh": self.sam3_new_det_thresh,
+                "propagation_direction": getattr(
+                    self, "sam3_propagation_direction", None
+                ),
+                "max_frame_num_to_track": getattr(
+                    self, "sam3_max_frame_num_to_track", None
+                ),
+                "device": getattr(self, "sam3_device_override", None),
+                "sliding_window_size": getattr(
+                    self, "sam3_sliding_window_size", None
+                ),
+                "sliding_window_stride": getattr(
+                    self, "sam3_sliding_window_stride", None
+                ),
+                "agent_det_thresh": getattr(self, "sam3_agent_det_thresh", None),
+                "agent_window_size": getattr(
+                    self, "sam3_agent_window_size", None
+                ),
+                "agent_stride": getattr(self, "sam3_agent_stride", None),
+                "agent_output_dir": getattr(
+                    self, "sam3_agent_output_dir", None
+                ),
+            },
         )
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
@@ -1112,6 +1146,24 @@ class AnnolidWindow(MainWindow):
             "score_threshold_detection"
         )
         self.sam3_new_det_thresh = sam3_thresholds.get("new_det_thresh")
+        sam3_runtime = advanced_params_dialog.get_sam3_runtime_settings()
+        self.sam3_propagation_direction = sam3_runtime.get(
+            "propagation_direction"
+        )
+        self.sam3_max_frame_num_to_track = sam3_runtime.get(
+            "max_frame_num_to_track"
+        )
+        self.sam3_device_override = sam3_runtime.get("device")
+        self.sam3_sliding_window_size = sam3_runtime.get(
+            "sliding_window_size"
+        )
+        self.sam3_sliding_window_stride = sam3_runtime.get(
+            "sliding_window_stride"
+        )
+        self.sam3_agent_det_thresh = sam3_runtime.get("agent_det_thresh")
+        self.sam3_agent_window_size = sam3_runtime.get("agent_window_size")
+        self.sam3_agent_stride = sam3_runtime.get("agent_stride")
+        self.sam3_agent_output_dir = sam3_runtime.get("agent_output_dir")
         logger.info(
             "SAM3 thresholds updated: score=%.4f, new_det=%.4f",
             float(self.sam3_score_threshold_detection or 0.0),
@@ -2595,6 +2647,13 @@ class AnnolidWindow(MainWindow):
                 score_threshold_detection = sam3_cfg.get(
                     "score_threshold_detection")
                 new_det_thresh = sam3_cfg.get("new_det_thresh")
+                sliding_window_size = sam3_cfg.get("sliding_window_size", 5)
+                sliding_window_stride = sam3_cfg.get("sliding_window_stride")
+                agent_cfg = sam3_cfg.get("agent", {}) or {}
+                agent_det_thresh_cfg = agent_cfg.get("det_thresh")
+                agent_window_size_cfg = agent_cfg.get("window_size")
+                agent_stride_cfg = agent_cfg.get("stride")
+                agent_output_dir_cfg = agent_cfg.get("output_dir")
                 try:
                     if isinstance(max_frame_num_to_track, str):
                         max_frame_num_to_track = int(max_frame_num_to_track)
@@ -2603,27 +2662,94 @@ class AnnolidWindow(MainWindow):
                 for name, val in (
                     ("score_threshold_detection", score_threshold_detection),
                     ("new_det_thresh", new_det_thresh),
+                    ("sliding_window_size", sliding_window_size),
+                    ("agent_det_thresh_cfg", agent_det_thresh_cfg),
                 ):
                     try:
-                        if isinstance(val, str):
-                            parsed = float(val)
-                        elif val is None:
-                            parsed = None
+                        if name == "sliding_window_size":
+                            parsed = int(val) if isinstance(
+                                val, str) else int(val)
+                        elif name == "agent_det_thresh_cfg":
+                            parsed = float(val) if val is not None else None
                         else:
-                            parsed = float(val)
+                            if isinstance(val, str):
+                                parsed = float(val)
+                            elif val is None:
+                                parsed = None
+                            else:
+                                parsed = float(val)
                         if name == "score_threshold_detection":
                             score_threshold_detection = parsed
-                        else:
+                        elif name == "new_det_thresh":
                             new_det_thresh = parsed
+                        elif name == "sliding_window_size":
+                            sliding_window_size = parsed
+                        else:
+                            agent_det_thresh_cfg = parsed
                     except Exception:
                         if name == "score_threshold_detection":
                             score_threshold_detection = None
-                        else:
+                        elif name == "new_det_thresh":
                             new_det_thresh = None
+                        elif name == "sliding_window_size":
+                            sliding_window_size = 5
+                        else:
+                            agent_det_thresh_cfg = None
                 if score_threshold_detection is None:
                     score_threshold_detection = self.sam3_score_threshold_detection
                 if new_det_thresh is None:
                     new_det_thresh = self.sam3_new_det_thresh
+                try:
+                    if isinstance(sliding_window_stride, str):
+                        sliding_window_stride = int(sliding_window_stride)
+                except Exception:
+                    sliding_window_stride = None
+                try:
+                    if isinstance(agent_window_size_cfg, str):
+                        agent_window_size_cfg = int(agent_window_size_cfg)
+                except Exception:
+                    agent_window_size_cfg = None
+                try:
+                    if isinstance(agent_stride_cfg, str):
+                        agent_stride_cfg = int(agent_stride_cfg)
+                except Exception:
+                    agent_stride_cfg = None
+                if self.sam3_propagation_direction:
+                    propagation_direction = self.sam3_propagation_direction
+                if self.sam3_max_frame_num_to_track is not None:
+                    max_frame_num_to_track = self.sam3_max_frame_num_to_track
+                if self.sam3_device_override:
+                    device_override = self.sam3_device_override
+                if self.sam3_sliding_window_size is not None:
+                    sliding_window_size = self.sam3_sliding_window_size
+                if self.sam3_sliding_window_stride is not None:
+                    sliding_window_stride = self.sam3_sliding_window_stride
+                agent_det_thresh = (
+                    self.sam3_agent_det_thresh
+                    if self.sam3_agent_det_thresh is not None
+                    else agent_det_thresh_cfg
+                    if agent_det_thresh_cfg is not None
+                    else score_threshold_detection
+                )
+                agent_window_size = (
+                    self.sam3_agent_window_size
+                    if self.sam3_agent_window_size is not None
+                    else agent_window_size_cfg
+                    if agent_window_size_cfg is not None
+                    else sliding_window_size
+                )
+                agent_stride = (
+                    self.sam3_agent_stride
+                    if self.sam3_agent_stride is not None
+                    else agent_stride_cfg
+                    if agent_stride_cfg is not None
+                    else sliding_window_stride
+                )
+                agent_output_dir = (
+                    self.sam3_agent_output_dir
+                    or agent_output_dir_cfg
+                    or "sam3_agent_out"
+                )
 
                 # If no label annotations are present, try to seed prompts from the canvas.
                 if not annotations:
@@ -2638,58 +2764,98 @@ class AnnolidWindow(MainWindow):
                 else:
                     self._sam3_initial_prompts = None
 
-                try:
-                    self.sam3_session = sam3_adapter.SAM3VideoProcessor(
-                        video_dir=self.video_file,
-                        id_to_labels=id_to_labels,
-                        annotations=annotations,
-                        checkpoint_path=sam3_checkpoint,
-                        text_prompt=text_prompt,
-                        epsilon_for_polygon=self.epsilon_for_polygon,
-                        propagation_direction=propagation_direction,
-                        max_frame_num_to_track=max_frame_num_to_track,
-                        device=device_override,
-                        score_threshold_detection=score_threshold_detection,
-                        new_det_thresh=new_det_thresh,
-                    )
-                    self._sam3_last_prompt_frame = None
-                except Exception as exc:
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "SAM3 init error",
-                        f"Failed to initialise SAM3 session.\n{exc}",
-                    )
-                    return
+                def _build_standard_sam3_runner():
+                    try:
+                        self.sam3_session = sam3_adapter.SAM3VideoProcessor(
+                            video_dir=self.video_file,
+                            id_to_labels=id_to_labels,
+                            annotations=annotations,
+                            checkpoint_path=sam3_checkpoint,
+                            text_prompt=text_prompt,
+                            epsilon_for_polygon=self.epsilon_for_polygon,
+                            propagation_direction=propagation_direction,
+                            max_frame_num_to_track=max_frame_num_to_track,
+                            device=device_override,
+                            score_threshold_detection=score_threshold_detection,
+                            new_det_thresh=new_det_thresh,
+                        )
+                        self._sam3_last_prompt_frame = None
+                    except Exception as exc:
+                        QtWidgets.QMessageBox.warning(
+                            self,
+                            "SAM3 init error",
+                            f"Failed to initialise SAM3 session.\n{exc}",
+                        )
+                        return None
 
-                def _run_sam3_with_canvas_prompts():
-                    # If we collected canvas prompts (no JSON annotations), inject them before propagate.
-                    if getattr(self, "_sam3_initial_prompts", None):
-                        prompts = self._sam3_initial_prompts
+                    def _run_sam3_with_canvas_prompts():
+                        # If we collected canvas prompts (no JSON annotations), inject them before propagate.
+                        if getattr(self, "_sam3_initial_prompts", None):
+                            prompts = self._sam3_initial_prompts
+                            try:
+                                if prompts["boxes_abs"]:
+                                    self.sam3_session.add_prompt_boxes_abs(
+                                        prompts["frame_idx"],
+                                        prompts["boxes_abs"],
+                                        prompts["box_labels"] or [1]
+                                        * len(prompts["boxes_abs"]),
+                                        text=text_prompt,
+                                    )
+                                    self._sam3_last_prompt_frame = prompts["frame_idx"]
+                                if prompts["points_abs"]:
+                                    self.sam3_session.add_prompt_points_abs(
+                                        prompts["frame_idx"],
+                                        prompts["points_abs"],
+                                        prompts["point_labels"] or [1]
+                                        * len(prompts["points_abs"]),
+                                        text=text_prompt,
+                                    )
+                                    self._sam3_last_prompt_frame = prompts["frame_idx"]
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to add SAM3 canvas prompts: %s", exc
+                                )
+                        return self.sam3_session.run()
+
+                    return _run_sam3_with_canvas_prompts
+
+                def _run_sam3_agent_first():
+                    """
+                    Prefer agent-seeded SAM3; fall back to standard SAM3 if agent fails.
+                    """
+                    if text_prompt:
                         try:
-                            if prompts["boxes_abs"]:
-                                self.sam3_session.add_prompt_boxes_abs(
-                                    prompts["frame_idx"],
-                                    prompts["boxes_abs"],
-                                    prompts["box_labels"] or [1] *
-                                    len(prompts["boxes_abs"]),
-                                    text=text_prompt,
+                            frames, masks = sam3_adapter.process_video_with_agent(
+                                video_path=self.video_file,
+                                agent_prompt=text_prompt,
+                                agent_det_thresh=agent_det_thresh,
+                                window_size=agent_window_size,
+                                stride=agent_stride,
+                                output_dir=agent_output_dir,
+                                checkpoint_path=sam3_checkpoint,
+                                propagation_direction=propagation_direction,
+                                device=device_override,
+                                score_threshold_detection=score_threshold_detection,
+                                new_det_thresh=new_det_thresh,
+                            )
+                            if masks <= 0:
+                                raise RuntimeError(
+                                    "Agent mode returned zero masks; falling back to standard SAM3."
                                 )
-                                self._sam3_last_prompt_frame = prompts["frame_idx"]
-                            if prompts["points_abs"]:
-                                self.sam3_session.add_prompt_points_abs(
-                                    prompts["frame_idx"],
-                                    prompts["points_abs"],
-                                    prompts["point_labels"] or [1] *
-                                    len(prompts["points_abs"]),
-                                    text=text_prompt,
-                                )
-                                self._sam3_last_prompt_frame = prompts["frame_idx"]
+                            return f"SAM3 agent-seeded done#{masks}"
                         except Exception as exc:
                             logger.warning(
-                                "Failed to add SAM3 canvas prompts: %s", exc)
-                    return self.sam3_session.run()
+                                "SAM3 agent mode failed; falling back to standard tracking: %s",
+                                exc,
+                                exc_info=False,
+                            )
 
-                self.video_processor = _run_sam3_with_canvas_prompts
+                    standard_runner = _build_standard_sam3_runner()
+                    if standard_runner is None:
+                        return "SAM3 init failed"
+                    return standard_runner()
+
+                self.video_processor = _run_sam3_agent_first
             elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
                 # Instead of using a hard-coded prompt, extract visual prompts from canvas.

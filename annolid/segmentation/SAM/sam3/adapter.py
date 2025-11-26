@@ -6,8 +6,9 @@ later add interactive prompts without changing call sites.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from qtpy import QtCore
@@ -17,6 +18,11 @@ from annolid.utils.logger import logger
 from annolid.gui.shape import Shape
 
 from .session import Sam3SessionConfig, Sam3SessionManager
+from .agent_video_orchestrator import (
+    AgentConfig,
+    TrackingConfig,
+    run_agent_seeded_sam3_video,
+)
 
 
 class SAM3VideoProcessor(Sam3SessionManager):
@@ -140,6 +146,55 @@ def process_video(
         device=device,
     )
     return processor.run()
+
+
+def process_video_with_agent(
+    video_path: str | Path,
+    *,
+    agent_prompt: str,
+    agent_det_thresh: float = 0.3,
+    window_size: int = 5,
+    stride: Optional[int] = None,
+    output_dir: str = "sam3_agent_out",
+    checkpoint_path: Optional[str] = None,
+    propagation_direction: str = "forward",
+    device: Optional[str] = None,
+    score_threshold_detection: Optional[float] = None,
+    new_det_thresh: Optional[float] = None,
+) -> Tuple[int, int]:
+    """
+    Run SAM3 video propagation using SAM3 Agent to refine the first frame of
+    each window, then track within that window.
+
+    Returns a short status string for the GUI/CLI.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    agent_cfg = AgentConfig(
+        prompt=agent_prompt,
+        det_thresh=agent_det_thresh,
+        window_size=window_size,
+        stride=stride,
+        output_dir=output_dir,
+    )
+    tracking_cfg = TrackingConfig(
+        checkpoint_path=checkpoint_path,
+        propagation_direction=propagation_direction,
+        device=device,
+        score_threshold_detection=score_threshold_detection,
+        new_det_thresh=new_det_thresh,
+    )
+    frames, masks = run_agent_seeded_sam3_video(
+        video_path=str(video_path),
+        agent_cfg=agent_cfg,
+        tracking_cfg=tracking_cfg,
+    )
+    logger.info(
+        "SAM3 agent-seeded propagation finished: frames=%d, masks=%d",
+        frames,
+        masks,
+    )
+    return frames, masks
 
 
 def _shape_from_box(label: str, box: List[float]) -> Shape:

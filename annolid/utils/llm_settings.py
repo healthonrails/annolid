@@ -12,7 +12,7 @@ _SETTINGS_DIR = Path.home() / ".annolid"
 _SETTINGS_FILE = _SETTINGS_DIR / "llm_settings.json"
 
 _DEFAULT_MODEL_FALLBACKS: Dict[str, str] = {
-    "ollama": "llama3.2-vision:latest",
+    "ollama": "qwen3-vl",  # prefer a tool-friendly local VLM
     "openai": "gpt-4o-mini",
     "gemini": "gemini-1.5-flash",
 }
@@ -21,7 +21,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     "provider": "ollama",
     "ollama": {
         "host": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-        "preferred_models": [],
+        "preferred_models": ["qwen3-vl", "llama3.2-vision:latest"],
     },
     "openai": {
         "api_key": os.getenv("OPENAI_API_KEY", ""),
@@ -56,6 +56,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
         "frame_agent": {"provider": "ollama", "model": "llama3.2"},
         "research_agent": {"provider": "ollama", "model": "llama3.2"},
         "playground": {"provider": "openai", "model": "gpt-4o"},
+        "sam3_agent": {"provider": "ollama", "model": "qwen3-vl"},
     },
 }
 
@@ -128,7 +129,8 @@ def _inject_env_defaults(provider: str, params: Dict[str, Any]) -> Dict[str, Any
                 params["base_url"] = env_url
     elif provider == "gemini":
         if not params.get("api_key"):
-            env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            env_key = os.getenv("GEMINI_API_KEY") or os.getenv(
+                "GOOGLE_API_KEY")
             if env_key:
                 params["api_key"] = env_key
     return params
@@ -325,7 +327,8 @@ def fetch_available_models(provider: str) -> List[str]:
                 os.environ.pop("OLLAMA_HOST", None)
 
         models = []
-        payload = response.get("models") if isinstance(response, dict) else None
+        payload = response.get("models") if isinstance(
+            response, dict) else None
         if isinstance(payload, list):
             for item in payload:
                 if isinstance(item, dict) and item.get("name"):

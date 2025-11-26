@@ -2,12 +2,15 @@ from typing import Dict, Optional
 
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QSpinBox,
     QVBoxLayout,
 )
@@ -22,12 +25,14 @@ class AdvancedParametersDialog(QDialog):
         self,
         parent=None,
         tracker_config: Optional[CutieDinoTrackerConfig] = None,
+        sam3_runtime: Optional[Dict[str, object]] = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Advanced Parameters")
 
         self._tracker_config = tracker_config or CutieDinoTrackerConfig()
         self._tracker_settings: Dict[str, object] = {}
+        sam3_runtime = sam3_runtime or {}
 
         self.epsilon_value = 2.0
         self.t_max_value = 5
@@ -36,8 +41,41 @@ class AdvancedParametersDialog(QDialog):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
-        self.sam3_score_threshold_detection = 0.05
-        self.sam3_new_det_thresh = 0.06
+        self.sam3_score_threshold_detection = float(
+            sam3_runtime.get("score_threshold_detection") or 0.35
+        )
+        self.sam3_new_det_thresh = float(
+            sam3_runtime.get("new_det_thresh") or 0.25
+        )
+        self.sam3_propagation_direction = str(
+            sam3_runtime.get("propagation_direction") or "both"
+        )
+        self.sam3_max_frame_num_to_track = sam3_runtime.get(
+            "max_frame_num_to_track", None
+        )
+        self.sam3_device_override = (
+            "" if sam3_runtime.get("device") is None else str(
+                sam3_runtime.get("device"))
+        )
+        self.sam3_sliding_window_size = int(
+            sam3_runtime.get("sliding_window_size") or 5
+        )
+        self.sam3_sliding_window_stride = sam3_runtime.get(
+            "sliding_window_stride", None
+        )
+        # Agent seeding defaults
+        self.sam3_agent_det_thresh = float(
+            sam3_runtime.get(
+                "agent_det_thresh") or self.sam3_score_threshold_detection
+        )
+        self.sam3_agent_window_size = int(
+            sam3_runtime.get(
+                "agent_window_size") or self.sam3_sliding_window_size
+        )
+        self.sam3_agent_stride = sam3_runtime.get("agent_stride", None)
+        self.sam3_agent_output_dir = str(
+            sam3_runtime.get("agent_output_dir") or "sam3_agent_out"
+        )
 
         layout = QVBoxLayout()
         layout.setSpacing(8)
@@ -244,8 +282,8 @@ class AdvancedParametersDialog(QDialog):
         return tracker_group
 
     def _build_sam3_group(self) -> QGroupBox:
-        """Controls specific to SAM3 detector thresholds."""
-        sam3_group = QGroupBox("SAM3 detection thresholds")
+        """Controls specific to SAM3 tracking and agent seeding."""
+        sam3_group = QGroupBox("SAM3 tracking + agent")
         form = QFormLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(6)
@@ -261,6 +299,81 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_new_det_thresh_spinbox.setSingleStep(0.01)
         self.sam3_new_det_thresh_spinbox.setValue(self.sam3_new_det_thresh)
 
+        self.sam3_direction_combo = QComboBox()
+        self.sam3_direction_combo.addItems(["forward", "backward", "both"])
+        idx = self.sam3_direction_combo.findText(
+            self.sam3_propagation_direction)
+        if idx >= 0:
+            self.sam3_direction_combo.setCurrentIndex(idx)
+
+        self.sam3_max_frames_spinbox = QSpinBox()
+        self.sam3_max_frames_spinbox.setRange(0, 100000)
+        self.sam3_max_frames_spinbox.setSpecialValueText("auto")
+        self.sam3_max_frames_spinbox.setValue(
+            0 if self.sam3_max_frame_num_to_track in (
+                None, "") else int(self.sam3_max_frame_num_to_track)
+        )
+
+        self.sam3_device_lineedit = QLineEdit(self.sam3_device_override)
+        self.sam3_device_lineedit.setPlaceholderText("auto (cuda/mps/cpu)")
+        self.sam3_device_lineedit.setToolTip(
+            "Optional device override for SAM3 tracker (e.g., cuda, mps, cpu). Leave empty for auto."
+        )
+
+        self.sam3_window_size_spinbox = QSpinBox()
+        self.sam3_window_size_spinbox.setRange(1, 1000)
+        self.sam3_window_size_spinbox.setValue(self.sam3_sliding_window_size)
+        self.sam3_window_size_spinbox.setToolTip(
+            "Sliding-window size for low-RAM text propagation."
+        )
+
+        self.sam3_window_stride_spinbox = QSpinBox()
+        self.sam3_window_stride_spinbox.setRange(0, 1000)
+        self.sam3_window_stride_spinbox.setSpecialValueText("auto")
+        self.sam3_window_stride_spinbox.setValue(
+            0 if self.sam3_sliding_window_stride in (
+                None, "") else int(self.sam3_sliding_window_stride)
+        )
+        self.sam3_window_stride_spinbox.setToolTip(
+            "Stride between windows; 0 uses window size."
+        )
+
+        # Agent seeding controls
+        self.sam3_agent_det_thresh_spinbox = QDoubleSpinBox()
+        self.sam3_agent_det_thresh_spinbox.setRange(0.0, 1.0)
+        self.sam3_agent_det_thresh_spinbox.setSingleStep(0.01)
+        self.sam3_agent_det_thresh_spinbox.setValue(self.sam3_agent_det_thresh)
+        self.sam3_agent_det_thresh_spinbox.setToolTip(
+            "Filter agent-generated masks below this score before seeding tracker."
+        )
+
+        self.sam3_agent_window_size_spinbox = QSpinBox()
+        self.sam3_agent_window_size_spinbox.setRange(1, 1000)
+        self.sam3_agent_window_size_spinbox.setValue(
+            self.sam3_agent_window_size)
+        self.sam3_agent_window_size_spinbox.setToolTip(
+            "Frames per agent window; first frame of each window is corrected by the agent."
+        )
+
+        self.sam3_agent_stride_spinbox = QSpinBox()
+        self.sam3_agent_stride_spinbox.setRange(0, 1000)
+        self.sam3_agent_stride_spinbox.setSpecialValueText("auto")
+        self.sam3_agent_stride_spinbox.setValue(
+            0 if self.sam3_agent_stride in (
+                None, "") else int(self.sam3_agent_stride)
+        )
+        self.sam3_agent_stride_spinbox.setToolTip(
+            "Stride between agent windows; 0 uses agent window size."
+        )
+
+        self.sam3_agent_output_dir_lineedit = QLineEdit(
+            self.sam3_agent_output_dir)
+        self.sam3_agent_output_dir_lineedit.setPlaceholderText(
+            "sam3_agent_out")
+        self.sam3_agent_output_dir_lineedit.setToolTip(
+            "Directory for agent JSON/PNG outputs."
+        )
+
         form.addRow(
             "Score threshold (SAM3_SCORE_THRESH)", self.sam3_score_thresh_spinbox
         )
@@ -268,6 +381,18 @@ class AdvancedParametersDialog(QDialog):
             "New detection threshold (SAM3_NEW_DET_THRESH)",
             self.sam3_new_det_thresh_spinbox,
         )
+        form.addRow("Propagation direction", self.sam3_direction_combo)
+        form.addRow("Max frames to track (0=auto)",
+                    self.sam3_max_frames_spinbox)
+        form.addRow("Device override", self.sam3_device_lineedit)
+        form.addRow("Sliding window size", self.sam3_window_size_spinbox)
+        form.addRow("Sliding window stride (0=auto)",
+                    self.sam3_window_stride_spinbox)
+        form.addRow("Agent det threshold", self.sam3_agent_det_thresh_spinbox)
+        form.addRow("Agent window size", self.sam3_agent_window_size_spinbox)
+        form.addRow("Agent window stride (0=auto)",
+                    self.sam3_agent_stride_spinbox)
+        form.addRow("Agent output dir", self.sam3_agent_output_dir_lineedit)
 
         sam3_group.setLayout(form)
         return sam3_group
@@ -309,6 +434,37 @@ class AdvancedParametersDialog(QDialog):
         }
         self.sam3_score_threshold_detection = self.sam3_score_thresh_spinbox.value()
         self.sam3_new_det_thresh = self.sam3_new_det_thresh_spinbox.value()
+        self.sam3_propagation_direction = str(
+            self.sam3_direction_combo.currentText()
+        )
+        self.sam3_max_frame_num_to_track = (
+            None
+            if self.sam3_max_frames_spinbox.value() == 0
+            else int(self.sam3_max_frames_spinbox.value())
+        )
+        self.sam3_device_override = self.sam3_device_lineedit.text().strip()
+        if self.sam3_device_override == "":
+            self.sam3_device_override = None
+        self.sam3_sliding_window_size = int(
+            self.sam3_window_size_spinbox.value())
+        self.sam3_sliding_window_stride = (
+            None
+            if self.sam3_window_stride_spinbox.value() == 0
+            else int(self.sam3_window_stride_spinbox.value())
+        )
+        self.sam3_agent_det_thresh = self.sam3_agent_det_thresh_spinbox.value()
+        self.sam3_agent_window_size = int(
+            self.sam3_agent_window_size_spinbox.value()
+        )
+        self.sam3_agent_stride = (
+            None
+            if self.sam3_agent_stride_spinbox.value() == 0
+            else int(self.sam3_agent_stride_spinbox.value())
+        )
+        self.sam3_agent_output_dir = (
+            self.sam3_agent_output_dir_lineedit.text().strip()
+            or "sam3_agent_out"
+        )
 
     def get_epsilon_value(self) -> float:
         return self.epsilon_value
@@ -338,4 +494,17 @@ class AdvancedParametersDialog(QDialog):
         return {
             "score_threshold_detection": float(self.sam3_score_threshold_detection),
             "new_det_thresh": float(self.sam3_new_det_thresh),
+        }
+
+    def get_sam3_runtime_settings(self) -> Dict[str, object]:
+        return {
+            "propagation_direction": self.sam3_propagation_direction,
+            "max_frame_num_to_track": self.sam3_max_frame_num_to_track,
+            "device": self.sam3_device_override,
+            "sliding_window_size": self.sam3_sliding_window_size,
+            "sliding_window_stride": self.sam3_sliding_window_stride,
+            "agent_det_thresh": self.sam3_agent_det_thresh,
+            "agent_window_size": self.sam3_agent_window_size,
+            "agent_stride": self.sam3_agent_stride,
+            "agent_output_dir": self.sam3_agent_output_dir,
         }
