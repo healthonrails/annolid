@@ -4,6 +4,7 @@ from typing import Generator, Iterable, List, Dict, Any, Optional, Tuple, Litera
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from .sam3.model_builder import build_sam3_video_model
 from .sam3.agent.agent_core import agent_inference
@@ -61,8 +62,6 @@ def _iter_video_windows(
 
 def _frames_to_pil(frames: List[np.ndarray]) -> List["Image.Image"]:
     """Convert OpenCV BGR frames to RGB PIL images."""
-    from PIL import Image
-
     pil_frames: List[Image.Image] = []
     for frame in frames:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -94,8 +93,6 @@ def run_sam3_video_sliding_window(
     Yields:
         (global_frame_index, sam3_frame_output_dict)
     """
-    from PIL import Image  # defer heavy import if unused
-
     sam3_model = model or build_sam3_video_model(device=device)
 
     stride = stride or window_size

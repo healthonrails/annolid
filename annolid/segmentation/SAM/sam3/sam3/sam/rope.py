@@ -31,10 +31,12 @@ def compute_axial_cis(
     device=None,
 ):
     freqs_x = 1.0 / (
-        theta ** (torch.arange(0, dim, 4, device=device)[: (dim // 4)].float() / dim)
+        theta ** (torch.arange(0, dim, 4, device=device)
+                  [: (dim // 4)].float() / dim)
     )
     freqs_y = 1.0 / (
-        theta ** (torch.arange(0, dim, 4, device=device)[: (dim // 4)].float() / dim)
+        theta ** (torch.arange(0, dim, 4, device=device)
+                  [: (dim // 4)].float() / dim)
     )
 
     t_x, t_y = init_t_xy(end_x, end_y, scale_pos, offset, device=device)
@@ -73,7 +75,10 @@ def apply_rotary_enc(
     # repeat freqs along seq_len dim to match k seq_len
     if repeat_freqs_k:
         r = xk_.shape[-2] // xq_.shape[-2]
-        freqs_cis = freqs_cis.repeat(*([1] * (freqs_cis.ndim - 2)), r, 1)
+        assert r >= 1, "Expected key sequence length >= query sequence length for RoPE"
+        # torch.repeat is not supported for complex on some backends (e.g. MPS),
+        # so fall back to concatenation along the sequence dimension.
+        freqs_cis = torch.cat([freqs_cis] * r, dim=-2)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
 
@@ -103,12 +108,16 @@ def apply_rotary_enc_real(
     xk_imag = xk.float().reshape(*xk.shape[:-1], -1, 2)[..., 1]
     freqs_cis_real = reshape_for_broadcast(freqs_cis_real, xq_real)
     freqs_cis_imag = reshape_for_broadcast(freqs_cis_imag, xq_imag)
-    xq_out = complex_mult(xq_real, xq_imag, freqs_cis_real, freqs_cis_imag).flatten(3)
+    xq_out = complex_mult(xq_real, xq_imag, freqs_cis_real,
+                          freqs_cis_imag).flatten(3)
     if repeat_freqs_k:
         r = xk_real.shape[-2] // xq_real.shape[-2]
-        freqs_cis_real = freqs_cis_real.repeat(*([1] * (freqs_cis_real.ndim - 2)), r, 1)
-        freqs_cis_imag = freqs_cis_imag.repeat(*([1] * (freqs_cis_imag.ndim - 2)), r, 1)
-    xk_out = complex_mult(xk_real, xk_imag, freqs_cis_real, freqs_cis_imag).flatten(3)
+        freqs_cis_real = freqs_cis_real.repeat(
+            *([1] * (freqs_cis_real.ndim - 2)), r, 1)
+        freqs_cis_imag = freqs_cis_imag.repeat(
+            *([1] * (freqs_cis_imag.ndim - 2)), r, 1)
+    xk_out = complex_mult(xk_real, xk_imag, freqs_cis_real,
+                          freqs_cis_imag).flatten(3)
     # xq_out = torch.view_as_real(torch.complex(xq_real, xq_imag) * torch.complex(freqs_cis_real, freqs_cis_imag)).flatten(3)
     # xk_out = torch.view_as_real(torch.compelx(xk_real, xk_imag) * torch.complex(freqs_cis_real, freqs_cis_imag)).flatten(3)
     return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
@@ -138,7 +147,8 @@ class VisionRotaryEmbeddingVE(nn.Module):
     ):
         super().__init__()
 
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)
+                       [: (dim // 2)].float() / dim))
         scale = 1.0
         if pt_seq_len is not None:
             scale = pt_seq_len / seq_len

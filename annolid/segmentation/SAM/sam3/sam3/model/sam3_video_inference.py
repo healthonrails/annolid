@@ -467,6 +467,12 @@ class Sam3VideoInference(Sam3VideoBase):
                 [obj_id_to_mask[obj_id] for obj_id in curr_obj_ids], dim=0
             )
 
+            # Ensure metadata tensors live on the same device as masks (needed on MPS)
+            mask_device = out_binary_masks.device
+            out_obj_ids = out_obj_ids.to(mask_device)
+            out_probs = out_probs.to(mask_device)
+            out_tracker_probs = out_tracker_probs.to(mask_device)
+
             assert out_binary_masks.dtype == torch.bool
             # remove masks with 0 areas
             keep = out_binary_masks.any(dim=(1, 2)).cpu()
