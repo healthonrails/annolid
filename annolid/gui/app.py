@@ -20,6 +20,7 @@ import numpy as np
 import torch
 import cv2
 import imgviz
+import yaml
 from pathlib import Path
 from datetime import datetime
 import functools
@@ -1097,33 +1098,74 @@ class AnnolidWindow(MainWindow):
         self.setDirty()
 
     def set_advanced_params(self):
+        sam3_cfg = dict((self._config or {}).get("sam3", {}) or {})
+        agent_cfg = sam3_cfg.get("agent", {}) or {}
+        sam3_score_threshold_detection = (
+            self.sam3_score_threshold_detection
+            if self.sam3_score_threshold_detection is not None
+            else sam3_cfg.get("score_threshold_detection")
+        )
+        sam3_new_det_thresh = (
+            self.sam3_new_det_thresh
+            if self.sam3_new_det_thresh is not None
+            else sam3_cfg.get("new_det_thresh")
+        )
+        sam3_propagation_direction = getattr(
+            self, "sam3_propagation_direction", None
+        ) or sam3_cfg.get("propagation_direction")
+        sam3_max_frame_num_to_track = getattr(
+            self, "sam3_max_frame_num_to_track", None
+        )
+        if sam3_max_frame_num_to_track is None:
+            sam3_max_frame_num_to_track = sam3_cfg.get(
+                "max_frame_num_to_track")
+        sam3_device_override = getattr(self, "sam3_device_override", None)
+        if sam3_device_override is None:
+            sam3_device_override = sam3_cfg.get("device")
+        sam3_sliding_window_size = getattr(
+            self, "sam3_sliding_window_size", None
+        )
+        if sam3_sliding_window_size is None:
+            sam3_sliding_window_size = sam3_cfg.get("sliding_window_size")
+        sam3_sliding_window_stride = getattr(
+            self, "sam3_sliding_window_stride", None
+        )
+        if sam3_sliding_window_stride is None:
+            sam3_sliding_window_stride = sam3_cfg.get(
+                "sliding_window_stride")
+        sam3_agent_det_thresh = getattr(self, "sam3_agent_det_thresh", None)
+        if sam3_agent_det_thresh is None:
+            sam3_agent_det_thresh = agent_cfg.get("det_thresh")
+        sam3_agent_window_size = getattr(
+            self, "sam3_agent_window_size", None
+        )
+        if sam3_agent_window_size is None:
+            sam3_agent_window_size = (
+                agent_cfg.get("window_size") or sam3_sliding_window_size
+            )
+        sam3_agent_stride = getattr(self, "sam3_agent_stride", None)
+        if sam3_agent_stride is None:
+            sam3_agent_stride = agent_cfg.get("stride")
+        sam3_agent_output_dir = (
+            self.sam3_agent_output_dir
+            if self.sam3_agent_output_dir is not None
+            else agent_cfg.get("output_dir")
+        )
         advanced_params_dialog = AdvancedParametersDialog(
             self,
             tracker_config=self.tracker_runtime_config,
             sam3_runtime={
-                "score_threshold_detection": self.sam3_score_threshold_detection,
-                "new_det_thresh": self.sam3_new_det_thresh,
-                "propagation_direction": getattr(
-                    self, "sam3_propagation_direction", None
-                ),
-                "max_frame_num_to_track": getattr(
-                    self, "sam3_max_frame_num_to_track", None
-                ),
-                "device": getattr(self, "sam3_device_override", None),
-                "sliding_window_size": getattr(
-                    self, "sam3_sliding_window_size", None
-                ),
-                "sliding_window_stride": getattr(
-                    self, "sam3_sliding_window_stride", None
-                ),
-                "agent_det_thresh": getattr(self, "sam3_agent_det_thresh", None),
-                "agent_window_size": getattr(
-                    self, "sam3_agent_window_size", None
-                ),
-                "agent_stride": getattr(self, "sam3_agent_stride", None),
-                "agent_output_dir": getattr(
-                    self, "sam3_agent_output_dir", None
-                ),
+                "score_threshold_detection": sam3_score_threshold_detection,
+                "new_det_thresh": sam3_new_det_thresh,
+                "propagation_direction": sam3_propagation_direction,
+                "max_frame_num_to_track": sam3_max_frame_num_to_track,
+                "device": sam3_device_override,
+                "sliding_window_size": sam3_sliding_window_size,
+                "sliding_window_stride": sam3_sliding_window_stride,
+                "agent_det_thresh": sam3_agent_det_thresh,
+                "agent_window_size": sam3_agent_window_size,
+                "agent_stride": sam3_agent_stride,
+                "agent_output_dir": sam3_agent_output_dir,
             },
         )
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
@@ -1169,11 +1211,68 @@ class AnnolidWindow(MainWindow):
             float(self.sam3_score_threshold_detection or 0.0),
             float(self.sam3_new_det_thresh or 0.0),
         )
+        sam3_updates = {
+            "score_threshold_detection": self.sam3_score_threshold_detection,
+            "new_det_thresh": self.sam3_new_det_thresh,
+            "propagation_direction": self.sam3_propagation_direction,
+            "max_frame_num_to_track": self.sam3_max_frame_num_to_track,
+            "device": self.sam3_device_override,
+            "sliding_window_size": self.sam3_sliding_window_size,
+            "sliding_window_stride": self.sam3_sliding_window_stride,
+        }
+        agent_updates = {
+            "det_thresh": self.sam3_agent_det_thresh,
+            "window_size": self.sam3_agent_window_size,
+            "stride": self.sam3_agent_stride,
+            "output_dir": self.sam3_agent_output_dir,
+        }
+        self._update_sam3_config_defaults(sam3_updates, agent_updates)
 
         logger.info("Computing optical flow is %s .",
                     self.compute_optical_flow)
         logger.info("Set epsilon for polygon to : %s",
                     self.epsilon_for_polygon)
+
+    def _update_sam3_config_defaults(
+        self, sam3_updates: dict, agent_updates: dict
+    ) -> None:
+        """
+        Persist SAM3/agent runtime overrides to both the in-memory config and
+        the user config file (~/.labelmerc) so future sessions pick them up.
+        """
+        try:
+            if isinstance(getattr(self, "_config", None), dict):
+                sam3_block = self._config.setdefault("sam3", {})
+                sam3_block.update(sam3_updates)
+                agent_block = sam3_block.get("agent", {}) or {}
+                agent_block.update(agent_updates)
+                sam3_block["agent"] = agent_block
+        except Exception as exc:  # pragma: no cover - best-effort logging
+            logger.warning("Failed to update in-memory SAM3 config: %s", exc)
+
+        config_path = Path.home() / ".labelmerc"
+        try:
+            disk_cfg: dict = {}
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as fh:
+                    loaded = yaml.safe_load(fh) or {}
+                    if isinstance(loaded, dict):
+                        disk_cfg = loaded
+
+            disk_cfg.setdefault("sam3", {})
+            disk_cfg["sam3"].update(sam3_updates)
+            agent_block = disk_cfg["sam3"].get("agent", {}) or {}
+            agent_block.update(agent_updates)
+            disk_cfg["sam3"]["agent"] = agent_block
+
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(disk_cfg, fh, sort_keys=False)
+            logger.info("SAM3 defaults saved to %s", config_path)
+        except Exception as exc:  # pragma: no cover - best-effort logging
+            logger.warning(
+                "Failed to persist SAM3 defaults to %s: %s", config_path, exc
+            )
 
     def segmentAnything(self,):
         try:
@@ -2695,6 +2794,11 @@ class AnnolidWindow(MainWindow):
                             sliding_window_size = 5
                         else:
                             agent_det_thresh_cfg = None
+                # Prefer runtime overrides from Advanced Parameters when present.
+                if self.sam3_score_threshold_detection is not None:
+                    score_threshold_detection = self.sam3_score_threshold_detection
+                if self.sam3_new_det_thresh is not None:
+                    new_det_thresh = self.sam3_new_det_thresh
                 if score_threshold_detection is None:
                     score_threshold_detection = self.sam3_score_threshold_detection
                 if new_det_thresh is None:
@@ -2778,6 +2882,8 @@ class AnnolidWindow(MainWindow):
                             device=device_override,
                             score_threshold_detection=score_threshold_detection,
                             new_det_thresh=new_det_thresh,
+                            sliding_window_size=sliding_window_size,
+                            sliding_window_stride=sliding_window_stride,
                         )
                         self._sam3_last_prompt_frame = None
                     except Exception as exc:

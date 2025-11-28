@@ -41,6 +41,9 @@ class SAM3VideoProcessor(Sam3SessionManager):
         device: Optional[str] = None,
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
+        sliding_window_size: int = 5,
+        sliding_window_stride: Optional[int] = None,
+        use_sliding_window_for_text_prompt: bool = True,
     ):
         self.annotations = annotations or []
         self.target_device = device
@@ -54,6 +57,9 @@ class SAM3VideoProcessor(Sam3SessionManager):
             device=device,
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
+            sliding_window_size=sliding_window_size,
+            sliding_window_stride=sliding_window_stride,
+            use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
         )
         super().__init__(
             video_dir=video_dir,
@@ -121,6 +127,9 @@ def process_video(
     propagation_direction: str = "both",
     max_frame_num_to_track: Optional[int] = None,
     device: Optional[str] = None,
+    sliding_window_size: int = 5,
+    sliding_window_stride: Optional[int] = None,
+    use_sliding_window_for_text_prompt: bool = True,
 ) -> str:
     """
     Run SAM3 video propagation seeded by existing LabelMe annotations.
@@ -144,6 +153,9 @@ def process_video(
         propagation_direction=propagation_direction,
         max_frame_num_to_track=max_frame_num_to_track,
         device=device,
+        sliding_window_size=sliding_window_size,
+        sliding_window_stride=sliding_window_stride,
+        use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
     )
     return processor.run()
 

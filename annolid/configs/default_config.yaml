@@ -98,12 +98,12 @@ sam3:
   device: null  # e.g. "cuda", "mps", or null for auto
   score_threshold_detection: 0.2
   new_det_thresh: 0.30
-  sliding_window_size: 5
+  sliding_window_size: 15 # best accuracy from the paper
   sliding_window_stride: null
   # Agent seeding defaults
   agent:
     det_thresh: 0.2
-    window_size: 5
+    window_size: 15
     stride: null
     output_dir: sam3_agent_out
     llm_profile: sam3_agent

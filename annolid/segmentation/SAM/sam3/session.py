@@ -459,7 +459,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         for idx, (obj_id, mask) in enumerate(zip(obj_ids, masks)):
             key = str(obj_id)
-            mask_dict[key] = np.asarray(mask, dtype=np.uint8)
             meta: Dict[str, object] = {"track_id": int(obj_id)}
             # Propagate label hints to keep stable labels across frames.
             hint = None
@@ -475,17 +474,25 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     self.id_to_labels[int(obj_id)] = hint
                 except Exception:
                     self.id_to_labels[key] = hint
+            sam3_score: Optional[float] = None
             if idx < len(probs):
                 try:
-                    meta["sam3_score"] = float(probs[idx])
+                    sam3_score = float(probs[idx])
+                    meta["sam3_score"] = sam3_score
                 except Exception:
                     pass
+            score_thresh = self.score_threshold_detection
+            if score_thresh is not None and sam3_score is not None:
+                if sam3_score < float(score_thresh):
+                    # Drop low-confidence outputs instead of writing them to disk.
+                    continue
             if idx < len(boxes):
                 try:
                     meta["sam3_box_xywh"] = [
                         float(v) for v in boxes[idx].tolist()]
                 except Exception:
                     pass
+            mask_dict[key] = np.asarray(mask, dtype=np.uint8)
             obj_meta[key] = meta
 
         if self.frame_shape is None:

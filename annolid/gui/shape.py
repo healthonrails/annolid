@@ -858,6 +858,8 @@ class MaskShape(MultipoinstShape):
                       group_id=self.group_id,
                       flags=self.flags,
                       description=self.description)
+        # Preserve any metadata stored on the mask (e.g., detection scores, track ids).
+        shape.other_data = dict(self.other_data)
         for x, y in merged_contour:
             shape.addPoint(QtCore.QPointF(x, y))
         self.points = shape.points
