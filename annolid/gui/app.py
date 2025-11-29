@@ -2708,6 +2708,9 @@ class AnnolidWindow(MainWindow):
 
                 sam3_checkpoint = self._resolve_sam3_checkpoint_path(
                     model_weight)
+                if sam3_checkpoint:
+                    # Ensure the SAM3 Agent image path uses the same checkpoint
+                    os.environ["SAM3_CKPT_PATH"] = sam3_checkpoint
                 # Reuse the free-form AI prompt if available (optional).
                 text_prompt = text_prompt or self._current_text_prompt()
 

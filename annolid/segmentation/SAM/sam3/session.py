@@ -184,6 +184,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.sliding_window_size = cfg.sliding_window_size
         self.sliding_window_stride = cfg.sliding_window_stride
         self.use_sliding_window_for_text_prompt = cfg.use_sliding_window_for_text_prompt
+        # Sliding-window text-prompt mode: maintain a global track id mapping so
+        # ids remain consistent across windows.
+        self._sliding_window_mode_active: bool = False
+        self._global_track_next_id: int = 1
+        self._global_track_last_box: Dict[int, np.ndarray] = {}
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -337,6 +342,68 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         ]
 
     @staticmethod
+    def _box_iou_xywh(box_a: np.ndarray, box_b: np.ndarray) -> float:
+        """Compute IoU between two [x, y, w, h] boxes in pixel space."""
+        ax, ay, aw, ah = [float(v) for v in box_a]
+        bx, by, bw, bh = [float(v) for v in box_b]
+        ax2 = ax + aw
+        ay2 = ay + ah
+        bx2 = bx + bw
+        by2 = by + bh
+
+        inter_x1 = max(ax, bx)
+        inter_y1 = max(ay, by)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0.0:
+            return 0.0
+        union = aw * ah + bw * bh - inter_area
+        if union <= 0.0:
+            return 0.0
+        return float(inter_area / union)
+
+    def _reset_global_tracks(self) -> None:
+        """Reset global track id mapping for sliding-window runs."""
+        self._global_track_next_id = 1
+        self._global_track_last_box.clear()
+
+    def _assign_global_track_id(
+        self,
+        box_xywh: np.ndarray,
+        used_ids: Optional[set[int]] = None,
+        iou_threshold: float = 0.5,
+    ) -> int:
+        """
+        Assign a stable global track id for the given box based on IoU with
+        previously seen tracks. Ensures each global id is used at most once
+        per frame via the optional `used_ids` set.
+        """
+        if used_ids is None:
+            used_ids = set()
+
+        best_gid: Optional[int] = None
+        best_iou = 0.0
+        for gid, prev_box in self._global_track_last_box.items():
+            if gid in used_ids:
+                continue
+            iou = self._box_iou_xywh(prev_box, box_xywh)
+            if iou > best_iou:
+                best_iou = iou
+                best_gid = gid
+
+        if best_gid is not None and best_iou >= iou_threshold:
+            self._global_track_last_box[best_gid] = box_xywh
+            return best_gid
+
+        gid = self._global_track_next_id
+        self._global_track_next_id += 1
+        self._global_track_last_box[gid] = box_xywh
+        return gid
+
+    @staticmethod
     def _label_hints_from_ids(labels: List[int], id_to_labels: Dict[int, str]) -> List[str]:
         hints: List[str] = []
         for lid in labels:
@@ -457,16 +524,46 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             except Exception:
                 frame_meta = None
 
+        # In sliding-window text-prompt mode, remap per-window SAM3 object ids to
+        # stable global track ids so ids stay consistent across windows.
+        if (
+            self._sliding_window_mode_active
+            and self.text_prompt
+            and boxes is not None
+            and len(boxes) == len(obj_ids)
+        ):
+            try:
+                used_global: set[int] = set()
+                new_ids: List[int] = []
+                boxes_arr = np.asarray(boxes, dtype=float)
+                for idx, _local_id in enumerate(obj_ids):
+                    box_xywh = np.asarray(boxes_arr[idx], dtype=float)
+                    gid = self._assign_global_track_id(
+                        box_xywh=box_xywh,
+                        used_ids=used_global,
+                    )
+                    used_global.add(gid)
+                    new_ids.append(int(gid))
+                obj_ids = new_ids
+                outputs["out_obj_ids"] = np.asarray(new_ids, dtype=np.int64)
+            except Exception:
+                # Best-effort remapping; fall back to raw ids on failure.
+                pass
+
         for idx, (obj_id, mask) in enumerate(zip(obj_ids, masks)):
             key = str(obj_id)
             meta: Dict[str, object] = {"track_id": int(obj_id)}
             # Propagate label hints to keep stable labels across frames.
             hint = None
+            # Prefer an existing mapping for this SAM3 object id when available.
+            existing = self.obj_id_to_label.get(key)
+            if existing:
+                hint = existing
             if label_hints and idx < len(label_hints):
                 hint = label_hints[idx]
             if hint is None and self.text_prompt:
-                # Use the text prompt plus object id to disambiguate multiple instances,
-                # e.g., "fish_3" when prompting with "fish".
+                # Use the text prompt plus global object id to keep labels
+                # interpretable and stable across windows, e.g. "mouse_1".
                 hint = f"{self.text_prompt}_{int(obj_id)}"
             if hint is not None:
                 self.obj_id_to_label[key] = hint
@@ -584,32 +681,38 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         of frames in memory while still writing masks/metadata through the
         usual annotation pipeline.
         """
-        device_str = (
-            str(target_device) if target_device is not None else None)
+        device_str = str(target_device) if target_device is not None else None
         total_frames = self.total_frames_estimate()
         yielded_frames = 0
         total_masks = 0
 
-        for frame_idx, outputs in run_video_sliding_window(
-            video_path=str(self.video_path),
-            mode="sam3",
-            text_prompt=text_prompt,
-            window_size=self.sliding_window_size,
-            stride=self.sliding_window_stride,
-            device=device_str,
-        ):
-            yielded_frames += 1
-            masks_in_frame, _ = self._handle_frame_outputs(
-                frame_idx=frame_idx,
-                outputs=outputs,
-                total_frames=total_frames,
-                yielded_frames=yielded_frames,
-            )
-            total_masks += masks_in_frame
+        # Enable global-id remapping for the sliding-window run.
+        self._reset_global_tracks()
+        self._sliding_window_mode_active = True
+        try:
+            for frame_idx, outputs in run_video_sliding_window(
+                video_path=str(self.video_path),
+                mode="sam3",
+                text_prompt=text_prompt,
+                window_size=self.sliding_window_size,
+                stride=self.sliding_window_stride,
+                device=device_str,
+            ):
+                yielded_frames += 1
+                masks_in_frame, _ = self._handle_frame_outputs(
+                    frame_idx=frame_idx,
+                    outputs=outputs,
+                    total_frames=total_frames,
+                    yielded_frames=yielded_frames,
+                )
+                total_masks += masks_in_frame
+        finally:
+            self._sliding_window_mode_active = False
 
         if yielded_frames == 0:
             raise RuntimeError(
-                "SAM3 sliding-window propagation yielded no frames")
+                "SAM3 sliding-window propagation yielded no frames"
+            )
         return yielded_frames, total_masks
 
     def _prepare_prompts(
