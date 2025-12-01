@@ -384,7 +384,8 @@ class TrackAllWorker(QThread):
 
             json_file = output_folder / sorted(json_files)[-1]
             try:
-                labeled_frame_number = get_frame_number_from_json(str(json_file))
+                labeled_frame_number = get_frame_number_from_json(
+                    str(json_file))
                 label_file = LabelFile(str(json_file), is_video_frame=True)
                 valid_shapes = [
                     shape
@@ -560,7 +561,7 @@ class LoadFrameThread(QtCore.QObject):
     """
     Thread for loading video frames with optimized performance.
     """
-    res_frame = QtCore.Signal(QtGui.QImage)
+    res_frame = QtCore.Signal(int, QtGui.QImage)
     process = QtCore.Signal()
     video_loader = None
 
@@ -603,7 +604,7 @@ class LoadFrameThread(QtCore.QObject):
         # Check cache first
         cached_frame = self._frame_cache.get(frame_number)
         if cached_frame is not None:
-            self.res_frame.emit(cached_frame)
+            self.res_frame.emit(frame_number, cached_frame)
             return
 
         try:
@@ -620,7 +621,7 @@ class LoadFrameThread(QtCore.QObject):
             self._last_frame = qimage
 
             # Emit the frame
-            self.res_frame.emit(qimage)
+            self.res_frame.emit(frame_number, qimage)
 
         except KeyError as e:
             logger.error(f"Error loading frame {frame_number}: {e}")
@@ -648,7 +649,7 @@ class LoadFrameThread(QtCore.QObject):
         """Handle frame loading errors with fallback."""
         if self._last_frame is not None:
             # Use last successful frame as fallback
-            self.res_frame.emit(self._last_frame)
+            self.res_frame.emit(frame_number, self._last_frame)
         with self.working_lock:
             has_more = bool(self.frame_queue)
         if has_more and not self._shutting_down:

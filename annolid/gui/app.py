@@ -4878,6 +4878,28 @@ class AnnolidWindow(MainWindow):
                 QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaStop))
             self.playButton.setText("Pause")
 
+    def _on_frame_loaded(self, frame_idx: int, qimage: QtGui.QImage) -> None:
+        """Render a frame only if it matches the latest requested index."""
+        current = getattr(self, "frame_number", None)
+        if current is not None and frame_idx != current:
+            logger.debug(
+                "Dropping stale frame %s (current=%s)", frame_idx, current
+            )
+            return
+        frame_path = self._frame_image_path(frame_idx)
+        self.image_to_canvas(qimage, frame_path, frame_idx)
+
+    def _frame_image_path(self, frame_number: int) -> Path:
+        if self.video_results_folder:
+            return self.video_results_folder / \
+                f"{str(self.video_results_folder.name)}_{frame_number:09}.png"
+        if getattr(self, "filename", None):
+            try:
+                return Path(self.filename)
+            except Exception:
+                pass
+        return Path()
+
     def set_frame_number(self, frame_number):
         if frame_number >= self.num_frames or frame_number < 0:
             return
@@ -4887,8 +4909,7 @@ class AnnolidWindow(MainWindow):
             audio_loader = self._active_audio_loader()
             if audio_loader:
                 audio_loader.play(start_frame=frame_number)
-        self.filename = self.video_results_folder / \
-            f"{str(self.video_results_folder.name)}_{self.frame_number:09}.png"
+        self.filename = str(self._frame_image_path(frame_number))
         self.current_frame_time_stamp = self.video_loader.get_time_stamp()
         if self.frame_loader is not None:
             self.frame_loader.request(frame_number)
@@ -5347,25 +5368,22 @@ class AnnolidWindow(MainWindow):
             self.statusBar().addPermanentWidget(self.seekbar, stretch=1)
             self.statusBar().addPermanentWidget(self.saveButton)
 
+            # Configure frame loader before requesting any frames.
+            self.frame_loader.video_loader = self.video_loader
+            self.frame_loader.moveToThread(self.frame_worker)
+            self.frame_loader.res_frame.connect(
+                self._on_frame_loaded
+            )
+            if not self.frame_worker.isRunning():
+                self.frame_worker.start(
+                    priority=QtCore.QThread.IdlePriority)
+
             # load the first frame
             self.set_frame_number(self.frame_number)
 
             self.actions.openNextImg.setEnabled(True)
 
             self.actions.openPrevImg.setEnabled(True)
-
-            self.frame_loader.video_loader = self.video_loader
-
-            self.frame_loader.moveToThread(self.frame_worker)
-
-            if not self.frame_worker.isRunning():
-                self.frame_worker.start(
-                    priority=QtCore.QThread.IdlePriority)
-
-            self.frame_loader.res_frame.connect(
-                lambda qimage: self.image_to_canvas(
-                    qimage, self.filename, self.frame_number)
-            )
             # go over all the tracking csv files
             # use the first matched file with video name
             # and segmentation
@@ -5477,6 +5495,12 @@ class AnnolidWindow(MainWindow):
                 self.setScroll(
                     orientation, self.scroll_values[orientation][self.filename]
                 )
+        # Ensure shapes for the current frame are loaded using the emitted frame index.
+        try:
+            self.loadPredictShapes(frame_number, filename)
+        except Exception:
+            logger.debug("Failed to load shapes for frame %s", frame_number,
+                         exc_info=True)
         # set brightness constrast values
         # dialog = BrightnessContrastDialog(
         #     imageData,
