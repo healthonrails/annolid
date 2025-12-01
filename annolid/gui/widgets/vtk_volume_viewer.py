@@ -644,7 +644,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def __init__(self, src_path: Optional[str | Path], parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("3D Volume Renderer (VTK)")
-        self.resize(900, 700)
+        self.resize(1150, 820)
         self._source_path: Optional[Path] = None
         self._path = Path(".")
         if src_path:
@@ -722,7 +722,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(6)
         self._controls_dock = QtWidgets.QDockWidget("Controls", self)
-        self._controls_dock.setWidget(controls_panel)
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameStyle(QtWidgets.QFrame.NoFrame)
+        scroll_area.setWidget(controls_panel)
+        self._controls_dock.setWidget(scroll_area)
         self._controls_dock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         self._controls_dock.setFeatures(
@@ -732,6 +736,74 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         )
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._controls_dock)
         self._apply_default_dock_width()
+
+        # Quick access strip
+        quick_group = QtWidgets.QGroupBox("Quick Actions")
+        quick_layout = QtWidgets.QVBoxLayout()
+        quick_layout.setContentsMargins(6, 6, 6, 6)
+        quick_grid = QtWidgets.QGridLayout()
+        quick_grid.setSpacing(6)
+        buttons = [
+            self._create_quick_button(
+                "Load Volume",
+                self.style().standardIcon(QtWidgets.QStyle.SP_DirOpenIcon),
+                self._load_volume_dialog,
+                "Open a 3D volume, DICOM folder, OME-TIFF, or Zarr store.",
+            ),
+            self._create_quick_button(
+                "Reload Volume",
+                self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+                self._reload_volume,
+                "Re-read the active volume from disk (useful after toggling out-of-core).",
+            ),
+            self._create_quick_button(
+                "Load Points",
+                self.style().standardIcon(QtWidgets.QStyle.SP_FileIcon),
+                self._load_point_cloud_dialog,
+                "Load CSV/PLY/XYZ point clouds.",
+            ),
+            self._create_quick_button(
+                "Load Mesh",
+                self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogNewFolder),
+                self._load_mesh_dialog,
+                "Load STL/OBJ/PLY meshes.",
+            ),
+            self._create_quick_button(
+                "Snapshot",
+                self.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton),
+                self._save_snapshot,
+                "Save the current viewport as a PNG.",
+            ),
+            self._create_quick_button(
+                "Reset View",
+                self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+                self._reset_camera,
+                "Reset camera to fit all visible data.",
+            ),
+            self._create_quick_button(
+                "Help",
+                self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxInformation),
+                self._show_help_overlay,
+                "Show navigation tips and shortcuts.",
+            ),
+        ]
+        for idx, btn in enumerate(buttons):
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                              QtWidgets.QSizePolicy.Preferred)
+            btn.setMinimumHeight(28)
+            r, c = divmod(idx, 3)
+            quick_grid.addWidget(btn, r, c)
+        for c in range(3):
+            quick_grid.setColumnStretch(c, 1)
+        quick_layout.addLayout(quick_grid)
+        quick_hint = QtWidgets.QLabel(
+            "Tip: press W to toggle window/level mode, R to reset camera, +/- to change opacity."
+        )
+        quick_hint.setWordWrap(True)
+        quick_hint.setStyleSheet("color: #4a4a4a;")
+        quick_layout.addWidget(quick_hint)
+        quick_group.setLayout(quick_layout)
+        controls_layout.addWidget(quick_group)
 
         self.volume_group = QtWidgets.QGroupBox("Volume Controls")
         volume_layout = QtWidgets.QGridLayout()
@@ -957,18 +1029,6 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.mesh_group.setLayout(mesh_layout)
         controls_layout.addWidget(self.mesh_group)
 
-        self.reset_cam_btn = QtWidgets.QPushButton("Reset Camera")
-        self.reset_cam_btn.clicked.connect(self._reset_camera)
-        self.load_volume_btn = QtWidgets.QPushButton("Load Volume…")
-        self.load_volume_btn.clicked.connect(self._load_volume_dialog)
-        self.reload_volume_btn = QtWidgets.QPushButton("Reload Volume")
-        self.reload_volume_btn.setToolTip(
-            "Re-read the active volume from disk. Use this after toggling the "
-            "out-of-core TIFF option."
-        )
-        self.reload_volume_btn.clicked.connect(self._reload_volume)
-        self.snapshot_btn = QtWidgets.QPushButton("Save Snapshot…")
-        self.snapshot_btn.clicked.connect(self._save_snapshot)
         self.wl_mode_checkbox = QtWidgets.QCheckBox("Window/Level Mode")
         self.wl_mode_checkbox.setToolTip(
             "Enable to adjust intensity window by left-drag; camera interaction is paused"
@@ -981,6 +1041,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         wl_layout.addWidget(self.wl_mode_checkbox)
         wl_layout.addStretch(1)
         general_layout.addLayout(wl_layout)
+        hint_label = QtWidgets.QLabel(
+            "Use Quick Actions above for load/reset/snapshot. Keep these toggles for visibility.")
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #4a4a4a; font-size: 11px;")
+        general_layout.addWidget(hint_label)
         visibility_layout = QtWidgets.QHBoxLayout()
         self.show_volume_checkbox = QtWidgets.QCheckBox("Show Volume")
         self.show_volume_checkbox.setChecked(True)
@@ -995,13 +1060,6 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         visibility_layout.addWidget(self.show_point_cloud_checkbox)
         visibility_layout.addStretch(1)
         general_layout.addLayout(visibility_layout)
-        general_buttons_layout = QtWidgets.QHBoxLayout()
-        general_buttons_layout.addWidget(self.reset_cam_btn)
-        general_buttons_layout.addWidget(self.load_volume_btn)
-        general_buttons_layout.addWidget(self.reload_volume_btn)
-        general_buttons_layout.addWidget(self.snapshot_btn)
-        general_buttons_layout.addStretch(1)
-        general_layout.addLayout(general_buttons_layout)
         self.general_group.setLayout(general_layout)
         controls_layout.addWidget(self.general_group)
 
@@ -1109,13 +1167,32 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.slice_group)
         self._configure_plane_controls()
 
-        status_row = QtWidgets.QHBoxLayout()
-        self.volume_io_label = QtWidgets.QLabel("Volume I/O: in-memory")
-        status_row.addWidget(self.volume_io_label)
+        self.status_group = QtWidgets.QGroupBox("Status")
+        status_layout = QtWidgets.QVBoxLayout()
+        self.data_status_label = QtWidgets.QLabel("Data: none loaded")
+        self.data_status_label.setWordWrap(True)
+        self.mode_status_label = QtWidgets.QLabel("Mode: waiting for data")
+        self.mode_status_label.setWordWrap(True)
+        self.counts_status_label = QtWidgets.QLabel(
+            "Overlays: 0 • Points: 0 • Meshes: 0")
+        self.counts_status_label.setWordWrap(True)
+        self.volume_io_label = QtWidgets.QLabel("Volume I/O: idle")
         self.mesh_status_label = QtWidgets.QLabel("Mesh: none loaded")
-        status_row.addWidget(self.mesh_status_label)
-        status_row.addStretch(1)
-        controls_layout.addLayout(status_row)
+        for lab in (
+            self.data_status_label,
+            self.mode_status_label,
+            self.counts_status_label,
+            self.volume_io_label,
+            self.mesh_status_label,
+        ):
+            lab.setStyleSheet("color: #3a3a3a;")
+        status_layout.addWidget(self.data_status_label)
+        status_layout.addWidget(self.mode_status_label)
+        status_layout.addWidget(self.counts_status_label)
+        status_layout.addWidget(self.volume_io_label)
+        status_layout.addWidget(self.mesh_status_label)
+        self.status_group.setLayout(status_layout)
+        controls_layout.addWidget(self.status_group)
         controls_layout.addStretch(1)
 
         # Build pipeline
@@ -1199,6 +1276,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         # Enable/disable volume-related controls based on whether a volume was loaded
         self._set_volume_controls_enabled(_loaded_volume)
         self._update_mesh_status_label()
+        self._refresh_status_summary()
 
     def setModal(self, modal: bool):
         """QMainWindow cannot be modal; keep compatibility with QDialog API."""
@@ -1209,11 +1287,47 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return
         try:
             total_width = max(1, self.width())
-            preferred = max(160, min(260, int(total_width * 0.25)))
+            preferred = max(220, min(360, int(total_width * 0.3)))
             self.resizeDocks([self._controls_dock], [
                              preferred], QtCore.Qt.Horizontal)
         except Exception:
             pass
+
+    def _create_quick_button(
+        self,
+        text: str,
+        icon: QtGui.QIcon,
+        callback: Callable[[], None],
+        tooltip: str = "",
+    ) -> QtWidgets.QToolButton:
+        btn = QtWidgets.QToolButton()
+        btn.setText(text)
+        btn.setIcon(icon)
+        btn.setIconSize(QtCore.QSize(16, 16))
+        btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        btn.setAutoRaise(True)
+        btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        if tooltip:
+            btn.setToolTip(tooltip)
+        try:
+            btn.clicked.connect(callback)
+        except Exception:
+            pass
+        return btn
+
+    def _show_help_overlay(self):
+        tips = [
+            "Drag with the left mouse to rotate, middle to pan, and scroll to zoom.",
+            "Press W to toggle window/level mode, then drag to adjust contrast.",
+            "Press R to reset the camera, +/- to change opacity, and C to toggle shading.",
+            "Use the slice index slider when large TIFF/Zarr volumes open in slice mode.",
+            "Pick points to see region names; use the Quick Actions row to load common data.",
+        ]
+        QtWidgets.QMessageBox.information(
+            self,
+            "Viewer Tips",
+            "\n\n".join(tips),
+        )
 
     def _configure_render_quality(self) -> None:
         """Tune render window for better translucent gaussian splat compositing."""
@@ -1417,6 +1531,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._overlay_volumes.append(entry)
         self._refresh_overlay_list()
         self.vtk_widget.GetRenderWindow().Render()
+        self._refresh_status_summary()
 
     def _load_volume(self) -> bool:
         old_array = self._out_of_core_array
@@ -1502,6 +1617,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._cleanup_out_of_core_backing(old_array, old_path)
         self._ensure_volume_actor_added()
         self._set_volume_actor_visibility(self._volume_visible, force=True)
+        self._refresh_status_summary()
         return True
 
     def _prepare_vtk_image(self, volume_data: _VolumeData) -> tuple[vtkImageData, np.ndarray]:
@@ -1816,6 +1932,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._update_slice_gamma_label()
         self._slice_window_override = False
         self._slice_start_index_hint = None
+        self._refresh_status_summary()
 
     def _close_slice_loader(self):
         if self._slice_loader is None:
@@ -3501,6 +3618,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if not paths:
             return
         self._clear_point_clouds()
+        if not getattr(self, "_has_volume", False):
+            try:
+                self._source_path = Path(paths[0]).expanduser()
+            except Exception:
+                self._source_path = Path(paths[0])
         combined_bounds = None
         for path in paths:
             lowered = path.lower()
@@ -3527,6 +3649,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._focus_on_bounds(combined_bounds)
         self._update_point_sizes()
         self.vtk_widget.GetRenderWindow().Render()
+        self._refresh_status_summary()
 
     def _add_point_cloud_ply(self, path: str):
         try:
@@ -4720,6 +4843,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.show_point_cloud_checkbox.blockSignals(True)
             self.show_point_cloud_checkbox.setChecked(False)
             self.show_point_cloud_checkbox.blockSignals(False)
+        if not getattr(self, "_has_volume", False) and not getattr(self, "_mesh_actors", []):
+            self._source_path = None
+        self._refresh_status_summary()
 
     def _clear_region_selection(self) -> None:
         if not hasattr(self, "region_list_widget"):
@@ -4971,6 +5097,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _load_mesh_file(self, path: str):
         path_obj = Path(path)
+        if not getattr(self, "_has_volume", False):
+            self._source_path = path_obj
         ext = path_obj.suffix.lower()
         textures: dict[str, str] = {}
         if ext == ".stl":
@@ -5066,6 +5194,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._active_mesh_actor = None
         self._update_mesh_controls_visibility()
         self.vtk_widget.GetRenderWindow().Render()
+        if not getattr(self, "_has_volume", False) and not getattr(self, "_point_actors", []):
+            self._source_path = None
         self._update_mesh_status_label()
 
     def _load_texture_dialog(self, kind: str):
@@ -5171,6 +5301,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         actor = self._current_mesh_actor()
         if actor is None:
             self.mesh_status_label.setText("Mesh: none loaded")
+            self._refresh_status_summary()
             return
         name = self._mesh_actor_names.get(id(actor), "mesh")
         textures = self._mesh_textures.get(id(actor), {})
@@ -5181,6 +5312,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if path:
                 parts.append(f"{kind_label}: {Path(path).name}")
         self.mesh_status_label.setText(" | ".join(parts))
+        self._refresh_status_summary()
 
     def _on_volume_visibility_changed(self, state: int):
         visible = state == QtCore.Qt.Checked
@@ -5293,6 +5425,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         for idx in indexes:
             self._remove_overlay_at_index(idx)
         self._refresh_overlay_list()
+        self._refresh_status_summary()
 
     def _remove_overlay_at_index(self, idx: int):
         if idx < 0 or idx >= len(self._overlay_volumes):
@@ -5306,6 +5439,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.vtk_widget.GetRenderWindow().Render()
         except Exception:
             pass
+        self._refresh_status_summary()
 
     def _clear_overlay_volumes(self):
         if not getattr(self, "_overlay_volumes", None):
@@ -5321,6 +5455,43 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.vtk_widget.GetRenderWindow().Render()
         except Exception:
             pass
+        self._refresh_status_summary()
+
+    def _refresh_status_summary(self) -> None:
+        """Update the friendly status readout for the dock."""
+        if not hasattr(self, "data_status_label"):
+            return
+        path = getattr(self, "_source_path", None)
+        if path:
+            try:
+                name = Path(path).name
+            except Exception:
+                name = str(path)
+            data_txt = f"Data: {name}"
+        else:
+            data_txt = "Data: none loaded"
+        self.data_status_label.setText(data_txt)
+
+        dims_txt = "-"
+        if getattr(self, "_volume_shape", None):
+            z, y, x = self._volume_shape
+            if all(val > 0 for val in (z, y, x)):
+                dims_txt = f"{int(x)}×{int(y)}×{int(z)}"
+
+        if getattr(self, "_slice_mode", False):
+            mode_txt = f"Mode: slice viewer ({dims_txt})"
+        elif getattr(self, "_has_volume", False):
+            mode_txt = f"Mode: volume ({dims_txt})"
+        else:
+            mode_txt = "Mode: scene (no volume loaded)"
+        self.mode_status_label.setText(mode_txt)
+
+        overlays = len(getattr(self, "_overlay_volumes", []))
+        points = len(getattr(self, "_point_actors", []))
+        meshes = len(getattr(self, "_mesh_actors", []))
+        self.counts_status_label.setText(
+            f"Overlays: {overlays} • Points: {points} • Meshes: {meshes}"
+        )
 
     def _update_volume_io_label(self, out_of_core: bool):
         if not hasattr(self, "volume_io_label"):
@@ -5332,6 +5503,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         else:
             text = "Volume I/O: in-memory"
         self.volume_io_label.setText(text)
+        self._refresh_status_summary()
 
     def _read_stl_mesh(self, path: str) -> vtkPolyData:
         try:
