@@ -22,8 +22,17 @@ try:
 
     XFORMERS_AVAILABLE = True
 except ImportError:
-    logger.warning("xFormers not available")
     XFORMERS_AVAILABLE = False
+
+_XFORMERS_WARNING_SHOWN = False
+
+
+def _warn_xformers_unavailable():
+    global _XFORMERS_WARNING_SHOWN
+    if not _XFORMERS_WARNING_SHOWN:
+        logger.warning(
+            "xFormers not available, falling back to standard attention.")
+        _XFORMERS_WARNING_SHOWN = True
 
 
 class Attention(nn.Module):
@@ -48,7 +57,8 @@ class Attention(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C //
+                                  self.num_heads).permute(2, 0, 3, 1, 4)
 
         q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
         attn = q @ k.transpose(-2, -1)
@@ -65,6 +75,7 @@ class Attention(nn.Module):
 class MemEffAttention(Attention):
     def forward(self, x: Tensor, attn_bias=None) -> Tensor:
         if not XFORMERS_AVAILABLE:
+            _warn_xformers_unavailable()
             assert attn_bias is None, "xFormers is required for nested tensors usage"
             return super().forward(x)
 
@@ -79,5 +90,3 @@ class MemEffAttention(Attention):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
-
-        
