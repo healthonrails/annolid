@@ -5591,7 +5591,6 @@ class AnnolidWindow(MainWindow):
         self.paintCanvas()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
-        self.loadPredictShapes(frame_number, filename)
         if self._df_deeplabcut is not None:
             self._load_deeplabcut_results(frame_number)
         self._refresh_behavior_overlay()
