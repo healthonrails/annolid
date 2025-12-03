@@ -1,0 +1,36 @@
+run:
+  train_csv: "../datasets/calms21_polygon_dataset_motion_index/train_dataset.csv"
+  test_csv: "../datasets/calms21_polygon_dataset_motion_index/test_dataset.csv"
+  output_dir: "results"
+  log_dir: "logs"
+  tb_log_dir: "runs"
+  seed: 42
+  log_level: "INFO"
+
+feature:
+  polygon_pad_len: 40 # adjust to your polygon vector length if different
+  frame_width: 1024
+  frame_height: 570
+  rescale_coordinates: true
+  normalize_features: true
+  normalization_eps: 1e-6
+
+model:
+  window_size: 15
+  hidden_dim: 128
+  kernel_size: 3
+  num_residual_blocks: 6
+  dropout: 0.2
+  use_attention: true
+
+training:
+  batch_size: 64
+  num_epochs: 100
+  learning_rate: 0.004
+  weight_decay: 0.0001
+  scheduler_patience: 15
+  early_stopping_patience: 20
+  val_split_ratio: 0.05
+  num_workers: 2
+  sampling_strategy: balanced_sampler
+  log_every: 50
