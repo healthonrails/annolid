@@ -82,12 +82,15 @@ class TrainingConfig:
     num_epochs: int = 30
     learning_rate: float = 4e-3
     weight_decay: float = 1e-4
-    scheduler_patience: int = 10
-    early_stopping_patience: int = 15
+    scheduler_patience: int = 8
+    early_stopping_patience: int = 12
     val_split_ratio: float = 0.1
     num_workers: int = 2
     sampling_strategy: str = "balanced_sampler"  # or "random"
     log_every: int = 50
+    loss_type: str = "ce"  # ce or focal
+    focal_gamma: float = 2.0
+    add_noise_std: float = 0.0
 
 
 def _parse_array(value) -> List[float]:
@@ -166,9 +169,8 @@ class PolygonFrameDataset(Dataset):
                 self._normalization = self._compute_normalization()
             if self._normalization:
                 logger.info(
-                    "Applied feature normalization with mean[0]=%.4f std[0]=%.4f",
-                    float(self._normalization["mean"][0]),
-                    float(self._normalization["std"][0]),
+                    f"Applied feature normalization with mean[0]={float(self._normalization['mean'][0]):.4f} "
+                    f"std[0]={float(self._normalization['std'][0]):.4f}"
                 )
 
     def _infer_polygon_lengths(self) -> Dict[str, int]:
@@ -444,6 +446,28 @@ def _mean_average_precision(probs: List[np.ndarray], targets: List[int], num_cla
         return 0.0
 
 
+def _make_loss(loss_type: str, class_weights: torch.Tensor, focal_gamma: float) -> nn.Module:
+    if loss_type == "focal":
+        class FocalLoss(nn.Module):
+            def __init__(self, weights: torch.Tensor, gamma: float):
+                super().__init__()
+                self.weights = weights
+                self.gamma = gamma
+
+            def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+                probs = torch.softmax(logits, dim=1)
+                targets_one_hot = torch.nn.functional.one_hot(
+                    targets, num_classes=probs.shape[1]).float()
+                pt = (probs * targets_one_hot).sum(dim=1).clamp(min=1e-6)
+                log_pt = pt.log()
+                weights = self.weights[targets]
+                loss = -weights * ((1 - pt) ** self.gamma) * log_pt
+                return loss.mean()
+
+        return FocalLoss(class_weights, focal_gamma)
+    return nn.CrossEntropyLoss(weight=class_weights)
+
+
 def train_polygon_frame_classifier(
     train_csv: Path,
     test_csv: Path,
@@ -523,14 +547,20 @@ def train_polygon_frame_classifier(
         dropout=model_config.dropout,
         use_attention=model_config.use_attention,
     ).to(device)
+    param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Model structure:\n{model}")
+    logger.info(f"Total trainable parameters: {param_count:,}")
 
-    # Weighted CE using inverse class frequency.
+    # Weighted CE/Focal using inverse class frequency; normalize weights to mean=1 to avoid tiny losses.
     class_counts = np.bincount(
         labels_ordered, minlength=len(full_dataset.label_to_index))
     class_counts = np.where(class_counts == 0, 1, class_counts)
+    raw_weights = 1.0 / class_counts
+    normalized_weights = raw_weights / np.mean(raw_weights)
     class_weights = torch.tensor(
-        1.0 / class_counts, dtype=torch.float, device=device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+        normalized_weights, dtype=torch.float, device=device)
+    criterion = _make_loss(training_config.loss_type,
+                           class_weights, training_config.focal_gamma)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_config.learning_rate,
@@ -570,6 +600,10 @@ def train_polygon_frame_classifier(
         for step, (inputs, targets) in enumerate(train_loader, 1):
             inputs = inputs.to(device)
             targets = targets.to(device)
+            if training_config.add_noise_std > 0:
+                noise = torch.randn_like(
+                    inputs) * training_config.add_noise_std
+                inputs = inputs + noise
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             optimizer.zero_grad()
@@ -648,6 +682,9 @@ def train_polygon_frame_classifier(
                     f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
                 break
 
-    # Merge best and latest for downstream consumers.
-    best_state.update(latest_state)
+    # Merge references so downstream can access both best and latest.
+    if latest_state:
+        best_state["latest_model_state"] = latest_state.get("model_state")
+        best_state["latest_val_map"] = latest_state.get("latest_val_map")
+        best_state["latest_val_loss"] = latest_state.get("latest_val_loss")
     return best_state

@@ -47,13 +47,20 @@ class RunConfig:
 
 
 def _parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
-    parser = argparse.ArgumentParser(description="Train polygon frame classifier from CSV features.")
-    parser.add_argument("--config", type=str, default=None, help="YAML/JSON config to seed parameters (CLI overrides).")
-    parser.add_argument("--train_csv", required=False, default=None, help="Path to training CSV.")
-    parser.add_argument("--test_csv", required=False, default=None, help="Path to test CSV.")
-    parser.add_argument("--output_dir", default="results", help="Directory to save models and metrics.")
-    parser.add_argument("--log_dir", default="logs", help="Directory for log files.")
-    parser.add_argument("--tb_log_dir", default="runs", help="Directory for TensorBoard logs (unused placeholder).")
+    parser = argparse.ArgumentParser(
+        description="Train polygon frame classifier from CSV features.")
+    parser.add_argument("--config", type=str, default=None,
+                        help="YAML/JSON config to seed parameters (CLI overrides).")
+    parser.add_argument("--train_csv", required=False,
+                        default=None, help="Path to training CSV.")
+    parser.add_argument("--test_csv", required=False,
+                        default=None, help="Path to test CSV.")
+    parser.add_argument("--output_dir", default="results",
+                        help="Directory to save models and metrics.")
+    parser.add_argument("--log_dir", default="logs",
+                        help="Directory for log files.")
+    parser.add_argument("--tb_log_dir", default="runs",
+                        help="Directory for TensorBoard logs (unused placeholder).")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--log_level", default="INFO", help="Logging level.")
 
@@ -72,7 +79,8 @@ def _parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--early_stopping_patience", type=int, default=20)
     parser.add_argument("--val_split_ratio", type=float, default=0.1)
     parser.add_argument("--num_workers", type=int, default=2)
-    parser.add_argument("--sampling_strategy", default="balanced_sampler", choices=["balanced_sampler", "random"])
+    parser.add_argument("--sampling_strategy", default="balanced_sampler",
+                        choices=["balanced_sampler", "random"])
     parser.add_argument("--log_every", type=int, default=50)
 
     parser.add_argument("--frame_width", type=int, default=1024)
@@ -146,6 +154,7 @@ def _evaluate(
     total_loss = 0.0
     all_preds: list[int] = []
     all_targets: list[int] = []
+    all_probs: list[List[float]] = []
     with torch.no_grad():
         for inputs, targets in loader:
             inputs = inputs.to(device)
@@ -153,14 +162,18 @@ def _evaluate(
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             total_loss += loss.item()
-            preds = outputs.argmax(dim=1)
+            probs = torch.softmax(outputs, dim=1)
+            preds = probs.argmax(dim=1)
             all_preds.extend(preds.cpu().tolist())
             all_targets.extend(targets.cpu().tolist())
+            all_probs.extend(probs.cpu().tolist())
 
     avg_loss = total_loss / max(1, len(loader))
-    label_names = [dataset.index_to_label[idx] for idx in range(len(dataset.index_to_label))]
+    label_names = [dataset.index_to_label[idx]
+                   for idx in range(len(dataset.index_to_label))]
     accuracy = metrics.accuracy_score(all_targets, all_preds)
-    macro_f1 = metrics.f1_score(all_targets, all_preds, average="macro", zero_division=0)
+    macro_f1 = metrics.f1_score(
+        all_targets, all_preds, average="macro", zero_division=0)
     per_class = metrics.classification_report(
         all_targets,
         all_preds,
@@ -168,11 +181,32 @@ def _evaluate(
         zero_division=0,
         output_dict=True,
     )
-    confusion = metrics.confusion_matrix(all_targets, all_preds, labels=list(range(len(label_names)))).tolist()
+    confusion = metrics.confusion_matrix(
+        all_targets, all_preds, labels=list(range(len(label_names)))).tolist()
+    # Per-class AP and mAP using probability scores.
+    per_class_ap: Dict[str, float] = {}
+    try:
+        prob_array = np.asarray(all_probs, dtype=float)
+        true_array = np.asarray(all_targets, dtype=int)
+        ap_scores = []
+        for idx, name in enumerate(label_names):
+            binary_true = (true_array == idx).astype(int)
+            ap = metrics.average_precision_score(
+                binary_true, prob_array[:, idx]) if prob_array.size else 0.0
+            if np.isnan(ap):
+                ap = 0.0
+            per_class_ap[name] = float(ap)
+            ap_scores.append(ap)
+        macro_map = float(np.mean(ap_scores)) if ap_scores else 0.0
+    except Exception:
+        macro_map = 0.0
+        per_class_ap = {}
     return {
         "loss": avg_loss,
         "accuracy": accuracy,
         "macro_f1": macro_f1,
+        "macro_map": macro_map,
+        "per_class_ap": per_class_ap,
         "per_class": per_class,
         "confusion_matrix": confusion,
         "labels": label_names,
@@ -190,12 +224,13 @@ def _save_checkpoint(state: Dict[str, Any], output_dir: Path, label: str = "best
 def _dump_run_artifacts(output_dir: Path, run_payload: Dict[str, Any], suffix: str) -> Path:
     path = output_dir / f"run_{suffix}.yaml"
     with path.open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(run_payload, fh, sort_keys=False)
+        yaml.safe_dump(_to_builtin(run_payload), fh, sort_keys=False)
     return path
 
 
 def _log_run_artifacts(run_payload: Dict[str, Any], label: str) -> None:
-    logger.info(f"{label} configuration/details:\n{json.dumps(run_payload, indent=2)}")
+    logger.info(
+        f"{label} configuration/details:\n{json.dumps(_to_builtin(run_payload), indent=2)}")
 
 
 def _configure_run_logger(log_dir: Path, command: str) -> Path:
@@ -204,11 +239,24 @@ def _configure_run_logger(log_dir: Path, command: str) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"experiment_{timestamp}.log"
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logger.addHandler(file_handler)
     logger.info(f"Logging initiated. Log file: {log_file}")
     logger.info(f"Command: {command}")
     return log_file
+
+
+def _to_builtin(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _to_builtin(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_builtin(v) for v in obj]
+    if isinstance(obj, (np.generic,)):  # numpy scalar
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
 
 
 def main() -> None:
@@ -229,13 +277,18 @@ def main() -> None:
     model_defaults = asdict(ModelConfig())
     training_defaults = asdict(TrainingConfig())
 
-    run_params = _merge_section(run_defaults, cfg_file.get("run", {}), cli_overrides)
-    feature_params = _merge_section(feature_defaults, cfg_file.get("feature", {}), cli_overrides)
-    model_params = _merge_section(model_defaults, cfg_file.get("model", {}), cli_overrides)
-    training_params = _merge_section(training_defaults, cfg_file.get("training", {}), cli_overrides)
+    run_params = _merge_section(
+        run_defaults, cfg_file.get("run", {}), cli_overrides)
+    feature_params = _merge_section(
+        feature_defaults, cfg_file.get("feature", {}), cli_overrides)
+    model_params = _merge_section(
+        model_defaults, cfg_file.get("model", {}), cli_overrides)
+    training_params = _merge_section(
+        training_defaults, cfg_file.get("training", {}), cli_overrides)
 
     if not run_params["train_csv"] or not run_params["test_csv"]:
-        raise ValueError("train_csv and test_csv must be provided via config or CLI.")
+        raise ValueError(
+            "train_csv and test_csv must be provided via config or CLI.")
 
     run_cfg = RunConfig(
         train_csv=Path(run_params["train_csv"]),
@@ -302,7 +355,8 @@ def main() -> None:
     if "latest_model_state" in best_state:
         latest_state = dict(best_state)
         latest_state["model_state"] = latest_state.pop("latest_model_state")
-        ckpt_latest = _save_checkpoint(latest_state, run_cfg.output_dir, label="latest")
+        ckpt_latest = _save_checkpoint(
+            latest_state, run_cfg.output_dir, label="latest")
         logger.info(f"Saved latest checkpoint to {ckpt_latest}")
     _dump_run_artifacts(
         run_cfg.output_dir,
@@ -325,7 +379,8 @@ def main() -> None:
     )
 
     # Evaluate on test set with the learned label mapping and polygon lengths.
-    test_feature_config = replace(feature_config, polygon_pad_len=best_state["polygon_lengths"])
+    test_feature_config = replace(
+        feature_config, polygon_pad_len=best_state["polygon_lengths"])
     normalization = best_state.get("normalization")
     test_dataset = PolygonFrameDataset(
         run_cfg.test_csv,
@@ -344,19 +399,22 @@ def main() -> None:
         dropout=model_config.dropout,
         use_attention=model_config.use_attention,
     ).to(device)
+    logger.info(f"Evaluation model structure:\n{model}")
     model.load_state_dict(best_state["model_state"])
     metrics = _evaluate(model, test_dataset, device)
     metrics_path = run_cfg.output_dir / "metrics.json"
-    metrics_payload = {
+    metrics_payload = _to_builtin({
         "test_metrics": metrics,
         "label_to_index": best_state["label_to_index"],
-    }
-    metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+    })
+    metrics_path.write_text(json.dumps(
+        metrics_payload, indent=2), encoding="utf-8")
     logger.info(
-        "Test metrics | loss: %.4f | acc: %.4f | macro_f1: %.4f | labels: %s",
+        "Test metrics | loss: %.4f | acc: %.4f | macro_f1: %.4f | macro_mAP: %.4f | labels: %s",
         metrics.get("loss", 0.0),
         metrics.get("accuracy", 0.0),
         metrics.get("macro_f1", 0.0),
+        metrics.get("macro_map", 0.0),
         metrics.get("labels", []),
     )
     per_class = metrics.get("per_class", {})
@@ -369,6 +427,9 @@ def main() -> None:
                 vals.get("recall", 0.0),
                 vals.get("f1-score", 0.0),
             )
+    per_class_ap = metrics.get("per_class_ap", {})
+    for label, ap in per_class_ap.items():
+        logger.info("Class %s | AP: %.4f", label, ap)
     logger.info(f"Metrics saved to {metrics_path}")
     _dump_run_artifacts(run_cfg.output_dir, metrics_payload, suffix="metrics")
     _log_run_artifacts(metrics_payload, label="Run metrics")
