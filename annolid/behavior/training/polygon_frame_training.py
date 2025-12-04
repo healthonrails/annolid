@@ -16,7 +16,7 @@ import shlex
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import numpy as np
 import torch
@@ -152,9 +152,9 @@ def _evaluate(
     criterion = torch.nn.CrossEntropyLoss()
     model.eval()
     total_loss = 0.0
-    all_preds: list[int] = []
-    all_targets: list[int] = []
-    all_probs: list[List[float]] = []
+    all_preds: List[int] = []
+    all_targets: List[int] = []
+    all_probs: List[List[float]] = []
     with torch.no_grad():
         for inputs, targets in loader:
             inputs = inputs.to(device)
@@ -410,26 +410,22 @@ def main() -> None:
     metrics_path.write_text(json.dumps(
         metrics_payload, indent=2), encoding="utf-8")
     logger.info(
-        "Test metrics | loss: %.4f | acc: %.4f | macro_f1: %.4f | macro_mAP: %.4f | labels: %s",
-        metrics.get("loss", 0.0),
-        metrics.get("accuracy", 0.0),
-        metrics.get("macro_f1", 0.0),
-        metrics.get("macro_map", 0.0),
-        metrics.get("labels", []),
+        f"Test metrics | loss: {metrics.get('loss', 0.0):.4f} | "
+        f"acc: {metrics.get('accuracy', 0.0):.4f} | "
+        f"macro_f1: {metrics.get('macro_f1', 0.0):.4f} | "
+        f"macro_mAP: {metrics.get('macro_map', 0.0):.4f} | "
+        f"labels: {metrics.get('labels', [])}"
     )
     per_class = metrics.get("per_class", {})
     for label, vals in per_class.items():
         if isinstance(vals, dict):
             logger.info(
-                "Class %s | precision: %.4f | recall: %.4f | f1: %.4f",
-                label,
-                vals.get("precision", 0.0),
-                vals.get("recall", 0.0),
-                vals.get("f1-score", 0.0),
+                f"Class {label} | precision: {vals.get('precision', 0.0):.4f} | "
+                f"recall: {vals.get('recall', 0.0):.4f} | f1: {vals.get('f1-score', 0.0):.4f}"
             )
     per_class_ap = metrics.get("per_class_ap", {})
     for label, ap in per_class_ap.items():
-        logger.info("Class %s | AP: %.4f", label, ap)
+        logger.info(f"Class {label} | AP: {ap:.4f}")
     logger.info(f"Metrics saved to {metrics_path}")
     _dump_run_artifacts(run_cfg.output_dir, metrics_payload, suffix="metrics")
     _log_run_artifacts(metrics_payload, label="Run metrics")
