@@ -34,6 +34,11 @@ from annolid.behavior.models.polygon_frame_classifier import ImprovedFrameLabelC
 from annolid.behavior.models.polygon_frame_classifier import _collate_fn  # type: ignore
 from annolid.utils.logger import logger
 
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:  # pragma: no cover - plotting is optional
+    plt = None
+
 
 @dataclass
 class RunConfig:
@@ -141,6 +146,7 @@ def _evaluate(
     model: ImprovedFrameLabelConvNet,
     dataset: PolygonFrameDataset,
     device: torch.device,
+    plot_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     loader = torch.utils.data.DataLoader(
         dataset,
@@ -201,6 +207,14 @@ def _evaluate(
     except Exception:
         macro_map = 0.0
         per_class_ap = {}
+
+    if plot_dir is not None:
+        try:
+            _plot_eval_curves_and_confusion(
+                all_probs, all_targets, all_preds, label_names, Path(plot_dir)
+            )
+        except Exception as exc:  # pragma: no cover - plotting is optional
+            logger.warning(f"Failed to plot evaluation metrics: {exc}")
     return {
         "loss": avg_loss,
         "accuracy": accuracy,
@@ -211,6 +225,87 @@ def _evaluate(
         "confusion_matrix": confusion,
         "labels": label_names,
     }
+
+
+def _plot_eval_curves_and_confusion(
+    probs: List[List[float]],
+    targets: List[int],
+    preds: List[int],
+    label_names: List[str],
+    plot_dir: Path,
+) -> None:
+    if plt is None:
+        return
+    if not probs:
+        return
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    y_score = np.asarray(probs, dtype=float)
+    y_true_idx = np.asarray(targets, dtype=int)
+    y_pred_idx = np.asarray(preds, dtype=int)
+    num_classes = len(label_names)
+
+    # Confusion matrix heatmap
+    cm = metrics.confusion_matrix(
+        y_true_idx, y_pred_idx, labels=list(range(num_classes))
+    )
+    fig_cm, ax_cm = plt.subplots(1, 1, figsize=(6, 5))
+    im = ax_cm.imshow(cm, interpolation="nearest", cmap="Blues")
+    fig_cm.colorbar(im, ax=ax_cm)
+    ax_cm.set_xticks(range(num_classes))
+    ax_cm.set_yticks(range(num_classes))
+    ax_cm.set_xticklabels(label_names, rotation=45, ha="right")
+    ax_cm.set_yticklabels(label_names)
+    ax_cm.set_xlabel("Predicted")
+    ax_cm.set_ylabel("True")
+    for i in range(num_classes):
+        for j in range(num_classes):
+            ax_cm.text(
+                j,
+                i,
+                str(cm[i, j]),
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="black",
+            )
+    fig_cm.tight_layout()
+    cm_path = plot_dir / "confusion_matrix.png"
+    fig_cm.savefig(cm_path)
+    plt.close(fig_cm)
+    logger.info(f"Saved confusion matrix plot to {cm_path}")
+
+    # Precision-recall curves per class
+    y_true = np.zeros((len(y_true_idx), num_classes), dtype=int)
+    for i, t in enumerate(y_true_idx):
+        if 0 <= t < num_classes:
+            y_true[i, t] = 1
+
+    fig_pr, ax_pr = plt.subplots(1, 1, figsize=(6, 5))
+    for idx, name in enumerate(label_names):
+        if y_true[:, idx].sum() == 0:
+            continue
+        precision, recall, _ = metrics.precision_recall_curve(
+            y_true[:, idx], y_score[:, idx]
+        )
+        ap = metrics.average_precision_score(y_true[:, idx], y_score[:, idx])
+        ax_pr.step(
+            recall,
+            precision,
+            where="post",
+            label=f"{name} (AP={ap:.3f})",
+        )
+    ax_pr.set_xlabel("Recall")
+    ax_pr.set_ylabel("Precision")
+    ax_pr.set_xlim([0.0, 1.0])
+    ax_pr.set_ylim([0.0, 1.05])
+    ax_pr.grid(True, alpha=0.3)
+    ax_pr.legend(fontsize=8)
+    fig_pr.tight_layout()
+    pr_path = plot_dir / "pr_curves.png"
+    fig_pr.savefig(pr_path)
+    plt.close(fig_pr)
+    logger.info(f"Saved PR curves plot to {pr_path}")
 
 
 def _save_checkpoint(state: Dict[str, Any], output_dir: Path, label: str = "best") -> Path:
@@ -401,7 +496,8 @@ def main() -> None:
     ).to(device)
     logger.info(f"Evaluation model structure:\n{model}")
     model.load_state_dict(best_state["model_state"])
-    metrics = _evaluate(model, test_dataset, device)
+    metrics = _evaluate(model, test_dataset, device,
+                        plot_dir=run_cfg.output_dir)
     metrics_path = run_cfg.output_dir / "metrics.json"
     metrics_payload = _to_builtin({
         "test_metrics": metrics,

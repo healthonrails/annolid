@@ -27,6 +27,11 @@ from torch.utils.data import DataLoader, Dataset, RandomSampler, WeightedRandomS
 
 from annolid.utils.logger import logger
 
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:  # pragma: no cover - plotting is optional
+    plt = None
+
 __all__ = [
     "PolygonFeatureConfig",
     "ModelConfig",
@@ -446,6 +451,52 @@ def _mean_average_precision(probs: List[np.ndarray], targets: List[int], num_cla
         return 0.0
 
 
+def _plot_training_curves(history: Dict[str, List[float]], output_dir: Path, prefix: str) -> None:
+    if plt is None:
+        return
+    if not history.get("epoch"):
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    epochs = history["epoch"]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    ax1, ax2 = axes
+
+    ax1.plot(epochs, history.get("train_loss", []),
+             label="train_loss", marker="o")
+    ax1.plot(epochs, history.get("val_loss", []),
+             label="val_loss", marker="o")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(epochs, history.get("val_map", []),
+             label="val mAP", marker="o")
+    ax2.plot(epochs, history.get("val_macro_f1", []),
+             label="val macro F1", marker="o")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Score")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = output_dir / f"{prefix}_training_curves.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    logger.info(f"Saved training curves plot to {out_path}")
+
+
+def _save_training_history(history: Dict[str, List[float]], output_dir: Path, prefix: str) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{prefix}_history.json"
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(history, fh, indent=2)
+    try:
+        _plot_training_curves(history, output_dir, prefix)
+    except Exception as exc:  # pragma: no cover - plotting is optional
+        logger.warning(f"Failed to plot training history: {exc}")
+
+
 def _make_loss(loss_type: str, class_weights: torch.Tensor, focal_gamma: float) -> nn.Module:
     if loss_type == "focal":
         class FocalLoss(nn.Module):
@@ -593,6 +644,13 @@ def train_polygon_frame_classifier(
         "best_val_loss": best_val_loss,
     }
     latest_state: Dict[str, object] = {}
+    history: Dict[str, List[float]] = {
+        "epoch": [],
+        "train_loss": [],
+        "val_loss": [],
+        "val_map": [],
+        "val_macro_f1": [],
+    }
     epochs_without_improve = 0
     for epoch in range(training_config.num_epochs):
         model.train()
@@ -635,6 +693,13 @@ def train_polygon_frame_classifier(
         scheduler.step(val_loss)
         val_macro_f1 = metrics.f1_score(val_targets, np.argmax(
             val_probs, axis=1), average="macro", zero_division=0)
+
+        history["epoch"].append(epoch + 1)
+        history["train_loss"].append(float(avg_train_loss))
+        history["val_loss"].append(float(val_loss))
+        history["val_map"].append(float(val_map))
+        history["val_macro_f1"].append(float(val_macro_f1))
+
         logger.info(
             f"Epoch {epoch + 1}/{training_config.num_epochs} | "
             f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | "
@@ -687,4 +752,6 @@ def train_polygon_frame_classifier(
         best_state["latest_model_state"] = latest_state.get("model_state")
         best_state["latest_val_map"] = latest_state.get("latest_val_map")
         best_state["latest_val_loss"] = latest_state.get("latest_val_loss")
+    if checkpoint_dir is not None:
+        _save_training_history(history, checkpoint_dir, checkpoint_prefix)
     return best_state
