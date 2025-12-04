@@ -108,6 +108,24 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _increment_path(base: Path) -> Path:
+    """YOLO-style run directory incrementer: exp, exp2, exp3, ..."""
+    if not base.exists():
+        return base
+    parent = base.parent
+    name = base.name
+    existing = [p.name for p in parent.glob(f"{name}*") if p.is_dir()]
+    indices: List[int] = []
+    for n in existing:
+        suffix = n[len(name):]
+        if suffix == "":
+            indices.append(1)
+        elif suffix.isdigit():
+            indices.append(int(suffix))
+    next_idx = (max(indices) + 1) if indices else 1
+    return parent / (name if next_idx == 1 else f"{name}{next_idx}")
+
+
 def _load_config_file(path: Optional[str]) -> Dict[str, Any]:
     if not path:
         return {}
@@ -362,11 +380,12 @@ def main() -> None:
     run_defaults = {
         "train_csv": None,
         "test_csv": None,
-        "output_dir": "results",
-        "log_dir": "logs",
-        "tb_log_dir": "runs",
+        "output_dir": "results",  # project directory, e.g. runs/polygon_frame
+        "log_dir": "logs",        # subdirectory inside each run directory
+        "tb_log_dir": "tb",       # subdirectory inside each run directory
         "seed": 42,
         "log_level": "INFO",
+        "run_name": "exp",
     }
     feature_defaults = asdict(PolygonFeatureConfig())
     model_defaults = asdict(ModelConfig())
@@ -385,12 +404,19 @@ def main() -> None:
         raise ValueError(
             "train_csv and test_csv must be provided via config or CLI.")
 
+    project_dir = Path(run_params["output_dir"])
+    _ensure_dir(project_dir)
+    base_run_name = str(run_params.get("run_name", "exp"))
+    run_dir = _increment_path(project_dir / base_run_name)
+    log_subdir = Path(run_params["log_dir"]).name
+    tb_subdir = Path(run_params["tb_log_dir"]).name
+
     run_cfg = RunConfig(
         train_csv=Path(run_params["train_csv"]),
         test_csv=Path(run_params["test_csv"]),
-        output_dir=Path(run_params["output_dir"]),
-        log_dir=Path(run_params["log_dir"]),
-        tb_log_dir=Path(run_params["tb_log_dir"]),
+        output_dir=run_dir,
+        log_dir=run_dir / log_subdir,
+        tb_log_dir=run_dir / tb_subdir,
         seed=int(run_params.get("seed", 42)),
         log_level=str(run_params.get("log_level", "INFO")).upper(),
     )
@@ -409,6 +435,8 @@ def main() -> None:
     run_dict = asdict(run_cfg)
     for key in ("train_csv", "test_csv", "output_dir", "log_dir", "tb_log_dir"):
         run_dict[key] = str(run_dict[key])
+    run_dict["project_dir"] = str(project_dir)
+    run_dict["run_name"] = base_run_name
     cli_command = "python -m annolid.behavior.training.polygon_frame_training"
     if args.config:
         cli_command += f" --config {shlex.quote(str(args.config))}"
