@@ -29,9 +29,10 @@ from annolid.behavior.models.polygon_frame_classifier import (
     PolygonFrameDataset,
     TrainingConfig,
     train_polygon_frame_classifier,
+    ImprovedFrameLabelConvNet,
+    _collate_fn,  # type: ignore
+    _seed_worker,  # type: ignore
 )
-from annolid.behavior.models.polygon_frame_classifier import ImprovedFrameLabelConvNet
-from annolid.behavior.models.polygon_frame_classifier import _collate_fn  # type: ignore
 from annolid.utils.logger import logger
 
 try:
@@ -74,7 +75,19 @@ def _parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--kernel_size", type=int, default=3)
     parser.add_argument("--num_residual_blocks", type=int, default=6)
     parser.add_argument("--dropout", type=float, default=0.3)
-    parser.add_argument("--use_attention", action="store_true", default=True)
+    parser.add_argument(
+        "--use_attention",
+        dest="use_attention",
+        action="store_true",
+        default=None,
+        help="Enable channel attention (default: enabled).",
+    )
+    parser.add_argument(
+        "--no_attention",
+        dest="use_attention",
+        action="store_false",
+        help="Disable channel attention.",
+    )
 
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_epochs", type=int, default=100)
@@ -87,10 +100,49 @@ def _parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--sampling_strategy", default="balanced_sampler",
                         choices=["balanced_sampler", "random"])
     parser.add_argument("--log_every", type=int, default=50)
+    parser.add_argument(
+        "--label_smoothing",
+        type=float,
+        default=None,
+        help="Label smoothing factor (default from config; set 0 to disable).",
+    )
+    parser.add_argument(
+        "--no_label_smoothing",
+        dest="label_smoothing",
+        action="store_const",
+        const=0.0,
+        help="Disable label smoothing (sets label_smoothing=0).",
+    )
 
     parser.add_argument("--frame_width", type=int, default=1024)
     parser.add_argument("--frame_height", type=int, default=570)
     parser.add_argument("--polygon_pad_len", type=int, default=None)
+    parser.add_argument(
+        "--compute_dynamic_features",
+        dest="compute_dynamic_features",
+        action="store_true",
+        default=None,
+        help="Compute dynamic features (inter_animal_distance, relative_velocity, facing_angle) if missing in CSV.",
+    )
+    parser.add_argument(
+        "--no_dynamic_features",
+        dest="compute_dynamic_features",
+        action="store_false",
+        help="Do not compute dynamic features when missing.",
+    )
+    parser.add_argument(
+        "--compute_motion_index",
+        dest="compute_motion_index",
+        action="store_true",
+        default=None,
+        help="Use motion index features if present.",
+    )
+    parser.add_argument(
+        "--no_motion_index",
+        dest="compute_motion_index",
+        action="store_false",
+        help="Disable motion index features even if present.",
+    )
 
     args = parser.parse_args()
     return args, parser
@@ -202,6 +254,7 @@ def _evaluate(
         shuffle=False,
         num_workers=2,
         collate_fn=_collate_fn,
+        worker_init_fn=_seed_worker,
     )
     criterion = torch.nn.CrossEntropyLoss()
     model.eval()
@@ -510,7 +563,6 @@ def main() -> None:
 
     best_state = train_polygon_frame_classifier(
         run_cfg.train_csv,
-        run_cfg.test_csv,
         feature_config=feature_config,
         model_config=model_config,
         training_config=training_config,

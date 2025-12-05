@@ -11,6 +11,8 @@ feature:
   polygon_pad_len: 40 # adjust to your polygon vector length if different
   frame_width: 1024
   frame_height: 570
+  compute_dynamic_features: true
+  compute_motion_index: true
   rescale_coordinates: true
   normalize_features: true
   normalization_eps: 1e-6

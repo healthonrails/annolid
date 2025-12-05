@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -63,6 +64,8 @@ class PolygonFeatureConfig:
     polygon_pad_len: Optional[Union[int, Dict[str, int]]] = None
     frame_width: int = 1024
     frame_height: int = 570
+    compute_dynamic_features: bool = True
+    compute_motion_index: bool = True
     normalize_features: bool = True
     normalization_eps: float = 1e-6
     rescale_coordinates: bool = False  # if True, divide x/y by frame dims
@@ -192,6 +195,8 @@ class PolygonFrameDataset(Dataset):
                 )
 
     def _augment_dynamic_features(self) -> None:
+        if not self.feature_config.compute_dynamic_features:
+            return
         required_centroids = {"intruder_centroid", "resident_centroid"}
         if not required_centroids.issubset(self.dataframe.columns):
             return
@@ -217,6 +222,7 @@ class PolygonFrameDataset(Dataset):
                 df_sorted = df.sort_index()
 
             prev_distance: Optional[float] = None
+            prev_frame_number: Optional[int] = None
 
             for idx, row in df_sorted.iterrows():
                 centroid_i = _parse_array(row.get("intruder_centroid", []))
@@ -229,11 +235,24 @@ class PolygonFrameDataset(Dataset):
                 distance = float(math.hypot(dx, dy))
                 inter_distances[idx] = distance
 
+                frame_number: Optional[int] = None
+                if "frame" in row:
+                    try:
+                        frame_number = int(_frame_sort_key(row["frame"]))
+                    except Exception:
+                        frame_number = None
+
+                dt = 1
+                if frame_number is not None and prev_frame_number is not None:
+                    dt = max(1, frame_number - prev_frame_number)
+
                 if prev_distance is not None:
-                    rel_velocities[idx] = float(prev_distance - distance)
+                    rel_velocities[idx] = float(
+                        prev_distance - distance) / float(dt)
                 else:
                     rel_velocities[idx] = 0.0
                 prev_distance = distance
+                prev_frame_number = frame_number
 
                 # Facing angle derived from intruder polygon coordinates:
                 # use vector from centroid to the furthest intruder point
@@ -348,6 +367,8 @@ class PolygonFrameDataset(Dataset):
             values.extend(padded)
 
         for col in self.feature_config.extra_cols:
+            if (not self.feature_config.compute_motion_index) and ("motion_index" in col):
+                continue
             parsed = _parse_array(row.get(col, 0))
             values.extend(parsed)
 
@@ -542,6 +563,13 @@ def _collate_fn(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Tensor, to
     return torch.stack(windows, dim=0), torch.as_tensor(labels, dtype=torch.long)
 
 
+def _seed_worker(worker_id: int) -> None:
+    """Set numpy/Python RNG seeds for deterministic DataLoader workers."""
+    worker_seed = (torch.initial_seed() + worker_id) % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 def _mean_average_precision(probs: List[np.ndarray], targets: List[int], num_classes: int) -> float:
     if not probs:
         return 0.0
@@ -657,7 +685,6 @@ def _make_loss(
 
 def train_polygon_frame_classifier(
     train_csv: Path,
-    test_csv: Path,
     feature_config: Optional[PolygonFeatureConfig] = None,
     model_config: Optional[ModelConfig] = None,
     training_config: Optional[TrainingConfig] = None,
@@ -698,6 +725,18 @@ def train_polygon_frame_classifier(
     dummy = np.zeros(len(full_dataset))
     train_indices, val_indices = next(
         splitter.split(dummy, dummy, groups=groups))
+    if len(val_indices) == 0:
+        if len(train_indices) <= 1:
+            logger.warning(
+                "Validation split is empty and dataset is too small to reassign samples. "
+                "Training will proceed without validation; consider increasing dataset size or val_split_ratio."
+            )
+        else:
+            val_indices = train_indices[-1:]
+            train_indices = train_indices[:-1]
+            logger.warning(
+                "Validation split was empty; moved 1 sample from train to validation. "
+                "Consider increasing val_split_ratio or number of videos.")
     logger.info(
         f"Split dataset into train={len(train_indices)}, val={len(val_indices)} "
         f"(val_split={training_config.val_split_ratio:.2f})",
@@ -715,6 +754,7 @@ def train_polygon_frame_classifier(
         sampler=sampler if sampler else RandomSampler(train_subset),
         num_workers=training_config.num_workers,
         collate_fn=_collate_fn,
+        worker_init_fn=_seed_worker,
     )
     val_loader = DataLoader(
         val_subset,
@@ -722,6 +762,7 @@ def train_polygon_frame_classifier(
         shuffle=False,
         num_workers=training_config.num_workers,
         collate_fn=_collate_fn,
+        worker_init_fn=_seed_worker,
     )
 
     model = ImprovedFrameLabelConvNet(
@@ -836,11 +877,20 @@ def train_polygon_frame_classifier(
                 val_probs.extend(probs)
                 val_targets.extend(targets.cpu().numpy().tolist())
         val_loss /= max(1, len(val_loader))
-        val_map = _mean_average_precision(
-            val_probs, val_targets, num_classes=len(full_dataset.label_to_index))
-        scheduler.step(val_loss)
-        val_macro_f1 = metrics.f1_score(val_targets, np.argmax(
-            val_probs, axis=1), average="macro", zero_division=0)
+        has_val = len(val_targets) > 0
+        if has_val:
+            val_map = _mean_average_precision(
+                val_probs, val_targets, num_classes=len(full_dataset.label_to_index))
+            scheduler.step(val_loss)
+            val_macro_f1 = metrics.f1_score(
+                val_targets, np.argmax(val_probs, axis=1), average="macro", zero_division=0)
+        else:
+            logger.warning(
+                "Validation set is empty; skipping validation metrics. "
+                "Increase val_split_ratio or ensure multiple videos are available.")
+            val_map = 0.0
+            val_macro_f1 = 0.0
+            scheduler.step(val_loss)
 
         history["epoch"].append(epoch + 1)
         history["train_loss"].append(float(avg_train_loss))
@@ -853,10 +903,12 @@ def train_polygon_frame_classifier(
             f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | "
             f"Val mAP: {val_map:.4f} | Val F1(macro): {val_macro_f1:.4f}"
         )
-        improved_map = val_map > best_val_map or (
-            val_map == best_val_map and val_loss < best_val_loss
+        improved_map = has_val and (
+            val_map > best_val_map or (
+                val_map == best_val_map and val_loss < best_val_loss
+            )
         )
-        improved_loss = val_loss < best_val_loss
+        improved_loss = has_val and val_loss < best_val_loss
         if training_config.early_stopping_monitor == "loss":
             improved = improved_loss
         else:
@@ -876,6 +928,17 @@ def train_polygon_frame_classifier(
             "normalization": getattr(full_dataset, "_normalization", None),
         }
         _maybe_save_checkpoint(latest_state, label="latest")
+
+        if not has_val:
+            # Without validation data, keep the latest model as the current best.
+            best_state = {
+                **latest_state,
+                "best_val_map": val_map,
+                "best_val_loss": val_loss,
+            }
+            best_val_map = val_map
+            best_val_loss = val_loss
+            continue
 
         if improved:
             best_val_loss = val_loss
