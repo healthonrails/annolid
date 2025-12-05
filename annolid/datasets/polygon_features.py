@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 
 from annolid.datasets.polygon_utils import (
@@ -123,6 +125,9 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
         tracked_csv_path = data_folder / f"{video_folder.name}_tracked.csv"
         df_track = _load_tracking_csv(tracked_csv_path, video_folder.name)
 
+        prev_distance: Optional[float] = None
+        prev_frame_number: Optional[int] = None
+
         for json_path in sorted(video_folder.glob("*.json")):
             frame_data = load_frame_polygons(json_path, normalize=normalize)
             if frame_data is None:
@@ -149,6 +154,52 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
                 df_track, frame_number, video_folder.name
             )
 
+            # Inter-animal distance (pixel space) between centroids.
+            dx = intruder_centroid[0] - resident_centroid[0]
+            dy = intruder_centroid[1] - resident_centroid[1]
+            inter_animal_distance = float(math.hypot(dx, dy))
+
+            # Relative velocity: positive when animals are moving towards each other.
+            if prev_distance is not None and frame_number is not None and prev_frame_number is not None:
+                dt = max(1, frame_number - prev_frame_number)
+                relative_velocity = float(
+                    (prev_distance - inter_animal_distance) / dt)
+            else:
+                relative_velocity = 0.0
+            prev_distance = inter_animal_distance
+            prev_frame_number = frame_number
+
+            # Facing angle: angle between intruder "orientation" and vector to resident.
+            # Use vector from intruder centroid to the furthest intruder point as an orientation proxy.
+            if intruder_points and inter_animal_distance > 0:
+                pts = np.asarray(intruder_points, dtype=float)
+                centroid_arr = np.asarray(intruder_centroid, dtype=float)
+                offsets = pts - centroid_arr
+                dists = np.linalg.norm(offsets, axis=1)
+                head_idx = int(np.argmax(dists))
+                head_vec = offsets[head_idx]
+                to_resident = np.asarray(
+                    [resident_centroid[0] - intruder_centroid[0],
+                     resident_centroid[1] - intruder_centroid[1]],
+                    dtype=float,
+                )
+                head_norm = float(np.linalg.norm(head_vec))
+                to_res_norm = float(np.linalg.norm(to_resident))
+                if head_norm > 0.0 and to_res_norm > 0.0:
+                    cos_angle = float(
+                        np.clip(
+                            np.dot(head_vec, to_resident) /
+                            (head_norm * to_res_norm),
+                            -1.0,
+                            1.0,
+                        )
+                    )
+                    facing_angle = float(math.acos(cos_angle))
+                else:
+                    facing_angle = 0.0
+            else:
+                facing_angle = 0.0
+
             record = {
                 "video": video_folder.name,
                 "frame": json_path.name,
@@ -163,6 +214,10 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
                 "resident_perimeter": resident_perimeter,
                 "intruder_motion_index": intruder_motion_index,
                 "resident_motion_index": resident_motion_index,
+                "inter_animal_distance": inter_animal_distance,
+                "relative_velocity": relative_velocity,
+                "facing_angle": facing_angle,
+                "frame_number": frame_number if frame_number is not None else -1,
             }
             records.append(record)
 

@@ -523,7 +523,18 @@ def main() -> None:
         use_attention=model_config.use_attention,
     ).to(device)
     logger.info(f"Evaluation model structure:\n{model}")
-    model.load_state_dict(best_state["model_state"])
+    eval_state = best_state
+    try:
+        loaded_state = torch.load(ckpt_best, map_location=device)
+        if isinstance(loaded_state, dict) and "model_state" in loaded_state:
+            eval_state = loaded_state
+            logger.info(
+                f"Loaded best checkpoint from {ckpt_best} for evaluation.")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            f"Failed to load best checkpoint from {ckpt_best}, using in-memory state: {exc}"
+        )
+    model.load_state_dict(eval_state["model_state"])
     metrics = _evaluate(model, test_dataset, device,
                         plot_dir=run_cfg.output_dir)
     metrics_path = run_cfg.output_dir / "metrics.json"

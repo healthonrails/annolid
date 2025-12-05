@@ -56,6 +56,9 @@ class PolygonFeatureConfig:
         "resident_perimeter",
         "intruder_motion_index",
         "resident_motion_index",
+        "inter_animal_distance",
+        "relative_velocity",
+        "facing_angle",
     )
     polygon_pad_len: Optional[Union[int, Dict[str, int]]] = None
     frame_width: int = 1024
@@ -89,6 +92,8 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     scheduler_patience: int = 8
     early_stopping_patience: int = 12
+    # Which validation metric to monitor for early stopping: "map" or "loss".
+    early_stopping_monitor: str = "map"
     val_split_ratio: float = 0.1
     num_workers: int = 2
     sampling_strategy: str = "balanced_sampler"  # or "random"
@@ -96,6 +101,7 @@ class TrainingConfig:
     loss_type: str = "ce"  # ce or focal
     focal_gamma: float = 2.0
     add_noise_std: float = 0.0
+    label_smoothing: float = 0.0
 
 
 def _parse_array(value) -> List[float]:
@@ -156,6 +162,11 @@ class PolygonFrameDataset(Dataset):
         if self.dataframe.empty:
             raise ValueError(f"No data found in {self.csv_path}")
 
+        # Optionally enrich the dataframe with dynamic geometric features
+        # computed per-video from centroids and polygon coordinates when
+        # they are not already present in the CSV.
+        self._augment_dynamic_features()
+
         self.label_to_index = label_to_index or {
             label: idx for idx, label in enumerate(sorted(self.dataframe["label"].unique()))
         }
@@ -177,6 +188,98 @@ class PolygonFrameDataset(Dataset):
                     f"Applied feature normalization with mean[0]={float(self._normalization['mean'][0]):.4f} "
                     f"std[0]={float(self._normalization['std'][0]):.4f}"
                 )
+
+    def _augment_dynamic_features(self) -> None:
+        required_centroids = {"intruder_centroid", "resident_centroid"}
+        if not required_centroids.issubset(self.dataframe.columns):
+            return
+        # If all three dynamic columns already exist, respect the dataset
+        # and avoid recomputing.
+        dynamic_cols = {
+            "inter_animal_distance",
+            "relative_velocity",
+            "facing_angle",
+        }
+        if dynamic_cols.issubset(self.dataframe.columns):
+            return
+
+        inter_distances: Dict[int, float] = {}
+        rel_velocities: Dict[int, float] = {}
+        facing_angles: Dict[int, float] = {}
+
+        for video, df in self.dataframe.groupby("video"):
+            if "frame" in df:
+                df_sorted = df.sort_values(
+                    by="frame", key=lambda s: s.map(_frame_sort_key))
+            else:
+                df_sorted = df.sort_index()
+
+            prev_distance: Optional[float] = None
+
+            for idx, row in df_sorted.iterrows():
+                centroid_i = _parse_array(row.get("intruder_centroid", []))
+                centroid_r = _parse_array(row.get("resident_centroid", []))
+                centroid_i = centroid_i if len(centroid_i) >= 2 else [0.0, 0.0]
+                centroid_r = centroid_r if len(centroid_r) >= 2 else [0.0, 0.0]
+
+                dx = centroid_i[0] - centroid_r[0]
+                dy = centroid_i[1] - centroid_r[1]
+                distance = float(math.hypot(dx, dy))
+                inter_distances[idx] = distance
+
+                if prev_distance is not None:
+                    rel_velocities[idx] = float(prev_distance - distance)
+                else:
+                    rel_velocities[idx] = 0.0
+                prev_distance = distance
+
+                # Facing angle derived from intruder polygon coordinates:
+                # use vector from centroid to the furthest intruder point
+                # and compare to vector from centroid to resident.
+                intruder_coords = _parse_array(
+                    row.get("intruder_features", []))
+                if intruder_coords and distance > 0.0:
+                    arr = np.asarray(
+                        intruder_coords, dtype=float).reshape(-1, 2)
+                    centroid_arr = np.asarray(centroid_i[:2], dtype=float)
+                    offsets = arr - centroid_arr
+                    dists = np.linalg.norm(offsets, axis=1)
+                    head_idx = int(np.argmax(dists))
+                    head_vec = offsets[head_idx]
+                    to_resident = np.asarray(
+                        [centroid_r[0] - centroid_i[0],
+                         centroid_r[1] - centroid_i[1]],
+                        dtype=float,
+                    )
+                    head_norm = float(np.linalg.norm(head_vec))
+                    to_res_norm = float(np.linalg.norm(to_resident))
+                    if head_norm > 0.0 and to_res_norm > 0.0:
+                        cos_angle = float(
+                            np.clip(
+                                np.dot(head_vec, to_resident)
+                                / (head_norm * to_res_norm),
+                                -1.0,
+                                1.0,
+                            )
+                        )
+                        facing_angles[idx] = float(math.acos(cos_angle))
+                    else:
+                        facing_angles[idx] = 0.0
+                else:
+                    facing_angles[idx] = 0.0
+
+        if "inter_animal_distance" not in self.dataframe.columns:
+            self.dataframe["inter_animal_distance"] = self.dataframe.index.map(
+                lambda i: inter_distances.get(i, 0.0)
+            )
+        if "relative_velocity" not in self.dataframe.columns:
+            self.dataframe["relative_velocity"] = self.dataframe.index.map(
+                lambda i: rel_velocities.get(i, 0.0)
+            )
+        if "facing_angle" not in self.dataframe.columns:
+            self.dataframe["facing_angle"] = self.dataframe.index.map(
+                lambda i: facing_angles.get(i, 0.0)
+            )
 
     def _infer_polygon_lengths(self) -> Dict[str, int]:
         lengths: Dict[str, int] = {}
@@ -497,7 +600,12 @@ def _save_training_history(history: Dict[str, List[float]], output_dir: Path, pr
         logger.warning(f"Failed to plot training history: {exc}")
 
 
-def _make_loss(loss_type: str, class_weights: torch.Tensor, focal_gamma: float) -> nn.Module:
+def _make_loss(
+    loss_type: str,
+    class_weights: torch.Tensor,
+    focal_gamma: float,
+    label_smoothing: float,
+) -> nn.Module:
     if loss_type == "focal":
         class FocalLoss(nn.Module):
             def __init__(self, weights: torch.Tensor, gamma: float):
@@ -516,7 +624,33 @@ def _make_loss(loss_type: str, class_weights: torch.Tensor, focal_gamma: float) 
                 return loss.mean()
 
         return FocalLoss(class_weights, focal_gamma)
-    return nn.CrossEntropyLoss(weight=class_weights)
+
+    smoothing = float(label_smoothing)
+    if smoothing <= 0.0:
+        return nn.CrossEntropyLoss(weight=class_weights)
+
+    class LabelSmoothingCrossEntropy(nn.Module):
+        def __init__(self, weights: torch.Tensor, smoothing: float):
+            super().__init__()
+            self.weights = weights
+            self.smoothing = smoothing
+
+        def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+            num_classes = logits.size(1)
+            log_probs = torch.log_softmax(logits, dim=1)
+
+            with torch.no_grad():
+                true_dist = torch.zeros_like(log_probs)
+                true_dist.fill_(self.smoothing / (num_classes - 1))
+                true_dist.scatter_(1, targets.unsqueeze(1),
+                                   1.0 - self.smoothing)
+
+            nll_loss = -(true_dist * log_probs).sum(dim=1)
+            weights = self.weights[targets]
+            loss = (nll_loss * weights).sum() / weights.sum()
+            return loss
+
+    return LabelSmoothingCrossEntropy(class_weights, smoothing)
 
 
 def train_polygon_frame_classifier(
@@ -611,7 +745,7 @@ def train_polygon_frame_classifier(
     class_weights = torch.tensor(
         normalized_weights, dtype=torch.float, device=device)
     criterion = _make_loss(training_config.loss_type,
-                           class_weights, training_config.focal_gamma)
+                           class_weights, training_config.focal_gamma, training_config.label_smoothing)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_config.learning_rate,
@@ -655,6 +789,7 @@ def train_polygon_frame_classifier(
     for epoch in range(training_config.num_epochs):
         model.train()
         total_loss = 0.0
+        nan_loss_detected = False
         for step, (inputs, targets) in enumerate(train_loader, 1):
             inputs = inputs.to(device)
             targets = targets.to(device)
@@ -664,6 +799,12 @@ def train_polygon_frame_classifier(
                 inputs = inputs + noise
             outputs = model(inputs)
             loss = criterion(outputs, targets)
+            if not torch.isfinite(loss):
+                logger.error(
+                    f"Non-finite loss detected at epoch {epoch + 1} step {step}: {loss.item()}"
+                )
+                nan_loss_detected = True
+                break
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -671,6 +812,11 @@ def train_polygon_frame_classifier(
             if step % training_config.log_every == 0:
                 logger.info(
                     f"Epoch {epoch + 1} Step {step} - loss {loss.item():.4f}")
+
+        if nan_loss_detected:
+            logger.info(
+                "Stopping training early due to non-finite loss.")
+            break
 
         avg_train_loss = total_loss / max(1, len(train_loader))
         model.eval()
@@ -705,9 +851,14 @@ def train_polygon_frame_classifier(
             f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | "
             f"Val mAP: {val_map:.4f} | Val F1(macro): {val_macro_f1:.4f}"
         )
-
-        improved = val_map > best_val_map or (
-            val_map == best_val_map and val_loss < best_val_loss)
+        improved_map = val_map > best_val_map or (
+            val_map == best_val_map and val_loss < best_val_loss
+        )
+        improved_loss = val_loss < best_val_loss
+        if training_config.early_stopping_monitor == "loss":
+            improved = improved_loss
+        else:
+            improved = improved_map
 
         # Always keep the latest checkpoint.
         latest_state = {
