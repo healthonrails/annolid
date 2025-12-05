@@ -102,6 +102,8 @@ class TrainingConfig:
     focal_gamma: float = 2.0
     add_noise_std: float = 0.0
     label_smoothing: float = 0.0
+    apply_rolling_median: bool = True
+    rolling_window: int = 7
 
 
 def _parse_array(value) -> List[float]:

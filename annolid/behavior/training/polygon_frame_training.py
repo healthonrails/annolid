@@ -160,11 +160,41 @@ def _merge_section(defaults: Dict[str, Any], config_values: Dict[str, Any], cli_
     return merged
 
 
+def _apply_rolling_median_probs(
+    probs: np.ndarray,
+    video_ids: np.ndarray,
+    window: int,
+) -> np.ndarray:
+    if window <= 1 or probs.size == 0:
+        return probs
+    smoothed = probs.copy()
+    half = window // 2
+    unique_videos = np.unique(video_ids)
+    for vid in unique_videos:
+        idxs = np.where(video_ids == vid)[0]
+        if idxs.size == 0:
+            continue
+        sub = probs[idxs]  # (T, C)
+        t_len, n_classes = sub.shape
+        for c in range(n_classes):
+            series = sub[:, c]
+            pad_left = np.repeat(series[0], half)
+            pad_right = np.repeat(series[-1], max(0, window - half - 1))
+            padded = np.concatenate([pad_left, series, pad_right])
+            out = np.empty_like(series)
+            for t in range(t_len):
+                out[t] = np.median(padded[t:t + window])
+            smoothed[idxs, c] = out
+    return smoothed
+
+
 def _evaluate(
     model: ImprovedFrameLabelConvNet,
     dataset: PolygonFrameDataset,
     device: torch.device,
     plot_dir: Optional[Path] = None,
+    smooth_predictions: bool = True,
+    smooth_window: int = 7,
 ) -> Dict[str, Any]:
     loader = torch.utils.data.DataLoader(
         dataset,
@@ -195,23 +225,35 @@ def _evaluate(
     avg_loss = total_loss / max(1, len(loader))
     label_names = [dataset.index_to_label[idx]
                    for idx in range(len(dataset.index_to_label))]
-    accuracy = metrics.accuracy_score(all_targets, all_preds)
+
+    prob_array = np.asarray(all_probs, dtype=float)
+    true_array = np.asarray(all_targets, dtype=int)
+    pred_array = np.asarray(all_preds, dtype=int)
+
+    if smooth_predictions and prob_array.size and hasattr(dataset, "indices"):
+        video_ids = np.asarray([vid for vid, _ in dataset.indices])
+        if video_ids.shape[0] == prob_array.shape[0]:
+            prob_array = _apply_rolling_median_probs(
+                prob_array, video_ids, smooth_window
+            )
+            pred_array = prob_array.argmax(axis=1)
+
+    accuracy = metrics.accuracy_score(true_array, pred_array)
     macro_f1 = metrics.f1_score(
-        all_targets, all_preds, average="macro", zero_division=0)
+        true_array, pred_array, average="macro", zero_division=0)
     per_class = metrics.classification_report(
-        all_targets,
-        all_preds,
+        true_array,
+        pred_array,
         target_names=label_names,
         zero_division=0,
         output_dict=True,
     )
     confusion = metrics.confusion_matrix(
-        all_targets, all_preds, labels=list(range(len(label_names)))).tolist()
-    # Per-class AP and mAP using probability scores.
+        true_array, pred_array, labels=list(range(len(label_names)))).tolist()
+
+    # Per-class AP and mAP using smoothed probability scores.
     per_class_ap: Dict[str, float] = {}
     try:
-        prob_array = np.asarray(all_probs, dtype=float)
-        true_array = np.asarray(all_targets, dtype=int)
         ap_scores = []
         for idx, name in enumerate(label_names):
             binary_true = (true_array == idx).astype(int)
@@ -229,7 +271,11 @@ def _evaluate(
     if plot_dir is not None:
         try:
             _plot_eval_curves_and_confusion(
-                all_probs, all_targets, all_preds, label_names, Path(plot_dir)
+                prob_array.tolist(),
+                true_array.tolist(),
+                pred_array.tolist(),
+                label_names,
+                Path(plot_dir),
             )
         except Exception as exc:  # pragma: no cover - plotting is optional
             logger.warning(f"Failed to plot evaluation metrics: {exc}")
@@ -535,8 +581,14 @@ def main() -> None:
             f"Failed to load best checkpoint from {ckpt_best}, using in-memory state: {exc}"
         )
     model.load_state_dict(eval_state["model_state"])
-    metrics = _evaluate(model, test_dataset, device,
-                        plot_dir=run_cfg.output_dir)
+    metrics = _evaluate(
+        model,
+        test_dataset,
+        device,
+        plot_dir=run_cfg.output_dir,
+        smooth_predictions=training_config.apply_rolling_median,
+        smooth_window=training_config.rolling_window,
+    )
     metrics_path = run_cfg.output_dir / "metrics.json"
     metrics_payload = _to_builtin({
         "test_metrics": metrics,

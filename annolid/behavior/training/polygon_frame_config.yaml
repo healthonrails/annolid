@@ -16,26 +16,28 @@ feature:
   normalization_eps: 1e-6
 
 model:
-  window_size: 61
-  hidden_dim: 128
+  window_size: 25
+  hidden_dim: 192
   kernel_size: 7
-  num_residual_blocks: 4
-  dropout: 0.5
+  num_residual_blocks: 8
+  dropout: 0.3
   use_attention: true
 
 training:
   batch_size: 128
   num_epochs: 100
-  learning_rate: 0.0001
-  weight_decay: 0.05
+  learning_rate: 0.0002
+  weight_decay: 0.005
   scheduler_patience: 8
-  early_stopping_monitor: loss 
+  early_stopping_monitor: map
   early_stopping_patience: 12
   val_split_ratio: 0.08
   num_workers: 2
   sampling_strategy: balanced_sampler
   log_every: 50
   loss_type: ce # ce or focal
-  focal_gamma: 0.5
-  add_noise_std: 0.05
+  focal_gamma: 2.0
+  add_noise_std: 0.02
   label_smoothing: 0.1
+  apply_rolling_median: true
+  rolling_window: 7
