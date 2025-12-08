@@ -32,14 +32,14 @@ training:
   weight_decay: 0.005
   scheduler_patience: 8
   early_stopping_monitor: map
-  early_stopping_patience: 12
+  early_stopping_patience: 8
   val_split_ratio: 0.08
   num_workers: 2
-  sampling_strategy: balanced_sampler
+  sampling_strategy: random #balanced_sampler
   log_every: 50
   loss_type: ce # ce or focal
   focal_gamma: 2.0
   add_noise_std: 0.02
-  label_smoothing: 0.1
+  label_smoothing: 0.0
   apply_rolling_median: true
   rolling_window: 7

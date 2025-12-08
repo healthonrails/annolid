@@ -170,7 +170,10 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
             prev_frame_number = frame_number
 
             # Facing angle: angle between intruder "orientation" and vector to resident.
-            # Use vector from intruder centroid to the furthest intruder point as an orientation proxy.
+            # We approximate orientation by the vector from intruder centroid to the furthest
+            # polygon vertex. This is only a coarse proxy: the furthest point may correspond
+            # to tail, limbs, or cable artifacts rather than the head, especially under
+            # occlusion or segmentation noise.
             if intruder_points and inter_animal_distance > 0:
                 pts = np.asarray(intruder_points, dtype=float)
                 centroid_arr = np.asarray(intruder_centroid, dtype=float)
