@@ -28,9 +28,23 @@ class AiRectangleWidget(QtWidgets.QWidget):
         aiRectangleLabel.setFont(QtGui.QFont(None, 10))
         aiRectangleLabel.setFixedWidth(200)
 
+        # Optional CountGD toggle (off by default)
+        self._useCountGDCheckbox = QtWidgets.QCheckBox(
+            self.tr("Use CountGD")
+        )
+        self._useCountGDCheckbox.setToolTip(
+            self.tr(
+                "Enable CountGD-based object counting in addition to "
+                "GroundingDINO. This can improve counting of repeated "
+                "objects but is slower and requires CountGD to be installed."
+            )
+        )
+        self._useCountGDCheckbox.setChecked(False)
+
         aiRectangleLayout = QtWidgets.QVBoxLayout()
         aiRectangleLayout.addWidget(self._aiRectanglePrompt)
         aiRectangleLayout.addWidget(aiRectangleLabel)
+        aiRectangleLayout.addWidget(self._useCountGDCheckbox)
 
         self.aiRectangleWidget = QtWidgets.QWidget()
         self.aiRectangleWidget.setLayout(aiRectangleLayout)

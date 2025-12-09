@@ -342,7 +342,8 @@ class Canvas(QtWidgets.QWidget):
 
     def predictAiRectangle(self, prompt,
                            rectangle_shapes=None,
-                           is_polygon_output=True):
+                           is_polygon_output=True,
+                           use_countgd=False):
         """
         Predict bounding boxes and then polygons based on the given prompt.
 
@@ -390,13 +391,15 @@ class Canvas(QtWidgets.QWidget):
                 rectangle_shapes=rectangle_shapes, prompt=prompt)
         else:
             rectangle_shapes = []
-            _bboxes = self._predict_similar_rectangles(
-                rectangle_shapes=rectangle_shapes, prompt=prompt)
+            _bboxes = []
+            if use_countgd:
+                _bboxes = self._predict_similar_rectangles(
+                    rectangle_shapes=rectangle_shapes, prompt=prompt)
             # Initialize AI model if not already initialized
             if self._ai_model_rect is None:
                 self._ai_model_rect = GroundingDINO()
 
-            # # Predict bounding boxes using the AI model
+            # Predict bounding boxes using the GroundingDINO model
             bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
             gd_bboxes = [list(box) for box, _ in bboxes]
             _bboxes.extend(gd_bboxes)

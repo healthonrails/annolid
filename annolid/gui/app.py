@@ -584,6 +584,16 @@ class AnnolidWindow(MainWindow):
             logger.info(f"Invalid text prompt '{prompt_text}'")
             return
 
+        # Check whether the user requested CountGD in the UI (optional).
+        use_countgd = False
+        try:
+            if hasattr(self, "aiRectangle") and hasattr(
+                self.aiRectangle, "_useCountGDCheckbox"
+            ):
+                use_countgd = self.aiRectangle._useCountGDCheckbox.isChecked()
+        except Exception:
+            use_countgd = False
+
         # Check if the prompt starts with 'flags:' and contains flags separated by commas
         if prompt_text.startswith('flags:'):
             flags = {k.strip(): False for k in prompt_text.replace(
@@ -593,7 +603,8 @@ class AnnolidWindow(MainWindow):
             else:
                 self.flags_controller.clear_flags()
         else:
-            self.canvas.predictAiRectangle(prompt_text)
+            self.canvas.predictAiRectangle(
+                prompt_text, use_countgd=use_countgd)
 
     def _current_text_prompt(self) -> Optional[str]:
         """Return the current AI text prompt (trimmed) if available."""
