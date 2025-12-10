@@ -7155,8 +7155,19 @@ class AnnolidWindow(MainWindow):
         )
 
 
-def main(argv=None):
-    config, _, version_requested = parse_cli(argv)
+def main(argv=None, *, config=None):
+    """
+    Launch the Annolid GUI.
+
+    When ``config`` is provided (e.g., by a lightweight launcher), CLI parsing
+    is skipped to avoid duplicate work.
+    """
+    if config is None:
+        config, _, version_requested = parse_cli(argv)
+    else:
+        # Assume caller already decided whether to show version/help
+        version_requested = False
+
     if version_requested:
         print(__version__)
         return 0

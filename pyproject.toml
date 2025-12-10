@@ -76,7 +76,7 @@ Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"
 
 [project.scripts]
-annolid = "annolid.gui.app:main"
+annolid = "annolid.gui.launcher:main"
 annolid-train = "annolid.segmentation.yolact.train:train"
 annolid-track = "annolid.segmentation.yolact.eval:main"
 
