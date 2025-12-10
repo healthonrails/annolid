@@ -374,7 +374,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self,
         box_xywh: np.ndarray,
         used_ids: Optional[set[int]] = None,
-        iou_threshold: float = 0.5,
+        iou_threshold: float = 0.3,
     ) -> int:
         """
         Assign a stable global track id for the given box based on IoU with
@@ -386,17 +386,39 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         best_gid: Optional[int] = None
         best_iou = 0.0
+        best_center_shift = float("inf")
         for gid, prev_box in self._global_track_last_box.items():
             if gid in used_ids:
                 continue
             iou = self._box_iou_xywh(prev_box, box_xywh)
-            if iou > best_iou:
+            cx_prev = float(prev_box[0] + prev_box[2] * 0.5)
+            cy_prev = float(prev_box[1] + prev_box[3] * 0.5)
+            cx_curr = float(box_xywh[0] + box_xywh[2] * 0.5)
+            cy_curr = float(box_xywh[1] + box_xywh[3] * 0.5)
+            center_shift = float(
+                np.hypot(cx_prev - cx_curr, cy_prev - cy_curr))
+
+            if iou > best_iou or (np.isclose(iou, best_iou) and center_shift < best_center_shift):
                 best_iou = iou
                 best_gid = gid
+                best_center_shift = center_shift
 
         if best_gid is not None and best_iou >= iou_threshold:
             self._global_track_last_box[best_gid] = box_xywh
             return best_gid
+
+        # Fallback: if IoU is low but the box stayed near the previous center,
+        # keep the same id to avoid unnecessary id churn on small object counts.
+        if best_gid is not None:
+            prev_box = np.asarray(
+                self._global_track_last_box[best_gid], dtype=float)
+            prev_diag = float(np.hypot(prev_box[2], prev_box[3]))
+            curr_diag = float(np.hypot(box_xywh[2], box_xywh[3]))
+            max_diag = max(prev_diag, curr_diag, 1e-6)
+            relative_shift = best_center_shift / max_diag
+            if best_iou > 0.05 or relative_shift <= 0.75:
+                self._global_track_last_box[best_gid] = box_xywh
+                return best_gid
 
         gid = self._global_track_next_id
         self._global_track_next_id += 1
