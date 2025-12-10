@@ -644,12 +644,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 progress = 100
             if progress % 10 == 0:
                 logger.info(
-                    "SAM3 progress: %d/%d frames (%d%%), frame=%s, masks=%d",
-                    yielded_frames,
-                    total_frames,
-                    progress,
-                    frame_idx,
-                    len(mask_dict),
+                    f"SAM3 progress: {yielded_frames}/{total_frames} frames "
+                    f"({progress}%), frame={frame_idx}, masks={len(mask_dict)}"
                 )
         return len(mask_dict), len(mask_dict)
 
