@@ -2438,6 +2438,14 @@ class AnnolidWindow(MainWindow):
         return False
 
     @staticmethod
+    def _is_efficienttam_model(identifier: str, weight: str) -> bool:
+        """
+        Detect EfficientTAM models based on identifier/weight strings.
+        """
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return "efficienttam" in key
+
+    @staticmethod
     def _is_sam2_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()
@@ -2682,6 +2690,24 @@ class AnnolidWindow(MainWindow):
                     short_side=768,
                     device=None,
                     runtime_config=fresh_tracker_config,
+                )
+            elif self._is_efficienttam_model(model_name, model_weight):
+                from annolid.segmentation.SAM.sam_v2 import (
+                    process_video_efficienttam,
+                )
+
+                model_key = Path(
+                    model_weight).stem if model_weight else "efficienttam_s"
+                logger.info(
+                    "Using EfficientTAM model '%s' for video '%s'",
+                    model_key,
+                    self.video_file,
+                )
+                self.video_processor = functools.partial(
+                    process_video_efficienttam,
+                    video_path=self.video_file,
+                    model_key=model_key,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
                 )
             elif self._is_sam2_model(model_name, model_weight):
                 from annolid.segmentation.SAM.sam_v2 import process_video
@@ -3034,6 +3060,12 @@ class AnnolidWindow(MainWindow):
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+            elif self._is_efficienttam_model(model_name, model_weight):
+                frame_idx = max(self.frame_number, 0)
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor,
+                    frame_idx=frame_idx,
+                )
             elif self._is_sam2_model(model_name, model_weight):
                 frame_idx = max(self.frame_number, 0)
                 self.pred_worker = FlexibleWorker(

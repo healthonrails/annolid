@@ -12,6 +12,8 @@ class ModelConfig:
 MODEL_REGISTRY = [
     ModelConfig("SAM_HQ", "sam_hq", "sam_hq.pt"),
     ModelConfig("EfficientVit_SAM", "efficientvit_sam", "efficientvit_sam.pt"),
+    ModelConfig("EfficientTAM_s", "efficienttam_s", "efficienttam_s.pt"),
+    ModelConfig("EfficientTAM_ti", "efficienttam_ti", "efficienttam_ti.pt"),
     ModelConfig("Cutie", "Cutie", "Cutie.pt"),
     ModelConfig("CoTracker", "CoTracker", "CoTracker.pt"),
     ModelConfig("sam2_hiera_s", "sam2_hiera_s", "sam2_hiera_s.pt"),

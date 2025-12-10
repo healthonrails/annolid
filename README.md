@@ -40,6 +40,7 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
 - Interactive GUI for rapid annotation (LabelMe-based) plus automation with text prompts.
 - Behavioral state classification, keypoint tracking, and downstream analytics.
 - Works with pre-recorded video or real-time streams; supports GPU acceleration.
+- Optional EfficientTAM video tracking backend, fully integrated and auto-downloaded (no separate installation needed).
 
 ## Documentation & Support
 - Latest documentation and user guide: [https://annolid.com](https://annolid.com) (mirror: [https://cplab.science/annolid](https://cplab.science/annolid))
