@@ -32,7 +32,7 @@ Annolid is a deep learning toolkit for animal behavior analysis that brings anno
 
 Use Annolid to classify behavioral states such as freezing, digging, pup huddling, or social interaction while maintaining fine-grained tracking of individuals and body parts across long video sessions.
 
-> **Python support:** Annolid runs on Python 3.8–3.13. The toolkit is not yet validated on Python 3.14, where several binary wheels (PyQt, Pillow) are still pending upstream releases.
+> **Python support:** Annolid runs on Python 3.10–3.13. The toolkit is not yet validated on Python 3.14, where several binary wheels (PyQt, Pillow) are still pending upstream releases.
 
 ## Key Features
 - Markerless multiple-animal tracking from a single annotated frame.
