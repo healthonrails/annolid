@@ -11,15 +11,21 @@ from pathlib import Path
 from collections import deque
 from annolid.segmentation.maskrcnn import inference
 from PIL import Image, ImageSequence
+from annolid.utils.logger import logger
 
 
-def get_video_fps(video_path: str) -> float | None:
+# Default timeout (in seconds) for external media probes such as ffprobe/ffmpeg.
+DEFAULT_SUBPROCESS_TIMEOUT = 10.0
+
+
+def get_video_fps(video_path: str, *, timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> float | None:
     """
     Extracts the frames per second (FPS) of a video file using `ffprobe` if available,
     with a fallback to OpenCV in case of failure.
 
     Parameters:
         video_path (str): Full path to the video file.
+        timeout (float): How many seconds to wait for ffprobe before falling back.
 
     Returns:
         float | None: The frame rate (FPS) as a float (rounded to 2 decimals), or None if extraction fails.
@@ -39,7 +45,7 @@ def get_video_fps(video_path: str) -> float | None:
             video_path
         ]
         result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout
         )
         if result.returncode == 0:
             rate_str = result.stdout.strip()
@@ -49,8 +55,21 @@ def get_video_fps(video_path: str) -> float | None:
                     return round(num / denom, 2)
             elif rate_str.replace('.', '', 1).isdigit():
                 return round(float(rate_str), 2)
+        else:
+            logger.warning(
+                "ffprobe returned a non-zero exit code while reading FPS for %s: %s",
+                video_path,
+                result.stderr.strip(),
+            )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "ffprobe timed out after %.1fs while reading FPS for %s; falling back to OpenCV.",
+            timeout,
+            video_path,
+        )
     except Exception as e:
-        print(f"[get_video_fps] ffprobe failed: {e}")
+        logger.warning(
+            "[get_video_fps] ffprobe failed for %s: %s", video_path, e)
 
     # Fallback to OpenCV
     try:
@@ -61,17 +80,22 @@ def get_video_fps(video_path: str) -> float | None:
             if fps > 0:
                 return round(fps, 2)
     except Exception as e:
-        print(f"[get_video_fps] OpenCV fallback failed: {e}")
+        logger.warning(
+            "[get_video_fps] OpenCV fallback failed for %s: %s", video_path, e)
 
     return None
 
 
-def get_keyframe_timestamps(video_path: str) -> List[float]:
+def get_keyframe_timestamps(
+    video_path: str,
+    *,
+    timeout: float = DEFAULT_SUBPROCESS_TIMEOUT,
+) -> List[float]:
     """
     Retrieves presentation timestamps (in seconds) for keyframes using ffprobe.
 
-    Returns an empty list if ffprobe is unavailable or keyframe data cannot be
-    extracted.
+    Returns an empty list if ffprobe is unavailable, times out, or keyframe data
+    cannot be extracted.
     """
     cmd = [
         "ffprobe",
@@ -86,12 +110,24 @@ def get_keyframe_timestamps(video_path: str) -> List[float]:
 
     try:
         result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout
         )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "ffprobe timed out after %.1fs while reading keyframes for %s; skipping keyframe-assisted extraction.",
+            timeout,
+            video_path,
+        )
+        return []
     except FileNotFoundError:
         return []
 
     if result.returncode != 0:
+        logger.warning(
+            "ffprobe returned a non-zero exit code while reading keyframes for %s: %s",
+            video_path,
+            result.stderr.strip(),
+        )
         return []
 
     timestamps: List[float] = []
@@ -143,7 +179,7 @@ def frame_from_video(video, num_frames):
                 break
             else:
                 video.set(cv2.CAP_PROP_POS_FRAMES, i+1)
-                print('Cannot read this frame:', i)
+                logger.warning("Cannot read frame %s; skipping.", i)
                 continue
 
 
@@ -194,11 +230,25 @@ def get_ffmpeg_path():
     return ffmpeg_binary
 
 
-def ffmpeg_extract_subclip(filename, t1, t2, targetname=None):
+def ffmpeg_extract_subclip(
+    filename,
+    t1,
+    t2,
+    targetname=None,
+    *,
+    timeout: Optional[float] = None,
+):
     """ 
      Makes a new video file playing video file ``filename`` between
         the times ``t1`` and ``t2``.
     Modified from moviepy ffmpeg_tools
+
+    Args:
+        filename: Source video file.
+        t1: Start time (seconds).
+        t2: End time (seconds).
+        targetname: Optional output path.
+        timeout: Optional timeout (seconds) passed to ffmpeg. If None, wait indefinitely.
     """
     name, ext = os.path.splitext(filename)
     if not targetname:
@@ -222,11 +272,25 @@ def ffmpeg_extract_subclip(filename, t1, t2, targetname=None):
 
     proc = subprocess.Popen(cmd, **popen_params)
 
-    out, err = proc.communicate()
-    proc.stderr.close()
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        proc.stderr.close()
+        logger.error(
+            "ffmpeg timed out after %s seconds while extracting subclip from %s",
+            timeout,
+            filename,
+        )
+        raise TimeoutError(
+            f"ffmpeg timed out after {timeout} seconds while processing {filename}"
+        )
+    else:
+        proc.stderr.close()
 
-    if proc.returncode:
-        raise IOError(err.decode('utf8'))
+        if proc.returncode:
+            raise IOError(err.decode('utf8'))
     del proc
 
 
@@ -324,11 +388,11 @@ def key_frames(video_file=None,
             f"{(video_name).replace(' ','_')}_{frame_idx:08}.png"
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         cv2.imwrite(str(out_frame_file), frame_rgb)
-        print(f"Saved {str(out_frame_file)}")
+        logger.info("Saved keyframe preview to %s", out_frame_file)
 
     cap.release()
 
-    print(f"Please check your frames located at {out_dir}")
+    logger.info("Keyframe extraction complete. Frames located at %s", out_dir)
     return out_dir
 
 
@@ -366,7 +430,8 @@ def download_youtube_video(
             "The 'yt-dlp' package is required to download YouTube videos."
         ) from exc
 
-    destination_root = Path(output_dir) if output_dir else Path.home() / "annolid_youtube"
+    destination_root = Path(
+        output_dir) if output_dir else Path.home() / "annolid_youtube"
     destination_root.mkdir(parents=True, exist_ok=True)
 
     ydl_opts = {
@@ -619,7 +684,8 @@ class TiffStackVideo:
                 arr = np.clip(arr, 0, 255).astype(np.uint8)
             return arr
         except Exception as e:
-            raise KeyError(f"Failed to convert frame {index} to RGB array: {e}")
+            raise KeyError(
+                f"Failed to convert frame {index} to RGB array: {e}")
 
     def get_first_frame(self) -> np.ndarray:
         return self.first_frame
@@ -741,11 +807,15 @@ def extract_frames(video_file='None',
         cv2.imwrite(out_frame_file, old_frame)
 
     if num_frames < -1 or num_frames > n_frames:
-        print(f'The video has {n_frames} number frames in total.')
-        print('Please input a valid number of frames!')
+        logger.error(
+            "Invalid num_frames=%s for %s; video has %s frames.",
+            num_frames,
+            video_file,
+            n_frames,
+        )
         return
     elif num_frames == 1:
-        print(f'Please check your first frame here {out_dir}')
+        logger.info("Please check your first frame here %s", out_dir)
         return
     elif num_frames > 2:
         # if save the first frame and the last frame
@@ -772,7 +842,8 @@ def extract_frames(video_file='None',
             if ret:
                 cv2.imwrite(
                     out_frame_file, frame)
-                print(f'Saved the frame {frame_number}.')
+                logger.info("Saved frame %s to %s",
+                            frame_number, out_frame_file)
             continue
         if algo == 'random' and num_frames != -1:
             if ret:
@@ -823,8 +894,9 @@ def extract_frames(video_file='None',
                 if show_flow:
                     cv2.imshow("Frame", rgb)
                 yield progress_percent, progress_msg
-            except:
-                print('skipping the current frame.')
+            except Exception as exc:
+                logger.warning(
+                    "Skipping current frame during optical flow computation: %s", exc)
 
             old_frame = frame
         key = cv2.waitKey(1)
@@ -839,10 +911,13 @@ def extract_frames(video_file='None',
         if prediction and num_frames <= 5:
             try:
                 inference.predict_mask_to_labelme(out_img, 0.7)
-            except:
-                print("Please install pytorch and torchvision as follows.")
-                print("pip install torch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0")
-                pass
+            except Exception as exc:
+                logger.error(
+                    "Auto mask prediction requires torch/torchvision. Please install: "
+                    "pip install torch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 "
+                    "(error: %s)",
+                    exc,
+                )
 
     cap.release()
     cv2.destroyAllWindows()
@@ -886,7 +961,7 @@ def track(video_file=None,
         from annolid.detector import build_detector
         from annolid.utils.draw import draw_boxes
         if not (os.path.isfile(video_file)):
-            print("Please provide a valid video file")
+            logger.error("Please provide a valid video file: %s", video_file)
         detector = build_detector()
         class_names = detector.class_names
 
@@ -898,7 +973,7 @@ def track(video_file=None,
         while ret:
             ret, frame = cap.read()
             if not ret:
-                print("Finished tracking.")
+                logger.info("Finished tracking.")
                 break
             im = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             bbox_xywh, cls_conf, cls_ids = detector(im)
@@ -981,7 +1056,7 @@ def extract_frames_from_video(
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
     if output_folder is None:
-        output_folder = video_path.with_suffix("" ).as_posix()
+        output_folder = video_path.with_suffix("").as_posix()
     os.makedirs(output_folder, exist_ok=True)
 
     cap = cv2.VideoCapture(str(video_path))
@@ -994,7 +1069,8 @@ def extract_frames_from_video(
         return []
 
     if frame_indices:
-        indices = sorted({idx for idx in frame_indices if 0 <= idx < frame_count})
+        indices = sorted(
+            {idx for idx in frame_indices if 0 <= idx < frame_count})
     else:
         if num_frames <= 1:
             indices = [frame_count // 2]
@@ -1013,7 +1089,8 @@ def extract_frames_from_video(
             continue
         if name_pattern:
             try:
-                filename = name_pattern.format(video_stem=video_path.stem, frame=idx)
+                filename = name_pattern.format(
+                    video_stem=video_path.stem, frame=idx)
             except Exception:
                 filename = f"{video_path.stem}_{idx:09d}.{image_format}"
         else:
@@ -1055,4 +1132,4 @@ def extract_frames_from_videos(input_folder, output_folder=None, num_frames=5):
                 num_frames=num_frames,
             )
         except Exception as exc:
-            print(f"Skipping {video_file}: {exc}")
+            logger.warning("Skipping %s: %s", video_file, exc)
