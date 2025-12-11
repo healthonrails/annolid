@@ -60,8 +60,25 @@ class AnnotationStore:
             fh.write(json.dumps(record, separators=(",", ":")))
             fh.write("\n")
 
-        # Refresh cache after appending.
-        self._load_records(force_reload=True)
+        # Keep the cache in sync without re-reading the entire file (O(1) append).
+        cached = AnnotationStore._CACHE.get(self.store_path)
+        if cached:
+            try:
+                frame_key = int(frame)
+            except (TypeError, ValueError):
+                frame_key = frame
+            records = dict(cached["records"])
+            records[frame_key] = record
+            try:
+                stat = self.store_path.stat()
+            except OSError:
+                AnnotationStore._CACHE.pop(self.store_path, None)
+            else:
+                AnnotationStore._CACHE[self.store_path] = {
+                    "mtime": stat.st_mtime,
+                    "size": stat.st_size,
+                    "records": records,
+                }
 
     def get_frame(self, frame: int) -> Optional[Dict[str, Any]]:
         """Return the latest record for a frame if present."""
