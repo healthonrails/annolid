@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 
 import cv2
 import numpy as np
+from annolid.utils.devices import get_device
 
 
 def _cuda_flow_available() -> bool:
@@ -19,11 +20,13 @@ def compute_optical_flow(prev_frame: np.ndarray,
                          scale: float = 1.0,
                          max_dim: Optional[int] = None,
                          use_umat: Optional[bool] = None,
-                         prefer_cuda: Optional[bool] = None) -> Tuple[np.ndarray, np.ndarray]:
+                         prefer_cuda: Optional[bool] = None,
+                         use_raft: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute dense Farneback optical flow with automatic device selection.
 
-    Tries CUDA (if available) for maximum speed, then OpenCL/UMat, then CPU.
+    When use_raft=True and torch/torchvision RAFT are available, uses RAFT first;
+    otherwise falls back to CUDA Farneback, then OpenCL/UMat, then CPU.
     Frames can be optionally downscaled for speed via `scale` and/or `max_dim`.
     The returned flow is always resized back to the original resolution and
     scaled so downstream consumers do not need to adjust.
@@ -60,6 +63,14 @@ def compute_optical_flow(prev_frame: np.ndarray,
         use_umat = False
 
     flow: Optional[np.ndarray] = None
+
+    # Try RAFT (torchvision) first if requested and available
+    if use_raft:
+        try:
+            flow = compute_optical_flow_raft(
+                prev_frame, current_frame, device=get_device())
+        except Exception:
+            flow = None  # fall back to Farneback paths
 
     # Fastest path: CUDA Farneback
     if prefer_cuda and _cuda_flow_available():
@@ -147,3 +158,24 @@ def compute_optical_flow(prev_frame: np.ndarray,
     flow_hsv[..., 2] = magnitude
 
     return flow_hsv, flow
+
+
+def compute_optical_flow_raft(prev_frame: np.ndarray,
+                              current_frame: np.ndarray,
+                              model: str = "small",
+                              device: Optional[str] = None) -> np.ndarray:
+    """
+    Compute RAFT optical flow via torchvision and return (H, W, 2) numpy array.
+    This is optional and requires torch + torchvision with optical_flow models.
+    """
+    try:
+        import torch
+        from annolid.motion.raft_wrapper import compute_raft_flow
+    except Exception as exc:  # pragma: no cover - optional
+        raise ImportError("RAFT flow requires torch + torchvision") from exc
+
+    prev_t = torch.from_numpy(prev_frame).permute(2, 0, 1).unsqueeze(0).float()
+    curr_t = torch.from_numpy(current_frame).permute(
+        2, 0, 1).unsqueeze(0).float()
+    flow_t = compute_raft_flow(prev_t, curr_t, model_type=model, device=device)
+    return flow_t.squeeze(0).permute(1, 2, 0).cpu().numpy()

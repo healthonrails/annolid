@@ -18,5 +18,4 @@ def get_device():
         device = 'mps'
     else:
         device = 'cpu'
-    print(f'Using device: {device}')
     return device
