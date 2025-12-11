@@ -198,9 +198,26 @@ def load_video_frames(
     """
     is_bytes = isinstance(video_path, bytes)
     is_str = isinstance(video_path, str)
-    is_mp4_path = is_str and os.path.splitext(
-        video_path)[-1] in [".mp4", ".MP4"]
-    if is_bytes or is_mp4_path:
+    ext = os.path.splitext(video_path)[-1].lower() if is_str else ""
+    # Allow a broader set of common video extensions; OpenCV/decord will validate contents.
+    video_exts = {
+        ".mp4",
+        ".m4v",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".mpg",
+        ".mpeg",
+    }
+    is_video_file = is_bytes or (
+        is_str and os.path.isfile(video_path) and (
+            ext in video_exts or ext == "")
+    )
+
+    if is_video_file:
         return load_video_frames_from_video_file(
             video_path=video_path,
             image_size=image_size,
@@ -221,7 +238,7 @@ def load_video_frames(
         )
     else:
         raise NotImplementedError(
-            "Only MP4 video and JPEG folder are supported at this moment"
+            "Only video files (e.g., mp4, mpg, mov, avi, mkv) and image folders are supported."
         )
 
 
