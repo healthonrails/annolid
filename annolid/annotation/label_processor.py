@@ -80,16 +80,30 @@ class LabelProcessor:
         obj_id = 1  # Starting object ID
 
         for shape in self.shapes:
-            shape_type = shape['shape_type']
-            points = shape['points']
-            label = shape['label']
-            label_value = self.label_name_to_value.get(
-                label, 0)  # Default to 0 if label not found
+            shape_type = shape.get('shape_type')
+            points = shape.get('points') or []
+            label = shape.get('label', '')
+            label_value = self.label_name_to_value.get(label, 0)
 
+            _mask = None
+            # Normalize point-based shapes
+            if shape_type == 'point':
+                shape_type = 'points'
+            if shape_type == 'points':
+                # LabelMe stores points as a list of [x, y] pairs; ensure iterable
+                if not isinstance(points, list):
+                    logger.warning(
+                        "Skipping malformed points shape for label '%s'", label)
+                    continue
             if shape_type == 'rectangle':
                 points = self.convert_rectangle_to_points(points)
                 shape_type = 'box'
-            elif shape_type == 'polygon':
+            elif shape_type in ('polygon', 'mask'):
+                if len(points) < 3:
+                    logger.warning(
+                        "Skipping polygon/mask with <3 points for label '%s'", label
+                    )
+                    continue
                 _mask = self.get_mask(shape)
                 shape_type = 'mask'
 

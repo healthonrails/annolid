@@ -183,6 +183,147 @@ class AsyncVideoFrameLoader:
         return len(self.images)
 
 
+class LazyVideoFrameLoader:
+    """
+    Decode video frames on demand instead of preloading the entire video into memory.
+    This keeps RAM/GPU usage bounded for long videos. A small cache avoids
+    re-decoding frames that may be revisited during interactive prompting.
+    """
+
+    def __init__(
+        self,
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        img_mean,
+        img_std,
+        compute_device,
+        cache_size=8,
+    ):
+        self.video_path = video_path
+        self.image_size = image_size
+        self.offload_video_to_cpu = offload_video_to_cpu
+        self.compute_device = compute_device
+        self.cache_size = max(1, cache_size)
+        self.cache = {}
+        self.cache_keys = []
+        self.img_mean_cpu = torch.tensor(
+            img_mean, dtype=torch.float32)[:, None, None]
+        self.img_std_cpu = torch.tensor(
+            img_std, dtype=torch.float32)[:, None, None]
+        self.img_mean_gpu = (
+            None if offload_video_to_cpu else self.img_mean_cpu.to(
+                compute_device)
+        )
+        self.img_std_gpu = (
+            None if offload_video_to_cpu else self.img_std_cpu.to(
+                compute_device)
+        )
+        self.use_decord = False
+        self.reader = None
+        self.cap = None
+        self._first_frame_cache = None
+
+        try:  # pragma: no cover - optional dependency
+            import decord  # type: ignore
+
+            decord.bridge.set_bridge("torch")
+            self.reader = decord.VideoReader(
+                video_path, width=image_size, height=image_size
+            )
+            self.use_decord = True
+            self.num_frames = len(self.reader)
+            first = self.reader[0]
+            self.video_height, self.video_width, _ = first.shape
+        except Exception:
+            self.reader = None
+            self.use_decord = False
+            self.cap = cv2.VideoCapture(video_path)
+            if not self.cap.isOpened():
+                raise RuntimeError(f"Unable to open video file: {video_path}")
+            self.num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            self.video_height = int(self.cap.get(
+                cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            ok, frame0 = self.cap.read()
+            if not ok or frame0 is None:
+                raise RuntimeError(
+                    f"No frames decoded from video file: {video_path}")
+            if self.video_width <= 0 or self.video_height <= 0:
+                h0, w0 = frame0.shape[:2]
+                self.video_height, self.video_width = h0, w0
+            self._first_frame_cache = frame0
+            self.num_frames = max(self.num_frames, 1)
+            # rewind to start for subsequent reads
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        if self.num_frames <= 0:
+            raise RuntimeError(
+                f"No frames decoded from video file: {video_path}")
+
+    def __len__(self):
+        return self.num_frames
+
+    def __getitem__(self, index):
+        if index < 0 or index >= self.num_frames:
+            raise IndexError(
+                f"Frame index {index} out of range 0..{self.num_frames-1}")
+
+        cached = self.cache.get(index, None)
+        if cached is not None:
+            return cached
+
+        if self.use_decord:
+            frame = self.reader[index]
+            if isinstance(frame, torch.Tensor):
+                frame = frame.permute(2, 0, 1).float() / 255.0
+            else:  # pragma: no cover - fallback path
+                frame = torch.from_numpy(frame.asnumpy()).permute(
+                    2, 0, 1).float() / 255.0
+        else:
+            if index == 0 and self._first_frame_cache is not None:
+                frame_bgr = self._first_frame_cache
+            else:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+                ok, frame_bgr = self.cap.read()
+                if not ok or frame_bgr is None:
+                    raise RuntimeError(
+                        f"Unable to decode frame {index} from video file: {self.video_path}"
+                    )
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            frame_resized = cv2.resize(
+                frame_rgb,
+                (self.image_size, self.image_size),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            frame = torch.from_numpy(frame_resized).permute(
+                2, 0, 1).float() / 255.0
+
+        if self.offload_video_to_cpu:
+            mean, std = self.img_mean_cpu, self.img_std_cpu
+        else:
+            mean = self.img_mean_gpu
+            std = self.img_std_gpu
+            frame = frame.to(self.compute_device, non_blocking=True)
+
+        frame -= mean
+        frame /= std
+        # maintain a small LRU cache to speed up repeated access
+        self.cache[index] = frame
+        self.cache_keys.append(index)
+        if len(self.cache_keys) > self.cache_size:
+            evict = self.cache_keys.pop(0)
+            self.cache.pop(evict, None)
+        return frame
+
+    def __del__(self):
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+
+
 def load_video_frames(
     video_path,
     image_size,
@@ -224,6 +365,7 @@ def load_video_frames(
             offload_video_to_cpu=offload_video_to_cpu,
             img_mean=img_mean,
             img_std=img_std,
+            async_loading_frames=async_loading_frames,
             compute_device=compute_device,
         )
     elif is_str and os.path.isdir(video_path):
@@ -318,7 +460,9 @@ def load_video_frames_from_video_file(
     offload_video_to_cpu,
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
+    async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    cache_size=8,
 ):
     """Load the video frames from a video file.
 
@@ -326,6 +470,18 @@ def load_video_frames_from_video_file(
     codebase). If it is not available, we fall back to OpenCV, matching
     the behaviour used elsewhere in Annolid (e.g. SAM2VideoProcessor).
     """
+    if async_loading_frames:
+        lazy_loader = LazyVideoFrameLoader(
+            video_path=video_path,
+            image_size=image_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            img_mean=img_mean,
+            img_std=img_std,
+            compute_device=compute_device,
+            cache_size=cache_size,
+        )
+        return lazy_loader, lazy_loader.video_height, lazy_loader.video_width
+
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
 
