@@ -30,6 +30,7 @@ from annolid.motion.optical_flow import compute_optical_flow
 from annolid.utils import draw
 from annolid.utils.files import create_tracking_csv_file
 from annolid.utils.lru_cache import BboxCache
+from annolid.utils.annotation_store import AnnotationStore
 from hydra.core.global_hydra import GlobalHydra
 """
 References:
@@ -229,6 +230,36 @@ class CutieVideoProcessor:
         stem_prefix = f"{stem}_"
         stem_prefix_lower = stem_prefix.lower()
 
+        def has_valid_shapes(shapes: Iterable[Dict[str, Any]]) -> bool:
+            for shape in shapes or []:
+                if (
+                    (shape.get('shape_type') == 'polygon' and len(
+                        shape.get('points', [])) >= 3)
+                    or shape.get('mask')
+                ):
+                    return True
+            return False
+
+        # Prefer the annotation store (written during prediction) because per-frame
+        # JSON files are not persisted for auto-labeled frames.
+        store_path = results_dir / \
+            f"{results_dir.name}{AnnotationStore.STORE_SUFFIX}"
+        if store_path.exists():
+            try:
+                store = AnnotationStore(store_path)
+                records = store._load_records()
+                for frame_idx, record in records.items():
+                    try:
+                        normalized_idx = int(frame_idx)
+                    except (TypeError, ValueError):
+                        continue
+                    if has_valid_shapes(record.get('shapes')):
+                        labeled_frames.add(normalized_idx)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to read annotation store %s: %s", store_path, exc
+                )
+
         def scan_directory(directory: Path):
             if not directory.exists() or not directory.is_dir():
                 return
@@ -239,6 +270,10 @@ class CutieVideoProcessor:
                 suffix = name_lower[len(stem_prefix_lower):]
                 if len(suffix) != 9 or not suffix.isdigit():
                     continue
+                frame_idx = int(suffix)
+                # Skip JSON files for frames already accounted for via the store.
+                if frame_idx in labeled_frames:
+                    continue
                 try:
                     with open(json_path, 'r', encoding='utf-8') as fp:
                         data = json.load(fp) or {}
@@ -248,16 +283,10 @@ class CutieVideoProcessor:
                     continue
 
                 shapes = data.get('shapes') or []
-                has_polygon = any(
-                    (shape.get('shape_type') == 'polygon' and len(
-                        shape.get('points', [])) >= 3)
-                    or shape.get('mask')
-                    for shape in shapes
-                )
-                if not has_polygon:
+                if not has_valid_shapes(shapes):
                     continue
 
-                labeled_frames.add(int(suffix))
+                labeled_frames.add(frame_idx)
 
         scan_directory(results_dir)
         nested_dir = results_dir / stem
@@ -321,13 +350,15 @@ class CutieVideoProcessor:
         video_key = str(Path(self.video_folder).resolve())
         required_frames = sorted(seed.frame_index for seed in seeds)
         cache_entry = self._video_seed_cache.get(video_key)
-        cache_frames = cache_entry.get("frame_indices") if cache_entry else None
+        cache_frames = cache_entry.get(
+            "frame_indices") if cache_entry else None
 
         if (
             cache_entry is None
             or cache_frames is None
             or not set(required_frames).issubset(cache_frames)
-            or set(cache_frames) != set(required_frames)  # detect removed seeds
+            # detect removed seeds
+            or set(cache_frames) != set(required_frames)
         ):
             self._prepare_seed_segments(seeds)
         else:
@@ -679,7 +710,8 @@ class CutieVideoProcessor:
 
     def commit_masks_into_permanent_memory(self, frame_number, labels_dict,
                                            seed_frames: Optional[List[SeedFrame]] = None,
-                                           seed_segment_lookup: Optional[Dict[int, SeedSegment]] = None,
+                                           seed_segment_lookup: Optional[Dict[int,
+                                                                              SeedSegment]] = None,
                                            segment_end: Optional[int] = None):
         """
         Commit masks into permanent memory for inference.
@@ -710,7 +742,8 @@ class CutieVideoProcessor:
                     if seed_segment_lookup:
                         segment = seed_segment_lookup.get(seed.frame_index)
                     if segment is None:
-                        segment = self._seed_segment_lookup.get(seed.frame_index)
+                        segment = self._seed_segment_lookup.get(
+                            seed.frame_index)
                     if segment is None:
                         segment = self._load_seed_mask(seed)
                         if segment and segment.seed is not None:
