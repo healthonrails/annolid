@@ -65,6 +65,7 @@ class TrackAllWorker(QThread):
             'auto_recovery_missing_instances': False,
             'save_video_with_color_mask': False,
             'compute_optical_flow': True,
+            'optical_flow_backend': 'farneback',  # farneback | raft
             'has_occlusion': True
         }
         self.is_running = True

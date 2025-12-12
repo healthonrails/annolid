@@ -122,6 +122,7 @@ from annolid.gui.widgets.florence2_widget import (
     Florence2Request,
     Florence2Widget,
 )
+from annolid.gui.widgets.optical_flow_tool import OpticalFlowTool
 from annolid.three_d import sam3d_client
 from annolid.three_d.sam3d_backend import Sam3DBackendError
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
@@ -302,6 +303,12 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.video_file = None
         self._depth_ndjson_records: Dict[int, Dict[str, object]] = {}
+        self.flow_visualization: str = "hsv"
+        self.flow_opacity: int = 70  # percent
+        self.flow_quiver_step: int = 16
+        self.flow_quiver_gain: float = 1.0
+        self.flow_stable_hsv: bool = True
+        self.optical_flow_raft_model: str = "small"
         self.isPlaying = False
         self.event_type = None
         self._time_stamp = ''
@@ -338,6 +345,8 @@ class AnnolidWindow(MainWindow):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
+        self.optical_flow_backend = "farneback"
+        self.optical_flow_backend = "farneback"
         self.playButton = None
         self.saveButton = None
         # Create progress bar
@@ -361,6 +370,7 @@ class AnnolidWindow(MainWindow):
             crosshair=self._config["canvas"]["crosshair"],
             sam=self._config["sam"]
         )
+        self.optical_flow_tool = OpticalFlowTool(self)
         self.canvas.zoomRequest.connect(self.zoomRequest)
         scrollArea = QtWidgets.QScrollArea()
         scrollArea.setWidget(self.canvas)
@@ -627,6 +637,10 @@ class AnnolidWindow(MainWindow):
     def downsample_videos(self):
         video_downsample_widget = VideoRescaleWidget()
         video_downsample_widget.exec_()
+
+    def run_optical_flow_tool(self):
+        """Open the optical-flow tool dialog and run flow."""
+        return self.optical_flow_tool.run()
 
     def trigger_gap_analysis(self):
         """
@@ -1179,6 +1193,13 @@ class AnnolidWindow(MainWindow):
                 "agent_output_dir": sam3_agent_output_dir,
             },
         )
+        # Seed current optical-flow settings into the dialog
+        advanced_params_dialog.compute_optical_flow_checkbox.setChecked(
+            bool(getattr(self, "compute_optical_flow", True)))
+        advanced_params_dialog.optical_flow_backend = getattr(
+            self, "optical_flow_backend", "farneback")
+        advanced_params_dialog.optical_flow_backend_combo.setCurrentIndex(
+            1 if advanced_params_dialog.optical_flow_backend == "raft" else 0)
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 
@@ -1189,6 +1210,7 @@ class AnnolidWindow(MainWindow):
         self.save_video_with_color_mask = advanced_params_dialog.is_save_video_with_color_mask_enabled()
         self.auto_recovery_missing_instances = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
         self.compute_optical_flow = advanced_params_dialog.is_compute_optiocal_flow_enabled()
+        self.optical_flow_backend = advanced_params_dialog.get_optical_flow_backend()
 
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():
@@ -1426,6 +1448,14 @@ class AnnolidWindow(MainWindow):
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
         self._pred_res_folder_suffix = '_tracking_results_labelme'
+        self._depth_ndjson_records = {}
+        try:
+            if self.canvas:
+                self.canvas.setDepthPreviewOverlay(None)
+        except Exception:
+            pass
+        if getattr(self, "optical_flow_tool", None) is not None:
+            self.optical_flow_tool.clear()
         self.frame_number = 0
         self.step_size = 5
         self.video_results_folder = None
@@ -3032,6 +3062,7 @@ class AnnolidWindow(MainWindow):
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
                     save_video_with_color_mask=self.save_video_with_color_mask,
                     compute_optical_flow=self.compute_optical_flow,
+                    optical_flow_backend=self.optical_flow_backend,
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder else None,
                 )
@@ -5348,6 +5379,8 @@ class AnnolidWindow(MainWindow):
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
             self._load_depth_ndjson_records()
+            if getattr(self, "optical_flow_tool", None) is not None:
+                self.optical_flow_tool.load_records(video_filename)
             try:
                 suffix_lower = Path(video_filename).suffix.lower()
                 # Support TIFF stacks by treating them as videos (one slice per frame)
@@ -5503,6 +5536,9 @@ class AnnolidWindow(MainWindow):
         except Exception:
             frame_rgb = None
         self._update_depth_overlay_for_frame(frame_number, frame_rgb)
+        if getattr(self, "optical_flow_tool", None) is not None:
+            self.optical_flow_tool.update_overlay_for_frame(
+                frame_number, frame_rgb)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
@@ -7010,6 +7046,8 @@ class AnnolidWindow(MainWindow):
                 )
         except Exception:
             pass
+
+    # Optical-flow previews and overlays are handled by OpticalFlowTool.
 
     def _set_depth_preview_frame(self, frame_index: int) -> None:
         self.frame_number = frame_index

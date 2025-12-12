@@ -4,6 +4,17 @@ import cv2
 import numpy as np
 from annolid.utils.devices import get_device
 
+AVAILABLE_DEVICE = get_device()
+
+
+def _to_gray(frame: np.ndarray) -> np.ndarray:
+    """Convert to single-channel grayscale."""
+    if frame.ndim == 2:
+        return frame
+    if frame.ndim == 3 and frame.shape[2] == 1:
+        return frame[..., 0]
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
 
 def _cuda_flow_available() -> bool:
     """Check whether CUDA Farneback is available."""
@@ -21,7 +32,9 @@ def compute_optical_flow(prev_frame: np.ndarray,
                          max_dim: Optional[int] = None,
                          use_umat: Optional[bool] = None,
                          prefer_cuda: Optional[bool] = None,
-                         use_raft: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+                         use_raft: bool = False,
+                         raft_model: str = "small",
+                         use_torch_farneback: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute dense Farneback optical flow with automatic device selection.
 
@@ -68,12 +81,33 @@ def compute_optical_flow(prev_frame: np.ndarray,
     if use_raft:
         try:
             flow = compute_optical_flow_raft(
-                prev_frame, current_frame, device=get_device())
+                prev_frame, current_frame, model=raft_model, device=AVAILABLE_DEVICE)
         except Exception:
             flow = None  # fall back to Farneback paths
 
+    # Torch Farneback (optional)
+    if flow is None and use_torch_farneback:
+        try:
+            from annolid.motion.farneback_torch import calc_optical_flow_farneback_torch
+            prev_gray = _to_gray(prev_frame)
+            current_gray = _to_gray(current_frame)
+            flow = calc_optical_flow_farneback_torch(
+                prev_gray,
+                current_gray,
+                pyr_scale=0.5,
+                levels=1,
+                winsize=1,
+                iterations=3,
+                poly_n=3,
+                poly_sigma=1.1,
+                flags=0,
+                device=AVAILABLE_DEVICE,
+            )
+        except Exception:
+            flow = None
+
     # Fastest path: CUDA Farneback
-    if prefer_cuda and _cuda_flow_available():
+    if flow is None and prefer_cuda and _cuda_flow_available():
         try:
             cuda_flow = cv2.cuda.FarnebackOpticalFlow_create(
                 numLevels=1,

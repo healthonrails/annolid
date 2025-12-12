@@ -142,6 +142,12 @@ class MenuController:
                 "tip": w.tr("Downsample Videos"),
             },
             {
+                "name": "run_optical_flow",
+                "text": w.tr("Run &Optical Flow..."),
+                "slot": w.run_optical_flow_tool,
+                "tip": w.tr("Run optical flow (Farneback or RAFT), preview on canvas, and optionally export stats"),
+            },
+            {
                 "name": "tracking_reports",
                 "text": w.tr("&Tracking Reports"),
                 "slot": w.trigger_gap_analysis,
@@ -472,6 +478,8 @@ class MenuController:
         utils.addActions(w.menus.view, (actions["glitter2"],))
         utils.addActions(
             w.menus.view, (actions["video_depth_anything"],))
+        utils.addActions(
+            w.menus.view, (actions["run_optical_flow"],))
         utils.addActions(
             w.menus.view, (actions["sam3d_reconstruct"],))
         utils.addActions(w.menus.view, (actions["sam3d_settings"],))

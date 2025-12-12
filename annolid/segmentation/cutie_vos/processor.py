@@ -48,6 +48,8 @@ class SegmentedCutieExecutor:
         self.config = processing_config  # Store the full config
         self.pred_worker = pred_worker
         self.device = device  # Store the device for CutieEngine
+        self.optical_flow_backend = processing_config.get(
+            'optical_flow_backend', 'farneback')
 
         self.cutie_engine: Optional[CutieEngine] = None
         # {'mask': np.array, 'labels_dict': dict, 'num_objects': int}
@@ -331,7 +333,8 @@ class SegmentedCutieExecutor:
                 dense_flow_for_this_frame: Optional[np.ndarray] = None
                 if self.config.get('compute_optical_flow', True) and prev_frame_bgr is not None:
                     _, dense_flow_for_this_frame = compute_optical_flow(
-                        prev_frame_bgr, current_frame_bgr)
+                        prev_frame_bgr, current_frame_bgr,
+                        use_raft=(self.optical_flow_backend == 'raft'))
 
                 self._save_frame_annotation(
                     frame_idx, pred_mask_np_obj_ids,

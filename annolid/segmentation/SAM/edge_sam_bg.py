@@ -191,6 +191,8 @@ class VideoProcessor:
         self.save_video_with_color_mask = kwargs.get(
             'save_video_with_color_mask', False)
         self.compute_optical_flow = kwargs.get('compute_optical_flow', False)
+        self.optical_flow_backend = kwargs.get(
+            'optical_flow_backend', 'farneback')
         self._cotracker_grid_size = kwargs.get('cotracker_grid_size', 10)
 
     def set_pred_worker(self, pred_worker):
@@ -213,6 +215,7 @@ class VideoProcessor:
             t_max_value=self.t_max_value,
             use_cpu_only=self.use_cpu_only,
             compute_optical_flow=self.compute_optical_flow,
+            optical_flow_backend=self.optical_flow_backend,
             results_folder=self.results_folder,
         )
         if VideoProcessor.sam_hq is None:

@@ -146,6 +146,7 @@ class Canvas(QtWidgets.QWidget):
         self._patch_similarity_pixmap = None
         self._pca_map_pixmap = None
         self._depth_preview_pixmap = None
+        self._flow_preview_pixmap = None
 
     def fillDrawing(self):
         return self._fill_drawing
@@ -225,6 +226,23 @@ class Canvas(QtWidgets.QWidget):
                 QtGui.QImage.Format_RGBA8888,
             )
             self._depth_preview_pixmap = QtGui.QPixmap.fromImage(image.copy())
+        self.update()
+
+    def setFlowPreviewOverlay(self, overlay_rgba):
+        """Update or clear the optical-flow overlay."""
+        if overlay_rgba is None:
+            self._flow_preview_pixmap = None
+        else:
+            h, w, _ = overlay_rgba.shape
+            image = QtGui.QImage(
+                overlay_rgba.data,
+                w,
+                h,
+                overlay_rgba.strides[0],
+                QtGui.QImage.Format_RGBA8888,
+            )
+            self._flow_preview_pixmap = QtGui.QPixmap.fromImage(
+                image.copy())
         self.update()
 
     @property
@@ -1168,6 +1186,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
         if self._depth_preview_pixmap is not None:
             p.drawPixmap(0, 0, self._depth_preview_pixmap)
+
+        if self._flow_preview_pixmap is not None:
+            p.drawPixmap(0, 0, self._flow_preview_pixmap)
 
         if self.current_behavior_text and len(self.current_behavior_text) > 0:
             p.save()

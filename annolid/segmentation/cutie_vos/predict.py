@@ -120,6 +120,8 @@ class CutieVideoProcessor:
             self.video_folder) + f"_tracked.csv"
         self.showing_KMedoids_in_mask = False
         self.compute_optical_flow = kwargs.get('compute_optical_flow', False)
+        self.optical_flow_backend = kwargs.get(
+            'optical_flow_backend', 'farneback')
         self.auto_missing_instance_recovery = kwargs.get(
             "auto_missing_instance_recovery", False)
         logger.info(
@@ -1008,7 +1010,8 @@ class CutieVideoProcessor:
 
                     if self.compute_optical_flow and prev_frame is not None:
                         self._flow_hsv, self._flow = compute_optical_flow(
-                            prev_frame, frame)
+                            prev_frame, frame,
+                            use_raft=(self.optical_flow_backend == 'raft'))
 
                     mask_dict = {}
                     for label_id in np.unique(global_prediction):

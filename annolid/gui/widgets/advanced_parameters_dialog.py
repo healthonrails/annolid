@@ -41,6 +41,8 @@ class AdvancedParametersDialog(QDialog):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
+        self.optical_flow_backend = "farneback"
+        self.optical_flow_backend = "farneback"
         self.sam3_score_threshold_detection = float(
             sam3_runtime.get("score_threshold_detection") or 0.35
         )
@@ -126,6 +128,13 @@ class AdvancedParametersDialog(QDialog):
             self.save_video_with_color_mask
         )
 
+        self.optical_flow_backend_label = QLabel("Optical Flow Backend")
+        self.optical_flow_backend_combo = QComboBox()
+        self.optical_flow_backend_combo.addItems(
+            ["farneback (default)", "raft (torchvision)"])
+        self.optical_flow_backend_combo.setCurrentIndex(
+            1 if self.optical_flow_backend == "raft" else 0)
+
         self.auto_recovery_missing_instances_checkbox = QCheckBox(
             "Auto Recovery of Missing Instances"
         )
@@ -146,6 +155,8 @@ class AdvancedParametersDialog(QDialog):
         form.addRow(self.automatic_pause_checkbox)
         form.addRow(self.cpu_only_checkbox)
         form.addRow(self.save_video_with_color_mask_checkbox)
+        form.addRow(self.optical_flow_backend_label,
+                    self.optical_flow_backend_combo)
         form.addRow(self.auto_recovery_missing_instances_checkbox)
         form.addRow(self.compute_optical_flow_checkbox)
         return form
@@ -413,6 +424,7 @@ class AdvancedParametersDialog(QDialog):
             self.auto_recovery_missing_instances_checkbox.isChecked()
         )
         self.compute_optical_flow = self.compute_optical_flow_checkbox.isChecked()
+        self.optical_flow_backend = self.get_optical_flow_backend()
 
         snap_radius = self.mask_enforce_radius_spinbox.value()
         self._tracker_settings = {
@@ -487,6 +499,10 @@ class AdvancedParametersDialog(QDialog):
     def is_compute_optiocal_flow_enabled(self) -> bool:
         return self.compute_optical_flow
 
+    def get_optical_flow_backend(self) -> str:
+        text = self.optical_flow_backend_combo.currentText().lower()
+        return "raft" if "raft" in text else "farneback"
+
     def get_tracker_settings(self) -> Dict[str, object]:
         return dict(self._tracker_settings)
 
@@ -508,3 +524,7 @@ class AdvancedParametersDialog(QDialog):
             "agent_stride": self.sam3_agent_stride,
             "agent_output_dir": self.sam3_agent_output_dir,
         }
+
+    def get_optical_flow_backend(self) -> str:
+        text = self.optical_flow_backend_combo.currentText().lower()
+        return "raft" if "raft" in text else "farneback"
