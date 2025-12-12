@@ -263,11 +263,18 @@ class TrackingController(QtCore.QObject):
         window = self._window
         logger.info("TrackAll: Finished processing for %s", video_path)
         current_video_name_in_watcher = ""
-        watcher = window.prediction_progress_watcher
-        if watcher and watcher.directories():
-            current_video_name_in_watcher = Path(
-                watcher.directories()[0]
-            ).name
+        watcher = getattr(window, "prediction_progress_watcher", None)
+        watched_folder = getattr(window, "prediction_progress_folder", None)
+
+        if watched_folder:
+            current_video_name_in_watcher = Path(watched_folder).name
+        elif watcher is not None and hasattr(watcher, "directories"):
+            try:
+                dirs = watcher.directories()
+                if dirs:
+                    current_video_name_in_watcher = Path(dirs[0]).name
+            except Exception:
+                current_video_name_in_watcher = ""
 
         if Path(video_path).stem == current_video_name_in_watcher:
             window._finalize_prediction_progress(

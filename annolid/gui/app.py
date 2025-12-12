@@ -3889,6 +3889,7 @@ class AnnolidWindow(MainWindow):
             )
 
         if osp.isdir(folder_path_to_watch):
+            self.prediction_progress_folder = folder_path_to_watch
             self.prediction_start_timestamp = time.time()
             self.prediction_progress_watcher.start(1000)  # Poll every 1000 ms
             logger.info(
@@ -4030,6 +4031,7 @@ class AnnolidWindow(MainWindow):
         if self.prediction_progress_watcher:
             self.prediction_progress_watcher.stop()
             logger.info("Prediction progress watcher stopped.")
+        self.prediction_progress_folder = None
         self.last_known_predicted_frame = -1  # Reset
         self.prediction_start_timestamp = 0.0
         if self.seekbar:
