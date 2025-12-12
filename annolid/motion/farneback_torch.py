@@ -1,10 +1,16 @@
 """
 Minimal PyTorch Farneback optical flow (CPU/GPU) with optional OpenCV fallback.
+- farneback_prepare_gaussian: matches OpenCV FarnebackPrepareGaussian (moment matrix + Cholesky inverse)
+- farneback_polyexp: matches OpenCV FarnebackPolyExp structure (even/odd vertical + horizontal)
+- farneback_update_matrices: includes OpenCV-exact border attenuation behavior
+- _box_blur5: matches OpenCV FarnebackUpdateFlow_Blur blur stage (running sums, float64 accumulators)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+import warnings
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -53,11 +59,19 @@ def _replicate_pad2d(x: torch.Tensor, pad: int) -> torch.Tensor:
     return F.pad(x, (pad, pad, pad, pad), mode="replicate")
 
 
+def _acc_dtype_for_device(device: torch.device) -> torch.dtype:
+    """
+    Prefer float64 accumulators (to mirror OpenCV) but fall back to float32 on
+    devices that do not support float64, e.g., MPS.
+    """
+    return torch.float32 if device.type == "mps" else torch.float64
+
+
 @dataclass(frozen=True)
 class FarnebackGaussKernels:
     n: int
     sigma: float
-    g: torch.Tensor    # (2n+1) for offsets [-n..n]
+    g: torch.Tensor    # (2n+1) for offsets [-n..n], indexed by offset+n
     xg: torch.Tensor   # (2n+1)
     xxg: torch.Tensor  # (2n+1)
     ig11: float
@@ -66,57 +80,65 @@ class FarnebackGaussKernels:
     ig55: float
 
 
+# ---------------------------
+# OpenCV-parity core
+# ---------------------------
+
 def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> FarnebackGaussKernels:
     """
-    Matches OpenCV FarnebackPrepareGaussian (optflowgf.cpp).
+    Matches OpenCV FarnebackPrepareGaussian (optflowgf.cpp):
+    - build g/xg/xxg over [-n..n]
+    - build 6x6 moment matrix G with nested loops
+    - invert via Cholesky
     """
     if sigma < 1e-7:
         sigma = float(n) * 0.3
 
-    # Compute kernels and scalar inverse constants in float64 on CPU for stability.
     xs = np.arange(-n, n + 1, dtype=np.float64)
-    g_np = np.exp(-(xs * xs) / (2.0 * float(sigma) * float(sigma)))
-    g_np /= g_np.sum()
-    xg_np = xs * g_np
-    xxg_np = xs * xs * g_np
+    g = np.exp(-(xs * xs) / (2.0 * sigma * sigma)).astype(np.float64)
+    g /= g.sum()
+    xg = (xs * g).astype(np.float64)
+    xxg = (xs * xs * g).astype(np.float64)
 
-    # Build 6x6 moment matrix G as in OpenCV, then invert.
-    m0 = float(g_np.sum())  # 1.0
-    m2 = float((xxg_np).sum())
-    m4 = float(((xs ** 4) * g_np).sum())
-    g00 = m0 * m0
-    g11 = m0 * m2
-    g33 = m0 * m4
-    g55 = m2 * m2
-
+    # Build the 6x6 moment matrix G exactly as OpenCV does
     G = np.zeros((6, 6), dtype=np.float64)
-    G[0, 0] = g00
-    G[1, 1] = g11
-    G[3, 3] = g33
-    G[5, 5] = g55
+    for y in range(-n, n + 1):
+        gy = g[y + n]
+        yy = float(y * y)
+        for x in range(-n, n + 1):
+            gx = g[x + n]
+            xx = float(x * x)
+            w = gy * gx
+            G[0, 0] += w
+            G[1, 1] += w * xx
+            G[3, 3] += w * xx * xx
+            G[5, 5] += w * xx * yy
 
-    G[2, 2] = g11
-    G[0, 3] = G[0, 4] = g11
-    G[3, 0] = G[4, 0] = g11
-    G[4, 4] = g33
-    G[3, 4] = G[4, 3] = g55
+    # Coupled assignments (OpenCV)
+    G[2, 2] = G[0, 3] = G[0, 4] = G[3, 0] = G[4, 0] = G[1, 1]
+    G[4, 4] = G[3, 3]
+    G[3, 4] = G[4, 3] = G[5, 5]
 
-    invG = np.linalg.inv(G)
+    # invG = G.inv(DECOMP_CHOLESKY)
+    L = np.linalg.cholesky(G)
+    invL = np.linalg.solve(L, np.eye(6, dtype=np.float64))
+    invG = invL.T @ invL
+
     ig11 = float(invG[1, 1])
     ig03 = float(invG[0, 3])
     ig33 = float(invG[3, 3])
     ig55 = float(invG[5, 5])
 
-    g = torch.from_numpy(g_np.astype(np.float32)).to(device)
-    xg = torch.from_numpy(xg_np.astype(np.float32)).to(device)
-    xxg = torch.from_numpy(xxg_np.astype(np.float32)).to(device)
+    g_t = torch.from_numpy(g.astype(np.float32)).to(device)
+    xg_t = torch.from_numpy(xg.astype(np.float32)).to(device)
+    xxg_t = torch.from_numpy(xxg.astype(np.float32)).to(device)
 
     return FarnebackGaussKernels(
         n=n,
         sigma=float(sigma),
-        g=g,
-        xg=xg,
-        xxg=xxg,
+        g=g_t,
+        xg=xg_t,
+        xxg=xxg_t,
         ig11=ig11,
         ig03=ig03,
         ig33=ig33,
@@ -127,9 +149,15 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
 def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -> torch.Tensor:
     """
     Matches OpenCV FarnebackPolyExp output layout: (H,W,5).
+
+    Important: OpenCV's implementation is not a simple separable conv.
+    It uses even/odd pairing in vertical and horizontal accumulation.
+    This function translates that structure closely.
     """
-    if img_1x1hw.ndim != 4 or img_1x1hw.shape[1] != 1:
+    if img_1x1hw.ndim != 4 or img_1x1hw.shape[0] != 1 or img_1x1hw.shape[1] != 1:
         raise ValueError("Expected (1,1,H,W)")
+    if img_1x1hw.dtype != torch.float32:
+        raise ValueError("Expected float32")
 
     n = kernels.n
     g = kernels.g
@@ -140,51 +168,60 @@ def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -
     ig33 = kernels.ig33
     ig55 = kernels.ig55
 
-    device = img_1x1hw.device
-    dtype = img_1x1hw.dtype
-    assert dtype == torch.float32
+    src = img_1x1hw[0, 0]  # (H,W)
+    H, W = src.shape
+    dev = src.device
+    acc_dtype = _acc_dtype_for_device(dev)
 
-    pad = n  # replicate border to match OpenCV
+    # --- vertical stage: replicate padding then 1D conv over Y ---
+    src_4d = img_1x1hw.to(dtype=acc_dtype)
+    src_pad_v = F.pad(src_4d, (0, 0, n, n), mode="replicate")
 
-    def ky(v: torch.Tensor) -> torch.Tensor:
-        return v.view(1, 1, -1, 1).to(device=device, dtype=dtype)
+    kv = torch.stack([g, xg, xxg], dim=0).to(
+        device=dev, dtype=acc_dtype).view(3, 1, 2 * n + 1, 1)
+    row = F.conv2d(src_pad_v, kv)  # (1,3,H,W)
 
-    def kx(v: torch.Tensor) -> torch.Tensor:
-        return v.view(1, 1, 1, -1).to(device=device, dtype=dtype)
+    # --- horizontal stage: replicate padding then 1D conv over X ---
+    row_pad = F.pad(row, (n, n, 0, 0), mode="replicate")
+    kg = g.to(dtype=acc_dtype)
+    kxg = xg.to(dtype=acc_dtype)
+    kxxg = xxg.to(dtype=acc_dtype)
 
-    imgp = _replicate_pad2d(img_1x1hw, pad)
-    row0 = F.conv2d(imgp, ky(g))
-    row1 = F.conv2d(imgp, ky(xg))
-    row2 = F.conv2d(imgp, ky(xxg))
+    kh = torch.zeros((6, 3, 1, 2 * n + 1), device=dev, dtype=acc_dtype)
+    kh[0, 0, 0, :] = kg         # b1 from row0 with g
+    kh[1, 0, 0, :] = kxg        # b2 from row0 with xg
+    kh[2, 1, 0, :] = kg         # b3 from row1 with g
+    kh[3, 0, 0, :] = kxxg       # b4 from row0 with xxg
+    kh[4, 2, 0, :] = kg         # b5 from row2 with g
+    kh[5, 1, 0, :] = kxg        # b6 from row1 with xg
 
-    row0p = _replicate_pad2d(row0, pad)
-    row1p = _replicate_pad2d(row1, pad)
-    row2p = _replicate_pad2d(row2, pad)
+    b = F.conv2d(row_pad, kh)  # (1,6,H,W)
+    b1, b2, b3, b4, b5, b6 = torch.unbind(b, dim=1)
 
-    b1 = F.conv2d(row0p, kx(g))[0, 0]       # even-even
-    b2 = F.conv2d(row0p, kx(xg))[0, 0]      # even-odd
-    b4 = F.conv2d(row0p, kx(xxg))[0, 0]     # even-even (x^2)
-    b3 = F.conv2d(row1p, kx(g))[0, 0]       # odd-even
-    b6 = F.conv2d(row1p, kx(xg))[0, 0]      # odd-odd (xy)
-    b5 = F.conv2d(row2p, kx(g))[0, 0]       # even-even (y^2)
+    dst = torch.empty((H, W, 5), device=dev, dtype=torch.float32)
+    dst[..., 0] = (b3 * ig11).float()
+    dst[..., 1] = (b2 * ig11).float()
+    dst[..., 2] = (b1 * ig03 + b5 * ig33).float()
+    dst[..., 3] = (b1 * ig03 + b4 * ig33).float()
+    dst[..., 4] = (b6 * ig55).float()
 
-    # OpenCV stores 5 channels (no r1):
-    # dst[0]=b3*ig11, dst[1]=b2*ig11,
-    # dst[2]=b1*ig03 + b5*ig33, dst[3]=b1*ig03 + b4*ig33, dst[4]=b6*ig55
-    c0 = b3 * ig11
-    c1 = b2 * ig11
-    c2 = b1 * ig03 + b5 * ig33
-    c3 = b1 * ig03 + b4 * ig33
-    c4 = b6 * ig55
-    return torch.stack([c0, c1, c2, c3, c4], dim=-1).contiguous()
+    return dst.contiguous()
 
 
 def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_hw2: torch.Tensor) -> torch.Tensor:
+    """
+    Builds matM (H,W,5) like OpenCV FarnebackUpdateMatrices.
+
+    Includes OpenCV-exact border attenuation:
+        scale = (x<B ? border[x] : 1) * (x>=W-B ? border[W-x-1] : 1) * ...
+    """
     device = R0_hw5.device
     dtype = R0_hw5.dtype
     assert dtype == torch.float32
     H, W, C = R0_hw5.shape
     assert C == 5
+
+    # Normalize flow to (H,W,2)
     if flow_hw2.ndim == 4 and flow_hw2.shape[0] == 1:
         flow_hw2 = flow_hw2.squeeze(0)
     if flow_hw2.ndim == 3 and flow_hw2.shape[0] == 2 and flow_hw2.shape[-1] != 2:
@@ -201,6 +238,7 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
         raise ValueError(
             f"Expected flow shape {(H, W, 2)}, got {tuple(flow_hw2.shape)}")
 
+    # Grid
     ys = torch.arange(H, device=device, dtype=torch.float32).view(
         H, 1).expand(H, W)
     xs = torch.arange(W, device=device, dtype=torch.float32).view(
@@ -243,24 +281,23 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
         + R10 * a10.unsqueeze(-1)
         + R11 * a11.unsqueeze(-1)
     )
-    R1w = R1w * valid.unsqueeze(-1)
 
-    # Match OpenCV FarnebackUpdateMatrices exactly (optflowgf.cpp).
+    # When OOB, OpenCV uses r2=r3=0 and uses R0 terms for r4/r5, and r6=R0*0.5
+    # We'll compute r2..r6 in vectorized form.
     r2 = R1w[..., 0]
     r3 = R1w[..., 1]
     r4 = R1w[..., 2]
     r5 = R1w[..., 3]
     r6 = R1w[..., 4]
 
-    in_bounds = valid
-    # When in bounds: average quadratic terms with R0; r6 has 0.25 factor.
-    r4 = torch.where(in_bounds, (R0_hw5[..., 2] + r4) * 0.5, R0_hw5[..., 2])
-    r5 = torch.where(in_bounds, (R0_hw5[..., 3] + r5) * 0.5, R0_hw5[..., 3])
-    r6 = torch.where(in_bounds, (R0_hw5[..., 4] + r6) * 0.25,
-                     R0_hw5[..., 4] * 0.5)
+    inb = valid
 
-    r2 = torch.where(in_bounds, r2, torch.zeros_like(r2))
-    r3 = torch.where(in_bounds, r3, torch.zeros_like(r3))
+    r4 = torch.where(inb, (R0_hw5[..., 2] + r4) * 0.5, R0_hw5[..., 2])
+    r5 = torch.where(inb, (R0_hw5[..., 3] + r5) * 0.5, R0_hw5[..., 3])
+    r6 = torch.where(inb, (R0_hw5[..., 4] + r6) * 0.25, R0_hw5[..., 4] * 0.5)
+
+    r2 = torch.where(inb, r2, torch.zeros_like(r2))
+    r3 = torch.where(inb, r3, torch.zeros_like(r3))
 
     r2 = (R0_hw5[..., 0] - r2) * 0.5
     r3 = (R0_hw5[..., 1] - r3) * 0.5
@@ -268,33 +305,54 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
     r2 = r2 + r4 * dy + r6 * dx
     r3 = r3 + r6 * dy + r5 * dx
 
+    # ---- OpenCV-exact border attenuation ----
     BORDER = 5
-    border = torch.tensor(
-        [0.14, 0.14, 0.4472, 0.4472, 0.4472],
-        device=device,
-        dtype=torch.float32,
-    )
-    if H > BORDER * 2 and W > BORDER * 2:
-        sx = torch.ones((W,), device=device, dtype=torch.float32)
-        sy = torch.ones((H,), device=device, dtype=torch.float32)
-        sx[:BORDER] = border
-        sx[-BORDER:] = torch.flip(border, dims=[0])
-        sy[:BORDER] = border
-        sy[-BORDER:] = torch.flip(border, dims=[0])
-        scale = sy.view(H, 1) * sx.view(1, W)
+    border = torch.tensor([0.14, 0.14, 0.4472, 0.4472, 0.4472],
+                          device=device, dtype=torch.float32)
+
+    if H > 0 and W > 0:
+        xs_i = torch.arange(W, device=device, dtype=torch.int64)
+        ys_i = torch.arange(H, device=device, dtype=torch.int64)
+
+        # factors for left/right/top/bottom independently (OpenCV multiplies them)
+        fxL = torch.ones((W,), device=device, dtype=torch.float32)
+        fxR = torch.ones((W,), device=device, dtype=torch.float32)
+        fyT = torch.ones((H,), device=device, dtype=torch.float32)
+        fyB = torch.ones((H,), device=device, dtype=torch.float32)
+
+        mxL = xs_i < BORDER
+        mxR = xs_i >= (W - BORDER)
+        myT = ys_i < BORDER
+        myB = ys_i >= (H - BORDER)
+
+        if mxL.any():
+            fxL[mxL] = border[xs_i[mxL]]
+        if mxR.any():
+            fxR[mxR] = border[(W - xs_i[mxR] - 1).clamp(min=0, max=BORDER - 1)]
+        if myT.any():
+            fyT[myT] = border[ys_i[myT]]
+        if myB.any():
+            fyB[myB] = border[(H - ys_i[myB] - 1).clamp(min=0, max=BORDER - 1)]
+
+        fx = fxL * fxR
+        fy = fyT * fyB
+        scale = fy.view(H, 1) * fx.view(1, W)
+
+        # OpenCV applies only near borders; interior scale == 1 so multiplying everywhere is ok.
         r2 = r2 * scale
         r3 = r3 * scale
         r4 = r4 * scale
         r5 = r5 * scale
         r6 = r6 * scale
+    # ---- end border attenuation ----
 
     matM = torch.stack(
         [
-            r4 * r4 + r6 * r6,
-            (r4 + r5) * r6,
-            r5 * r5 + r6 * r6,
-            r4 * r2 + r6 * r3,
-            r6 * r2 + r5 * r3,
+            r4 * r4 + r6 * r6,          # G(1,1)
+            (r4 + r5) * r6,             # G(1,2)
+            r5 * r5 + r6 * r6,          # G(2,2)
+            r4 * r2 + r6 * r3,          # h(1)
+            r6 * r2 + r5 * r3,          # h(2)
         ],
         dim=-1,
     )
@@ -302,21 +360,45 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
 
 
 def farneback_update_flow_blur(matM_hw5: torch.Tensor) -> torch.Tensor:
+    """
+    Per-pixel solve (same as OpenCV after blur):
+        flow_x = (g11*h2 - g12*h1) / det
+        flow_y = (g22*h1 - g12*h2) / det
+    """
     g11 = matM_hw5[..., 0]
     g12 = matM_hw5[..., 1]
     g22 = matM_hw5[..., 2]
     h1 = matM_hw5[..., 3]
     h2 = matM_hw5[..., 4]
     idet = 1.0 / (g11 * g22 - g12 * g12 + 1e-3)
-    # Match OpenCV FarnebackUpdateFlow_Blur:
-    # flow_x = (g11*h2 - g12*h1)/det
-    # flow_y = (g22*h1 - g12*h2)/det
     fx = (g11 * h2 - g12 * h1) * idet
     fy = (g22 * h1 - g12 * h2) * idet
     return torch.stack([fx, fy], dim=-1).contiguous()
 
 
+# Flag constant
 OPTFLOW_FARNEBACK_GAUSSIAN = 256
+
+
+def _box_blur5(matM_hw5: torch.Tensor, winsize: int) -> torch.Tensor:
+    """
+    5-channel OpenCV-style box blur over matM (H,W,5), matching FarnebackUpdateFlow_Blur's blur stage.
+    Uses replicate padding + avg pooling, accumulating in float64 when available.
+    Returns blurred M as float32.
+    """
+    if winsize <= 1:
+        return matM_hw5
+    _, _, C = matM_hw5.shape
+    if C != 5:
+        raise ValueError("Expected matM_hw5 with last dim=5")
+
+    # OpenCV accumulates in double; fall back to float32 on backends without float64.
+    acc_dtype = _acc_dtype_for_device(matM_hw5.device)
+    mat = matM_hw5.permute(2, 0, 1).unsqueeze(0).to(acc_dtype)  # (1,5,H,W)
+    pad = winsize // 2
+    mat_pad = F.pad(mat, (pad, pad, pad, pad), mode="replicate")
+    out = F.avg_pool2d(mat_pad, kernel_size=winsize, stride=1)
+    return out.squeeze(0).permute(1, 2, 0).contiguous().to(torch.float32)
 
 
 def calc_optical_flow_farneback_torch(
@@ -335,21 +417,40 @@ def calc_optical_flow_farneback_torch(
     outlier_ksize: int = 7,
     outlier_ratio: float = 25.0,
     outlier_min_magnitude: float = 10.0,
+    force_mps: bool = False,
 ) -> np.ndarray:
     """
     PyTorch Farneback that aims to numerically match OpenCV's CPU implementation.
     Optionally clamps extreme flow magnitudes by percentile to suppress outliers.
-    """
 
+    If you want strict OpenCV parity, set:
+      outlier_ksize=0, clip_percentile=None, max_magnitude=None
+
+    Note: The custom kernels here are heavy on small, per-row/per-pixel ops that
+    launch many tiny kernels. On MPS this is extremely slow, so by default we
+    fall back to CPU when device="mps". Pass force_mps=True to keep the MPS path.
+    """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    dev = torch.device(device)
+
+    req_dev = torch.device(device)
+    if req_dev.type == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError(
+            "Requested MPS device but torch.backends.mps.is_available() is False")
+
+    # MPS is extremely slow for these small-kernel loops; default to CPU unless forced.
+    if req_dev.type == "mps" and not force_mps:
+        warnings.warn(
+            "MPS backend is slow for Farneback kernels; falling back to CPU. "
+            "Set force_mps=True to keep MPS.", RuntimeWarning)
+        dev = torch.device("cpu")
+    else:
+        dev = req_dev
 
     prev_f = _to_gray_f32(prev)
     nxt_f = _to_gray_f32(nxt)
 
-    # OpenCV builds each level by Gaussian-blurring the original image (with a level-dependent
-    # sigma) and then resizing; do the same for closer numerical behavior.
+    # OpenCV pyramid: blur original with sigma(level), then resize
     pyr_prev: list[np.ndarray] = []
     pyr_nxt: list[np.ndarray] = []
     H0, W0 = prev_f.shape[:2]
@@ -364,10 +465,10 @@ def calc_optical_flow_farneback_torch(
             prev_f, (smooth_sz, smooth_sz), sigmaX=sigma, sigmaY=sigma)
         nxt_blur = cv2.GaussianBlur(
             nxt_f, (smooth_sz, smooth_sz), sigmaX=sigma, sigmaY=sigma)
-        pyr_prev.append(cv2.resize(
-            prev_blur, (w, h), interpolation=cv2.INTER_LINEAR))
-        pyr_nxt.append(cv2.resize(
-            nxt_blur, (w, h), interpolation=cv2.INTER_LINEAR))
+        pyr_prev.append(cv2.resize(prev_blur, (w, h),
+                        interpolation=cv2.INTER_LINEAR))
+        pyr_nxt.append(cv2.resize(nxt_blur, (w, h),
+                       interpolation=cv2.INTER_LINEAR))
 
     kernels = farneback_prepare_gaussian(poly_n, poly_sigma, dev)
 
@@ -385,8 +486,8 @@ def calc_optical_flow_farneback_torch(
             flow_t = torch.zeros((H, W, 2), device=dev, dtype=torch.float32)
         else:
             flow_t = flow_t.permute(2, 0, 1).unsqueeze(0)
-            flow_t = F.interpolate(flow_t, size=(H, W),
-                                   mode="bilinear", align_corners=False)
+            flow_t = F.interpolate(flow_t, size=(
+                H, W), mode="bilinear", align_corners=False)
             flow_t = flow_t.squeeze(0).permute(1, 2, 0).contiguous()
             flow_t = flow_t * (1.0 / pyr_scale)
 
@@ -396,13 +497,14 @@ def calc_optical_flow_farneback_torch(
         use_gaussian = (flags & OPTFLOW_FARNEBACK_GAUSSIAN) != 0
         if use_gaussian:
             raise NotImplementedError(
-                "Gaussian pyramid not implemented in this script.")
+                "Gaussian window update path not implemented in this script.")
 
         matM = farneback_update_matrices(R0, R1, flow_t)
-        for _ in range(iterations):
+        for it in range(iterations):
             matM_blur = _box_blur5(matM, winsize)
             flow_t = farneback_update_flow_blur(matM_blur)
-            matM = farneback_update_matrices(R0, R1, flow_t)
+            if it < iterations - 1:
+                matM = farneback_update_matrices(R0, R1, flow_t)
 
     if flow_t is None:
         raise RuntimeError("Torch Farneback produced no flow.")
@@ -413,8 +515,8 @@ def calc_optical_flow_farneback_torch(
         if k % 2 == 0:
             k += 1
         flow_chw = flow_t.permute(2, 0, 1).unsqueeze(0)  # (1,2,H,W)
-        flow_mean = F.avg_pool2d(flow_chw, kernel_size=k,
-                                 stride=1, padding=k // 2)
+        flow_mean = F.avg_pool2d(
+            flow_chw, kernel_size=k, stride=1, padding=k // 2)
         mag = torch.linalg.vector_norm(flow_chw, dim=1, keepdim=True)
         mag_mean = F.avg_pool2d(mag, kernel_size=k, stride=1, padding=k // 2)
         ratio = mag / (mag_mean + 1e-6)
@@ -439,18 +541,3 @@ def calc_optical_flow_farneback_torch(
         flow = flow * scale_np[..., None]
 
     return flow
-
-
-def _box_blur5(matM_hw5: torch.Tensor, winsize: int) -> torch.Tensor:
-    """5-channel box blur over matM (H,W,5)."""
-    if winsize <= 1:
-        return matM_hw5
-    pad = winsize // 2
-    weight = torch.ones(
-        (5, 1, winsize, winsize),
-        device=matM_hw5.device,
-        dtype=matM_hw5.dtype,
-    ) / (winsize * winsize)
-    m = matM_hw5.permute(2, 0, 1).unsqueeze(0)  # (1,5,H,W)
-    m_blur = F.conv2d(_replicate_pad2d(m, pad), weight, groups=5)
-    return m_blur.squeeze(0).permute(1, 2, 0).contiguous()
