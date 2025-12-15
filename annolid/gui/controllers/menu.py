@@ -25,8 +25,10 @@ class MenuController:
     def setup(self) -> None:
         """Create actions, populate menus/toolbars, and configure custom menus."""
         self._ensure_video_tools_menu()
+        self._ensure_settings_menu()
         self._create_core_actions()
         self._populate_tools_and_menus()
+        self._reorder_top_menus()
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -381,6 +383,19 @@ class MenuController:
             tip=w.tr("Open a 3D viewer for TIFF stacks"),
         )
 
+    def _ensure_settings_menu(self) -> None:
+        """Create a Settings menu (positioned before View when available)."""
+        w = self._window
+        if hasattr(w.menus, "settings"):
+            return
+        settings_menu = QtWidgets.QMenu(w.tr("&Settings"), w)
+        view_menu = getattr(w.menus, "view", None)
+        if view_menu is not None:
+            w.menuBar().insertMenu(view_menu.menuAction(), settings_menu)
+        else:
+            w.menuBar().addMenu(settings_menu)
+        w.menus.settings = settings_menu
+
     def _create_action_from_spec(self, spec: dict) -> QtWidgets.QAction:
         action = self._action_factory(
             spec["text"],
@@ -447,51 +462,98 @@ class MenuController:
                 button.setIconSize(QtCore.QSize(32, 32))
                 text = self._format_tool_button_text(action.text())
                 button.setText(text)
-        utils.addActions(w.menus.file, (actions["open_video"],))
-        utils.addActions(w.menus.file, (actions["open_youtube_video"],))
-        utils.addActions(w.menus.file, (actions["open_audio"],))
-        utils.addActions(w.menus.file, (actions["open_caption"],))
-        utils.addActions(w.menus.file, (actions["open_florence2"],))
-        utils.addActions(w.menus.file, (actions["colab"],))
-        utils.addActions(w.menus.file, (actions["save_labels"],))
-        utils.addActions(w.menus.file, (actions["coco"],))
-        utils.addActions(w.menus.file, (actions["frames"],))
-        utils.addActions(w.menus.file, (actions["models"],))
-        utils.addActions(w.menus.file, (actions["tracks"],))
-        utils.addActions(w.menus.file, (actions["quality_control"],))
-        utils.addActions(w.menus.file, (actions["downsample_video"],))
-        utils.addActions(w.menus.file, (actions["tracking_reports"],))
-        utils.addActions(w.menus.file, (actions["behavior_time_budget"],))
-        utils.addActions(w.menus.file, (actions["project_schema"],))
-        w.menus.file.addSeparator()
-        utils.addActions(w.menus.file, (actions["convert_csv"],))
-        utils.addActions(w.menus.file, (actions["extract_shape_keypoints"],))
-        utils.addActions(w.menus.file, (actions["convert_deeplabcut"],))
-        utils.addActions(w.menus.file, (actions["convert_sleap"],))
-        utils.addActions(
-            w.menus.file, (actions["convert_labelme2yolo_format"],)
-        )
-        utils.addActions(w.menus.file, (actions["place_preference"],))
-        utils.addActions(w.menus.file, (actions["add_stamps_action"],))
-        utils.addActions(w.menus.file, (actions["advance_params"],))
+        file_sections = [
+            (
+                actions["open_video"],
+                actions["open_youtube_video"],
+                actions["open_audio"],
+                actions["open_caption"],
+                actions["open_florence2"],
+                actions["colab"],
+            ),
+            (
+                actions["save_labels"],
+                actions["frames"],
+                actions["models"],
+                actions["tracks"],
+                actions["quality_control"],
+                actions["downsample_video"],
+            ),
+            (
+                actions["tracking_reports"],
+                actions["behavior_time_budget"],
+                actions["project_schema"],
+                actions["place_preference"],
+                actions["add_stamps_action"],
+            ),
+            (
+                actions["convert_csv"],
+                actions["extract_shape_keypoints"],
+                actions["convert_labelme2yolo_format"],
+                actions["convert_deeplabcut"],
+                actions["convert_sleap"],
+                actions["coco"],
+            ),
+        ]
+        self._add_menu_sections(w.menus.file, file_sections)
 
-        utils.addActions(w.menus.view, (actions["glitter2"],))
-        utils.addActions(
-            w.menus.view, (actions["video_depth_anything"],))
-        utils.addActions(
-            w.menus.view, (actions["run_optical_flow"],))
-        utils.addActions(
-            w.menus.view, (actions["sam3d_reconstruct"],))
-        utils.addActions(w.menus.view, (actions["sam3d_settings"],))
-        utils.addActions(w.menus.view, (actions["depth_settings"],))
-        utils.addActions(w.menus.view, (actions["visualization"],))
-        utils.addActions(w.menus.view, (w.patch_similarity_action,))
-        utils.addActions(w.menus.view, (w.pca_map_action,))
-        utils.addActions(w.menus.view, (w.open_3d_viewer_action,))
-        utils.addActions(w.menus.view, (w.realtime_control_action,))
-        utils.addActions(
-            w.menus.view,
-            (w.patch_similarity_settings_action, w.pca_map_settings_action),
-        )
+        view_sections = [
+            (
+                actions["glitter2"],
+                actions["video_depth_anything"],
+                actions["run_optical_flow"],
+                actions["sam3d_reconstruct"],
+            ),
+            (
+                actions["visualization"],
+                w.patch_similarity_action,
+                w.pca_map_action,
+                w.open_3d_viewer_action,
+            ),
+            (w.realtime_control_action,),
+        ]
+        self._add_menu_sections(w.menus.view, view_sections)
+
+        settings_actions = [
+            actions["advance_params"],
+            actions["depth_settings"],
+            actions["sam3d_settings"],
+            w.patch_similarity_settings_action,
+            w.pca_map_settings_action,
+        ]
+        self._add_menu_sections(w.menus.settings, [settings_actions])
 
         utils.addActions(w.menus.help, (actions["about_annolid"],))
+
+    @staticmethod
+    def _add_menu_sections(menu: QtWidgets.QMenu, sections) -> None:
+        """Add grouped actions to a menu with separators between sections."""
+        if menu is None:
+            return
+        total = len(sections)
+        for idx, section in enumerate(sections):
+            utils.addActions(menu, tuple(section))
+            if idx < total - 1:
+                menu.addSeparator()
+
+    def _reorder_top_menus(self) -> None:
+        """Keep top-level menu order consistent and professional."""
+        w = self._window
+        bar = w.menuBar()
+        desired_names = ["file", "edit", "view",
+                         "video_tools", "settings", "help"]
+        menus = []
+        for name in desired_names:
+            menu = getattr(w.menus, name, None)
+            if menu is not None:
+                menus.append(menu)
+
+        # Remove existing occurrences so we can re-add in the desired order.
+        for action in list(bar.actions()):
+            menu = action.menu()
+            if menu is not None and menu in menus:
+                bar.removeAction(action)
+
+        # Re-add in the requested order.
+        for menu in menus:
+            bar.addMenu(menu)
