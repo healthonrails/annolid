@@ -148,6 +148,12 @@ def process_video_flow(video_path: str,
                        smooth_kernel: int = 3,
                        quantize: bool = True,
                        use_torch_farneback: bool = False,
+                       farneback_pyr_scale: float = 0.5,
+                       farneback_levels: int = 1,
+                       farneback_winsize: int = 1,
+                       farneback_iterations: int = 3,
+                       farneback_poly_n: int = 3,
+                       farneback_poly_sigma: float = 1.1,
                        progress_callback: Optional[Callable[[
                            int], None]] = None,
                        preview_callback: Optional[Callable[[dict], None]] = None) -> None:
@@ -170,6 +176,7 @@ def process_video_flow(video_path: str,
         smooth_kernel: odd kernel size for smoothing when enabled.
         quantize: store ndjson values quantized to uint16 (smaller); if False store float16.
         use_torch_farneback: attempt torch Farneback (for verification) before cv CUDA/UMat/CPU.
+        farneback_*: parameters forwarded to Farneback computation when backend='farneback'.
         progress_callback: optional callable receiving integer percent progress.
         preview_callback: optional callable receiving overlay previews.
     """
@@ -203,6 +210,12 @@ def process_video_flow(video_path: str,
             prev_frame, curr_frame,
             use_raft=(backend.lower() == "raft"),
             raft_model=raft_model,
+            farneback_pyr_scale=farneback_pyr_scale,
+            farneback_levels=farneback_levels,
+            farneback_winsize=farneback_winsize,
+            farneback_iterations=farneback_iterations,
+            farneback_poly_n=farneback_poly_n,
+            farneback_poly_sigma=farneback_poly_sigma,
         )
         if smooth and smooth_kernel > 1:
             k = int(max(1, smooth_kernel))

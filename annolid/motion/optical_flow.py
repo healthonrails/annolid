@@ -34,7 +34,13 @@ def compute_optical_flow(prev_frame: np.ndarray,
                          prefer_cuda: Optional[bool] = None,
                          use_raft: bool = False,
                          raft_model: str = "small",
-                         use_torch_farneback: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+                         use_torch_farneback: bool = False,
+                         farneback_pyr_scale: float = 0.5,
+                         farneback_levels: int = 1,
+                         farneback_winsize: int = 1,
+                         farneback_iterations: int = 3,
+                         farneback_poly_n: int = 3,
+                         farneback_poly_sigma: float = 1.1) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute dense Farneback optical flow with automatic device selection.
 
@@ -94,12 +100,12 @@ def compute_optical_flow(prev_frame: np.ndarray,
             flow = calc_optical_flow_farneback_torch(
                 prev_gray,
                 current_gray,
-                pyr_scale=0.5,
-                levels=1,
-                winsize=1,
-                iterations=3,
-                poly_n=3,
-                poly_sigma=1.1,
+                pyr_scale=float(farneback_pyr_scale),
+                levels=int(farneback_levels),
+                winsize=int(farneback_winsize),
+                iterations=int(farneback_iterations),
+                poly_n=int(farneback_poly_n),
+                poly_sigma=float(farneback_poly_sigma),
                 flags=0,
                 device=AVAILABLE_DEVICE,
             )
@@ -110,13 +116,13 @@ def compute_optical_flow(prev_frame: np.ndarray,
     if flow is None and prefer_cuda and _cuda_flow_available():
         try:
             cuda_flow = cv2.cuda.FarnebackOpticalFlow_create(
-                numLevels=1,
-                pyrScale=0.5,
+                numLevels=int(farneback_levels),
+                pyrScale=float(farneback_pyr_scale),
                 fastPyramids=False,
-                winSize=1,
-                numIters=3,
-                polyN=3,
-                polySigma=1.1,
+                winSize=int(farneback_winsize),
+                numIters=int(farneback_iterations),
+                polyN=int(farneback_poly_n),
+                polySigma=float(farneback_poly_sigma),
                 flags=0,
             )
             prev_gpu = cv2.cuda_GpuMat()
@@ -141,12 +147,12 @@ def compute_optical_flow(prev_frame: np.ndarray,
                     cv2.UMat(current_frame), cv2.COLOR_BGR2GRAY)
                 flow = cv2.calcOpticalFlowFarneback(
                     prev_gray, current_gray, None,
-                    pyr_scale=0.5,
-                    levels=1,
-                    winsize=1,
-                    iterations=3,
-                    poly_n=3,
-                    poly_sigma=1.1,
+                    pyr_scale=float(farneback_pyr_scale),
+                    levels=int(farneback_levels),
+                    winsize=int(farneback_winsize),
+                    iterations=int(farneback_iterations),
+                    poly_n=int(farneback_poly_n),
+                    poly_sigma=float(farneback_poly_sigma),
                     flags=0
                 )
                 used_umat = True
@@ -158,12 +164,12 @@ def compute_optical_flow(prev_frame: np.ndarray,
             current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
             flow = cv2.calcOpticalFlowFarneback(
                 prev_gray, current_gray, None,
-                pyr_scale=0.5,
-                levels=1,
-                winsize=1,
-                iterations=3,
-                poly_n=3,
-                poly_sigma=1.1,
+                pyr_scale=float(farneback_pyr_scale),
+                levels=int(farneback_levels),
+                winsize=int(farneback_winsize),
+                iterations=int(farneback_iterations),
+                poly_n=int(farneback_poly_n),
+                poly_sigma=float(farneback_poly_sigma),
                 flags=0
             )
 

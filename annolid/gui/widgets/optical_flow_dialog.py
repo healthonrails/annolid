@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional, Tuple, Union
 
 from qtpy import QtCore, QtWidgets
 
 
 class FlowOptionsDialog(QtWidgets.QDialog):
-    """Simple dialog to pick optical-flow backend, visualization, and NDJSON path."""
+    """Simple dialog to pick optical-flow backend, visualization, and overlay options."""
 
     def __init__(
         self,
@@ -16,14 +15,19 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         default_backend: str = "farneback",
         default_raft_model: str = "small",
         default_viz: str = "quiver",
-        default_ndjson: Optional[str] = None,
         default_opacity: Union[int, float] = 70,
         default_quiver_step: int = 16,
         default_quiver_gain: Union[int, float] = 1.0,
         default_stable_hsv: bool = True,
+        default_pyr_scale: Union[int, float] = 0.5,
+        default_levels: int = 1,
+        default_winsize: int = 1,
+        default_iterations: int = 3,
+        default_poly_n: int = 3,
+        default_poly_sigma: Union[int, float] = 1.1,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Optical Flow Options")
+        self.setWindowTitle("Optical Flow Settings")
 
         backend_label = QtWidgets.QLabel("Flow backend:")
         self.backend_combo = QtWidgets.QComboBox()
@@ -67,6 +71,49 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         )
         self.stable_hsv_checkbox.setChecked(bool(default_stable_hsv))
 
+        # Farneback params
+        self.farneback_group = QtWidgets.QGroupBox("Farneback parameters")
+        farneback_form = QtWidgets.QFormLayout(self.farneback_group)
+
+        self.pyr_scale_spin = QtWidgets.QDoubleSpinBox()
+        self.pyr_scale_spin.setRange(0.05, 0.99)
+        self.pyr_scale_spin.setSingleStep(0.05)
+        self.pyr_scale_spin.setValue(float(default_pyr_scale or 0.5))
+
+        self.levels_spin = QtWidgets.QSpinBox()
+        self.levels_spin.setRange(1, 10)
+        self.levels_spin.setValue(int(default_levels or 1))
+
+        self.winsize_spin = QtWidgets.QSpinBox()
+        self.winsize_spin.setRange(1, 128)
+        self.winsize_spin.setSingleStep(2)  # prefer odd sizes
+        self.winsize_spin.setValue(max(1, int(default_winsize or 1)))
+
+        self.iterations_spin = QtWidgets.QSpinBox()
+        self.iterations_spin.setRange(1, 50)
+        self.iterations_spin.setValue(int(default_iterations or 3))
+
+        self.poly_n_spin = QtWidgets.QSpinBox()
+        self.poly_n_spin.setRange(3, 15)
+        self.poly_n_spin.setSingleStep(2)  # prefer odd sizes
+        self.poly_n_spin.setValue(max(3, int(default_poly_n or 3)))
+
+        self.poly_sigma_spin = QtWidgets.QDoubleSpinBox()
+        self.poly_sigma_spin.setRange(0.5, 5.0)
+        self.poly_sigma_spin.setSingleStep(0.05)
+        self.poly_sigma_spin.setValue(float(default_poly_sigma or 1.1))
+
+        farneback_form.addRow(QtWidgets.QLabel(
+            "Pyramid scale:"), self.pyr_scale_spin)
+        farneback_form.addRow(QtWidgets.QLabel("Levels:"), self.levels_spin)
+        farneback_form.addRow(QtWidgets.QLabel(
+            "Window size:"), self.winsize_spin)
+        farneback_form.addRow(QtWidgets.QLabel(
+            "Iterations:"), self.iterations_spin)
+        farneback_form.addRow(QtWidgets.QLabel("Poly N:"), self.poly_n_spin)
+        farneback_form.addRow(QtWidgets.QLabel(
+            "Poly Sigma:"), self.poly_sigma_spin)
+
         self.quiver_group = QtWidgets.QGroupBox("Quiver options")
         quiver_form = QtWidgets.QFormLayout(self.quiver_group)
         self.quiver_step_spin = QtWidgets.QSpinBox()
@@ -82,13 +129,6 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         quiver_form.addRow(QtWidgets.QLabel(
             "Gain (arrow length):"), self.quiver_gain_spin)
 
-        ndjson_label = QtWidgets.QLabel("Save NDJSON to:")
-        self.ndjson_edit = QtWidgets.QLineEdit()
-        if default_ndjson:
-            self.ndjson_edit.setText(default_ndjson)
-        browse_btn = QtWidgets.QPushButton("Browse…")
-        browse_btn.clicked.connect(self._browse_ndjson)
-
         form_layout = QtWidgets.QFormLayout()
         form_layout.addRow(backend_label, self.backend_combo)
         form_layout.addRow(raft_label, self.raft_combo)
@@ -99,11 +139,6 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         form_layout.addRow(opacity_label, opacity_layout)
         form_layout.addRow(self.stable_hsv_checkbox)
 
-        ndjson_layout = QtWidgets.QHBoxLayout()
-        ndjson_layout.addWidget(self.ndjson_edit)
-        ndjson_layout.addWidget(browse_btn)
-        form_layout.addRow(ndjson_label, ndjson_layout)
-
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -112,6 +147,7 @@ class FlowOptionsDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout()
         layout.addLayout(form_layout)
+        layout.addWidget(self.farneback_group)
         layout.addWidget(self.quiver_group)
         layout.addWidget(buttons)
         self.setLayout(layout)
@@ -127,28 +163,36 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         self.stable_hsv_checkbox.setEnabled(not is_quiver)
         is_raft = self.backend_combo.currentText().strip().lower() == "raft"
         self.raft_combo.setEnabled(is_raft)
+        self.farneback_group.setEnabled(not is_raft)
 
-    def _browse_ndjson(self) -> None:
-        current = self.ndjson_edit.text().strip()
-        start_path = current or str(Path.home() / "flow.ndjson")
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            self.tr("Save flow NDJSON"),
-            start_path,
-            self.tr("NDJSON Files (*.ndjson)"),
-        )
-        if path:
-            self.ndjson_edit.setText(path)
-
-    def values(self) -> Optional[Tuple[str, str, str, str, int, int, float, bool]]:
+    def values(self) -> Optional[Tuple[str, str, str, int, int, float, bool, float, int, int, int, int, float]]:
         if self.result() != QtWidgets.QDialog.Accepted:
             return None
         backend = self.backend_combo.currentText().strip().lower()
         raft_model = self.raft_combo.currentText().strip().lower()
         viz = self.viz_combo.currentText().strip().lower()
-        ndjson_path = self.ndjson_edit.text().strip()
         opacity = int(self.opacity_slider.value())
         quiver_step = int(self.quiver_step_spin.value())
         quiver_gain = float(self.quiver_gain_spin.value())
         stable_hsv = bool(self.stable_hsv_checkbox.isChecked())
-        return backend, raft_model, viz, ndjson_path, opacity, quiver_step, quiver_gain, stable_hsv
+        pyr_scale = float(self.pyr_scale_spin.value())
+        levels = int(self.levels_spin.value())
+        winsize = int(self.winsize_spin.value())
+        iterations = int(self.iterations_spin.value())
+        poly_n = int(self.poly_n_spin.value())
+        poly_sigma = float(self.poly_sigma_spin.value())
+        return (
+            backend,
+            raft_model,
+            viz,
+            opacity,
+            quiver_step,
+            quiver_gain,
+            stable_hsv,
+            pyr_scale,
+            levels,
+            winsize,
+            iterations,
+            poly_n,
+            poly_sigma,
+        )

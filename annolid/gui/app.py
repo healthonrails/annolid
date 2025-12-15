@@ -310,7 +310,12 @@ class AnnolidWindow(MainWindow):
         self.flow_quiver_gain: float = 1.0
         self.flow_stable_hsv: bool = True
         self.optical_flow_raft_model: str = "small"
-        self.optical_flow_ndjson_path: str = ""
+        self.flow_farneback_pyr_scale: float = 0.5
+        self.flow_farneback_levels: int = 1
+        self.flow_farneback_winsize: int = 1
+        self.flow_farneback_iterations: int = 3
+        self.flow_farneback_poly_n: int = 3
+        self.flow_farneback_poly_sigma: float = 1.1
         self._load_optical_flow_settings()
         self.isPlaying = False
         self.event_type = None
@@ -663,10 +668,6 @@ class AnnolidWindow(MainWindow):
                 self.settings.value(
                     "optical_flow/visualization", self.flow_visualization)
             )
-            self.optical_flow_ndjson_path = str(
-                self.settings.value(
-                    "optical_flow/ndjson_path", self.optical_flow_ndjson_path)
-            )
             self.flow_opacity = int(
                 self.settings.value(
                     "optical_flow/opacity", self.flow_opacity)
@@ -682,6 +683,30 @@ class AnnolidWindow(MainWindow):
             self.flow_stable_hsv = bool(
                 self.settings.value(
                     "optical_flow/stable_hsv", self.flow_stable_hsv)
+            )
+            self.flow_farneback_pyr_scale = float(
+                self.settings.value(
+                    "optical_flow/farneback_pyr_scale", self.flow_farneback_pyr_scale)
+            )
+            self.flow_farneback_levels = int(
+                self.settings.value(
+                    "optical_flow/farneback_levels", self.flow_farneback_levels)
+            )
+            self.flow_farneback_winsize = int(
+                self.settings.value(
+                    "optical_flow/farneback_winsize", self.flow_farneback_winsize)
+            )
+            self.flow_farneback_iterations = int(
+                self.settings.value(
+                    "optical_flow/farneback_iterations", self.flow_farneback_iterations)
+            )
+            self.flow_farneback_poly_n = int(
+                self.settings.value(
+                    "optical_flow/farneback_poly_n", self.flow_farneback_poly_n)
+            )
+            self.flow_farneback_poly_sigma = float(
+                self.settings.value(
+                    "optical_flow/farneback_poly_sigma", self.flow_farneback_poly_sigma)
             )
         except Exception:
             pass

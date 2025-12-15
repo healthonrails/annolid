@@ -22,16 +22,22 @@ class FlowPreferences:
     backend: str = "farneback"
     raft_model: str = "small"
     visualization: str = "hsv"
-    ndjson_path: str = ""
     opacity: int = 70
     quiver_step: int = 16
     quiver_gain: float = 1.0
     stable_hsv: bool = True
+    farneback_pyr_scale: float = 0.5
+    farneback_levels: int = 1
+    farneback_winsize: int = 1
+    farneback_iterations: int = 3
+    farneback_poly_n: int = 3
+    farneback_poly_sigma: float = 1.1
 
 
 @dataclass
 class FlowRunSettings(FlowPreferences):
     video_path: str = ""
+    ndjson_path: str = ""
 
 
 class OpticalFlowTool(QtCore.QObject):
@@ -67,29 +73,51 @@ class OpticalFlowTool(QtCore.QObject):
             default_backend=prefs.backend,
             default_raft_model=prefs.raft_model,
             default_viz=prefs.visualization,
-            default_ndjson=prefs.ndjson_path or str(
-                self._default_ndjson_path()),
             default_opacity=prefs.opacity,
             default_quiver_step=prefs.quiver_step,
             default_quiver_gain=prefs.quiver_gain,
             default_stable_hsv=prefs.stable_hsv,
+            default_pyr_scale=prefs.farneback_pyr_scale,
+            default_levels=prefs.farneback_levels,
+            default_winsize=prefs.farneback_winsize,
+            default_iterations=prefs.farneback_iterations,
+            default_poly_n=prefs.farneback_poly_n,
+            default_poly_sigma=prefs.farneback_poly_sigma,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         values = dialog.values()
         if not values:
             return
-        backend, raft_model, viz_choice, ndjson_path, opacity, quiver_step, quiver_gain, stable_hsv = values
-        ndjson_path = ndjson_path or str(self._default_ndjson_path())
+        (
+            backend,
+            raft_model,
+            viz_choice,
+            opacity,
+            quiver_step,
+            quiver_gain,
+            stable_hsv,
+            pyr_scale,
+            levels,
+            winsize,
+            iterations,
+            poly_n,
+            poly_sigma,
+        ) = values
         updated = FlowPreferences(
             backend=backend,
             raft_model=raft_model,
             visualization=viz_choice,
-            ndjson_path=ndjson_path,
             opacity=opacity,
             quiver_step=quiver_step,
             quiver_gain=quiver_gain,
             stable_hsv=stable_hsv,
+            farneback_pyr_scale=pyr_scale,
+            farneback_levels=levels,
+            farneback_winsize=winsize,
+            farneback_iterations=iterations,
+            farneback_poly_n=poly_n,
+            farneback_poly_sigma=poly_sigma,
         )
         self._apply_preferences_to_window(updated)
         self._persist_preferences(updated)
@@ -203,23 +231,22 @@ class OpticalFlowTool(QtCore.QObject):
 
         prefs = self._current_preferences()
         self._apply_preferences_to_window(prefs)
-        ndjson_path = prefs.ndjson_path or self._flow_ndjson_path(video_path)
-        if isinstance(ndjson_path, Path):
-            ndjson_path = str(ndjson_path)
-        if not ndjson_path:
-            ndjson_path = str(self._default_ndjson_path(video_path))
-        ndjson_path = str(Path(ndjson_path).expanduser())
-
         return FlowRunSettings(
             video_path=video_path,
             backend=prefs.backend,
             raft_model=prefs.raft_model,
             visualization=prefs.visualization,
-            ndjson_path=str(ndjson_path),
+            ndjson_path=str(self._default_ndjson_path(video_path)),
             opacity=int(prefs.opacity),
             quiver_step=int(prefs.quiver_step),
             quiver_gain=float(prefs.quiver_gain),
             stable_hsv=bool(prefs.stable_hsv),
+            farneback_pyr_scale=float(prefs.farneback_pyr_scale),
+            farneback_levels=int(prefs.farneback_levels),
+            farneback_winsize=int(prefs.farneback_winsize),
+            farneback_iterations=int(prefs.farneback_iterations),
+            farneback_poly_n=int(prefs.farneback_poly_n),
+            farneback_poly_sigma=float(prefs.farneback_poly_sigma),
         )
 
     def _resolve_video_path(self) -> Optional[str]:
@@ -245,7 +272,12 @@ class OpticalFlowTool(QtCore.QObject):
         setattr(w, "flow_quiver_step", prefs.quiver_step)
         setattr(w, "flow_quiver_gain", prefs.quiver_gain)
         setattr(w, "flow_stable_hsv", prefs.stable_hsv)
-        setattr(w, "optical_flow_ndjson_path", prefs.ndjson_path)
+        setattr(w, "flow_farneback_pyr_scale", prefs.farneback_pyr_scale)
+        setattr(w, "flow_farneback_levels", prefs.farneback_levels)
+        setattr(w, "flow_farneback_winsize", prefs.farneback_winsize)
+        setattr(w, "flow_farneback_iterations", prefs.farneback_iterations)
+        setattr(w, "flow_farneback_poly_n", prefs.farneback_poly_n)
+        setattr(w, "flow_farneback_poly_sigma", prefs.farneback_poly_sigma)
 
     def _persist_preferences(self, prefs: FlowPreferences) -> None:
         settings = getattr(self._window, "settings", None)
@@ -254,11 +286,22 @@ class OpticalFlowTool(QtCore.QObject):
         settings.setValue("optical_flow/backend", prefs.backend)
         settings.setValue("optical_flow/raft_model", prefs.raft_model)
         settings.setValue("optical_flow/visualization", prefs.visualization)
-        settings.setValue("optical_flow/ndjson_path", prefs.ndjson_path)
         settings.setValue("optical_flow/opacity", prefs.opacity)
         settings.setValue("optical_flow/quiver_step", prefs.quiver_step)
         settings.setValue("optical_flow/quiver_gain", prefs.quiver_gain)
         settings.setValue("optical_flow/stable_hsv", prefs.stable_hsv)
+        settings.setValue("optical_flow/farneback_pyr_scale",
+                          prefs.farneback_pyr_scale)
+        settings.setValue("optical_flow/farneback_levels",
+                          prefs.farneback_levels)
+        settings.setValue("optical_flow/farneback_winsize",
+                          prefs.farneback_winsize)
+        settings.setValue("optical_flow/farneback_iterations",
+                          prefs.farneback_iterations)
+        settings.setValue("optical_flow/farneback_poly_n",
+                          prefs.farneback_poly_n)
+        settings.setValue("optical_flow/farneback_poly_sigma",
+                          prefs.farneback_poly_sigma)
 
     def _current_preferences(self) -> FlowPreferences:
         w = self._window
@@ -266,11 +309,19 @@ class OpticalFlowTool(QtCore.QObject):
             backend=str(getattr(w, "optical_flow_backend", "farneback")),
             raft_model=str(getattr(w, "optical_flow_raft_model", "small")),
             visualization=str(getattr(w, "flow_visualization", "hsv")),
-            ndjson_path=str(getattr(w, "optical_flow_ndjson_path", "") or ""),
             opacity=int(getattr(w, "flow_opacity", 70)),
             quiver_step=int(getattr(w, "flow_quiver_step", 16)),
             quiver_gain=float(getattr(w, "flow_quiver_gain", 1.0)),
             stable_hsv=bool(getattr(w, "flow_stable_hsv", True)),
+            farneback_pyr_scale=float(
+                getattr(w, "flow_farneback_pyr_scale", 0.5)),
+            farneback_levels=int(getattr(w, "flow_farneback_levels", 1)),
+            farneback_winsize=int(getattr(w, "flow_farneback_winsize", 1)),
+            farneback_iterations=int(
+                getattr(w, "flow_farneback_iterations", 3)),
+            farneback_poly_n=int(getattr(w, "flow_farneback_poly_n", 3)),
+            farneback_poly_sigma=float(
+                getattr(w, "flow_farneback_poly_sigma", 1.1)),
         )
 
     def _start_worker(self, settings: FlowRunSettings) -> None:
@@ -289,6 +340,12 @@ class OpticalFlowTool(QtCore.QObject):
             quiver_step=settings.quiver_step,
             quiver_gain=settings.quiver_gain,
             stable_hsv=settings.stable_hsv,
+            farneback_pyr_scale=settings.farneback_pyr_scale,
+            farneback_levels=settings.farneback_levels,
+            farneback_winsize=settings.farneback_winsize,
+            farneback_iterations=settings.farneback_iterations,
+            farneback_poly_n=settings.farneback_poly_n,
+            farneback_poly_sigma=settings.farneback_poly_sigma,
             progress_callback=None,
             preview_callback=None,
         )
@@ -334,12 +391,12 @@ class OpticalFlowTool(QtCore.QObject):
         return Path.home() / "flow.ndjson"
 
     def _flow_ndjson_path(self, video_file: Optional[str] = None) -> Optional[Path]:
-        if video_file is None:
-            video_file = getattr(self._window, "video_file", None)
-        if not video_file:
+        candidate = video_file or getattr(self._window, "video_file", None)
+        if not candidate:
             return None
-        video_path = Path(video_file)
-        return video_path.parent / video_path.stem / "flow.ndjson"
+        video_path = Path(candidate).expanduser()
+        flow_dir = video_path.parent / video_path.stem
+        return flow_dir / f"{video_path.stem}_flow.ndjson"
 
     def _decode_flow_component(
         self, comp: Dict[str, object], height: int, width: int
