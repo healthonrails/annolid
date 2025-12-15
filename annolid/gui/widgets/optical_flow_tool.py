@@ -4,7 +4,8 @@ import base64
 import json
 import gzip
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 import cv2
 import numpy as np
@@ -14,6 +15,23 @@ from annolid.gui.widgets.optical_flow_dialog import FlowOptionsDialog
 from annolid.gui.workers import FlexibleWorker
 from annolid.motion.flow_runner import process_video_flow, flow_to_color
 from annolid.utils import draw
+
+
+@dataclass
+class FlowPreferences:
+    backend: str = "farneback"
+    raft_model: str = "small"
+    visualization: str = "hsv"
+    ndjson_path: str = ""
+    opacity: int = 70
+    quiver_step: int = 16
+    quiver_gain: float = 1.0
+    stable_hsv: bool = True
+
+
+@dataclass
+class FlowRunSettings(FlowPreferences):
+    video_path: str = ""
 
 
 class OpticalFlowTool(QtCore.QObject):
@@ -32,101 +50,53 @@ class OpticalFlowTool(QtCore.QObject):
     # Public API
     # ------------------------------------------------------------------ #
     def run(self) -> None:
-        w = self._window
-        if self._worker_thread and self._worker_thread.isRunning():
-            QtWidgets.QMessageBox.information(
-                w,
-                w.tr("Already running"),
-                w.tr("Optical flow is already processing a video."),
-            )
+        if self._is_processing():
+            self._show_already_running_message()
             return
 
-        self._live_running = True
-        video_path = getattr(w, "video_file", "") or ""
-        if not video_path:
-            video_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                w,
-                w.tr("Select video for optical flow"),
-                str(Path.home()),
-                w.tr("Video Files (*.mp4 *.avi *.mov *.mkv)"),
-            )
-        if not video_path:
+        settings = self._build_run_settings()
+        if not settings:
             return
-        video_path = str(Path(video_path).expanduser().resolve())
+        self._start_worker(settings)
 
-        video_path_obj = Path(video_path)
-        default_ndjson = str(
-            video_path_obj.parent / video_path_obj.stem / "flow.ndjson"
-        )
+    def configure(self) -> None:
+        """Open a dialog to set optical-flow defaults without starting a run."""
+        prefs = self._current_preferences()
         dialog = FlowOptionsDialog(
-            w,
-            default_backend=getattr(w, "optical_flow_backend", "farneback"),
-            default_raft_model=getattr(w, "optical_flow_raft_model", "small"),
-            default_viz=getattr(w, "flow_visualization", "hsv"),
-            default_ndjson=default_ndjson,
-            default_opacity=getattr(w, "flow_opacity", 70),
-            default_quiver_step=getattr(w, "flow_quiver_step", 16),
-            default_quiver_gain=getattr(w, "flow_quiver_gain", 1.0),
-            default_stable_hsv=getattr(w, "flow_stable_hsv", True),
+            self._window,
+            default_backend=prefs.backend,
+            default_raft_model=prefs.raft_model,
+            default_viz=prefs.visualization,
+            default_ndjson=prefs.ndjson_path or str(
+                self._default_ndjson_path()),
+            default_opacity=prefs.opacity,
+            default_quiver_step=prefs.quiver_step,
+            default_quiver_gain=prefs.quiver_gain,
+            default_stable_hsv=prefs.stable_hsv,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         values = dialog.values()
         if not values:
             return
-
         backend, raft_model, viz_choice, ndjson_path, opacity, quiver_step, quiver_gain, stable_hsv = values
-        ndjson_path = ndjson_path or default_ndjson
-
-        setattr(w, "optical_flow_backend", backend)
-        setattr(w, "optical_flow_raft_model", raft_model)
-        setattr(w, "flow_visualization", viz_choice)
-        setattr(w, "flow_opacity", opacity)
-        setattr(w, "flow_quiver_step", quiver_step)
-        setattr(w, "flow_quiver_gain", quiver_gain)
-        setattr(w, "flow_stable_hsv", stable_hsv)
-
-        worker = FlexibleWorker(
-            process_video_flow,
-            video_path,
+        ndjson_path = ndjson_path or str(self._default_ndjson_path())
+        updated = FlowPreferences(
             backend=backend,
-            save_csv=None,
-            save_ndjson=ndjson_path,
-            sample_stride=1,
-            visualization=viz_choice,
             raft_model=raft_model,
+            visualization=viz_choice,
+            ndjson_path=ndjson_path,
             opacity=opacity,
             quiver_step=quiver_step,
             quiver_gain=quiver_gain,
             stable_hsv=stable_hsv,
-            progress_callback=None,
-            preview_callback=None,
         )
-        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(
-            percent
-        )
-        worker._kwargs["preview_callback"] = lambda payload: worker.preview_signal.emit(
-            payload
-        )
-
-        worker.progress_signal.connect(self._on_progress)
-        worker.preview_signal.connect(self._on_preview)
-
-        def _finished(result: object) -> None:
-            self._on_finished(result, Path(ndjson_path))
-
-        worker.finished_signal.connect(_finished)
-
-        worker_thread = QtCore.QThread(w)
-        worker.moveToThread(worker_thread)
-        worker.finished_signal.connect(worker_thread.quit)
-        worker_thread.started.connect(worker.run)
-        worker_thread.start()
-
-        self._worker = worker
-        self._worker_thread = worker_thread
+        self._apply_preferences_to_window(updated)
+        self._persist_preferences(updated)
         try:
-            w.statusBar().showMessage(w.tr("Optical flow running..."), 3000)
+            self._window.statusBar().showMessage(
+                self._window.tr("Optical flow settings updated."), 2500
+            )
         except Exception:
             pass
 
@@ -215,10 +185,153 @@ class OpticalFlowTool(QtCore.QObject):
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+    def _is_processing(self) -> bool:
+        return bool(self._worker_thread and self._worker_thread.isRunning())
+
+    def _show_already_running_message(self) -> None:
+        w = self._window
+        QtWidgets.QMessageBox.information(
+            w,
+            w.tr("Already running"),
+            w.tr("Optical flow is already processing a video."),
+        )
+
+    def _build_run_settings(self) -> Optional[FlowRunSettings]:
+        video_path = self._resolve_video_path()
+        if not video_path:
+            return None
+
+        prefs = self._current_preferences()
+        self._apply_preferences_to_window(prefs)
+        ndjson_path = prefs.ndjson_path or self._flow_ndjson_path(video_path)
+        if isinstance(ndjson_path, Path):
+            ndjson_path = str(ndjson_path)
+        if not ndjson_path:
+            ndjson_path = str(self._default_ndjson_path(video_path))
+        ndjson_path = str(Path(ndjson_path).expanduser())
+
+        return FlowRunSettings(
+            video_path=video_path,
+            backend=prefs.backend,
+            raft_model=prefs.raft_model,
+            visualization=prefs.visualization,
+            ndjson_path=str(ndjson_path),
+            opacity=int(prefs.opacity),
+            quiver_step=int(prefs.quiver_step),
+            quiver_gain=float(prefs.quiver_gain),
+            stable_hsv=bool(prefs.stable_hsv),
+        )
+
+    def _resolve_video_path(self) -> Optional[str]:
+        w = self._window
+        video_path = getattr(w, "video_file", "") or ""
+        if not video_path:
+            video_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                w,
+                w.tr("Select video for optical flow"),
+                str(Path.home()),
+                w.tr("Video Files (*.mp4 *.avi *.mov *.mkv)"),
+            )
+        if not video_path:
+            return None
+        return str(Path(video_path).expanduser().resolve())
+
+    def _apply_preferences_to_window(self, prefs: FlowPreferences) -> None:
+        w = self._window
+        setattr(w, "optical_flow_backend", prefs.backend)
+        setattr(w, "optical_flow_raft_model", prefs.raft_model)
+        setattr(w, "flow_visualization", prefs.visualization)
+        setattr(w, "flow_opacity", prefs.opacity)
+        setattr(w, "flow_quiver_step", prefs.quiver_step)
+        setattr(w, "flow_quiver_gain", prefs.quiver_gain)
+        setattr(w, "flow_stable_hsv", prefs.stable_hsv)
+        setattr(w, "optical_flow_ndjson_path", prefs.ndjson_path)
+
+    def _persist_preferences(self, prefs: FlowPreferences) -> None:
+        settings = getattr(self._window, "settings", None)
+        if not isinstance(settings, QtCore.QSettings):
+            return
+        settings.setValue("optical_flow/backend", prefs.backend)
+        settings.setValue("optical_flow/raft_model", prefs.raft_model)
+        settings.setValue("optical_flow/visualization", prefs.visualization)
+        settings.setValue("optical_flow/ndjson_path", prefs.ndjson_path)
+        settings.setValue("optical_flow/opacity", prefs.opacity)
+        settings.setValue("optical_flow/quiver_step", prefs.quiver_step)
+        settings.setValue("optical_flow/quiver_gain", prefs.quiver_gain)
+        settings.setValue("optical_flow/stable_hsv", prefs.stable_hsv)
+
+    def _current_preferences(self) -> FlowPreferences:
+        w = self._window
+        return FlowPreferences(
+            backend=str(getattr(w, "optical_flow_backend", "farneback")),
+            raft_model=str(getattr(w, "optical_flow_raft_model", "small")),
+            visualization=str(getattr(w, "flow_visualization", "hsv")),
+            ndjson_path=str(getattr(w, "optical_flow_ndjson_path", "") or ""),
+            opacity=int(getattr(w, "flow_opacity", 70)),
+            quiver_step=int(getattr(w, "flow_quiver_step", 16)),
+            quiver_gain=float(getattr(w, "flow_quiver_gain", 1.0)),
+            stable_hsv=bool(getattr(w, "flow_stable_hsv", True)),
+        )
+
+    def _start_worker(self, settings: FlowRunSettings) -> None:
+        w = self._window
+        self._live_running = True
+        worker = FlexibleWorker(
+            process_video_flow,
+            settings.video_path,
+            backend=settings.backend,
+            save_csv=None,
+            save_ndjson=settings.ndjson_path,
+            sample_stride=1,
+            visualization=settings.visualization,
+            raft_model=settings.raft_model,
+            opacity=settings.opacity,
+            quiver_step=settings.quiver_step,
+            quiver_gain=settings.quiver_gain,
+            stable_hsv=settings.stable_hsv,
+            progress_callback=None,
+            preview_callback=None,
+        )
+        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(
+            percent
+        )
+        worker._kwargs["preview_callback"] = lambda payload: worker.preview_signal.emit(
+            payload
+        )
+
+        worker.progress_signal.connect(self._on_progress)
+        worker.preview_signal.connect(self._on_preview)
+
+        def _finished(result: object) -> None:
+            self._on_finished(result, Path(settings.ndjson_path))
+
+        worker.finished_signal.connect(_finished)
+
+        worker_thread = QtCore.QThread(w)
+        worker.moveToThread(worker_thread)
+        worker.finished_signal.connect(worker_thread.quit)
+        worker_thread.started.connect(worker.run)
+        worker_thread.start()
+
+        self._worker = worker
+        self._worker_thread = worker_thread
+        try:
+            w.statusBar().showMessage(w.tr("Optical flow running..."), 3000)
+        except Exception:
+            pass
+
     def _opacity_alpha(self) -> int:
         w = self._window
         opacity = float(getattr(w, "flow_opacity", 70))
         return int(np.clip(opacity, 0, 100) / 100.0 * 255.0)
+
+    def _default_ndjson_path(
+        self, video_file: Optional[str] = None
+    ) -> Path:
+        path = self._flow_ndjson_path(video_file)
+        if path:
+            return path
+        return Path.home() / "flow.ndjson"
 
     def _flow_ndjson_path(self, video_file: Optional[str] = None) -> Optional[Path]:
         if video_file is None:

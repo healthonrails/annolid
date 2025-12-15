@@ -147,7 +147,7 @@ class MenuController:
                 "name": "run_optical_flow",
                 "text": w.tr("Run &Optical Flow..."),
                 "slot": w.run_optical_flow_tool,
-                "tip": w.tr("Run optical flow (Farneback or RAFT), preview on canvas, and optionally export stats"),
+                "tip": w.tr("Run optical flow with saved settings, preview on canvas, and optionally export stats"),
             },
             {
                 "name": "tracking_reports",
@@ -286,6 +286,12 @@ class MenuController:
                 "slot": w.run_sam3d_reconstruction,
                 "tip": w.tr("Generate a 3D Gaussian splat using SAM 3D Objects"),
                 "icon_name": "objects",
+            },
+            {
+                "name": "optical_flow_settings",
+                "text": w.tr("Optical Flow Settings..."),
+                "slot": w.configure_optical_flow_settings,
+                "tip": w.tr("Configure optical flow backend, overlays, and outputs"),
             },
             {
                 "name": "depth_settings",
@@ -516,6 +522,7 @@ class MenuController:
 
         settings_actions = [
             actions["advance_params"],
+            actions["optical_flow_settings"],
             actions["depth_settings"],
             actions["sam3d_settings"],
             w.patch_similarity_settings_action,

@@ -303,12 +303,15 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.video_file = None
         self._depth_ndjson_records: Dict[int, Dict[str, object]] = {}
+        self.optical_flow_backend: str = "farneback"
         self.flow_visualization: str = "hsv"
         self.flow_opacity: int = 70  # percent
         self.flow_quiver_step: int = 16
         self.flow_quiver_gain: float = 1.0
         self.flow_stable_hsv: bool = True
         self.optical_flow_raft_model: str = "small"
+        self.optical_flow_ndjson_path: str = ""
+        self._load_optical_flow_settings()
         self.isPlaying = False
         self.event_type = None
         self._time_stamp = ''
@@ -345,8 +348,6 @@ class AnnolidWindow(MainWindow):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
-        self.optical_flow_backend = "farneback"
-        self.optical_flow_backend = "farneback"
         self.playButton = None
         self.saveButton = None
         # Create progress bar
@@ -641,6 +642,49 @@ class AnnolidWindow(MainWindow):
     def run_optical_flow_tool(self):
         """Open the optical-flow tool dialog and run flow."""
         return self.optical_flow_tool.run()
+
+    def configure_optical_flow_settings(self):
+        """Open the optical-flow settings dialog without starting processing."""
+        self.optical_flow_tool.configure()
+
+    def _load_optical_flow_settings(self) -> None:
+        if not isinstance(getattr(self, "settings", None), QtCore.QSettings):
+            return
+        try:
+            self.optical_flow_backend = str(
+                self.settings.value(
+                    "optical_flow/backend", self.optical_flow_backend)
+            )
+            self.optical_flow_raft_model = str(
+                self.settings.value(
+                    "optical_flow/raft_model", self.optical_flow_raft_model)
+            )
+            self.flow_visualization = str(
+                self.settings.value(
+                    "optical_flow/visualization", self.flow_visualization)
+            )
+            self.optical_flow_ndjson_path = str(
+                self.settings.value(
+                    "optical_flow/ndjson_path", self.optical_flow_ndjson_path)
+            )
+            self.flow_opacity = int(
+                self.settings.value(
+                    "optical_flow/opacity", self.flow_opacity)
+            )
+            self.flow_quiver_step = int(
+                self.settings.value(
+                    "optical_flow/quiver_step", self.flow_quiver_step)
+            )
+            self.flow_quiver_gain = float(
+                self.settings.value(
+                    "optical_flow/quiver_gain", self.flow_quiver_gain)
+            )
+            self.flow_stable_hsv = bool(
+                self.settings.value(
+                    "optical_flow/stable_hsv", self.flow_stable_hsv)
+            )
+        except Exception:
+            pass
 
     def trigger_gap_analysis(self):
         """
