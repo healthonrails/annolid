@@ -3,20 +3,24 @@
 <!DOCTYPE html>
 <html class="writer-html5" lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Track animals and Auto labeling &mdash; annolid v1.0.1 documentation</title>
+  <title>Track animals and Auto labeling &mdash; annolid unknown documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
 
   
-      <script src="_static/jquery.js"></script>
-      <script src="_static/underscore.js"></script>
-      <script src="_static/doctools.js"></script>
-      <script src="_static/language_data.js"></script>
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js?v=680b02e7"></script>
+      <script src="_static/doctools.js?v=888ff710"></script>
+      <script src="_static/sphinx_highlight.js?v=4825356b"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Config keypoint connection rules, events, and instances" href="keypoints_definitions.html" />
-    <link rel="prev" title="Extract desired number of frames from a video based on optical flow" href="extract_frames.html" /> 
+    <link rel="prev" title="Extract Frames" href="extract_frames.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -41,14 +45,7 @@
               <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
-<li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-locally">Install Detectron2 locally</a></li>
-<li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-on-google-colab">Install Detectron2 on Google Colab</a></li>
-<li class="toctree-l1"><a class="reference internal" href="install.html#optional-install-older-version-of-pytorch-for-yolact">Optional: Install older version of Pytorch for YOLACT</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract desired number of frames from a video based on optical flow</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#display-optical-flow-while-extracting-frames-with-show-flow-true">Display optical flow while extracting frames with <strong>–show_flow=True</strong></a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#save-all-the-frames-as-images">Save all the frames as images</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#select-frames-randomly-by-reservoir-sampling">Select frames randomly by reservoir sampling</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#extract-all-the-key-frames-from-a-video-used-by-the-compression-methods">Extract all the key frames from a video used by the compression methods</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Track animals and Auto labeling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="#output-csv-format">Output CSV format</a></li>
 <li class="toctree-l1"><a class="reference internal" href="#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a><ul>
@@ -60,18 +57,7 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html">Threshold based object segmenation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-wmv-format-to-mp4-format-using-ffmpeg">Convert WMV format to mp4 format using ffmpeg</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#save-the-extracted-frames-to-a-user-selected-output-directory">Save the extracted frames to a user selected output directory</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-track-multiple-objects-in-the-video">How to track multiple objects in the video?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-convert-coco-annonation-format-to-yolov5-format">How to convert coco annonation format to YOLOV5 format?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-train-a-custom-yolov5-model">How to train a custom YOLOV5 model?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-track-objects-in-a-video-with-the-trained-model">How to track objects in a video with the trained model?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-convert-labelme-labeled-dataset-to-coco-format">How to convert labelme labeled dataset to COCO format?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-train-a-yolact-model-with-a-custom-dataset">How to train a YOLACT model with a custom dataset?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-evaluate-a-video-based-on-a-trained-model">How to evaluate a video based on a trained model?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-the-tracking-results-csv-file-to-glitter2-csv-format">Convert the tracking results csv file to Glitter2 csv format</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-the-keypoint-annotations-to-labelme-format">Convert the keypoint annotations to labelme format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
 </ul>
 
         </div>
@@ -98,8 +84,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <div class="section" id="track-animals-and-auto-labeling">
-<h1>Track animals and Auto labeling<a class="headerlink" href="#track-animals-and-auto-labeling" title="Permalink to this headline">¶</a></h1>
+  <section id="track-animals-and-auto-labeling">
+<h1>Track animals and Auto labeling<a class="headerlink" href="#track-animals-and-auto-labeling" title="Permalink to this heading"></a></h1>
 <p>Click <code class="docutils literal notranslate"><span class="pre">Track</span> <span class="pre">Animals</span></code> button on the toolbar, fill the info in the opened dialog as follows.</p>
 <p><img alt="Track Animals and objects" src="_images/track_animals.png" /></p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">Detectron2</span></code> as the default model type</p>
@@ -109,11 +95,11 @@
 <p>The output result folder is optional.</p>
 <p>Note. You need to <a class="reference external" href="https://healthonrails.github.io/annolid/install.html#install-detectron2-locally">install <code class="docutils literal notranslate"><span class="pre">Detectron2</span></code></a> on your local device. If your workstation does not have a GPU card, it will only extract the key frames from the provided video and will save predicted results as json format in the same png image folder.
 Here is an example of predicted polygon annotions.</p>
-<p><img alt="_images/predicted_polygons.png" src="_images/predicted_polygons.png" />
+<p><img alt="" src="_images/predicted_polygons.png" />
 The GPU workstation will run inference for all the frames in the provided video and will save the predicted results into a CSV file.</p>
-</div>
-<div class="section" id="output-csv-format">
-<h1>Output CSV format<a class="headerlink" href="#output-csv-format" title="Permalink to this headline">¶</a></h1>
+</section>
+<section id="output-csv-format">
+<h1>Output CSV format<a class="headerlink" href="#output-csv-format" title="Permalink to this heading"></a></h1>
 <p>Here are the columns of the Annolid CSV output format:</p>
 <p>frame_number: int, 0 based numbers for frames e.g. 10 the 11th frame</p>
 <p>x1: float, the top left x value of the instance bounding box</p>
@@ -125,12 +111,12 @@ The GPU workstation will run inference for all the frames in the provided video 
 <p>segmentation: run length encoding of the instance binary mask</p>
 <p>cx: float, optional, the center x value of the instance bounding box</p>
 <p>cy: float, optional, the center y value of the instance bounding box</p>
-</div>
-<div class="section" id="cutie-dino-body-part-tracker">
-<h1>Cutie + DINO Body-Part Tracker<a class="headerlink" href="#cutie-dino-body-part-tracker" title="Permalink to this headline">¶</a></h1>
+</section>
+<section id="cutie-dino-body-part-tracker">
+<h1>Cutie + DINO Body-Part Tracker<a class="headerlink" href="#cutie-dino-body-part-tracker" title="Permalink to this heading"></a></h1>
 <p>The Cutie + DINO tracker pairs Cutie’s video object segmentation with DINO patch descriptors to preserve keypoint identity across long and challenging clips. The runtime can be tweaked through <code class="docutils literal notranslate"><span class="pre">CutieDinoTrackerConfig</span></code> to prioritise appearance, structure, or symmetry cues depending on the animal and camera setup.</p>
-<div class="section" id="key-runtime-parameters">
-<h2>Key runtime parameters<a class="headerlink" href="#key-runtime-parameters" title="Permalink to this headline">¶</a></h2>
+<section id="key-runtime-parameters">
+<h2>Key runtime parameters<a class="headerlink" href="#key-runtime-parameters" title="Permalink to this heading"></a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">appearance_bundle_radius</span></code> / <code class="docutils literal notranslate"><span class="pre">appearance_bundle_size</span></code> / <code class="docutils literal notranslate"><span class="pre">appearance_bundle_weight</span></code> control the per-keypoint appearance codebook. Increase the radius and size to gather more context in the first frame; raise the weight when fur patterns are distinctive and you want candidate patches that match the stored descriptors to win.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">baseline_similarity_weight</span></code> penalises candidates that deviate from the initial (first-frame) descriptor quality. Increase it to keep keypoints glued to their original look when lighting is stable; lower it when the appearance changes dramatically over time.</p></li>
@@ -143,9 +129,9 @@ The GPU workstation will run inference for all the frames in the provided video 
 <li><p><code class="docutils literal notranslate"><span class="pre">mask_dilation_iterations</span></code>, <code class="docutils literal notranslate"><span class="pre">mask_dilation_kernel</span></code>, <code class="docutils literal notranslate"><span class="pre">mask_similarity_bonus</span></code>, and <code class="docutils literal notranslate"><span class="pre">max_mask_fallback_frames</span></code> control the mask-aware matching stage. They determine how aggressively stored masks are dilated and how much bonus a candidate receives for staying inside the expected region when Cutie has fresh or fallback predictions.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">support_probe_count</span></code> / <code class="docutils literal notranslate"><span class="pre">support_probe_sigma</span></code> / <code class="docutils literal notranslate"><span class="pre">support_probe_radius</span></code> / <code class="docutils literal notranslate"><span class="pre">support_probe_weight</span></code> sample Gaussian-distributed “support probes” around each keypoint to keep local context consistent. Increase the count or weight when nearby appearance cues (fur tufts, tattoos) help disambiguate swaps; widen the radius if the animal stretches markedly between frames. <code class="docutils literal notranslate"><span class="pre">support_probe_mask_only</span></code> restricts probes to Cutie’s mask and <code class="docutils literal notranslate"><span class="pre">support_probe_mask_bonus</span></code> adds a small reward when probes stay inside the current mask corridor.</p></li>
 </ul>
-</div>
-<div class="section" id="tuning-guidance">
-<h2>Tuning guidance<a class="headerlink" href="#tuning-guidance" title="Permalink to this headline">¶</a></h2>
+</section>
+<section id="tuning-guidance">
+<h2>Tuning guidance<a class="headerlink" href="#tuning-guidance" title="Permalink to this heading"></a></h2>
 <ul class="simple">
 <li><p>Manual corrections saved from LabelMe (keep the <code class="docutils literal notranslate"><span class="pre">.json</span></code> and matching <code class="docutils literal notranslate"><span class="pre">.png</span></code>) now force a full reset of the Cutie mask cache and the descriptor tracker when you resume. This wipes stale velocities and mask history so the next segment of tracking begins from your latest edits.</p></li>
 <li><p><strong>Symmetric rodents during sharp turns:</strong> set <code class="docutils literal notranslate"><span class="pre">symmetry_pairs</span></code> for all left/right body parts and bump <code class="docutils literal notranslate"><span class="pre">symmetry_penalty</span></code> to <code class="docutils literal notranslate"><span class="pre">0.6–0.8</span></code>. Keep <code class="docutils literal notranslate"><span class="pre">structural_consistency_weight</span></code> at <code class="docutils literal notranslate"><span class="pre">0.3+</span></code> so ear and tail distances stay coherent. This prevents swaps when the animal spins.</p></li>
@@ -156,28 +142,28 @@ The GPU workstation will run inference for all the frames in the provided video 
 <li><p><strong>Ambiguous local descriptors:</strong> raise <code class="docutils literal notranslate"><span class="pre">support_probe_weight</span></code> toward <code class="docutils literal notranslate"><span class="pre">0.5</span></code> and add more probes so the tracker checks neighbouring fur/texture consistency before accepting a candidate. If the mask is reliable, keep <code class="docutils literal notranslate"><span class="pre">support_probe_mask_only=True</span></code> to bias probes toward valid anatomy.</p></li>
 <li><p><strong>Quality monitoring:</strong> each JSON keypoint now carries <code class="docutils literal notranslate"><span class="pre">velocity</span></code>, <code class="docutils literal notranslate"><span class="pre">misses</span></code>, and <code class="docutils literal notranslate"><span class="pre">quality</span></code> flags. Downstream analytics can watch for spikes in <code class="docutils literal notranslate"><span class="pre">misses</span></code> or drops in <code class="docutils literal notranslate"><span class="pre">quality</span></code> to trigger re-initialisation or manual review.</p></li>
 </ul>
-<div class="section" id="updating-the-tracker-config">
-<h3>Updating the tracker config<a class="headerlink" href="#updating-the-tracker-config" title="Permalink to this headline">¶</a></h3>
+<section id="updating-the-tracker-config">
+<h3>Updating the tracker config<a class="headerlink" href="#updating-the-tracker-config" title="Permalink to this heading"></a></h3>
 <p>Both the CLI and GUI share the same configuration plumbing. Add a <code class="docutils literal notranslate"><span class="pre">tracker</span></code> block to your Annolid config (the GUI writes it to <code class="docutils literal notranslate"><span class="pre">~/.labelmerc</span></code>) to override the runtime defaults:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">tracker</span><span class="p">:</span>
-  <span class="nt">motion_search_tighten</span><span class="p">:</span> <span class="l l-Scalar l-Scalar-Plain">0.8</span>
-  <span class="nt">motion_search_gain</span><span class="p">:</span> <span class="l l-Scalar l-Scalar-Plain">0.9</span>
-  <span class="nt">motion_prior_penalty_weight</span><span class="p">:</span> <span class="l l-Scalar l-Scalar-Plain">0.25</span>
-  <span class="nt">motion_prior_miss_relief</span><span class="p">:</span> <span class="l l-Scalar l-Scalar-Plain">1.25</span>
-  <span class="nt">mask_enforce_position</span><span class="p">:</span> <span class="l l-Scalar l-Scalar-Plain">true</span>
-  <span class="nt">mask_enforce_search_radius</span><span class="p">:</span> <span class="l l-Scalar l-Scalar-Plain">16</span>
+<span class="w">  </span><span class="nt">motion_search_tighten</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.8</span>
+<span class="w">  </span><span class="nt">motion_search_gain</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
+<span class="w">  </span><span class="nt">motion_prior_penalty_weight</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.25</span>
+<span class="w">  </span><span class="nt">motion_prior_miss_relief</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.25</span>
+<span class="w">  </span><span class="nt">mask_enforce_position</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">mask_enforce_search_radius</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span>
 </pre></div>
 </div>
 <p>When launching the GUI, pass <code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">my_tracker.yaml</span></code> to test different presets, or edit the saved config from <code class="docutils literal notranslate"><span class="pre">File</span> <span class="pre">→</span> <span class="pre">Preferences</span> <span class="pre">→</span> <span class="pre">Save</span> <span class="pre">Config</span></code> and restart. Programmatic and CLI workflows can instantiate <code class="docutils literal notranslate"><span class="pre">CutieDinoTrackerConfig(**config[&quot;tracker&quot;])</span></code> and pass it to <code class="docutils literal notranslate"><span class="pre">DinoKeypointVideoProcessor</span></code> to reuse the same knobs.</p>
-</div>
-</div>
-</div>
+</section>
+</section>
+</section>
 
 
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="extract_frames.html" class="btn btn-neutral float-left" title="Extract desired number of frames from a video based on optical flow" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="extract_frames.html" class="btn btn-neutral float-left" title="Extract Frames" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="keypoints_definitions.html" class="btn btn-neutral float-right" title="Config keypoint connection rules, events, and instances" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

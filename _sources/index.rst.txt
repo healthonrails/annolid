@@ -4,12 +4,12 @@ Welcome to annolid's documentation!
 .. toctree::
    :maxdepth: 2
    
-   guide.rst
-   install.rst
-   extract_frames.md
-   track_animals.md
-   keypoints_definitions.md
-   faqs.md
+   guide
+   install
+   extract_frames
+   track_animals
+   keypoints_definitions
+   faqs
 
 Indices and tables
 ==================

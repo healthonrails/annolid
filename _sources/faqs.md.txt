@@ -1,3 +1,5 @@
+# FAQs
+
 ## Threshold based object segmenation
 Added track bars for users to select HSV values to 
 segment ROIs in the provided video. 
@@ -115,4 +117,3 @@ python annolid/main.py --keypoints2labelme /path/to/mouse_m7s3/  --keypoints /pa
 
 ```
 ![Example](../imgs/mouse_keypoints.png)
-

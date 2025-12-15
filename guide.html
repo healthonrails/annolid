@@ -3,15 +3,19 @@
 <!DOCTYPE html>
 <html class="writer-html5" lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Annolid User Guide &mdash; annolid v1.0.1 documentation</title>
+  <title>Annolid User Guide &mdash; annolid unknown documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
 
   
-      <script src="_static/jquery.js"></script>
-      <script src="_static/underscore.js"></script>
-      <script src="_static/doctools.js"></script>
-      <script src="_static/language_data.js"></script>
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js?v=680b02e7"></script>
+      <script src="_static/doctools.js?v=888ff710"></script>
+      <script src="_static/sphinx_highlight.js?v=4825356b"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -59,30 +63,12 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
-<li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-locally">Install Detectron2 locally</a></li>
-<li class="toctree-l1"><a class="reference internal" href="install.html#install-detectron2-on-google-colab">Install Detectron2 on Google Colab</a></li>
-<li class="toctree-l1"><a class="reference internal" href="install.html#optional-install-older-version-of-pytorch-for-yolact">Optional: Install older version of Pytorch for YOLACT</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract desired number of frames from a video based on optical flow</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#display-optical-flow-while-extracting-frames-with-show-flow-true">Display optical flow while extracting frames with <strong>–show_flow=True</strong></a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#save-all-the-frames-as-images">Save all the frames as images</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#select-frames-randomly-by-reservoir-sampling">Select frames randomly by reservoir sampling</a></li>
-<li class="toctree-l1"><a class="reference internal" href="extract_frames.html#extract-all-the-key-frames-from-a-video-used-by-the-compression-methods">Extract all the key frames from a video used by the compression methods</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
 <li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
 <li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
 <li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html">Threshold based object segmenation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-wmv-format-to-mp4-format-using-ffmpeg">Convert WMV format to mp4 format using ffmpeg</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#save-the-extracted-frames-to-a-user-selected-output-directory">Save the extracted frames to a user selected output directory</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-track-multiple-objects-in-the-video">How to track multiple objects in the video?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-convert-coco-annonation-format-to-yolov5-format">How to convert coco annonation format to YOLOV5 format?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-train-a-custom-yolov5-model">How to train a custom YOLOV5 model?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-track-objects-in-a-video-with-the-trained-model">How to track objects in a video with the trained model?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-convert-labelme-labeled-dataset-to-coco-format">How to convert labelme labeled dataset to COCO format?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-train-a-yolact-model-with-a-custom-dataset">How to train a YOLACT model with a custom dataset?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#how-to-evaluate-a-video-based-on-a-trained-model">How to evaluate a video based on a trained model?</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-the-tracking-results-csv-file-to-glitter2-csv-format">Convert the tracking results csv file to Glitter2 csv format</a></li>
-<li class="toctree-l1"><a class="reference internal" href="faqs.html#convert-the-keypoint-annotations-to-labelme-format">Convert the keypoint annotations to labelme format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
 </ul>
 
         </div>
@@ -109,39 +95,39 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <div class="section" id="annolid-user-guide">
-<h1>Annolid User Guide<a class="headerlink" href="#annolid-user-guide" title="Permalink to this headline">¶</a></h1>
-<div class="section" id="overview">
-<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+  <section id="annolid-user-guide">
+<h1>Annolid User Guide<a class="headerlink" href="#annolid-user-guide" title="Permalink to this heading"></a></h1>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this heading"></a></h2>
 <p>Annolid is an instance segmentation based tracking and behavioral analysis package for videos.</p>
 <p>It supports instance segmentation based tracking, and behavioral analysis.</p>
 <img alt="https://raw.githubusercontent.com/healthonrails/annolid/master/docs/imgs/annolid_workflow.png" src="https://raw.githubusercontent.com/healthonrails/annolid/master/docs/imgs/annolid_workflow.png" />
 <p>Figure 1. Overview of Annolid workflow.</p>
 <p>The tracking result CSV files can be imported
 into Glitter2 for correction or analysis.</p>
-</div>
-<div class="section" id="video-guide">
-<h2>Video guide<a class="headerlink" href="#video-guide" title="Permalink to this headline">¶</a></h2>
+</section>
+<section id="video-guide">
+<h2>Video guide<a class="headerlink" href="#video-guide" title="Permalink to this heading"></a></h2>
 <p>Following is a video for instance segmentation based pose estimation.</p>
-<p>Please see the <a class="reference external" href="https://healthonrails.github.io/annolid/install.html">Install Annolid</a> section for instructions on how to download and install Annolid.</p>
-<div class="section" id="pose-estimation">
-<h3>Pose estimation<a class="headerlink" href="#pose-estimation" title="Permalink to this headline">¶</a></h3>
+<p>Please see <a class="reference internal" href="install.html"><span class="doc">Install Annolid</span></a> for instructions on how to download and install Annolid.</p>
+<section id="pose-estimation">
+<h3>Pose estimation<a class="headerlink" href="#pose-estimation" title="Permalink to this heading"></a></h3>
 <p>This video shows pose estimation results based on instance segmentation methods.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/op3A4_LuVj8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="optical-flow-estimation">
-<h3>Optical flow estimation<a class="headerlink" href="#optical-flow-estimation" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="optical-flow-estimation">
+<h3>Optical flow estimation<a class="headerlink" href="#optical-flow-estimation" title="Permalink to this heading"></a></h3>
 <p>This video shows self-supervised optical flow estimation in Annolid.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/EpQ9JPZgcYE" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="extract-frames">
-<h3>Extract frames<a class="headerlink" href="#extract-frames" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="extract-frames">
+<h3>Extract frames<a class="headerlink" href="#extract-frames" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to extract frames frome a video.</p>
 <p>First, start the <cite>Annolid</cite> GUI. Click Extract frames in the toolbar list.
 When the dialog opens, click the and select the video file.
@@ -154,81 +140,81 @@ You can check the extract frames by clicking the files in the file list.</p>
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="label-zones">
-<h3>Label Zones<a class="headerlink" href="#label-zones" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="label-zones">
+<h3>Label Zones<a class="headerlink" href="#label-zones" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to label zones and non-moving objects in a video frame.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/zX8cUImRI_s" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="save-labels">
-<h3>Save labels<a class="headerlink" href="#save-labels" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="save-labels">
+<h3>Save labels<a class="headerlink" href="#save-labels" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to save labels for your dataset.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/pb8X4bqLRZ0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="create-your-coco-format-dataset">
-<h3>Create your COCO format dataset<a class="headerlink" href="#create-your-coco-format-dataset" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="create-your-coco-format-dataset">
+<h3>Create your COCO format dataset<a class="headerlink" href="#create-your-coco-format-dataset" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to create your dataset in COCO format.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/_oNGc_44eZ8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="install-and-run-detectron2-in-google-colab">
-<h3>Install and run Detectron2 in Google Colab<a class="headerlink" href="#install-and-run-detectron2-in-google-colab" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="install-and-run-detectron2-in-google-colab">
+<h3>Install and run Detectron2 in Google Colab<a class="headerlink" href="#install-and-run-detectron2-in-google-colab" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to install and run Detectron2 in Google Colab.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/iQRVR7GPBH0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="upload-and-visualize-your-dataset-in-detectron2-colab">
-<h3>Upload and visualize your dataset in Detectron2 Colab<a class="headerlink" href="#upload-and-visualize-your-dataset-in-detectron2-colab" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="upload-and-visualize-your-dataset-in-detectron2-colab">
+<h3>Upload and visualize your dataset in Detectron2 Colab<a class="headerlink" href="#upload-and-visualize-your-dataset-in-detectron2-colab" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to upload and visualize your dataset in Detectron2 Colab.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/7zYNRfY0yy4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab">
-<h3>Train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab<a class="headerlink" href="#train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab">
+<h3>Train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab<a class="headerlink" href="#train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/n7VDmh3LFRk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="inference-on-a-test-video-in-detectron2-colab">
-<h3>Inference on a test video in Detectron2 Colab<a class="headerlink" href="#inference-on-a-test-video-in-detectron2-colab" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="inference-on-a-test-video-in-detectron2-colab">
+<h3>Inference on a test video in Detectron2 Colab<a class="headerlink" href="#inference-on-a-test-video-in-detectron2-colab" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to perform instance segmentation on a test video in Detectron2 Colab.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/eiF5TpZ796E" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="save-and-download-the-tracking-results-from-detectron2-colab">
-<h3>Save and download the tracking results from Detectron2 Colab<a class="headerlink" href="#save-and-download-the-tracking-results-from-detectron2-colab" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="save-and-download-the-tracking-results-from-detectron2-colab">
+<h3>Save and download the tracking results from Detectron2 Colab<a class="headerlink" href="#save-and-download-the-tracking-results-from-detectron2-colab" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to download and save the tracking results from Detectron2 Colab.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/vshDSMpYhgw" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-<div class="section" id="convert-instance-segmentation-results-to-glitter2-format">
-<h3>Convert instance segmentation results to Glitter2 format<a class="headerlink" href="#convert-instance-segmentation-results-to-glitter2-format" title="Permalink to this headline">¶</a></h3>
+</section>
+<section id="convert-instance-segmentation-results-to-glitter2-format">
+<h3>Convert instance segmentation results to Glitter2 format<a class="headerlink" href="#convert-instance-segmentation-results-to-glitter2-format" title="Permalink to this heading"></a></h3>
 <p>In this video, we’ll show you how to convert instance segmentation results to Glitter2 format.</p>
 <iframe width="560" height="315" src="https://www.youtube.com/embed/QW8dhAVNsk0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
 <div class="line"><br /></div>
 <div class="line"><br /></div>
 </div>
-</div>
-</div>
-</div>
+</section>
+</section>
+</section>
 
 
            </div>

@@ -1,3 +1,5 @@
+# Extract Frames
+
 ## Extract desired number of frames from a video based on optical flow
 
 ```bash
@@ -7,7 +9,7 @@ The above command will extract 100 frames from the provided video and save them 
 
 Or you can use the GUI as follows.
 
-![Extract frames](docs/imgs/extract_frames_dialog.png)
+![Extract frames](../imgs/extract_frames_dialog.png)
 
 ## Display optical flow while extracting frames with **--show_flow=True**
 ```bash
