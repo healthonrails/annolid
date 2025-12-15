@@ -22,7 +22,7 @@ Video guide
 
 Following is a video for instance segmentation based pose estimation.
 
-Please see the `Install Annolid <https://healthonrails.github.io/annolid/install.html>`_ section for instructions on how to download and install Annolid.
+Please see :doc:`install` for instructions on how to download and install Annolid.
 
 Pose estimation
 ~~~~~~~~~~~~~~~~~~~~

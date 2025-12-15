@@ -12,6 +12,8 @@
 #
 import os
 import sys
+from pathlib import Path
+
 sys.path.insert(0, os.path.abspath('../..'))
 
 # -- Project information -----------------------------------------------------
@@ -20,8 +22,36 @@ project = 'annolid'
 copyright = '2021, Chen Yang'
 author = 'Chen Yang'
 
-# The full version, including alpha/beta/rc tags
-release = 'v1.0.1'
+def _read_release() -> str:
+    """Return the Annolid version for docs rendering.
+
+    Prefer installed package metadata, then fall back to pyproject.toml.
+    """
+    try:
+        from importlib import metadata
+        return metadata.version("annolid")
+    except Exception:
+        pass
+
+    try:
+        import tomllib  # py3.11+
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore
+        except Exception:
+            return "unknown"
+
+    try:
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        return str(data.get("project", {}).get("version", "unknown"))
+    except Exception:
+        return "unknown"
+
+
+# The full version, including alpha/beta/rc tags.
+release = _read_release()
+version = release
 
 
 # -- General configuration ---------------------------------------------------
@@ -36,7 +66,7 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.mathjax',
     'sphinx.ext.viewcode',
-    'recommonmark',
+    'myst_parser',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -45,7 +75,16 @@ templates_path = ['./_templates']
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = []
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    # Legacy API stubs that assume a different packaging/layout.
+    "_templates/*.rst",
+    "modules.rst",
+    "setup.rst",
+    "tests.rst",
+]
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -68,4 +107,7 @@ except ImportError:
 else:
     extensions.append("sphinxcontrib.spelling")
 
-source_suffix = ['.md', '.rst', '.ipynb']
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
