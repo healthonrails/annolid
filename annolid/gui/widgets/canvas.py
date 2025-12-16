@@ -1451,7 +1451,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         return not (0 <= p.x() <= w - 1 and 0 <= p.y() <= h - 1)
 
     def finalise(self):
-        # assert self.current
+        if self.current is None:
+            logger.warning(
+                "finalise called without an active shape; ignoring.")
+            return
         if self.createMode == "rectangle":
             self.current.close()
             rect_shape = self.current
