@@ -137,7 +137,8 @@ class Canvas(QtWidgets.QWidget):
         self.sam_mask = MaskShape()
         self.behavior_text_position = "top-left"  # Default position
         self.behavior_text_color = QtGui.QColor(255, 255, 255)
-        self.behavior_text_background = None  # Optional background color
+        # Semi-transparent background keeps overlay text readable on bright images
+        self.behavior_text_background = QtGui.QColor(0, 0, 0, 180)
         self.current_behavior_text = None
 
         # Patch similarity helpers
@@ -1220,8 +1221,13 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 text_bounds.height() + 2 * padding_y,
             )
 
-            if self.behavior_text_background is not None:
-                bg_color = QtGui.QColor(self.behavior_text_background)
+            bg_color = self.behavior_text_background
+            if bg_color is None:
+                bg_color = QtGui.QColor(0, 0, 0, 180)
+            else:
+                bg_color = QtGui.QColor(bg_color)
+
+            if bg_color.alpha() > 0:
                 p.setPen(QtCore.Qt.NoPen)
                 p.setBrush(QtGui.QBrush(bg_color))
                 p.drawRoundedRect(background_rect, 6, 6)
@@ -1231,6 +1237,15 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 background_rect.top() + padding_y,
                 text_bounds.width(),
                 text_bounds.height(),
+            )
+
+            # Drop shadow ensures contrast even if the background is light/transparent
+            shadow_rect = text_rect.translated(1, 1)
+            p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 200)))
+            p.drawText(
+                shadow_rect,
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                text,
             )
 
             p.setPen(QtGui.QPen(QtGui.QColor(self.behavior_text_color)))
