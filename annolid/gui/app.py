@@ -5651,6 +5651,8 @@ class AnnolidWindow(MainWindow):
         except Exception:
             logger.debug("Failed to load shapes for frame %s", frame_number,
                          exc_info=True)
+        # Refresh behavior and flag states for the newly loaded frame.
+        self._refresh_behavior_overlay()
         # set brightness constrast values
         # dialog = BrightnessContrastDialog(
         #     imageData,
@@ -5743,7 +5745,6 @@ class AnnolidWindow(MainWindow):
         self.toggleActions(True)
         if self._df_deeplabcut is not None:
             self._load_deeplabcut_results(frame_number)
-        self._refresh_behavior_overlay()
         return True
 
     # ------------------------------------------------------------------
