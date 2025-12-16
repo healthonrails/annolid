@@ -1449,16 +1449,42 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
             # Get the label of the rectangle
             rect_label = rect_shape.label
-            # Launch CountGD if the description is not None and indicates exemplar, count, or starts with '0'
-            if rect_shape.description is not None and \
-               ("exemplar" in rect_shape.description.lower() or
-                "count" in rect_shape.description.lower() or
-                    rect_shape.description.startswith('0')):
-                rect_shape.description = f"used_{rect_shape.description}"
+            # Launch CountGD when requested either via description hints or the UI checkbox.
+            description_text = rect_shape.description
+            description_flagged = False
+            if isinstance(description_text, str):
+                lowered = description_text.lower()
+                description_flagged = (
+                    "exemplar" in lowered
+                    or "count" in lowered
+                    or description_text.startswith("0")
+                )
+
+            checkbox_flagged = False
+            try:
+                main_window = self.window()
+                checkbox = getattr(
+                    getattr(main_window, "aiRectangle",
+                            None), "_useCountGDCheckbox", None
+                )
+                checkbox_flagged = bool(checkbox and checkbox.isChecked())
+            except Exception:
+                checkbox_flagged = False
+
+            if description_flagged or checkbox_flagged:
+                if description_text:
+                    if not description_text.startswith("used_"):
+                        rect_shape.description = f"used_{description_text}"
+                else:
+                    rect_shape.description = "used_countgd"
                 self.createMode = "grounding_sam"
                 # Call predictAiRectangle with the rectangle shape and its label
                 self.predictAiRectangle(
-                    rect_label, [rect_shape], is_polygon_output=True)
+                    rect_label,
+                    [rect_shape],
+                    is_polygon_output=True,
+                    use_countgd=True,
+                )
             return
         if self.createMode == "ai_polygon":
             # convert points to polygon by an AI model
