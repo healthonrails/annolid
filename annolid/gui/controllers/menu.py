@@ -450,7 +450,6 @@ class MenuController:
         tool_actions.append(actions["video_depth_anything"])
         tool_actions.append(actions["sam3d_reconstruct"])
         tool_actions.append(actions["visualization"])
-        tool_actions.append(actions["depth_settings"])
         tool_actions.append(actions["open_florence2"])
         tool_actions.append(w.patch_similarity_action)
         tool_actions.append(w.pca_map_action)
