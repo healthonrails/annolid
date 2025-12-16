@@ -8,7 +8,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import DropPath
+
+try:
+    from timm.layers import DropPath
+except ModuleNotFoundError:
+    # compatibility for older timm versions
+    from timm.models.layers import DropPath
 
 
 class FeatureResizer(nn.Module):
@@ -165,13 +170,15 @@ class BiMultiHeadAttention(nn.Module):
         value_l_states = self._shape(self.values_l_proj(l), -1, bsz)
 
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
-        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
+        query_states = self._shape(
+            query_states, tgt_len, bsz).view(*proj_shape)
         key_states = key_states.view(*proj_shape)
         value_v_states = value_v_states.view(*proj_shape)
         value_l_states = value_l_states.view(*proj_shape)
 
         src_len = key_states.size(1)
-        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))  # bs*nhead, nimg, ntxt
+        # bs*nhead, nimg, ntxt
+        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
 
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
@@ -191,7 +198,8 @@ class BiMultiHeadAttention(nn.Module):
             )  # Do not increase 50000, data type half has quite limited range
 
         attn_weights_T = attn_weights.transpose(1, 2)
-        attn_weights_l = attn_weights_T - torch.max(attn_weights_T, dim=-1, keepdim=True)[0]
+        attn_weights_l = attn_weights_T - \
+            torch.max(attn_weights_T, dim=-1, keepdim=True)[0]
         if self.clamp_min_for_underflow:
             attn_weights_l = torch.clamp(
                 attn_weights_l, min=-50000
@@ -204,7 +212,8 @@ class BiMultiHeadAttention(nn.Module):
         # mask vison for language
         if attention_mask_v is not None:
             attention_mask_v = (
-                attention_mask_v[:, None, None, :].repeat(1, self.num_heads, 1, 1).flatten(0, 1)
+                attention_mask_v[:, None, None, :].repeat(
+                    1, self.num_heads, 1, 1).flatten(0, 1)
             )
             attn_weights_l.masked_fill_(attention_mask_v, float("-inf"))
 
@@ -213,13 +222,16 @@ class BiMultiHeadAttention(nn.Module):
         # mask language for vision
         if attention_mask_l is not None:
             attention_mask_l = (
-                attention_mask_l[:, None, None, :].repeat(1, self.num_heads, 1, 1).flatten(0, 1)
+                attention_mask_l[:, None, None, :].repeat(
+                    1, self.num_heads, 1, 1).flatten(0, 1)
             )
             attn_weights.masked_fill_(attention_mask_l, float("-inf"))
         attn_weights_v = attn_weights.softmax(dim=-1)
 
-        attn_probs_v = F.dropout(attn_weights_v, p=self.dropout, training=self.training)
-        attn_probs_l = F.dropout(attn_weights_l, p=self.dropout, training=self.training)
+        attn_probs_v = F.dropout(
+            attn_weights_v, p=self.dropout, training=self.training)
+        attn_probs_l = F.dropout(
+            attn_weights_l, p=self.dropout, training=self.training)
 
         attn_output_v = torch.bmm(attn_probs_v, value_l_states)
         attn_output_l = torch.bmm(attn_probs_l, value_v_states)
@@ -234,11 +246,13 @@ class BiMultiHeadAttention(nn.Module):
                 f"`attn_output_l` should be of size {(bsz, self.num_heads, src_len, self.head_dim)}, but is {attn_output_l.size()}"
             )
 
-        attn_output_v = attn_output_v.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        attn_output_v = attn_output_v.view(
+            bsz, self.num_heads, tgt_len, self.head_dim)
         attn_output_v = attn_output_v.transpose(1, 2)
         attn_output_v = attn_output_v.reshape(bsz, tgt_len, self.embed_dim)
 
-        attn_output_l = attn_output_l.view(bsz, self.num_heads, src_len, self.head_dim)
+        attn_output_l = attn_output_l.view(
+            bsz, self.num_heads, src_len, self.head_dim)
         attn_output_l = attn_output_l.transpose(1, 2)
         attn_output_l = attn_output_l.reshape(bsz, src_len, self.embed_dim)
 
@@ -279,9 +293,12 @@ class BiAttentionBlock(nn.Module):
         )
 
         # add layer scale for training stability
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.gamma_v = nn.Parameter(init_values * torch.ones((v_dim)), requires_grad=True)
-        self.gamma_l = nn.Parameter(init_values * torch.ones((l_dim)), requires_grad=True)
+        self.drop_path = DropPath(
+            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.gamma_v = nn.Parameter(
+            init_values * torch.ones((v_dim)), requires_grad=True)
+        self.gamma_l = nn.Parameter(
+            init_values * torch.ones((l_dim)), requires_grad=True)
 
     def forward(self, v, l, attention_mask_v=None, attention_mask_l=None):
         v = self.layer_norm_v(v)
