@@ -61,6 +61,7 @@ The Cutie + DINO tracker pairs Cutie's video object segmentation with DINO patch
 - `mask_enforce_position` / `mask_enforce_search_radius` (default `12` px) snap keypoints back inside the current instance mask. Leave enforcement enabled for production runs so late-frame corrections stay on anatomy; widen the search radius if masks are large and you notice clamping toward the previous position.
 - `mask_dilation_iterations`, `mask_dilation_kernel`, `mask_similarity_bonus`, and `max_mask_fallback_frames` control the mask-aware matching stage. They determine how aggressively stored masks are dilated and how much bonus a candidate receives for staying inside the expected region when Cutie has fresh or fallback predictions.
 - `support_probe_count` / `support_probe_sigma` / `support_probe_radius` / `support_probe_weight` sample Gaussian-distributed “support probes” around each keypoint to keep local context consistent. Increase the count or weight when nearby appearance cues (fur tufts, tattoos) help disambiguate swaps; widen the radius if the animal stretches markedly between frames. `support_probe_mask_only` restricts probes to Cutie’s mask and `support_probe_mask_bonus` adds a small reward when probes stay inside the current mask corridor.
+- `keypoint_refine_radius` / `keypoint_refine_sigma` / `keypoint_refine_temperature` enable sub-patch refinement: after selecting the best patch, compute a Gaussian-weighted centroid of nearby candidates (weighted by descriptor similarity) to reduce jitter (set radius to `0` to disable).
 
 ## Tuning guidance
 
@@ -79,6 +80,7 @@ Both the CLI and GUI share the same configuration plumbing. Add a `tracker` bloc
 
 ```yaml
 tracker:
+  tracker_preset: rodent_30fps_occlusions
   motion_search_tighten: 0.8
   motion_search_gain: 0.9
   motion_prior_penalty_weight: 0.25

@@ -36,6 +36,7 @@ class KeypointTrack:
     patch_rc: Tuple[int, int]
     descriptor: torch.Tensor
     reference_descriptor: torch.Tensor
+    manual_codebook: Optional[torch.Tensor] = None
     velocity: Tuple[float, float] = (0.0, 0.0)
     misses: int = 0
     struct_refs: Dict[str, float] = field(default_factory=dict)
@@ -48,6 +49,7 @@ class KeypointTrack:
     symmetry_midpoint: Optional[Tuple[float, float]] = None
     symmetry_sign: float = 0.0
     support_probes: List["SupportProbe"] = field(default_factory=list)
+    body_coords: Optional[Tuple[float, float, float]] = None
 
 
 @dataclass
@@ -78,6 +80,39 @@ class MotionPrior:
     radius: int
     radius_px: float
     confidence: float
+
+
+@dataclass
+class BodyPrior:
+    centroid_rc: Tuple[float, float]
+    axis_rc: Tuple[float, float]
+    perp_rc: Tuple[float, float]
+    sigma_axis: float
+    sigma_perp: float
+    thickness_map: np.ndarray
+    sigma_thickness: float
+
+    def coords(self, rc: Tuple[float, float]) -> Tuple[float, float]:
+        dr = float(rc[0] - self.centroid_rc[0])
+        dc = float(rc[1] - self.centroid_rc[1])
+        t = dr * float(self.axis_rc[0]) + dc * float(self.axis_rc[1])
+        p = dr * float(self.perp_rc[0]) + dc * float(self.perp_rc[1])
+        return (t, p)
+
+    def signature(self, rc: Tuple[float, float]) -> Tuple[float, float, float]:
+        t, p = self.coords(rc)
+        rr = int(round(float(rc[0])))
+        cc = int(round(float(rc[1])))
+        if (
+            rr < 0
+            or cc < 0
+            or rr >= int(self.thickness_map.shape[0])
+            or cc >= int(self.thickness_map.shape[1])
+        ):
+            thickness = 0.0
+        else:
+            thickness = float(self.thickness_map[rr, cc])
+        return (t, p, thickness)
 
 
 class DinoKeypointTracker:
@@ -139,9 +174,22 @@ class DinoKeypointTracker:
         self._roi_offset: Tuple[float, float] = (0.0, 0.0)
         self._roi_box: Tuple[int, int, int, int] = (0, 0, 0, 0)
         self._roi_size: Tuple[int, int] = (0, 0)
+        self._instance_body_axes: Dict[str, Tuple[float, float]] = {}
+        self._manual_anchor_codebooks: Dict[str, torch.Tensor] = {}
+        self.keypoint_refine_radius = max(
+            0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
+        )
+        self.keypoint_refine_sigma = max(
+            1e-4, float(getattr(self.runtime_config,
+                        "keypoint_refine_sigma", 1.25))
+        )
+        self.keypoint_refine_temperature = max(
+            1e-4,
+            float(getattr(self.runtime_config, "keypoint_refine_temperature", 0.35)),
+        )
         self.reset_state()
 
-    def reset_state(self) -> None:
+    def reset_state(self, *, preserve_manual_anchors: bool = False) -> None:
         """Restore tracker state to a clean slate prior to (re)starting."""
         self.tracks.clear()
         self.prev_gray = None
@@ -153,6 +201,9 @@ class DinoKeypointTracker:
         self._roi_offset = (0.0, 0.0)
         self._roi_box = (0, 0, 0, 0)
         self._roi_size = (0, 0)
+        self._instance_body_axes = {}
+        if not preserve_manual_anchors:
+            self._manual_anchor_codebooks = {}
 
     def start(
         self,
@@ -160,7 +211,7 @@ class DinoKeypointTracker:
         registry: InstanceRegistry,
         mask_lookup: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
-        self.reset_state()
+        self.reset_state(preserve_manual_anchors=True)
         self._is_fresh_start = True  # Signal that the next update is the first
 
         polygons: List[List[Tuple[float, float]]] = []
@@ -184,6 +235,7 @@ class DinoKeypointTracker:
             grid_hw,
             allow_fallback=False,
         )
+        body_priors = self._compute_body_priors(mask_cache)
 
         self.prev_scale = (scale_x, scale_y)
         self.tracks.clear()
@@ -195,6 +247,8 @@ class DinoKeypointTracker:
                 base_desc = base_desc / (base_desc.norm() + 1e-12)
                 reference_desc = self._reference_descriptor(
                     feats, patch_rc, grid_hw, base_desc)
+                self._update_manual_anchor_codebook(
+                    keypoint.key, reference_desc)
                 mask_descriptor = None
                 patch_mask = None
                 cache_entry = mask_cache.get(instance.label)
@@ -213,6 +267,8 @@ class DinoKeypointTracker:
                     patch_rc=patch_rc,
                     descriptor=descriptor,
                     reference_descriptor=reference_desc.clone(),
+                    manual_codebook=self._manual_anchor_codebooks.get(
+                        keypoint.key),
                     last_position=(float(keypoint.x), float(keypoint.y)),
                 )
 
@@ -229,6 +285,11 @@ class DinoKeypointTracker:
                     grid_hw,
                     patch_mask,
                 )
+                body_prior = body_priors.get(instance.label)
+                if body_prior is not None:
+                    track.body_coords = body_prior.signature(
+                        (float(patch_rc[0]), float(patch_rc[1]))
+                    )
                 self.tracks[keypoint.key] = track
 
         frame_array = np.array(image)
@@ -257,6 +318,7 @@ class DinoKeypointTracker:
             grid_hw,
             allow_fallback=True,
         )
+        body_priors = self._compute_body_priors(mask_cache)
         active_masks: Dict[str, Optional[np.ndarray]] = {}
         if mask_lookup:
             active_masks = {
@@ -287,11 +349,20 @@ class DinoKeypointTracker:
         }
 
         track_candidates: Dict[str, List[Candidate]] = {}
+        candidate_clouds: Dict[
+            str, List[Tuple[Tuple[int, int], Tuple[float, float], float, float]]
+        ] = {}
         mask_descriptors: Dict[str, Optional[torch.Tensor]] = {}
         base_positions: Dict[str, Tuple[float, float]] = {}
         motion_priors: Dict[str, MotionPrior] = {}
         results: List[Dict[str, object]] = []
         for track in self.tracks.values():
+            manual_codebook = track.manual_codebook
+            if manual_codebook is not None and manual_codebook.device != feats.device:
+                manual_codebook = manual_codebook.to(feats.device)
+                track.manual_codebook = manual_codebook
+            manual_weight = self._manual_anchor_weight(track)
+
             prev_r, prev_c = track.patch_rc
             base_x, base_y = self._patch_to_pixel(
                 (prev_r, prev_c), scale_x, scale_y)
@@ -333,6 +404,9 @@ class DinoKeypointTracker:
             c_min = max(0, predicted_c - radius)
             c_max = min(grid_w - 1, predicted_c + radius)
             candidate_list: List[Candidate] = []
+            candidate_cloud: List[
+                Tuple[Tuple[int, int], Tuple[float, float], float, float]
+            ] = []
 
             mask_entry = mask_cache.get(track.instance_label)
             patch_mask = mask_entry.get("patch_mask") if mask_entry else None
@@ -346,8 +420,21 @@ class DinoKeypointTracker:
 
             for r in range(r_min, r_max + 1):
                 row_vecs = feats[:, r, c_min:c_max + 1]
-                sims = torch.matmul(row_vecs.transpose(0, 1), track.descriptor)
+                sims_current = torch.matmul(
+                    row_vecs.transpose(0, 1), track.descriptor
+                )
+                sims = sims_current
+                if manual_weight > 0.0 and manual_codebook is not None:
+                    anchor_sims = torch.matmul(
+                        row_vecs.transpose(
+                            0, 1), manual_codebook.transpose(0, 1)
+                    )
+                    sims_manual = anchor_sims.max(dim=1).values
+                    sims = (1.0 - manual_weight) * sims_current + \
+                        manual_weight * sims_manual
+
                 sims_np = sims.detach().cpu().numpy()
+                sims_current_np = sims_current.detach().cpu().numpy()
                 for idx, candidate_sim in enumerate(sims_np):
                     candidate_c = c_min + idx
                     if patch_mask is not None and not patch_mask[r, candidate_c]:
@@ -365,14 +452,20 @@ class DinoKeypointTracker:
                         track, candidate_desc)
                     candidate_score -= self._structural_penalty(
                         track, candidate_xy, previous_positions)
+                    candidate_score -= self._body_prior_penalty(
+                        track,
+                        (r, candidate_c),
+                        body_priors.get(track.instance_label),
+                    )
                     candidate_score -= self._symmetry_penalty(
                         track, candidate_xy)
                     candidate_score -= self._baseline_penalty(
-                        track, float(candidate_sim))
+                        track, float(sims_current_np[idx]))
                     candidate_score -= self._motion_prior_penalty(
                         track,
                         candidate_xy,
                         motion_priors.get(track.key),
+                        similarity=float(candidate_sim),
                     )
                     candidate_score += self._support_score(
                         track,
@@ -380,6 +473,18 @@ class DinoKeypointTracker:
                         feats,
                         patch_mask,
                     )
+                    if self.keypoint_refine_radius > 0:
+                        refine_logit = float(candidate_sim)
+                        if patch_mask is not None and patch_mask[r, candidate_c]:
+                            refine_logit += float(similarity_bonus)
+                        candidate_cloud.append(
+                            (
+                                (r, candidate_c),
+                                candidate_xy,
+                                refine_logit,
+                                float(candidate_score),
+                            )
+                        )
                     candidate_list.append(
                         Candidate(
                             rc=(r, candidate_c),
@@ -392,6 +497,8 @@ class DinoKeypointTracker:
 
             candidate_list.sort(key=lambda c: c.score, reverse=True)
             track_candidates[track.key] = candidate_list[: self.max_candidates]
+            if self.keypoint_refine_radius > 0:
+                candidate_clouds[track.key] = candidate_cloud
 
         assignments = self._resolve_assignments(track_candidates)
 
@@ -409,6 +516,14 @@ class DinoKeypointTracker:
                     track.velocity = (0.0, 0.0)
             else:
                 x, y = assignment.xy
+                refine_confidence = 0.0
+                if self.keypoint_refine_radius > 0:
+                    refined_x, refined_y, refine_confidence = self._refine_keypoint_xy(
+                        center_rc=assignment.rc,
+                        fallback_xy=(x, y),
+                        candidate_cloud=candidate_clouds.get(track.key, []),
+                    )
+                    x, y = refined_x, refined_y
                 candidate_visible = True
                 if (
                     self.mask_enforce_position
@@ -423,6 +538,37 @@ class DinoKeypointTracker:
                     )
                     if not inside_mask and self.mask_enforce_reject_outside:
                         candidate_visible = False
+
+                similarity_conf = 0.0
+                if candidate_visible:
+                    similarity_conf = float(
+                        np.clip(
+                            (quality - self.min_similarity)
+                            / max(1e-6, 1.0 - self.min_similarity),
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    prior = motion_priors.get(track.key)
+                    candidate_visible = self._should_accept_jump(
+                        track,
+                        candidate_xy=(x, y),
+                        prior=prior,
+                        similarity_confidence=similarity_conf,
+                    )
+                    if candidate_visible:
+                        candidate_rc = self._pixel_to_patch(
+                            x,
+                            y,
+                            scale_x,
+                            scale_y,
+                            grid_hw,
+                        )
+                        candidate_visible = self._should_accept_body_prior(
+                            track,
+                            candidate_rc=candidate_rc,
+                            body_prior=body_priors.get(track.instance_label),
+                        )
 
                 if not candidate_visible:
                     track.misses += 1
@@ -439,17 +585,45 @@ class DinoKeypointTracker:
                         scale_y,
                         grid_hw,
                     )
-                    new_desc = assignment.descriptor.clone()
-                    blended = (1.0 - self.momentum) * track.descriptor + \
-                        self.momentum * new_desc
+                    rr, cc = track.patch_rc
+                    new_desc = feats[:, rr, cc].detach().clone()
+                    new_desc = new_desc / (new_desc.norm() + 1e-12)
+                    combined_conf = max(
+                        similarity_conf, float(refine_confidence))
+                    effective_momentum = self.momentum * combined_conf
+
+                    blended = (1.0 - effective_momentum) * track.descriptor + \
+                        effective_momentum * new_desc
                     if self.reference_weight > 0.0:
-                        blended = (1.0 - self.reference_weight) * blended + \
-                            self.reference_weight * track.reference_descriptor
+                        effective_reference = self.reference_weight + (
+                            (1.0 - self.reference_weight)
+                            * (1.0 - combined_conf)
+                        )
+                        blended = (1.0 - effective_reference) * blended + \
+                            effective_reference * track.reference_descriptor
                     blended = self._apply_mask_descriptor(
                         blended, mask_descriptor)
                     track.descriptor = blended / (blended.norm() + 1e-12)
-                    self._update_appearance_codebook(
-                        track, assignment.descriptor)
+                    self._update_appearance_codebook(track, new_desc)
+                    body_prior = body_priors.get(track.instance_label)
+                    if body_prior is not None:
+                        current_body = body_prior.signature(
+                            (float(track.patch_rc[0]),
+                             float(track.patch_rc[1]))
+                        )
+                        if track.body_coords is None:
+                            track.body_coords = current_body
+                        else:
+                            alpha = 0.1 * \
+                                float(np.clip(combined_conf, 0.0, 1.0))
+                            track.body_coords = (
+                                (1.0 - alpha) *
+                                track.body_coords[0] + alpha * current_body[0],
+                                (1.0 - alpha) *
+                                track.body_coords[1] + alpha * current_body[1],
+                                (1.0 - alpha) *
+                                track.body_coords[2] + alpha * current_body[2],
+                            )
                     if track.appearance_codebook is not None:
                         refreshed = torch.matmul(
                             track.appearance_codebook, track.descriptor)
@@ -500,6 +674,215 @@ class DinoKeypointTracker:
         if self._is_fresh_start:
             self._is_fresh_start = False  # Clear the fresh start flag
         return results
+
+    def _refine_keypoint_xy(
+        self,
+        *,
+        center_rc: Tuple[int, int],
+        fallback_xy: Tuple[float, float],
+        candidate_cloud: List[
+            Tuple[Tuple[int, int], Tuple[float, float], float, float]
+        ],
+    ) -> Tuple[float, float, float]:
+        radius = int(self.keypoint_refine_radius)
+        if radius <= 0 or not candidate_cloud:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        sigma = max(1e-4, float(self.keypoint_refine_sigma))
+        temperature = max(1e-4, float(self.keypoint_refine_temperature))
+        inv_sigma_sq = 1.0 / (sigma * sigma)
+
+        selected: List[Tuple[int, int, Tuple[float, float], float]] = []
+        for rc, xy, similarity, _score in candidate_cloud:
+            dr = rc[0] - center_rc[0]
+            dc = rc[1] - center_rc[1]
+            if abs(dr) > radius or abs(dc) > radius:
+                continue
+            selected.append((dr, dc, xy, float(similarity)))
+        if not selected:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        max_similarity = max(item[3] for item in selected)
+        total = 0.0
+        sum_x = 0.0
+        sum_y = 0.0
+        max_weight = 0.0
+        for dr, dc, xy, similarity in selected:
+            dist_sq = float(dr * dr + dc * dc)
+            spatial = math.exp(-0.5 * dist_sq * inv_sigma_sq)
+            weight = math.exp(
+                (float(similarity) - float(max_similarity)) / temperature
+            )
+            w = spatial * weight
+            max_weight = max(max_weight, w)
+            total += w
+            sum_x += w * float(xy[0])
+            sum_y += w * float(xy[1])
+        if total <= 1e-12:
+            return fallback_xy[0], fallback_xy[1], 0.0
+        confidence = float(np.clip(max_weight / total, 0.0, 1.0))
+        return (sum_x / total, sum_y / total, confidence)
+
+    def _should_accept_jump(
+        self,
+        track: KeypointTrack,
+        *,
+        candidate_xy: Tuple[float, float],
+        prior: Optional[MotionPrior],
+        similarity_confidence: float,
+    ) -> bool:
+        if prior is None:
+            return True
+
+        soft_radius_px = float(self.runtime_config.motion_prior_soft_radius_px)
+        radius_factor = float(self.runtime_config.motion_prior_radius_factor)
+        hard_limit = max(soft_radius_px, 1.0) * max(radius_factor, 1.0)
+        hard_limit *= (1.0 + 0.5 * max(0, int(track.misses)))
+
+        dx = float(candidate_xy[0] - prior.predicted_xy[0])
+        dy = float(candidate_xy[1] - prior.predicted_xy[1])
+        dist = math.hypot(dx, dy)
+
+        if dist <= hard_limit:
+            return True
+
+        # If appearance evidence is strong, allow larger jumps (fast motion/reacquisition).
+        if similarity_confidence >= 0.75:
+            return True
+
+        # Otherwise, reject large jumps to prevent identity swaps on occlusion frames.
+        return False
+
+    def _should_accept_body_prior(
+        self,
+        track: KeypointTrack,
+        *,
+        candidate_rc: Tuple[int, int],
+        body_prior: Optional[BodyPrior],
+    ) -> bool:
+        weight = float(
+            max(0.0, self.runtime_config.structural_consistency_weight))
+        if weight <= 0.0:
+            return True
+        if body_prior is None or track.body_coords is None:
+            return True
+
+        cand_t, cand_p, cand_th = body_prior.signature(
+            (float(candidate_rc[0]), float(candidate_rc[1]))
+        )
+        ref_t, ref_p, ref_th = track.body_coords
+        sigma_t = max(1.0, float(body_prior.sigma_axis))
+        sigma_p = max(1.0, float(body_prior.sigma_perp))
+        sigma_th = max(1.0, float(body_prior.sigma_thickness))
+        dt = (cand_t - ref_t) / sigma_t
+        dp = (cand_p - ref_p) / sigma_p
+        dth = (cand_th - ref_th) / sigma_th
+        d2 = dt * dt + dp * dp + dth * dth
+        # 2-sigma gate in body coordinates: prevents keypoints from hopping to
+        # a different anatomical region (ear -> tail) when appearance is ambiguous.
+        return bool(d2 <= 4.0)
+
+    def _body_prior_penalty(
+        self,
+        track: KeypointTrack,
+        candidate_rc: Tuple[int, int],
+        body_prior: Optional[BodyPrior],
+    ) -> float:
+        weight = float(
+            max(0.0, self.runtime_config.structural_consistency_weight))
+        if (
+            weight <= 0.0
+            or body_prior is None
+            or track.body_coords is None
+        ):
+            return 0.0
+
+        cand_t, cand_p, cand_th = body_prior.signature(
+            (float(candidate_rc[0]), float(candidate_rc[1]))
+        )
+        ref_t, ref_p, ref_th = track.body_coords
+        sigma_t = max(1.0, float(body_prior.sigma_axis))
+        sigma_p = max(1.0, float(body_prior.sigma_perp))
+        sigma_th = max(1.0, float(body_prior.sigma_thickness))
+        dt = (cand_t - ref_t) / sigma_t
+        dp = (cand_p - ref_p) / sigma_p
+        dth = (cand_th - ref_th) / sigma_th
+        d2 = dt * dt + dp * dp + dth * dth
+
+        penalty = weight * (1.0 - math.exp(-0.5 * float(d2)))
+        if track.struct_refs:
+            penalty *= 0.35
+        relief = 1.0 / (1.0 + 0.5 * max(0, int(track.misses)))
+        return penalty * relief
+
+    def _compute_body_priors(
+        self,
+        mask_cache: Dict[str, Dict[str, object]],
+    ) -> Dict[str, BodyPrior]:
+        priors: Dict[str, BodyPrior] = {}
+        for label, entry in mask_cache.items():
+            patch_mask = entry.get("patch_mask")
+            if patch_mask is None:
+                continue
+            prior = self._compute_body_prior(
+                label=label, patch_mask=patch_mask)
+            if prior is not None:
+                priors[label] = prior
+        return priors
+
+    def _compute_body_prior(
+        self,
+        *,
+        label: str,
+        patch_mask: np.ndarray,
+    ) -> Optional[BodyPrior]:
+        if patch_mask is None or patch_mask.size == 0:
+            return None
+        ys, xs = np.nonzero(patch_mask)
+        if xs.size < 16:
+            return None
+
+        mask_u8 = (patch_mask.astype(np.uint8) * 255)
+        thickness_map = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3)
+        thickness_values = thickness_map[patch_mask]
+        sigma_thickness = float(np.std(thickness_values))
+        if not math.isfinite(sigma_thickness) or sigma_thickness < 1e-6:
+            sigma_thickness = float(np.median(thickness_values))
+        sigma_thickness = max(1.0, float(sigma_thickness))
+
+        coords = np.stack(
+            [ys.astype(np.float32), xs.astype(np.float32)], axis=1
+        )
+        centroid = coords.mean(axis=0)
+        centered = coords - centroid
+        cov = (centered.T @ centered) / float(max(1, coords.shape[0] - 1))
+        eigvals, eigvecs = np.linalg.eigh(cov)
+
+        axis = eigvecs[:, 1]
+        axis_norm = float(np.linalg.norm(axis) + 1e-6)
+        axis = axis / axis_norm
+        perp = np.array([-axis[1], axis[0]], dtype=np.float32)
+
+        prev_axis = self._instance_body_axes.get(label)
+        if prev_axis is not None:
+            dot = float(axis[0] * prev_axis[0] + axis[1] * prev_axis[1])
+            if dot < 0.0:
+                axis = -axis
+                perp = -perp
+        self._instance_body_axes[label] = (float(axis[0]), float(axis[1]))
+
+        sigma_axis = float(np.sqrt(max(float(eigvals[1]), 1e-6)))
+        sigma_perp = float(np.sqrt(max(float(eigvals[0]), 1e-6)))
+
+        return BodyPrior(
+            centroid_rc=(float(centroid[0]), float(centroid[1])),
+            axis_rc=(float(axis[0]), float(axis[1])),
+            perp_rc=(float(perp[0]), float(perp[1])),
+            sigma_axis=max(1.0, sigma_axis),
+            sigma_perp=max(1.0, sigma_perp),
+            thickness_map=thickness_map.astype(np.float32, copy=False),
+            sigma_thickness=float(sigma_thickness),
+        )
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
         feats = self.extractor.extract(
@@ -906,6 +1289,8 @@ class DinoKeypointTracker:
         track: KeypointTrack,
         candidate_xy: Tuple[float, float],
         prior: Optional[MotionPrior],
+        *,
+        similarity: Optional[float] = None,
     ) -> float:
         weight = float(
             max(0.0, self.runtime_config.motion_prior_penalty_weight))
@@ -926,7 +1311,16 @@ class DinoKeypointTracker:
             return 0.0
 
         scaled = dist / soft_radius_px
-        penalty = weight * (1.0 - math.exp(-scaled * scaled))
+        distance_factor = (1.0 - math.exp(-scaled * scaled))
+
+        feature_factor = 1.0
+        if similarity is not None:
+            similarity_clamped = float(np.clip(similarity, -1.0, 1.0))
+            feature_distance = float(
+                np.clip(1.0 - similarity_clamped, 0.0, 2.0))
+            feature_factor = 0.5 + 0.25 * feature_distance
+
+        penalty = weight * distance_factor * feature_factor
 
         miss_relief = 1.0 / (
             1.0
@@ -1188,6 +1582,36 @@ class DinoKeypointTracker:
         if updated.shape[0] > max_samples:
             updated = updated[:max_samples]
         track.appearance_codebook = updated
+
+    def _update_manual_anchor_codebook(
+        self, track_key: str, descriptor: torch.Tensor
+    ) -> None:
+        desc = descriptor.detach().clone()
+        desc = desc / (desc.norm() + 1e-12)
+        desc = desc.to("cpu")
+
+        codebook = self._manual_anchor_codebooks.get(track_key)
+        if codebook is None:
+            self._manual_anchor_codebooks[track_key] = desc.unsqueeze(0)
+            return
+
+        similarity = torch.matmul(codebook, desc)
+        if bool((similarity > 0.999).any().item()):
+            return
+
+        updated = torch.cat([desc.unsqueeze(0), codebook], dim=0)
+        max_samples = max(1, int(self.runtime_config.appearance_bundle_size))
+        if updated.shape[0] > max_samples:
+            updated = updated[:max_samples]
+        self._manual_anchor_codebooks[track_key] = updated
+
+    def _manual_anchor_weight(self, track: KeypointTrack) -> float:
+        if track.manual_codebook is None or self.reference_weight <= 0.0:
+            return 0.0
+        base = float(np.clip(self.reference_weight, 0.0, 1.0))
+        boost = 0.1 * min(5.0, float(max(0, int(track.misses))))
+        boost += 0.25 * (1.0 - float(np.clip(track.quality, 0.0, 1.0)))
+        return float(np.clip(base + boost, 0.0, 0.95))
 
     def _resolve_assignments(
         self, track_candidates: Dict[str, List[Candidate]]
@@ -1701,7 +2125,21 @@ class DinoKeypointVideoProcessor:
             instance.last_updated_frame = frame_number
 
         self.mask_manager.reset_state()
-        self.tracker.reset_state()
+        reset_state = getattr(self.tracker, "reset_state", None)
+        if callable(reset_state):
+            try:
+                import inspect
+
+                accepts_manual_anchors = (
+                    "preserve_manual_anchors"
+                    in inspect.signature(reset_state).parameters
+                )
+            except (TypeError, ValueError):
+                accepts_manual_anchors = False
+            if accepts_manual_anchors:
+                reset_state(preserve_manual_anchors=True)
+            else:
+                reset_state()
 
         mask_lookup = self._mask_lookup_from_registry(registry)
         if self.mask_manager.enabled:

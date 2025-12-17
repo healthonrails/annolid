@@ -801,3 +801,203 @@ def test_support_probes_prefer_contextual_candidate(monkeypatch):
     tracker.update(image, {})
     track_state = tracker.tracks["animalnose"]
     assert track_state.patch_rc == (1, 2)
+
+
+def test_gaussian_refine_shifts_keypoint_towards_secondary_peak(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        keypoint_refine_radius=1,
+        keypoint_refine_sigma=1.0,
+        keypoint_refine_temperature=0.2,
+        mask_descriptor_weight=0.0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=0.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+        motion_search_gain=0.0,
+        motion_search_miss_boost=0.0,
+        mask_similarity_bonus=0.0,
+        velocity_smoothing=0.0,
+    )
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=1,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    start_features = torch.zeros((2, 3, 4), dtype=torch.float32)
+    start_features[:, 1, 1] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    update_features = torch.zeros((2, 3, 4), dtype=torch.float32)
+    update_features[:, 1, 2] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+    update_features[:, 1, 1] = torch.tensor(
+        [0.9, math.sqrt(1.0 - 0.9 ** 2)], dtype=torch.float32
+    )
+
+    extractor.set_queue([start_features, update_features])
+
+    frame = np.zeros((3, 4, 3), dtype=np.uint8)
+    image = Image.fromarray(frame)
+
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=1.0,
+            y=1.0,
+        )
+    )
+    tracker.start(image, registry, {})
+    tracker.prev_gray = None
+
+    results = tracker.update(image, {})
+    assert len(results) == 1
+    assert results[0]["visible"] is True
+    assert results[0]["x"] == pytest.approx(2.231, abs=0.05)
+
+
+def test_motion_penalty_prefers_nearby_candidate_over_far_peak(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        mask_descriptor_weight=0.0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=0.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        mask_similarity_bonus=0.0,
+        velocity_smoothing=0.0,
+        keypoint_refine_radius=0,
+        motion_search_tighten=1.0,
+        motion_search_gain=0.0,
+        motion_search_flow_gain=0.0,
+        motion_search_min_radius=1.0,
+        motion_search_max_radius=16.0,
+        motion_search_miss_boost=0.0,
+        motion_prior_penalty_weight=1.0,
+        motion_prior_soft_radius_px=1.0,
+        motion_prior_radius_factor=1.0,
+        motion_prior_miss_relief=0.0,
+        motion_prior_flow_relief=0.0,
+    )
+
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=8,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    start_features = torch.zeros((2, 1, 9), dtype=torch.float32)
+    start_features[:, 0, 1] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    update_features = torch.zeros((2, 1, 9), dtype=torch.float32)
+    update_features[:, 0, 2] = torch.tensor(
+        [0.9, math.sqrt(1.0 - 0.9 ** 2)], dtype=torch.float32
+    )
+    update_features[:, 0, 7] = torch.tensor(
+        [0.95, math.sqrt(1.0 - 0.95 ** 2)], dtype=torch.float32
+    )
+
+    extractor.set_queue([start_features, update_features])
+
+    frame = np.zeros((1, 9, 3), dtype=np.uint8)
+    image = Image.fromarray(frame)
+
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=1.0,
+            y=0.0,
+        )
+    )
+
+    tracker.start(image, registry, {})
+    tracker.prev_gray = None
+
+    tracker.update(image, {})
+    assert tracker.tracks["animalnose"].patch_rc == (0, 2)
+
+
+def test_body_prior_rejects_ear_to_tail_swap_on_mask(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        mask_descriptor_weight=0.0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=1.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+        motion_prior_soft_radius_px=100.0,
+        motion_prior_radius_factor=1.0,
+        motion_search_gain=0.0,
+        motion_search_flow_gain=0.0,
+        motion_search_miss_boost=0.0,
+        keypoint_refine_radius=0,
+        mask_enforce_position=False,
+    )
+
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=8,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    start_features = torch.zeros((2, 2, 9), dtype=torch.float32)
+    start_features[:, 0, 1] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    update_features = torch.zeros((2, 2, 9), dtype=torch.float32)
+    update_features[:, 0, 7] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    extractor.set_queue([start_features, update_features])
+
+    frame = np.zeros((2, 9, 3), dtype=np.uint8)
+    image = Image.fromarray(frame)
+
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=1.0,
+            y=0.0,
+        )
+    )
+
+    mask = np.ones((2, 9), dtype=bool)
+    tracker.start(image, registry, {"animal": mask})
+    tracker.prev_gray = None
+
+    results = tracker.update(image, {"animal": mask})
+    assert results[0]["visible"] is True
+    assert results[0]["misses"] == 0
+    assert tracker.tracks["animalnose"].patch_rc == (0, 1)

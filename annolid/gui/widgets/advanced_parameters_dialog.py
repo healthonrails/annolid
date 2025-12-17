@@ -22,6 +22,8 @@ from annolid.tracking.configuration import CutieDinoTrackerConfig
 class AdvancedParametersDialog(QDialog):
     """Dialog exposing advanced segmentation and tracker controls."""
 
+    _CUSTOM_TRACKER_PRESET = "<custom>"
+
     def __init__(
         self,
         parent=None,
@@ -262,10 +264,43 @@ class AdvancedParametersDialog(QDialog):
 
         tracker_form = self._make_form_layout()
 
+        self.tracker_preset_combo = QComboBox()
+        presets = list(CutieDinoTrackerConfig.available_presets())
+        self.tracker_preset_combo.addItem(self._CUSTOM_TRACKER_PRESET)
+        for preset in presets:
+            self.tracker_preset_combo.addItem(preset)
+        current_preset = getattr(self._tracker_config, "tracker_preset", None)
+        if current_preset and current_preset in presets:
+            self.tracker_preset_combo.setCurrentText(str(current_preset))
+        else:
+            self.tracker_preset_combo.setCurrentText(
+                self._CUSTOM_TRACKER_PRESET)
+
         self.mask_enforce_checkbox = QCheckBox(
             "Clamp keypoints to instance mask")
         self.mask_enforce_checkbox.setChecked(
             bool(self._tracker_config.mask_enforce_position)
+        )
+
+        self.keypoint_refine_radius_spinbox = QSpinBox()
+        self.keypoint_refine_radius_spinbox.setRange(0, 12)
+        self.keypoint_refine_radius_spinbox.setSingleStep(1)
+        self.keypoint_refine_radius_spinbox.setValue(
+            int(getattr(self._tracker_config, "keypoint_refine_radius", 0))
+        )
+
+        self.keypoint_refine_sigma_spinbox = QDoubleSpinBox()
+        self.keypoint_refine_sigma_spinbox.setRange(0.1, 8.0)
+        self.keypoint_refine_sigma_spinbox.setSingleStep(0.05)
+        self.keypoint_refine_sigma_spinbox.setValue(
+            float(getattr(self._tracker_config, "keypoint_refine_sigma", 1.25))
+        )
+
+        self.keypoint_refine_temperature_spinbox = QDoubleSpinBox()
+        self.keypoint_refine_temperature_spinbox.setRange(0.05, 2.0)
+        self.keypoint_refine_temperature_spinbox.setSingleStep(0.05)
+        self.keypoint_refine_temperature_spinbox.setValue(
+            float(getattr(self._tracker_config, "keypoint_refine_temperature", 0.35))
         )
 
         self.mask_enforce_radius_spinbox = QSpinBox()
@@ -360,10 +395,38 @@ class AdvancedParametersDialog(QDialog):
         )
 
         tracker_form.addRow(
+            "Tracker preset",
+            self._wrap_with_hint(
+                self.tracker_preset_combo,
+                "Choose a tuned preset (e.g. rodents at 30fps with occlusions) or keep custom values.",
+            ),
+        )
+        tracker_form.addRow(
             self._wrap_checkbox(
                 self.mask_enforce_checkbox,
                 "Keeps keypoints snapped to the instance mask to reduce drift.",
             )
+        )
+        tracker_form.addRow(
+            "Keypoint refine radius (patches)",
+            self._wrap_with_hint(
+                self.keypoint_refine_radius_spinbox,
+                "0 disables. When enabled, reports the Gaussian-weighted centroid of nearby candidates for smoother sub-patch motion.",
+            ),
+        )
+        tracker_form.addRow(
+            "Keypoint refine sigma",
+            self._wrap_with_hint(
+                self.keypoint_refine_sigma_spinbox,
+                "Spatial Gaussian spread in patch units (typical 1.0–2.0).",
+            ),
+        )
+        tracker_form.addRow(
+            "Keypoint refine temperature",
+            self._wrap_with_hint(
+                self.keypoint_refine_temperature_spinbox,
+                "Softmax temperature over candidate scores (lower = sharper peak).",
+            ),
         )
         tracker_form.addRow(
             "Mask snap radius (px)",
@@ -458,7 +521,55 @@ class AdvancedParametersDialog(QDialog):
 
         tracker_layout.addLayout(tracker_form)
         tracker_layout.addStretch(1)
+
+        self.tracker_preset_combo.currentTextChanged.connect(
+            self._apply_tracker_preset
+        )
         return tab
+
+    def _apply_tracker_preset(self, preset: str) -> None:
+        if preset == self._CUSTOM_TRACKER_PRESET:
+            return
+        try:
+            cfg = CutieDinoTrackerConfig.from_preset(str(preset))
+        except ValueError:
+            return
+        self.keypoint_refine_radius_spinbox.setValue(
+            int(cfg.keypoint_refine_radius))
+        self.keypoint_refine_sigma_spinbox.setValue(
+            float(cfg.keypoint_refine_sigma))
+        self.keypoint_refine_temperature_spinbox.setValue(
+            float(cfg.keypoint_refine_temperature)
+        )
+        self.mask_enforce_checkbox.setChecked(bool(cfg.mask_enforce_position))
+        self.mask_enforce_radius_spinbox.setValue(
+            int(cfg.mask_enforce_snap_radius))
+        self.mask_enforce_reject_checkbox.setChecked(
+            bool(cfg.mask_enforce_reject_outside)
+        )
+        self.motion_search_tighten_spinbox.setValue(
+            float(cfg.motion_search_tighten))
+        self.motion_search_gain_spinbox.setValue(float(cfg.motion_search_gain))
+        self.motion_search_flow_gain_spinbox.setValue(
+            float(cfg.motion_search_flow_gain)
+        )
+        self.motion_search_min_radius_spinbox.setValue(
+            float(cfg.motion_search_min_radius))
+        self.motion_search_max_radius_spinbox.setValue(
+            float(cfg.motion_search_max_radius))
+        self.motion_search_miss_boost_spinbox.setValue(
+            float(cfg.motion_search_miss_boost))
+        self.motion_prior_penalty_weight_spinbox.setValue(
+            float(cfg.motion_prior_penalty_weight)
+        )
+        self.motion_prior_soft_radius_spinbox.setValue(
+            float(cfg.motion_prior_soft_radius_px))
+        self.motion_prior_radius_factor_spinbox.setValue(
+            float(cfg.motion_prior_radius_factor))
+        self.motion_prior_miss_relief_spinbox.setValue(
+            float(cfg.motion_prior_miss_relief))
+        self.motion_prior_flow_relief_spinbox.setValue(
+            float(cfg.motion_prior_flow_relief))
 
     def _build_sam3_tab(self) -> QWidget:
         """Controls specific to SAM3 tracking and agent seeding."""
@@ -697,7 +808,16 @@ class AdvancedParametersDialog(QDialog):
         self.optical_flow_backend = self.get_optical_flow_backend()
 
         snap_radius = self.mask_enforce_radius_spinbox.value()
+        preset = None
+        if hasattr(self, "tracker_preset_combo"):
+            selected = str(self.tracker_preset_combo.currentText()).strip()
+            if selected and selected != self._CUSTOM_TRACKER_PRESET:
+                preset = selected
         self._tracker_settings = {
+            "tracker_preset": preset,
+            "keypoint_refine_radius": self.keypoint_refine_radius_spinbox.value(),
+            "keypoint_refine_sigma": self.keypoint_refine_sigma_spinbox.value(),
+            "keypoint_refine_temperature": self.keypoint_refine_temperature_spinbox.value(),
             "mask_enforce_position": self.mask_enforce_checkbox.isChecked(),
             "mask_enforce_search_radius": snap_radius,
             "mask_enforce_snap_radius": snap_radius,

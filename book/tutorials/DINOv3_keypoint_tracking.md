@@ -19,7 +19,7 @@ Tip: If the DINOv3 checkpoint is gated, run `huggingface-cli login` once in your
 4. Save (`Ctrl+S`). This creates `<video_name>/<video_name>_#########.json` next to your video.
 
 Notes on keypoint naming:
-- Symmetry handling assumes lowercase pairs like `leftear` and `rightear` by default; use those names to activate symmetry constraints.
+- To enable symmetry constraints (prevent left/right swaps), set `symmetry_pairs` in `CutieDinoTrackerConfig`, e.g. `symmetry_pairs=(("leftear","rightear"),)`.
 - Annolid stores instance/keypoint association in the shape list; adding points while your instance is selected ensures correct linkage.
 
 ## 2. Choose the DINOv3 backbone (once)
@@ -46,6 +46,7 @@ Open Tools → Advanced Parameters to fine‑tune tracking:
 - Clamp keypoints to instance mask and Mask snap radius: keep points inside their masks; increase radius to be more permissive near edges.
 - Search tighten, Velocity gain, Flow gain, Min/Max radius, Miss boost: tune the motion prior (uses optical flow and recent velocity).
 - Motion prior weight/soft radius/factor/miss relief/flow relief: adjust how strongly the motion prior penalizes unlikely jumps.
+- Keypoint refine radius/sigma/temperature: track a small patch neighborhood around each keypoint and report the Gaussian‑weighted centroid (sub‑patch smoothing).
 
 Defaults work well on most videos; increase Search tighten and reduce Max radius for tighter, slower motion; do the opposite for fast motion.
 
@@ -72,7 +73,7 @@ vp = DinoKeypointVideoProcessor(
     model_name="facebook/dinov3-vits16-pretrain-lvd1689m",
     short_side=768,
     device=None,  # auto-selects CUDA/MPS/CPU
-    runtime_config=CutieDinoTrackerConfig(mask_enforce_position=True),
+    runtime_config=CutieDinoTrackerConfig(tracker_preset="rodent_30fps_occlusions"),
 )
 vp.process_video()
 ```
