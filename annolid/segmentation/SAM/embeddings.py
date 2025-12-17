@@ -4,7 +4,6 @@ import torch
 import sys
 import os
 import pickle
-from segment_anything import sam_model_registry, SamPredictor
 """
 Image Embeddings Generation for All Slices of a Tiff Stack Data
 
@@ -79,6 +78,7 @@ year={2023}
 
 """
 
+
 def load_image(input_filepath):
     """Load and preprocess the input image."""
     check, img = cv2.imreadmulti(input_filepath)
@@ -97,6 +97,13 @@ def load_image(input_filepath):
 
 def create_embeddings(img, output_filepath, sam_checkpoint_path):
     """Create embeddings for an input image and save them to a file."""
+    try:
+        from segment_anything import sam_model_registry, SamPredictor
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Optional dependency 'segment_anything' is required to create SAM embeddings. "
+            "Install it with: pip install \"segment-anything @ git+https://github.com/SysCV/sam-hq.git\""
+        ) from exc
     slice_directions = ['x', 'y', 'z']
 
     sam = sam_model_registry["vit_h"](checkpoint=sam_checkpoint_path)

@@ -175,7 +175,10 @@ class VideoProcessor:
         self.use_cpu_only = kwargs.get("use_cpu_only", False)
         self.sam_name = kwargs.get('model_name', "Segment-Anything (Edge)")
         if self.sam_name == 'sam_hq' and VideoProcessor.sam_hq is None:
-            VideoProcessor.sam_hq = SamHQSegmenter()
+            try:
+                VideoProcessor.sam_hq = SamHQSegmenter()
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(str(exc)) from exc
         elif self.sam_name == "Segment-Anything (Edge)":
             self.edge_sam = self.get_model()
         elif self.sam_name == "efficientvit_sam":
@@ -219,7 +222,10 @@ class VideoProcessor:
             results_folder=self.results_folder,
         )
         if VideoProcessor.sam_hq is None:
-            VideoProcessor.sam_hq = SamHQSegmenter()
+            try:
+                VideoProcessor.sam_hq = SamHQSegmenter()
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(str(exc)) from exc
         self.cutie_processor.set_same_hq(VideoProcessor.sam_hq)
 
     def get_total_frames(self):

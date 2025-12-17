@@ -387,7 +387,15 @@ class Canvas(QtWidgets.QWidget):
 
         # Initialize SAM HQ model if not already initialized
         if self.sam_hq_model is None:
-            self.sam_hq_model = SamHQSegmenter()
+            try:
+                self.sam_hq_model = SamHQSegmenter()
+            except ModuleNotFoundError as exc:
+                QtWidgets.QMessageBox.about(
+                    self,
+                    "Missing Segment Anything dependency",
+                    str(exc),
+                )
+                return
 
         # If the prompt contains 'every', segment everything
         if prompt and 'every' in prompt.lower():

@@ -3,7 +3,6 @@ import cv2
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
 from annolid.utils.devices import has_gpu
 
 
@@ -33,14 +32,31 @@ class SamHQSegmenter:
         - model_type (str): Type of the SAM model to be used.
         - device (str): Device to run the model on (e.g., 'cpu' or 'cuda').
         """
+        try:
+            from segment_anything import (
+                sam_model_registry,
+                SamPredictor,
+                SamAutomaticMaskGenerator,
+            )
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "SamHQSegmenter requires the optional dependency 'segment_anything'. "
+                "Install it with: pip install \"segment-anything @ git+https://github.com/SysCV/sam-hq.git\""
+            ) from exc
+
+        self._sam_model_registry = sam_model_registry
+        self._SamPredictor = SamPredictor
+        self._SamAutomaticMaskGenerator = SamAutomaticMaskGenerator
+
         if has_gpu() and torch.cuda.is_available():
             device = 'cuda'
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             checkpoint_path = self._download_model(model_type)
 
-        self.sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
+        self.sam = self._sam_model_registry[model_type](
+            checkpoint=checkpoint_path)
         self.sam.to(device=device)
-        self.predictor = SamPredictor(self.sam)
+        self.predictor = self._SamPredictor(self.sam)
 
     def _download_model(self, model_type):
         import gdown
@@ -83,13 +99,23 @@ class SamHQSegmenter:
         transformed_box = self.predictor.transform.apply_boxes_torch(
             input_box, image.shape[:2])
         try:
-            masks, scores, _ = self.predictor.predict_torch(
-                point_coords=None,
-                point_labels=None,
-                boxes=transformed_box,
-                multimask_output=False,
-                hq_token_only=hq_token_only,
-            )
+            try:
+                masks, scores, _ = self.predictor.predict_torch(
+                    point_coords=None,
+                    point_labels=None,
+                    boxes=transformed_box,
+                    multimask_output=False,
+                    hq_token_only=hq_token_only,
+                )
+            except TypeError as e:
+                if "hq_token_only" not in str(e):
+                    raise
+                masks, scores, _ = self.predictor.predict_torch(
+                    point_coords=None,
+                    point_labels=None,
+                    boxes=transformed_box,
+                    multimask_output=False,
+                )
             masks = masks.squeeze(1).cpu().numpy()
             scores = scores.squeeze(1).cpu().numpy()
             input_box = input_box.cpu().numpy()
@@ -119,11 +145,12 @@ class SamHQSegmenter:
 
         """
         # Instantiate the SamAutomaticMaskGenerator
-        mask_generator = SamAutomaticMaskGenerator(self.sam,
-                                                   points_per_side=points_per_side,
-                                                   pred_iou_thresh=0.80,
-                                                   stability_score_thresh=0.90,
-                                                   )
+        mask_generator = self._SamAutomaticMaskGenerator(
+            self.sam,
+            points_per_side=points_per_side,
+            pred_iou_thresh=0.80,
+            stability_score_thresh=0.90,
+        )
 
         try:
             # Generate segmentation annotations

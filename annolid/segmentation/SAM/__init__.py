@@ -1,5 +1,4 @@
 import os
-from segment_anything import build_sam, SamAutomaticMaskGenerator
 from PIL import Image
 import numpy as np
 import torch
@@ -63,6 +62,17 @@ MODELS = [
 ]
 
 
+def _require_segment_anything():
+    try:
+        from segment_anything import build_sam, SamAutomaticMaskGenerator
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Optional dependency 'segment_anything' is required for SAM features. "
+            "Install it with: pip install \"segment-anything @ git+https://github.com/SysCV/sam-hq.git\""
+        ) from exc
+    return build_sam, SamAutomaticMaskGenerator
+
+
 class SAMModel:
     """
     Wrapper class for the Segment Anything Model (SAM).
@@ -75,6 +85,7 @@ class SAMModel:
 
         sam_checkpoint (str): Path to the SAM checkpoint file.
         """
+        build_sam, _ = _require_segment_anything()
         if not os.path.exists(sam_checkpoint):
             raise FileNotFoundError(
                 f"SAM checkpoint file not found at path: {sam_checkpoint}")
@@ -128,6 +139,7 @@ class SAMModel:
         Returns:
             List: List of SAM masks.
         """
+        _, SamAutomaticMaskGenerator = _require_segment_anything()
         image = Image.open(image_path)
         image_np = np.asarray(image)
 

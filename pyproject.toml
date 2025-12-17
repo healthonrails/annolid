@@ -61,7 +61,7 @@ dependencies = [
     'transformers>=4.45.1',
     'ultralytics>=8.3.34',
     'huggingface-hub>=0.22.0',
-    "segment-anything @ git+https://github.com/SysCV/sam-hq.git",
+    # Optional dependency: install SAM / SAM-HQ separately (see README.md).
     "dataclasses>=0.6; python_version < '3.7'",
 ]
 
@@ -85,3 +85,5 @@ annolid-track = "annolid.segmentation.yolact.eval:main"
 # By default it looks in the root directory. If you use a `src` layout,
 # you would change this to: where = ["src"]
 where = ["."]
+include = ["annolid*"]
+exclude = ["build*", "dist*", "docs*", "demo*", "tests*"]

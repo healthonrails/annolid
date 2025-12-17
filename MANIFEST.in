@@ -1,13 +1,18 @@
-recursive-include docs *
+prune docs
 prune book
+prune build
+prune dist
+prune dist_test
+prune dist_sdist
+prune demo
+prune tests
 prune docs/source/_build
 prune docs/source/_templates
-prune tests/tmp
 prune annolid/motion/weights
 prune annolid/detector/yolov5/weights/last.pt
 prune annolid/detector/YOLOv3/weight/yolov3-tiny.weights
 prune docs/tutorials/Untitled.ipynb
 prune docs/tutorials/.ipynb_checkpoints
 include environment.yml
-recursive-include annolid/configs *.json
-include annolid/annotation labels.txt mabe*labes.txt
+recursive-include annolid *.yaml *.yml *.json *.txt *.md *.qrc
+include annolid/annotation/labels_interaction
