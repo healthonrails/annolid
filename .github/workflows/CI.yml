@@ -34,7 +34,7 @@ jobs:
     - name: Test with pytest
       run: |
         pytest
-    - uses: ammaraskar/sphinx-action@v0.5.1
+    - uses: ammaraskar/sphinx-action@master
       with:
         docs-folder: "docs/"
     # Publish built docs to gh-pages branch.
