@@ -2,7 +2,9 @@
 # Modified from mmcv
 # ==========================================================
 
-import json, pickle, yaml
+import json
+import pickle
+import yaml
 try:
     from yaml import CLoader as Loader, CDumper as Dumper
 except ImportError:
@@ -14,6 +16,7 @@ from abc import ABCMeta, abstractmethod
 # ===========================
 # Rigister handler
 # ===========================
+
 
 class BaseFileHandler(metaclass=ABCMeta):
 
@@ -37,6 +40,7 @@ class BaseFileHandler(metaclass=ABCMeta):
         with open(filepath, mode) as f:
             self.dump_to_fileobj(obj, f, **kwargs)
 
+
 class JsonHandler(BaseFileHandler):
 
     def load_from_fileobj(self, file):
@@ -48,9 +52,11 @@ class JsonHandler(BaseFileHandler):
     def dump_to_str(self, obj, **kwargs):
         return json.dumps(obj, **kwargs)
 
+
 class PickleHandler(BaseFileHandler):
 
     def load_from_fileobj(self, file, **kwargs):
+        # Note: pickle is unsafe for untrusted inputs; only load data you trust.
         return pickle.load(file, **kwargs)
 
     def load_from_path(self, filepath, **kwargs):
@@ -69,10 +75,11 @@ class PickleHandler(BaseFileHandler):
         super(PickleHandler, self).dump_to_path(
             obj, filepath, mode='wb', **kwargs)
 
+
 class YamlHandler(BaseFileHandler):
 
     def load_from_fileobj(self, file, **kwargs):
-        kwargs.setdefault('Loader', Loader)
+        kwargs.setdefault('Loader', SafeLoader)
         return yaml.load(file, **kwargs)
 
     def dump_to_fileobj(self, obj, file, **kwargs):
@@ -82,6 +89,7 @@ class YamlHandler(BaseFileHandler):
     def dump_to_str(self, obj, **kwargs):
         kwargs.setdefault('Dumper', Dumper)
         return yaml.dump(obj, **kwargs)
+
 
 file_handlers = {
     'json': JsonHandler(),
@@ -95,12 +103,14 @@ file_handlers = {
 # load and dump
 # ===========================
 
+
 def is_str(x):
     """Whether the input is an string instance.
 
     Note: This method is deprecated since python 2 is no longer supported.
     """
     return isinstance(x, str)
+
 
 def slload(file, file_format=None, **kwargs):
     """Load data from json/yaml/pickle files.
