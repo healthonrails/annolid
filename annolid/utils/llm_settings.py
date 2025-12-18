@@ -154,9 +154,18 @@ def load_llm_settings() -> Dict[str, Any]:
 
 def save_llm_settings(settings: Dict[str, Any]) -> None:
     """Persist LLM settings to disk."""
+    def _scrub_api_keys(obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy with any provider api_key fields removed before writing to disk."""
+        copy_obj = deepcopy(obj)
+        for provider in ("ollama", "openai", "gemini"):
+            if isinstance(copy_obj.get(provider), dict):
+                copy_obj[provider].pop("api_key", None)
+        return copy_obj
+
+    sanitized = _scrub_api_keys(settings)
     _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
     with _SETTINGS_FILE.open("w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent=2)
+        json.dump(sanitized, fh, indent=2)
 
 
 def settings_path() -> Path:
