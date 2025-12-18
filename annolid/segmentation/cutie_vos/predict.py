@@ -958,6 +958,9 @@ class CutieVideoProcessor:
         if self._global_label_names:
             value_to_label_names.update(self._global_label_names)
         instance_names = set(segment.active_labels)
+        local_to_global = np.zeros(len(active_ids) + 1, dtype=np.int32)
+        for local_idx, global_id in enumerate(active_ids, start=1):
+            local_to_global[local_idx] = int(global_id)
 
         current_frame_index = segment.start_frame
         prev_frame = None
@@ -969,6 +972,8 @@ class CutieVideoProcessor:
 
         with torch.inference_mode():
             with torch.amp.autocast('cuda', enabled=self.cfg.amp and self.device == 'cuda'):
+                if int(cap.get(cv2.CAP_PROP_POS_FRAMES)) != current_frame_index:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
                 while cap.isOpened():
                     if pred_worker is not None and pred_worker.is_stopped():
                         return (None, True)
@@ -976,7 +981,6 @@ class CutieVideoProcessor:
                     if current_frame_index > end_frame:
                         break
 
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
                     ret, frame = cap.read()
                     if not ret or frame is None:
                         break
@@ -997,29 +1001,47 @@ class CutieVideoProcessor:
                                 force_permanent=True,
                             )
                             prediction = torch_prob_to_numpy_mask(prediction)
-                            global_prediction = self._map_local_prediction_to_global(
-                                prediction, active_ids)
                         except Exception as exc:  # pragma: no cover - logging only
                             logger.info(exc)
-                            global_prediction = mask.copy()
+                            prediction = None
                     else:
                         prediction = self.processor.step(frame_torch)
                         prediction = torch_prob_to_numpy_mask(prediction)
-                        global_prediction = self._map_local_prediction_to_global(
-                            prediction, active_ids)
+
+                    if prediction is None:
+                        global_prediction = mask.copy()
+                        mask_dict = {}
+                        for global_id in active_ids:
+                            global_mask = global_prediction == int(global_id)
+                            if not global_mask.any():
+                                continue
+                            label_name = value_to_label_names.get(
+                                int(global_id), str(global_id))
+                            mask_dict[label_name] = global_mask
+                    else:
+                        mask_dict = {}
+                        for local_idx, global_id in enumerate(active_ids, start=1):
+                            local_mask = prediction == local_idx
+                            if not local_mask.any():
+                                continue
+                            label_name = value_to_label_names.get(
+                                int(global_id), str(global_id))
+                            mask_dict[label_name] = local_mask
+
+                        global_prediction = None
+                        if (
+                            recording
+                            or (
+                                self.debug
+                                and current_frame_index % max(1, visualize_every) == 0
+                            )
+                        ):
+                            global_prediction = local_to_global[prediction]
 
                     if self.compute_optical_flow and prev_frame is not None:
                         self._flow_hsv, self._flow = compute_optical_flow(
                             prev_frame, frame,
                             use_raft=(self.optical_flow_backend == 'raft'))
-
-                    mask_dict = {}
-                    for label_id in np.unique(global_prediction):
-                        if label_id == 0:
-                            continue
-                        label_name = value_to_label_names.get(
-                            int(label_id), str(label_id))
-                        mask_dict[label_name] = (global_prediction == label_id)
 
                     self._save_annotation(filename, mask_dict, frame.shape)
 
@@ -1049,6 +1071,8 @@ class CutieVideoProcessor:
                                 return (message_with_index, True)
 
                     if recording:
+                        if global_prediction is None:
+                            global_prediction = local_to_global[prediction]
                         self._mask = global_prediction > 0
                         visualization = overlay_davis(frame, global_prediction)
                         if self._flow_hsv is not None:
@@ -1066,10 +1090,13 @@ class CutieVideoProcessor:
                         self.video_writer.write(visualization)
 
                     if self.debug and current_frame_index % max(1, visualize_every) == 0:
+                        if global_prediction is None:
+                            global_prediction = local_to_global[prediction]
                         self.save_color_id_mask(
                             frame, global_prediction, filename)
 
-                    prev_frame = frame.copy()
+                    if self.compute_optical_flow:
+                        prev_frame = frame.copy()
                     current_frame_index += 1
 
         message = ("Stop at frame:\n" +
