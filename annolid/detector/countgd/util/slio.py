@@ -6,9 +6,9 @@ import json
 import pickle
 import yaml
 try:
-    from yaml import CLoader as Loader, CDumper as Dumper
+    from yaml import SafeLoader, CDumper as Dumper
 except ImportError:
-    from yaml import Loader, Dumper
+    from yaml import SafeLoader, Dumper
 
 from pathlib import Path
 from abc import ABCMeta, abstractmethod
