@@ -88,9 +88,8 @@ jobs:
 
       - name: Create dmg for macOS
         run: |
-          npm install -g create-dmg
           cd dist
-          create-dmg Annolid.app || test -f Annolid\ 0.0.0.dmg
+          npx create-dmg@5.4.0 Annolid.app || test -f Annolid\ 0.0.0.dmg
           mv Annolid\ 0.0.0.dmg Annolid.dmg
         if: runner.os == 'macOS'
 
