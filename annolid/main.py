@@ -1,9 +1,10 @@
-import os
 import argparse
-from segmentation.threshold import InRange
-from annotation import coco2yolo
-from data.videos import extract_frames, track
-from postprocessing.glitter import tracks2nix
+import os
+
+from annolid.segmentation.threshold import InRange
+from annolid.annotation import coco2yolo
+from annolid.data.videos import extract_frames, track
+from annolid.postprocessing.glitter import tracks2nix
 
 
 def parse_args():
@@ -133,14 +134,14 @@ def main():
         print("Done.")
 
     if args['labelme2yolo'] is not None:
-        from annotation import labelme2yolo
+        from annolid.annotation import labelme2yolo
         converter = labelme2yolo.Labelme2YOLO(args['labelme2yolo'])
         converter.convert(
             val_size=args['val_size'], test_size=args['test_size'])
         print('Done')
 
     if args['labelme2coco'] is not None:
-        from annotation import labelme2coco
+        from annolid.annotation import labelme2coco
         label_gen = labelme2coco.convert(
             args['labelme2coco'],
             output_annotated_dir=args['to'],
@@ -152,7 +153,7 @@ def main():
                 f'Converting {content} as {image_id % 100:.2f} % of the labeled images.')
 
     if args['tracks2glitter'] is not None:
-        assert(os.path.isfile(
+        assert (os.path.isfile(
             args['tracks2glitter'])), \
             "Please provide the correct tracking results csv file"
 
