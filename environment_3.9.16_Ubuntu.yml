@@ -7,15 +7,14 @@ channels:
   - pytorch
   - defaults
 dependencies:
-  - python==3.9.16
+  - python==3.10
   - pip
   - cython 
-  - pytorch::torchvision
-  - pytorch::pytorch >=1.4.0
+  - pytorch::torchvision>=0.19
+  - pytorch::pytorch>=2.4
   - cudatoolkit
   - cudnn
   - ffmpeg
-  - pytorch::cuda100
   - matplotlib
   - git 
   - curl
