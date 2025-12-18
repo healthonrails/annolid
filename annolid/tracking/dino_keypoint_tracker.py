@@ -243,8 +243,9 @@ class DinoKeypointTracker:
             for keypoint in instance.keypoints.values():
                 patch_rc = self._pixel_to_patch(
                     keypoint.x, keypoint.y, scale_x, scale_y, grid_hw)
-                base_desc = feats[:, patch_rc[0], patch_rc[1]].detach().clone()
-                base_desc = base_desc / (base_desc.norm() + 1e-12)
+                base_desc = self._normalize_descriptor(
+                    feats[:, patch_rc[0], patch_rc[1]]
+                )
                 reference_desc = self._reference_descriptor(
                     feats, patch_rc, grid_hw, base_desc)
                 self._update_manual_anchor_codebook(
@@ -353,6 +354,8 @@ class DinoKeypointTracker:
             str, List[Tuple[Tuple[int, int], Tuple[float, float], float, float]]
         ] = {}
         mask_descriptors: Dict[str, Optional[torch.Tensor]] = {}
+        mask_patches: Dict[str, Optional[np.ndarray]] = {}
+        mask_pixels_by_track: Dict[str, Optional[np.ndarray]] = {}
         base_positions: Dict[str, Tuple[float, float]] = {}
         motion_priors: Dict[str, MotionPrior] = {}
         results: List[Dict[str, object]] = []
@@ -415,8 +418,10 @@ class DinoKeypointTracker:
             similarity_bonus = mask_entry.get(
                 "similarity_bonus", 0.0) if mask_entry else 0.0
             mask_descriptors[track.key] = mask_descriptor
+            mask_patches[track.key] = patch_mask
             base_positions[track.key] = (base_x, base_y)
             mask_pixels = active_masks.get(track.instance_label)
+            mask_pixels_by_track[track.key] = mask_pixels
 
             for r in range(r_min, r_max + 1):
                 row_vecs = feats[:, r, c_min:c_max + 1]
@@ -443,9 +448,9 @@ class DinoKeypointTracker:
                     candidate_score = float(candidate_sim)
                     if patch_mask is not None and patch_mask[r, candidate_c]:
                         candidate_score += similarity_bonus
-                    candidate_desc = feats[:, r, candidate_c].detach().clone()
-                    candidate_desc = candidate_desc / (
-                        candidate_desc.norm() + 1e-12)
+                    candidate_desc = self._normalize_descriptor(
+                        feats[:, r, candidate_c]
+                    )
                     candidate_xy = self._patch_to_pixel(
                         (r, candidate_c), scale_x, scale_y)
                     candidate_score += self._appearance_score(
@@ -506,6 +511,8 @@ class DinoKeypointTracker:
             base_x, base_y = base_positions.get(track.key, (0.0, 0.0))
             assignment = assignments.get(track.key)
             mask_descriptor = mask_descriptors.get(track.key)
+            patch_mask = mask_patches.get(track.key)
+            mask_pixels = mask_pixels_by_track.get(track.key)
 
             quality = float(assignment.similarity) if assignment else -1.0
             if assignment is None or quality < self.min_similarity:
@@ -586,8 +593,7 @@ class DinoKeypointTracker:
                         grid_hw,
                     )
                     rr, cc = track.patch_rc
-                    new_desc = feats[:, rr, cc].detach().clone()
-                    new_desc = new_desc / (new_desc.norm() + 1e-12)
+                    new_desc = self._normalize_descriptor(feats[:, rr, cc])
                     combined_conf = max(
                         similarity_conf, float(refine_confidence))
                     effective_momentum = self.momentum * combined_conf
@@ -883,6 +889,18 @@ class DinoKeypointTracker:
             thickness_map=thickness_map.astype(np.float32, copy=False),
             sigma_thickness=float(sigma_thickness),
         )
+
+    @staticmethod
+    def _normalize_descriptor(
+        descriptor: torch.Tensor,
+        *,
+        clone: bool = True,
+    ) -> torch.Tensor:
+        if clone:
+            descriptor = descriptor.detach().clone()
+        else:
+            descriptor = descriptor.detach()
+        return descriptor / (descriptor.norm() + 1e-12)
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
         feats = self.extractor.extract(
@@ -1208,8 +1226,7 @@ class DinoKeypointTracker:
             if not (0 <= sr < grid_h and 0 <= sc < grid_w):
                 penalties += probe_weight
                 continue
-            desc = feats[:, sr, sc].detach().clone()
-            desc = desc / (desc.norm() + 1e-12)
+            desc = self._normalize_descriptor(feats[:, sr, sc])
             descriptor = probe.descriptor
             if descriptor.device != desc.device:
                 descriptor = descriptor.to(desc.device)
@@ -1420,8 +1437,7 @@ class DinoKeypointTracker:
             for dc in range(-radius, radius + 1):
                 rr = min(max(patch_rc[0] + dr, 0), grid_h - 1)
                 cc = min(max(patch_rc[1] + dc, 0), grid_w - 1)
-                desc = feats[:, rr, cc].detach().clone()
-                desc = desc / (desc.norm() + 1e-12)
+                desc = self._normalize_descriptor(feats[:, rr, cc])
                 descriptors.append(desc)
                 if len(descriptors) >= max_samples:
                     break
@@ -1471,8 +1487,7 @@ class DinoKeypointTracker:
                     continue
                 if patch_mask is not None and enforce_mask and not patch_mask[sr, sc]:
                     continue
-                descriptor = feats[:, sr, sc].detach().clone()
-                descriptor = descriptor / (descriptor.norm() + 1e-12)
+                descriptor = self._normalize_descriptor(feats[:, sr, sc])
                 distance_sq = (
                     (dr / sigma) ** 2 + (dc / sigma) ** 2
                 )
@@ -1518,8 +1533,7 @@ class DinoKeypointTracker:
                     and not patch_mask[sr, sc]
                 ):
                     continue
-                descriptor = feats[:, sr, sc].detach().clone()
-                descriptor = descriptor / (descriptor.norm() + 1e-12)
+                descriptor = self._normalize_descriptor(feats[:, sr, sc])
                 in_mask = bool(patch_mask is not None and patch_mask[sr, sc])
                 probes.append(
                     SupportProbe(
@@ -1544,9 +1558,7 @@ class DinoKeypointTracker:
             sr = track.patch_rc[0] + probe.offset_rc[0]
             sc = track.patch_rc[1] + probe.offset_rc[1]
             if 0 <= sr < grid_h and 0 <= sc < grid_w:
-                descriptor = feats[:, sr, sc].detach().clone()
-                descriptor = descriptor / (descriptor.norm() + 1e-12)
-                probe.descriptor = descriptor
+                probe.descriptor = self._normalize_descriptor(feats[:, sr, sc])
 
     def _update_support_probe_mask_flags(
         self,
@@ -1566,8 +1578,7 @@ class DinoKeypointTracker:
         track: KeypointTrack,
         descriptor: torch.Tensor,
     ) -> None:
-        descriptor = descriptor.detach().clone()
-        descriptor = descriptor / (descriptor.norm() + 1e-12)
+        descriptor = self._normalize_descriptor(descriptor)
         max_samples = max(1, int(self.runtime_config.appearance_bundle_size))
         if track.appearance_codebook is None:
             track.appearance_codebook = descriptor.unsqueeze(0)
@@ -1586,8 +1597,7 @@ class DinoKeypointTracker:
     def _update_manual_anchor_codebook(
         self, track_key: str, descriptor: torch.Tensor
     ) -> None:
-        desc = descriptor.detach().clone()
-        desc = desc / (desc.norm() + 1e-12)
+        desc = self._normalize_descriptor(descriptor)
         desc = desc.to("cpu")
 
         codebook = self._manual_anchor_codebooks.get(track_key)
@@ -1817,8 +1827,7 @@ class DinoKeypointTracker:
         if masked_feats.numel() == 0:
             return None
         descriptor = masked_feats.mean(dim=1)
-        descriptor = descriptor / (descriptor.norm() + 1e-12)
-        return descriptor
+        return self._normalize_descriptor(descriptor, clone=False)
 
     def _apply_mask_descriptor(
         self,
