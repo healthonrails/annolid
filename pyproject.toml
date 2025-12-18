@@ -87,3 +87,15 @@ annolid-track = "annolid.segmentation.yolact.eval:main"
 where = ["."]
 include = ["annolid*"]
 exclude = ["build*", "dist*", "docs*", "demo*", "tests*"]
+
+[tool.setuptools.package-data]
+annolid = [
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.svg",
+    "**/*.ico",
+    "**/*.icns",
+    "**/*.qrc",
+]
