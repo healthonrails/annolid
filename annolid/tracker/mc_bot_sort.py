@@ -3,10 +3,10 @@
 import numpy as np
 from collections import deque
 
-from tracker import matching
-from tracker.gmc import GMC
-from tracker.basetrack import BaseTrack, TrackState
-from tracker.kalman_filter import KalmanFilter
+from annolid.tracker import matching
+from annolid.tracker.gmc import GMC
+from annolid.tracker.basetrack import BaseTrack, TrackState
+from annolid.tracker.kalman_filter import KalmanFilter
 
 
 class STrack(BaseTrack):
