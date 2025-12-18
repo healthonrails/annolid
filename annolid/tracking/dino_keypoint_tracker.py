@@ -235,7 +235,9 @@ class DinoKeypointTracker:
             grid_hw,
             allow_fallback=False,
         )
-        body_priors = self._compute_body_priors(mask_cache)
+        body_priors: Dict[str, BodyPrior] = {}
+        if float(self.runtime_config.structural_consistency_weight) > 0.0:
+            body_priors = self._compute_body_priors(mask_cache)
 
         self.prev_scale = (scale_x, scale_y)
         self.tracks.clear()
@@ -312,6 +314,22 @@ class DinoKeypointTracker:
             polygons=None,
         )
         grid_h, grid_w = grid_hw
+        normalized_feats = self._normalize_feature_grid(feats)
+        inv_scale_x = 1.0 / max(scale_x, 1e-6)
+        inv_scale_y = 1.0 / max(scale_y, 1e-6)
+        patch_size = float(self.patch_size)
+        patch_centers_x = (
+            (np.arange(grid_w, dtype=np.float32) + 0.5)
+            * patch_size
+            * inv_scale_x
+            + self._roi_offset[0]
+        )
+        patch_centers_y = (
+            (np.arange(grid_h, dtype=np.float32) + 0.5)
+            * patch_size
+            * inv_scale_y
+            + self._roi_offset[1]
+        )
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
         mask_cache = self._build_mask_cache(
             feats,
@@ -319,7 +337,9 @@ class DinoKeypointTracker:
             grid_hw,
             allow_fallback=True,
         )
-        body_priors = self._compute_body_priors(mask_cache)
+        body_priors: Dict[str, BodyPrior] = {}
+        if float(self.runtime_config.structural_consistency_weight) > 0.0:
+            body_priors = self._compute_body_priors(mask_cache)
         active_masks: Dict[str, Optional[np.ndarray]] = {}
         if mask_lookup:
             active_masks = {
@@ -367,8 +387,8 @@ class DinoKeypointTracker:
             manual_weight = self._manual_anchor_weight(track)
 
             prev_r, prev_c = track.patch_rc
-            base_x, base_y = self._patch_to_pixel(
-                (prev_r, prev_c), scale_x, scale_y)
+            base_x = float(patch_centers_x[prev_c])
+            base_y = float(patch_centers_y[prev_r])
             flow_dx = flow_dy = 0.0
             flow_vec_tuple: Optional[Tuple[float, float]] = None
             if flow is not None:
@@ -423,16 +443,48 @@ class DinoKeypointTracker:
             mask_pixels = active_masks.get(track.instance_label)
             mask_pixels_by_track[track.key] = mask_pixels
 
+            appearance_weight = float(
+                max(0.0, self.runtime_config.appearance_bundle_weight))
+            baseline_weight = float(
+                max(0.0, self.runtime_config.baseline_similarity_weight))
+            use_appearance = (
+                appearance_weight > 0.0
+                and track.appearance_codebook is not None
+            )
+            if use_appearance:
+                codebook = track.appearance_codebook
+                if codebook.device != feats.device:
+                    codebook = codebook.to(feats.device)
+                    track.appearance_codebook = codebook
+
+            struct_weight = float(
+                max(0.0, self.runtime_config.structural_consistency_weight))
+            use_struct_penalty = (
+                struct_weight > 0.0
+                and bool(track.struct_refs)
+                and not self._is_fresh_start
+            )
+            use_body_prior = struct_weight > 0.0
+            symmetry_weight = float(
+                max(0.0, self.runtime_config.symmetry_penalty))
+            use_symmetry_penalty = symmetry_weight > 0.0
+            motion_penalty_weight = float(
+                max(0.0, self.runtime_config.motion_prior_penalty_weight))
+            use_motion_penalty = motion_penalty_weight > 0.0
+            support_weight = float(
+                max(0.0, self.runtime_config.support_probe_weight))
+            use_support = support_weight > 0.0 and bool(track.support_probes)
+
             for r in range(r_min, r_max + 1):
                 row_vecs = feats[:, r, c_min:c_max + 1]
+                row_vecs_t = row_vecs.transpose(0, 1)
                 sims_current = torch.matmul(
-                    row_vecs.transpose(0, 1), track.descriptor
+                    row_vecs_t, track.descriptor
                 )
                 sims = sims_current
                 if manual_weight > 0.0 and manual_codebook is not None:
                     anchor_sims = torch.matmul(
-                        row_vecs.transpose(
-                            0, 1), manual_codebook.transpose(0, 1)
+                        row_vecs_t, manual_codebook.transpose(0, 1)
                     )
                     sims_manual = anchor_sims.max(dim=1).values
                     sims = (1.0 - manual_weight) * sims_current + \
@@ -440,47 +492,71 @@ class DinoKeypointTracker:
 
                 sims_np = sims.detach().cpu().numpy()
                 sims_current_np = sims_current.detach().cpu().numpy()
+                baseline_penalties = None
+                if baseline_weight > 0.0:
+                    baseline_penalties = baseline_weight * np.maximum(
+                        0.0, track.baseline_similarity - sims_current_np
+                    )
+
+                row_descs = normalized_feats[:, r, c_min:c_max + 1]
+                appearance_scores = None
+                if use_appearance:
+                    appearance_scores = torch.matmul(
+                        codebook, row_descs).max(dim=0).values
+                    appearance_scores = appearance_scores.detach().cpu().numpy()
+                    if appearance_weight != 1.0:
+                        appearance_scores = appearance_scores * appearance_weight
+                row_mask = None
+                if patch_mask is not None:
+                    row_mask = patch_mask[r, c_min:c_max + 1]
+                row_y = float(patch_centers_y[r])
                 for idx, candidate_sim in enumerate(sims_np):
                     candidate_c = c_min + idx
-                    if patch_mask is not None and not patch_mask[r, candidate_c]:
+                    if row_mask is not None and not row_mask[idx]:
                         if self.restrict_to_mask:
                             continue
                     candidate_score = float(candidate_sim)
-                    if patch_mask is not None and patch_mask[r, candidate_c]:
+                    if row_mask is not None and row_mask[idx]:
                         candidate_score += similarity_bonus
-                    candidate_desc = self._normalize_descriptor(
-                        feats[:, r, candidate_c]
+                    candidate_desc = row_descs[:, idx]
+                    candidate_xy = (
+                        float(patch_centers_x[candidate_c]),
+                        row_y,
                     )
-                    candidate_xy = self._patch_to_pixel(
-                        (r, candidate_c), scale_x, scale_y)
-                    candidate_score += self._appearance_score(
-                        track, candidate_desc)
-                    candidate_score -= self._structural_penalty(
-                        track, candidate_xy, previous_positions)
-                    candidate_score -= self._body_prior_penalty(
-                        track,
-                        (r, candidate_c),
-                        body_priors.get(track.instance_label),
-                    )
-                    candidate_score -= self._symmetry_penalty(
-                        track, candidate_xy)
-                    candidate_score -= self._baseline_penalty(
-                        track, float(sims_current_np[idx]))
-                    candidate_score -= self._motion_prior_penalty(
-                        track,
-                        candidate_xy,
-                        motion_priors.get(track.key),
-                        similarity=float(candidate_sim),
-                    )
-                    candidate_score += self._support_score(
-                        track,
-                        (r, candidate_c),
-                        feats,
-                        patch_mask,
-                    )
+                    if appearance_scores is not None:
+                        candidate_score += float(appearance_scores[idx])
+                    if use_struct_penalty:
+                        candidate_score -= self._structural_penalty(
+                            track, candidate_xy, previous_positions)
+                    if use_body_prior:
+                        candidate_score -= self._body_prior_penalty(
+                            track,
+                            (r, candidate_c),
+                            body_priors.get(track.instance_label),
+                        )
+                    if use_symmetry_penalty:
+                        candidate_score -= self._symmetry_penalty(
+                            track, candidate_xy)
+                    if baseline_penalties is not None:
+                        candidate_score -= float(baseline_penalties[idx])
+                    if use_motion_penalty:
+                        candidate_score -= self._motion_prior_penalty(
+                            track,
+                            candidate_xy,
+                            motion_priors.get(track.key),
+                            similarity=float(candidate_sim),
+                        )
+                    if use_support:
+                        candidate_score += self._support_score(
+                            track,
+                            (r, candidate_c),
+                            feats,
+                            patch_mask,
+                            normalized_feats=normalized_feats,
+                        )
                     if self.keypoint_refine_radius > 0:
                         refine_logit = float(candidate_sim)
-                        if patch_mask is not None and patch_mask[r, candidate_c]:
+                        if row_mask is not None and row_mask[idx]:
                             refine_logit += float(similarity_bonus)
                         candidate_cloud.append(
                             (
@@ -593,7 +669,7 @@ class DinoKeypointTracker:
                         grid_hw,
                     )
                     rr, cc = track.patch_rc
-                    new_desc = self._normalize_descriptor(feats[:, rr, cc])
+                    new_desc = normalized_feats[:, rr, cc].detach().clone()
                     combined_conf = max(
                         similarity_conf, float(refine_confidence))
                     effective_momentum = self.momentum * combined_conf
@@ -640,7 +716,8 @@ class DinoKeypointTracker:
                                 float(refreshed.max().item()),
                             ),
                         )
-                    self._refresh_support_probes(track, feats)
+                    self._refresh_support_probes(
+                        track, feats, normalized_feats=normalized_feats)
                     self._update_support_probe_mask_flags(track, patch_mask)
                     delta_x = x - base_x
                     delta_y = y - base_y
@@ -901,6 +978,11 @@ class DinoKeypointTracker:
         else:
             descriptor = descriptor.detach()
         return descriptor / (descriptor.norm() + 1e-12)
+
+    @staticmethod
+    def _normalize_feature_grid(feats: torch.Tensor) -> torch.Tensor:
+        norms = torch.sqrt((feats * feats).sum(dim=0, keepdim=True))
+        return feats / (norms + 1e-12)
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
         feats = self.extractor.extract(
@@ -1209,6 +1291,8 @@ class DinoKeypointTracker:
         candidate_rc: Tuple[int, int],
         feats: torch.Tensor,
         patch_mask: Optional[np.ndarray],
+        *,
+        normalized_feats: Optional[torch.Tensor] = None,
     ) -> float:
         weight = float(max(0.0, self.runtime_config.support_probe_weight))
         if weight <= 0.0 or not track.support_probes:
@@ -1226,7 +1310,10 @@ class DinoKeypointTracker:
             if not (0 <= sr < grid_h and 0 <= sc < grid_w):
                 penalties += probe_weight
                 continue
-            desc = self._normalize_descriptor(feats[:, sr, sc])
+            if normalized_feats is None:
+                desc = self._normalize_descriptor(feats[:, sr, sc])
+            else:
+                desc = normalized_feats[:, sr, sc]
             descriptor = probe.descriptor
             if descriptor.device != desc.device:
                 descriptor = descriptor.to(desc.device)
@@ -1550,6 +1637,8 @@ class DinoKeypointTracker:
         self,
         track: KeypointTrack,
         feats: torch.Tensor,
+        *,
+        normalized_feats: Optional[torch.Tensor] = None,
     ) -> None:
         if not track.support_probes:
             return
@@ -1558,7 +1647,12 @@ class DinoKeypointTracker:
             sr = track.patch_rc[0] + probe.offset_rc[0]
             sc = track.patch_rc[1] + probe.offset_rc[1]
             if 0 <= sr < grid_h and 0 <= sc < grid_w:
-                probe.descriptor = self._normalize_descriptor(feats[:, sr, sc])
+                if normalized_feats is None:
+                    probe.descriptor = self._normalize_descriptor(
+                        feats[:, sr, sc])
+                else:
+                    probe.descriptor = normalized_feats[:, sr, sc].detach(
+                    ).clone()
 
     def _update_support_probe_mask_flags(
         self,
