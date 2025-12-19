@@ -719,6 +719,7 @@ class DinoKeypointTracker:
             else:
                 x, y = assignment.xy
                 refine_confidence = 0.0
+                body_prior_rejected = False
                 if self.keypoint_refine_radius > 0:
                     refined_x, refined_y, refine_confidence = self._refine_keypoint_xy(
                         center_rc=assignment.rc,
@@ -766,17 +767,25 @@ class DinoKeypointTracker:
                             scale_y,
                             grid_hw,
                         )
-                        candidate_visible = self._should_accept_body_prior(
+                        body_prior_accept = self._should_accept_body_prior(
                             track,
                             candidate_rc=candidate_rc,
                             body_prior=body_priors.get(track.instance_label),
                         )
+                        body_prior_rejected = not body_prior_accept
+                        candidate_visible = candidate_visible and body_prior_accept
 
                 if not candidate_visible:
-                    track.misses += 1
-                    visible = False
-                    x, y = track.last_position
-                    quality = 0.0
+                    if body_prior_rejected:
+                        # Reject the jump but treat it as a hold at the prior spot.
+                        visible = True
+                        x, y = track.last_position
+                        quality = track.quality
+                    else:
+                        track.misses += 1
+                        visible = False
+                        x, y = track.last_position
+                        quality = 0.0
                 else:
                     track.misses = 0
                     visible = True
