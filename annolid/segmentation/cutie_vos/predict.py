@@ -1039,9 +1039,16 @@ class CutieVideoProcessor:
                             global_prediction = local_to_global[prediction]
 
                     if self.compute_optical_flow and prev_frame is not None:
+                        backend_val = str(self.optical_flow_backend).lower()
+                        use_raft = "raft" in backend_val
+                        use_torch_farneback = (
+                            "torch" in backend_val) and not use_raft
                         self._flow_hsv, self._flow = compute_optical_flow(
-                            prev_frame, frame,
-                            use_raft=(self.optical_flow_backend == 'raft'))
+                            prev_frame,
+                            frame,
+                            use_raft=use_raft,
+                            use_torch_farneback=use_torch_farneback,
+                        )
 
                     self._save_annotation(filename, mask_dict, frame.shape)
 

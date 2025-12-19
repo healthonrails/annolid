@@ -327,6 +327,9 @@ class OpticalFlowTool(QtCore.QObject):
     def _start_worker(self, settings: FlowRunSettings) -> None:
         w = self._window
         self._live_running = True
+        backend_val = str(settings.backend).lower()
+        use_torch_farneback = ("torch" in backend_val) and (
+            "raft" not in backend_val)
         worker = FlexibleWorker(
             process_video_flow,
             settings.video_path,
@@ -340,6 +343,7 @@ class OpticalFlowTool(QtCore.QObject):
             quiver_step=settings.quiver_step,
             quiver_gain=settings.quiver_gain,
             stable_hsv=settings.stable_hsv,
+            use_torch_farneback=use_torch_farneback,
             farneback_pyr_scale=settings.farneback_pyr_scale,
             farneback_levels=settings.farneback_levels,
             farneback_winsize=settings.farneback_winsize,

@@ -1,5 +1,5 @@
 """
-Standalone optical-flow runner (Farneback or RAFT) for videos.
+Standalone optical-flow runner (Farneback, Torch Farneback, or RAFT) for videos.
 
 Usage (CLI):
     python -m annolid.motion.flow_runner --video /path/to/video.mp4 \
@@ -7,6 +7,7 @@ Usage (CLI):
         --viz quiver
 
 Notes:
+- Torch Farneback uses --backend farneback_torch.
 - RAFT requires torch+torchvision optical_flow models; pass --backend raft to opt in.
 - Overlays use annolid.utils.draw.draw_flow for visualization and can be streamed
   via a preview callback instead of saving to disk.
@@ -162,7 +163,7 @@ def process_video_flow(video_path: str,
 
     Args:
         video_path: input video file path.
-        backend: 'farneback' (default) or 'raft'.
+        backend: 'farneback' (default), 'farneback_torch', or 'raft'.
         raft_model: 'small' or 'large' RAFT variant when backend='raft'.
         save_csv: output csv path with mean dx, dy, magnitude per frame (optional).
         save_ndjson: optional NDJSON path (depth-anything style) storing flow components.
@@ -180,6 +181,11 @@ def process_video_flow(video_path: str,
         progress_callback: optional callable receiving integer percent progress.
         preview_callback: optional callable receiving overlay previews.
     """
+    backend_val = str(backend).lower()
+    use_raft_backend = "raft" in backend_val
+    use_torch_backend = ("torch" in backend_val) and not use_raft_backend
+    use_torch = bool(use_torch_farneback) or use_torch_backend
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -208,8 +214,9 @@ def process_video_flow(video_path: str,
 
         flow_hsv, flow = compute_optical_flow(
             prev_frame, curr_frame,
-            use_raft=(backend.lower() == "raft"),
+            use_raft=use_raft_backend,
             raft_model=raft_model,
+            use_torch_farneback=use_torch,
             farneback_pyr_scale=farneback_pyr_scale,
             farneback_levels=farneback_levels,
             farneback_winsize=farneback_winsize,
@@ -294,7 +301,8 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Optical flow runner")
     p.add_argument("--video", required=True, help="Path to input video")
     p.add_argument("--backend", default="farneback",
-                   choices=["farneback", "raft"], help="Flow backend")
+                   choices=["farneback", "farneback_torch", "raft"],
+                   help="Flow backend")
     p.add_argument("--csv", help="Path to save CSV of mean flow stats")
     p.add_argument("--stride", type=int, default=1,
                    help="Process every Nth frame (default 1)")

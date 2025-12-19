@@ -1267,8 +1267,16 @@ class AnnolidWindow(MainWindow):
             bool(getattr(self, "compute_optical_flow", True)))
         advanced_params_dialog.optical_flow_backend = getattr(
             self, "optical_flow_backend", "farneback")
+        backend_val = str(
+            advanced_params_dialog.optical_flow_backend).lower()
+        if "raft" in backend_val:
+            backend_idx = 2
+        elif "torch" in backend_val:
+            backend_idx = 1
+        else:
+            backend_idx = 0
         advanced_params_dialog.optical_flow_backend_combo.setCurrentIndex(
-            1 if advanced_params_dialog.optical_flow_backend == "raft" else 0)
+            backend_idx)
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 

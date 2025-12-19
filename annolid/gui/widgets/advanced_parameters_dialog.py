@@ -167,11 +167,17 @@ class AdvancedParametersDialog(QDialog):
 
         self.optical_flow_backend_combo = QComboBox()
         self.optical_flow_backend_combo.addItems(
-            ["farneback (default)", "raft (torchvision)"])
-        self.optical_flow_backend_combo.setCurrentIndex(
-            1 if self.optical_flow_backend == "raft" else 0)
+            ["farneback (default)", "farneback (torch)", "raft (torchvision)"])
+        backend_val = str(self.optical_flow_backend).lower()
+        if "raft" in backend_val:
+            backend_idx = 2
+        elif "torch" in backend_val:
+            backend_idx = 1
+        else:
+            backend_idx = 0
+        self.optical_flow_backend_combo.setCurrentIndex(backend_idx)
         self.optical_flow_backend_combo.setToolTip(
-            "RAFT offers higher quality flow (requires TorchVision); Farneback is lighter."
+            "Choose OpenCV Farneback, Torch Farneback, or RAFT (TorchVision)."
         )
 
         self.auto_recovery_missing_instances_checkbox = QCheckBox(
@@ -229,7 +235,7 @@ class AdvancedParametersDialog(QDialog):
             "Optical flow backend",
             self._wrap_with_hint(
                 self.optical_flow_backend_combo,
-                "Use RAFT for highest fidelity, or Farneback for speed and compatibility.",
+                "Use Torch Farneback for verification or RAFT for highest fidelity.",
             ),
         )
         form.addRow(
@@ -891,7 +897,11 @@ class AdvancedParametersDialog(QDialog):
 
     def get_optical_flow_backend(self) -> str:
         text = self.optical_flow_backend_combo.currentText().lower()
-        return "raft" if "raft" in text else "farneback"
+        if "raft" in text:
+            return "raft"
+        if "torch" in text:
+            return "farneback_torch"
+        return "farneback"
 
     def get_tracker_settings(self) -> Dict[str, object]:
         return dict(self._tracker_settings)

@@ -7,7 +7,6 @@ Minimal PyTorch Farneback optical flow (CPU/GPU) with optional OpenCV fallback.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 import warnings
 from typing import Optional
@@ -17,10 +16,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from annolid.utils.logger import logger
 
-# ---------------------------
-# Utilities
-# ---------------------------
 
 def _to_gray_f32(img: np.ndarray) -> np.ndarray:
     """
@@ -67,6 +64,90 @@ def _acc_dtype_for_device(device: torch.device) -> torch.dtype:
     return torch.float32 if device.type == "mps" else torch.float64
 
 
+_BORDER_SCALE_CACHE: dict[tuple[str, int, int, int], torch.Tensor] = {}
+
+
+def _device_key(device: torch.device) -> tuple[str, int]:
+    return (device.type, device.index if device.index is not None else -1)
+
+
+def _to_device_safe(x: torch.Tensor, device: torch.device) -> torch.Tensor:
+    if device.type != "mps":
+        return x.to(device=device)
+    x = x.contiguous()
+    dst = torch.empty_like(x, device=device)
+    dst.copy_(x, non_blocking=False)
+    torch.mps.synchronize()
+    return dst
+
+
+def _get_border_scale_numpy(H: int, W: int) -> np.ndarray:
+    BORDER = 5
+    border = np.array([0.14, 0.14, 0.4472, 0.4472, 0.4472], dtype=np.float32)
+    xs_i = np.arange(W, dtype=np.int64)
+    ys_i = np.arange(H, dtype=np.int64)
+
+    fx = np.ones((W,), dtype=np.float32)
+    fy = np.ones((H,), dtype=np.float32)
+
+    mxL = xs_i < BORDER
+    if np.any(mxL):
+        fx[mxL] *= border[xs_i[mxL]]
+    mxR = xs_i >= (W - BORDER)
+    if np.any(mxR):
+        fx[mxR] *= border[np.clip(W - xs_i[mxR] - 1, 0, BORDER - 1)]
+
+    myT = ys_i < BORDER
+    if np.any(myT):
+        fy[myT] *= border[ys_i[myT]]
+    myB = ys_i >= (H - BORDER)
+    if np.any(myB):
+        fy[myB] *= border[np.clip(H - ys_i[myB] - 1, 0, BORDER - 1)]
+
+    return (fy.reshape(H, 1) * fx.reshape(1, W)).astype(np.float32)
+
+
+def _get_border_scale(H: int, W: int, device: torch.device) -> torch.Tensor:
+    key = (*_device_key(device), H, W)
+    scale = _BORDER_SCALE_CACHE.get(key)
+    if scale is not None:
+        return scale
+
+    BORDER = 5
+    if device.type == "mps":
+        scale_np = _get_border_scale_numpy(H, W)
+        scale = torch.from_numpy(scale_np).to(device=device)
+        _BORDER_SCALE_CACHE[key] = scale
+        return scale
+
+    border = torch.tensor([0.14, 0.14, 0.4472, 0.4472, 0.4472],
+                          device=device, dtype=torch.float32)
+
+    xs_i = torch.arange(W, device=device, dtype=torch.int64)
+    ys_i = torch.arange(H, device=device, dtype=torch.int64)
+
+    fx = torch.ones((W,), device=device, dtype=torch.float32)
+    fy = torch.ones((H,), device=device, dtype=torch.float32)
+
+    mxL = xs_i < BORDER
+    if mxL.any():
+        fx[mxL] *= border[xs_i[mxL]]
+    mxR = xs_i >= (W - BORDER)
+    if mxR.any():
+        fx[mxR] *= border[(W - xs_i[mxR] - 1).clamp(min=0, max=BORDER - 1)]
+
+    myT = ys_i < BORDER
+    if myT.any():
+        fy[myT] *= border[ys_i[myT]]
+    myB = ys_i >= (H - BORDER)
+    if myB.any():
+        fy[myB] *= border[(H - ys_i[myB] - 1).clamp(min=0, max=BORDER - 1)]
+
+    scale = (fy.view(H, 1) * fx.view(1, W)).contiguous()
+    _BORDER_SCALE_CACHE[key] = scale
+    return scale
+
+
 @dataclass(frozen=True)
 class FarnebackGaussKernels:
     n: int
@@ -78,6 +159,10 @@ class FarnebackGaussKernels:
     ig03: float
     ig33: float
     ig55: float
+    kv_f32: torch.Tensor  # (3,1,2n+1,1)
+    kh_f32: torch.Tensor  # (6,3,1,2n+1)
+    kv_f64: Optional[torch.Tensor]
+    kh_f64: Optional[torch.Tensor]
 
 
 # ---------------------------
@@ -88,8 +173,8 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
     """
     Matches OpenCV FarnebackPrepareGaussian (optflowgf.cpp):
     - build g/xg/xxg over [-n..n]
-    - build 6x6 moment matrix G with nested loops
-    - invert via Cholesky
+    - build moment sums with nested loops
+    - invert analytically using the matrix's block structure (avoids LAPACK/Accelerate)
     """
     if sigma < 1e-7:
         sigma = float(n) * 0.3
@@ -100,8 +185,13 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
     xg = (xs * g).astype(np.float64)
     xxg = (xs * xs * g).astype(np.float64)
 
-    # Build the 6x6 moment matrix G exactly as OpenCV does
-    G = np.zeros((6, 6), dtype=np.float64)
+    # OpenCV builds a structured 6x6 moment matrix G but only a few unique sums
+    # are needed. The matrix is block diagonal except for a symmetric 3x3 block
+    # over indices (0,3,4); we compute the required inverse entries analytically.
+    G00 = 0.0
+    G11 = 0.0
+    G33 = 0.0
+    G55 = 0.0
     for y in range(-n, n + 1):
         gy = g[y + n]
         yy = float(y * y)
@@ -109,29 +199,55 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
             gx = g[x + n]
             xx = float(x * x)
             w = gy * gx
-            G[0, 0] += w
-            G[1, 1] += w * xx
-            G[3, 3] += w * xx * xx
-            G[5, 5] += w * xx * yy
+            G00 += w
+            G11 += w * xx
+            G33 += w * xx * xx
+            G55 += w * xx * yy
 
-    # Coupled assignments (OpenCV)
-    G[2, 2] = G[0, 3] = G[0, 4] = G[3, 0] = G[4, 0] = G[1, 1]
-    G[4, 4] = G[3, 3]
-    G[3, 4] = G[4, 3] = G[5, 5]
+    A = float(G00)
+    B = float(G11)
+    C = float(G33)
+    D = float(G55)
 
-    # invG = G.inv(DECOMP_CHOLESKY)
-    L = np.linalg.cholesky(G)
-    invL = np.linalg.solve(L, np.eye(6, dtype=np.float64))
-    invG = invL.T @ invL
+    # Indices 1 and 2 are independent 1x1 blocks (value B), and index 5 is an
+    # independent 1x1 block (value D).
+    ig11 = 1.0 / B
+    ig55 = 1.0 / D
 
-    ig11 = float(invG[1, 1])
-    ig03 = float(invG[0, 3])
-    ig33 = float(invG[3, 3])
-    ig55 = float(invG[5, 5])
+    # For the (0,3,4) 3x3 block:
+    #   [[A, B, B],
+    #    [B, C, D],
+    #    [B, D, C]]
+    # In a symmetric/antisymmetric basis it becomes (C-D) ⊕ [[A, √2 B],[√2 B, C+D]].
+    det2 = A * (C + D) - 2.0 * (B * B)
+    ig03 = -B / det2
+    ig33 = 0.5 * (A / det2 + 1.0 / (C - D))
 
-    g_t = torch.from_numpy(g.astype(np.float32)).to(device)
-    xg_t = torch.from_numpy(xg.astype(np.float32)).to(device)
-    xxg_t = torch.from_numpy(xxg.astype(np.float32)).to(device)
+    g_cpu = torch.from_numpy(g.astype(np.float32))
+    xg_cpu = torch.from_numpy(xg.astype(np.float32))
+    xxg_cpu = torch.from_numpy(xxg.astype(np.float32))
+
+    kv_cpu = torch.stack([g_cpu, xg_cpu, xxg_cpu], dim=0).view(
+        3, 1, 2 * n + 1, 1)
+    kh_cpu = torch.zeros((6, 3, 1, 2 * n + 1), dtype=torch.float32)
+    kh_cpu[0, 0, 0, :] = g_cpu
+    kh_cpu[1, 0, 0, :] = xg_cpu
+    kh_cpu[2, 1, 0, :] = g_cpu
+    kh_cpu[3, 0, 0, :] = xxg_cpu
+    kh_cpu[4, 2, 0, :] = g_cpu
+    kh_cpu[5, 1, 0, :] = xg_cpu
+
+    g_t = _to_device_safe(g_cpu, device)
+    xg_t = _to_device_safe(xg_cpu, device)
+    xxg_t = _to_device_safe(xxg_cpu, device)
+    kv_f32 = _to_device_safe(kv_cpu, device)
+    kh_f32 = _to_device_safe(kh_cpu, device)
+
+    kv_f64: Optional[torch.Tensor] = None
+    kh_f64: Optional[torch.Tensor] = None
+    if _acc_dtype_for_device(device) == torch.float64:
+        kv_f64 = kv_f32.to(torch.float64)
+        kh_f64 = kh_f32.to(torch.float64)
 
     return FarnebackGaussKernels(
         n=n,
@@ -143,6 +259,10 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
         ig03=ig03,
         ig33=ig33,
         ig55=ig55,
+        kv_f32=kv_f32,
+        kh_f32=kh_f32,
+        kv_f64=kv_f64,
+        kh_f64=kh_f64,
     )
 
 
@@ -160,41 +280,32 @@ def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -
         raise ValueError("Expected float32")
 
     n = kernels.n
-    g = kernels.g
-    xg = kernels.xg
-    xxg = kernels.xxg
     ig11 = kernels.ig11
     ig03 = kernels.ig03
     ig33 = kernels.ig33
     ig55 = kernels.ig55
 
-    src = img_1x1hw[0, 0]  # (H,W)
-    H, W = src.shape
-    dev = src.device
+    H, W = img_1x1hw.shape[2:]
+    dev = img_1x1hw.device
     acc_dtype = _acc_dtype_for_device(dev)
 
     # --- vertical stage: replicate padding then 1D conv over Y ---
-    src_4d = img_1x1hw.to(dtype=acc_dtype)
-    src_pad_v = F.pad(src_4d, (0, 0, n, n), mode="replicate")
+    if acc_dtype == torch.float32:
+        src_4d = img_1x1hw
+        kv = kernels.kv_f32
+        kh = kernels.kh_f32
+    else:
+        src_4d = img_1x1hw.to(dtype=acc_dtype)
+        kv = kernels.kv_f64 if kernels.kv_f64 is not None else kernels.kv_f32.to(
+            dtype=acc_dtype)
+        kh = kernels.kh_f64 if kernels.kh_f64 is not None else kernels.kh_f32.to(
+            dtype=acc_dtype)
 
-    kv = torch.stack([g, xg, xxg], dim=0).to(
-        device=dev, dtype=acc_dtype).view(3, 1, 2 * n + 1, 1)
+    src_pad_v = F.pad(src_4d, (0, 0, n, n), mode="replicate")
     row = F.conv2d(src_pad_v, kv)  # (1,3,H,W)
 
     # --- horizontal stage: replicate padding then 1D conv over X ---
     row_pad = F.pad(row, (n, n, 0, 0), mode="replicate")
-    kg = g.to(dtype=acc_dtype)
-    kxg = xg.to(dtype=acc_dtype)
-    kxxg = xxg.to(dtype=acc_dtype)
-
-    kh = torch.zeros((6, 3, 1, 2 * n + 1), device=dev, dtype=acc_dtype)
-    kh[0, 0, 0, :] = kg         # b1 from row0 with g
-    kh[1, 0, 0, :] = kxg        # b2 from row0 with xg
-    kh[2, 1, 0, :] = kg         # b3 from row1 with g
-    kh[3, 0, 0, :] = kxxg       # b4 from row0 with xxg
-    kh[4, 2, 0, :] = kg         # b5 from row2 with g
-    kh[5, 1, 0, :] = kxg        # b6 from row1 with xg
-
     b = F.conv2d(row_pad, kh)  # (1,6,H,W)
     b1, b2, b3, b4, b5, b6 = torch.unbind(b, dim=1)
 
@@ -215,28 +326,10 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
     Includes OpenCV-exact border attenuation:
         scale = (x<B ? border[x] : 1) * (x>=W-B ? border[W-x-1] : 1) * ...
     """
+    R0_hw5, R1_hw5, flow_hw2, H, W = _normalize_flow_hw2(
+        R0_hw5, R1_hw5, flow_hw2)
     device = R0_hw5.device
-    dtype = R0_hw5.dtype
-    assert dtype == torch.float32
-    H, W, C = R0_hw5.shape
-    assert C == 5
-
-    # Normalize flow to (H,W,2)
-    if flow_hw2.ndim == 4 and flow_hw2.shape[0] == 1:
-        flow_hw2 = flow_hw2.squeeze(0)
-    if flow_hw2.ndim == 3 and flow_hw2.shape[0] == 2 and flow_hw2.shape[-1] != 2:
-        flow_hw2 = flow_hw2.permute(1, 2, 0)
-    fH, fW = flow_hw2.shape[:2]
-    if (H, W) != (fH, fW):
-        Hc = min(H, fH)
-        Wc = min(W, fW)
-        R0_hw5 = R0_hw5[:Hc, :Wc, :]
-        R1_hw5 = R1_hw5[:Hc, :Wc, :]
-        flow_hw2 = flow_hw2[:Hc, :Wc, :]
-        H, W = Hc, Wc
-    if flow_hw2.shape != (H, W, 2):
-        raise ValueError(
-            f"Expected flow shape {(H, W, 2)}, got {tuple(flow_hw2.shape)}")
+    assert R0_hw5.dtype == torch.float32
 
     # Grid
     ys = torch.arange(H, device=device, dtype=torch.float32).view(
@@ -248,39 +341,43 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
     dy = flow_hw2[..., 1]
     fx = xs + dx
     fy = ys + dy
+    if device.type == "mps":
+        # Avoid int64 indexing on MPS by using grid_sample.
+        valid = (fx >= 0) & (fx < W - 1) & (fy >= 0) & (fy < H - 1)
+        R1w = _grid_sample_R1(R1_hw5, fx, fy)
+    else:
+        x1 = torch.floor(fx).to(torch.int64)
+        y1 = torch.floor(fy).to(torch.int64)
 
-    x1 = torch.floor(fx).to(torch.int64)
-    y1 = torch.floor(fy).to(torch.int64)
+        valid = (x1 >= 0) & (x1 < W - 1) & (y1 >= 0) & (y1 < H - 1)
 
-    valid = (x1 >= 0) & (x1 < W - 1) & (y1 >= 0) & (y1 < H - 1)
+        x1c = torch.clamp(x1, 0, W - 2)
+        y1c = torch.clamp(y1, 0, H - 2)
 
-    x1c = torch.clamp(x1, 0, W - 2)
-    y1c = torch.clamp(y1, 0, H - 2)
+        fx_frac = (fx - x1.to(torch.float32))
+        fy_frac = (fy - y1.to(torch.float32))
+        a00 = (1.0 - fx_frac) * (1.0 - fy_frac)
+        a01 = fx_frac * (1.0 - fy_frac)
+        a10 = (1.0 - fx_frac) * fy_frac
+        a11 = fx_frac * fy_frac
 
-    fx_frac = (fx - x1.to(torch.float32))
-    fy_frac = (fy - y1.to(torch.float32))
-    a00 = (1.0 - fx_frac) * (1.0 - fy_frac)
-    a01 = fx_frac * (1.0 - fy_frac)
-    a10 = (1.0 - fx_frac) * fy_frac
-    a11 = fx_frac * fy_frac
+        flat = R1_hw5.reshape(H * W, 5)
+        idx00 = (y1c * W + x1c).view(-1)
+        idx01 = (y1c * W + (x1c + 1)).view(-1)
+        idx10 = ((y1c + 1) * W + x1c).view(-1)
+        idx11 = ((y1c + 1) * W + (x1c + 1)).view(-1)
 
-    flat = R1_hw5.reshape(H * W, 5)
-    idx00 = (y1c * W + x1c).view(-1)
-    idx01 = (y1c * W + (x1c + 1)).view(-1)
-    idx10 = ((y1c + 1) * W + x1c).view(-1)
-    idx11 = ((y1c + 1) * W + (x1c + 1)).view(-1)
+        R00 = flat[idx00].view(H, W, 5)
+        R01 = flat[idx01].view(H, W, 5)
+        R10 = flat[idx10].view(H, W, 5)
+        R11 = flat[idx11].view(H, W, 5)
 
-    R00 = flat[idx00].view(H, W, 5)
-    R01 = flat[idx01].view(H, W, 5)
-    R10 = flat[idx10].view(H, W, 5)
-    R11 = flat[idx11].view(H, W, 5)
-
-    R1w = (
-        R00 * a00.unsqueeze(-1)
-        + R01 * a01.unsqueeze(-1)
-        + R10 * a10.unsqueeze(-1)
-        + R11 * a11.unsqueeze(-1)
-    )
+        R1w = (
+            R00 * a00.unsqueeze(-1)
+            + R01 * a01.unsqueeze(-1)
+            + R10 * a10.unsqueeze(-1)
+            + R11 * a11.unsqueeze(-1)
+        )
 
     # When OOB, OpenCV uses r2=r3=0 and uses R0 terms for r4/r5, and r6=R0*0.5
     # We'll compute r2..r6 in vectorized form.
@@ -306,37 +403,8 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
     r3 = r3 + r6 * dy + r5 * dx
 
     # ---- OpenCV-exact border attenuation ----
-    BORDER = 5
-    border = torch.tensor([0.14, 0.14, 0.4472, 0.4472, 0.4472],
-                          device=device, dtype=torch.float32)
-
     if H > 0 and W > 0:
-        xs_i = torch.arange(W, device=device, dtype=torch.int64)
-        ys_i = torch.arange(H, device=device, dtype=torch.int64)
-
-        # factors for left/right/top/bottom independently (OpenCV multiplies them)
-        fxL = torch.ones((W,), device=device, dtype=torch.float32)
-        fxR = torch.ones((W,), device=device, dtype=torch.float32)
-        fyT = torch.ones((H,), device=device, dtype=torch.float32)
-        fyB = torch.ones((H,), device=device, dtype=torch.float32)
-
-        mxL = xs_i < BORDER
-        mxR = xs_i >= (W - BORDER)
-        myT = ys_i < BORDER
-        myB = ys_i >= (H - BORDER)
-
-        if mxL.any():
-            fxL[mxL] = border[xs_i[mxL]]
-        if mxR.any():
-            fxR[mxR] = border[(W - xs_i[mxR] - 1).clamp(min=0, max=BORDER - 1)]
-        if myT.any():
-            fyT[myT] = border[ys_i[myT]]
-        if myB.any():
-            fyB[myB] = border[(H - ys_i[myB] - 1).clamp(min=0, max=BORDER - 1)]
-
-        fx = fxL * fxR
-        fy = fyT * fyB
-        scale = fy.view(H, 1) * fx.view(1, W)
+        scale = _get_border_scale(H, W, device)
 
         # OpenCV applies only near borders; interior scale == 1 so multiplying everywhere is ok.
         r2 = r2 * scale
@@ -359,6 +427,57 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
     return matM.contiguous()
 
 
+def _normalize_flow_hw2(
+    R0_hw5: torch.Tensor,
+    R1_hw5: torch.Tensor,
+    flow_hw2: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
+    H, W, C = R0_hw5.shape
+    if C != 5:
+        raise ValueError("Expected R0_hw5 with last dim=5")
+
+    # Normalize flow to (H,W,2)
+    if flow_hw2.ndim == 4 and flow_hw2.shape[0] == 1:
+        flow_hw2 = flow_hw2.squeeze(0)
+    if flow_hw2.ndim == 3 and flow_hw2.shape[0] == 2 and flow_hw2.shape[-1] != 2:
+        flow_hw2 = flow_hw2.permute(1, 2, 0).contiguous()
+    fH, fW = flow_hw2.shape[:2]
+    if (H, W) != (fH, fW):
+        Hc = min(H, fH)
+        Wc = min(W, fW)
+        R0_hw5 = R0_hw5[:Hc, :Wc, :]
+        R1_hw5 = R1_hw5[:Hc, :Wc, :]
+        flow_hw2 = flow_hw2[:Hc, :Wc, :]
+        H, W = Hc, Wc
+    if flow_hw2.shape != (H, W, 2):
+        raise ValueError(
+            f"Expected flow shape {(H, W, 2)}, got {tuple(flow_hw2.shape)}")
+    return R0_hw5, R1_hw5, flow_hw2, H, W
+
+
+def _grid_sample_R1(R1_hw5: torch.Tensor, fx: torch.Tensor, fy: torch.Tensor) -> torch.Tensor:
+    """MPS-safe bilinear sampling of R1 without int64 indexing."""
+    H, W = fx.shape
+    if W > 1:
+        x_norm = fx / (W - 1) * 2.0 - 1.0
+    else:
+        x_norm = torch.zeros_like(fx)
+    if H > 1:
+        y_norm = fy / (H - 1) * 2.0 - 1.0
+    else:
+        y_norm = torch.zeros_like(fy)
+    grid = torch.stack((x_norm, y_norm), dim=-1).unsqueeze(0)
+    R1_t = R1_hw5.permute(2, 0, 1).unsqueeze(0)
+    R1w = F.grid_sample(
+        R1_t,
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    )
+    return R1w.squeeze(0).permute(1, 2, 0).contiguous()
+
+
 def farneback_update_flow_blur(matM_hw5: torch.Tensor) -> torch.Tensor:
     """
     Per-pixel solve (same as OpenCV after blur):
@@ -374,6 +493,15 @@ def farneback_update_flow_blur(matM_hw5: torch.Tensor) -> torch.Tensor:
     fx = (g11 * h2 - g12 * h1) * idet
     fy = (g22 * h1 - g12 * h2) * idet
     return torch.stack([fx, fy], dim=-1).contiguous()
+
+
+def _vector_norm_chw(flow_chw: torch.Tensor) -> torch.Tensor:
+    """
+    MPS has had stability issues with torch.linalg; use a float32-safe norm there.
+    """
+    if flow_chw.device.type == "mps":
+        return torch.sqrt((flow_chw * flow_chw).sum(dim=1, keepdim=True))
+    return torch.linalg.vector_norm(flow_chw, dim=1, keepdim=True)
 
 
 # Flag constant
@@ -417,7 +545,6 @@ def calc_optical_flow_farneback_torch(
     outlier_ksize: int = 7,
     outlier_ratio: float = 25.0,
     outlier_min_magnitude: float = 10.0,
-    force_mps: bool = False,
 ) -> np.ndarray:
     """
     PyTorch Farneback that aims to numerically match OpenCV's CPU implementation.
@@ -427,29 +554,19 @@ def calc_optical_flow_farneback_torch(
       outlier_ksize=0, clip_percentile=None, max_magnitude=None
 
     Note: The custom kernels here are heavy on small, per-row/per-pixel ops that
-    launch many tiny kernels. On MPS this is extremely slow, so by default we
-    fall back to CPU when device="mps". Pass force_mps=True to keep the MPS path.
+    launch many tiny kernels.
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     req_dev = torch.device(device)
-    if req_dev.type == "mps" and not torch.backends.mps.is_available():
-        raise RuntimeError(
-            "Requested MPS device but torch.backends.mps.is_available() is False")
-
-    # MPS is extremely slow for these small-kernel loops; default to CPU unless forced.
-    if req_dev.type == "mps" and not force_mps:
-        warnings.warn(
-            "MPS backend is slow for Farneback kernels; falling back to CPU. "
-            "Set force_mps=True to keep MPS.", RuntimeWarning)
-        dev = torch.device("cpu")
-    else:
-        dev = req_dev
+    dev = req_dev
+    if dev.type == "mps":
+        _ = torch.zeros(1, device=dev)
+        torch.mps.synchronize()
 
     prev_f = _to_gray_f32(prev)
     nxt_f = _to_gray_f32(nxt)
-
     # OpenCV pyramid: blur original with sigma(level), then resize
     pyr_prev: list[np.ndarray] = []
     pyr_nxt: list[np.ndarray] = []
@@ -470,62 +587,101 @@ def calc_optical_flow_farneback_torch(
         pyr_nxt.append(cv2.resize(nxt_blur, (w, h),
                        interpolation=cv2.INTER_LINEAR))
 
-    kernels = farneback_prepare_gaussian(poly_n, poly_sigma, dev)
+    def _run_torch(dev_run: torch.device) -> torch.Tensor:
+        prev_threads: Optional[int] = None
+        if dev_run.type == "cpu":
+            try:
+                prev_threads = int(torch.get_num_threads())
+                if prev_threads > 1:
+                    torch.set_num_threads(1)
+            except Exception:
+                prev_threads = None
 
-    flow_t: Optional[torch.Tensor] = None
+        try:
+            with torch.inference_mode():
+                kernels = farneback_prepare_gaussian(
+                    poly_n, poly_sigma, dev_run)
 
-    for lvl in reversed(range(levels + 1)):
-        I0 = pyr_prev[lvl]
-        I1 = pyr_nxt[lvl]
+                flow_t: Optional[torch.Tensor] = None
 
-        t0 = _torch_gray(I0, dev)
-        t1 = _torch_gray(I1, dev)
-        H, W = I0.shape[:2]
+                for lvl in reversed(range(levels + 1)):
+                    I0 = pyr_prev[lvl]
+                    I1 = pyr_nxt[lvl]
 
-        if flow_t is None:
-            flow_t = torch.zeros((H, W, 2), device=dev, dtype=torch.float32)
-        else:
-            flow_t = flow_t.permute(2, 0, 1).unsqueeze(0)
-            flow_t = F.interpolate(flow_t, size=(
-                H, W), mode="bilinear", align_corners=False)
-            flow_t = flow_t.squeeze(0).permute(1, 2, 0).contiguous()
-            flow_t = flow_t * (1.0 / pyr_scale)
+                    t0 = _torch_gray(I0, dev_run)
+                    t1 = _torch_gray(I1, dev_run)
+                    H, W = I0.shape[:2]
 
-        R0 = farneback_polyexp(t0, kernels)
-        R1 = farneback_polyexp(t1, kernels)
+                    if flow_t is None:
+                        flow_t = torch.zeros(
+                            (H, W, 2), device=dev_run, dtype=torch.float32)
+                    else:
+                        flow_t = flow_t.permute(2, 0, 1).unsqueeze(0)
+                        flow_t = F.interpolate(flow_t, size=(
+                            H, W), mode="bilinear", align_corners=False)
+                        flow_t = flow_t.squeeze(0).permute(
+                            1, 2, 0).contiguous()
+                        flow_t = flow_t * (1.0 / pyr_scale)
 
-        use_gaussian = (flags & OPTFLOW_FARNEBACK_GAUSSIAN) != 0
-        if use_gaussian:
-            raise NotImplementedError(
-                "Gaussian window update path not implemented in this script.")
+                    R0 = farneback_polyexp(t0, kernels)
+                    R1 = farneback_polyexp(t1, kernels)
 
-        matM = farneback_update_matrices(R0, R1, flow_t)
-        for it in range(iterations):
-            matM_blur = _box_blur5(matM, winsize)
-            flow_t = farneback_update_flow_blur(matM_blur)
-            if it < iterations - 1:
-                matM = farneback_update_matrices(R0, R1, flow_t)
+                    use_gaussian = (flags & OPTFLOW_FARNEBACK_GAUSSIAN) != 0
+                    if use_gaussian:
+                        raise NotImplementedError(
+                            "Gaussian window update path not implemented in this script.")
 
-    if flow_t is None:
-        raise RuntimeError("Torch Farneback produced no flow.")
+                    matM = farneback_update_matrices(R0, R1, flow_t)
+                    for it in range(iterations):
+                        matM_blur = _box_blur5(matM, winsize)
+                        flow_t = farneback_update_flow_blur(matM_blur)
+                        if it < iterations - 1:
+                            matM = farneback_update_matrices(R0, R1, flow_t)
 
-    # Spatial outlier suppression: replace isolated spikes with local mean flow.
-    if outlier_ksize and outlier_ksize > 1:
-        k = int(outlier_ksize)
-        if k % 2 == 0:
-            k += 1
-        flow_chw = flow_t.permute(2, 0, 1).unsqueeze(0)  # (1,2,H,W)
-        flow_mean = F.avg_pool2d(
-            flow_chw, kernel_size=k, stride=1, padding=k // 2)
-        mag = torch.linalg.vector_norm(flow_chw, dim=1, keepdim=True)
-        mag_mean = F.avg_pool2d(mag, kernel_size=k, stride=1, padding=k // 2)
-        ratio = mag / (mag_mean + 1e-6)
-        mask = (ratio > float(outlier_ratio)) & (
-            mag > float(outlier_min_magnitude))
-        flow_chw = torch.where(mask, flow_mean, flow_chw)
-        flow_t = flow_chw.squeeze(0).permute(1, 2, 0).contiguous()
+                if flow_t is None:
+                    raise RuntimeError("Torch Farneback produced no flow.")
 
-    flow = flow_t.detach().cpu().numpy().astype(np.float32)
+                # Spatial outlier suppression: replace isolated spikes with local mean flow.
+                if outlier_ksize and outlier_ksize > 1:
+                    k = int(outlier_ksize)
+                    if k % 2 == 0:
+                        k += 1
+                    flow_chw = flow_t.permute(
+                        2, 0, 1).unsqueeze(0)  # (1,2,H,W)
+                    flow_mean = F.avg_pool2d(
+                        flow_chw, kernel_size=k, stride=1, padding=k // 2)
+                    mag = _vector_norm_chw(flow_chw)
+                    mag_mean = F.avg_pool2d(
+                        mag, kernel_size=k, stride=1, padding=k // 2)
+                    ratio = mag / (mag_mean + 1e-6)
+                    mask = (ratio > float(outlier_ratio)) & (
+                        mag > float(outlier_min_magnitude))
+                    flow_chw = torch.where(mask, flow_mean, flow_chw)
+                    flow_t = flow_chw.squeeze(
+                        0).permute(1, 2, 0).contiguous()
+
+                return flow_t
+        finally:
+            if prev_threads is not None and dev_run.type == "cpu":
+                try:
+                    torch.set_num_threads(prev_threads)
+                except Exception:
+                    pass
+
+    if dev.type == "mps":
+        try:
+            flow_t = _run_torch(dev)
+        except Exception as exc:
+            logger.exception("MPS Farneback failed; retrying on CPU.")
+            warnings.warn(
+                f"MPS Farneback failed ({exc}); retrying on CPU.",
+                RuntimeWarning,
+            )
+            flow_t = _run_torch(torch.device("cpu"))
+    else:
+        flow_t = _run_torch(dev)
+
+    flow = flow_t.cpu().numpy().astype(np.float32)
 
     # Global clipping (optional) to bound remaining extremes.
     if clip_percentile is not None and 0 < clip_percentile < 100:

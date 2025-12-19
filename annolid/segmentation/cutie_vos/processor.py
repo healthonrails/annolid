@@ -332,9 +332,16 @@ class SegmentedCutieExecutor:
 
                 dense_flow_for_this_frame: Optional[np.ndarray] = None
                 if self.config.get('compute_optical_flow', True) and prev_frame_bgr is not None:
+                    backend_val = str(self.optical_flow_backend).lower()
+                    use_raft = "raft" in backend_val
+                    use_torch_farneback = (
+                        "torch" in backend_val) and not use_raft
                     _, dense_flow_for_this_frame = compute_optical_flow(
-                        prev_frame_bgr, current_frame_bgr,
-                        use_raft=(self.optical_flow_backend == 'raft'))
+                        prev_frame_bgr,
+                        current_frame_bgr,
+                        use_raft=use_raft,
+                        use_torch_farneback=use_torch_farneback,
+                    )
 
                 self._save_frame_annotation(
                     frame_idx, pred_mask_np_obj_ids,

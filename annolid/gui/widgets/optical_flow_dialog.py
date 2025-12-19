@@ -31,10 +31,17 @@ class FlowOptionsDialog(QtWidgets.QDialog):
 
         backend_label = QtWidgets.QLabel("Flow backend:")
         self.backend_combo = QtWidgets.QComboBox()
-        self.backend_combo.addItems(["farneback", "raft"])
+        self.backend_combo.addItems(
+            ["farneback (default)", "farneback (torch)", "raft (torchvision)"]
+        )
         backend_val = str(default_backend).lower(
         ) if default_backend is not None else "farneback"
-        backend_idx = 1 if backend_val == "raft" else 0
+        if "raft" in backend_val:
+            backend_idx = 2
+        elif "torch" in backend_val:
+            backend_idx = 1
+        else:
+            backend_idx = 0
         self.backend_combo.setCurrentIndex(backend_idx)
 
         raft_label = QtWidgets.QLabel("RAFT model:")
@@ -161,14 +168,22 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         is_quiver = self.viz_combo.currentText().strip().lower() == "quiver"
         self.quiver_group.setEnabled(is_quiver)
         self.stable_hsv_checkbox.setEnabled(not is_quiver)
-        is_raft = self.backend_combo.currentText().strip().lower() == "raft"
+        is_raft = "raft" in self.backend_combo.currentText().strip().lower()
         self.raft_combo.setEnabled(is_raft)
         self.farneback_group.setEnabled(not is_raft)
+
+    def _backend_value(self) -> str:
+        text = self.backend_combo.currentText().strip().lower()
+        if "raft" in text:
+            return "raft"
+        if "torch" in text:
+            return "farneback_torch"
+        return "farneback"
 
     def values(self) -> Optional[Tuple[str, str, str, int, int, float, bool, float, int, int, int, int, float]]:
         if self.result() != QtWidgets.QDialog.Accepted:
             return None
-        backend = self.backend_combo.currentText().strip().lower()
+        backend = self._backend_value()
         raft_model = self.raft_combo.currentText().strip().lower()
         viz = self.viz_combo.currentText().strip().lower()
         opacity = int(self.opacity_slider.value())
