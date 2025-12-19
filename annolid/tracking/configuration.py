@@ -28,8 +28,8 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "motion_search_tighten": 0.8,
         "motion_search_gain": 0.9,
         "motion_search_flow_gain": None,
-        "motion_search_min_radius": 1.0,
-        "motion_search_max_radius": 10.0,
+        "motion_search_min_radius": 2.5,
+        "motion_search_max_radius": 12.0,
         "motion_search_miss_boost": 1.5,
         "motion_prior_penalty_weight": 0.25,
         "motion_prior_soft_radius_px": 20.0,
@@ -37,10 +37,14 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "motion_prior_miss_relief": 1.25,
         "motion_prior_flow_relief": 0.15,
         "structural_consistency_weight": 0.55,
-        "appearance_bundle_radius": 3,
-        "appearance_bundle_size": 40,
-        "appearance_bundle_weight": 0.85,
-        "baseline_similarity_weight": 0.4,
+        "appearance_bundle_radius": 4,
+        "appearance_bundle_size": 60,
+        "appearance_bundle_weight": 0.65,
+        "baseline_similarity_weight": 0.2,
+        "context_radius": 1,
+        "context_radius_large": 2,
+        "context_large_weight": 0.4,
+        "context_weight": 0.4,
         "part_shared_weight": 0.2,
         "part_shared_momentum": 0.12,
         "max_candidate_tracks": 12,
@@ -81,21 +85,25 @@ class CutieDinoTrackerConfig:
     mask_enforce_snap_radius: Optional[int] = None
     mask_enforce_reject_outside: bool = True
     motion_search_tighten: float = 0.85
-    motion_search_gain: float = 0.6
-    motion_search_min_radius: float = 1.0
-    motion_search_max_radius: float = 4.0
+    motion_search_gain: float = 0.9
+    motion_search_min_radius: float = 2.5
+    motion_search_max_radius: float = 12.0
     motion_search_miss_boost: float = 1.0
     motion_search_flow_gain: Optional[float] = None
     motion_prior_penalty_weight: float = 0.3
-    motion_prior_soft_radius_px: float = 4.0
+    motion_prior_soft_radius_px: float = 20.0
     motion_prior_radius_factor: float = 1.5
-    motion_prior_miss_relief: float = 0.75
+    motion_prior_miss_relief: float = 1.0
     motion_prior_flow_relief: float = 0.0
     structural_consistency_weight: float = 0.4
-    appearance_bundle_radius: int = 3
-    appearance_bundle_size: int = 30
-    appearance_bundle_weight: float = 0.99
-    baseline_similarity_weight: float = 0.65
+    appearance_bundle_radius: int = 4
+    appearance_bundle_size: int = 50
+    appearance_bundle_weight: float = 0.75
+    baseline_similarity_weight: float = 0.3
+    context_radius: int = 1
+    context_radius_large: int = 2
+    context_large_weight: float = 0.35
+    context_weight: float = 0.3
     part_shared_weight: float = 0.15
     part_shared_momentum: float = 0.1
     symmetry_pairs: Tuple[Tuple[str, str], ...] = ()
@@ -170,6 +178,13 @@ class CutieDinoTrackerConfig:
             0.0, min(1.0, float(self.part_shared_weight)))
         self.part_shared_momentum = max(
             0.0, min(1.0, float(self.part_shared_momentum)))
+        self.context_radius = max(0, int(self.context_radius))
+        self.context_radius_large = max(
+            self.context_radius, int(self.context_radius_large))
+        self.context_large_weight = max(
+            0.0, min(1.0, float(self.context_large_weight)))
+        self.context_weight = max(
+            0.0, min(1.0, float(self.context_weight)))
         self.candidate_prune_ratio = max(
             0.0, min(1.0, float(self.candidate_prune_ratio)))
         self.candidate_prune_min = max(0, int(self.candidate_prune_min))

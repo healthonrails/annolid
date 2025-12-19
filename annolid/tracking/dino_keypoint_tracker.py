@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple, Set
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import math
 
@@ -36,6 +37,7 @@ class KeypointTrack:
     patch_rc: Tuple[int, int]
     descriptor: torch.Tensor
     reference_descriptor: torch.Tensor
+    context_descriptor: Optional[torch.Tensor] = None
     manual_codebook: Optional[torch.Tensor] = None
     velocity: Tuple[float, float] = (0.0, 0.0)
     misses: int = 0
@@ -231,6 +233,8 @@ class DinoKeypointTracker:
             mask_lookup=mask_lookup,
             polygons=polygons,
         )
+        normalized_feats = self._normalize_feature_grid(feats)
+        context_map = self._compute_context_map(normalized_feats)
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
         self._last_patch_masks = {}
         self._mask_miss_counts = {}
@@ -265,6 +269,10 @@ class DinoKeypointTracker:
                     patch_mask = cache_entry.get("patch_mask")
                 descriptor = self._apply_mask_descriptor(
                     reference_desc.clone(), mask_descriptor)
+                context_desc = None
+                if context_map is not None:
+                    context_desc = context_map[:, patch_rc[0],
+                                               patch_rc[1]].detach().clone()
 
                 # KeypointTrack always starts with zero velocity.
                 track = KeypointTrack(
@@ -275,6 +283,7 @@ class DinoKeypointTracker:
                     patch_rc=patch_rc,
                     descriptor=descriptor,
                     reference_descriptor=reference_desc.clone(),
+                    context_descriptor=context_desc,
                     manual_codebook=self._manual_anchor_codebooks.get(
                         keypoint.key),
                     last_position=(float(keypoint.x), float(keypoint.y)),
@@ -327,6 +336,7 @@ class DinoKeypointTracker:
         roi_changed = self._roi_box != prev_roi_box
         grid_h, grid_w = grid_hw
         normalized_feats = self._normalize_feature_grid(feats)
+        context_map = self._compute_context_map(normalized_feats)
         inv_scale_x = 1.0 / max(scale_x, 1e-6)
         inv_scale_y = 1.0 / max(scale_y, 1e-6)
         patch_size = float(self.patch_size)
@@ -400,6 +410,13 @@ class DinoKeypointTracker:
             shared_key, shared_descriptor = self._part_shared_descriptor(
                 track, feats.device)
             shared_weight = self._part_shared_weight(track, shared_key)
+            context_weight = float(
+                max(0.0, getattr(self.runtime_config, "context_weight", 0.0)))
+            use_context = (
+                context_weight > 0.0
+                and context_map is not None
+                and track.context_descriptor is not None
+            )
 
             prev_r, prev_c = track.patch_rc
             if (
@@ -504,6 +521,10 @@ class DinoKeypointTracker:
             support_weight = float(
                 max(0.0, self.runtime_config.support_probe_weight))
             use_support = support_weight > 0.0 and bool(track.support_probes)
+            if use_context and track.context_descriptor is not None:
+                if track.context_descriptor.device != feats.device:
+                    track.context_descriptor = track.context_descriptor.to(
+                        feats.device)
 
             region_feats = feats[:, r_min:r_max + 1, c_min:c_max + 1]
             region_h, region_w = region_feats.shape[1:]
@@ -555,6 +576,15 @@ class DinoKeypointTracker:
                 normalized_feats.shape[0], -1)
             candidate_descs = norm_region_flat[:,
                                                candidate_indices] if candidate_indices.numel() > 0 else norm_region_flat[:, :0]
+            context_scores = None
+            if use_context and candidate_indices.numel() > 0:
+                context_region_flat = context_map[:, r_min:r_max + 1,
+                                                  c_min:c_max + 1].reshape(
+                    context_map.shape[0], -1)
+                candidate_contexts = context_region_flat[:,
+                                                         candidate_indices]
+                context_scores = torch.matmul(
+                    track.context_descriptor, candidate_contexts)
 
             appearance_scores = None
             if use_appearance and candidate_indices.numel() > 0:
@@ -591,6 +621,9 @@ class DinoKeypointTracker:
                 )
                 if appearance_scores is not None:
                     candidate_score += float(appearance_scores[idx].item())
+                if context_scores is not None:
+                    candidate_score += context_weight * float(
+                        context_scores[idx].item())
                 if use_struct_penalty:
                     candidate_score -= self._structural_penalty(
                         track, candidate_xy, previous_positions)
@@ -772,6 +805,19 @@ class DinoKeypointTracker:
                     blended = self._apply_mask_descriptor(
                         blended, mask_descriptor)
                     track.descriptor = blended / (blended.norm() + 1e-12)
+                    if context_map is not None:
+                        new_context = context_map[:, rr, cc].detach().clone()
+                        if track.context_descriptor is None:
+                            track.context_descriptor = new_context
+                        else:
+                            blended_context = (
+                                (1.0 - effective_momentum)
+                                * track.context_descriptor
+                                + effective_momentum * new_context
+                            )
+                            track.context_descriptor = blended_context / (
+                                blended_context.norm() + 1e-12
+                            )
                     self._update_part_shared_descriptor(
                         track,
                         track.descriptor,
@@ -1074,6 +1120,47 @@ class DinoKeypointTracker:
     def _normalize_feature_grid(feats: torch.Tensor) -> torch.Tensor:
         norms = torch.sqrt((feats * feats).sum(dim=0, keepdim=True))
         return feats / (norms + 1e-12)
+
+    @staticmethod
+    def _avg_pool_descriptor_map(
+        feats: torch.Tensor,
+        radius: int,
+    ) -> torch.Tensor:
+        if radius <= 0:
+            return feats
+        kernel = 2 * radius + 1
+        pooled = F.avg_pool2d(
+            feats.unsqueeze(0),
+            kernel_size=kernel,
+            stride=1,
+            padding=radius,
+        )
+        return pooled.squeeze(0)
+
+    def _compute_context_map(
+        self,
+        normalized_feats: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        weight = float(max(0.0, getattr(
+            self.runtime_config, "context_weight", 0.0)))
+        radius = int(getattr(self.runtime_config, "context_radius", 0))
+        if weight <= 0.0 or radius <= 0:
+            return None
+        small = self._avg_pool_descriptor_map(normalized_feats, radius)
+        large_radius = int(
+            getattr(self.runtime_config, "context_radius_large", radius))
+        if large_radius > radius:
+            large = self._avg_pool_descriptor_map(
+                normalized_feats, large_radius)
+            blend = float(np.clip(
+                getattr(self.runtime_config, "context_large_weight", 0.0),
+                0.0,
+                1.0,
+            ))
+            combined = (1.0 - blend) * small + blend * large
+        else:
+            combined = small
+        return self._normalize_feature_grid(combined)
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
         feats = self.extractor.extract(
