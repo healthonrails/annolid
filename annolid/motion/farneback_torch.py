@@ -65,6 +65,8 @@ def _acc_dtype_for_device(device: torch.device) -> torch.dtype:
 
 
 _BORDER_SCALE_CACHE: dict[tuple[str, int, int, int], torch.Tensor] = {}
+_BASE_COORDS_CACHE: dict[tuple[str, int, int, int],
+                         tuple[torch.Tensor, torch.Tensor]] = {}
 
 
 def _device_key(device: torch.device) -> tuple[str, int]:
@@ -148,6 +150,19 @@ def _get_border_scale(H: int, W: int, device: torch.device) -> torch.Tensor:
     return scale
 
 
+def _get_base_coords(H: int, W: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    key = (*_device_key(device), H, W)
+    coords = _BASE_COORDS_CACHE.get(key)
+    if coords is not None:
+        return coords
+
+    ys = torch.arange(H, device=device, dtype=torch.float32)
+    xs = torch.arange(W, device=device, dtype=torch.float32)
+    coords = (ys, xs)
+    _BASE_COORDS_CACHE[key] = coords
+    return coords
+
+
 @dataclass(frozen=True)
 class FarnebackGaussKernels:
     n: int
@@ -169,6 +184,10 @@ class FarnebackGaussKernels:
 # OpenCV-parity core
 # ---------------------------
 
+_GAUSS_KERNEL_CACHE: dict[tuple[str, int, int, float],
+                          FarnebackGaussKernels] = {}
+
+
 def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> FarnebackGaussKernels:
     """
     Matches OpenCV FarnebackPrepareGaussian (optflowgf.cpp):
@@ -178,6 +197,12 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
     """
     if sigma < 1e-7:
         sigma = float(n) * 0.3
+    sigma = float(sigma)
+
+    cache_key = (*_device_key(device), n, sigma)
+    cached = _GAUSS_KERNEL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     xs = np.arange(-n, n + 1, dtype=np.float64)
     g = np.exp(-(xs * xs) / (2.0 * sigma * sigma)).astype(np.float64)
@@ -249,7 +274,7 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
         kv_f64 = kv_f32.to(torch.float64)
         kh_f64 = kh_f32.to(torch.float64)
 
-    return FarnebackGaussKernels(
+    kernels = FarnebackGaussKernels(
         n=n,
         sigma=float(sigma),
         g=g_t,
@@ -264,6 +289,8 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
         kv_f64=kv_f64,
         kh_f64=kh_f64,
     )
+    _GAUSS_KERNEL_CACHE[cache_key] = kernels
+    return kernels
 
 
 def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -> torch.Tensor:
@@ -332,10 +359,9 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
     assert R0_hw5.dtype == torch.float32
 
     # Grid
-    ys = torch.arange(H, device=device, dtype=torch.float32).view(
-        H, 1).expand(H, W)
-    xs = torch.arange(W, device=device, dtype=torch.float32).view(
-        1, W).expand(H, W)
+    ys_1d, xs_1d = _get_base_coords(H, W, device)
+    ys = ys_1d.view(H, 1)
+    xs = xs_1d.view(1, W)
 
     dx = flow_hw2[..., 0]
     dy = flow_hw2[..., 1]
@@ -545,6 +571,7 @@ def calc_optical_flow_farneback_torch(
     outlier_ksize: int = 7,
     outlier_ratio: float = 25.0,
     outlier_min_magnitude: float = 10.0,
+    cpu_num_threads: Optional[int] = None,
 ) -> np.ndarray:
     """
     PyTorch Farneback that aims to numerically match OpenCV's CPU implementation.
@@ -555,6 +582,8 @@ def calc_optical_flow_farneback_torch(
 
     Note: The custom kernels here are heavy on small, per-row/per-pixel ops that
     launch many tiny kernels.
+
+    cpu_num_threads: Optional override for torch CPU thread count (None keeps default).
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -589,11 +618,12 @@ def calc_optical_flow_farneback_torch(
 
     def _run_torch(dev_run: torch.device) -> torch.Tensor:
         prev_threads: Optional[int] = None
-        if dev_run.type == "cpu":
+        if dev_run.type == "cpu" and cpu_num_threads is not None:
             try:
-                prev_threads = int(torch.get_num_threads())
-                if prev_threads > 1:
-                    torch.set_num_threads(1)
+                threads = int(cpu_num_threads)
+                if threads > 0:
+                    prev_threads = int(torch.get_num_threads())
+                    torch.set_num_threads(threads)
             except Exception:
                 prev_threads = None
 
