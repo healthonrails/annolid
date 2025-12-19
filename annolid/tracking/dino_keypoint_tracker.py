@@ -136,6 +136,7 @@ class DinoKeypointTracker:
             model_name=model_name,
             short_side=short_side,
             device=device,
+            layers=(-2, -1),
         )
         self.extractor = Dinov3FeatureExtractor(cfg)
         self.runtime_config = runtime_config or CutieDinoTrackerConfig()
@@ -176,6 +177,8 @@ class DinoKeypointTracker:
         self._roi_size: Tuple[int, int] = (0, 0)
         self._instance_body_axes: Dict[str, Tuple[float, float]] = {}
         self._manual_anchor_codebooks: Dict[str, torch.Tensor] = {}
+        self._part_shared_descriptors: Dict[str, torch.Tensor] = {}
+        self._part_shared_counts: Dict[str, int] = {}
         self.keypoint_refine_radius = max(
             0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
         )
@@ -204,6 +207,8 @@ class DinoKeypointTracker:
         self._instance_body_axes = {}
         if not preserve_manual_anchors:
             self._manual_anchor_codebooks = {}
+        self._part_shared_descriptors = {}
+        self._part_shared_counts = {}
 
     def start(
         self,
@@ -293,6 +298,11 @@ class DinoKeypointTracker:
                     track.body_coords = body_prior.signature(
                         (float(patch_rc[0]), float(patch_rc[1]))
                     )
+                self._update_part_shared_descriptor(
+                    track,
+                    reference_desc,
+                    confidence=1.0,
+                )
                 self.tracks[keypoint.key] = track
 
         frame_array = np.array(image)
@@ -308,11 +318,13 @@ class DinoKeypointTracker:
         if not self.tracks:
             return []
 
+        prev_roi_box = self._roi_box
         feats, scale_x, scale_y, grid_hw = self._prepare_roi_inputs(
             image=image,
             mask_lookup=mask_lookup,
             polygons=None,
         )
+        roi_changed = self._roi_box != prev_roi_box
         grid_h, grid_w = grid_hw
         normalized_feats = self._normalize_feature_grid(feats)
         inv_scale_x = 1.0 / max(scale_x, 1e-6)
@@ -385,8 +397,26 @@ class DinoKeypointTracker:
                 manual_codebook = manual_codebook.to(feats.device)
                 track.manual_codebook = manual_codebook
             manual_weight = self._manual_anchor_weight(track)
+            shared_key, shared_descriptor = self._part_shared_descriptor(
+                track, feats.device)
+            shared_weight = self._part_shared_weight(track, shared_key)
 
             prev_r, prev_c = track.patch_rc
+            if (
+                roi_changed
+                or prev_r < 0
+                or prev_r >= grid_h
+                or prev_c < 0
+                or prev_c >= grid_w
+            ):
+                prev_r, prev_c = self._pixel_to_patch(
+                    track.last_position[0],
+                    track.last_position[1],
+                    scale_x,
+                    scale_y,
+                    grid_hw,
+                )
+                track.patch_rc = (prev_r, prev_c)
             base_x = float(patch_centers_x[prev_c])
             base_y = float(patch_centers_y[prev_r])
             flow_dx = flow_dy = 0.0
@@ -475,106 +505,162 @@ class DinoKeypointTracker:
                 max(0.0, self.runtime_config.support_probe_weight))
             use_support = support_weight > 0.0 and bool(track.support_probes)
 
-            for r in range(r_min, r_max + 1):
-                row_vecs = feats[:, r, c_min:c_max + 1]
-                row_vecs_t = row_vecs.transpose(0, 1)
-                sims_current = torch.matmul(
-                    row_vecs_t, track.descriptor
+            region_feats = feats[:, r_min:r_max + 1, c_min:c_max + 1]
+            region_h, region_w = region_feats.shape[1:]
+            region_flat = region_feats.reshape(
+                region_feats.shape[0], -1).transpose(0, 1)
+            sims_current = torch.matmul(region_flat, track.descriptor)
+            sims = sims_current
+            if shared_weight > 0.0 and shared_descriptor is not None:
+                sims_shared = torch.matmul(region_flat, shared_descriptor)
+                sims = (1.0 - shared_weight) * sims + \
+                    shared_weight * sims_shared
+            if manual_weight > 0.0 and manual_codebook is not None:
+                anchor_sims = torch.matmul(
+                    region_flat, manual_codebook.transpose(0, 1)
                 )
-                sims = sims_current
-                if manual_weight > 0.0 and manual_codebook is not None:
-                    anchor_sims = torch.matmul(
-                        row_vecs_t, manual_codebook.transpose(0, 1)
-                    )
-                    sims_manual = anchor_sims.max(dim=1).values
-                    sims = (1.0 - manual_weight) * sims_current + \
-                        manual_weight * sims_manual
+                sims_manual = anchor_sims.max(dim=1).values
+                sims = (1.0 - manual_weight) * sims + \
+                    manual_weight * sims_manual
 
-                sims_np = sims.detach().cpu().numpy()
-                sims_current_np = sims_current.detach().cpu().numpy()
-                baseline_penalties = None
-                if baseline_weight > 0.0:
-                    baseline_penalties = baseline_weight * np.maximum(
-                        0.0, track.baseline_similarity - sims_current_np
-                    )
+            mask_region = None
+            mask_flat = None
+            if patch_mask is not None:
+                mask_region = patch_mask[r_min:r_max + 1, c_min:c_max + 1]
+                mask_flat = torch.from_numpy(
+                    mask_region.reshape(-1)).to(sims.device)
+                if self.restrict_to_mask:
+                    sims = sims.masked_fill(~mask_flat, float("-inf"))
 
-                row_descs = normalized_feats[:, r, c_min:c_max + 1]
-                appearance_scores = None
-                if use_appearance:
-                    appearance_scores = torch.matmul(
-                        codebook, row_descs).max(dim=0).values
-                    appearance_scores = appearance_scores.detach().cpu().numpy()
-                    if appearance_weight != 1.0:
-                        appearance_scores = appearance_scores * appearance_weight
-                row_mask = None
-                if patch_mask is not None:
-                    row_mask = patch_mask[r, c_min:c_max + 1]
-                row_y = float(patch_centers_y[r])
-                for idx, candidate_sim in enumerate(sims_np):
-                    candidate_c = c_min + idx
-                    if row_mask is not None and not row_mask[idx]:
-                        if self.restrict_to_mask:
-                            continue
-                    candidate_score = float(candidate_sim)
-                    if row_mask is not None and row_mask[idx]:
+            region_size = int(sims.numel())
+            preselect_k = self._candidate_preselect_count(track, region_size)
+            if preselect_k >= region_size:
+                candidate_indices = torch.arange(
+                    region_size, device=sims.device)
+            else:
+                candidate_indices = torch.topk(sims, k=preselect_k).indices
+
+            if mask_flat is not None and self.restrict_to_mask:
+                if candidate_indices.numel() > 0:
+                    valid = mask_flat[candidate_indices]
+                    candidate_indices = candidate_indices[valid]
+
+            sims_selected = sims[candidate_indices] if candidate_indices.numel(
+            ) > 0 else sims[:0]
+            sims_current_selected = sims_current[candidate_indices] if candidate_indices.numel(
+            ) > 0 else sims_current[:0]
+
+            norm_region_flat = normalized_feats[:, r_min:r_max + 1,
+                                                c_min:c_max + 1].reshape(
+                normalized_feats.shape[0], -1)
+            candidate_descs = norm_region_flat[:,
+                                               candidate_indices] if candidate_indices.numel() > 0 else norm_region_flat[:, :0]
+
+            appearance_scores = None
+            if use_appearance and candidate_indices.numel() > 0:
+                appearance_scores = torch.matmul(
+                    codebook, candidate_descs).max(dim=0).values
+                if appearance_weight != 1.0:
+                    appearance_scores = appearance_scores * appearance_weight
+
+            candidate_indices_list = candidate_indices.tolist()
+            for idx, flat_idx in enumerate(candidate_indices_list):
+                local_r = int(flat_idx // region_w)
+                local_c = int(flat_idx % region_w)
+                if (
+                    mask_region is not None
+                    and not mask_region[local_r, local_c]
+                    and self.restrict_to_mask
+                ):
+                    continue
+                r = r_min + local_r
+                c = c_min + local_c
+                candidate_sim = float(sims_selected[idx].item())
+                candidate_sim_current = float(
+                    sims_current_selected[idx].item())
+                candidate_score = candidate_sim
+                in_mask = False
+                if mask_region is not None:
+                    in_mask = bool(mask_region[local_r, local_c])
+                    if in_mask:
                         candidate_score += similarity_bonus
-                    candidate_desc = row_descs[:, idx]
-                    candidate_xy = (
-                        float(patch_centers_x[candidate_c]),
-                        row_y,
+                candidate_desc = candidate_descs[:, idx]
+                candidate_xy = (
+                    float(patch_centers_x[c]),
+                    float(patch_centers_y[r]),
+                )
+                if appearance_scores is not None:
+                    candidate_score += float(appearance_scores[idx].item())
+                if use_struct_penalty:
+                    candidate_score -= self._structural_penalty(
+                        track, candidate_xy, previous_positions)
+                if use_body_prior:
+                    candidate_score -= self._body_prior_penalty(
+                        track,
+                        (r, c),
+                        body_priors.get(track.instance_label),
                     )
-                    if appearance_scores is not None:
-                        candidate_score += float(appearance_scores[idx])
-                    if use_struct_penalty:
-                        candidate_score -= self._structural_penalty(
-                            track, candidate_xy, previous_positions)
-                    if use_body_prior:
-                        candidate_score -= self._body_prior_penalty(
-                            track,
-                            (r, candidate_c),
-                            body_priors.get(track.instance_label),
-                        )
-                    if use_symmetry_penalty:
-                        candidate_score -= self._symmetry_penalty(
-                            track, candidate_xy)
-                    if baseline_penalties is not None:
-                        candidate_score -= float(baseline_penalties[idx])
-                    if use_motion_penalty:
-                        candidate_score -= self._motion_prior_penalty(
-                            track,
-                            candidate_xy,
-                            motion_priors.get(track.key),
-                            similarity=float(candidate_sim),
-                        )
-                    if use_support:
-                        candidate_score += self._support_score(
-                            track,
-                            (r, candidate_c),
-                            feats,
-                            patch_mask,
-                            normalized_feats=normalized_feats,
-                        )
-                    if self.keypoint_refine_radius > 0:
-                        refine_logit = float(candidate_sim)
-                        if row_mask is not None and row_mask[idx]:
+                if use_symmetry_penalty:
+                    candidate_score -= self._symmetry_penalty(
+                        track, candidate_xy)
+                if baseline_weight > 0.0:
+                    candidate_score -= baseline_weight * max(
+                        0.0, track.baseline_similarity - candidate_sim_current
+                    )
+                if use_motion_penalty:
+                    candidate_score -= self._motion_prior_penalty(
+                        track,
+                        candidate_xy,
+                        motion_priors.get(track.key),
+                        similarity=float(candidate_sim),
+                    )
+                if use_support:
+                    candidate_score += self._support_score(
+                        track,
+                        (r, c),
+                        feats,
+                        patch_mask,
+                        normalized_feats=normalized_feats,
+                    )
+                candidate_list.append(
+                    Candidate(
+                        rc=(r, c),
+                        xy=candidate_xy,
+                        score=candidate_score,
+                        similarity=float(candidate_sim),
+                        descriptor=candidate_desc,
+                    )
+                )
+
+            if self.keypoint_refine_radius > 0:
+                sims_flat = sims.detach().cpu().numpy()
+                for local_r in range(region_h):
+                    row_mask = None
+                    if mask_region is not None:
+                        row_mask = mask_region[local_r]
+                    row_y = float(patch_centers_y[r_min + local_r])
+                    for local_c in range(region_w):
+                        if (
+                            row_mask is not None
+                            and not row_mask[local_c]
+                            and self.restrict_to_mask
+                        ):
+                            continue
+                        flat_idx = local_r * region_w + local_c
+                        refine_logit = float(sims_flat[flat_idx])
+                        if row_mask is not None and row_mask[local_c]:
                             refine_logit += float(similarity_bonus)
                         candidate_cloud.append(
                             (
-                                (r, candidate_c),
-                                candidate_xy,
+                                (r_min + local_r, c_min + local_c),
+                                (
+                                    float(patch_centers_x[c_min + local_c]),
+                                    row_y,
+                                ),
                                 refine_logit,
-                                float(candidate_score),
+                                refine_logit,
                             )
                         )
-                    candidate_list.append(
-                        Candidate(
-                            rc=(r, candidate_c),
-                            xy=candidate_xy,
-                            score=candidate_score,
-                            similarity=float(candidate_sim),
-                            descriptor=candidate_desc,
-                        )
-                    )
 
             candidate_list.sort(key=lambda c: c.score, reverse=True)
             track_candidates[track.key] = candidate_list[: self.max_candidates]
@@ -686,6 +772,11 @@ class DinoKeypointTracker:
                     blended = self._apply_mask_descriptor(
                         blended, mask_descriptor)
                     track.descriptor = blended / (blended.norm() + 1e-12)
+                    self._update_part_shared_descriptor(
+                        track,
+                        track.descriptor,
+                        confidence=combined_conf,
+                    )
                     self._update_appearance_codebook(track, new_desc)
                     body_prior = body_priors.get(track.instance_label)
                     if body_prior is not None:
@@ -1716,6 +1807,90 @@ class DinoKeypointTracker:
         boost = 0.1 * min(5.0, float(max(0, int(track.misses))))
         boost += 0.25 * (1.0 - float(np.clip(track.quality, 0.0, 1.0)))
         return float(np.clip(base + boost, 0.0, 0.95))
+
+    def _part_shared_key(self, track: KeypointTrack) -> Optional[str]:
+        label = (track.display_label or "").strip()
+        return label or None
+
+    def _part_shared_descriptor(
+        self,
+        track: KeypointTrack,
+        device: torch.device,
+    ) -> Tuple[Optional[str], Optional[torch.Tensor]]:
+        key = self._part_shared_key(track)
+        if not key:
+            return None, None
+        descriptor = self._part_shared_descriptors.get(key)
+        if descriptor is None:
+            return key, None
+        if descriptor.device != device:
+            descriptor = descriptor.to(device)
+        return key, descriptor
+
+    def _part_shared_weight(self, track: KeypointTrack, key: Optional[str]) -> float:
+        base = float(max(0.0, getattr(
+            self.runtime_config, "part_shared_weight", 0.0)))
+        if base <= 0.0 or key is None:
+            return 0.0
+        count = int(self._part_shared_counts.get(key, 0))
+        if count <= 0:
+            return 0.0
+        quality = float(np.clip(track.quality, 0.0, 1.0))
+        boost = 0.1 * min(4.0, float(max(0, track.misses)))
+        boost += 0.25 * (1.0 - quality)
+        warmup = min(1.0, count / 3.0)
+        weight = (base + boost) * warmup
+        return float(np.clip(weight, 0.0, 0.95))
+
+    def _update_part_shared_descriptor(
+        self,
+        track: KeypointTrack,
+        descriptor: torch.Tensor,
+        *,
+        confidence: float,
+    ) -> None:
+        key = self._part_shared_key(track)
+        if not key:
+            return
+        momentum = float(max(0.0, getattr(
+            self.runtime_config, "part_shared_momentum", 0.0)))
+        if momentum <= 0.0:
+            return
+        conf = float(np.clip(confidence, 0.0, 1.0))
+        if conf < 0.1:
+            return
+        desc = self._normalize_descriptor(descriptor).to("cpu")
+        existing = self._part_shared_descriptors.get(key)
+        if existing is None:
+            self._part_shared_descriptors[key] = desc
+            self._part_shared_counts[key] = 1
+            return
+        if existing.device != desc.device:
+            existing = existing.to(desc.device)
+        adaptive = momentum * (0.25 + 0.75 * conf)
+        blended = (1.0 - adaptive) * existing + adaptive * desc
+        self._part_shared_descriptors[key] = blended / (blended.norm() + 1e-12)
+        self._part_shared_counts[key] = self._part_shared_counts.get(
+            key, 1) + 1
+
+    def _candidate_preselect_count(
+        self, track: KeypointTrack, region_size: int
+    ) -> int:
+        if region_size <= 0:
+            return 0
+        ratio = float(max(0.0, min(
+            1.0, getattr(self.runtime_config, "candidate_prune_ratio", 1.0))))
+        min_candidates = max(
+            0, int(getattr(self.runtime_config, "candidate_prune_min", 0)))
+        if ratio >= 1.0:
+            return region_size
+        if track.misses > 0:
+            return region_size
+        quality = float(np.clip(track.quality, 0.0, 1.0))
+        dynamic_ratio = ratio + (1.0 - ratio) * (1.0 - quality)
+        preselect = int(math.ceil(region_size * dynamic_ratio))
+        preselect = max(preselect, min_candidates, self.max_candidates)
+        return min(region_size, preselect)
 
     def _resolve_assignments(
         self, track_candidates: Dict[str, List[Candidate]]

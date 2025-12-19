@@ -54,8 +54,9 @@ class Dinov3Config:
     return_layer: Literal["last", "all"]
         Whether `extract()` returns only the last layer or all requested layers.
     layers: Optional[Iterable[int]]
-        Which intermediate transformer blocks to retrieve (0-indexed). If None,
-        uses the full depth reported by the checkpoint configuration.
+        Which intermediate transformer blocks to retrieve (0-indexed). Negative
+        indices are supported (e.g., -1 for the last block). If None, uses the
+        full depth reported by the checkpoint configuration.
     """
 
     model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
@@ -262,11 +263,15 @@ class Dinov3FeatureExtractor:
 
         hidden_states = outputs.hidden_states  # (num_layers + 1) tensors
         selected_grids = []
+        num_layers = len(hidden_states) - 1
         for layer_idx in self._layers:
-            if layer_idx < 0 or layer_idx >= len(hidden_states) - 1:
+            resolved_idx = layer_idx
+            if layer_idx < 0:
+                resolved_idx = num_layers + layer_idx
+            if resolved_idx < 0 or resolved_idx >= num_layers:
                 raise IndexError(
-                    f"Requested layer {layer_idx} outside available range 0..{len(hidden_states) - 2}")
-            tokens = hidden_states[layer_idx + 1]
+                    f"Requested layer {layer_idx} outside available range -{num_layers}..{num_layers - 1}")
+            tokens = hidden_states[resolved_idx + 1]
             grid = self._tokens_to_grid(
                 tokens,
                 spatial_hw=(x.shape[-2], x.shape[-1]),

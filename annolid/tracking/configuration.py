@@ -41,7 +41,11 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "appearance_bundle_size": 40,
         "appearance_bundle_weight": 0.85,
         "baseline_similarity_weight": 0.4,
+        "part_shared_weight": 0.2,
+        "part_shared_momentum": 0.12,
         "max_candidate_tracks": 12,
+        "candidate_prune_ratio": 0.45,
+        "candidate_prune_min": 64,
         "support_probe_count": 12,
         "support_probe_sigma": 1.25,
         "support_probe_radius": 4,
@@ -92,9 +96,13 @@ class CutieDinoTrackerConfig:
     appearance_bundle_size: int = 30
     appearance_bundle_weight: float = 0.99
     baseline_similarity_weight: float = 0.65
+    part_shared_weight: float = 0.15
+    part_shared_momentum: float = 0.1
     symmetry_pairs: Tuple[Tuple[str, str], ...] = ()
     symmetry_penalty: float = 0.0
     max_candidate_tracks: int = 8
+    candidate_prune_ratio: float = 0.5
+    candidate_prune_min: int = 48
     support_probe_count: int = 8
     support_probe_sigma: float = 1.25
     support_probe_radius: int = 4
@@ -158,6 +166,13 @@ class CutieDinoTrackerConfig:
         self.keypoint_refine_temperature = max(
             1e-4, float(self.keypoint_refine_temperature)
         )
+        self.part_shared_weight = max(
+            0.0, min(1.0, float(self.part_shared_weight)))
+        self.part_shared_momentum = max(
+            0.0, min(1.0, float(self.part_shared_momentum)))
+        self.candidate_prune_ratio = max(
+            0.0, min(1.0, float(self.candidate_prune_ratio)))
+        self.candidate_prune_min = max(0, int(self.candidate_prune_min))
 
     def _apply_preset_defaults(self, preset: str) -> None:
         preset_values = TRACKER_PRESETS.get(preset)
