@@ -112,7 +112,15 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
                     progress_callback(progress)
                 continue
 
-            frame_number = get_frame_number_from_filename(json_file)
+            try:
+                frame_number = get_frame_number_from_filename(json_file)
+            except ValueError:
+                # Skip metadata files that do not follow the frame naming scheme
+                num_processed_files += 1
+                if progress_callback:
+                    progress = int((num_processed_files / total_files) * 100)
+                    progress_callback(progress)
+                continue
             img_height = data.get("imageHeight")
             img_width = data.get("imageWidth")
             shapes = data.get("shapes") or []
