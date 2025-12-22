@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
 from qtpy import QtCore
 
 from annolid.gui.widgets.optical_flow_tool import OpticalFlowTool
@@ -63,7 +64,7 @@ class OpticalFlowManager(QtCore.QObject):
         self.optical_flow_tool.load_records(video_file)
 
     def update_overlay_for_frame(
-        self, frame_number: int, frame_rgb: Optional["np.ndarray"] = None
+        self, frame_number: int, frame_rgb: Optional[np.ndarray] = None
     ) -> None:
         self.optical_flow_tool.update_overlay_for_frame(
             frame_number, frame_rgb)
