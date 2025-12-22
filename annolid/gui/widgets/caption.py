@@ -285,6 +285,7 @@ class CaptionWidget(QtWidgets.QWidget):
             """
         )
         text_edit.installEventFilter(self)
+        text_edit.copyAvailable.connect(self._update_read_label_for_selection)
         return text_edit
 
     def _build_action_buttons(self) -> QHBoxLayout:
@@ -342,6 +343,9 @@ class CaptionWidget(QtWidgets.QWidget):
         self.describe_button.clicked.connect(self.on_describe_clicked)
         self.read_button.clicked.connect(self.read_caption_async)
         self.clear_button.clicked.connect(self.clear_caption)
+        self.read_button.setToolTip(
+            "Read the selected text (or the full caption if nothing is selected)."
+        )
 
         for sub_layout in (
             record_layout,
@@ -375,6 +379,7 @@ class CaptionWidget(QtWidgets.QWidget):
         self.text_edit.textChanged.connect(self.emit_caption_changed)
         self.text_edit.textChanged.connect(self.monitor_text_change)
         self.readCaptionFinished.connect(self.on_read_caption_finished)
+        self._update_read_label_for_selection()
 
     def _stack_button_with_label(
         self, button: QPushButton, label_text: str
@@ -942,31 +947,73 @@ class CaptionWidget(QtWidgets.QWidget):
 
         return self._snapshot_canvas_to_tempfile()
 
+    def _get_selected_text(self) -> str:
+        """Return the currently selected text from the caption editor, normalised."""
+        cursor = self.text_edit.textCursor()
+        if cursor is None or not cursor.hasSelection():
+            return ""
+        # QTextCursor.selectedText uses U+2029 for newlines; normalise to \n for TTS.
+        selected = cursor.selectedText().replace("\u2029", "\n")
+        return selected.strip()
+
+    def _text_to_read(self) -> tuple[str, bool]:
+        """Return the text to read and whether it came from a selection."""
+        selected = self._get_selected_text()
+        if selected:
+            return selected, True
+        fallback = self.text_edit.toPlainText().strip()
+        return fallback, False
+
+    def _update_read_label_for_selection(self, has_selection: Optional[bool] = None) -> None:
+        """Keep the read button label in sync with selection state."""
+        if not hasattr(self, "read_label"):
+            return
+        if has_selection is None:
+            cursor = self.text_edit.textCursor()
+            has_selection = bool(cursor and cursor.hasSelection())
+        self.read_label.setText(
+            "Read selection" if has_selection else "Read caption")
+
+    def _reset_read_label(self) -> None:
+        """Reset read label based on current selection."""
+        self._update_read_label_for_selection()
+
     def read_caption_async(self):
         """Reads the caption in a background thread."""
+        text_to_read, from_selection = self._text_to_read()
+        if not text_to_read:
+            self.read_label.setText("No text to read")
+            QTimer.singleShot(2000, self._reset_read_label)
+            return
+
         self._tts_settings_snapshot = self._load_tts_settings_snapshot()
-        self.read_label.setText("Reading...")
+        self.read_label.setText(
+            "Reading selection..." if from_selection else "Reading caption..."
+        )
         self.read_button.setEnabled(False)  # Disable button
-        self.thread_pool.start(ReadCaptionTask(self))
+        self.thread_pool.start(
+            ReadCaptionTask(self, text=text_to_read,
+                            tts_settings=self._tts_settings_snapshot)
+        )
 
     @QtCore.Slot()
     def on_read_caption_finished(self):
         """Slot connected to the readCaptionFinished signal."""
-        self.read_label.setText("Read Caption")
         self.read_button.setEnabled(True)  # Re-enable button
+        self._reset_read_label()
 
-    def read_caption(self):  # This method is now used by the background task
-        """Reads the current caption using kokoro or gTTS and plays it."""
+    def read_caption(self, text_to_read: str, tts_settings: Optional[Dict[str, object]] = None):
+        """Reads provided text using kokoro or gTTS and plays it."""
+        tts_settings = tts_settings or self._load_tts_settings_snapshot()
+        text_to_read = (text_to_read or "").strip()
         try:
             from annolid.agents.kokoro_tts import text_to_speech
             from annolid.agents.kokoro_tts import play_audio
-            text = self.text_edit.toPlainText()
-            if not text:
+            if not text_to_read:
                 print("Caption is empty. Nothing to read.")
                 return
-            tts_settings = self._tts_settings_snapshot or {}
             audio_data = text_to_speech(
-                text,
+                text_to_read,
                 voice=str(tts_settings.get("voice", "af_sarah")),
                 speed=float(tts_settings.get("speed", 1.0)),
                 lang=str(tts_settings.get("lang", "en-us")),
@@ -983,15 +1030,13 @@ class CaptionWidget(QtWidgets.QWidget):
             from pydub import AudioSegment
             import numpy as np
             try:
-                current_text = self.text_edit.toPlainText()
-                if not current_text:
+                if not text_to_read:
                     print("Caption is empty. Nothing to read.")
                     return
 
-                tts_settings = self._tts_settings_snapshot or {}
                 lang = str(tts_settings.get("lang", "en-us")).lower()
                 gtts_lang = lang.split("-")[0] if lang else "en"
-                tts = gTTS(text=current_text, lang=gtts_lang)
+                tts = gTTS(text=text_to_read, lang=gtts_lang)
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     temp_file_path = os.path.join(
@@ -1815,13 +1860,15 @@ class DescribeImageTask(QRunnable):
 class ReadCaptionTask(QRunnable):
     """A task to read the caption in the background."""
 
-    def __init__(self, widget):
+    def __init__(self, widget, text: str, tts_settings: Dict[str, object]):
         super().__init__()
         self.widget = widget
+        self.text = text
+        self.tts_settings = tts_settings
 
     def run(self):
         """Runs the read_caption method in the background."""
-        self.widget.read_caption()
+        self.widget.read_caption(self.text, self.tts_settings)
 
 
 # Generalised chat task supporting multiple providers

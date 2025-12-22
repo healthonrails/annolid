@@ -100,6 +100,7 @@ from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
+from annolid.gui.widgets.pdf_manager import PdfManager
 from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
 from annolid.gui.widgets.sam3d_settings_dialog import Sam3DSettingsDialog
@@ -376,10 +377,14 @@ class AnnolidWindow(MainWindow):
             crosshair=self._config["canvas"]["crosshair"],
             sam=self._config["sam"]
         )
+        self._viewer_stack = QtWidgets.QStackedWidget()
+        self._viewer_stack.setContentsMargins(0, 0, 0, 0)
+        self._viewer_stack.addWidget(self.canvas)
+        self.pdf_manager = PdfManager(self, self._viewer_stack)
         self.optical_flow_tool = OpticalFlowTool(self)
         self.canvas.zoomRequest.connect(self.zoomRequest)
         scrollArea = QtWidgets.QScrollArea()
-        scrollArea.setWidget(self.canvas)
+        scrollArea.setWidget(self._viewer_stack)
         scrollArea.setWidgetResizable(True)
         self.scrollBars = {
             Qt.Vertical: scrollArea.verticalScrollBar(),
@@ -571,6 +576,33 @@ class AnnolidWindow(MainWindow):
         file_menu = getattr(self.menus, "file", None)
         if file_menu is not None:
             file_menu.addAction(self.open_pdf_action)
+
+    def _set_active_view(self, mode: str = "canvas") -> None:
+        """Switch the central view between the canvas and PDF viewer."""
+        if mode == "pdf" and getattr(self, "pdf_manager", None) is not None:
+            viewer = self.pdf_manager.pdf_widget()
+            if viewer is not None:
+                pdf_index = self._viewer_stack.indexOf(viewer)
+                if pdf_index != -1:
+                    self._viewer_stack.setCurrentIndex(pdf_index)
+                    return
+        self._viewer_stack.setCurrentIndex(0)
+
+    def show_pdf_in_viewer(self, pdf_path: str) -> None:
+        """Load a PDF into the viewer and display it in place of the canvas."""
+        if self.pdf_manager is not None:
+            self.pdf_manager.show_pdf_in_viewer(pdf_path)
+
+    @QtCore.Slot(str)
+    def _apply_pdf_selection_to_caption(self, text: str) -> None:
+        """Send selected PDF text into the caption widget for TTS."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+        if self.caption_widget is None:
+            self.openCaption()
+        if self.caption_widget is not None:
+            self.caption_widget.set_caption(cleaned)
 
     def _save_canvas_screenshot(self):
         """ Calls CanvasScreenshotWidget and passes in the current filename"""
@@ -1481,6 +1513,7 @@ class AnnolidWindow(MainWindow):
     def closeFile(self, _value=False, *, suppress_tracking_prompt=False):
         if not self.mayContinue():
             return
+        self._set_active_view("canvas")
         self.resetState()
         self.dino_controller.deactivate_patch_similarity()
         self.dino_controller.deactivate_pca_map()
@@ -6346,6 +6379,8 @@ class AnnolidWindow(MainWindow):
         if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
             self._config["keep_prev"] = True
 
+        self._set_active_view("canvas")
+
         if not self.mayContinue():
             return
 
@@ -6400,6 +6435,8 @@ class AnnolidWindow(MainWindow):
         keep_prev = self._config["keep_prev"]
         if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
             self._config["keep_prev"] = True
+
+        self._set_active_view("canvas")
 
         if not self.mayContinue():
             return
