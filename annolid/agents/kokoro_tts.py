@@ -4,18 +4,6 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 import gdown
-# --- Handle ImportError for kokoro_onnx ---
-try:
-    from kokoro_onnx import Kokoro
-    _KOKORO_AVAILABLE = True
-except ImportError:
-    Kokoro = None
-    _KOKORO_AVAILABLE = False
-    print(
-        "\nError: kokoro_onnx library is not installed.\n"
-        "Please install it using pip:\n"
-        "   pip install kokoro-onnx\n"
-    )
 
 from annolid.utils.audio_playback import play_audio_buffer
 
@@ -153,6 +141,10 @@ _LANG_PREFIX_MAP = {
     "zh": "cmn",
 }
 
+# Lazy import cache for kokoro_onnx to avoid loading on app startup.
+_KOKORO_AVAILABLE: Optional[bool] = None
+_KOKORO_CLS = None
+
 # --- Helper Functions ---
 
 
@@ -160,6 +152,25 @@ def _kokoro_cache_dir() -> Path:
     override = os.getenv("ANNOLID_KOKORO_CACHE_DIR")
     base = Path(override) if override else Path.home() / ".annolid" / "kokoro"
     return base.expanduser()
+
+
+def _kokoro_class():
+    """Lazy importer for kokoro_onnx.Kokoro to avoid loading on startup."""
+    global _KOKORO_AVAILABLE, _KOKORO_CLS
+    if _KOKORO_AVAILABLE is False:
+        return None
+    if _KOKORO_CLS is not None:
+        return _KOKORO_CLS
+    try:
+        from kokoro_onnx import Kokoro as _K
+
+        _KOKORO_CLS = _K
+        _KOKORO_AVAILABLE = True
+        return _KOKORO_CLS
+    except Exception:
+        _KOKORO_AVAILABLE = False
+        _KOKORO_CLS = None
+        return None
 
 
 def download_file(url: str, filepath: Path) -> None:
@@ -232,18 +243,19 @@ def ensure_files_exist(
 
 @lru_cache(maxsize=4)
 def _load_kokoro(model_path: str, voices_path: str, config_path: Optional[str]):
-    if not _KOKORO_AVAILABLE:
+    cls = _kokoro_class()
+    if cls is None:
         raise RuntimeError("kokoro_onnx is not available.")
     # Prefer vocab_config when supported (helps zh model); fall back otherwise.
     if config_path:
         try:
-            return Kokoro(model_path, voices_path, vocab_config=config_path)
+            return cls(model_path, voices_path, vocab_config=config_path)
         except TypeError:
             print(
                 "Warning: Installed kokoro_onnx does not support 'vocab_config'. "
                 "Falling back to default initialisation."
             )
-    return Kokoro(model_path, voices_path)
+    return cls(model_path, voices_path)
 
 
 def _extract_sorted_strings(values: Iterable[object]) -> List[str]:
@@ -256,7 +268,7 @@ def get_available_voices(
     voice: Optional[str] = None,
 ) -> List[str]:
     """Return available voices if Kokoro is ready, else a suggested list."""
-    if not _KOKORO_AVAILABLE:
+    if _kokoro_class() is None:
         return list(SUGGESTED_VOICES)
     try:
         cache_dir = cache_dir or _kokoro_cache_dir()
@@ -410,7 +422,7 @@ def text_to_speech(
                Returns None if there is an error.
     """
     try:
-        if not _KOKORO_AVAILABLE:
+        if _kokoro_class() is None:
             print("Kokoro is not available. Install kokoro-onnx to use TTS.")
             return None
 
