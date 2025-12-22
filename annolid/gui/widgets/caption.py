@@ -1,4 +1,3 @@
-from pathlib import Path
 from qtpy import QtWidgets, QtGui, QtCore
 import logging
 from qtpy.QtWidgets import (
@@ -7,7 +6,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QLabel,
     QHBoxLayout,
-    QLineEdit,
     QComboBox,
 )
 from qtpy.QtCore import Signal, Qt, QRunnable, QThreadPool, QMetaObject, QTimer
@@ -17,7 +15,6 @@ import tempfile
 import mimetypes
 import uuid
 import base64
-import cv2
 from typing import Any, Dict, List, Tuple, Optional, Sequence
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
@@ -29,6 +26,7 @@ from annolid.utils.llm_settings import (
     resolve_llm_config,
     ensure_provider_env,
 )
+from annolid.utils.tts_settings import load_tts_settings, default_tts_settings
 from annolid.gui.widgets.behavior_describe_widget import BehaviorDescribeWidget
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.utils.audio_playback import play_audio_buffer
@@ -106,6 +104,7 @@ class CaptionWidget(QtWidgets.QWidget):
             None,
             None,
         )
+        self._tts_settings_snapshot: Optional[Dict[str, object]] = None
 
     def _determine_image_model(self) -> str:
         """Choose an appropriate Gemini model for image generation."""
@@ -237,18 +236,21 @@ class CaptionWidget(QtWidgets.QWidget):
         self.provider_selector = QComboBox()
         for key, label in self.provider_labels.items():
             self.provider_selector.addItem(label, userData=key)
-        provider_index = self.provider_selector.findData(self.selected_provider)
+        provider_index = self.provider_selector.findData(
+            self.selected_provider)
         if provider_index != -1:
             self.provider_selector.setCurrentIndex(provider_index)
         layout.addWidget(self.provider_label)
         layout.addWidget(self.provider_selector)
 
         self.configure_models_button = QPushButton("Configure…")
-        self.configure_models_button.clicked.connect(self.open_llm_settings_dialog)
+        self.configure_models_button.clicked.connect(
+            self.open_llm_settings_dialog)
         layout.addWidget(self.configure_models_button)
         layout.addStretch(1)
 
-        self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
+        self.provider_selector.currentIndexChanged.connect(
+            self.on_provider_changed)
         return layout
 
     def _build_model_controls(self) -> QHBoxLayout:
@@ -360,7 +362,8 @@ class CaptionWidget(QtWidgets.QWidget):
     def _build_prompt_controls(self) -> QHBoxLayout:
         layout = QtWidgets.QHBoxLayout()
         self.prompt_text_edit = QtWidgets.QLineEdit(self)
-        self.prompt_text_edit.setPlaceholderText("Type your chat prompt here...")
+        self.prompt_text_edit.setPlaceholderText(
+            "Type your chat prompt here...")
         layout.addWidget(self.prompt_text_edit)
 
         self.chat_button = QtWidgets.QPushButton("Chat", self)
@@ -582,7 +585,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self._chat_entries = []
         self._message_buffers.clear()
         self._apply_editor_style()
-        self.text_edit.setHtml('<div class="chat-log" data-chat-log="true"></div>')
+        self.text_edit.setHtml(
+            '<div class="chat-log" data-chat-log="true"></div>')
         self._update_cache_from_editor()
         self._last_emitted_caption = ""
 
@@ -717,7 +721,6 @@ class CaptionWidget(QtWidgets.QWidget):
     def _rich_text_from_markdown(self, text: str) -> str:
         """Render Markdown with LaTeX support into styled HTML."""
         return self._renderer.render(text)
-
 
     def _apply_editor_style(self) -> None:
         """Apply a default stylesheet to the QTextDocument (avoids brittle <body> wrappers)."""
@@ -919,7 +922,8 @@ class CaptionWidget(QtWidgets.QWidget):
             return None
 
         try:
-            fd, tmp_path = tempfile.mkstemp(prefix="annolid_canvas_", suffix=".png")
+            fd, tmp_path = tempfile.mkstemp(
+                prefix="annolid_canvas_", suffix=".png")
             os.close(fd)
             if not pixmap.save(tmp_path, "PNG"):
                 os.remove(tmp_path)
@@ -940,6 +944,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def read_caption_async(self):
         """Reads the caption in a background thread."""
+        self._tts_settings_snapshot = self._load_tts_settings_snapshot()
         self.read_label.setText("Reading...")
         self.read_button.setEnabled(False)  # Disable button
         self.thread_pool.start(ReadCaptionTask(self))
@@ -959,7 +964,13 @@ class CaptionWidget(QtWidgets.QWidget):
             if not text:
                 print("Caption is empty. Nothing to read.")
                 return
-            audio_data = text_to_speech(text)
+            tts_settings = self._tts_settings_snapshot or {}
+            audio_data = text_to_speech(
+                text,
+                voice=str(tts_settings.get("voice", "af_sarah")),
+                speed=float(tts_settings.get("speed", 1.0)),
+                lang=str(tts_settings.get("lang", "en-us")),
+            )
             if audio_data:
                 samples, sample_rate = audio_data
                 print("\nText-to-speech conversion successful!")
@@ -977,7 +988,10 @@ class CaptionWidget(QtWidgets.QWidget):
                     print("Caption is empty. Nothing to read.")
                     return
 
-                tts = gTTS(text=current_text, lang='en')
+                tts_settings = self._tts_settings_snapshot or {}
+                lang = str(tts_settings.get("lang", "en-us")).lower()
+                gtts_lang = lang.split("-")[0] if lang else "en"
+                tts = gTTS(text=current_text, lang=gtts_lang)
 
                 with tempfile.TemporaryDirectory() as tmpdir:
                     temp_file_path = os.path.join(
@@ -1010,6 +1024,15 @@ class CaptionWidget(QtWidgets.QWidget):
                 print(f"Error in gTTS: {e}")
         finally:
             self.readCaptionFinished.emit()
+
+    def _load_tts_settings_snapshot(self) -> Dict[str, object]:
+        settings = load_tts_settings()
+        defaults = default_tts_settings()
+        return {
+            "voice": settings.get("voice", defaults["voice"]),
+            "lang": settings.get("lang", defaults["lang"]),
+            "speed": settings.get("speed", defaults["speed"]),
+        }
 
     @QtCore.Slot()
     def begin_description_stream(self, intro_text: str = "Describing image…") -> None:
@@ -1544,7 +1567,8 @@ class OpenAIImageGenerationTask(QRunnable):
                         if isinstance(result, str):
                             image_b64 = result
 
-                summary = getattr(response, "output_text", "") or "\n".join(text_chunks)
+                summary = getattr(response, "output_text",
+                                  "") or "\n".join(text_chunks)
 
             else:
                 image_b64 = None
@@ -1581,7 +1605,8 @@ class OpenAIImageGenerationTask(QRunnable):
                     )
                     data = legacy_response.get("data", [])
                     if data:
-                        image_b64 = data[0].get("b64_json") or data[0].get("b64")
+                        image_b64 = data[0].get(
+                            "b64_json") or data[0].get("b64")
 
             if not image_b64:
                 raise RuntimeError("OpenAI did not return image data.")
@@ -1781,7 +1806,8 @@ class DescribeImageTask(QRunnable):
             )
         finally:
             if prev_host_present:
-                os.environ["OLLAMA_HOST"] = prev_host_value  # type: ignore[arg-type]
+                # type: ignore[arg-type]
+                os.environ["OLLAMA_HOST"] = prev_host_value
             else:
                 os.environ.pop("OLLAMA_HOST", None)
 
@@ -1914,7 +1940,8 @@ class StreamingChatTask(QRunnable):
         api_key = config.get("api_key")
         base_url = config.get("base_url")
         if not api_key:
-            raise ValueError("OpenAI API key is missing. Configure it in settings.")
+            raise ValueError(
+                "OpenAI API key is missing. Configure it in settings.")
 
         client_kwargs = {"api_key": api_key}
         if base_url:
@@ -1960,7 +1987,8 @@ class StreamingChatTask(QRunnable):
         config = self.settings.get("gemini", {})
         api_key = config.get("api_key")
         if not api_key:
-            raise ValueError("Gemini API key is missing. Configure it in settings.")
+            raise ValueError(
+                "Gemini API key is missing. Configure it in settings.")
 
         genai.configure(api_key=api_key)
         model_name = self.model or "gemini-1.5-flash"

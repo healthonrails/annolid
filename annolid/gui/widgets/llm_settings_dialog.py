@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 from qtpy import QtCore, QtWidgets
 
 from annolid.utils.llm_settings import default_settings
+from annolid.utils.tts_settings import default_tts_settings, load_tts_settings, save_tts_settings
+from annolid.agents.kokoro_tts import get_available_voices, get_suggested_languages
 
 
 def _list_to_text(items: List[str]) -> str:
@@ -35,6 +37,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
         self._settings = default_settings() if settings is None else settings
         self._settings = {**default_settings(), **self._settings}
+        self._tts_settings = load_tts_settings()
+        self._tts_defaults = default_tts_settings()
 
         main_layout = QtWidgets.QVBoxLayout(self)
         info_label = QtWidgets.QLabel(
@@ -50,6 +54,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self._build_ollama_tab()
         self._build_openai_tab()
         self._build_gemini_tab()
+        self._build_tts_tab()
 
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
@@ -105,7 +110,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Reveal key:", toggle_button)
 
         self.openai_base_url_edit = QtWidgets.QLineEdit(
-            self._settings["openai"].get("base_url", "https://api.openai.com/v1")
+            self._settings["openai"].get(
+                "base_url", "https://api.openai.com/v1")
         )
         layout.addRow("Base URL:", self.openai_base_url_edit)
 
@@ -113,7 +119,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.openai_models_edit.setPlainText(
             _list_to_text(self._settings["openai"].get("preferred_models", []))
         )
-        self.openai_models_edit.setPlaceholderText("One model per line, e.g. gpt-4o-mini")
+        self.openai_models_edit.setPlaceholderText(
+            "One model per line, e.g. gpt-4o-mini")
         layout.addRow("Preferred models:", self.openai_models_edit)
 
         self._tabs.addTab(widget, "OpenAI GPT")
@@ -147,6 +154,49 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Preferred models:", self.gemini_models_edit)
 
         self._tabs.addTab(widget, "Google Gemini")
+
+    def _build_tts_tab(self) -> None:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(widget)
+
+        info_label = QtWidgets.QLabel(
+            "Text-to-speech settings are stored in ~/.annolid/tts_settings.json."
+        )
+        info_label.setWordWrap(True)
+        layout.addRow(info_label)
+
+        self.tts_voice_combo = QtWidgets.QComboBox()
+        self.tts_voice_combo.setEditable(True)
+        self.tts_voice_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        voices = get_available_voices()
+        if voices:
+            self.tts_voice_combo.addItems(voices)
+        self.tts_voice_combo.setCurrentText(
+            str(self._tts_settings.get("voice", self._tts_defaults["voice"]))
+        )
+        layout.addRow("Voice:", self.tts_voice_combo)
+
+        self.tts_lang_combo = QtWidgets.QComboBox()
+        self.tts_lang_combo.setEditable(True)
+        self.tts_lang_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        languages = get_suggested_languages()
+        if languages:
+            self.tts_lang_combo.addItems(languages)
+        self.tts_lang_combo.setCurrentText(
+            str(self._tts_settings.get("lang", self._tts_defaults["lang"]))
+        )
+        layout.addRow("Language:", self.tts_lang_combo)
+
+        self.tts_speed_spin = QtWidgets.QDoubleSpinBox()
+        self.tts_speed_spin.setRange(0.5, 2.0)
+        self.tts_speed_spin.setSingleStep(0.05)
+        self.tts_speed_spin.setDecimals(2)
+        self.tts_speed_spin.setValue(
+            float(self._tts_settings.get("speed", self._tts_defaults["speed"]))
+        )
+        layout.addRow("Speed:", self.tts_speed_spin)
+
+        self._tabs.addTab(widget, "Text-to-Speech")
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -226,5 +276,13 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             "api_key": self.gemini_key_edit.text().strip(),
             "preferred_models": _text_to_list(self.gemini_models_edit.toPlainText()),
         }
+        self._tts_settings = {
+            "voice": self.tts_voice_combo.currentText().strip()
+            or self._tts_defaults["voice"],
+            "lang": self.tts_lang_combo.currentText().strip()
+            or self._tts_defaults["lang"],
+            "speed": float(self.tts_speed_spin.value()),
+        }
+        save_tts_settings(self._tts_settings)
         self._settings = updated
         super().accept()
