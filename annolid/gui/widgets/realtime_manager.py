@@ -553,3 +553,11 @@ class RealtimeManager(QtCore.QObject):
         message = self.window.tr("Realtime inference stopped.")
         self.window.statusBar().showMessage(message)
         self.realtime_control_widget.set_status_text(message)
+        # Restore persisted shapes for the current frame.
+        try:
+            self.window.loadPredictShapes(
+                getattr(self.window, "frame_number", 0),
+                getattr(self.window, "filename", None),
+            )
+        except Exception:
+            pass

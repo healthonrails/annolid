@@ -13,19 +13,15 @@ import hashlib
 import json
 import io
 import copy
-import logging
 from PIL import ImageQt, Image, ImageDraw
 import pandas as pd
 import numpy as np
 import torch
-import cv2
 import imgviz
 import yaml
 from pathlib import Path
-from datetime import datetime
 import functools
 import subprocess
-import threading
 
 from labelme.ai import MODELS
 from qtpy import QtCore
@@ -39,9 +35,9 @@ from annolid.gui.workers import (
     FlexibleWorker,
     LoadFrameThread,
 )
+from annolid.gui.shape import Shape
 from labelme.app import MainWindow
 from labelme.utils import newAction
-from labelme.widgets import BrightnessContrastDialog
 from labelme.widgets import LabelListWidgetItem
 from labelme import utils
 from annolid.utils.logger import logger
@@ -102,12 +98,9 @@ from annolid.gui.widgets.realtime_manager import RealtimeManager
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
-import base64
 import io
-import imageio
 
 from annolid.annotation.timestamps import convert_frame_number_to_time
-from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 from annolid.annotation import labelme2csv
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
@@ -118,11 +111,8 @@ from annolid.gui.widgets.florence2_widget import (
     Florence2Request,
     Florence2Widget,
 )
-from annolid.three_d import sam3d_client
-from annolid.three_d.sam3d_backend import Sam3DBackendError
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.model_manager import AIModelManager
-from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.vision.florence_2 import (
@@ -134,12 +124,7 @@ from annolid.vision.florence_2 import (
 import contextlib
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from annolid.jobs.tracking_jobs import TrackingSegment
-from annolid.gui.dino_patch_service import (
-    DinoPatchRequest,
-    DinoPatchSimilarityService,
-    DinoPCARequest,
-    DinoPCAMapService,
-)
+
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
