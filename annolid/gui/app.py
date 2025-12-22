@@ -575,7 +575,17 @@ class AnnolidWindow(MainWindow):
         )
         file_menu = getattr(self.menus, "file", None)
         if file_menu is not None:
-            file_menu.addAction(self.open_pdf_action)
+            actions = file_menu.actions()
+            target_action = None
+            for act in actions:
+                text = act.text() if act is not None else ""
+                if text and "Open Dir" in text:
+                    target_action = act
+                    break
+            if target_action:
+                file_menu.insertAction(target_action, self.open_pdf_action)
+            else:
+                file_menu.addAction(self.open_pdf_action)
 
     def _set_active_view(self, mode: str = "canvas") -> None:
         """Switch the central view between the canvas and PDF viewer."""
