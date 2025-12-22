@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import json
+import contextlib
 import os
 import threading
 from pathlib import Path
