@@ -122,7 +122,7 @@ from annolid.gui.widgets.florence2_widget import (
     Florence2Request,
     Florence2Widget,
 )
-from annolid.gui.widgets.optical_flow_tool import OpticalFlowTool
+from annolid.gui.widgets.optical_flow_manager import OpticalFlowManager
 from annolid.three_d import sam3d_client
 from annolid.three_d.sam3d_backend import Sam3DBackendError
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
@@ -300,20 +300,6 @@ class AnnolidWindow(MainWindow):
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
-        self.optical_flow_backend: str = "farneback"
-        self.flow_visualization: str = "hsv"
-        self.flow_opacity: int = 70  # percent
-        self.flow_quiver_step: int = 16
-        self.flow_quiver_gain: float = 1.0
-        self.flow_stable_hsv: bool = True
-        self.optical_flow_raft_model: str = "small"
-        self.flow_farneback_pyr_scale: float = 0.5
-        self.flow_farneback_levels: int = 1
-        self.flow_farneback_winsize: int = 1
-        self.flow_farneback_iterations: int = 3
-        self.flow_farneback_poly_n: int = 3
-        self.flow_farneback_poly_sigma: float = 1.1
-        self._load_optical_flow_settings()
         self.isPlaying = False
         self.event_type = None
         self._time_stamp = ''
@@ -346,7 +332,6 @@ class AnnolidWindow(MainWindow):
         self.use_cpu_only = False
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
-        self.compute_optical_flow = True
         self.playButton = None
         self.saveButton = None
         # Create progress bar
@@ -375,8 +360,8 @@ class AnnolidWindow(MainWindow):
         self._viewer_stack.addWidget(self.canvas)
         self.pdf_manager = PdfManager(self, self._viewer_stack)
         self.depth_manager = DepthManager(self)
+        self.optical_flow_manager = OpticalFlowManager(self)
         self.sam3d_manager = Sam3DManager(self)
-        self.optical_flow_tool = OpticalFlowTool(self)
         self.canvas.zoomRequest.connect(self.zoomRequest)
         scrollArea = QtWidgets.QScrollArea()
         scrollArea.setWidget(self._viewer_stack)
@@ -683,70 +668,13 @@ class AnnolidWindow(MainWindow):
 
     def run_optical_flow_tool(self):
         """Open the optical-flow tool dialog and run flow."""
-        return self.optical_flow_tool.run()
+        if getattr(self, "optical_flow_manager", None) is not None:
+            return self.optical_flow_manager.run_tool()
 
     def configure_optical_flow_settings(self):
         """Open the optical-flow settings dialog without starting processing."""
-        self.optical_flow_tool.configure()
-
-    def _load_optical_flow_settings(self) -> None:
-        if not isinstance(getattr(self, "settings", None), QtCore.QSettings):
-            return
-        try:
-            self.optical_flow_backend = str(
-                self.settings.value(
-                    "optical_flow/backend", self.optical_flow_backend)
-            )
-            self.optical_flow_raft_model = str(
-                self.settings.value(
-                    "optical_flow/raft_model", self.optical_flow_raft_model)
-            )
-            self.flow_visualization = str(
-                self.settings.value(
-                    "optical_flow/visualization", self.flow_visualization)
-            )
-            self.flow_opacity = int(
-                self.settings.value(
-                    "optical_flow/opacity", self.flow_opacity)
-            )
-            self.flow_quiver_step = int(
-                self.settings.value(
-                    "optical_flow/quiver_step", self.flow_quiver_step)
-            )
-            self.flow_quiver_gain = float(
-                self.settings.value(
-                    "optical_flow/quiver_gain", self.flow_quiver_gain)
-            )
-            self.flow_stable_hsv = bool(
-                self.settings.value(
-                    "optical_flow/stable_hsv", self.flow_stable_hsv)
-            )
-            self.flow_farneback_pyr_scale = float(
-                self.settings.value(
-                    "optical_flow/farneback_pyr_scale", self.flow_farneback_pyr_scale)
-            )
-            self.flow_farneback_levels = int(
-                self.settings.value(
-                    "optical_flow/farneback_levels", self.flow_farneback_levels)
-            )
-            self.flow_farneback_winsize = int(
-                self.settings.value(
-                    "optical_flow/farneback_winsize", self.flow_farneback_winsize)
-            )
-            self.flow_farneback_iterations = int(
-                self.settings.value(
-                    "optical_flow/farneback_iterations", self.flow_farneback_iterations)
-            )
-            self.flow_farneback_poly_n = int(
-                self.settings.value(
-                    "optical_flow/farneback_poly_n", self.flow_farneback_poly_n)
-            )
-            self.flow_farneback_poly_sigma = float(
-                self.settings.value(
-                    "optical_flow/farneback_poly_sigma", self.flow_farneback_poly_sigma)
-            )
-        except Exception:
-            pass
+        if getattr(self, "optical_flow_manager", None) is not None:
+            self.optical_flow_manager.configure_tool()
 
     def trigger_gap_analysis(self):
         """
@@ -1300,12 +1228,14 @@ class AnnolidWindow(MainWindow):
             },
         )
         # Seed current optical-flow settings into the dialog
+        of_manager = getattr(self, "optical_flow_manager", None)
         advanced_params_dialog.compute_optical_flow_checkbox.setChecked(
-            bool(getattr(self, "compute_optical_flow", True)))
+            bool(getattr(of_manager, "compute_optical_flow", True))
+        )
         advanced_params_dialog.optical_flow_backend = getattr(
-            self, "optical_flow_backend", "farneback")
-        backend_val = str(
-            advanced_params_dialog.optical_flow_backend).lower()
+            of_manager, "optical_flow_backend", "farneback"
+        )
+        backend_val = str(advanced_params_dialog.optical_flow_backend).lower()
         if "raft" in backend_val:
             backend_idx = 2
         elif "torch" in backend_val:
@@ -1323,8 +1253,13 @@ class AnnolidWindow(MainWindow):
         self.use_cpu_only = advanced_params_dialog.is_cpu_only_enabled()
         self.save_video_with_color_mask = advanced_params_dialog.is_save_video_with_color_mask_enabled()
         self.auto_recovery_missing_instances = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
-        self.compute_optical_flow = advanced_params_dialog.is_compute_optiocal_flow_enabled()
-        self.optical_flow_backend = advanced_params_dialog.get_optical_flow_backend()
+        if of_manager is not None:
+            of_manager.set_compute_optical_flow(
+                advanced_params_dialog.is_compute_optiocal_flow_enabled()
+            )
+            of_manager.set_backend(
+                advanced_params_dialog.get_optical_flow_backend()
+            )
 
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():
@@ -1375,8 +1310,11 @@ class AnnolidWindow(MainWindow):
         }
         self._update_sam3_config_defaults(sam3_updates, agent_updates)
 
-        logger.info("Computing optical flow is %s .",
-                    self.compute_optical_flow)
+        of_manager = getattr(self, "optical_flow_manager", None)
+        logger.info(
+            "Computing optical flow is %s .",
+            getattr(of_manager, "compute_optical_flow", True),
+        )
         logger.info("Set epsilon for polygon to : %s",
                     self.epsilon_for_polygon)
 
@@ -1569,8 +1507,8 @@ class AnnolidWindow(MainWindow):
                 self.canvas.setDepthPreviewOverlay(None)
         except Exception:
             pass
-        if getattr(self, "optical_flow_tool", None) is not None:
-            self.optical_flow_tool.clear()
+        if getattr(self, "optical_flow_manager", None) is not None:
+            self.optical_flow_manager.clear()
         self.frame_number = 0
         self.step_size = 5
         self.video_results_folder = None
@@ -3176,8 +3114,12 @@ class AnnolidWindow(MainWindow):
                     use_cpu_only=self.use_cpu_only,
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
                     save_video_with_color_mask=self.save_video_with_color_mask,
-                    compute_optical_flow=self.compute_optical_flow,
-                    optical_flow_backend=self.optical_flow_backend,
+                    compute_optical_flow=getattr(
+                        self.optical_flow_manager, "compute_optical_flow", True
+                    ),
+                    optical_flow_backend=getattr(
+                        self.optical_flow_manager, "optical_flow_backend", "farneback"
+                    ),
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder else None,
                 )
@@ -5497,8 +5439,8 @@ class AnnolidWindow(MainWindow):
             self.video_file = video_filename
             if getattr(self, "depth_manager", None) is not None:
                 self.depth_manager.load_depth_ndjson_records()
-            if getattr(self, "optical_flow_tool", None) is not None:
-                self.optical_flow_tool.load_records(video_filename)
+            if getattr(self, "optical_flow_manager", None) is not None:
+                self.optical_flow_manager.load_records(video_filename)
             try:
                 suffix_lower = Path(video_filename).suffix.lower()
                 # Support TIFF stacks by treating them as videos (one slice per frame)
@@ -5656,8 +5598,8 @@ class AnnolidWindow(MainWindow):
         if getattr(self, "depth_manager", None) is not None:
             self.depth_manager.update_overlay_for_frame(
                 frame_number, frame_rgb)
-        if getattr(self, "optical_flow_tool", None) is not None:
-            self.optical_flow_tool.update_overlay_for_frame(
+        if getattr(self, "optical_flow_manager", None) is not None:
+            self.optical_flow_manager.update_overlay_for_frame(
                 frame_number, frame_rgb)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
