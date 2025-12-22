@@ -338,6 +338,7 @@ class AnnolidWindow(MainWindow):
         scrollArea = QtWidgets.QScrollArea()
         scrollArea.setWidget(self._viewer_stack)
         scrollArea.setWidgetResizable(True)
+        scrollArea.setAlignment(Qt.AlignCenter)
         self.scrollBars = {
             Qt.Vertical: scrollArea.verticalScrollBar(),
             Qt.Horizontal: scrollArea.horizontalScrollBar(),
@@ -440,6 +441,24 @@ class AnnolidWindow(MainWindow):
         self._setup_open_pdf_action()
 
         self.populateModeActions()
+
+    def paintCanvas(self):
+        """Update zoom and redraw the viewer.
+
+        LabelMe's default implementation calls `self.canvas.adjustSize()`, which
+        works when the canvas is directly inside the scroll area. Annolid embeds
+        the canvas inside `self._viewer_stack`, so resizing the canvas can leave
+        it top-aligned within the stacked widget and show a large empty area.
+        """
+        assert not self.image.isNull(), "cannot paint null image"
+        self.canvas.scale = 0.01 * self.zoomWidget.value()
+        self.canvas.updateGeometry()
+        if getattr(self, "_viewer_stack", None) is not None:
+            self._viewer_stack.updateGeometry()
+            self._viewer_stack.adjustSize()
+        else:
+            self.canvas.adjustSize()
+        self.canvas.update()
 
     @Slot()
     def _open_segment_editor_dialog(self):  # Largely the same
