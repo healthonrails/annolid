@@ -2,10 +2,13 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
+import os
+import warnings
 
 import gdown
 
 from annolid.utils.audio_playback import play_audio_buffer
+from annolid.utils.logger import logger
 
 # --- Configuration ---
 BASE_V1_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
@@ -93,15 +96,6 @@ SUGGESTED_LANGUAGES = [
     "hi",
     "en",
     "pt",
-    "a",
-    "b",
-    "e",
-    "f",
-    "h",
-    "i",
-    "j",
-    "p",
-    "z",
 ]
 
 _BASE_VARIANT = os.getenv("ANNOLID_KOKORO_VARIANT", "f32").strip().lower()
@@ -144,6 +138,8 @@ _LANG_PREFIX_MAP = {
 # Lazy import cache for kokoro_onnx to avoid loading on app startup.
 _KOKORO_AVAILABLE: Optional[bool] = None
 _KOKORO_CLS = None
+_MISAKI_CACHE: dict[str, object] = {}
+_JIEBA_SILENCED = False
 
 # --- Helper Functions ---
 
@@ -173,28 +169,77 @@ def _kokoro_class():
         return None
 
 
+def _get_cached_misaki(lang: str):
+    """Return a cached Misaki G2P instance for zh/ja, or None on failure."""
+    key = lang.lower().strip()
+    if key in _MISAKI_CACHE:
+        return _MISAKI_CACHE[key]
+    _silence_jieba_logs()
+    try:
+        if key == "zh":
+            from misaki import zh as misaki_zh  # type: ignore
+
+            inst = misaki_zh.ZHG2P(version="1.1")
+        elif key == "ja":
+            from misaki import ja as misaki_ja  # type: ignore
+
+            inst = misaki_ja.JAG2P()
+        else:
+            inst = None
+        _MISAKI_CACHE[key] = inst
+        return inst
+    except Exception as exc:
+        logger.warning("Failed to init %s G2P (%s); caching None.", key, exc)
+        _MISAKI_CACHE[key] = None
+        return None
+
+
+def _silence_jieba_logs() -> None:
+    """Prevent jieba from spamming stderr/debug output (especially on macOS)."""
+    global _JIEBA_SILENCED
+    if _JIEBA_SILENCED:
+        return
+    try:
+        os.environ.setdefault("JIEBA_LOG_LEVEL", "ERROR")
+        warnings.filterwarnings(
+            "ignore",
+            message=".*words count mismatch.*",
+        )
+        import jieba  # type: ignore
+        import logging as _logging
+
+        jieba.setLogLevel(_logging.ERROR)
+        _JIEBA_SILENCED = True
+    except Exception:
+        # If jieba is not installed or setting log level fails, ignore silently.
+        _JIEBA_SILENCED = True
+
+
 def download_file(url: str, filepath: Path) -> None:
     """Downloads a file from a URL to a specified filepath using gdown."""
     filepath.parent.mkdir(parents=True, exist_ok=True)
     try:
         # quiet=False shows progress bar, fuzzy=True handles redirects
         gdown.download(url, str(filepath), quiet=False, fuzzy=True)
-        print(f"Downloaded to '{filepath}'")
+        logger.info("Downloaded to '%s'", filepath)
     except Exception as e:
-        print(f"Error downloading from {url}: {e}")
+        logger.warning("Error downloading from %s: %s", url, e)
         raise  # Re-raise the exception to be caught in text_to_speech
 
 
 def _ensure_file(filepath: Path, url: Optional[str], label: str) -> None:
     if filepath.exists():
-        print(f"{label} file found in cache: '{filepath}'")
+        logger.debug("%s file found in cache: '%s'", label, filepath)
         return
     if not url:
-        print(f"{label} path '{filepath}' requested but no URL provided; skipping.")
+        logger.warning(
+            "%s path '%s' requested but no URL provided; skipping.", label, filepath
+        )
         return
-    print(f"{label} file '{filepath.name}' not found in cache. Downloading...")
+    logger.info("%s file '%s' not found in cache. Downloading...",
+                label, filepath.name)
     download_file(url, filepath)
-    print(f"{label} file downloaded to '{filepath}'")
+    logger.info("%s file downloaded to '%s'", label, filepath)
 
 
 def _select_pack(lang: Optional[str], voice: Optional[str]) -> str:
@@ -251,9 +296,8 @@ def _load_kokoro(model_path: str, voices_path: str, config_path: Optional[str]):
         try:
             return cls(model_path, voices_path, vocab_config=config_path)
         except TypeError:
-            print(
-                "Warning: Installed kokoro_onnx does not support 'vocab_config'. "
-                "Falling back to default initialisation."
+            logger.warning(
+                "Installed kokoro_onnx does not support 'vocab_config'; falling back to default initialisation."
             )
     return cls(model_path, voices_path)
 
@@ -315,25 +359,25 @@ def _maybe_g2p(text: str, lang: str):
     """Convert text to phonemes when supported (currently zh via misaki)."""
     lang_lower = lang.lower()
     if lang_lower.startswith("zh") or lang_lower in {"z", "cmn"}:
-        try:
-            from misaki import zh as misaki_zh  # type: ignore
-
-            g2p = misaki_zh.ZHG2P(version="1.1")
-            phonemes, _ = g2p(text)
-            return phonemes, True
-        except Exception as exc:
-            print(
-                f"Warning: Chinese G2P unavailable ({exc}); using raw text instead.")
+        converter = _get_cached_misaki("zh")
+        if converter:
+            try:
+                phonemes, _ = converter(text)
+                return phonemes, True
+            except Exception as exc:
+                logger.warning(
+                    "Chinese G2P failed (%s); using raw text instead.", exc
+                )
     if lang_lower.startswith("ja") or lang_lower == "j":
-        try:
-            from misaki import ja as misaki_ja  # type: ignore
-
-            g2p = misaki_ja.JAG2P()
-            phonemes, _ = g2p(text)
-            return phonemes, True
-        except Exception as exc:
-            print(
-                f"Warning: Japanese G2P unavailable ({exc}); using raw text instead.")
+        converter = _get_cached_misaki("ja")
+        if converter:
+            try:
+                phonemes, _ = converter(text)
+                return phonemes, True
+            except Exception as exc:
+                logger.warning(
+                    "Japanese G2P failed (%s); using raw text instead.", exc
+                )
     return text, False
 
 
@@ -343,15 +387,19 @@ def _cap_phonemes(phonemes, max_len: int = MAX_PHONEMES):
         if isinstance(phonemes, str):
             parts = phonemes.split()
             if len(parts) > max_len:
-                print(
-                    f"Warning: Phoneme string too long ({len(parts)}); truncating to {max_len}."
+                logger.warning(
+                    "Phoneme string too long (%s); truncating to %s.",
+                    len(parts),
+                    max_len,
                 )
                 return " ".join(parts[:max_len])
             return phonemes
         if hasattr(phonemes, "__len__") and not isinstance(phonemes, (bytes,)):
             if len(phonemes) > max_len:
-                print(
-                    f"Warning: Phoneme sequence too long ({len(phonemes)}); truncating to {max_len}."
+                logger.warning(
+                    "Phoneme sequence too long (%s); truncating to %s.",
+                    len(phonemes),
+                    max_len,
                 )
                 return phonemes[:max_len]
     except Exception:
@@ -376,9 +424,8 @@ def _resolve_voice(
     else:
         fallback = DEFAULT_VOICE
     if requested and requested != fallback:
-        print(
-            f"Voice '{requested}' not found. "
-            f"Falling back to '{fallback}'. Available voices: {', '.join(voices) or 'unknown'}."
+        logger.warning(
+            "Voice '%s' not found. Falling back to '%s'.", requested, fallback
         )
     return fallback, voices
 
@@ -387,15 +434,58 @@ def _create_audio(
     kokoro, text: str, voice: str, speed: float, lang: str, is_phonemes: bool
 ):
     """Call Kokoro.create with or without is_phonemes depending on support."""
-    import inspect
+    supports = getattr(kokoro, "_annolid_supports_is_phonemes", None)
+    if supports is None:
+        supports = False
+        try:
+            import inspect
 
-    sig = inspect.signature(kokoro.create)
-    if "is_phonemes" in sig.parameters:
+            sig = inspect.signature(kokoro.create)
+            supports = "is_phonemes" in sig.parameters
+        except Exception:
+            supports = False
+        try:
+            setattr(kokoro, "_annolid_supports_is_phonemes", supports)
+        except Exception:
+            pass
+    if supports:
         return kokoro.create(
             text, voice=voice, speed=speed, lang=lang, is_phonemes=is_phonemes
         )
-    # Fallback for older kokoro_onnx that lacks the flag
     return kokoro.create(text, voice=voice, speed=speed, lang=lang)
+
+
+def _extract_kokoro_voice_list(kokoro) -> List[str]:
+    voices = getattr(kokoro, "voices", None)
+    if isinstance(voices, dict):
+        return _extract_sorted_strings(voices.keys())
+    if isinstance(voices, (list, tuple, set)):
+        return _extract_sorted_strings(voices)
+    return list(SUGGESTED_VOICES)
+
+
+@lru_cache(maxsize=8)
+def _cached_kokoro_voice_list(
+    model_path: str, voices_path: str, config_path: Optional[str]
+) -> Tuple[str, ...]:
+    kokoro = _load_kokoro(model_path, voices_path, config_path)
+    return tuple(_extract_kokoro_voice_list(kokoro))
+
+
+def _resolve_voice_from_list(requested: str, voices: List[str]) -> str:
+    requested = (requested or "").strip()
+    if requested and requested in voices:
+        return requested
+    if DEFAULT_VOICE in voices:
+        fallback = DEFAULT_VOICE
+    elif voices:
+        fallback = voices[0]
+    else:
+        fallback = DEFAULT_VOICE
+    if requested and requested != fallback:
+        logger.warning(
+            "Voice '%s' not found. Falling back to '%s'.", requested, fallback)
+    return fallback
 
 
 def text_to_speech(
@@ -423,34 +513,62 @@ def text_to_speech(
     """
     try:
         if _kokoro_class() is None:
-            print("Kokoro is not available. Install kokoro-onnx to use TTS.")
+            logger.warning(
+                "Kokoro is not available. Install kokoro-onnx to use TTS."
+            )
             return None
 
+        import re
+
+        # Guard against extreme inputs that can overflow ONNX kernels.
+        cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+        max_chars = 800
+        if len(cleaned) > max_chars:
+            logger.warning(
+                "Input text too long for Kokoro (%s chars); truncating to %s chars.",
+                len(cleaned),
+                max_chars,
+            )
+            cleaned = cleaned[:max_chars]
+
         normalized_lang = _normalize_lang(lang)
+        cache_dir = cache_dir or _kokoro_cache_dir()
         model_path, voices_path, config_path, pack_key = ensure_files_exist(
             cache_dir, lang=normalized_lang, voice=voice
         )
 
+        config_str = str(config_path) if config_path else None
         try:
             kokoro = _load_kokoro(
                 str(model_path),
                 str(voices_path),
-                str(config_path) if config_path else None,
+                config_str,
             )
         except TypeError as exc:
             if pack_key != "default":
-                print(
-                    f"Warning: Kokoro pack '{pack_key}' not supported by this kokoro_onnx "
-                    f"({exc}). Retrying without vocab_config."
+                logger.warning(
+                    "Kokoro pack '%s' not supported by this kokoro_onnx (%s). Retrying without vocab_config.",
+                    pack_key,
+                    exc,
                 )
                 kokoro = _load_kokoro(str(model_path), str(voices_path), None)
             else:
                 raise
 
-        resolved_voice, _ = _resolve_voice(voice, cache_dir, normalized_lang)
-        g2p_text, is_phonemes = _maybe_g2p(text, normalized_lang)
+        available_voices = list(
+            _cached_kokoro_voice_list(
+                str(model_path), str(voices_path), config_str)
+        )
+        resolved_voice = _resolve_voice_from_list(voice, available_voices)
+        g2p_text, is_phonemes = _maybe_g2p(cleaned, normalized_lang)
         if is_phonemes:
             g2p_text = _cap_phonemes(g2p_text)
+        else:
+            if isinstance(g2p_text, str) and len(g2p_text) > max_chars:
+                logger.warning(
+                    f"Phoneme string too long ({len(g2p_text)}); truncating to {max_chars}."
+                )
+                g2p_text = g2p_text[:max_chars]
         samples, sample_rate = _create_audio(
             kokoro, g2p_text, resolved_voice, speed, normalized_lang, is_phonemes
         )
@@ -460,27 +578,29 @@ def text_to_speech(
 
             output_path = str(output_path)
             sf.write(output_path, samples, sample_rate)
-            print(f"Audio saved to '{output_path}'")
+            logger.info("Audio saved to '%s'", output_path)
         else:
-            print("Audio generated but not saved.")
+            logger.debug("Audio generated but not saved.")
 
         return samples, sample_rate
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.warning("An error occurred: %s", e)
         return None
 
 
 def play_audio(samples, sample_rate):
     """Plays audio data using sounddevice."""
     if samples is not None and sample_rate is not None and samples.size > 0:
-        print("Playing audio...")
+        logger.debug("Playing audio...")
         if play_audio_buffer(samples, sample_rate, blocking=True):
-            print("Audio playback finished.")
+            logger.debug("Audio playback finished.")
         else:
-            print("Audio playback skipped because no usable audio device was detected.")
+            logger.info(
+                "Audio playback skipped because no usable audio device was detected."
+            )
     else:
-        print("No audio data to play or audio data is empty.")
+        logger.info("No audio data to play or audio data is empty.")
 
 
 # --- Main execution (Example usage) ---
