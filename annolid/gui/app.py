@@ -93,6 +93,7 @@ from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
 from annolid.gui.widgets.pdf_manager import PdfManager
 from annolid.gui.widgets.depth_manager import DepthManager
 from annolid.gui.widgets.sam3d_manager import Sam3DManager
+from annolid.gui.widgets.sam2_manager import Sam2Manager
 from annolid.gui.widgets.sam3_manager import Sam3Manager
 from annolid.gui.widgets.optical_flow_manager import OpticalFlowManager
 from annolid.gui.widgets.realtime_manager import RealtimeManager
@@ -302,6 +303,7 @@ class AnnolidWindow(MainWindow):
         self.depth_manager = DepthManager(self)
         self.optical_flow_manager = OpticalFlowManager(self)
         self.sam3d_manager = Sam3DManager(self)
+        self.sam2_manager = Sam2Manager(self)
         self.sam3_manager = Sam3Manager(self)
         self.realtime_manager = RealtimeManager(self)
         self.canvas.zoomRequest.connect(self.zoomRequest)
@@ -1691,70 +1693,6 @@ class AnnolidWindow(MainWindow):
         key = f"{identifier or ''} {weight or ''}".lower()
         return "efficienttam" in key
 
-    @staticmethod
-    def _is_sam2_model(identifier: str, weight: str) -> bool:
-        identifier = identifier.lower()
-        weight = weight.lower()
-        return "sam2_hiera" in identifier or "sam2_hiera" in weight
-
-    def _resolve_sam2_model_config(self, identifier: str, weight: str) -> str:
-        """
-        Resolve the SAM2 config file name based on the selected identifier or weight.
-        Falls back to the small hierarchy config if nothing matches.
-        """
-        key = f"{identifier or ''}|{weight or ''}".lower()
-        if "hiera_l" in key:
-            return "sam2.1_hiera_l.yaml"
-        if "hiera_s" in key:
-            return "sam2.1_hiera_s.yaml"
-        return "sam2.1_hiera_s.yaml"
-
-    def _resolve_sam2_checkpoint_path(self, weight: str) -> Optional[str]:
-        """
-        Try to resolve the absolute checkpoint path for SAM2 models.
-        Returns None to use the default download location when the file is not found.
-        """
-        if not weight:
-            return None
-
-        weight = weight.strip()
-        if not weight:
-            return None
-
-        weight_path = Path(weight)
-        if weight_path.exists():
-            return str(weight_path)
-
-        checkpoints_dir = (
-            Path(__file__).resolve().parent.parent
-            / "segmentation"
-            / "SAM"
-            / "segment-anything-2"
-            / "checkpoints"
-        )
-
-        candidate = checkpoints_dir / weight_path.name
-        if candidate.exists():
-            return str(candidate)
-
-        lower_name = weight_path.name.lower()
-        fallback_names = []
-        if "hiera_l" in lower_name:
-            fallback_names.extend(
-                ["sam2_hiera_large.pt", "sam2.1_hiera_large.pt"]
-            )
-        elif "hiera_s" in lower_name:
-            fallback_names.extend(
-                ["sam2_hiera_small.pt", "sam2.1_hiera_small.pt"]
-            )
-
-        for fallback_name in fallback_names:
-            fallback_candidate = checkpoints_dir / fallback_name
-            if fallback_candidate.exists():
-                return str(fallback_candidate)
-
-        return None
-
     def stop_prediction(self):
         # Emit the stop signal to signal the prediction thread to stop
         self.pred_worker.stop_signal.emit()
@@ -1886,26 +1824,15 @@ class AnnolidWindow(MainWindow):
                     model_key=model_key,
                     epsilon_for_polygon=self.epsilon_for_polygon,
                 )
-            elif self._is_sam2_model(model_name, model_weight):
-                from annolid.segmentation.SAM.sam_v2 import process_video
-                sam2_config = self._resolve_sam2_model_config(
-                    model_name, model_weight
-                )
-                sam2_checkpoint = self._resolve_sam2_checkpoint_path(
-                    model_weight
-                )
-                logger.info(
-                    "Using SAM2 config '%s' with checkpoint '%s'",
-                    sam2_config,
-                    sam2_checkpoint if sam2_checkpoint else "auto-download",
-                )
-                self.video_processor = functools.partial(
-                    process_video,
-                    video_path=self.video_file,
-                    checkpoint_path=sam2_checkpoint,
-                    model_config=sam2_config,
+            elif self.sam2_manager.is_sam2_model(model_name, model_weight):
+                processor = self.sam2_manager.build_video_processor(
+                    model_name=model_name,
+                    model_weight=model_weight,
                     epsilon_for_polygon=self.epsilon_for_polygon,
                 )
+                if processor is None:
+                    return
+                self.video_processor = processor
             elif self.sam3_manager.is_sam3_model(model_name, model_weight):
                 processor = self.sam3_manager.build_video_processor(
                     model_name=model_name,
@@ -1984,7 +1911,7 @@ class AnnolidWindow(MainWindow):
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
                 )
-            elif self._is_sam2_model(model_name, model_weight):
+            elif self.sam2_manager.is_sam2_model(model_name, model_weight):
                 frame_idx = max(self.frame_number, 0)
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
