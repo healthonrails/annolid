@@ -15,5 +15,6 @@ prune docs/tutorials/Untitled.ipynb
 prune docs/tutorials/.ipynb_checkpoints
 include environment.yml
 recursive-include annolid *.yaml *.yml *.json *.txt *.md *.qrc
+recursive-include annolid *.js
 recursive-include annolid *.png *.jpg *.jpeg *.gif *.svg *.ico *.icns
 include annolid/annotation/labels_interaction

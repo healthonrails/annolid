@@ -90,6 +90,7 @@ exclude = ["build*", "dist*", "docs*", "demo*", "tests*"]
 
 [tool.setuptools.package-data]
 annolid = [
+    "**/*.js",
     "**/*.png",
     "**/*.jpg",
     "**/*.jpeg",

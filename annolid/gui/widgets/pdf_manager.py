@@ -8,6 +8,7 @@ from qtpy.QtCore import Qt
 
 from annolid.gui.widgets.pdf_viewer import PdfViewerWidget
 from annolid.gui.widgets.pdf_controls import PdfControlsWidget
+from annolid.gui.widgets.pdf_reader_controls import PdfReaderControlsWidget
 from annolid.gui.widgets.tts_controls import TtsControlsWidget
 from annolid.utils.logger import logger
 
@@ -29,6 +30,8 @@ class PdfManager(QtCore.QObject):
         self.pdf_tts_controls: Optional[TtsControlsWidget] = None
         self.pdf_controls_dock: Optional[QtWidgets.QDockWidget] = None
         self.pdf_controls_widget: Optional[PdfControlsWidget] = None
+        self.pdf_reader_dock: Optional[QtWidgets.QDockWidget] = None
+        self.pdf_reader_controls: Optional[PdfReaderControlsWidget] = None
         self._pdf_files: list[str] = []
         self._pdf_file_signals_connected = False
         self._hidden_docks: list[QtWidgets.QDockWidget] = []
@@ -42,6 +45,10 @@ class PdfManager(QtCore.QObject):
             viewer.page_changed.connect(self._update_pdf_controls_page)
             viewer.controls_enabled_changed.connect(
                 self._on_pdf_controls_enabled_changed
+            )
+            viewer.reader_state_changed.connect(self._on_reader_state_changed)
+            viewer.reader_availability_changed.connect(
+                self._on_reader_availability_changed
             )
             self.viewer_stack.addWidget(viewer)
             self.pdf_viewer = viewer
@@ -111,6 +118,42 @@ class PdfManager(QtCore.QObject):
             self.pdf_controls_dock.raise_()
         self._sync_pdf_controls_state()
 
+    def ensure_pdf_reader_dock(self) -> None:
+        if self.pdf_reader_dock is None:
+            dock = QtWidgets.QDockWidget(
+                self.window.tr("PDF Reader"), self.window)
+            dock.setObjectName("PdfReaderDock")
+            dock.setFeatures(
+                QtWidgets.QDockWidget.DockWidgetMovable
+                | QtWidgets.QDockWidget.DockWidgetFloatable
+                | QtWidgets.QDockWidget.DockWidgetClosable
+            )
+            controls = PdfReaderControlsWidget(dock)
+            container = QtWidgets.QWidget(dock)
+            layout = QtWidgets.QVBoxLayout(container)
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.setSpacing(4)
+            layout.addWidget(controls, alignment=Qt.AlignTop)
+            container.setLayout(layout)
+            container.setSizePolicy(
+                QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum
+            )
+            dock.setWidget(container)
+            self.window.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self.pdf_reader_dock = dock
+            self.pdf_reader_controls = controls
+
+            controls.reader_enabled_changed.connect(self._set_reader_enabled)
+            controls.pdfjs_mode_requested.connect(self._set_reader_pdfjs_mode)
+            controls.pause_resume_requested.connect(
+                self._toggle_reader_pause_resume)
+            controls.stop_requested.connect(self._stop_reader)
+
+        if self.pdf_reader_dock is not None:
+            self.pdf_reader_dock.show()
+            self.pdf_reader_dock.raise_()
+        self._sync_pdf_reader_state()
+
     def _connect_file_list_signals(self) -> None:
         if self._pdf_file_signals_connected:
             return
@@ -149,6 +192,7 @@ class PdfManager(QtCore.QObject):
         self._close_unrelated_docks_for_pdf()
         self.ensure_pdf_tts_dock()
         self.ensure_pdf_controls_dock()
+        self.ensure_pdf_reader_dock()
         self._record_pdf_entry(str(pdf_path))
         self.window.lastOpenDir = str(Path(pdf_path).parent)
         self.window.statusBar().showMessage(
@@ -162,7 +206,7 @@ class PdfManager(QtCore.QObject):
         self._restore_hidden_docks()
         self._restore_labelme_file_selection()
         # Hide PDF docks.
-        for dock in (self.pdf_tts_dock, self.pdf_controls_dock):
+        for dock in (self.pdf_tts_dock, self.pdf_controls_dock, self.pdf_reader_dock):
             try:
                 if dock is not None:
                     dock.hide()
@@ -330,6 +374,45 @@ class PdfManager(QtCore.QObject):
         controls.set_zoom_percent(viewer.current_zoom_percent())
         total = viewer.page_count()
         controls.set_page_info(viewer.current_page_index(), total)
+
+    def _sync_pdf_reader_state(self) -> None:
+        viewer = self.pdf_viewer
+        controls = self.pdf_reader_controls
+        if viewer is None or controls is None:
+            return
+        available, reason = viewer.reader_availability()
+        controls.set_reader_available(available, reason=reason)
+        controls.set_reader_enabled(viewer.reader_enabled())
+        controls.set_pdfjs_checked(viewer.force_pdfjs_enabled())
+        state, current, total = viewer.reader_state()
+        controls.set_reader_state(state, current, total)
+
+    def _on_reader_state_changed(self, state: str, current: int, total: int) -> None:
+        if self.pdf_reader_controls is not None:
+            self.pdf_reader_controls.set_reader_state(state, current, total)
+
+    def _on_reader_availability_changed(self, available: bool, reason: str) -> None:
+        if self.pdf_reader_controls is not None:
+            self.pdf_reader_controls.set_reader_available(
+                available, reason=reason)
+        self._sync_pdf_reader_state()
+
+    def _set_reader_enabled(self, enabled: bool) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.set_reader_enabled(enabled)
+
+    def _set_reader_pdfjs_mode(self, enabled: bool) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.set_force_pdfjs(enabled)
+        self._sync_pdf_reader_state()
+
+    def _toggle_reader_pause_resume(self) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.toggle_reader_pause_resume()
+
+    def _stop_reader(self) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.stop_reader()
 
     # ------------------------------------------------------------------ helpers
     def pdf_widget(self) -> Optional[PdfViewerWidget]:
