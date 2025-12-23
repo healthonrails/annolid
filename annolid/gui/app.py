@@ -107,20 +107,11 @@ from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
 from annolid.data.audios import AudioLoader
 from annolid.gui.widgets.caption import CaptionWidget
-from annolid.gui.widgets.florence2_widget import (
-    Florence2Request,
-    Florence2Widget,
-)
+from annolid.gui.widgets.florence2_widget import Florence2DockWidget
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.model_manager import AIModelManager
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
-from annolid.vision.florence_2 import (
-    Florence2Predictor,
-    Florence2Result,
-    create_shapes_from_mask_dict,
-    process_nth_frame_from_video,
-)
 import contextlib
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from annolid.jobs.tracking_jobs import TrackingSegment
@@ -203,12 +194,6 @@ class AnnolidWindow(MainWindow):
         self.csv_worker = None
         self._last_tracking_csv_path = None
         self._csv_conversion_queue = []
-        self._florence_worker = None
-        self._florence_thread = None
-        self._florence_predictors: Dict[str,
-                                        Florence2Predictor] = {}
-        self._running_florence_request: Optional[Florence2Request] = None
-        self.florence_widget: Optional[Florence2Widget] = None
         self.florence_dock: Optional[QtWidgets.QDockWidget] = None
         # SAM3 session manager (initialized lazily when a SAM3 model is selected).
         self.sam3_session = None
@@ -884,29 +869,20 @@ class AnnolidWindow(MainWindow):
 
     def openFlorence2(self):
         """Open or show the Florence-2 dock widget."""
-        if self.florence_dock is not None:
-            if self.florence_dock.isHidden():
-                self.florence_dock.show()
-            self.florence_dock.raise_()
-            return
+        dock = getattr(self, "florence_dock", None)
+        if dock is None:
+            dock = Florence2DockWidget(self)
+            dock.destroyed.connect(
+                lambda *_: setattr(self, "florence_dock", None))
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self.florence_dock = dock
 
-        self.florence_widget = Florence2Widget(self)
-        self.florence_widget.runFrameRequested.connect(
-            self._handle_florence_frame_request)
-        self.florence_widget.runVideoRequested.connect(
-            self._handle_florence_video_request)
-
-        dock = QtWidgets.QDockWidget(self.tr("Florence-2"), self)
-        dock.setObjectName("Florence2Dock")
-        dock.setWidget(self.florence_widget)
-        dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-            | QtWidgets.QDockWidget.DockWidgetClosable
-        )
-        dock.destroyed.connect(lambda *_: setattr(self, "florence_dock", None))
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        self.florence_dock = dock
+        if isinstance(dock, Florence2DockWidget):
+            dock.show_or_raise()
+        else:
+            if dock.isHidden():
+                dock.show()
+            dock.raise_()
 
     @QtCore.Slot(str)
     def display_generated_image(self, image_path: str) -> None:
@@ -930,204 +906,6 @@ class AnnolidWindow(MainWindow):
         self.statusBar().showMessage(
             self.tr("Generated image loaded: %s") % image_path
         )
-
-    def _get_florence_predictor(self, model_name: str) -> Florence2Predictor:
-        predictor = self._florence_predictors.get(model_name)
-        if predictor is None:
-            predictor = Florence2Predictor(model_name=model_name)
-            self._florence_predictors[model_name] = predictor
-        return predictor
-
-    def _handle_florence_frame_request(self, request: Florence2Request) -> None:
-        image = self._get_pil_image_from_state()
-        if image is None:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("No frame available"),
-                self.tr("Load a frame before running Florence-2."),
-            )
-            return
-        self._start_florence_job(request, image=image)
-
-    def _handle_florence_video_request(self, request: Florence2Request) -> None:
-        if not self.video_file:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("No video loaded"),
-                self.tr("Open a video before processing it with Florence-2."),
-            )
-            return
-        self._start_florence_job(request, video_path=self.video_file)
-
-    def _start_florence_job(
-        self,
-        request: Florence2Request,
-        *,
-        image: Optional[Image.Image] = None,
-        video_path: Optional[str] = None,
-    ) -> None:
-        if self._florence_thread and self._florence_thread.isRunning():
-            QtWidgets.QMessageBox.information(
-                self,
-                self.tr("Florence-2 busy"),
-                self.tr("Please wait for the current Florence-2 task to finish."),
-            )
-            return
-
-        predictor = self._get_florence_predictor(request.model_name)
-        self._florence_worker = FlexibleWorker(
-            task_function=self._execute_florence_job,
-            predictor=predictor,
-            request=request,
-            image=image.copy() if image is not None else None,
-            video_path=video_path,
-        )
-        self._florence_thread = QtCore.QThread()
-        self._florence_worker.moveToThread(self._florence_thread)
-        self._florence_worker.start_signal.connect(self._florence_worker.run)
-        self._florence_worker.result_signal.connect(
-            self._handle_florence_result)
-        self._florence_worker.finished_signal.connect(
-            self._handle_florence_finished)
-        self._florence_worker.finished_signal.connect(
-            self._florence_thread.quit)
-        self._florence_worker.finished_signal.connect(
-            self._florence_worker.deleteLater)
-        self._florence_thread.finished.connect(self._clear_florence_worker)
-        self._florence_thread.finished.connect(
-            self._florence_thread.deleteLater)
-
-        self._running_florence_request = request
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        self.statusBar().showMessage(self.tr("Running Florence-2…"))
-        self._florence_thread.start()
-        QtCore.QTimer.singleShot(
-            0, lambda: self._florence_worker.start_signal.emit())
-
-    @staticmethod
-    def _execute_florence_job(
-        *,
-        predictor: Florence2Predictor,
-        request: Florence2Request,
-        image: Optional[Image.Image] = None,
-        video_path: Optional[str] = None,
-    ) -> Tuple[Florence2Request, Optional[Florence2Result]]:
-        if request.target == "frame":
-            if image is None:
-                raise ValueError(
-                    "Florence-2 frame request missing image data.")
-            result = predictor.predict(
-                image,
-                text_input=request.text_input,
-                segmentation_task=request.segmentation_task,
-                include_caption=request.include_caption,
-                caption_task=request.caption_task,
-            )
-            return request, result
-
-        if video_path is None:
-            raise ValueError(
-                "Florence-2 video request requires an open video file.")
-
-        process_nth_frame_from_video(
-            video_path,
-            request.every_n or 1,
-            predictor,
-            segmentation_task=request.segmentation_task,
-            text_input=request.text_input,
-            caption_task=request.caption_task,
-            description=request.description,
-        )
-        return request, None
-
-    def _handle_florence_result(
-        self,
-        payload: Tuple[Florence2Request, Optional[Florence2Result]],
-    ) -> None:
-        request, result = payload
-        if request.target != "frame" or not isinstance(result, Florence2Result):
-            return
-
-        shapes = create_shapes_from_mask_dict(
-            result.mask_dict, description=request.description
-        )
-
-        if request.replace_existing:
-            preserved_shapes = [
-                shape.copy()
-                for shape in self.canvas.shapes
-                if getattr(shape, "description", None)
-                != request.description
-            ]
-            shapes_to_load = preserved_shapes + shapes
-            self.loadShapes(shapes_to_load, replace=True)
-        else:
-            self.loadShapes(shapes, replace=False)
-
-        if shapes:
-            self.setDirty()
-            self.statusBar().showMessage(
-                self.tr("Florence-2 added %d shape(s).") % len(shapes),
-                5000,
-            )
-        elif not result.caption:
-            self.statusBar().showMessage(
-                self.tr("Florence-2 did not return any shapes."), 5000
-            )
-
-        if result.caption:
-            self._apply_florence_caption(result.caption)
-            if not shapes:
-                self.statusBar().showMessage(
-                    self.tr("Florence-2 caption updated."), 5000
-                )
-
-    def _handle_florence_finished(self, outcome: object) -> None:
-        try:
-            QtWidgets.QApplication.restoreOverrideCursor()
-        except Exception:
-            pass
-
-        request = self._running_florence_request
-        self._running_florence_request = None
-
-        if isinstance(outcome, Exception):
-            logger.error("Florence-2 job failed: %s", outcome, exc_info=True)
-            QtWidgets.QMessageBox.critical(
-                self,
-                self.tr("Florence-2 Error"),
-                self.tr("Failed to run Florence-2:\n%s") % str(outcome),
-            )
-            self.statusBar().showMessage(self.tr("Florence-2 failed."), 5000)
-            return
-
-        if request and request.target == "video":
-            self.statusBar().showMessage(
-                self.tr("Florence-2 video processing complete."), 5000
-            )
-        elif request and request.target == "frame":
-            # Success message already handled when shapes were added.
-            pass
-        else:
-            self.statusBar().showMessage(
-                self.tr("Florence-2 finished."), 3000)
-
-    def _clear_florence_worker(self) -> None:
-        self._florence_thread = None
-        self._florence_worker = None
-
-    def _apply_florence_caption(self, caption: str) -> None:
-        if not caption:
-            return
-
-        self.canvas.setCaption(caption)
-        if self.caption_widget is None:
-            self.openCaption()
-        if self.caption_widget is not None:
-            self.caption_widget.set_caption(caption)
-            if self.filename:
-                self.caption_widget.set_image_path(self.filename)
-        self.setDirty()
 
     def set_advanced_params(self):
         sam3_cfg = dict((self._config or {}).get("sam3", {}) or {})
