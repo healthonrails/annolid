@@ -19,7 +19,9 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     # Prevent PyInstaller from loading alternate Qt bindings; project uses PyQt5.
-    excludes=['PySide6', 'PySide2', 'PyQt6'],
+    # Exclude heavyweight ML runtimes from the bundled app to keep executables small;
+    # users should install PyTorch separately when needed.
+    excludes=['PySide6', 'PySide2', 'PyQt6', 'torch', 'torchvision', 'torchaudio', 'torchtext', 'triton'],
 )
 pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(

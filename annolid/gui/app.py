@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Enable CPU fallback for unsupported MPS ops
 import os  # noqa
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # noqa
@@ -16,12 +18,15 @@ import copy
 from PIL import ImageQt, Image, ImageDraw
 import pandas as pd
 import numpy as np
-import torch
 import imgviz
 import yaml
 from pathlib import Path
 import functools
 import subprocess
+try:
+    import torch
+except ImportError:  # PyTorch is optional for lighter desktop bundles
+    torch = None
 
 from labelme.ai import MODELS
 from qtpy import QtCore
@@ -2973,9 +2978,12 @@ class AnnolidWindow(MainWindow):
                 self.statusBar().showMessage(self.tr(f"Tracking..."))
 
             if algo == 'YOLACT':
-                if not torch.cuda.is_available():
+                if torch is None or not torch.cuda.is_available():
                     QtWidgets.QMessageBox.about(
-                        self, "No GPU available", "At least one GPU is required to train models.")
+                        self,
+                        "GPU or PyTorch unavailable",
+                        "PyTorch with CUDA support is required to run YOLACT tracking.",
+                    )
                     return
 
                 subprocess.Popen([
@@ -3048,10 +3056,12 @@ class AnnolidWindow(MainWindow):
 
         elif algo == 'YOLACT':
             # start training models
-            if not torch.cuda.is_available():
-                QtWidgets.QMessageBox.about(self,
-                                            "Not GPU available",
-                                            "At least one GPU  is required to train models.")
+            if torch is None or not torch.cuda.is_available():
+                QtWidgets.QMessageBox.about(
+                    self,
+                    "GPU or PyTorch unavailable",
+                    "PyTorch with CUDA support is required to train YOLACT models.",
+                )
                 return
 
             subprocess.Popen(['annolid-train',
@@ -5233,10 +5243,10 @@ class AnnolidWindow(MainWindow):
 
     # --- Handler for Tracking Initiated by SegmentEditorDialog ---
 
-    def _get_tracking_device(self) -> torch.device:  # Centralized device selection
+    def _get_tracking_device(self):
         # More sophisticated logic could go here (e.g., user settings)
-        if self.config.get('use_cpu_only', False):
-            return torch.device("cpu")
+        if self.config.get('use_cpu_only', False) or torch is None:
+            return "cpu" if torch is None else torch.device("cpu")
         if torch.cuda.is_available():
             return torch.device("cuda:0")
         if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
