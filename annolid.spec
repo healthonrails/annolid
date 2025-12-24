@@ -6,6 +6,21 @@ import sys
 
 sys.setrecursionlimit(5000)  # required on Windows
 
+# Keep the bundle lean: ship only the GUI and its assets. Heavy ML stacks
+# (PyTorch, transformers, YOLO/Detectron extras, ONNX runtimes, etc.) are
+# excluded so users install them separately when needed.
+EXCLUDED_MODULES = [
+    # Alternate Qt bindings
+    'PySide6', 'PySide2', 'PyQt6',
+    # PyTorch & siblings
+    'torch', 'torchvision', 'torchaudio', 'torchtext', 'triton',
+    # Other heavy runtimes
+    'tensorflow', 'onnx', 'onnxruntime', 'onnxruntime_gpu',
+    'mxnet', 'jax', 'diffusers', 'accelerate',
+    # Large model/tooling stacks that are optional in the GUI
+    'transformers', 'huggingface_hub', 'sentencepiece', 'timm',
+    'ultralytics', 'detectron2', 'pytorch_lightning',
+]
 
 a = Analysis(
     ['annolid/gui/app.py'],
@@ -18,10 +33,7 @@ a = Analysis(
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
-    # Prevent PyInstaller from loading alternate Qt bindings; project uses PyQt5.
-    # Exclude heavyweight ML runtimes from the bundled app to keep executables small;
-    # users should install PyTorch separately when needed.
-    excludes=['PySide6', 'PySide2', 'PyQt6', 'torch', 'torchvision', 'torchaudio', 'torchtext', 'triton'],
+    excludes=EXCLUDED_MODULES,
 )
 pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
