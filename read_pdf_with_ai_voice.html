@@ -1,0 +1,221 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Read PDFs Aloud with AI Voice (Text-to-Speech) &mdash; annolid unknown documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js?v=680b02e7"></script>
+      <script src="_static/doctools.js?v=888ff710"></script>
+      <script src="_static/sphinx_highlight.js?v=4825356b"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Extract Frames" href="extract_frames.html" />
+    <link rel="prev" title="Install Annolid" href="install.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Read PDFs Aloud with AI Voice (Text-to-Speech)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#open-a-pdf-in-annolid">Open a PDF in Annolid</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#option-a-speak-a-selection-fastest">Option A: Speak a selection (fastest)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#option-b-click-to-read-paragraphs-pdf-js-reader-mode">Option B: Click-to-read paragraphs (PDF.js reader mode)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#change-voice-language-and-speed">Change voice, language, and speed</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Read PDFs Aloud with AI Voice (Text-to-Speech)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/read_pdf_with_ai_voice.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="read-pdfs-aloud-with-ai-voice-text-to-speech">
+<h1>Read PDFs Aloud with AI Voice (Text-to-Speech)<a class="headerlink" href="#read-pdfs-aloud-with-ai-voice-text-to-speech" title="Permalink to this heading"></a></h1>
+<p>Annolid includes an integrated PDF viewer with text-to-speech (TTS), so you can open a PDF and have selected text (or whole paragraphs) read aloud.</p>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Install Annolid (see <code class="docutils literal notranslate"><span class="pre">install.md</span></code>).</p></li>
+<li><p>Install PDF support:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>pymupdf
+</pre></div>
+</div>
+<ol class="arabic simple" start="3">
+<li><p>Install a TTS backend (pick one):</p></li>
+</ol>
+<ul class="simple">
+<li><p>Recommended (offline, higher-quality “AI voice”): Kokoro (ONNX)</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>kokoro-onnx<span class="w"> </span>onnxruntime<span class="w"> </span>gdown
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Language packs for Kokoro when you want Chinese or Japanese voices:</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">[</span>zh<span class="o">]</span><span class="w">  </span><span class="c1"># enables Mandarin (e.g., voice zf_001)</span>
+pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">[</span>ja<span class="o">]</span><span class="w">  </span><span class="c1"># enables Japanese (e.g., voice jf_alpha)</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Fallback (online, simpler): Google TTS</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>gTTS<span class="w"> </span>pydub
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">pydub</span></code> needs <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> available on your system.</p>
+</section>
+<section id="open-a-pdf-in-annolid">
+<h2>Open a PDF in Annolid<a class="headerlink" href="#open-a-pdf-in-annolid" title="Permalink to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Launch the GUI:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid
+</pre></div>
+</div>
+<ol class="arabic simple" start="2">
+<li><p>Go to <code class="docutils literal notranslate"><span class="pre">File</span></code> → <code class="docutils literal notranslate"><span class="pre">Open</span> <span class="pre">PDF...</span></code> and pick a <code class="docutils literal notranslate"><span class="pre">.pdf</span></code>.</p></li>
+</ol>
+<p>Annolid switches into PDF view and shows these docks (typically on the right):</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Speech</span></code> (voice / language / speed)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Controls</span></code> (page + zoom)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Reader</span></code> (click-to-read mode)</p></li>
+</ul>
+</section>
+<section id="option-a-speak-a-selection-fastest">
+<h2>Option A: Speak a selection (fastest)<a class="headerlink" href="#option-a-speak-a-selection-fastest" title="Permalink to this heading"></a></h2>
+<p>This works in both the fallback viewer (image + text panel) and the PDF.js viewer.</p>
+<ol class="arabic simple">
+<li><p>Select some text (either in the page text panel, or directly on the PDF page).</p></li>
+<li><p>Right-click → <code class="docutils literal notranslate"><span class="pre">Speak</span> <span class="pre">selection</span></code>.</p></li>
+</ol>
+</section>
+<section id="option-b-click-to-read-paragraphs-pdf-js-reader-mode">
+<h2>Option B: Click-to-read paragraphs (PDF.js reader mode)<a class="headerlink" href="#option-b-click-to-read-paragraphs-pdf-js-reader-mode" title="Permalink to this heading"></a></h2>
+<p>This reads full paragraphs/sentences starting from where you click.</p>
+<ol class="arabic simple">
+<li><p>In the <code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Reader</span></code> dock, enable <code class="docutils literal notranslate"><span class="pre">Use</span> <span class="pre">PDF.js</span> <span class="pre">(required</span> <span class="pre">for</span> <span class="pre">reader)</span></code>.</p></li>
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">Enable</span> <span class="pre">click-to-read</span></code> turned on.</p></li>
+<li><p>Click a paragraph in the PDF page to start reading.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">Pause/Resume</span></code>, <code class="docutils literal notranslate"><span class="pre">Stop</span></code>, <code class="docutils literal notranslate"><span class="pre">Prev</span></code>, <code class="docutils literal notranslate"><span class="pre">Next</span></code> in the same dock.</p></li>
+</ol>
+<p>If the reader says it’s unavailable, install QtWebEngine (<code class="docutils literal notranslate"><span class="pre">pyqtwebengine</span></code> in conda, or <code class="docutils literal notranslate"><span class="pre">PyQtWebEngine</span></code> via pip) and restart Annolid.</p>
+</section>
+<section id="change-voice-language-and-speed">
+<h2>Change voice, language, and speed<a class="headerlink" href="#change-voice-language-and-speed" title="Permalink to this heading"></a></h2>
+<p>Use the <code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Speech</span></code> dock to set:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Voice</span></code> (example: <code class="docutils literal notranslate"><span class="pre">af_sarah</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Voice</span></code> (Chinese): <code class="docutils literal notranslate"><span class="pre">zf_001</span></code> (requires <code class="docutils literal notranslate"><span class="pre">misaki[zh]</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Voice</span></code> (Japanese): <code class="docutils literal notranslate"><span class="pre">jf_alpha</span></code> (requires <code class="docutils literal notranslate"><span class="pre">misaki[ja]</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Language</span></code> (example: <code class="docutils literal notranslate"><span class="pre">en-us</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Speed</span></code> (0.5–2.0)</p></li>
+</ul>
+<p>These settings persist in <code class="docutils literal notranslate"><span class="pre">~/.annolid/tts_settings.json</span></code>.</p>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permalink to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>“PyMuPDF Required” dialog</strong>: run <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">pymupdf</span></code>.</p></li>
+<li><p><strong>No audio output</strong>:</p>
+<ul>
+<li><p>Make sure <code class="docutils literal notranslate"><span class="pre">ANNOLID_DISABLE_AUDIO</span></code> is not set.</p></li>
+<li><p>On Linux servers/containers, ensure an audio device is present (or use a desktop machine).</p></li>
+</ul>
+</li>
+<li><p><strong>First Kokoro run is slow</strong>: Annolid downloads model files into <code class="docutils literal notranslate"><span class="pre">~/.annolid/kokoro</span></code> the first time.</p></li>
+<li><p><strong>gTTS fails</strong>: it requires internet access; also ensure <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> is installed for <code class="docutils literal notranslate"><span class="pre">pydub</span></code>.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="install.html" class="btn btn-neutral float-left" title="Install Annolid" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="extract_frames.html" class="btn btn-neutral float-right" title="Extract Frames" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -6,6 +6,7 @@ Welcome to annolid's documentation!
    
    guide
    install
+   read_pdf_with_ai_voice
    extract_frames
    track_animals
    keypoints_definitions
