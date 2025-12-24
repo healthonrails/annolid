@@ -148,6 +148,8 @@ class PdfManager(QtCore.QObject):
             controls.pause_resume_requested.connect(
                 self._toggle_reader_pause_resume)
             controls.stop_requested.connect(self._stop_reader)
+            controls.previous_requested.connect(self._reader_prev_sentence)
+            controls.next_requested.connect(self._reader_next_sentence)
 
         if self.pdf_reader_dock is not None:
             self.pdf_reader_dock.show()
@@ -413,6 +415,14 @@ class PdfManager(QtCore.QObject):
     def _stop_reader(self) -> None:
         if self.pdf_viewer is not None:
             self.pdf_viewer.stop_reader()
+
+    def _reader_prev_sentence(self) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.reader_prev_sentence()
+
+    def _reader_next_sentence(self) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.reader_next_sentence()
 
     # ------------------------------------------------------------------ helpers
     def pdf_widget(self) -> Optional[PdfViewerWidget]:

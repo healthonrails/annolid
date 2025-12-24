@@ -10,6 +10,8 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
     pdfjs_mode_requested = QtCore.Signal(bool)
     pause_resume_requested = QtCore.Signal()
     stop_requested = QtCore.Signal()
+    previous_requested = QtCore.Signal()
+    next_requested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,6 +55,11 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         controls_row = QtWidgets.QHBoxLayout()
         controls_row.setSpacing(6)
 
+        self.prev_button = QtWidgets.QToolButton(self)
+        self.prev_button.setText("◀ Prev")
+        self.prev_button.clicked.connect(self.previous_requested.emit)
+        controls_row.addWidget(self.prev_button)
+
         self.pause_button = QtWidgets.QToolButton(self)
         self.pause_button.setText("Pause")
         self.pause_button.clicked.connect(self.pause_resume_requested.emit)
@@ -62,6 +69,11 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         self.stop_button.setText("Stop")
         self.stop_button.clicked.connect(self.stop_requested.emit)
         controls_row.addWidget(self.stop_button)
+
+        self.next_button = QtWidgets.QToolButton(self)
+        self.next_button.setText("Next ▶")
+        self.next_button.clicked.connect(self.next_requested.emit)
+        controls_row.addWidget(self.next_button)
 
         controls_row.addStretch(1)
         layout.addLayout(controls_row)
@@ -97,14 +109,20 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
             self.pause_button.setText("Pause")
             self.pause_button.setEnabled(True)
             self.stop_button.setEnabled(True)
+            self.prev_button.setEnabled(True)
+            self.next_button.setEnabled(True)
         elif state == "paused":
             self.pause_button.setText("Resume")
             self.pause_button.setEnabled(True)
             self.stop_button.setEnabled(True)
+            self.prev_button.setEnabled(True)
+            self.next_button.setEnabled(True)
         else:
             self.pause_button.setText("Pause")
             self.pause_button.setEnabled(False)
             self.stop_button.setEnabled(False)
+            self.prev_button.setEnabled(False)
+            self.next_button.setEnabled(False)
 
     def set_reader_enabled(self, enabled: bool) -> None:
         self._ignore_signals = True
@@ -129,6 +147,8 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
             self.pause_button,
             self.stop_button,
             self.tip_label,
+            self.prev_button,
+            self.next_button,
         ]
         for widget in widgets:
             widget.setEnabled(enabled)

@@ -773,7 +773,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	      color: #f5f5f5;
 	      border: 1px solid rgba(255, 255, 255, 0.12);
 	      border-radius: 6px;
-	      padding: 6px 10px;
+	      padding: 5px 8px;
 	      cursor: pointer;
 	      min-width: 32px;
 	    }}
@@ -797,7 +797,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
       font-size: 12px;
     }}
     #annolidToolbar input[type="color"] {{
-      width: 32px;
+      width: 28px;
       height: 28px;
       padding: 0;
       border: 0;
@@ -805,10 +805,10 @@ class PdfViewerWidget(QtWidgets.QWidget):
       cursor: pointer;
     }}
 	    #annolidToolbar input[type="range"] {{
-	      width: 92px;
+	      width: 32px;
 	    }}
 	    @media (max-width: 980px) {{
-	      .annolid-title {{ max-width: 200px; }}
+	      .annolid-title {{ max-width: 150px; }}
 	      #annolidZoomReset {{ display: none; }}
 	      #annolidZoomFit {{ display: none; }}
 	    }}
@@ -821,21 +821,21 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	      align-items: center;
 	      gap: 10px;
 	      min-width: 0;
-	      flex: 0 1 360px;
+	      flex: 0 1 160px;
 	    }}
 	    .annolid-title {{
 	      font-weight: 600;
-	      font-size: 14px;
+	      font-size: 13px;
 	      color: #f5f5f5;
 	      white-space: nowrap;
 	      overflow: hidden;
 	      text-overflow: ellipsis;
-	      max-width: 320px;
+	      max-width: 140px;
 	    }}
 	    .annolid-nav {{
 	      display: flex;
 	      align-items: center;
-	      gap: 8px;
+	      gap: 6px;
 	      justify-content: center;
 	      flex-wrap: nowrap;
 	      min-width: 0;
@@ -851,11 +851,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	      min-width: 0;
 	      flex: 1 1 0;
 	    }}
-	    .annolid-group {{
-	      display: inline-flex;
-	      align-items: center;
-	      gap: 0;
-	      border: 1px solid rgba(255, 255, 255, 0.12);
+    .annolid-group {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      border: 1px solid rgba(255, 255, 255, 0.12);
 	      border-radius: 8px;
 	      overflow: hidden;
 	      background: rgba(0, 0, 0, 0.12);
@@ -866,16 +866,37 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	      border-radius: 0;
 	      background: transparent;
 	      padding: 6px 10px;
-	      min-width: 34px;
+	      min-width: 28px;
 	    }}
 	    .annolid-group button:last-child {{
-	      border-right: 0;
-	    }}
-	    .annolid-overflow {{
-	      position: relative;
-	      display: flex;
-	      align-items: center;
-	      justify-content: center;
+      border-right: 0;
+    }}
+    .annolid-mark-options {{
+      gap: 8px;
+      padding: 6px 10px;
+    }}
+    .annolid-mark-options input[type="color"] {{
+      width: 30px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+    }}
+    .annolid-mark-options input[type="range"] {{
+      width: 80px;
+    }}
+    .annolid-option-label {{
+      font-size: 12px;
+      opacity: 0.85;
+      padding: 0 2px;
+      white-space: nowrap;
+    }}
+    .annolid-overflow {{
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
 	    }}
 	    #annolidOverflowMenu {{
 	      position: absolute;
@@ -887,11 +908,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
       padding: 6px;
       box-shadow: 0 4px 18px rgba(0,0,0,0.4);
 	      display: none;
-	      flex-direction: column;
-	      gap: 6px;
-	      z-index: 10000;
-	      min-width: 140px;
-	    }}
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10000;
+      min-width: 120px;
+    }}
 	    #annolidOverflowMenu button {{
 	      width: 100%;
 	      text-align: left;
@@ -925,25 +946,43 @@ class PdfViewerWidget(QtWidgets.QWidget):
     #annolidOverflowMenu.annolid-open {{
       display: flex;
     }}
-    #annolidMoreToggle {{
-      min-width: 32px;
-      padding: 6px 8px;
+    #annolidMenuPanel {{
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      background: #2b2b2b;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 6px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.4);
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10000;
+      min-width: 140px;
+    }}
+    #annolidMenuPanel.annolid-open {{
+      display: flex;
+    }}
+    #annolidMenuPanel button {{
+      width: 100%;
+      text-align: left;
     }}
     #annolidPageInput {{
-      width: 64px;
+      width: 48px;
       background: #1e1e1e;
       color: #fff;
       border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 6px;
-      padding: 6px 8px;
+      padding: 5px 7px;
       text-align: center;
     }}
     #annolidZoomLabel {{
-      padding: 6px 10px;
+      padding: 5px 8px;
       background: #1e1e1e;
       border-radius: 6px;
       border: 1px solid rgba(255, 255, 255, 0.18);
-      min-width: 64px;
+      min-width: 48px;
       text-align: center;
     }}
     .annolid-icon-btn {{
@@ -1100,6 +1139,57 @@ class PdfViewerWidget(QtWidgets.QWidget):
         window.__annolidParagraphs = [];
         window.__annolidParagraphOffsets = {{}};
         window.__annolidParagraphTotal = 0;
+        window.__annolidSplitParagraphIntoSentences = function(para) {{
+          try {{
+            const spans = (para && Array.isArray(para.spans)) ? para.spans.filter((n) => Number.isInteger(n)) : [];
+            if (!spans.length) return [];
+            const nodes = window.__annolidSpans || [];
+            const parts = [];
+            let combined = "";
+            spans.forEach((idx) => {{
+              const node = nodes[idx];
+              if (!node) return;
+              const raw = node.textContent || "";
+              const text = _annolidNormalizeText(raw);
+              if (!text) return;
+              const start = combined ? combined.length + 1 : 0;
+              if (combined) combined += " ";
+              combined += text;
+              const end = combined.length;
+              parts.push({{ idx, start, end }});
+            }});
+            const paraText = _annolidNormalizeText(para.text || combined);
+            const resolvedPageNum = (parseInt(para.pageNum || para.page || 0, 10) || 0);
+            const sentences = [];
+            const regex = /[^.!?。！？]+[.!?。！？]*/g;
+            let cursor = 0;
+            let match;
+            while ((match = regex.exec(paraText)) !== null) {{
+              const raw = _annolidNormalizeText(match[0]);
+              if (!raw) continue;
+              const start = paraText.indexOf(raw, cursor);
+              if (start < 0) continue;
+              const end = start + raw.length;
+              cursor = end;
+              const group = parts.filter((p) => p.end > start && p.start < end).map((p) => p.idx);
+              sentences.push({{
+                text: raw,
+                spans: group.length ? group : spans.slice(),
+                pageNum: resolvedPageNum,
+              }});
+            }}
+            if (!sentences.length && paraText) {{
+              sentences.push({{
+                text: paraText,
+                spans: spans.slice(),
+                pageNum: resolvedPageNum,
+              }});
+            }}
+            return sentences;
+          }} catch (e) {{
+            return [];
+          }}
+        }};
         window.__annolidBridge = null;
         window.__annolidRenderedPages = 0;
         window.__annolidPdfLoaded = false;
@@ -1380,6 +1470,155 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	            container.scrollTop = offset;
 	          }}
 	        }};
+        window.__annolidScrollToSentence = function(indices, pageNum) {{
+          try {{
+            const spans = Array.isArray(indices) ? indices : [];
+            if (!spans.length) return;
+            const container = document.getElementById("viewerContainer");
+            if (!container) return;
+            const requestedPage = (parseInt(pageNum || 0, 10) || 0);
+
+            const now = Date.now();
+            const key = String(requestedPage) + ":" + spans.slice(0, 10).join(",");
+            const last = window.__annolidLastSentenceScroll || null;
+            if (last && last.key === key && (now - (last.t || 0)) < 120) {{
+              return;
+            }}
+            window.__annolidLastSentenceScroll = {{ key, t: now }};
+
+            const scrollBehavior = "smooth";
+            const minMovePx = 18;
+            const safeHeight = Math.max(1, container.clientHeight || 1);
+            const comfortMargin = Math.min(220, Math.max(80, safeHeight * 0.25));
+
+            const clampScroll = (value) => {{
+              const maxScroll = Math.max(0, (container.scrollHeight || 0) - safeHeight);
+              return Math.max(0, Math.min(maxScroll, value));
+            }};
+
+            const scrollToTop = (target) => {{
+              const clamped = clampScroll(target);
+              if (Math.abs((container.scrollTop || 0) - clamped) < minMovePx) return;
+              try {{
+                container.scrollTo({{ top: clamped, behavior: scrollBehavior }});
+              }} catch (e) {{
+                container.scrollTop = clamped;
+              }}
+            }};
+
+            const scrollToPageCenter = (pageNumToUse) => {{
+              const page = document.querySelector(`.page[data-page-number='${{pageNumToUse}}']`);
+              if (!page) return;
+              const center = (page.offsetTop || 0) + (page.clientHeight || 0) / 2;
+              scrollToTop(center - safeHeight / 2);
+            }};
+
+            const groupMetasByPage = (metas) => {{
+              const groups = {{}};
+              metas.forEach((m) => {{
+                const p = m && (m.pageNum || 0);
+                if (!p) return;
+                const k = String(p);
+                if (!groups[k]) groups[k] = [];
+                groups[k].push(m);
+              }});
+              return groups;
+            }};
+
+            const pickPageGroup = (groups) => {{
+              const keys = Object.keys(groups || {{}});
+              if (!keys.length) return {{ pageNum: 0, metas: [] }};
+              if (requestedPage > 0 && groups[String(requestedPage)] && groups[String(requestedPage)].length) {{
+                return {{ pageNum: requestedPage, metas: groups[String(requestedPage)] }};
+              }}
+              let bestKey = keys[0];
+              let bestCount = (groups[bestKey] || []).length;
+              keys.forEach((k) => {{
+                const c = (groups[k] || []).length;
+                if (c > bestCount) {{
+                  bestCount = c;
+                  bestKey = k;
+                }}
+              }});
+              return {{ pageNum: (parseInt(bestKey, 10) || 0), metas: groups[bestKey] || [] }};
+            }};
+
+            const computeSentenceBox = (metas, pageEl) => {{
+              if (!metas || !metas.length || !pageEl) return null;
+              let minY = Infinity;
+              let maxY = -Infinity;
+              metas.forEach((m) => {{
+                const y0 = (m.y || 0);
+                const y1 = (m.y || 0) + (m.h || 0);
+                if (isFinite(y0)) minY = Math.min(minY, y0);
+                if (isFinite(y1)) maxY = Math.max(maxY, y1);
+              }});
+              if (!isFinite(minY) || !isFinite(maxY)) return null;
+              const absTop = (pageEl.offsetTop || 0) + minY;
+              const absBottom = (pageEl.offsetTop || 0) + maxY;
+              const absCenter = (absTop + absBottom) / 2;
+              return {{ absTop, absBottom, absCenter }};
+            }};
+
+            const isComfortablyVisible = (box) => {{
+              if (!box) return false;
+              const topBound = (container.scrollTop || 0) + comfortMargin;
+              const bottomBound = (container.scrollTop || 0) + safeHeight - comfortMargin;
+              return box.absCenter >= topBound && box.absCenter <= bottomBound;
+            }};
+
+            const ensureRenderedThroughIfNeeded = (pageNumToUse) => {{
+              if (pageNumToUse > 0 && typeof _annolidEnsureRenderedThrough === "function") {{
+                const lastEnsure = window.__annolidLastEnsurePage || 0;
+                if (pageNumToUse > lastEnsure) {{
+                  window.__annolidLastEnsurePage = pageNumToUse;
+                  return _annolidEnsureRenderedThrough(pageNumToUse);
+                }}
+              }}
+              return Promise.resolve();
+            }};
+
+            const runScrollAttempt = (attempt) => {{
+              const metas = spans
+                .map((idx) => _annolidGetSpanMeta(idx))
+                .filter((m) => m && Number.isFinite(m.y) && Number.isFinite(m.h) && (m.pageNum || 0) > 0);
+
+              if (!metas.length) {{
+                if (requestedPage > 0) scrollToPageCenter(requestedPage);
+                if (attempt < 8) requestAnimationFrame(() => runScrollAttempt(attempt + 1));
+                return;
+              }}
+
+              const groups = groupMetasByPage(metas);
+              const picked = pickPageGroup(groups);
+              const pageNumToUse = picked.pageNum || requestedPage || 0;
+              const pageEl = pageNumToUse
+                ? document.querySelector(`.page[data-page-number='${{pageNumToUse}}']`)
+                : null;
+
+              if (!pageEl) {{
+                if (pageNumToUse > 0 && typeof _annolidGoToPage === "function") {{
+                  _annolidGoToPage(pageNumToUse);
+                }}
+                if (attempt < 8) requestAnimationFrame(() => runScrollAttempt(attempt + 1));
+                return;
+              }}
+
+              const box = computeSentenceBox(picked.metas, pageEl);
+              if (!box) {{
+                if (pageNumToUse > 0) scrollToPageCenter(pageNumToUse);
+                return;
+              }}
+              if (isComfortablyVisible(box)) return;
+              scrollToTop(box.absCenter - safeHeight / 2);
+            }};
+
+            const initialPage = requestedPage || 0;
+            Promise.resolve(ensureRenderedThroughIfNeeded(initialPage))
+              .then(() => requestAnimationFrame(() => runScrollAttempt(0)))
+              .catch(() => requestAnimationFrame(() => runScrollAttempt(0)));
+          }} catch (e) {{}}
+        }};
 
         function _annolidSetTool(tool) {{
           window.__annolidMarks.tool = tool;
@@ -1515,6 +1754,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
         const clearBtn = document.getElementById("annolidClear");
         const colorInput = document.getElementById("annolidColor");
         const sizeInput = document.getElementById("annolidSize");
+        const colorInline = document.getElementById("annolidColorInline");
+        const sizeInline = document.getElementById("annolidSizeInline");
 
         if (selectBtn) selectBtn.addEventListener("click", () => _annolidSetTool("select"));
         if (penBtn) penBtn.addEventListener("click", () => _annolidSetTool("pen"));
@@ -1523,17 +1764,45 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if (undoBtn) undoBtn.addEventListener("click", _annolidUndo);
         if (clearBtn) clearBtn.addEventListener("click", _annolidClearMarks);
 
+        function _annolidSetStrokeColor(value) {{
+          const color = value || "#ffb300";
+          window.__annolidMarks.color = color;
+          if (colorInput && colorInput.value !== color) colorInput.value = color;
+          if (colorInline && colorInline.value !== color) colorInline.value = color;
+        }}
+
+        function _annolidSetStrokeSize(value) {{
+          const v = parseFloat(value);
+          const clamped = isFinite(v) ? Math.max(2, Math.min(24, v)) : 10;
+          window.__annolidMarks.size = clamped;
+          const str = String(clamped);
+          if (sizeInput && sizeInput.value !== str) sizeInput.value = str;
+          if (sizeInline && sizeInline.value !== str) sizeInline.value = str;
+        }}
+
         if (colorInput) {{
           colorInput.addEventListener("input", (ev) => {{
-            window.__annolidMarks.color = ev.target.value || "#ffb300";
+            _annolidSetStrokeColor(ev.target.value);
+          }});
+        }}
+        if (colorInline) {{
+          colorInline.addEventListener("input", (ev) => {{
+            _annolidSetStrokeColor(ev.target.value);
           }});
         }}
         if (sizeInput) {{
           sizeInput.addEventListener("input", (ev) => {{
-            const v = parseFloat(ev.target.value || "10");
-            window.__annolidMarks.size = isFinite(v) ? v : 10;
+            _annolidSetStrokeSize(ev.target.value);
           }});
         }}
+        if (sizeInline) {{
+          sizeInline.addEventListener("input", (ev) => {{
+            _annolidSetStrokeSize(ev.target.value);
+          }});
+        }}
+
+        _annolidSetStrokeColor(window.__annolidMarks.color || "#ffb300");
+        _annolidSetStrokeSize(window.__annolidMarks.size || 10);
 
         _annolidSetTool("select");
         window.__annolidSetReaderEnabled(window.__annolidReaderEnabled);
@@ -1786,6 +2055,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        let pendingZoom = null;
 	        const total = pdf.numPages || 1;
 	        window.__annolidTotalPages = total;
+        let pdfObjectUrl = null;
+        let pdfObjectUrlPromise = null;
 	
 	        const titleEl = document.getElementById("annolidTitle");
 	        const prevPageBtn = document.getElementById("annolidPrevPage");
@@ -1797,12 +2068,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        const zoomResetBtn = document.getElementById("annolidZoomReset");
 	        const zoomFitBtn = document.getElementById("annolidZoomFit");
 	        const zoomLabel = document.getElementById("annolidZoomLabel");
-	        const downloadBtn = document.getElementById("annolidDownload");
 	        const printBtn = document.getElementById("annolidPrint");
-	        const actionRow = document.getElementById("annolidActionRow");
-	        const overflowWrap = document.getElementById("annolidOverflow");
-	        const overflowMenu = document.getElementById("annolidOverflowMenu");
-	        const moreToggle = document.getElementById("annolidMoreToggle");
+        const menuBtn = document.getElementById("annolidMenuBtn");
+        const menuPanel = document.getElementById("annolidMenuPanel");
 	
 	        if (titleEl) titleEl.textContent = pdfTitle || "PDF";
 	        if (totalPagesEl) totalPagesEl.textContent = String(total);
@@ -1820,62 +2088,83 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          zoomLabel.textContent = String(pct) + "%";
 	        }}
 
-	        function _annolidCloseOverflow() {{
-	          if (overflowMenu) overflowMenu.classList.remove("annolid-open");
-	        }}
+        function _annolidCleanupObjectUrl() {{
+          if (pdfObjectUrl) {{
+            try {{ URL.revokeObjectURL(pdfObjectUrl); }} catch (e) {{}}
+          }}
+          pdfObjectUrl = null;
+          pdfObjectUrlPromise = null;
+        }}
 
-	        function _annolidToggleOverflow() {{
-	          if (!overflowMenu) return;
-	          const open = overflowMenu.classList.contains("annolid-open");
-	          if (open) overflowMenu.classList.remove("annolid-open");
-	          else overflowMenu.classList.add("annolid-open");
-	        }}
+        async function _annolidGetPdfObjectUrl() {{
+          if (pdfObjectUrl) return pdfObjectUrl;
+          if (!pdfObjectUrlPromise) {{
+            if (pdf && typeof pdf.getData === "function") {{
+              pdfObjectUrlPromise = pdf.getData().then((data) => {{
+                const blob = new Blob([data], {{ type: "application/pdf" }});
+                pdfObjectUrl = URL.createObjectURL(blob);
+                return pdfObjectUrl;
+              }}).catch(() => {{
+                pdfObjectUrlPromise = null;
+                return pdfUrl;
+              }});
+            }} else {{
+              pdfObjectUrlPromise = Promise.resolve(pdfUrl);
+            }}
+          }}
+          const url = await pdfObjectUrlPromise;
+          if (url) pdfObjectUrl = url;
+          return url || pdfUrl;
+        }}
 
-	        function _annolidRelayoutOverflow() {{
-	          if (!actionRow || !overflowWrap || !overflowMenu || !moreToggle) return;
-	          _annolidCloseOverflow();
-	          const anchor = overflowWrap;
+        function _annolidCloseMenu() {{
+          if (menuPanel) menuPanel.classList.remove("annolid-open");
+        }}
+        function _annolidToggleMenu() {{
+          if (!menuPanel) return;
+          const open = menuPanel.classList.contains("annolid-open");
+          if (open) menuPanel.classList.remove("annolid-open");
+          else {{
+            menuPanel.classList.add("annolid-open");
+          }}
+        }}
 	
-	          // Stamp a stable order for auto-overflow items.
-	          const seed = Array.from(actionRow.children).filter((n) => n !== anchor && n.dataset && n.dataset.overflow === "auto");
-	          seed.forEach((n, idx) => {{
-	            if (!n.dataset.overflowOrder) n.dataset.overflowOrder = String(idx);
-	          }});
-	
-	          function orderOf(node) {{
-	            const raw = node && node.dataset ? parseInt(node.dataset.overflowOrder || "9999", 10) : 9999;
-	            return Number.isFinite(raw) ? raw : 9999;
-	          }}
-	
-	          // Move all auto items from the menu back into the row, keeping fixed menu items in place.
-	          const movedBack = Array.from(overflowMenu.children).filter((n) => n && n.dataset && n.dataset.overflow === "auto");
-	          movedBack.sort((a, b) => orderOf(a) - orderOf(b));
-	          movedBack.forEach((node) => actionRow.insertBefore(node, anchor));
-	
-	          overflowWrap.style.display = "flex";
-	          overflowWrap.style.visibility = "visible";
-	
-	          const available = actionRow.clientWidth;
-	          if (available <= 0) return;
-	
-	          // If we overflow, move auto items (right-to-left) into the menu.
-	          let candidates = Array.from(actionRow.children).filter((n) => n !== anchor && n.dataset && n.dataset.overflow === "auto");
-	          candidates.sort((a, b) => orderOf(b) - orderOf(a));
-	          while (candidates.length && actionRow.scrollWidth > available) {{
-	            const last = candidates.shift();
-	            if (!last) break;
-	            overflowMenu.appendChild(last);
-	          }}
-	        }}
-	
-	        if (moreToggle) moreToggle.addEventListener("click", (ev) => {{
-	          ev.stopPropagation();
-	          _annolidToggleOverflow();
-	        }});
-	        if (overflowMenu) overflowMenu.addEventListener("click", (ev) => {{
-	          ev.stopPropagation();
-	        }});
-	        document.addEventListener("click", _annolidCloseOverflow);
+        if (menuBtn) menuBtn.addEventListener("click", (ev) => {{
+          ev.stopPropagation();
+          _annolidToggleMenu();
+        }});
+        if (menuPanel) menuPanel.addEventListener("click", (ev) => {{
+          ev.stopPropagation();
+          const target = ev.target;
+          const action = target && target.dataset ? target.dataset.action : "";
+          if (!action) return;
+          _annolidCloseMenu();
+          switch (action) {{
+            case "first-page":
+              _annolidGoToPage(1);
+              break;
+            case "fit":
+              _annolidZoomFitWidth();
+              break;
+            case "reset":
+              _annolidRerenderAll(1.0);
+              break;
+            case "print":
+              _annolidPrintPdf().catch(() => {{}});
+              break;
+            default:
+              break;
+          }}
+        }});
+        document.addEventListener("keydown", (ev) => {{
+          if (ev.key === "Escape") {{
+            _annolidCloseMenu();
+          }}
+        }});
+	        document.addEventListener("click", () => {{
+            _annolidCloseMenu();
+          }});
+        window.addEventListener("beforeunload", _annolidCleanupObjectUrl);
 	
 	        function _annolidQueueRender(fn) {{
 	          const myEpoch = renderEpoch;
@@ -1921,7 +2210,6 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          _annolidSetDisabled(prevPageBtn, current <= 1);
 	          _annolidSetDisabled(nextPageBtn, current >= total);
 	          _annolidUpdateZoomLabel();
-	          _annolidRelayoutOverflow();
 	        }}
 	
 	        function _annolidScrollToPage(pageNum, offsetFrac) {{
@@ -2037,6 +2325,97 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	            // ignore
 	          }}
 	        }};
+
+          window.__annolidHighlightSentenceByText = async function(pageNum, text) {{
+            try {{
+              const p = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+              const wanted = _annolidNormalizeText(text || "").toLowerCase();
+              const scrollPageFallback = () => {{
+                try {{
+                  const container = document.getElementById("viewerContainer");
+                  const page = document.querySelector(`.page[data-page-number='${{p}}']`);
+                  if (!container || !page) return;
+                  const center = (page.offsetTop || 0) + (page.clientHeight || 0) / 2;
+                  const target = Math.max(0, center - container.clientHeight / 2);
+                  container.scrollTop = target;
+                }} catch (e) {{}}
+              }};
+              const currentPage = (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 0;
+              if (!wanted) {{
+                await _annolidEnsureRenderedThrough(p);
+                if (currentPage !== p) scrollPageFallback();
+                return;
+              }}
+
+              await _annolidEnsureRenderedThrough(p);
+              const paras = _annolidBuildParagraphsForPage(p) || [];
+              if (!paras.length) {{
+                if (currentPage !== p) scrollPageFallback();
+                return;
+              }}
+
+              function scoreCandidate(candidate) {{
+                const cand = _annolidNormalizeText(candidate || "").toLowerCase();
+                if (!cand) return 0;
+                if (cand === wanted) return 1.0;
+                if (cand.includes(wanted) || wanted.includes(cand)) {{
+                  return Math.min(cand.length, wanted.length) / Math.max(1, Math.max(cand.length, wanted.length));
+                }}
+                const a = wanted.split(" ").filter(Boolean);
+                const b = cand.split(" ").filter(Boolean);
+                if (!a.length || !b.length) return 0;
+                const limit = 80;
+                const setA = new Set(a.slice(0, limit));
+                const setB = new Set(b.slice(0, limit));
+                let inter = 0;
+                setA.forEach((t) => {{ if (setB.has(t)) inter += 1; }});
+                const denom = Math.max(1, setA.size + setB.size - inter);
+                return inter / denom;
+              }}
+
+              let best = null;
+              let bestScore = 0;
+              for (const para of paras) {{
+                const splits = (typeof window.__annolidSplitParagraphIntoSentences === "function")
+                  ? (window.__annolidSplitParagraphIntoSentences(para) || [])
+                  : [];
+                if (splits.length) {{
+                  for (const s of splits) {{
+                    const sc = scoreCandidate(s.text || "");
+                    if (sc > bestScore) {{
+                      bestScore = sc;
+                      best = s;
+                    }}
+                  }}
+                }} else {{
+                  const sc = scoreCandidate(para.text || "");
+                  if (sc > bestScore) {{
+                    bestScore = sc;
+                    best = para;
+                  }}
+                }}
+              }}
+
+              if (!best || bestScore < 0.05) {{
+                if (currentPage !== p) scrollPageFallback();
+                return;
+              }}
+              const spans = best.spans || [];
+              if (!spans.length) {{
+                if (currentPage !== p) scrollPageFallback();
+                return;
+              }}
+              window.__annolidHighlightSentenceIndices && window.__annolidHighlightSentenceIndices(spans);
+              window.__annolidScrollToSentence && window.__annolidScrollToSentence(spans, p);
+            }} catch (e) {{
+              try {{
+                const p = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+                if (typeof _annolidEnsureRenderedThrough === "function") {{
+                  await _annolidEnsureRenderedThrough(p);
+                }}
+              }} catch (e2) {{}}
+            }}
+          }};
 	
 	        async function _annolidRerenderAll(newScale) {{
 	          if (!container) return;
@@ -2113,47 +2492,33 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          _annolidRerenderAll(next);
 	        }}
 	
-	        function _annolidDownloadPdf() {{
-	          try {{
-	            const a = document.createElement("a");
-	            a.href = pdfUrl;
-	            a.download = pdfTitle || "document.pdf";
-	            a.rel = "noopener";
-	            a.style.display = "none";
-	            document.body.appendChild(a);
-	            a.click();
-	            a.remove();
-	          }} catch (e) {{
-	            window.location.href = pdfUrl;
-	          }}
-	        }}
-	
-	        function _annolidPrintPdf() {{
-	          try {{
-	            const iframe = document.createElement("iframe");
-	            iframe.style.position = "fixed";
-	            iframe.style.right = "0";
-	            iframe.style.bottom = "0";
-	            iframe.style.width = "1px";
-	            iframe.style.height = "1px";
-	            iframe.style.border = "0";
-	            iframe.src = pdfUrl;
-	            iframe.onload = () => {{
-	              try {{
-	                iframe.contentWindow.focus();
-	                iframe.contentWindow.print();
-	              }} catch (e) {{
-	                window.print();
-	              }}
-	              setTimeout(() => {{
-	                try {{ iframe.remove(); }} catch (e) {{}}
-	              }}, 1500);
-	            }};
-	            document.body.appendChild(iframe);
-	          }} catch (e) {{
-	            window.print();
-	          }}
-	        }}
+        async function _annolidPrintPdf() {{
+          try {{
+            const url = await _annolidGetPdfObjectUrl();
+            const iframe = document.createElement("iframe");
+            iframe.style.position = "fixed";
+            iframe.style.right = "0";
+            iframe.style.bottom = "0";
+            iframe.style.width = "1px";
+            iframe.style.height = "1px";
+            iframe.style.border = "0";
+            iframe.src = url || pdfUrl;
+            iframe.onload = () => {{
+              try {{
+                iframe.contentWindow.focus();
+                iframe.contentWindow.print();
+              }} catch (e) {{
+                window.print();
+              }}
+              setTimeout(() => {{
+                try {{ iframe.remove(); }} catch (e) {{}}
+              }}, 1500);
+            }};
+            document.body.appendChild(iframe);
+          }} catch (e) {{
+            window.print();
+          }}
+        }}
 	
 	        if (prevPageBtn) prevPageBtn.addEventListener("click", () => _annolidGoToPage(_annolidGetCurrentPageNum() - 1));
 	        if (nextPageBtn) nextPageBtn.addEventListener("click", () => _annolidGoToPage(_annolidGetCurrentPageNum() + 1));
@@ -2170,8 +2535,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        if (zoomInBtn) zoomInBtn.addEventListener("click", () => _annolidZoomBy(1.1));
 	        if (zoomResetBtn) zoomResetBtn.addEventListener("click", () => _annolidRerenderAll(1.0));
 	        if (zoomFitBtn) zoomFitBtn.addEventListener("click", _annolidZoomFitWidth);
-	        if (downloadBtn) downloadBtn.addEventListener("click", _annolidDownloadPdf);
-	        if (printBtn) printBtn.addEventListener("click", _annolidPrintPdf);
+        if (printBtn) printBtn.addEventListener("click", () => _annolidPrintPdf().catch(() => {{}}));
 	        _annolidUpdateNavState();
 	        if (container) {{
 	          container.addEventListener("click", async (ev) => {{
@@ -2222,13 +2586,55 @@ class PdfViewerWidget(QtWidgets.QWidget):
             const remaining = window.__annolidParagraphs.slice(startIndex).map((p) => ({{
               text: p.text || "",
               spans: p.spans || [],
-              pageNum: p.pageNum || pageNum,
+              pageNum: (parseInt(p.pageNum || p.page || 0, 10) || pageNum),
             }}));
             if (!remaining.length) return;
+            const sentences = [];
+            const splitFallback = (text) => {{
+              const normalized = _annolidNormalizeText(text || "");
+              if (!normalized) return [];
+              const out = [];
+              const pattern = /.+?(?:[.!?。！？]+|$)/g;
+              let match;
+              while ((match = pattern.exec(normalized)) !== null) {{
+                const seg = _annolidNormalizeText(match[0] || "");
+                if (seg) out.push(seg);
+              }}
+              return out.length ? out : [normalized];
+            }};
+            remaining.forEach((p) => {{
+              if (typeof window.__annolidSplitParagraphIntoSentences === "function") {{
+                const splits = window.__annolidSplitParagraphIntoSentences(p) || [];
+                if (splits.length) {{
+                  splits.forEach((s) => sentences.push(s));
+                  return;
+                }}
+              }}
+              const pageForPara = (parseInt(p.pageNum || p.page || 0, 10) || pageNum);
+              const segs = splitFallback(p.text || "");
+              if (segs.length) {{
+                segs.forEach((seg) => {{
+                  sentences.push({{
+                    text: seg,
+                    spans: [],
+                    pageNum: pageForPara,
+                  }});
+                }});
+                return;
+              }}
+              sentences.push({{
+                text: p.text || "",
+                spans: [],
+                pageNum: pageForPara,
+              }});
+            }});
             window.__annolidBridge.onParagraphClicked({{
               startIndex,
               total: window.__annolidParagraphTotal || (startIndex + remaining.length),
               paragraphs: remaining,
+              sentences,
+              sentenceStartIndex: 0,
+              sentenceTotal: sentences.length,
             }});
           }});
         }}
@@ -2352,11 +2758,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	            }});
 	          }});
 	        }}
-	        window.addEventListener("resize", () => {{
-	          requestAnimationFrame(_annolidRelayoutOverflow);
-	        }});
-	        _annolidRelayoutOverflow();
-	      }} catch (err) {{
+      }} catch (err) {{
 	        console.error("PDF.js render failed", err);
 	        try {{
 	          const msg = (err && err.message) ? err.message : String(err);
@@ -2369,13 +2771,19 @@ class PdfViewerWidget(QtWidgets.QWidget):
   </script>
 </head>
 <body>
-	  <div id="annolidToolbar">
-	    <div class="annolid-toolbar-left">
-	      <button id="annolidMenuBtn" title="Menu" class="annolid-icon-btn">☰</button>
-	      <div class="annolid-title" id="annolidTitle">PDF</div>
-	    </div>
-	    <div class="annolid-nav">
-	      <button id="annolidPrevPage" title="Previous page">◀</button>
+  <div id="annolidToolbar">
+    <div class="annolid-toolbar-left">
+      <button id="annolidMenuBtn" title="Menu" class="annolid-icon-btn">☰</button>
+      <div id="annolidMenuPanel">
+        <button data-action="first-page">Go to first page</button>
+        <button data-action="fit">Fit width</button>
+        <button data-action="reset">Reset zoom</button>
+        <button data-action="print">Print</button>
+      </div>
+      <div class="annolid-title" id="annolidTitle">PDF</div>
+    </div>
+    <div class="annolid-nav">
+      <button id="annolidPrevPage" title="Previous page">◀</button>
       <input id="annolidPageInput" type="number" value="1" min="1" />
       <button id="annolidNextPage" title="Next page">▶</button>
       <span>/ <span id="annolidTotalPages">-</span></span>
@@ -2385,6 +2793,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
       <button id="annolidZoomIn" title="Zoom in">+</button>
       <button id="annolidZoomReset" title="Reset zoom">100%</button>
       <button id="annolidZoomFit" title="Fit width">Fit</button>
+      <button id="annolidPrint" title="Print PDF">Print</button>
     </div>
     <div class="annolid-actions" id="annolidActionRow">
       <div class="annolid-group" data-overflow="auto" id="annolidToolsGroup">
@@ -2396,23 +2805,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
         <button id="annolidUndo" title="Undo">⟲</button>
         <button id="annolidClear" title="Clear all">✕</button>
       </div>
-      <div class="annolid-group" data-overflow="auto" id="annolidFileGroup">
-        <button id="annolidDownload" title="Download">⤓</button>
-        <button id="annolidPrint" title="Print">🖨</button>
-      </div>
-      <div class="annolid-overflow" id="annolidOverflow">
-        <button id="annolidMoreToggle" class="annolid-icon-btn" title="More">⋯</button>
-        <div id="annolidOverflowMenu">
-          <button id="annolidHighlightSelection" title="Highlight selection">Highlight selection</button>
-          <div class="annolid-menu-row">
-            <span class="annolid-menu-label">Color</span>
-            <input id="annolidColor" type="color" value="#ffb300" title="Stroke color" />
-          </div>
-          <div class="annolid-menu-row">
-            <span class="annolid-menu-label">Size</span>
-            <input id="annolidSize" type="range" min="2" max="24" value="10" title="Stroke size" />
-          </div>
-        </div>
+      <div class="annolid-group annolid-mark-options" data-overflow="auto" id="annolidMarkOptions">
+        <button id="annolidHighlightSelection" title="Highlight selection">Highlight</button>
+        <span class="annolid-option-label">Color</span>
+        <input id="annolidColorInline" type="color" value="#ffb300" title="Stroke color" />
+        <span class="annolid-option-label">Size</span>
+        <input id="annolidSizeInline" type="range" min="2" max="24" value="10" title="Stroke size" />
       </div>
     </div>
   </div>
@@ -2686,6 +3084,28 @@ class PdfViewerWidget(QtWidgets.QWidget):
         else:
             self._reset_reader_state()
 
+    def reader_next_sentence(self) -> None:
+        """Advance to the next sentence in the reader queue."""
+        if not self._reader_queue:
+            return
+        self._jump_reader_to_index(self._reader_current_index + 1)
+
+    def reader_prev_sentence(self) -> None:
+        """Go back to the previous sentence in the reader queue."""
+        if not self._reader_queue:
+            return
+        self._jump_reader_to_index(self._reader_current_index - 1)
+
+    def _jump_reader_to_index(self, global_index: int) -> None:
+        """Seek to an absolute reader index and restart playback."""
+        if not self._reader_queue:
+            return
+        max_global = self._reader_queue_offset + len(self._reader_queue) - 1
+        clamped = max(self._reader_queue_offset,
+                      min(max_global, int(global_index)))
+        local_index = clamped - self._reader_queue_offset
+        self._start_reader_from_local_index(local_index)
+
     def _pause_reader(self) -> None:
         if self._reader_state != "reading":
             return
@@ -2734,6 +3154,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_pause_requested = False
         self._reader_stop_requested = False
         self._reader_pending_restart = None
+        self._web_sentence_span_groups = []
         try:
             self.reader_state_changed.emit(
                 self._reader_state, self._reader_current_index, self._reader_total
@@ -2753,19 +3174,22 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
         if not isinstance(payload, dict):
             return
-        raw_paragraphs = payload.get("paragraphs")
-        if not isinstance(raw_paragraphs, list):
+        raw_sentences = payload.get("sentences")
+        use_sentences = isinstance(
+            raw_sentences, list) and len(raw_sentences) > 0
+        items = raw_sentences if use_sentences else payload.get("paragraphs")
+        if not isinstance(items, list):
             return
-        paragraphs: list[str] = []
+        texts: list[str] = []
         spans_list: list[list[int]] = []
         pages: list[int] = []
-        for entry in raw_paragraphs:
+        for entry in items:
             if not isinstance(entry, dict):
                 continue
             text = str(entry.get("text", "")).strip()
             if not text:
                 continue
-            paragraphs.append(text)
+            texts.append(text)
             raw_spans = entry.get("spans") or []
             spans: list[int] = []
             if isinstance(raw_spans, list):
@@ -2780,31 +3204,36 @@ class PdfViewerWidget(QtWidgets.QWidget):
             except Exception:
                 pages.append(0)
 
-        if not paragraphs:
+        if not texts:
             return
 
         try:
-            start_index = int(payload.get("startIndex", 0))
+            start_index = int(
+                payload.get(
+                    "sentenceStartIndex" if use_sentences else "startIndex", 0)
+            )
         except Exception:
             start_index = 0
         try:
-            total = int(payload.get("total", 0))
+            total = int(payload.get(
+                "sentenceTotal" if use_sentences else "total", 0))
         except Exception:
             total = 0
         if total <= 0:
-            total = start_index + len(paragraphs)
+            total = start_index + len(texts)
 
-        self._reader_queue = paragraphs
+        self._reader_queue = texts
         self._reader_spans = spans_list
         self._reader_pages = pages
         self._reader_queue_offset = max(0, start_index)
         self._reader_total = max(
-            total, self._reader_queue_offset + len(paragraphs))
+            total, self._reader_queue_offset + len(texts))
         self._reader_current_index = self._reader_queue_offset
         self._reader_chunk_base = 0
         self._reader_pause_requested = False
         self._reader_stop_requested = False
         self._reader_pending_restart = None
+        self._web_sentence_span_groups = spans_list if use_sentences else []
         self._reader_state = "reading"
         try:
             self.reader_state_changed.emit(
@@ -2812,7 +3241,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             )
         except Exception:
             pass
-        self._highlight_mode = "web-paragraph"
+        self._highlight_mode = "web-sentence" if use_sentences else "web-paragraph"
         self._start_reader_from_local_index(0)
 
     def _start_reader_from_local_index(self, local_index: int) -> None:
@@ -2828,6 +3257,61 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_state = "reading"
         self._reader_pause_requested = False
         self._reader_stop_requested = False
+        # Pre-scroll to the target sentence/page so manual navigation does not jump back.
+        if self._web_view is not None and self._pdfjs_active:
+            try:
+                queue_idx = local_index
+                spans: list[int] = []
+                if 0 <= queue_idx < len(self._web_sentence_span_groups):
+                    spans = self._web_sentence_span_groups[queue_idx] or []
+                page_num = (
+                    self._reader_pages[queue_idx]
+                    if 0 <= queue_idx < len(self._reader_pages)
+                    else 0
+                )
+                next_page = (
+                    self._reader_pages[queue_idx + 1]
+                    if 0 <= queue_idx + 1 < len(self._reader_pages)
+                    else 0
+                )
+                sentence_text = (
+                    self._reader_queue[queue_idx]
+                    if 0 <= queue_idx < len(self._reader_queue)
+                    else ""
+                )
+                if spans:
+                    if page_num > 0:
+                        self._web_view.page().runJavaScript(
+                            "window.__annolidEnsureRenderedThrough && "
+                            f"window.__annolidEnsureRenderedThrough({int(page_num)});"
+                        )
+                    self._web_view.page().runJavaScript(
+                        "window.__annolidHighlightSentenceIndices && "
+                        f"window.__annolidHighlightSentenceIndices({spans})"
+                    )
+                    self._web_view.page().runJavaScript(
+                        "window.__annolidScrollToSentence && "
+                        f"window.__annolidScrollToSentence({spans}, {int(page_num)})"
+                    )
+                elif page_num > 0:
+                    self._web_view.page().runJavaScript(
+                        "window.__annolidEnsureRenderedThrough && "
+                        f"window.__annolidEnsureRenderedThrough({int(page_num)});"
+                    )
+                    self._web_view.page().runJavaScript(
+                        "window.__annolidHighlightSentenceByText && "
+                        f"window.__annolidHighlightSentenceByText({int(page_num)}, {json.dumps(sentence_text)})"
+                    )
+                if next_page and next_page != page_num:
+                    try:
+                        self._web_view.page().runJavaScript(
+                            "window.__annolidEnsureRenderedThrough && "
+                            f"window.__annolidEnsureRenderedThrough({int(next_page)});"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         try:
             self.reader_state_changed.emit(
                 self._reader_state, self._reader_current_index, self._reader_total
@@ -2835,7 +3319,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
         except Exception:
             pass
         chunks = self._reader_queue[local_index:]
-        self._highlight_mode = "web-paragraph"
+        self._highlight_mode = (
+            "web-sentence" if self._web_sentence_span_groups else "web-paragraph"
+        )
         self._speak_text(" ".join(chunks), chunks=chunks)
 
     def _scroll_pdfjs_to_page(self, page_num: int) -> None:
@@ -3008,16 +3494,62 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
         if self._highlight_mode == "web-sentence":
             self._stop_word_highlight()
-            if 0 <= index < len(self._web_sentence_span_groups):
-                span_indices = self._web_sentence_span_groups[index]
-                if self._web_view is not None:
-                    try:
+            global_idx = self._reader_chunk_base + index
+            span_indices: list[int] = []
+            if 0 <= global_idx < len(self._web_sentence_span_groups):
+                span_indices = self._web_sentence_span_groups[global_idx] or []
+            page_num = (
+                self._reader_pages[global_idx]
+                if 0 <= global_idx < len(self._reader_pages)
+                else 0
+            )
+            next_page = (
+                self._reader_pages[global_idx + 1]
+                if 0 <= global_idx + 1 < len(self._reader_pages)
+                else 0
+            )
+            sentence_text = (
+                self._reader_queue[global_idx]
+                if 0 <= global_idx < len(self._reader_queue)
+                else ""
+            )
+            if self._web_view is not None:
+                try:
+                    if page_num > 0:
+                        self._web_view.page().runJavaScript(
+                            "window.__annolidEnsureRenderedThrough && "
+                            f"window.__annolidEnsureRenderedThrough({int(page_num)});"
+                        )
+                    if span_indices:
                         self._web_view.page().runJavaScript(
                             "window.__annolidHighlightSentenceIndices && "
                             f"window.__annolidHighlightSentenceIndices({span_indices})"
                         )
-                    except Exception:
-                        pass
+                        self._web_view.page().runJavaScript(
+                            "window.__annolidScrollToSentence && "
+                            f"window.__annolidScrollToSentence({span_indices}, {int(page_num)})"
+                        )
+                    elif page_num > 0:
+                        self._web_view.page().runJavaScript(
+                            "window.__annolidHighlightSentenceByText && "
+                            f"window.__annolidHighlightSentenceByText({int(page_num)}, {json.dumps(sentence_text)})"
+                        )
+                    if next_page and next_page != page_num:
+                        self._web_view.page().runJavaScript(
+                            "window.__annolidEnsureRenderedThrough && "
+                            f"window.__annolidEnsureRenderedThrough({int(next_page)});"
+                        )
+                except Exception:
+                    pass
+            self._reader_current_index = self._reader_queue_offset + global_idx
+            try:
+                self.reader_state_changed.emit(
+                    self._reader_state,
+                    self._reader_current_index,
+                    self._reader_total,
+                )
+            except Exception:
+                pass
             return
         if self._highlight_mode == "web-paragraph":
             self._stop_word_highlight()
@@ -3095,9 +3627,10 @@ class PdfViewerWidget(QtWidgets.QWidget):
             timer.start(self._word_highlight_durations_ms[0])
             return
         if self._highlight_mode == "web-sentence":
-            if not (0 <= index < len(self._web_sentence_span_groups)):
+            global_idx = self._reader_chunk_base + index
+            if not (0 <= global_idx < len(self._web_sentence_span_groups)):
                 return
-            span_indices = self._web_sentence_span_groups[index]
+            span_indices = self._web_sentence_span_groups[global_idx]
             if not span_indices:
                 return
             weights = [
