@@ -17,9 +17,9 @@ EXCLUDED_MODULES = [
     # Other heavy runtimes
     'tensorflow', 'onnx', 'onnxruntime', 'onnxruntime_gpu',
     'mxnet', 'jax', 'diffusers', 'accelerate',
-    # Large model/tooling stacks that are optional in the GUI
-    'transformers', 'huggingface_hub', 'sentencepiece', 'timm',
-    'ultralytics', 'detectron2', 'pytorch_lightning',
+    # Large model/tooling stacks that are optional in the GUI (see pyproject dependencies)
+    'transformers', 'huggingface_hub', 'sentencepiece', 'tokenizers',
+    'timm', 'ultralytics', 'detectron2', 'pytorch_lightning', 'tensorboard',
 ]
 
 a = Analysis(
