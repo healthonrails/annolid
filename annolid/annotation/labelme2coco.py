@@ -403,7 +403,7 @@ def convert(input_annotated_dir,
     names = list(categories)
     input_annotated_dir_name = os.path.basename(input_annotated_dir)
     output_annotated_dir_name = Path(os.path.basename(output_annotated_dir))
-    # dataset folder is in same dir as the yolov5 folder
+    # dataset folder is in same dir as the yolo folder
     with open(data_yaml, 'w') as dy:
         dy.write(f"DATASET:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")

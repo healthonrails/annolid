@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 try:
     import torch
@@ -27,6 +27,13 @@ from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
 from annolid.data.videos import video_loader
 import numpy as np
+
+if TYPE_CHECKING:
+    from transformers import AutoModelForCausalLM, AutoProcessor, GenerationMixin
+else:  # Gracefully handle missing transformers at runtime
+    AutoModelForCausalLM = Any  # type: ignore
+    AutoProcessor = Any  # type: ignore
+    GenerationMixin = Any  # type: ignore
 
 try:  # Qt is available in the GUI environment, but guard for CLI use.
     from qtpy import QtCore

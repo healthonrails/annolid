@@ -26,11 +26,11 @@ def parse_args():
                              )
     arg_builder.add_argument('--track', type=str, default=None,
                              help="Track objects in the video \
-                                 with detector YOLOV5|YOLOV3"
+                                 (YOLO tracking has been removed)"
                              )
     arg_builder.add_argument('--weights', type=str, default=None,
                              help="path to the trained  weights  \
-                                 e.g. ./detector/yolov5/weights/latest.pt"
+                                 (no longer used)"
                              )
     arg_builder.add_argument('--show_flow', type=bool, default=False,
                              help="Display optical flow while extracting"
@@ -41,7 +41,7 @@ def parse_args():
                              )
     arg_builder.add_argument('--segmentation', type=str, default=None,
                              help="Segmentation based on support methods \
-                                 options: threshold|yolact"
+                                 options: threshold"
                              )
 
     arg_builder.add_argument('--min_area', type=int, default=50,

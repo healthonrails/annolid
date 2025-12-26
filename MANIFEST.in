@@ -9,8 +9,6 @@ prune tests
 prune docs/source/_build
 prune docs/source/_templates
 prune annolid/motion/weights
-prune annolid/detector/yolov5/weights/last.pt
-prune annolid/detector/YOLOv3/weight/yolov3-tiny.weights
 prune docs/tutorials/Untitled.ipynb
 prune docs/tutorials/.ipynb_checkpoints
 include environment.yml

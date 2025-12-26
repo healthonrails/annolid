@@ -7,9 +7,6 @@ Subpackages
 .. toctree::
    :maxdepth: 4
 
-   annolid.detector.YOLOv3
-   annolid.detector.yolov5
-
 Module contents
 ---------------
 

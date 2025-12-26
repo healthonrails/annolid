@@ -7,8 +7,6 @@ Subpackages
 .. toctree::
    :maxdepth: 4
 
-   annolid.segmentation.yolact
-
 Submodules
 ----------
 

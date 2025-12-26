@@ -42,7 +42,7 @@ def create_dataset(json_file='annotation.json',
 
     Args:
         json_file (str, optional): file path for annotation.json. Defaults to 'annotation.json'.
-        results_dir (str, optional):  result directory. Defaults to 'yolov5_dataset'.
+        results_dir (str, optional):  result directory. Defaults to 'yolo_dataset'.
         dataset_type (str, optional): train or val or test. Defaults to 'train'.
         class_id (int, optional): class id. Defaults to None.
         is_segmentation (bool, optional): segmentation or detection. Defaults to None.
@@ -135,7 +135,7 @@ def create_dataset(json_file='annotation.json',
 
     data_yaml = Path(f"{results_dir}/data.yaml")
     names = list(categories)
-    # dataset folder is in same dir as the yolov5 folder
+    # dataset folder is in same dir as the yolo folder
     with open(data_yaml, 'w') as dy:
         dy.write(f"train: ../train/images\n")
         dy.write(f"val: ../val/images\n")

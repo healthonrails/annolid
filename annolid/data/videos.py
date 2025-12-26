@@ -925,84 +925,11 @@ def extract_frames(video_file='None',
 
 
 def track(video_file=None,
-          name="YOLOV5",
+          name=None,
           weights=None
           ):
 
-    points = [deque(maxlen=30) for _ in range(1000)]
-
-    if name == "YOLOV5":
-        # avoid installing pytorch
-        # if the user only wants to use it for
-        # extract frames
-        # maybe there is a better way to do this
-        sys.path.append("detector/yolov5/")
-        import torch
-        from annolid.detector.yolov5.detect import detect
-        from annolid.utils.config import get_config
-        cfg = get_config("./configs/yolov5s.yaml")
-        from annolid.detector.yolov5.utils.general import strip_optimizer
-
-        opt = cfg
-        if weights is not None:
-            opt.weights = weights
-        opt.source = video_file
-
-        with torch.no_grad():
-            if opt.update:  # update all models (to fix SourceChangeWarning)
-                for opt.weights in ['yolov5s.pt', 'yolov5m.pt', 'yolov5l.pt', 'yolov5x.pt']:
-                    detect(opt, points=points)
-                    strip_optimizer(opt.weights)
-            else:
-                detect(opt, points=points)
-                strip_optimizer(opt.weights)
-    else:
-        from annolid.tracker.build_deepsort import build_tracker
-        from annolid.detector import build_detector
-        from annolid.utils.draw import draw_boxes
-        if not (os.path.isfile(video_file)):
-            logger.error("Please provide a valid video file: %s", video_file)
-        detector = build_detector()
-        class_names = detector.class_names
-
-        cap = cv2.VideoCapture(video_file)
-
-        ret, prev_frame = cap.read()
-        deep_sort = build_tracker()
-
-        while ret:
-            ret, frame = cap.read()
-            if not ret:
-                logger.info("Finished tracking.")
-                break
-            im = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            bbox_xywh, cls_conf, cls_ids = detector(im)
-            bbox_xywh[:, 3:] *= 1.2
-            mask = cls_ids == 0
-            cls_conf = cls_conf[mask]
-
-            outputs = deep_sort.update(bbox_xywh, cls_conf, im)
-
-            if len(outputs) > 0:
-                bbox_xyxy = outputs[:, :4]
-                identities = outputs[:, -1]
-                frame = draw_boxes(frame,
-                                   bbox_xyxy,
-                                   identities,
-                                   draw_track=True,
-                                   points=points
-                                   )
-
-            cv2.imshow("Frame", frame)
-
-            key = cv2.waitKey(1)
-            if key == 27:
-                break
-
-            prev_frame = frame
-
-        cv2.destroyAllWindows()
-        cap.release()
+    raise NotImplementedError("Tracking via built-in YOLO models has been removed.")
 
 
 def extract_video_metadata(cap):
