@@ -96,10 +96,6 @@ class TrackDialog(QtWidgets.QDialog):
         self.radio_btn1.setChecked(True)
         self.radio_btn1.toggled.connect(self.onRadioButtonChecked)
         hboxLayOut.addWidget(self.radio_btn1)
-        self.radio_btn2 = QtWidgets.QRadioButton("YOLACT")
-        self.radio_btn2.toggled.connect(self.onRadioButtonChecked)
-        self.radio_btn2.setEnabled(True)
-        hboxLayOut.addWidget(self.radio_btn2)
         self.radio_btn3 = QtWidgets.QRadioButton("Predictions")
         self.radio_btn3.toggled.connect(self.onRadioButtonChecked)
         self.radio_btn3.setEnabled(True)
@@ -145,19 +141,20 @@ class TrackDialog(QtWidgets.QDialog):
         radio_btn = self.sender()
         if radio_btn.isChecked():
             self.algo = radio_btn.text()
-        if self.algo == 'Detectron2':
-            self.label2.hide()
-            self.top_k_slider.hide()
-        if self.algo == "Predictions":
-            self.top_k_slider.hide()
-            self.groupBoxModelFiles.hide()
-            self.label2.hide()
-            self.slider.hide()
-            self.label1.hide()
-            self.groupBoxFiles.hide()
-        else:
-            self.label2.show()
-            self.top_k_slider.show()
+            if self.algo == "Detectron2":
+                self.label2.hide()
+                self.top_k_slider.hide()
+                self.groupBoxModelFiles.show()
+                self.groupBoxFiles.show()
+                self.slider.show()
+                self.label1.show()
+            elif self.algo == "Predictions":
+                self.top_k_slider.hide()
+                self.groupBoxModelFiles.hide()
+                self.label2.hide()
+                self.slider.hide()
+                self.label1.hide()
+                self.groupBoxFiles.hide()
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
