@@ -8,6 +8,7 @@ class PdfControlsWidget(QtWidgets.QWidget):
 
     previous_requested = QtCore.Signal()
     next_requested = QtCore.Signal()
+    rotation_requested = QtCore.Signal()
     reset_zoom_requested = QtCore.Signal()
     zoom_changed = QtCore.Signal(float)
 
@@ -35,9 +36,15 @@ class PdfControlsWidget(QtWidgets.QWidget):
         self.next_button.setText("▶")
         self.next_button.clicked.connect(self.next_requested.emit)
 
+        self.rotate_button = QtWidgets.QToolButton(self)
+        self.rotate_button.setText("⟳")
+        self.rotate_button.setToolTip("Rotate 90° clockwise")
+        self.rotate_button.clicked.connect(self.rotation_requested.emit)
+
         nav_row.addWidget(self.prev_button)
         nav_row.addWidget(self.page_label, 1)
         nav_row.addWidget(self.next_button)
+        nav_row.addWidget(self.rotate_button)
         outer.addLayout(nav_row)
 
         zoom_row = QtWidgets.QHBoxLayout()
@@ -96,6 +103,7 @@ class PdfControlsWidget(QtWidgets.QWidget):
         for widget in (
             self.prev_button,
             self.next_button,
+            self.rotate_button,
             self.zoom_slider,
             self.zoom_value,
             self.reset_button,

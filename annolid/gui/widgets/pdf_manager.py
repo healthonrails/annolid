@@ -110,6 +110,7 @@ class PdfManager(QtCore.QObject):
             self.pdf_controls_widget = controls
             controls.previous_requested.connect(self._pdf_prev_page)
             controls.next_requested.connect(self._pdf_next_page)
+            controls.rotation_requested.connect(self._pdf_rotate_clockwise)
             controls.reset_zoom_requested.connect(self._pdf_reset_zoom)
             controls.zoom_changed.connect(self._pdf_set_zoom)
 
@@ -195,6 +196,11 @@ class PdfManager(QtCore.QObject):
         self.ensure_pdf_tts_dock()
         self.ensure_pdf_controls_dock()
         self.ensure_pdf_reader_dock()
+        self._tighten_right_docks()
+        try:
+            self.pdf_viewer.fit_to_width()
+        except Exception:
+            pass
         self._record_pdf_entry(str(pdf_path))
         self.window.lastOpenDir = str(Path(pdf_path).parent)
         self.window.statusBar().showMessage(
@@ -258,6 +264,54 @@ class PdfManager(QtCore.QObject):
         if file_dock is not None:
             file_dock.show()
             file_dock.raise_()
+
+    def _tighten_right_docks(self) -> None:
+        """Shrink the right dock area to fit PDF tools by default."""
+        docks: list[QtWidgets.QDockWidget] = []
+        for attr in ("file_dock",):
+            dock = getattr(self.window, attr, None)
+            if isinstance(dock, QtWidgets.QDockWidget) and dock.isVisible():
+                docks.append(dock)
+        for dock in (self.pdf_tts_dock, self.pdf_controls_dock, self.pdf_reader_dock):
+            if isinstance(dock, QtWidgets.QDockWidget) and dock.isVisible():
+                docks.append(dock)
+        if not docks:
+            return
+        try:
+            for dock in docks:
+                w = dock.widget()
+                if w is not None:
+                    w.setSizePolicy(
+                        QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred
+                    )
+        except Exception:
+            pass
+        widths: list[int] = []
+        for dock in docks:
+            try:
+                hint = dock.sizeHint().width()
+            except Exception:
+                hint = 0
+            try:
+                if dock.widget() is not None:
+                    hint = max(hint, dock.widget().sizeHint().width())
+            except Exception:
+                pass
+            widths.append(int(hint) if hint else 0)
+        target = max(widths) if widths else 0
+        # Clamp to a sane narrow default; users can still resize manually.
+        target = max(240, min(360, target + 16))
+        try:
+            self.window.resizeDocks(
+                docks, [target] * len(docks), Qt.Horizontal)
+        except Exception:
+            # Fallback: set a minimum width on the PDF docks only.
+            for dock in (self.pdf_tts_dock, self.pdf_controls_dock, self.pdf_reader_dock):
+                try:
+                    if dock is not None:
+                        dock.setMinimumWidth(target)
+                except Exception:
+                    pass
 
     def _restore_hidden_docks(self) -> None:
         """Show docks that were hidden for PDF viewing."""
@@ -345,6 +399,12 @@ class PdfManager(QtCore.QObject):
         if self.pdf_viewer is None:
             return
         self.pdf_viewer.reset_zoom()
+        self._sync_pdf_controls_state()
+
+    def _pdf_rotate_clockwise(self) -> None:
+        if self.pdf_viewer is None:
+            return
+        self.pdf_viewer.rotate_clockwise()
         self._sync_pdf_controls_state()
 
     def _pdf_set_zoom(self, percent: float) -> None:
