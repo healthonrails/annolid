@@ -1,21 +1,21 @@
 
 
 <!DOCTYPE html>
-<html class="writer-html5" lang="en">
+<html class="writer-html5" lang="en" data-content_root="./">
 <head>
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Read PDFs Aloud with AI Voice (Text-to-Speech) &mdash; annolid unknown documentation</title>
+  <title>Read PDFs Aloud with AI Voice (Text-to-Speech) &mdash; annolid 1.3.2 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js?v=680b02e7"></script>
-      <script src="_static/doctools.js?v=888ff710"></script>
-      <script src="_static/sphinx_highlight.js?v=4825356b"></script>
+      <script src="_static/documentation_options.js?v=8ca9e7a0"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -87,10 +87,10 @@
            <div itemprop="articleBody">
              
   <section id="read-pdfs-aloud-with-ai-voice-text-to-speech">
-<h1>Read PDFs Aloud with AI Voice (Text-to-Speech)<a class="headerlink" href="#read-pdfs-aloud-with-ai-voice-text-to-speech" title="Permalink to this heading"></a></h1>
+<h1>Read PDFs Aloud with AI Voice (Text-to-Speech)<a class="headerlink" href="#read-pdfs-aloud-with-ai-voice-text-to-speech" title="Link to this heading"></a></h1>
 <p>Annolid includes an integrated PDF viewer with text-to-speech (TTS), so you can open a PDF and have selected text (or whole paragraphs) read aloud.</p>
 <section id="prerequisites">
-<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this heading"></a></h2>
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
 <li><p>Install Annolid (see <code class="docutils literal notranslate"><span class="pre">install.md</span></code>).</p></li>
 <li><p>Install PDF support:</p></li>
@@ -123,7 +123,7 @@ pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">
 <p><code class="docutils literal notranslate"><span class="pre">pydub</span></code> needs <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> available on your system.</p>
 </section>
 <section id="open-a-pdf-in-annolid">
-<h2>Open a PDF in Annolid<a class="headerlink" href="#open-a-pdf-in-annolid" title="Permalink to this heading"></a></h2>
+<h2>Open a PDF in Annolid<a class="headerlink" href="#open-a-pdf-in-annolid" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
 <li><p>Launch the GUI:</p></li>
 </ol>
@@ -141,7 +141,7 @@ pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">
 </ul>
 </section>
 <section id="option-a-speak-a-selection-fastest">
-<h2>Option A: Speak a selection (fastest)<a class="headerlink" href="#option-a-speak-a-selection-fastest" title="Permalink to this heading"></a></h2>
+<h2>Option A: Speak a selection (fastest)<a class="headerlink" href="#option-a-speak-a-selection-fastest" title="Link to this heading"></a></h2>
 <p>This works in both the fallback viewer (image + text panel) and the PDF.js viewer.</p>
 <ol class="arabic simple">
 <li><p>Select some text (either in the page text panel, or directly on the PDF page).</p></li>
@@ -149,7 +149,7 @@ pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">
 </ol>
 </section>
 <section id="option-b-click-to-read-paragraphs-pdf-js-reader-mode">
-<h2>Option B: Click-to-read paragraphs (PDF.js reader mode)<a class="headerlink" href="#option-b-click-to-read-paragraphs-pdf-js-reader-mode" title="Permalink to this heading"></a></h2>
+<h2>Option B: Click-to-read paragraphs (PDF.js reader mode)<a class="headerlink" href="#option-b-click-to-read-paragraphs-pdf-js-reader-mode" title="Link to this heading"></a></h2>
 <p>This reads full paragraphs/sentences starting from where you click.</p>
 <ol class="arabic simple">
 <li><p>In the <code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Reader</span></code> dock, enable <code class="docutils literal notranslate"><span class="pre">Use</span> <span class="pre">PDF.js</span> <span class="pre">(required</span> <span class="pre">for</span> <span class="pre">reader)</span></code>.</p></li>
@@ -160,7 +160,7 @@ pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">
 <p>If the reader says it’s unavailable, install QtWebEngine (<code class="docutils literal notranslate"><span class="pre">pyqtwebengine</span></code> in conda, or <code class="docutils literal notranslate"><span class="pre">PyQtWebEngine</span></code> via pip) and restart Annolid.</p>
 </section>
 <section id="change-voice-language-and-speed">
-<h2>Change voice, language, and speed<a class="headerlink" href="#change-voice-language-and-speed" title="Permalink to this heading"></a></h2>
+<h2>Change voice, language, and speed<a class="headerlink" href="#change-voice-language-and-speed" title="Link to this heading"></a></h2>
 <p>Use the <code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Speech</span></code> dock to set:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">Voice</span></code> (example: <code class="docutils literal notranslate"><span class="pre">af_sarah</span></code>)</p></li>
@@ -172,7 +172,7 @@ pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">
 <p>These settings persist in <code class="docutils literal notranslate"><span class="pre">~/.annolid/tts_settings.json</span></code>.</p>
 </section>
 <section id="troubleshooting">
-<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permalink to this heading"></a></h2>
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p><strong>“PyMuPDF Required” dialog</strong>: run <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">pymupdf</span></code>.</p></li>
 <li><p><strong>No audio output</strong>:</p>

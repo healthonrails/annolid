@@ -1,21 +1,21 @@
 
 
 <!DOCTYPE html>
-<html class="writer-html5" lang="en">
+<html class="writer-html5" lang="en" data-content_root="./">
 <head>
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Install Annolid &mdash; annolid unknown documentation</title>
+  <title>Install Annolid &mdash; annolid 1.3.2 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js?v=680b02e7"></script>
-      <script src="_static/doctools.js?v=888ff710"></script>
-      <script src="_static/sphinx_highlight.js?v=4825356b"></script>
+      <script src="_static/documentation_options.js?v=8ca9e7a0"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -96,9 +96,9 @@
            <div itemprop="articleBody">
              
   <section id="install-annolid">
-<h1>Install Annolid<a class="headerlink" href="#install-annolid" title="Permalink to this heading"></a></h1>
+<h1>Install Annolid<a class="headerlink" href="#install-annolid" title="Link to this heading"></a></h1>
 <section id="requirements">
-<h2>Requirements<a class="headerlink" href="#requirements" title="Permalink to this heading"></a></h2>
+<h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p>Ubuntu / macOS / Windows</p></li>
 <li><p>Python &gt;= 3.10</p></li>
@@ -106,7 +106,7 @@
 </ul>
 </section>
 <section id="set-up-conda-environment">
-<h2>Set up Conda environment<a class="headerlink" href="#set-up-conda-environment" title="Permalink to this heading"></a></h2>
+<h2>Set up Conda environment<a class="headerlink" href="#set-up-conda-environment" title="Link to this heading"></a></h2>
 <p>To run Annolid, we suggest using Conda. Download and install <a class="reference external" href="https://www.anaconda.com/products/individual">Anaconda</a> (or Miniconda), then:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># For MacOS or Linux</span>
 <span class="n">conda</span> <span class="n">create</span> <span class="o">-</span><span class="n">n</span> <span class="n">annolid</span><span class="o">-</span><span class="n">env</span> <span class="n">python</span><span class="o">=</span><span class="mf">3.11</span>
@@ -117,11 +117,11 @@
 <p>On Windows, run the same commands in Anaconda Prompt/PowerShell.</p>
 </section>
 <section id="install-ffmpeg">
-<h2>Install ffmpeg<a class="headerlink" href="#install-ffmpeg" title="Permalink to this heading"></a></h2>
+<h2>Install ffmpeg<a class="headerlink" href="#install-ffmpeg" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">conda</span> <span class="pre">install</span> <span class="pre">-c</span> <span class="pre">conda-forge</span> <span class="pre">ffmpeg</span></code></p>
 </section>
 <section id="id1">
-<h2>Install Annolid<a class="headerlink" href="#id1" title="Permalink to this heading"></a></h2>
+<h2>Install Annolid<a class="headerlink" href="#id1" title="Link to this heading"></a></h2>
 <p>Clone the code repo from Github, change into the new directory, and install</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--recurse-submodules<span class="w"> </span>https://github.com/healthonrails/annolid.git
 <span class="nb">cd</span><span class="w"> </span>annolid<span class="w"> </span>
@@ -133,19 +133,19 @@ pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </s
 <p>Install <a class="reference external" href="https://ffmpeg.org/">ffmpeg</a> (for example with <code class="docutils literal notranslate"><span class="pre">conda</span> <span class="pre">install</span> <span class="pre">-c</span> <span class="pre">conda-forge</span> <span class="pre">ffmpeg</span></code>) to ensure OpenCV can decode a wide range of video formats during playback.</p>
 </section>
 <section id="windows-pycocotools">
-<h2>Windows: pycocotools<a class="headerlink" href="#windows-pycocotools" title="Permalink to this heading"></a></h2>
+<h2>Windows: pycocotools<a class="headerlink" href="#windows-pycocotools" title="Link to this heading"></a></h2>
 <p>If you encounter errors on Windows for <code class="docutils literal notranslate"><span class="pre">pycocotools</span></code>, please download and install Visual Studio 2019 from the link below:
 https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&amp;rel=16</p>
 <p>Then please run the following command in your terminal.
 <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;git+https://github.com/philferriere/cocoapi.git#egg=pycocotools&amp;subdirectory=PythonAPI&quot;</span></code></p>
 </section>
 <section id="linux-qt-xcb-plugin-error">
-<h2>Linux: Qt “xcb” plugin error<a class="headerlink" href="#linux-qt-xcb-plugin-error" title="Permalink to this heading"></a></h2>
+<h2>Linux: Qt “xcb” plugin error<a class="headerlink" href="#linux-qt-xcb-plugin-error" title="Link to this heading"></a></h2>
 <p>To fix the error <code class="docutils literal notranslate"><span class="pre">&quot;Failed</span> <span class="pre">to</span> <span class="pre">load</span> <span class="pre">platform</span> <span class="pre">plugin</span> <span class="pre">\&quot;xcb\&quot;&quot;</span></code> while launching the Qt app on Linux:</p>
 <p><code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">--reinstall</span> <span class="pre">libxcb-xinerama0</span></code></p>
 </section>
 <section id="launch-annolid">
-<h2>Launch Annolid<a class="headerlink" href="#launch-annolid" title="Permalink to this heading"></a></h2>
+<h2>Launch Annolid<a class="headerlink" href="#launch-annolid" title="Link to this heading"></a></h2>
 <p>Typing “annolid” will bring up the Annolid GUI, which is based on the excellent <a class="reference external" href="https://github.com/wkentaro/labelme">LabelMe</a> package.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># be sure to activate the annolid virtual environment every time you restart Anaconda; the conda shell prompt should read &quot;(annolid)&quot;</span>
 conda<span class="w"> </span>activate<span class="w"> </span>annolid-env
@@ -158,10 +158,10 @@ annolid<span class="w"> </span>--labels<span class="o">=</span>/path/to/labels_c
 </div>
 </section>
 <section id="install-detectron2-locally">
-<h2>Install Detectron2 locally<a class="headerlink" href="#install-detectron2-locally" title="Permalink to this heading"></a></h2>
+<h2>Install Detectron2 locally<a class="headerlink" href="#install-detectron2-locally" title="Link to this heading"></a></h2>
 <p><strong>Note</strong>: if you intend to process your tagged videos using Google Colab (which you should do unless you are using a workstation with a higher-end GPU), then <strong>you do not need to install Detectron2 on your local machine</strong>, and you can ignore the following steps.</p>
 <section id="id2">
-<h3>Requirements<a class="headerlink" href="#id2" title="Permalink to this heading"></a></h3>
+<h3>Requirements<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p>Windows, Linux or macOS with Python ≥ 3.10</p></li>
 <li><p>PyTorch ≥ 1.5 and <a class="reference external" href="https://github.com/pytorch/vision/">torchvision</a> that matches the PyTorch installation.
@@ -171,7 +171,7 @@ For purposes of using Annolid, it is OK to downgrade pyyaml from its current ver
 </ul>
 </section>
 <section id="install-detectron2-dependencies">
-<h3>Install Detectron2 dependencies:<a class="headerlink" href="#install-detectron2-dependencies" title="Permalink to this heading"></a></h3>
+<h3>Install Detectron2 dependencies:<a class="headerlink" href="#install-detectron2-dependencies" title="Link to this heading"></a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pip</span> <span class="n">install</span> <span class="n">pyyaml</span><span class="o">==</span><span class="mf">5.3</span> 
 <span class="n">pip</span> <span class="n">install</span> <span class="n">pycocotools</span><span class="o">&gt;=</span><span class="mf">2.0.1</span>
 <span class="n">pip</span> <span class="n">install</span> <span class="n">torch</span><span class="o">==</span><span class="mf">1.9.0</span><span class="o">+</span><span class="n">cu102</span> <span class="n">torchvision</span><span class="o">==</span><span class="mf">0.10.0</span><span class="o">+</span><span class="n">cu102</span> <span class="o">-</span><span class="n">f</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">download</span><span class="o">.</span><span class="n">pytorch</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">whl</span><span class="o">/</span><span class="n">torch_stable</span><span class="o">.</span><span class="n">html</span>
@@ -180,7 +180,7 @@ For purposes of using Annolid, it is OK to downgrade pyyaml from its current ver
 </div>
 </section>
 <section id="install-detectron2">
-<h3>Install Detectron2:<a class="headerlink" href="#install-detectron2" title="Permalink to this heading"></a></h3>
+<h3>Install Detectron2:<a class="headerlink" href="#install-detectron2" title="Link to this heading"></a></h3>
 <p>See <a class="reference external" href="https://detectron2.readthedocs.io/tutorials/install.html">https://detectron2.readthedocs.io/tutorials/install.html</a> for further information.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>import torch
 assert torch.__version__.startswith(&quot;1.9&quot;)    
@@ -204,12 +204,12 @@ After restart, you can cd to detectron2 folder and run the following command.
 </section>
 </section>
 <section id="install-detectron2-on-google-colab">
-<h2>Install Detectron2 on Google Colab<a class="headerlink" href="#install-detectron2-on-google-colab" title="Permalink to this heading"></a></h2>
+<h2>Install Detectron2 on Google Colab<a class="headerlink" href="#install-detectron2-on-google-colab" title="Link to this heading"></a></h2>
 <p>Instructions will be posted here presently.  (Colab uses CUDA 10.2 + torch 1.9.0).<br />
 <a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a></p>
 </section>
 <section id="optional-install-older-version-of-pytorch-for-yolact">
-<h2>Optional: Install older version of Pytorch for YOLACT<a class="headerlink" href="#optional-install-older-version-of-pytorch-for-yolact" title="Permalink to this heading"></a></h2>
+<h2>Optional: Install older version of Pytorch for YOLACT<a class="headerlink" href="#optional-install-older-version-of-pytorch-for-yolact" title="Link to this heading"></a></h2>
 <p>Note: YOLACT models are less accurate comparing to Mask-RCNN in Detectron2. However, it is faster in terms of inference.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span># DCNv2 will not work if Pytorch is greater than 1.4.0
 !pip install torchvision==0.5.0

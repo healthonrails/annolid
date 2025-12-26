@@ -1,21 +1,21 @@
 
 
 <!DOCTYPE html>
-<html class="writer-html5" lang="en">
+<html class="writer-html5" lang="en" data-content_root="./">
 <head>
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Track animals and Auto labeling &mdash; annolid unknown documentation</title>
+  <title>Track animals and Auto labeling &mdash; annolid 1.3.2 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js?v=680b02e7"></script>
-      <script src="_static/doctools.js?v=888ff710"></script>
-      <script src="_static/sphinx_highlight.js?v=4825356b"></script>
+      <script src="_static/documentation_options.js?v=8ca9e7a0"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -86,7 +86,7 @@
            <div itemprop="articleBody">
              
   <section id="track-animals-and-auto-labeling">
-<h1>Track animals and Auto labeling<a class="headerlink" href="#track-animals-and-auto-labeling" title="Permalink to this heading"></a></h1>
+<h1>Track animals and Auto labeling<a class="headerlink" href="#track-animals-and-auto-labeling" title="Link to this heading"></a></h1>
 <p>Click <code class="docutils literal notranslate"><span class="pre">Track</span> <span class="pre">Animals</span></code> button on the toolbar, fill the info in the opened dialog as follows.</p>
 <p><img alt="Track Animals and objects" src="_images/track_animals.png" /></p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">Detectron2</span></code> as the default model type</p>
@@ -100,7 +100,7 @@ Here is an example of predicted polygon annotions.</p>
 The GPU workstation will run inference for all the frames in the provided video and will save the predicted results into a CSV file.</p>
 </section>
 <section id="output-csv-format">
-<h1>Output CSV format<a class="headerlink" href="#output-csv-format" title="Permalink to this heading"></a></h1>
+<h1>Output CSV format<a class="headerlink" href="#output-csv-format" title="Link to this heading"></a></h1>
 <p>Here are the columns of the Annolid CSV output format:</p>
 <p>frame_number: int, 0 based numbers for frames e.g. 10 the 11th frame</p>
 <p>x1: float, the top left x value of the instance bounding box</p>
@@ -114,10 +114,10 @@ The GPU workstation will run inference for all the frames in the provided video 
 <p>cy: float, optional, the center y value of the instance bounding box</p>
 </section>
 <section id="cutie-dino-body-part-tracker">
-<h1>Cutie + DINO Body-Part Tracker<a class="headerlink" href="#cutie-dino-body-part-tracker" title="Permalink to this heading"></a></h1>
+<h1>Cutie + DINO Body-Part Tracker<a class="headerlink" href="#cutie-dino-body-part-tracker" title="Link to this heading"></a></h1>
 <p>The Cutie + DINO tracker pairs Cutie’s video object segmentation with DINO patch descriptors to preserve keypoint identity across long and challenging clips. The runtime can be tweaked through <code class="docutils literal notranslate"><span class="pre">CutieDinoTrackerConfig</span></code> to prioritise appearance, structure, or symmetry cues depending on the animal and camera setup.</p>
 <section id="key-runtime-parameters">
-<h2>Key runtime parameters<a class="headerlink" href="#key-runtime-parameters" title="Permalink to this heading"></a></h2>
+<h2>Key runtime parameters<a class="headerlink" href="#key-runtime-parameters" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">appearance_bundle_radius</span></code> / <code class="docutils literal notranslate"><span class="pre">appearance_bundle_size</span></code> / <code class="docutils literal notranslate"><span class="pre">appearance_bundle_weight</span></code> control the per-keypoint appearance codebook. Increase the radius and size to gather more context in the first frame; raise the weight when fur patterns are distinctive and you want candidate patches that match the stored descriptors to win.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">baseline_similarity_weight</span></code> penalises candidates that deviate from the initial (first-frame) descriptor quality. Increase it to keep keypoints glued to their original look when lighting is stable; lower it when the appearance changes dramatically over time.</p></li>
@@ -133,7 +133,7 @@ The GPU workstation will run inference for all the frames in the provided video 
 </ul>
 </section>
 <section id="tuning-guidance">
-<h2>Tuning guidance<a class="headerlink" href="#tuning-guidance" title="Permalink to this heading"></a></h2>
+<h2>Tuning guidance<a class="headerlink" href="#tuning-guidance" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p>Manual corrections saved from LabelMe (keep the <code class="docutils literal notranslate"><span class="pre">.json</span></code> and matching <code class="docutils literal notranslate"><span class="pre">.png</span></code>) now force a full reset of the Cutie mask cache and the descriptor tracker when you resume. This wipes stale velocities and mask history so the next segment of tracking begins from your latest edits.</p></li>
 <li><p><strong>Symmetric rodents during sharp turns:</strong> set <code class="docutils literal notranslate"><span class="pre">symmetry_pairs</span></code> for all left/right body parts and bump <code class="docutils literal notranslate"><span class="pre">symmetry_penalty</span></code> to <code class="docutils literal notranslate"><span class="pre">0.6–0.8</span></code>. Keep <code class="docutils literal notranslate"><span class="pre">structural_consistency_weight</span></code> at <code class="docutils literal notranslate"><span class="pre">0.3+</span></code> so ear and tail distances stay coherent. This prevents swaps when the animal spins.</p></li>
@@ -145,7 +145,7 @@ The GPU workstation will run inference for all the frames in the provided video 
 <li><p><strong>Quality monitoring:</strong> each JSON keypoint now carries <code class="docutils literal notranslate"><span class="pre">velocity</span></code>, <code class="docutils literal notranslate"><span class="pre">misses</span></code>, and <code class="docutils literal notranslate"><span class="pre">quality</span></code> flags. Downstream analytics can watch for spikes in <code class="docutils literal notranslate"><span class="pre">misses</span></code> or drops in <code class="docutils literal notranslate"><span class="pre">quality</span></code> to trigger re-initialisation or manual review.</p></li>
 </ul>
 <section id="updating-the-tracker-config">
-<h3>Updating the tracker config<a class="headerlink" href="#updating-the-tracker-config" title="Permalink to this heading"></a></h3>
+<h3>Updating the tracker config<a class="headerlink" href="#updating-the-tracker-config" title="Link to this heading"></a></h3>
 <p>Both the CLI and GUI share the same configuration plumbing. Add a <code class="docutils literal notranslate"><span class="pre">tracker</span></code> block to your Annolid config (the GUI writes it to <code class="docutils literal notranslate"><span class="pre">~/.labelmerc</span></code>) to override the runtime defaults:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">tracker</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">tracker_preset</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rodent_30fps_occlusions</span>
