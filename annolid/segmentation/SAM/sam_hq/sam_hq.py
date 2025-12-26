@@ -3,6 +3,7 @@ import cv2
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from huggingface_hub import hf_hub_download
 from annolid.utils.devices import has_gpu
 
 
@@ -20,8 +21,8 @@ class SamHQSegmenter:
     https://github.com/SysCV/sam-hq
     """
 
-    _REMOTE_MODEL_URL = "https://huggingface.co/lkeab/hq-sam/resolve/main/"
-    _MD5_DICT = {'vit_l': "08947267966e4264fb39523eccc33f86"}
+    _HUB_REPO_ID = "lkeab/hq-sam"
+    _MODEL_TYPES = {"vit_l", "vit_h", "vit_b"}
 
     def __init__(self, checkpoint_path=None, model_type="vit_l", device="cpu"):
         """
@@ -59,7 +60,6 @@ class SamHQSegmenter:
         self.predictor = self._SamPredictor(self.sam)
 
     def _download_model(self, model_type):
-        import gdown
         """
         Download the model checkpoint file if it does not exist locally.
 
@@ -69,19 +69,17 @@ class SamHQSegmenter:
         Returns:
         - str: Path to the downloaded model checkpoint file.
         """
-        current_directory = os.path.dirname(os.path.abspath(__file__))
+        if model_type not in self._MODEL_TYPES:
+            raise ValueError(f"Unknown SAM-HQ model type '{model_type}'")
+
         model_name = f"sam_hq_{model_type}.pth"
-        model_abs_path = os.path.join(current_directory, model_name)
-
-        if not os.path.exists(model_abs_path):
-            url = self._REMOTE_MODEL_URL + model_name
-            expected_md5 = self._MD5_DICT[model_type]
-            gdown.cached_download(url,
-                                  model_abs_path,
-                                  md5=expected_md5
-                                  )
-
-        return model_abs_path
+        # Let huggingface_hub handle caching to the default HF cache dir.
+        checkpoint_path = hf_hub_download(
+            repo_id=self._HUB_REPO_ID,
+            filename=model_name,
+            resume_download=True,
+        )
+        return checkpoint_path
 
     def segment_objects(self, image, bboxes):
         """
