@@ -1,7 +1,7 @@
 # pyproject.toml
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,23 +13,23 @@ authors = [
 description = "An annotation and instance segmentation-based multiple animal tracking and behavior analysis package."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "CC-BY-NC-4.0"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
 ]
 
 dependencies = [
-    'numpy>=1.18.2',
+    # Avoid NumPy 2 ABI breakage with compiled deps (e.g., scikit-image/labelme).
+    'numpy>=1.24,<2.0',
     'scipy>=1.5.2',
     'easydict>=1.9',
     'opencv-contrib-python>=4.1.2.30',
-    'opencv-python-headless>=4.1.2.30',
     'PyYAML>=5.3',
     'labelme==5.5.0',
     'sounddevice>=0.4.6',
@@ -62,7 +62,6 @@ dependencies = [
     'ultralytics>=8.3.34',
     'huggingface-hub>=0.22.0',
     # Optional dependency: install SAM / SAM-HQ separately (see README.md).
-    "dataclasses>=0.6; python_version < '3.7'",
 ]
 
 [project.optional-dependencies]

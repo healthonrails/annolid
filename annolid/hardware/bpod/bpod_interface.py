@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 import serial
 import time
 import struct
@@ -217,7 +220,6 @@ class BpodStateMachine:
                                 event_name_length).decode()
                             module_data["eventNames"].append(event_name)
                     more_info_follows = self.read_response()[0]
-
                 module_info.append(module_data)  # append to list
             else:
                 # Placeholder for a potentially missing module:
@@ -571,3 +573,53 @@ class BpodStateMachine:
 
         self.send_command('X')
         return self.run_state_machine()  # Data returned in the same format as regular run
+
+
+class BpodController:
+    """Simple controller wrapper for Bpod serial communication."""
+
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1):
+        from types import SimpleNamespace
+
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.serial_connection = SimpleNamespace(is_open=False)
+        self._logger = logging.getLogger(__name__)
+
+    def connect(self):
+        """Open the serial connection."""
+        try:
+            # Keep the constructor call minimal so it is easy to mock in unit tests.
+            conn = serial.Serial(self.port)
+            conn.baudrate = self.baudrate
+            conn.timeout = self.timeout
+            self.serial_connection = conn
+            return conn
+        except Exception:
+            self._logger.exception("Failed to connect to Bpod on %s", self.port)
+            raise
+
+    def disconnect(self) -> None:
+        """Close the serial connection (best effort)."""
+        conn = self.serial_connection
+        self.serial_connection = None
+        if conn is None:
+            return
+        try:
+            if getattr(conn, "is_open", False):
+                conn.close()
+        except Exception:
+            self._logger.debug(
+                "Failed to close Bpod serial connection.", exc_info=True)
+
+    def send_event(self, event_code: int) -> None:
+        """Send a single event byte to the Bpod."""
+        conn = self.serial_connection
+        if conn is None or not getattr(conn, "is_open", False):
+            self._logger.warning(
+                "Bpod serial connection is not open; dropping event %s", event_code
+            )
+            return
+        payload = bytes([int(event_code) & 0xFF])
+        conn.write(payload)

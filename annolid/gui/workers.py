@@ -1,31 +1,38 @@
+from __future__ import annotations
+
 import asyncio
-import threading
-from qtpy import QtCore, QtGui
-from threading import Lock
-from collections import deque
-from typing import Dict, List, Optional, Tuple
-import os
-import logging
+import gc
 import glob
 import json
+import logging
+import os
+import threading
+from collections import deque
+from pathlib import Path
+from threading import Lock
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
 import qimage2ndarray
-import torch
 import zmq
-from annolid.gui.label_file import LabelFile
-from pathlib import Path
-from typing import List
-from annolid.utils.logger import logger
-from qtpy.QtCore import Signal, QObject
-from annolid.data.videos import extract_frames_from_videos
-from qtpy.QtCore import QThread
-from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
-from annolid.segmentation.cutie_vos.processor import SegmentedCutieExecutor
-from annolid.utils.files import find_manual_labeled_json_files, get_frame_number_from_json
+from qtpy import QtCore, QtGui
+from qtpy.QtCore import QThread, Signal, QObject
+
 from annolid.annotation.labelme2csv import convert_json_to_csv
+from annolid.data.videos import extract_frames_from_videos
+from annolid.gui.label_file import LabelFile
 from annolid.jobs.tracking_jobs import TrackingSegment
-import gc
+from annolid.utils.files import (
+    find_manual_labeled_json_files,
+    get_frame_number_from_json,
+)
+from annolid.utils.logger import logger
+
+try:
+    import torch
+except ImportError:  # PyTorch is optional for lighter desktop bundles
+    torch = None
 
 
 class PredictionWorker(QObject):
@@ -137,6 +144,10 @@ class TrackAllWorker(QThread):
 
     def select_device(self):
         """Select the appropriate device (CUDA, MPS, or CPU)."""
+        if torch is None:
+            raise RuntimeError(
+                "PyTorch is required for tracking. Install torch to enable this feature."
+            )
         if torch.cuda.is_available():
             return torch.device("cuda:0")
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
@@ -184,6 +195,19 @@ class TrackAllWorker(QThread):
 
             segment_executor = None
             try:
+                try:
+                    from annolid.segmentation.cutie_vos.processor import (
+                        SegmentedCutieExecutor,
+                    )
+                except Exception as exc:
+                    error_msg = (
+                        "Segmented Cutie tracking backend is unavailable. "
+                        f"Install the full Annolid dependencies to enable tracking.\n\n{exc}"
+                    )
+                    self.error.emit(error_msg)
+                    self.logger.error(error_msg, exc_info=True)
+                    return False
+
                 segment_executor = SegmentedCutieExecutor(
                     video_path_str=str(video_path),
                     segment_annotated_frame=segment.annotated_frame,
@@ -240,6 +264,8 @@ class TrackAllWorker(QThread):
                 processor.cutie_processor = None
             del processor
         gc.collect()
+        if torch is None:
+            return
         if device.type == "cuda":
             try:
                 torch.cuda.empty_cache()
@@ -254,6 +280,11 @@ class TrackAllWorker(QThread):
 
     def log_gpu_memory(self, video_name, stage):
         """Log device memory usage."""
+        if torch is None:
+            self.logger.info(
+                f"No PyTorch runtime available ({stage} - {video_name}): Running on CPU"
+            )
+            return
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**2
             reserved = torch.cuda.memory_reserved() / 1024**2
@@ -358,6 +389,11 @@ class TrackAllWorker(QThread):
         output_folder: Path,
     ) -> bool:
         """Run the single-video pipeline on a specific device."""
+        if torch is None:
+            raise RuntimeError(
+                "PyTorch is required for tracking. Install torch to enable this feature."
+            )
+
         video_name = video_path.stem
         self.logger.info(f"Using device: {device} for {video_name}")
         self.log_gpu_memory(video_name, f"Before ({device.type})")
@@ -406,6 +442,18 @@ class TrackAllWorker(QThread):
                 )
                 self.logger.error(
                     f"JSON error for {video_name}: {str(exc)}", exc_info=True
+                )
+                return False
+
+            try:
+                from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+            except Exception as exc:
+                self.error.emit(
+                    f"Failed to load tracking backend for {video_name}: {exc}"
+                )
+                self.logger.error(
+                    f"Tracking backend import error for {video_name}: {exc}",
+                    exc_info=True,
                 )
                 return False
 
@@ -527,6 +575,14 @@ class TrackAllWorker(QThread):
 
     def run(self):
         """Process videos sequentially, ensuring one processor per video."""
+        if torch is None:
+            msg = "Track All requires PyTorch. Install torch to enable tracking."
+            self.error.emit(msg)
+            self.logger.error(msg)
+            self.finished.emit("Track All aborted (missing PyTorch).")
+            self.is_running = False
+            return
+
         try:
             total_videos = len(self.video_paths)
             processed_videos = 0

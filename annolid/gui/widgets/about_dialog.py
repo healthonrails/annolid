@@ -1,15 +1,26 @@
 import sys
 import psutil
-import torch
 import subprocess
+from importlib import metadata
 from qtpy.QtWidgets import (QApplication, QDialog,
                             QVBoxLayout, QLabel, QPushButton)
 from annolid.utils.devices import get_device
-from annolid.gui import app
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 def get_annolid_version():
-    return app.__version__
+    try:
+        return metadata.version("annolid")
+    except Exception:
+        try:
+            from annolid.gui import app
+            return app.__version__
+        except Exception:
+            return "unknown"
 
 
 def get_conda_version():
@@ -49,7 +60,8 @@ class SystemInfoDialog(QDialog):
         annolid_version_label = QLabel(
             f"AnnoLid Version: {get_annolid_version()}")
         device_label = QLabel(f"Device: {get_device()}")
-        pytorch_version_label = QLabel(f"PyTorch Version: {torch.__version__}")
+        pytorch_version = torch.__version__ if torch is not None else "not installed"
+        pytorch_version_label = QLabel(f"PyTorch Version: {pytorch_version}")
 
         # Python, Conda, and environment information
         python_version_label = QLabel(

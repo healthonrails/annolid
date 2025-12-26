@@ -91,11 +91,22 @@ jobs:
           asset_content_type: application/octet-stream
         if: runner.os == 'Windows'
 
+      - name: Set up Node.js (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Create dmg for macOS
         run: |
           cd dist
-          npx create-dmg@5.4.0 Annolid.app || test -f Annolid\ 0.0.0.dmg
-          mv Annolid\ 0.0.0.dmg Annolid.dmg
+          npx create-dmg@5.4.0 Annolid.app || true
+          dmg="$(ls -1 *.dmg 2>/dev/null | head -n 1 || true)"
+          if [ -z "$dmg" ]; then
+            echo "create-dmg did not produce a .dmg file"
+            exit 1
+          fi
+          mv "$dmg" Annolid.dmg
         if: runner.os == 'macOS'
 
       - name: Upload release app on macOS

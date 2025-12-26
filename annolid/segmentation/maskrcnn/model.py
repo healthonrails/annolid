@@ -8,7 +8,8 @@ from torchvision.transforms import functional as F
 def get_maskrcnn_model(
         num_classes=None,
         num_hidden_layer=256,
-        finetuning=True):
+        finetuning=True,
+        pretrained: bool = True):
     """ Get the pretrained mask rcnn model for finetuning or unmodified
 
     Args:
@@ -19,8 +20,24 @@ def get_maskrcnn_model(
     Returns:
         [model]: [mask rcnn model]
     """
-    # load mask rcnn model pretrained on COCO
-    model = torchvision.models.detection.maskrcnn_resnet50_fpn(pretrained=True)
+    # Load Mask R-CNN; newer torchvision uses `weights=` and may also download
+    # backbone weights unless explicitly disabled.
+    try:
+        from torchvision.models.detection import (
+            maskrcnn_resnet50_fpn,
+            MaskRCNN_ResNet50_FPN_Weights,
+        )
+
+        weights = MaskRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained else None
+        model = maskrcnn_resnet50_fpn(
+            weights=weights,
+            weights_backbone=None,
+        )
+    except Exception:
+        # Fallback for older torchvision.
+        model = torchvision.models.detection.maskrcnn_resnet50_fpn(
+            pretrained=pretrained
+        )
     if finetuning:
         # number of input features for the classifier
         in_features = model.roi_heads.box_predictor.cls_score.in_features
@@ -44,7 +61,7 @@ def get_maskrcnn_model(
     return model
 
 
-def predict_coco(img, device=None):
+def predict_coco(img, device=None, *, pretrained: bool = True):
     """predict with the default pretained mask rcnn model pretrained on COCO
 
     Args:
@@ -60,7 +77,10 @@ def predict_coco(img, device=None):
 
     if not isinstance(img, torch.Tensor):
         img = F.to_tensor(img)
-    coco_model = get_maskrcnn_model(finetuning=False)
+    coco_model = get_maskrcnn_model(
+        finetuning=False,
+        pretrained=pretrained,
+    )
     coco_model.to(device)
     coco_model.eval()
 

@@ -15,23 +15,17 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-import torch
-from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor
-from transformers.generation.utils import GenerationMixin
+try:
+    import torch
+except Exception:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore
 
-try:  # Optional import; Florence-2 is still in rapid development upstream.
-    from transformers.models.florence2.modeling_florence2 import (
-        Florence2ForConditionalGeneration,
-    )
-except Exception:  # pragma: no cover - if transformers version changes/remove symbol
-    Florence2ForConditionalGeneration = None  # type: ignore
+from PIL import Image
 
 from annolid.annotation.keypoints import save_labels
 from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
 from annolid.data.videos import video_loader
-import numpy as np
 import numpy as np
 
 try:  # Qt is available in the GUI environment, but guard for CLI use.
@@ -55,8 +49,12 @@ class Florence2Result:
         return bool(polygons)
 
 
-def get_device_and_dtype() -> Tuple[str, torch.dtype]:
+def get_device_and_dtype() -> Tuple[str, "torch.dtype"]:
     """Resolve the preferred torch device and dtype."""
+    if torch is None:
+        raise ImportError(
+            "Florence-2 requires PyTorch. Install torch to enable this feature."
+        )
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float32
     return device, torch_dtype
@@ -131,6 +129,19 @@ def load_model_and_processor(
     model_name: str, device: str, torch_dtype: torch.dtype
 ) -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load the Florence-2 model and processor with safe defaults."""
+    if torch is None:
+        raise ImportError(
+            "Florence-2 requires PyTorch. Install torch to enable this feature."
+        )
+
+    try:
+        from transformers import AutoModelForCausalLM, AutoProcessor
+    except Exception as exc:
+        raise ImportError(
+            "Florence-2 requires the Hugging Face `transformers` package. "
+            "Install `transformers` to enable this feature."
+        ) from exc
+
     from_pretrained_kwargs = {
         "dtype": torch_dtype,
         "trust_remote_code": True,
@@ -167,6 +178,20 @@ def _patch_generation_defaults() -> None:
     global _SDPA_PATCHED
     if _SDPA_PATCHED:
         return
+
+    try:
+        from transformers.generation.utils import GenerationMixin
+    except Exception:
+        # transformers not installed; nothing to patch.
+        _SDPA_PATCHED = True
+        return
+
+    try:  # Optional import; Florence-2 is still in rapid development upstream.
+        from transformers.models.florence2.modeling_florence2 import (
+            Florence2ForConditionalGeneration,
+        )
+    except Exception:  # pragma: no cover - if transformers version changes/remove symbol
+        Florence2ForConditionalGeneration = None  # type: ignore
 
     try:
         if not hasattr(GenerationMixin, "_supports_sdpa"):
@@ -215,7 +240,7 @@ def _normalize_image_input(image: Any) -> Tuple[Image.Image, np.ndarray]:
             np_image = np_image[:, :, :3]
         np_image = np.ascontiguousarray(np_image.astype(np.uint8))
         pil_image = Image.fromarray(np_image)
-    elif torch.is_tensor(image):
+    elif torch is not None and torch.is_tensor(image):
         tensor = image.detach().cpu()
         if tensor.ndim == 3 and tensor.shape[0] in (1, 3, 4):
             tensor = tensor.permute(1, 2, 0)
