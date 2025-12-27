@@ -9,6 +9,7 @@ from qtpy.QtCore import Qt
 from annolid.gui.widgets.pdf_viewer import PdfViewerWidget
 from annolid.gui.widgets.pdf_controls import PdfControlsWidget
 from annolid.gui.widgets.pdf_reader_controls import PdfReaderControlsWidget
+from annolid.gui.widgets.pdf_reading_log import PdfReadingLogWidget
 from annolid.gui.widgets.tts_controls import TtsControlsWidget
 from annolid.utils.logger import logger
 
@@ -32,6 +33,8 @@ class PdfManager(QtCore.QObject):
         self.pdf_controls_widget: Optional[PdfControlsWidget] = None
         self.pdf_reader_dock: Optional[QtWidgets.QDockWidget] = None
         self.pdf_reader_controls: Optional[PdfReaderControlsWidget] = None
+        self.pdf_log_dock: Optional[QtWidgets.QDockWidget] = None
+        self.pdf_log_widget: Optional[PdfReadingLogWidget] = None
         self._pdf_files: list[str] = []
         self._pdf_file_signals_connected = False
         self._hidden_docks: list[QtWidgets.QDockWidget] = []
@@ -50,6 +53,7 @@ class PdfManager(QtCore.QObject):
             viewer.reader_availability_changed.connect(
                 self._on_reader_availability_changed
             )
+            viewer.reading_log_event.connect(self._on_reading_log_event)
             self.viewer_stack.addWidget(viewer)
             self.pdf_viewer = viewer
         return self.pdf_viewer
@@ -157,6 +161,30 @@ class PdfManager(QtCore.QObject):
             self.pdf_reader_dock.raise_()
         self._sync_pdf_reader_state()
 
+    def ensure_pdf_log_dock(self) -> None:
+        if self.pdf_log_dock is None:
+            dock = QtWidgets.QDockWidget(
+                self.window.tr("PDF Reading Log"), self.window
+            )
+            dock.setObjectName("PdfReadingLogDock")
+            dock.setFeatures(
+                QtWidgets.QDockWidget.DockWidgetMovable
+                | QtWidgets.QDockWidget.DockWidgetFloatable
+                | QtWidgets.QDockWidget.DockWidgetClosable
+            )
+            widget = PdfReadingLogWidget(dock)
+            dock.setWidget(widget)
+            self.window.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self.pdf_log_dock = dock
+            self.pdf_log_widget = widget
+            widget.entry_activated.connect(self._on_log_entry_activated)
+            widget.clear_requested.connect(self._clear_pdf_reading_log)
+
+        if self.pdf_log_dock is not None:
+            self.pdf_log_dock.show()
+            self.pdf_log_dock.raise_()
+        self._sync_pdf_log_entries()
+
     def _connect_file_list_signals(self) -> None:
         if self._pdf_file_signals_connected:
             return
@@ -196,6 +224,7 @@ class PdfManager(QtCore.QObject):
         self.ensure_pdf_tts_dock()
         self.ensure_pdf_controls_dock()
         self.ensure_pdf_reader_dock()
+        self.ensure_pdf_log_dock()
         self._tighten_right_docks()
         try:
             self.pdf_viewer.fit_to_width()
@@ -210,11 +239,21 @@ class PdfManager(QtCore.QObject):
 
     def close_pdf(self) -> None:
         """Close PDF view, restore docks, and return to canvas."""
+        try:
+            if self.pdf_viewer is not None:
+                self.pdf_viewer.record_stop_event()
+        except Exception:
+            pass
         # Restore docks hidden for PDF.
         self._restore_hidden_docks()
         self._restore_labelme_file_selection()
         # Hide PDF docks.
-        for dock in (self.pdf_tts_dock, self.pdf_controls_dock, self.pdf_reader_dock):
+        for dock in (
+            self.pdf_tts_dock,
+            self.pdf_controls_dock,
+            self.pdf_reader_dock,
+            self.pdf_log_dock,
+        ):
             try:
                 if dock is not None:
                     dock.hide()
@@ -448,6 +487,43 @@ class PdfManager(QtCore.QObject):
         controls.set_pdfjs_checked(viewer.force_pdfjs_enabled())
         state, current, total = viewer.reader_state()
         controls.set_reader_state(state, current, total)
+
+    def _sync_pdf_log_entries(self) -> None:
+        widget = self.pdf_log_widget
+        if widget is None:
+            return
+        if self.pdf_viewer is None:
+            widget.clear()
+            return
+        try:
+            widget.set_entries(self.pdf_viewer.reading_log())
+        except Exception:
+            widget.clear()
+
+    def _clear_pdf_reading_log(self) -> None:
+        if self.pdf_viewer is not None:
+            try:
+                self.pdf_viewer.clear_reading_log()
+            except Exception:
+                pass
+        if self.pdf_log_widget is not None:
+            self.pdf_log_widget.clear()
+
+    def _on_log_entry_activated(self, entry: dict) -> None:
+        if self.pdf_viewer is None:
+            return
+        try:
+            self.pdf_viewer.activate_log_entry(entry)
+        except Exception:
+            pass
+
+    def _on_reading_log_event(self, entry: dict) -> None:
+        if self.pdf_log_widget is None:
+            return
+        try:
+            self.pdf_log_widget.add_entry(entry)
+        except Exception:
+            pass
 
     def _on_reader_state_changed(self, state: str, current: int, total: int) -> None:
         if self.pdf_reader_controls is not None:

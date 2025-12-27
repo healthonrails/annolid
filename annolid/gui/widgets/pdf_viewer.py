@@ -31,6 +31,12 @@ except Exception:
 from annolid.utils.tts_settings import default_tts_settings, load_tts_settings
 from annolid.utils.audio_playback import play_audio_buffer
 from annolid.utils.logger import logger
+from annolid.gui.widgets.pdf_user_state import (
+    delete_pdf_state,
+    load_pdf_state,
+    pdf_state_key,
+    save_pdf_state,
+)
 
 
 if _WEBENGINE_AVAILABLE:
@@ -247,6 +253,22 @@ class _PdfReaderBridge(QtCore.QObject):
     def onParagraphClicked(self, payload: object) -> None:
         self._viewer._handle_reader_click(payload)
 
+    @QtCore.Slot(str, result="QVariant")
+    def getUserState(self, pdfKey: str) -> object:  # noqa: N802 - Qt slot name
+        return self._viewer._get_pdf_user_state(pdfKey)
+
+    @QtCore.Slot("QVariant")
+    def saveUserState(self, payload: object) -> None:  # noqa: N802 - Qt slot name
+        self._viewer._handle_pdf_user_state_save(payload)
+
+    @QtCore.Slot(str)
+    def clearUserState(self, pdfKey: str) -> None:  # noqa: N802 - Qt slot name
+        self._viewer._clear_pdf_user_state(pdfKey)
+
+    @QtCore.Slot("QVariant")
+    def logEvent(self, payload: object) -> None:  # noqa: N802 - Qt slot name
+        self._viewer._handle_pdf_log_event(payload)
+
 
 class PdfViewerWidget(QtWidgets.QWidget):
     """PDF viewer that prefers an embedded browser (if available) with fallback rendering."""
@@ -257,11 +279,21 @@ class PdfViewerWidget(QtWidgets.QWidget):
     bookmarks_changed = QtCore.Signal(list)
     reader_state_changed = QtCore.Signal(str, int, int)
     reader_availability_changed = QtCore.Signal(bool, str)
+    reading_log_event = QtCore.Signal(dict)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._doc = None
         self._pdf_path: Optional[Path] = None
+        self._pdf_key: str = ""
+        self._pdf_user_state: dict[str, object] = {}
+        self._pdf_user_state_pending: Optional[dict[str, object]] = None
+        self._pdf_user_state_timer = QtCore.QTimer(self)
+        self._pdf_user_state_timer.setSingleShot(True)
+        self._pdf_user_state_timer.timeout.connect(
+            self._flush_pdf_user_state_to_disk
+        )
+        self._reading_log: list[dict[str, object]] = []
         self._current_page = 0
         self._zoom = 1.5
         self._rotation = 0
@@ -305,6 +337,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_stop_requested = False
         self._reader_pending_restart: Optional[int] = None
         self._active_speak_token: Optional[_SpeakToken] = None
+        self._last_reader_stop_log_ts = 0.0
         self._build_ui()
         logger.info(
             f"QtWebEngine available={bool(_WEBENGINE_AVAILABLE)}, "
@@ -447,6 +480,35 @@ class PdfViewerWidget(QtWidgets.QWidget):
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
         self._rotation = 0
+        self._pdf_path = path
+        try:
+            self._pdf_key = pdf_state_key(path)
+        except Exception:
+            self._pdf_key = ""
+        try:
+            self._pdf_user_state = load_pdf_state(path)
+        except Exception:
+            self._pdf_user_state = {}
+        self._reading_log = []
+        try:
+            existing_log = (
+                self._pdf_user_state.get("log")
+                if isinstance(self._pdf_user_state, dict)
+                else None
+            )
+            if isinstance(existing_log, list):
+                self._reading_log = [
+                    e for e in existing_log if isinstance(e, dict)
+                ][:500]
+        except Exception:
+            self._reading_log = []
+
+        self._append_reading_log_event(
+            {
+                "type": "open",
+                "label": f"Opened {path.name}",
+            }
+        )
 
         # Preferred: QtWebEngine <embed> plugin when available; fallback to PDF.js.
         if self._use_web_engine and self._web_view is not None:
@@ -529,11 +591,24 @@ class PdfViewerWidget(QtWidgets.QWidget):
             raise ValueError("The selected PDF does not contain any pages.")
 
         self._pdf_path = path
+        if not self._pdf_key:
+            try:
+                self._pdf_key = pdf_state_key(path)
+            except Exception:
+                self._pdf_key = ""
+        if not self._pdf_user_state:
+            try:
+                self._pdf_user_state = load_pdf_state(path)
+            except Exception:
+                self._pdf_user_state = {}
+
         self._current_page = 0
         self._stack.setCurrentIndex(0)
         self._set_controls_for_web(False)
         self._emit_reader_availability()
-        QtCore.QTimer.singleShot(0, self.fit_to_width)
+        restored_zoom = self._restore_pymupdf_reading_state()
+        if not restored_zoom:
+            QtCore.QTimer.singleShot(0, self.fit_to_width)
         self._render_current_page()
 
     def fit_to_width(self) -> None:
@@ -772,6 +847,16 @@ class PdfViewerWidget(QtWidgets.QWidget):
         base_url = QtCore.QUrl(base + "/")
         pdf_url = _register_pdfjs_http_pdf(path)
         pdf_b64 = ""
+        pdf_key = self._pdf_key or ""
+        initial_state = (
+            self._pdf_user_state if isinstance(
+                self._pdf_user_state, dict) else {}
+        )
+        try:
+            initial_state_js = json.dumps(initial_state, ensure_ascii=False)
+            initial_state_js = initial_state_js.replace("</", "<\\/")
+        except Exception:
+            initial_state_js = "{}"
         html = f"""
 <!doctype html>
 <html>
@@ -1037,6 +1122,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
       opacity: 0.45;
       pointer-events: none;
     }}
+    .annolid-hidden {{
+      display: none !important;
+    }}
     .page {{
       position: relative;
       margin: 14px auto;
@@ -1188,6 +1276,120 @@ class PdfViewerWidget(QtWidgets.QWidget):
         grid-template-columns: 1fr;
       }}
     }}
+    .annolid-notes-grid {{
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(320px, 1fr);
+      gap: 12px;
+      padding: 12px;
+      box-sizing: border-box;
+      align-items: start;
+    }}
+    @media (max-width: 980px) {{
+      .annolid-notes-grid {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+    .annolid-notes-left {{
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }}
+    .annolid-notes-search {{
+      width: 100%;
+      background: #202020;
+      color: #f5f5f5;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 10px;
+      padding: 8px 10px;
+      box-sizing: border-box;
+      font-size: 13px;
+      outline: none;
+    }}
+    .annolid-notes-section-title {{
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0.9;
+      margin: 2px 0 6px 2px;
+    }}
+    .annolid-notes-list {{
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }}
+    .annolid-notes-item {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 8px 10px;
+      color: #f5f5f5;
+      cursor: pointer;
+      box-sizing: border-box;
+    }}
+    .annolid-notes-item:hover {{
+      background: rgba(255, 255, 255, 0.07);
+    }}
+    .annolid-notes-item.annolid-active {{
+      border-color: rgba(25, 118, 210, 0.85);
+      box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.25);
+    }}
+    .annolid-notes-item-title {{
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }}
+    .annolid-notes-item-sub {{
+      font-size: 12px;
+      opacity: 0.75;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      margin-top: 2px;
+    }}
+    .annolid-notes-item-meta {{
+      font-size: 12px;
+      opacity: 0.8;
+      white-space: nowrap;
+    }}
+    .annolid-notes-right {{
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 260px;
+    }}
+    .annolid-notes-meta {{
+      padding: 8px 10px;
+      background: #202020;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }}
+    .annolid-notes-editor {{
+      flex: 1 1 auto;
+      width: 100%;
+      resize: none;
+      background: #202020;
+      color: #f5f5f5;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      font-size: 13px;
+      line-height: 1.35;
+      outline: none;
+      min-height: 220px;
+    }}
     .annolid-preview-text {{
       background: #202020;
       border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1309,6 +1511,10 @@ class PdfViewerWidget(QtWidgets.QWidget):
         }}
       }};
     }}
+  </script>
+  <script>
+    window.__annolidPdfKey = "{pdf_key}";
+    window.__annolidInitialUserState = {initial_state_js};
   </script>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   {pdfjs_tag}
@@ -1552,6 +1758,54 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          }}
 	        }};
         window.__annolidBridge = null;
+        const annolidPdfKey = String(window.__annolidPdfKey || "");
+        const annolidStorageKey = annolidPdfKey ? ("annolidPdfState:" + annolidPdfKey) : "";
+        const annolidNowMs = () => (Date.now ? Date.now() : (new Date()).getTime());
+        const annolidSafeJsonParse = (raw) => {{
+          try {{
+            const obj = JSON.parse(raw || "");
+            return (obj && typeof obj === "object") ? obj : null;
+          }} catch (e) {{
+            return null;
+          }}
+        }};
+        function _annolidGetStoredUserState() {{
+          if (!annolidStorageKey) return null;
+          try {{
+            return annolidSafeJsonParse(localStorage.getItem(annolidStorageKey));
+          }} catch (e) {{
+            return null;
+          }}
+        }}
+        function _annolidSetStoredUserState(state) {{
+          if (!annolidStorageKey) return;
+          try {{
+            localStorage.setItem(annolidStorageKey, JSON.stringify(state || {{}}));
+          }} catch (e) {{}}
+        }}
+        function _annolidPickNewestState(a, b) {{
+          const aa = (a && typeof a.updatedAt === "number") ? a.updatedAt : 0;
+          const bb = (b && typeof b.updatedAt === "number") ? b.updatedAt : 0;
+          return (bb >= aa) ? b : a;
+        }}
+        function _annolidNormalizeUserState(state) {{
+          const out = (state && typeof state === "object") ? state : {{}};
+          if (!out.version) out.version = 1;
+          if (!out.updatedAt) out.updatedAt = annolidNowMs() / 1000.0;
+          if (!out.reading) out.reading = {{}};
+          if (!Array.isArray(out.bookmarks)) out.bookmarks = [];
+          if (!Array.isArray(out.notes)) out.notes = [];
+          if (!out.marks) out.marks = {{}};
+          if (!out.tool) out.tool = {{}};
+          return out;
+        }}
+        function _annolidMergeUserState(base, incoming) {{
+          const out = Object.assign({{}}, base || {{}});
+          if (incoming && typeof incoming === "object") {{
+            for (const k of Object.keys(incoming)) out[k] = incoming[k];
+          }}
+          return out;
+        }}
         window.__annolidRenderedPages = 0;
         window.__annolidPdfLoaded = false;
         window.__annolidLinkTargets = {{}};
@@ -1565,6 +1819,56 @@ class PdfViewerWidget(QtWidgets.QWidget):
           }} catch (e) {{
             window.__annolidBridge = null;
           }}
+        }}
+        function _annolidWaitForBridge(timeoutMs) {{
+          const limit = Math.max(50, parseInt(timeoutMs || 0, 10) || 900);
+          const start = annolidNowMs();
+          return new Promise((resolve) => {{
+            function tick() {{
+              const bridge = window.__annolidBridge;
+              if (bridge && typeof bridge === "object") {{
+                resolve(bridge);
+                return;
+              }}
+              if (annolidNowMs() - start > limit) {{
+                resolve(null);
+                return;
+              }}
+              setTimeout(tick, 50);
+            }}
+            tick();
+          }});
+        }}
+        function _annolidFetchBridgeUserState() {{
+          if (!annolidPdfKey) return Promise.resolve(null);
+          return _annolidWaitForBridge(1200).then((bridge) => {{
+            if (!bridge || typeof bridge.getUserState !== "function") return null;
+            return new Promise((resolve) => {{
+              try {{
+                bridge.getUserState(annolidPdfKey, function(result) {{
+                  resolve((result && typeof result === "object") ? result : null);
+                }});
+              }} catch (e) {{
+                resolve(null);
+              }}
+            }});
+          }});
+        }}
+        function _annolidSendBridgeUserState(state) {{
+          if (!annolidPdfKey) return;
+          const bridge = window.__annolidBridge;
+          if (!bridge || typeof bridge.saveUserState !== "function") return;
+          try {{
+            bridge.saveUserState({{ pdfKey: annolidPdfKey, state: state || {{}} }});
+          }} catch (e) {{}}
+        }}
+        function _annolidClearBridgeUserState() {{
+          if (!annolidPdfKey) return;
+          const bridge = window.__annolidBridge;
+          if (!bridge || typeof bridge.clearUserState !== "function") return;
+          try {{
+            bridge.clearUserState(annolidPdfKey);
+          }} catch (e) {{}}
         }}
 
         function _annolidHexToRgba(hex, alpha) {{
@@ -2071,6 +2375,19 @@ class PdfViewerWidget(QtWidgets.QWidget):
               state.marks.strokes.push(stroke);
               window.__annolidMarks.undo.push({{ type: "stroke", pageNum: state.pageNum }});
               _annolidRenderMarks(state.pageNum);
+              if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(600);
+              try {{
+                const anchor = (typeof _annolidGetScrollAnchor === "function") ? _annolidGetScrollAnchor() : {{ pageNum: state.pageNum, offsetFrac: 0 }};
+                const bridge = window.__annolidBridge;
+                if (bridge && typeof bridge.logEvent === "function") {{
+                  bridge.logEvent({{
+                    type: "mark_stroke",
+                    label: "Mark (stroke)",
+                    pageNum: anchor.pageNum || state.pageNum,
+                    offsetFrac: (typeof anchor.offsetFrac === "number" && isFinite(anchor.offsetFrac)) ? anchor.offsetFrac : 0,
+                  }});
+                }}
+              }} catch (e) {{}}
             }}
             try {{ canvas.releasePointerCapture(ev.pointerId); }} catch (e) {{}}
             ev.preventDefault();
@@ -2103,6 +2420,19 @@ class PdfViewerWidget(QtWidgets.QWidget):
             window.__annolidMarks.undo.push({{ type: "highlight", pageNum }});
             _annolidRenderMarks(pageNum);
           }}
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(650);
+          try {{
+            const anchor = (typeof _annolidGetScrollAnchor === "function") ? _annolidGetScrollAnchor() : null;
+            const bridge = window.__annolidBridge;
+            if (bridge && typeof bridge.logEvent === "function") {{
+              bridge.logEvent({{
+                type: "mark_highlight",
+                label: "Mark (highlight)",
+                pageNum: anchor ? (anchor.pageNum || 1) : 1,
+                offsetFrac: anchor ? (anchor.offsetFrac || 0) : 0,
+              }});
+            }}
+          }} catch (e) {{}}
         }}
 
         function _annolidUndo() {{
@@ -2112,6 +2442,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
           if (op.type === "stroke") state.marks.strokes.pop();
           if (op.type === "highlight") state.marks.highlights.pop();
           _annolidRenderMarks(op.pageNum);
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(650);
         }}
 
         function _annolidClearMarks() {{
@@ -2124,6 +2455,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             state.marks.highlights = [];
             _annolidRenderMarks(state.pageNum);
           }});
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(650);
         }}
 
         // Toolbar bindings.
@@ -2133,6 +2465,18 @@ class PdfViewerWidget(QtWidgets.QWidget):
         const highlightBtn = document.getElementById("annolidHighlightSelection");
         const undoBtn = document.getElementById("annolidUndo");
         const clearBtn = document.getElementById("annolidClear");
+        const bookmarkBtn = document.getElementById("annolidBookmarkBtn");
+        const notesBtn = document.getElementById("annolidNotesBtn");
+        const notesModal = document.getElementById("annolidNotesModal");
+        const notesSearch = document.getElementById("annolidNotesSearch");
+        const bookmarksList = document.getElementById("annolidBookmarksList");
+        const notesList = document.getElementById("annolidNotesList");
+        const noteMeta = document.getElementById("annolidNoteMeta");
+        const noteEditor = document.getElementById("annolidNoteEditor");
+        const noteAddBtn = document.getElementById("annolidNoteAdd");
+        const noteDeleteBtn = document.getElementById("annolidNoteDelete");
+        const noteSaveBtn = document.getElementById("annolidNoteSave");
+        const noteCloseBtn = document.getElementById("annolidNoteClose");
         const colorInput = document.getElementById("annolidColor");
         const sizeInput = document.getElementById("annolidSize");
         const colorInline = document.getElementById("annolidColorInline");
@@ -2147,18 +2491,22 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
         function _annolidSetStrokeColor(value) {{
           const color = value || "#ffb300";
+          const prev = window.__annolidMarks.color;
           window.__annolidMarks.color = color;
           if (colorInput && colorInput.value !== color) colorInput.value = color;
           if (colorInline && colorInline.value !== color) colorInline.value = color;
+          if (prev !== color && window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(700);
         }}
 
         function _annolidSetStrokeSize(value) {{
           const v = parseFloat(value);
           const clamped = isFinite(v) ? Math.max(2, Math.min(24, v)) : 10;
+          const prev = window.__annolidMarks.size;
           window.__annolidMarks.size = clamped;
           const str = String(clamped);
           if (sizeInput && sizeInput.value !== str) sizeInput.value = str;
           if (sizeInline && sizeInline.value !== str) sizeInline.value = str;
+          if (prev !== clamped && window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(700);
         }}
 
         if (colorInput) {{
@@ -2187,6 +2535,359 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
         _annolidSetTool("select");
         window.__annolidSetReaderEnabled(window.__annolidReaderEnabled);
+
+        // ---- Bookmarks & notes ----------------------------------------------
+        let _annolidActiveNoteId = null;
+
+        function _annolidEnsureUserState() {{
+          if (!window.__annolidUserState || typeof window.__annolidUserState !== "object") {{
+            window.__annolidUserState = _annolidNormalizeUserState({{}});
+          }}
+          if (!Array.isArray(window.__annolidUserState.bookmarks)) window.__annolidUserState.bookmarks = [];
+          if (!Array.isArray(window.__annolidUserState.notes)) window.__annolidUserState.notes = [];
+          return window.__annolidUserState;
+        }}
+
+        function _annolidNowSec() {{
+          return annolidNowMs() / 1000.0;
+        }}
+
+        function _annolidRandomId(prefix) {{
+          try {{
+            if (window.crypto && typeof window.crypto.randomUUID === "function") {{
+              return String(prefix || "id") + ":" + window.crypto.randomUUID();
+            }}
+          }} catch (e) {{}}
+          return String(prefix || "id") + ":" + Math.random().toString(16).slice(2) + ":" + String(annolidNowMs());
+        }}
+
+        function _annolidIsBookmarked(pageNum) {{
+          const state = _annolidEnsureUserState();
+          const p = parseInt(pageNum, 10) || 1;
+          return (state.bookmarks || []).some((b) => (parseInt(b.pageNum, 10) || 0) === p);
+        }}
+
+        function _annolidUpdateBookmarkButton() {{
+          if (!bookmarkBtn) return;
+          const current = (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 1;
+          const active = _annolidIsBookmarked(current);
+          bookmarkBtn.textContent = active ? "★" : "☆";
+          bookmarkBtn.classList.toggle("annolid-active", active);
+        }}
+
+        function _annolidToggleBookmark() {{
+          const state = _annolidEnsureUserState();
+          const current = (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 1;
+          const p = parseInt(current, 10) || 1;
+          const existingIdx = (state.bookmarks || []).findIndex((b) => (parseInt(b.pageNum, 10) || 0) === p);
+          if (existingIdx >= 0) {{
+            state.bookmarks.splice(existingIdx, 1);
+          }} else {{
+            state.bookmarks.push({{
+              pageNum: p,
+              page: Math.max(0, p - 1),
+              title: `Page ${{p}}`,
+              createdAt: _annolidNowSec(),
+            }});
+            state.bookmarks.sort((a, b) => (parseInt(a.pageNum, 10) || 0) - (parseInt(b.pageNum, 10) || 0));
+          }}
+          window.__annolidUserState = state;
+          _annolidUpdateBookmarkButton();
+          _annolidUpdatePersistenceButtons();
+          try {{
+            if (notesModal && notesModal.classList.contains("annolid-open")) _annolidRenderNotesUi();
+          }} catch (e) {{}}
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(500);
+          try {{
+            const bridge = window.__annolidBridge;
+            if (bridge && typeof bridge.logEvent === "function") {{
+              const kind = (existingIdx >= 0) ? "bookmark_remove" : "bookmark_add";
+              const anchor = (typeof _annolidGetScrollAnchor === "function") ? _annolidGetScrollAnchor() : {{ pageNum: p, offsetFrac: 0 }};
+              bridge.logEvent({{
+                type: kind,
+                label: (kind === "bookmark_add") ? "Bookmark added" : "Bookmark removed",
+                pageNum: anchor.pageNum || p,
+                offsetFrac: anchor.offsetFrac || 0,
+              }});
+            }}
+          }} catch (e) {{}}
+        }}
+
+        function _annolidOpenNotesModal() {{
+          if (!notesModal) return;
+          notesModal.classList.add("annolid-open");
+          _annolidRenderNotesUi();
+          try {{
+            if (notesSearch) notesSearch.focus();
+          }} catch (e) {{}}
+        }}
+
+        function _annolidCloseNotesModal() {{
+          if (!notesModal) return;
+          notesModal.classList.remove("annolid-open");
+        }}
+
+        function _annolidSetActiveNote(noteId) {{
+          _annolidActiveNoteId = noteId ? String(noteId) : null;
+          const state = _annolidEnsureUserState();
+          const note = (state.notes || []).find((n) => String(n.id || "") === String(_annolidActiveNoteId || ""));
+          if (noteEditor) {{
+            noteEditor.value = note ? String(note.text || "") : "";
+          }}
+          if (noteMeta) {{
+            if (!note) {{
+              noteMeta.textContent = "Select a note to view/edit.";
+            }} else {{
+              const pageNum = parseInt(note.pageNum, 10) || 1;
+              const snippet = String(note.snippet || "").trim();
+              const created = note.createdAt ? new Date((Number(note.createdAt) || 0) * 1000).toLocaleString() : "";
+              noteMeta.textContent = `Page ${{pageNum}}\\n${{created}}\\n\\n${{snippet || "(no selection)"}}`;
+            }}
+          }}
+          _annolidRenderNotesUi();
+        }}
+
+        function _annolidJumpToPage(pageNum) {{
+          try {{
+            const p = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+            _annolidGoToPage(p);
+          }} catch (e) {{}}
+        }}
+
+        function _annolidRenderNotesUi() {{
+          const state = _annolidEnsureUserState();
+          const q = notesSearch ? String(notesSearch.value || "").trim().toLowerCase() : "";
+
+          function matches(text) {{
+            if (!q) return true;
+            return String(text || "").toLowerCase().includes(q);
+          }}
+
+          if (bookmarksList) {{
+            bookmarksList.innerHTML = "";
+            const list = (state.bookmarks || []).filter((b) => matches(b.title) || matches("page " + b.pageNum));
+            if (!list.length) {{
+              const empty = document.createElement("div");
+              empty.className = "annolid-muted";
+              empty.textContent = "No bookmarks yet.";
+              bookmarksList.appendChild(empty);
+            }} else {{
+              list.forEach((b) => {{
+                const btn = document.createElement("button");
+                btn.className = "annolid-notes-item";
+                const pageNum = parseInt(b.pageNum, 10) || 1;
+                btn.innerHTML = `<div style="min-width:0"><div class="annolid-notes-item-title">★ ${{_annolidNormalizeText(b.title || ("Page " + pageNum))}}</div></div><div class="annolid-notes-item-meta">p${{pageNum}}</div>`;
+                btn.addEventListener("click", () => _annolidJumpToPage(pageNum));
+                bookmarksList.appendChild(btn);
+              }});
+            }}
+          }}
+
+          if (notesList) {{
+            notesList.innerHTML = "";
+            const list = (state.notes || []).filter((n) => matches(n.text) || matches(n.snippet) || matches("page " + n.pageNum));
+            if (!list.length) {{
+              const empty = document.createElement("div");
+              empty.className = "annolid-muted";
+              empty.textContent = "No notes yet. Select text and click Add.";
+              notesList.appendChild(empty);
+            }} else {{
+              list.forEach((n) => {{
+                const btn = document.createElement("button");
+                const active = _annolidActiveNoteId && String(n.id || "") === String(_annolidActiveNoteId);
+                btn.className = "annolid-notes-item" + (active ? " annolid-active" : "");
+                const pageNum = parseInt(n.pageNum, 10) || 1;
+                const title = _annolidNormalizeText((n.text || n.snippet || "").toString()).slice(0, 70) || "Note";
+                const sub = _annolidNormalizeText((n.snippet || "").toString()).slice(0, 90);
+                btn.innerHTML = `<div style="min-width:0"><div class="annolid-notes-item-title">${{title}}</div><div class="annolid-notes-item-sub">${{sub}}</div></div><div class="annolid-notes-item-meta">p${{pageNum}}</div>`;
+                btn.addEventListener("click", () => {{
+                  _annolidSetActiveNote(n.id);
+                  _annolidJumpToPage(pageNum);
+                }});
+                notesList.appendChild(btn);
+              }});
+            }}
+          }}
+
+          if (noteDeleteBtn) {{
+            noteDeleteBtn.disabled = !_annolidActiveNoteId;
+          }}
+          if (noteSaveBtn) {{
+            noteSaveBtn.disabled = !_annolidActiveNoteId;
+          }}
+        }}
+
+        function _annolidAddNoteFromSelection() {{
+          const state = _annolidEnsureUserState();
+          const anchor = (typeof _annolidGetScrollAnchor === "function") ? _annolidGetScrollAnchor() : {{ pageNum: (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 1, offsetFrac: 0 }};
+          const selectionText = _annolidNormalizeText(window.__annolidSelection || "");
+          const id = _annolidRandomId("note");
+          const createdAt = _annolidNowSec();
+          const note = {{
+            id,
+            pageNum: anchor.pageNum || 1,
+            page: Math.max(0, (anchor.pageNum || 1) - 1),
+            offsetFrac: (typeof anchor.offsetFrac === "number" && isFinite(anchor.offsetFrac)) ? anchor.offsetFrac : 0,
+            snippet: selectionText.slice(0, 400),
+            text: "",
+            createdAt,
+            updatedAt: createdAt,
+          }};
+
+          // Optionally attach a light highlight to the selected text for context.
+          try {{
+            const indices = window.__annolidSelectionSpans || [];
+            if (indices && indices.length) {{
+              const grouped = {{}};
+              for (const idx of indices) {{
+                const meta = _annolidGetSpanMeta(idx);
+                if (!meta) continue;
+                const key = String(meta.pageNum);
+                if (!grouped[key]) grouped[key] = [];
+                grouped[key].push({{ x: meta.x, y: meta.y, w: meta.w, h: meta.h }});
+              }}
+              const color = window.__annolidMarks.color || "#ffb300";
+              for (const key of Object.keys(grouped)) {{
+                const pageNum = parseInt(key, 10) || 0;
+                if (!pageNum) continue;
+                const st = _annolidGetPageState(pageNum);
+                st.marks.highlights.push({{
+                  id,
+                  kind: "note",
+                  rects: grouped[key],
+                  color,
+                  alpha: 0.18,
+                }});
+                _annolidRenderMarks(pageNum);
+              }}
+            }}
+          }} catch (e) {{}}
+
+          state.notes.unshift(note);
+          window.__annolidUserState = state;
+          _annolidUpdatePersistenceButtons();
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(450);
+          try {{
+            const bridge = window.__annolidBridge;
+            if (bridge && typeof bridge.logEvent === "function") {{
+              bridge.logEvent({{
+                type: "note_add",
+                label: "Note added",
+                noteId: id,
+                pageNum: note.pageNum || 1,
+                offsetFrac: note.offsetFrac || 0,
+                snippet: note.snippet || "",
+              }});
+            }}
+          }} catch (e) {{}}
+          _annolidOpenNotesModal();
+          _annolidSetActiveNote(id);
+          try {{
+            if (noteEditor) noteEditor.focus();
+          }} catch (e) {{}}
+        }}
+
+        function _annolidSaveActiveNote() {{
+          const state = _annolidEnsureUserState();
+          if (!_annolidActiveNoteId) return;
+          const idx = (state.notes || []).findIndex((n) => String(n.id || "") === String(_annolidActiveNoteId));
+          if (idx < 0) return;
+          const note = state.notes[idx];
+          note.text = noteEditor ? String(noteEditor.value || "") : String(note.text || "");
+          note.updatedAt = _annolidNowSec();
+          state.notes[idx] = note;
+          window.__annolidUserState = state;
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(450);
+          _annolidRenderNotesUi();
+          try {{
+            const bridge = window.__annolidBridge;
+            if (bridge && typeof bridge.logEvent === "function") {{
+              bridge.logEvent({{
+                type: "note_save",
+                label: "Note saved",
+                noteId: note.id || "",
+                pageNum: parseInt(note.pageNum, 10) || 1,
+                offsetFrac: parseFloat(note.offsetFrac || 0) || 0,
+                snippet: note.snippet || "",
+              }});
+            }}
+          }} catch (e) {{}}
+        }}
+
+        function _annolidDeleteActiveNote() {{
+          const state = _annolidEnsureUserState();
+          if (!_annolidActiveNoteId) return;
+          const id = String(_annolidActiveNoteId);
+          state.notes = (state.notes || []).filter((n) => String(n.id || "") !== id);
+          window.__annolidUserState = state;
+          // Remove associated highlights.
+          try {{
+            const pages = window.__annolidPages || {{}};
+            Object.keys(pages).forEach((key) => {{
+              const st = pages[key];
+              if (!st || !st.marks || !Array.isArray(st.marks.highlights)) return;
+              st.marks.highlights = st.marks.highlights.filter((hl) => String(hl.id || "") !== id);
+              _annolidRenderMarks(st.pageNum);
+            }});
+          }} catch (e) {{}}
+          _annolidActiveNoteId = null;
+          if (noteEditor) noteEditor.value = "";
+          if (noteMeta) noteMeta.textContent = "Select a note to view/edit.";
+          _annolidUpdatePersistenceButtons();
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(450);
+          _annolidRenderNotesUi();
+          try {{
+            const bridge = window.__annolidBridge;
+            if (bridge && typeof bridge.logEvent === "function") {{
+              bridge.logEvent({{
+                type: "note_delete",
+                label: "Note deleted",
+                noteId: id,
+              }});
+            }}
+          }} catch (e) {{}}
+        }}
+
+        window.__annolidOpenNotesAndSelect = function(noteId) {{
+          try {{
+            _annolidOpenNotesModal();
+            if (noteId) {{
+              _annolidSetActiveNote(String(noteId));
+            }}
+          }} catch (e) {{}}
+        }};
+
+        if (bookmarkBtn) bookmarkBtn.addEventListener("click", _annolidToggleBookmark);
+        if (notesBtn) notesBtn.addEventListener("click", _annolidOpenNotesModal);
+        if (noteCloseBtn) noteCloseBtn.addEventListener("click", _annolidCloseNotesModal);
+        if (noteAddBtn) noteAddBtn.addEventListener("click", _annolidAddNoteFromSelection);
+        if (noteSaveBtn) noteSaveBtn.addEventListener("click", _annolidSaveActiveNote);
+        if (noteDeleteBtn) noteDeleteBtn.addEventListener("click", _annolidDeleteActiveNote);
+        if (notesSearch) notesSearch.addEventListener("input", _annolidRenderNotesUi);
+        if (noteEditor) noteEditor.addEventListener("input", () => {{
+          const state = _annolidEnsureUserState();
+          if (!_annolidActiveNoteId) return;
+          const idx = (state.notes || []).findIndex((n) => String(n.id || "") === String(_annolidActiveNoteId));
+          if (idx < 0) return;
+          const note = state.notes[idx];
+          note.text = String(noteEditor.value || "");
+          note.updatedAt = _annolidNowSec();
+          state.notes[idx] = note;
+          window.__annolidUserState = state;
+          _annolidRenderNotesUi();
+          if (window.__annolidRequestSaveUserState) window.__annolidRequestSaveUserState(900);
+        }});
+        if (notesModal) {{
+          notesModal.addEventListener("click", (ev) => {{
+            if (ev.target === notesModal) _annolidCloseNotesModal();
+          }});
+        }}
+        document.addEventListener("keydown", (ev) => {{
+          if (ev.key === "Escape") {{
+            _annolidCloseNotesModal();
+          }}
+        }});
+        _annolidUpdateBookmarkButton();
 
         function _annolidNormalizeText(text) {{
           // Normalize whitespace and drop discretionary (soft) hyphens.
@@ -2956,7 +3657,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        const pdf = await loadingTask.promise;
 	        window.__annolidPdf = pdf;
 	        window.__annolidPdfLoaded = true;
-	        const container = document.getElementById("viewerContainer");
+	        var container = document.getElementById("viewerContainer");
 	        const MIN_SCALE = 0.25;
 	        const MAX_SCALE = 4.0;
 	        const DEFAULT_SCALE = 1.25;
@@ -2969,6 +3670,63 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        let pendingZoom = null;
 	        const total = pdf.numPages || 1;
 	        window.__annolidTotalPages = total;
+        // Load persisted user state (disk via Qt bridge, plus localStorage).
+        const initialStateRaw = (window.__annolidInitialUserState && typeof window.__annolidInitialUserState === "object")
+          ? window.__annolidInitialUserState
+          : null;
+        const localStateRaw = _annolidGetStoredUserState();
+        let annolidUserState = _annolidNormalizeUserState(
+          _annolidPickNewestState(
+            _annolidNormalizeUserState(initialStateRaw || {{}}),
+            _annolidNormalizeUserState(localStateRaw || {{}}),
+          ) || (initialStateRaw || localStateRaw || {{}})
+        );
+        try {{
+          const bridgeStateRaw = await _annolidFetchBridgeUserState();
+          if (bridgeStateRaw) {{
+            const bridgeState = _annolidNormalizeUserState(bridgeStateRaw);
+            const chosen = _annolidPickNewestState(annolidUserState, bridgeState) || annolidUserState;
+            annolidUserState = _annolidNormalizeUserState(_annolidMergeUserState(chosen, bridgeState));
+            annolidUserState.updatedAt = Math.max(
+              annolidUserState.updatedAt || 0,
+              bridgeState.updatedAt || 0,
+            );
+          }}
+        }} catch (e) {{}}
+        window.__annolidUserState = annolidUserState;
+        // Apply persisted reading view (scale/rotation) early so rendering uses it.
+        try {{
+          const reading = (annolidUserState && annolidUserState.reading) ? annolidUserState.reading : {{}};
+          if (reading && typeof reading.zoom === "number" && isFinite(reading.zoom)) {{
+            scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, reading.zoom));
+          }}
+          if (reading && typeof reading.rotation === "number" && isFinite(reading.rotation)) {{
+            rotation = reading.rotation;
+          }}
+        }} catch (e) {{}}
+        // Apply persisted marks to page states (they will render as pages appear).
+        try {{
+          const marks = (annolidUserState && annolidUserState.marks) ? annolidUserState.marks : null;
+          const pages = marks && marks.pages ? marks.pages : null;
+          if (pages && typeof pages === "object") {{
+            for (const key of Object.keys(pages)) {{
+              const entry = pages[key];
+              const pageNum = parseInt(key, 10) || 0;
+              if (!pageNum || !entry) continue;
+              const st = _annolidGetPageState(pageNum);
+              const strokes = entry.strokes || [];
+              const highlights = entry.highlights || [];
+              st.marks.strokes = Array.isArray(strokes) ? strokes : [];
+              st.marks.highlights = Array.isArray(highlights) ? highlights : [];
+            }}
+          }}
+        }} catch (e) {{}}
+        // Apply persisted tool defaults.
+        try {{
+          const tool = (annolidUserState && annolidUserState.tool) ? annolidUserState.tool : {{}};
+          if (tool && typeof tool.color === "string" && tool.color) window.__annolidMarks.color = tool.color;
+          if (tool && typeof tool.size === "number" && isFinite(tool.size)) window.__annolidMarks.size = tool.size;
+        }} catch (e) {{}}
         let pdfObjectUrl = null;
         let pdfObjectUrlPromise = null;
 	
@@ -2986,6 +3744,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
         const printBtn = document.getElementById("annolidPrint");
         const menuBtn = document.getElementById("annolidMenuBtn");
         const menuPanel = document.getElementById("annolidMenuPanel");
+        const resumeBtn = document.getElementById("annolidResumeBtn");
+        const clearStateBtn = document.getElementById("annolidClearStateBtn");
         const previewModal = document.getElementById("annolidPreviewModal");
         const previewCloseBtn = document.getElementById("annolidPreviewClose");
         const previewZoomOutBtn = document.getElementById("annolidPreviewZoomOut");
@@ -3025,6 +3785,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        if (titleEl) titleEl.textContent = pdfTitle || "PDF";
 	        if (totalPagesEl) totalPagesEl.textContent = String(total);
 	        if (pageInput) pageInput.setAttribute("max", String(total));
+        _annolidUpdatePersistenceButtons();
 	
 	        function _annolidClampScale(value) {{
 	          const v = parseFloat(value);
@@ -3083,6 +3844,116 @@ class PdfViewerWidget(QtWidgets.QWidget):
           return url || pdfUrl;
         }}
 
+	        function _annolidGetSavedAnchor() {{
+	          const state = window.__annolidUserState || {{}};
+	          const reading = state.reading || {{}};
+	          const pageNum = parseInt(reading.pageNum || ((typeof reading.page === "number") ? (reading.page + 1) : 1), 10) || 1;
+	          const frac = (typeof reading.offsetFrac === "number" && isFinite(reading.offsetFrac)) ? reading.offsetFrac : 0;
+	          return {{
+	            pageNum: Math.max(1, Math.min(total, pageNum)),
+	            offsetFrac: Math.max(0, Math.min(1, frac)),
+	          }};
+	        }}
+
+        function _annolidGetStoppedAnchor() {{
+          const state = window.__annolidUserState || {{}};
+          const stopped = state.readingStopped || {{}};
+          const pageNum = parseInt(stopped.pageNum || 0, 10) || 0;
+          const frac = (typeof stopped.offsetFrac === "number" && isFinite(stopped.offsetFrac)) ? stopped.offsetFrac : 0;
+          if (!pageNum) return null;
+          return {{
+            pageNum: Math.max(1, Math.min(total, pageNum)),
+            offsetFrac: Math.max(0, Math.min(1, frac)),
+          }};
+        }}
+
+        function _annolidGetResumeAnchor() {{
+          return _annolidGetStoppedAnchor() || _annolidGetSavedAnchor();
+        }}
+
+        function _annolidHasSavedState() {{
+          try {{
+            const state = window.__annolidUserState || {{}};
+            const anchor = _annolidGetSavedAnchor();
+            const hasProgress = anchor.pageNum > 1 || anchor.offsetFrac > 0.02;
+            const hasBookmarks = Array.isArray(state.bookmarks) && state.bookmarks.length > 0;
+            const hasNotes = Array.isArray(state.notes) && state.notes.length > 0;
+            const marks = state.marks && state.marks.pages ? state.marks.pages : null;
+            const hasMarks = marks && typeof marks === "object" && Object.keys(marks).length > 0;
+            return hasProgress || hasBookmarks || hasNotes || hasMarks;
+          }} catch (e) {{
+            return false;
+          }}
+        }}
+
+	        async function _annolidResumeFromSavedState(force) {{
+	          try {{
+	            const anchor = _annolidGetResumeAnchor();
+	            if (anchor.pageNum <= 1 && anchor.offsetFrac <= 0.02) return;
+	            if (!force && anchor.pageNum > 12) {{
+	              // Avoid rendering hundreds of pages on startup; user can click Resume.
+	              return;
+	            }}
+	            await _annolidEnsureRenderedThrough(anchor.pageNum);
+	            _annolidScrollToPage(anchor.pageNum, anchor.offsetFrac);
+	            _annolidUpdateNavState();
+	            try {{
+	              const bridge = window.__annolidBridge;
+	              if (bridge && typeof bridge.logEvent === "function") {{
+	                bridge.logEvent({{
+	                  type: "resume",
+	                  label: "Resume reading",
+	                  pageNum: anchor.pageNum || 1,
+	                  offsetFrac: anchor.offsetFrac || 0,
+	                }});
+	              }}
+	            }} catch (e) {{}}
+	          }} catch (e) {{}}
+	        }}
+
+	        function _annolidUpdatePersistenceButtons() {{
+	          if (resumeBtn) {{
+	            const anchor = _annolidGetResumeAnchor();
+	            const show = anchor.pageNum > 1 || anchor.offsetFrac > 0.02;
+	            resumeBtn.classList.toggle("annolid-hidden", !show);
+	            if (show) {{
+	              resumeBtn.textContent = `Resume reading (page ${{anchor.pageNum}})`;
+	            }}
+	          }}
+	          if (clearStateBtn) {{
+	            clearStateBtn.classList.toggle("annolid-hidden", !_annolidHasSavedState());
+	          }}
+	        }}
+
+        function _annolidClearSavedState() {{
+          window.__annolidSuppressAutosave = true;
+          try {{
+            if (_annolidSaveTimer) {{
+              clearTimeout(_annolidSaveTimer);
+              _annolidSaveTimer = null;
+            }}
+          }} catch (e) {{}}
+          try {{
+            if (annolidStorageKey) localStorage.removeItem(annolidStorageKey);
+          }} catch (e) {{}}
+          try {{
+            _annolidClearBridgeUserState();
+          }} catch (e) {{}}
+          try {{
+            window.__annolidUserState = _annolidNormalizeUserState({{}});
+          }} catch (e) {{}}
+          try {{
+            _annolidClearMarks();
+          }} catch (e) {{}}
+          try {{
+            if (typeof _annolidUpdateBookmarkButton === "function") _annolidUpdateBookmarkButton();
+          }} catch (e) {{}}
+          try {{
+            _annolidUpdatePersistenceButtons();
+          }} catch (e) {{}}
+          window.__annolidSuppressAutosave = false;
+        }}
+
         function _annolidCloseMenu() {{
           if (menuPanel) menuPanel.classList.remove("annolid-open");
         }}
@@ -3106,6 +3977,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
           if (!action) return;
           _annolidCloseMenu();
           switch (action) {{
+            case "resume":
+              _annolidResumeFromSavedState(true);
+              break;
             case "first-page":
               _annolidGoToPage(1);
               break;
@@ -3117,6 +3991,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
               break;
             case "print":
               _annolidPrintPdf().catch(() => {{}});
+              break;
+            case "clear-state":
+              _annolidClearSavedState();
               break;
             default:
               break;
@@ -3960,6 +4837,117 @@ class PdfViewerWidget(QtWidgets.QWidget):
           }});
         }}
 
+        // --- Persistence helpers (progress, marks, notes, bookmarks) ---------
+        let _annolidSaveTimer = null;
+        function _annolidExportUserState() {{
+          const base = _annolidNormalizeUserState(window.__annolidUserState || {{}});
+          const anchor = (typeof _annolidGetScrollAnchor === "function")
+            ? _annolidGetScrollAnchor()
+            : {{ pageNum: (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 1, offsetFrac: 0 }};
+          base.updatedAt = annolidNowMs() / 1000.0;
+          base.reading = base.reading || {{}};
+          base.reading.pageNum = anchor.pageNum || 1;
+          base.reading.page = Math.max(0, (anchor.pageNum || 1) - 1);
+          base.reading.offsetFrac = (typeof anchor.offsetFrac === "number" && isFinite(anchor.offsetFrac)) ? anchor.offsetFrac : 0;
+          base.reading.zoom = scale;
+          base.reading.rotation = rotation;
+          base.tool = {{
+            color: window.__annolidMarks && window.__annolidMarks.color ? window.__annolidMarks.color : "#ffb300",
+            size: window.__annolidMarks && typeof window.__annolidMarks.size === "number" ? window.__annolidMarks.size : 10,
+          }};
+          const pagesRaw = window.__annolidPages || {{}};
+          const pages = {{}};
+          for (const key of Object.keys(pagesRaw)) {{
+            const st = pagesRaw[key];
+            if (!st || !st.marks) continue;
+            const strokes = st.marks.strokes || [];
+            const highlights = st.marks.highlights || [];
+            if ((strokes && strokes.length) || (highlights && highlights.length)) {{
+              pages[String(st.pageNum || key)] = {{
+                strokes: strokes,
+                highlights: highlights,
+              }};
+            }}
+          }}
+          base.marks = {{
+            pages,
+            view: {{ zoom: scale, rotation }},
+          }};
+          if (!Array.isArray(base.bookmarks)) base.bookmarks = [];
+          if (!Array.isArray(base.notes)) base.notes = [];
+          return base;
+        }}
+        function _annolidFlushSaveUserState() {{
+          try {{
+            if (window.__annolidSuppressAutosave) return;
+            const state = _annolidExportUserState();
+            window.__annolidUserState = state;
+            _annolidSetStoredUserState(state);
+            _annolidSendBridgeUserState(state);
+          }} catch (e) {{}}
+        }}
+        function _annolidRequestSaveUserState(delayMs) {{
+          if (window.__annolidSuppressAutosave) return;
+          const delay = Math.max(200, parseInt(delayMs || 0, 10) || 900);
+          if (_annolidSaveTimer) clearTimeout(_annolidSaveTimer);
+          _annolidSaveTimer = setTimeout(() => {{
+            _annolidSaveTimer = null;
+            _annolidFlushSaveUserState();
+          }}, delay);
+        }}
+        window.__annolidExportUserState = _annolidExportUserState;
+        window.__annolidRequestSaveUserState = _annolidRequestSaveUserState;
+        window.addEventListener("beforeunload", () => _annolidFlushSaveUserState());
+
+        window.__annolidStartReaderAtAnchor = async function(pageNum, offsetFrac) {{
+          try {{
+            if (!window.__annolidBridge || typeof window.__annolidBridge.onParagraphClicked !== "function") return false;
+            const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+            const frac = isFinite(offsetFrac) ? Math.max(0, Math.min(1, offsetFrac)) : 0;
+            if (window.__annolidScrollToAnchor) {{
+              await window.__annolidScrollToAnchor(target, frac);
+            }} else {{
+              await _annolidEnsurePageAvailable(target);
+              _annolidScrollToPage(target, frac);
+            }}
+
+            let pageParas = window.__annolidParagraphsByPage[String(target)];
+            if (!pageParas || !pageParas.length) {{
+              pageParas = _annolidBuildParagraphsForPage(target);
+              _annolidRebuildParagraphIndex();
+            }}
+            if (!pageParas || !pageParas.length) {{
+              await _annolidBuildTextParagraphsForPage(target);
+              await _annolidEnsureParagraphsFrom(target);
+              pageParas = window.__annolidParagraphsByPage[String(target)] || [];
+            }}
+            if (!pageParas || !pageParas.length) return false;
+
+            const paraIndex = Math.max(
+              0,
+              Math.min(pageParas.length - 1, Math.floor(frac * pageParas.length))
+            );
+            await _annolidEnsureParagraphsFrom(target);
+            const offset = window.__annolidParagraphOffsets[target] || 0;
+            const startIndex = offset + paraIndex;
+            const remaining = window.__annolidParagraphs.slice(startIndex).map((p) => ({{
+              text: p.text || "",
+              spans: p.spans || [],
+              pageNum: (parseInt(p.pageNum || p.page || 0, 10) || target),
+            }}));
+            if (!remaining.length) return false;
+
+            window.__annolidBridge.onParagraphClicked({{
+              startIndex,
+              total: window.__annolidParagraphTotal || (startIndex + remaining.length),
+              paragraphs: remaining,
+            }});
+            return true;
+          }} catch (e) {{
+            return false;
+          }}
+        }};
+
 	        function _annolidQueueRender(fn) {{
 	          const myEpoch = renderEpoch;
 	          const task = renderChain.then(async () => {{
@@ -4004,6 +4992,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          _annolidSetDisabled(prevPageBtn, current <= 1);
 	          _annolidSetDisabled(nextPageBtn, current >= total);
 	          _annolidUpdateZoomLabel();
+          try {{
+            if (typeof _annolidUpdateBookmarkButton === "function") _annolidUpdateBookmarkButton();
+          }} catch (e) {{}}
+          if (window.__annolidRequestSaveUserState) {{
+            window.__annolidRequestSaveUserState(1200);
+          }}
 	        }}
 	
 	        function _annolidScrollToPage(pageNum, offsetFrac) {{
@@ -4096,27 +5090,86 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          }}));
 	        }}
 	
-	        async function _annolidEnsureRenderedThrough(pageNum) {{
-	          const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
-	          return _annolidQueueRender(async (epoch) => {{
-	            while (nextPage <= target && nextPage <= total) {{
-	              await renderPage(nextPage, epoch);
-	              nextPage += 1;
-	              await new Promise(r => setTimeout(r, 0));
-	            }}
-	          }});
-	        }}
-	
-	        async function _annolidGoToPage(pageNum) {{
-	          const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
-	          await _annolidEnsureRenderedThrough(target);
-	          _annolidScrollToPage(target, 0);
-	          _annolidUpdateNavState();
-	        }}
+		        async function _annolidEnsureRenderedThrough(pageNum) {{
+		          const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+		          return _annolidQueueRender(async (epoch) => {{
+		            while (nextPage <= target && nextPage <= total) {{
+		              await renderPage(nextPage, epoch);
+		              nextPage += 1;
+		              await new Promise(r => setTimeout(r, 0));
+		            }}
+		          }});
+		        }}
 
-		        // Expose render helpers for the Qt bridge.
-		        window.__annolidEnsureRenderedThrough = _annolidEnsureRenderedThrough;
-		        window.__annolidGoToPage = _annolidGoToPage;
+            function _annolidIsPageRendered(pageNum) {{
+              if (!container) return false;
+              const n = parseInt(pageNum, 10) || 1;
+              return !!container.querySelector(`.page[data-page-number="${{n}}"]`);
+            }}
+
+            function _annolidResetContainerForJump(startPage) {{
+              if (!container) return;
+              renderEpoch += 1;
+              renderChain = Promise.resolve();
+              nextPage = Math.max(1, Math.min(total, parseInt(startPage, 10) || 1));
+              container.innerHTML = "";
+              window.__annolidSpans = [];
+              window.__annolidSpanCounter = 0;
+              window.__annolidSpanMeta = {{}};
+              window.__annolidLinkTargets = {{}};
+              window.__annolidLinkTargetCounter = 0;
+              window.__annolidRenderedPages = 0;
+              window.__annolidParagraphsByPage = {{}};
+              window.__annolidParagraphOffsets = {{}};
+              window.__annolidParagraphTotal = 0;
+              window.__annolidParagraphs = [];
+              const pages = window.__annolidPages || {{}};
+              Object.keys(pages).forEach((key) => {{
+                const state = pages[key];
+                if (!state) return;
+                state.pageDiv = null;
+                state.width = 0;
+                state.height = 0;
+                state.dpr = 1;
+                state.ttsCanvas = null;
+                state.ttsCtx = null;
+                state.markCanvas = null;
+                state.markCtx = null;
+              }});
+            }}
+
+            async function _annolidEnsurePageAvailable(pageNum) {{
+              const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+              if (_annolidIsPageRendered(target)) return;
+              const current = (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 1;
+              const gap = Math.abs(target - current);
+              // Large jumps: render a small window around the target instead of every prior page.
+              if (gap >= 12) {{
+                _annolidResetContainerForJump(Math.max(1, target - 1));
+              }}
+              await _annolidEnsureRenderedThrough(target);
+            }}
+		
+			        async function _annolidGoToPage(pageNum) {{
+			          const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+			          await _annolidEnsurePageAvailable(target);
+			          _annolidScrollToPage(target, 0);
+			          _annolidUpdateNavState();
+			        }}
+
+	            window.__annolidScrollToAnchor = async function(pageNum, offsetFrac) {{
+	              try {{
+	                const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
+	                const frac = isFinite(offsetFrac) ? Math.max(0, Math.min(1, offsetFrac)) : 0;
+	                await _annolidEnsurePageAvailable(target);
+	                _annolidScrollToPage(target, frac);
+	                _annolidUpdateNavState();
+	              }} catch (e) {{}}
+	            }};
+
+			        // Expose render helpers for the Qt bridge.
+			        window.__annolidEnsureRenderedThrough = _annolidEnsureRenderedThrough;
+			        window.__annolidGoToPage = _annolidGoToPage;
 		        window.__annolidZoomFitWidth = _annolidZoomFitWidth;
 	        window.__annolidRotate = function(delta) {{
 	          const step = isFinite(delta) ? delta : 90;
@@ -4396,7 +5449,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 		          container.addEventListener("dblclick", async (ev) => {{
 		            if (!window.__annolidReaderEnabled) return;
 		            if (!window.__annolidBridge || typeof window.__annolidBridge.onParagraphClicked !== "function") return;
-	            if (window.__annolidMarks && window.__annolidMarks.tool && window.__annolidMarks.tool !== "select") return;
+		            if (window.__annolidMarks && window.__annolidMarks.tool && window.__annolidMarks.tool !== "select") return;
 	            const sel = window.getSelection ? window.getSelection() : null;
 	            // Capture double-click selection to start reading from the exact word position.
 	            let selectedText = "";
@@ -4438,10 +5491,18 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	            if (ev.type === "dblclick" && sel && !sel.isCollapsed) {{
 	              try {{ sel.removeAllRanges(); }} catch (e) {{}}
 	            }}
-	            const pageDiv = ev.target && ev.target.closest ? ev.target.closest(".page") : null;
-	            if (!pageDiv) return;
-	            const pageNum = parseInt(pageDiv.getAttribute("data-page-number") || "0", 10);
-	            if (!pageNum) return;
+		            const pageDiv = ev.target && ev.target.closest ? ev.target.closest(".page") : null;
+		            if (!pageDiv) return;
+		            const pageNum = parseInt(pageDiv.getAttribute("data-page-number") || "0", 10);
+		            if (!pageNum) return;
+		            let clickOffsetFrac = 0.0;
+		            try {{
+		              const pageRect = pageDiv.getBoundingClientRect();
+		              const y = ev.clientY - pageRect.top;
+		              clickOffsetFrac = (pageRect.height > 0) ? Math.max(0, Math.min(1, y / pageRect.height)) : 0;
+		            }} catch (e) {{
+		              clickOffsetFrac = 0.0;
+		            }}
 
           let pageParas = window.__annolidParagraphsByPage[String(pageNum)];
           if (!pageParas || !pageParas.length) {{
@@ -4457,16 +5518,16 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	          }} else if (spanEl && spanEl.dataset && spanEl.dataset.annolidIndex) {{
 	            spanIdx = parseInt(spanEl.dataset.annolidIndex, 10);
 	          }}
-	          let paraIndex = -1;
+		          let paraIndex = -1;
 	          if (spanIdx >= 0) {{
 	            paraIndex = _annolidFindParagraphIndexBySpan(pageNum, spanIdx);
 	          }}
-          if (paraIndex < 0) {{
-            const pageRect = pageDiv.getBoundingClientRect();
-            const x = ev.clientX - pageRect.left;
-            const y = ev.clientY - pageRect.top;
-            paraIndex = _annolidFindParagraphIndexByPoint(pageNum, x, y);
-            if (paraIndex < 0) {{
+	          if (paraIndex < 0) {{
+	            const pageRect = pageDiv.getBoundingClientRect();
+	            const x = ev.clientX - pageRect.left;
+	            const y = ev.clientY - pageRect.top;
+	            paraIndex = _annolidFindParagraphIndexByPoint(pageNum, x, y);
+	            if (paraIndex < 0) {{
               // If textLayer spans are missing, fall back to PDF text extraction.
               await _annolidBuildTextParagraphsForPage(pageNum);
               await _annolidEnsureParagraphsFrom(pageNum);
@@ -4486,8 +5547,21 @@ class PdfViewerWidget(QtWidgets.QWidget):
               spans: p.spans || [],
               pageNum: (parseInt(p.pageNum || p.page || 0, 10) || pageNum),
             }}));
-	            if (!remaining.length) return;
-	            const sentences = [];
+		            if (!remaining.length) return;
+		            try {{
+		              const bridge = window.__annolidBridge;
+		              if (bridge && typeof bridge.logEvent === "function") {{
+		                const anchor = (typeof _annolidGetScrollAnchor === "function") ? _annolidGetScrollAnchor() : null;
+		                bridge.logEvent({{
+		                  type: "dblclick_read",
+		                  label: "Read (double click)",
+		                  pageNum,
+		                  offsetFrac: (clickOffsetFrac || (anchor ? anchor.offsetFrac : 0) || 0),
+		                  snippet: selectedText || (remaining[0] && remaining[0].text ? String(remaining[0].text).slice(0, 160) : ""),
+		                }});
+		              }}
+		            }} catch (e) {{}}
+		            const sentences = [];
 	            const targetSpanIdx = (spanIdx >= 0 && Number.isInteger(spanIdx)) ? spanIdx : null;
 	            let sentenceCursor = 0;
             const splitFallback = (text) => {{
@@ -4595,17 +5669,17 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	              }} catch (e) {{}}
 	            }}
 
-	            window.__annolidBridge.onParagraphClicked({{
-	              startIndex,
-	              total: window.__annolidParagraphTotal || (startIndex + remaining.length),
-	              paragraphs: remaining,
+		            window.__annolidBridge.onParagraphClicked({{
+		              startIndex,
+		              total: window.__annolidParagraphTotal || (startIndex + remaining.length),
+		              paragraphs: remaining,
 	              sentences,
 	              sentenceStartIndex: 0,
 	              sentenceLocalStartIndex: startSentenceIdx,
 	              sentenceTotal: totalSentences,
-	            }});
-	          }});
-	        }}
+		            }});
+		          }});
+		        }}
 
 	        async function renderPage(pageNum, epoch) {{
 	          if (epoch !== renderEpoch) return;
@@ -4796,6 +5870,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
 	        }}
 	
 	        await renderMore(2);
+        await _annolidResumeFromSavedState(false);
+        _annolidUpdatePersistenceButtons();
 	        if (container) {{
 	          let scrollScheduled = false;
 	          container.addEventListener("scroll", () => {{
@@ -4828,10 +5904,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
     <div class="annolid-toolbar-left">
       <button id="annolidMenuBtn" title="Menu" class="annolid-icon-btn">☰</button>
       <div id="annolidMenuPanel">
+        <button data-action="resume" id="annolidResumeBtn" class="annolid-hidden">Resume reading</button>
         <button data-action="first-page">Go to first page</button>
         <button data-action="fit">Fit width</button>
         <button data-action="reset">Reset zoom</button>
         <button data-action="print">Print</button>
+        <span class="annolid-sep"></span>
+        <button data-action="clear-state" id="annolidClearStateBtn" class="annolid-hidden">Clear saved data</button>
       </div>
       <div class="annolid-title" id="annolidTitle">PDF</div>
     </div>
@@ -4839,6 +5918,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
       <button id="annolidPrevPage" title="Previous page">◀</button>
       <input id="annolidPageInput" type="number" value="1" min="1" />
       <button id="annolidNextPage" title="Next page">▶</button>
+      <button id="annolidBookmarkBtn" title="Bookmark this page">☆</button>
       <span>/ <span id="annolidTotalPages">-</span></span>
       <span class="annolid-sep"></span>
       <button id="annolidZoomOut" title="Zoom out">-</button>
@@ -4850,6 +5930,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
       <button id="annolidPrint" title="Print PDF">Print</button>
     </div>
     <div class="annolid-actions" id="annolidActionRow">
+      <div class="annolid-group" data-overflow="auto" id="annolidMetaGroup">
+        <button id="annolidNotesBtn" title="Notes and bookmarks">Notes</button>
+      </div>
       <div class="annolid-group" data-overflow="auto" id="annolidToolsGroup">
         <button id="annolidToolSelect" class="annolid-active" title="Select">Select</button>
         <button id="annolidToolPen" title="Pen">Pen</button>
@@ -4887,6 +5970,38 @@ class PdfViewerWidget(QtWidgets.QWidget):
           <div class="annolid-modal-canvas-wrap" id="annolidPreviewCanvasWrap">
             <canvas id="annolidPreviewCanvas"></canvas>
             <div id="annolidPreviewHighlight"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annolid-modal" id="annolidNotesModal" role="dialog" aria-modal="true">
+    <div class="annolid-modal-content" role="document">
+      <div class="annolid-modal-header">
+        <div class="annolid-modal-title" id="annolidNotesTitle">Notes &amp; Bookmarks</div>
+        <div class="annolid-modal-actions">
+          <button id="annolidNoteAdd" title="Add note from selection">Add</button>
+          <button id="annolidNoteDelete" title="Delete selected note">Delete</button>
+          <button id="annolidNoteSave" title="Save note">Save</button>
+          <button id="annolidNoteClose" title="Close">Close</button>
+        </div>
+      </div>
+      <div class="annolid-modal-body">
+        <div class="annolid-notes-grid">
+          <div class="annolid-notes-left">
+            <input id="annolidNotesSearch" class="annolid-notes-search" type="search" placeholder="Search notes…" />
+            <div class="annolid-notes-section">
+              <div class="annolid-notes-section-title">Bookmarks</div>
+              <div id="annolidBookmarksList" class="annolid-notes-list"></div>
+            </div>
+            <div class="annolid-notes-section">
+              <div class="annolid-notes-section-title">Notes</div>
+              <div id="annolidNotesList" class="annolid-notes-list"></div>
+            </div>
+          </div>
+          <div class="annolid-notes-right">
+            <div id="annolidNoteMeta" class="annolid-notes-meta annolid-muted">Select a note to view/edit.</div>
+            <textarea id="annolidNoteEditor" class="annolid-notes-editor" placeholder="Write a comment…"></textarea>
           </div>
         </div>
       </div>
@@ -4938,6 +6053,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self.text_view.setPlainText(text)
         self.text_view.moveCursor(QtGui.QTextCursor.Start)
         self.page_changed.emit(self._current_page, self._doc.page_count)
+        self._schedule_pdf_user_state_save(
+            {
+                "reading": {
+                    "page": int(self._current_page),
+                    "zoom": float(self._zoom),
+                    "rotation": int(self._rotation),
+                }
+            }
+        )
 
     def _change_page(self, delta: int) -> None:
         if self._doc is None:
@@ -4968,6 +6092,16 @@ class PdfViewerWidget(QtWidgets.QWidget):
         speak_action.triggered.connect(self._request_speak_selection)
         menu.insertAction(
             menu.actions()[0] if menu.actions() else None, speak_action)
+        bookmark_action = QtWidgets.QAction("Bookmark this page", self)
+        bookmark_action.triggered.connect(self._toggle_fallback_bookmark)
+        menu.insertAction(
+            menu.actions()[0] if menu.actions() else None, bookmark_action
+        )
+        note_action = QtWidgets.QAction("Add note…", self)
+        note_action.setEnabled(True)
+        note_action.triggered.connect(self._add_fallback_note)
+        menu.insertAction(
+            menu.actions()[0] if menu.actions() else None, note_action)
         menu.exec_(self.text_view.mapToGlobal(position))
 
     def _show_web_context_menu(self, position: QtCore.QPoint) -> None:
@@ -5160,6 +6294,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
     def stop_reader(self) -> None:
         if self._reader_state in {"reading", "paused"}:
+            self._log_reader_stop_event()
             self._reader_stop_requested = True
             self._reader_pause_requested = False
             self._cancel_speaking()
@@ -5197,6 +6332,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if not self._speaking:
             self._reader_state = "paused"
             self._reader_pause_requested = False
+            self._log_reader_stop_event(
+                kind="reader_pause", label="Reader paused")
             try:
                 self.reader_state_changed.emit(
                     self._reader_state,
@@ -5213,6 +6350,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def _resume_reader(self) -> None:
         if self._reader_state != "paused":
             return
+        self._append_reading_log_event(
+            {"type": "reader_resume", "label": "Reader resumed"}
+        )
         local_index = max(0, self._reader_current_index -
                           self._reader_queue_offset)
         self._start_reader_from_local_index(local_index)
@@ -6081,6 +7221,14 @@ class PdfViewerWidget(QtWidgets.QWidget):
         return bool(self._use_web_engine and self._web_mode_active)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover - GUI cleanup
+        try:
+            self._record_stop_event()
+        except Exception:
+            pass
+        try:
+            self._flush_pdf_user_state_to_disk()
+        except Exception:
+            pass
         if self._doc is not None:
             self._doc.close()
         self._doc = None
@@ -6134,6 +7282,513 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
     def bookmarks(self) -> list[dict[str, object]]:
         return list(self._bookmarks)
+
+    # ---- Persistent reader state (progress, marks, notes) -------------------
+    def _restore_pymupdf_reading_state(self) -> bool:
+        """Apply persisted reading state in PyMuPDF fallback mode.
+
+        Returns True if a specific zoom level was restored (so fit-to-width should be skipped).
+        """
+        state = self._pdf_user_state if isinstance(
+            self._pdf_user_state, dict) else {}
+        reading = state.get("reading") if isinstance(
+            state.get("reading"), dict) else {}
+        restored_zoom = False
+
+        try:
+            page = reading.get("page", 0)
+            if page is None:
+                page = 0
+            page_index = int(page)
+        except Exception:
+            page_index = 0
+
+        try:
+            rotation = int(reading.get("rotation", 0) or 0) % 360
+        except Exception:
+            rotation = 0
+
+        zoom = reading.get("zoom", None)
+        zoom_factor: Optional[float] = None
+        try:
+            if zoom is not None:
+                zoom_factor = float(zoom)
+        except Exception:
+            zoom_factor = None
+
+        if self._doc is not None:
+            try:
+                page_index = max(
+                    0, min(page_index, int(self._doc.page_count) - 1))
+            except Exception:
+                page_index = max(0, page_index)
+        self._current_page = page_index
+        self._rotation = rotation
+        if zoom_factor is not None:
+            self._zoom = max(0.5, min(3.0, float(zoom_factor)))
+            restored_zoom = True
+        return restored_zoom
+
+    @staticmethod
+    def _deep_merge_state(dst: dict[str, object], src: dict[str, object]) -> dict[str, object]:
+        for key, value in (src or {}).items():
+            if (
+                isinstance(value, dict)
+                and isinstance(dst.get(key), dict)
+                and dst.get(key) is not None
+            ):
+                dst[key] = PdfViewerWidget._deep_merge_state(  # type: ignore[arg-type]
+                    dict(dst.get(key) or {}),  # type: ignore[arg-type]
+                    dict(value),
+                )
+            else:
+                dst[key] = value  # type: ignore[assignment]
+        return dst
+
+    def _schedule_pdf_user_state_save(
+        self, update: dict[str, object], *, replace: bool = False
+    ) -> None:
+        if self._pdf_path is None:
+            return
+        if replace:
+            self._pdf_user_state = dict(update or {})
+        else:
+            base = (
+                self._pdf_user_state
+                if isinstance(self._pdf_user_state, dict)
+                else {}
+            )
+            self._pdf_user_state = self._deep_merge_state(
+                dict(base), dict(update or {})
+            )
+        # Debounce writes to disk.
+        self._pdf_user_state_pending = (
+            self._pdf_user_state
+            if isinstance(self._pdf_user_state, dict)
+            else {}
+        )
+        try:
+            self._pdf_user_state_timer.start(800)
+        except Exception:
+            self._flush_pdf_user_state_to_disk()
+
+    def _flush_pdf_user_state_to_disk(self) -> None:
+        if self._pdf_path is None:
+            return
+        pending = (
+            self._pdf_user_state_pending
+            if isinstance(self._pdf_user_state_pending, dict)
+            else None
+        )
+        if not pending:
+            return
+        try:
+            save_pdf_state(self._pdf_path, pending)
+        except Exception:
+            pass
+        self._pdf_user_state_pending = None
+
+    def _append_reading_log_event(self, event: dict[str, object]) -> None:
+        if self._pdf_path is None:
+            return
+        payload = dict(event or {})
+        payload.setdefault("id", "evt:" + uuid.uuid4().hex)
+        payload.setdefault("ts", float(time.time()))
+        if "pageNum" not in payload:
+            try:
+                payload["pageNum"] = int(self._current_page) + 1
+            except Exception:
+                payload["pageNum"] = 0
+        # Optional offset for PDF.js view; set later when available.
+        payload.setdefault("offsetFrac", 0.0)
+
+        self._reading_log.insert(0, payload)
+        self._reading_log = self._reading_log[:600]
+        self._schedule_pdf_user_state_save({"log": list(self._reading_log)})
+        try:
+            self.reading_log_event.emit(payload)
+        except Exception:
+            pass
+
+    def _log_reader_stop_event(
+        self,
+        *,
+        kind: str = "reader_stop",
+        label: str = "Reader stopped",
+    ) -> None:
+        """Log a reader stop/pause event and persist a resume anchor."""
+        # Debounce: stop() + on_speak_finished can happen close together.
+        now = time.time()
+        if (now - float(self._last_reader_stop_log_ts or 0.0)) < 0.4:
+            return
+        self._last_reader_stop_log_ts = now
+
+        page_num = int(self._current_page) + 1
+        snippet = ""
+        try:
+            local_index = int(self._reader_current_index -
+                              self._reader_queue_offset)
+            if 0 <= local_index < len(self._reader_queue):
+                snippet = str(
+                    self._reader_queue[local_index] or "").strip()[:160]
+            if 0 <= local_index < len(self._reader_pages):
+                maybe_page = int(self._reader_pages[local_index] or 0)
+                if maybe_page > 0:
+                    page_num = maybe_page
+        except Exception:
+            pass
+
+        def finalize(offset_frac: float) -> None:
+            offset_frac_clamped = max(0.0, min(1.0, float(offset_frac or 0.0)))
+            self._schedule_pdf_user_state_save(
+                {
+                    "readingStopped": {
+                        "pageNum": int(page_num),
+                        "offsetFrac": offset_frac_clamped,
+                        "ts": float(now),
+                        "snippet": snippet,
+                    }
+                }
+            )
+            self._append_reading_log_event(
+                {
+                    "type": kind,
+                    "label": label,
+                    "pageNum": int(page_num),
+                    "offsetFrac": offset_frac_clamped,
+                    "snippet": snippet,
+                }
+            )
+
+        if self._web_view is not None and self._pdfjs_active:
+            try:
+                self._web_view.page().runJavaScript(
+                    "window.__annolidExportUserState && window.__annolidExportUserState();",
+                    lambda payload: finalize(
+                        float(
+                            (
+                                (payload or {})
+                                .get("reading", {})
+                                .get("offsetFrac", 0.0)
+                                if isinstance(payload, dict)
+                                else 0.0
+                            )
+                        )
+                    ),
+                )
+                return
+            except Exception:
+                pass
+        finalize(0.0)
+
+    def reading_log(self) -> list[dict[str, object]]:
+        return list(self._reading_log)
+
+    def clear_reading_log(self) -> None:
+        self._reading_log = []
+        self._schedule_pdf_user_state_save({"log": []})
+
+    def _record_stop_event(self) -> None:
+        # Best-effort: ask PDF.js for current anchor; fallback to current page.
+        if self._web_view is not None and self._pdfjs_active:
+            def _after(payload: object) -> None:
+                event: dict[str, object] = {
+                    "type": "stop",
+                    "label": "Last stop",
+                }
+                if isinstance(payload, dict):
+                    reading = payload.get("reading")
+                    if isinstance(reading, dict):
+                        try:
+                            event["pageNum"] = int(
+                                reading.get("pageNum", 0) or 0)
+                        except Exception:
+                            pass
+                        try:
+                            event["offsetFrac"] = float(
+                                reading.get("offsetFrac", 0.0) or 0.0)
+                        except Exception:
+                            pass
+                self._append_reading_log_event(event)
+
+            try:
+                self._web_view.page().runJavaScript(
+                    "window.__annolidExportUserState && window.__annolidExportUserState();",
+                    _after,
+                )
+                return
+            except Exception:
+                pass
+        self._append_reading_log_event({"type": "stop", "label": "Last stop"})
+
+    def record_stop_event(self) -> None:
+        self._record_stop_event()
+
+    def go_to_anchor(self, page_num: int, offset_frac: float = 0.0) -> None:
+        """Jump to a page/position for both PDF.js and PyMuPDF fallback."""
+        page_num = int(page_num)
+        offset_frac = float(offset_frac or 0.0)
+        offset_frac = max(0.0, min(1.0, offset_frac))
+        if self._web_view is not None and self._pdfjs_active:
+            try:
+                self._web_view.page().runJavaScript(
+                    f"window.__annolidScrollToAnchor && window.__annolidScrollToAnchor({page_num}, {offset_frac});"
+                )
+            except Exception:
+                pass
+            return
+        if self._doc is None:
+            return
+        target_index = max(0, page_num - 1)
+        try:
+            target_index = min(target_index, int(self._doc.page_count) - 1)
+        except Exception:
+            pass
+        if target_index != self._current_page:
+            self._current_page = target_index
+            self._render_current_page()
+
+    def activate_log_entry(self, entry: dict[str, object]) -> None:
+        """Activate a reading log entry (jump + optional UI focus)."""
+        try:
+            page_num = int(entry.get("pageNum") or 0)
+        except Exception:
+            page_num = 0
+        try:
+            offset = float(entry.get("offsetFrac") or 0.0)
+        except Exception:
+            offset = 0.0
+        if page_num <= 0:
+            page_num = int(self._current_page) + 1
+        self.go_to_anchor(page_num, offset)
+
+        if self._web_view is None or not self._pdfjs_active:
+            return
+        note_id = entry.get("noteId") or entry.get("id")
+        event_type = str(entry.get("type") or "")
+        if event_type.startswith("note_") and note_id:
+            try:
+                self._web_view.page().runJavaScript(
+                    f"window.__annolidOpenNotesAndSelect && window.__annolidOpenNotesAndSelect({json.dumps(str(note_id))});"
+                )
+            except Exception:
+                pass
+        if event_type in {"resume", "dblclick_read"}:
+            # Ensure reader is enabled, then start reading from the stored anchor.
+            try:
+                if not self._reader_enabled:
+                    self.set_reader_enabled(True)
+            except Exception:
+                pass
+            try:
+                self._web_view.page().runJavaScript(
+                    f"window.__annolidStartReaderAtAnchor && window.__annolidStartReaderAtAnchor({page_num}, {offset});"
+                )
+            except Exception:
+                pass
+        if event_type in {"reader_stop", "reader_pause"}:
+            # Resume from the last reader-stopped anchor if available.
+            page_num2 = page_num
+            offset2 = offset
+            try:
+                state = self._pdf_user_state if isinstance(
+                    self._pdf_user_state, dict) else {}
+                stopped = state.get("readingStopped")
+                if isinstance(stopped, dict):
+                    page_num2 = int(stopped.get("pageNum") or page_num2)
+                    offset2 = float(stopped.get("offsetFrac") or offset2)
+            except Exception:
+                pass
+            try:
+                if not self._reader_enabled:
+                    self.set_reader_enabled(True)
+            except Exception:
+                pass
+            try:
+                self._web_view.page().runJavaScript(
+                    f"window.__annolidStartReaderAtAnchor && window.__annolidStartReaderAtAnchor({page_num2}, {offset2});"
+                )
+            except Exception:
+                pass
+
+    def _get_pdf_user_state(self, pdf_key: str) -> object:
+        if not pdf_key or pdf_key != (self._pdf_key or ""):
+            return {}
+        return self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
+
+    def _handle_pdf_user_state_save(self, payload: object) -> None:
+        if self._pdf_path is None:
+            return
+        if not isinstance(payload, dict):
+            return
+        pdf_key = payload.get("pdfKey")
+        if pdf_key and str(pdf_key) != (self._pdf_key or ""):
+            return
+        state = payload.get("state", payload)
+        if not isinstance(state, dict):
+            return
+        merged = dict(state)
+        # Preserve any Python-side log entries if JS did not include them.
+        if "log" not in merged and self._reading_log:
+            merged["log"] = list(self._reading_log)
+        # Preserve reading-stopped anchor if JS did not include it.
+        if (
+            "readingStopped" not in merged
+            and isinstance(self._pdf_user_state, dict)
+            and "readingStopped" in self._pdf_user_state
+        ):
+            merged["readingStopped"] = self._pdf_user_state.get(
+                "readingStopped")
+        try:
+            incoming_log = merged.get("log")
+            if isinstance(incoming_log, list):
+                self._reading_log = [
+                    e for e in incoming_log if isinstance(e, dict)
+                ][:600]
+        except Exception:
+            pass
+        self._schedule_pdf_user_state_save(dict(merged), replace=True)
+
+    def _handle_pdf_log_event(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        # payload may be {type,label,pageNum,offsetFrac,...}
+        event = dict(payload)
+        # Normalize some common fields.
+        try:
+            if "pageNum" in event:
+                event["pageNum"] = int(event.get("pageNum") or 0)
+        except Exception:
+            pass
+        try:
+            if "offsetFrac" in event:
+                event["offsetFrac"] = float(event.get("offsetFrac") or 0.0)
+        except Exception:
+            pass
+        self._append_reading_log_event(event)
+
+    def _clear_pdf_user_state(self, pdf_key: str) -> None:
+        if not pdf_key or str(pdf_key) != (self._pdf_key or ""):
+            return
+        if self._pdf_path is None:
+            return
+        try:
+            delete_pdf_state(self._pdf_path)
+        except Exception:
+            pass
+        self._pdf_user_state = {}
+        self._pdf_user_state_pending = None
+
+    def _toggle_fallback_bookmark(self) -> None:
+        if self._pdf_path is None:
+            return
+        page_num = int(self._current_page) + 1
+        state = self._pdf_user_state if isinstance(
+            self._pdf_user_state, dict) else {}
+        bookmarks = state.get("bookmarks") if isinstance(
+            state.get("bookmarks"), list) else []
+        try:
+            existing = next(
+                (
+                    i
+                    for i, b in enumerate(bookmarks)
+                    if isinstance(b, dict)
+                    and int(b.get("pageNum", b.get("page", -1) + 1) or 0)
+                    == page_num
+                ),
+                -1,
+            )
+        except Exception:
+            existing = -1
+        if existing >= 0:
+            try:
+                bookmarks.pop(existing)
+            except Exception:
+                bookmarks = [
+                    b
+                    for b in bookmarks
+                    if not (
+                        isinstance(b, dict)
+                        and int(b.get("pageNum", b.get("page", -1) + 1) or 0)
+                        == page_num
+                    )
+                ]
+        else:
+            bookmarks.append(
+                {
+                    "pageNum": page_num,
+                    "page": max(0, page_num - 1),
+                    "title": f"Page {page_num}",
+                    "createdAt": float(time.time()),
+                }
+            )
+            self._append_reading_log_event(
+                {"type": "bookmark_add", "label": "Bookmark added", "pageNum": page_num}
+            )
+        if existing >= 0:
+            self._append_reading_log_event(
+                {"type": "bookmark_remove",
+                    "label": "Bookmark removed", "pageNum": page_num}
+            )
+        try:
+            bookmarks.sort(
+                key=lambda b: int(b.get("pageNum", 0)
+                                  ) if isinstance(b, dict) else 0
+            )
+        except Exception:
+            pass
+        self._schedule_pdf_user_state_save({"bookmarks": bookmarks})
+
+    def _add_fallback_note(self) -> None:
+        if self._pdf_path is None:
+            return
+        page_num = int(self._current_page) + 1
+        try:
+            selected = self.text_view.textCursor().selectedText()
+            snippet = (selected or "").replace("\u2029", "\n").strip()
+        except Exception:
+            snippet = ""
+        comment, ok = QtWidgets.QInputDialog.getMultiLineText(
+            self,
+            self.tr("Add Note"),
+            self.tr("Comment"),
+            "",
+        )
+        if not ok:
+            return
+        comment = (comment or "").strip()
+        if not comment and not snippet:
+            return
+
+        state = self._pdf_user_state if isinstance(
+            self._pdf_user_state, dict) else {}
+        notes = state.get("notes") if isinstance(
+            state.get("notes"), list) else []
+        now = float(time.time())
+        note_id = "note:" + uuid.uuid4().hex
+        notes.insert(
+            0,
+            {
+                "id": note_id,
+                "pageNum": page_num,
+                "page": max(0, page_num - 1),
+                "offsetFrac": 0.0,
+                "snippet": snippet[:400],
+                "text": comment,
+                "createdAt": now,
+                "updatedAt": now,
+            },
+        )
+        self._schedule_pdf_user_state_save({"notes": notes})
+        self._append_reading_log_event(
+            {
+                "type": "note_add",
+                "label": "Note added",
+                "noteId": note_id,
+                "pageNum": page_num,
+                "snippet": snippet[:120],
+            }
+        )
 
 
 class _SpeakTextTask(QtCore.QRunnable):
