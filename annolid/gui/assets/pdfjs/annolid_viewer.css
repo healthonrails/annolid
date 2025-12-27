@@ -1,0 +1,591 @@
+/* Annolid PDF.js viewer styles */
+
+html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #1e1e1e;
+      color: #eee;
+      overflow: hidden;
+      font: 13px "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    #viewerContainer {
+      position: absolute;
+      top: 56px; left: 0; right: 0; bottom: 0;
+      overflow: auto;
+      background: #1e1e1e;
+    }
+	    #annolidToolbar {
+	      position: fixed;
+	      top: 0;
+	      left: 0;
+	      right: 0;
+	      z-index: 9999;
+	      display: flex;
+	      align-items: center;
+	      gap: 10px;
+	      padding: 8px 12px;
+	      background: #3a3a3a;
+	      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	      color: #f5f5f5;
+	      box-sizing: border-box;
+	      overflow: visible;
+	      user-select: none;
+	      -webkit-user-select: none;
+	    }
+	    #annolidToolbar button {
+	      background: #2f2f2f;
+	      color: #f5f5f5;
+	      border: 1px solid rgba(255, 255, 255, 0.12);
+	      border-radius: 6px;
+	      padding: 5px 8px;
+	      cursor: pointer;
+	      min-width: 32px;
+	    }
+	    #annolidToolbar button:focus {
+	      outline: none;
+	      box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.45);
+	    }
+    #annolidToolbar button.annolid-active {
+      background: #1976d2;
+      border-color: #1976d2;
+      color: white;
+    }
+    #annolidToolbar .annolid-sep {
+      width: 1px;
+      height: 24px;
+      background: rgba(255, 255, 255, 0.14);
+      margin: 0 6px;
+    }
+    #annolidToolbar label {
+      opacity: 0.9;
+      font-size: 12px;
+    }
+    #annolidToolbar input[type="color"] {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+	    #annolidToolbar input[type="range"] {
+	      width: 32px;
+	    }
+	    @media (max-width: 980px) {
+	      .annolid-title { max-width: 150px; }
+	      #annolidZoomReset { display: none; }
+	      #annolidZoomFit { display: none; }
+	    }
+	    @media (max-width: 780px) {
+	      .annolid-title { display: none; }
+	      #annolidZoomLabel { min-width: 54px; }
+	    }
+	    .annolid-toolbar-left {
+	      display: flex;
+	      align-items: center;
+	      gap: 10px;
+	      min-width: 0;
+	      flex: 0 1 160px;
+	    }
+	    .annolid-title {
+	      font-weight: 600;
+	      font-size: 13px;
+	      color: #f5f5f5;
+	      white-space: nowrap;
+	      overflow: hidden;
+	      text-overflow: ellipsis;
+	      max-width: 140px;
+	    }
+	    .annolid-nav {
+	      display: flex;
+	      align-items: center;
+	      gap: 6px;
+	      justify-content: center;
+	      flex-wrap: nowrap;
+	      min-width: 0;
+	      flex: 0 0 auto;
+	    }
+	    .annolid-actions {
+	      display: flex;
+	      align-items: center;
+	      gap: 8px;
+	      justify-content: flex-end;
+	      flex-wrap: nowrap;
+	      overflow: hidden;
+	      min-width: 0;
+	      flex: 1 1 0;
+	    }
+    .annolid-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+	      border-radius: 8px;
+	      overflow: hidden;
+	      background: rgba(0, 0, 0, 0.12);
+	    }
+	    .annolid-group button {
+	      border: 0;
+	      border-right: 1px solid rgba(255, 255, 255, 0.10);
+	      border-radius: 0;
+	      background: transparent;
+	      padding: 6px 10px;
+	      min-width: 28px;
+	    }
+	    .annolid-group button:last-child {
+      border-right: 0;
+    }
+    .annolid-mark-options {
+      gap: 8px;
+      padding: 6px 10px;
+    }
+    .annolid-mark-options input[type="color"] {
+      width: 30px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+    .annolid-mark-options input[type="range"] {
+      width: 80px;
+    }
+    .annolid-option-label {
+      font-size: 12px;
+      opacity: 0.85;
+      padding: 0 2px;
+      white-space: nowrap;
+    }
+    .annolid-overflow {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+	    }
+	    #annolidOverflowMenu {
+	      position: absolute;
+	      top: calc(100% + 6px);
+	      right: 0;
+	      background: #2b2b2b;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 6px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.4);
+	      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10000;
+      min-width: 120px;
+    }
+	    #annolidOverflowMenu button {
+	      width: 100%;
+	      text-align: left;
+	    }
+	    #annolidOverflowMenu .annolid-sep {
+	      display: none;
+	    }
+	    .annolid-menu-row {
+	      display: flex;
+	      align-items: center;
+	      gap: 8px;
+	      padding: 6px;
+	      border-radius: 6px;
+	      background: rgba(255, 255, 255, 0.04);
+	    }
+	    .annolid-menu-label {
+	      min-width: 44px;
+	      font-size: 12px;
+	      opacity: 0.9;
+	    }
+	    #annolidOverflowMenu input[type="color"] {
+	      width: 32px;
+	      height: 28px;
+	      padding: 0;
+	      border: 0;
+	      background: transparent;
+	    }
+	    #annolidOverflowMenu input[type="range"] {
+	      width: 140px;
+	    }
+    #annolidOverflowMenu.annolid-open {
+      display: flex;
+    }
+    #annolidMenuPanel {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      background: #2b2b2b;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 6px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.4);
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10000;
+      min-width: 140px;
+    }
+    #annolidMenuPanel.annolid-open {
+      display: flex;
+    }
+    #annolidMenuPanel button {
+      width: 100%;
+      text-align: left;
+    }
+    #annolidPageInput {
+      width: 48px;
+      background: #1e1e1e;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+      padding: 5px 7px;
+      text-align: center;
+    }
+    #annolidZoomLabel {
+      padding: 5px 8px;
+      background: #1e1e1e;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      min-width: 48px;
+      text-align: center;
+    }
+    .annolid-icon-btn {
+      font-size: 14px;
+      line-height: 1;
+    }
+    .annolid-disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .annolid-hidden {
+      display: none !important;
+    }
+    .page {
+      position: relative;
+      margin: 14px auto;
+      background: #2b2b2b;
+      box-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+    }
+    canvas {
+      display: block;
+    }
+    .textLayer {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      opacity: 1;
+      user-select: text;
+      -webkit-user-select: text;
+      cursor: text;
+      z-index: 10;
+    }
+    .textLayer span {
+      position: absolute;
+      white-space: pre;
+      transform-origin: 0% 0%;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+    .textLayer ::selection {
+      background: rgba(0, 120, 215, 0.35);
+    }
+    .annolid-tts-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+    }
+    .annolid-mark-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+      pointer-events: none;
+      touch-action: none;
+    }
+    .annotationLayer {
+      position: absolute;
+      inset: 0;
+      z-index: 15;
+      pointer-events: none;
+    }
+    .annotationLayer a {
+      position: absolute;
+      display: block;
+      pointer-events: auto;
+      background: rgba(0, 0, 0, 0);
+      text-decoration: none;
+    }
+    .annotationLayer a:hover {
+      outline: 2px solid rgba(25, 118, 210, 0.55);
+      outline-offset: -2px;
+      background: rgba(25, 118, 210, 0.12);
+    }
+    body.annolid-drawing .textLayer {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body.annolid-reader-enabled .textLayer {
+      cursor: pointer;
+    }
+    body.annolid-reader-enabled .textLayer span:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+    .annolid-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 20000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.55);
+      box-sizing: border-box;
+    }
+    .annolid-modal.annolid-open {
+      display: flex;
+    }
+    .annolid-modal-content {
+      width: min(1100px, 96vw);
+      height: min(880px, 92vh);
+      display: flex;
+      flex-direction: column;
+      background: #242424;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+    }
+    .annolid-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      background: #2f2f2f;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    }
+    .annolid-modal-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f5f5f5;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .annolid-modal-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .annolid-modal-actions button {
+      background: #1e1e1e;
+      color: #f5f5f5;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      min-width: 36px;
+    }
+    .annolid-modal-actions button:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .annolid-modal-body {
+      position: relative;
+      flex: 1 1 auto;
+      overflow: auto;
+      background: #1a1a1a;
+    }
+    .annolid-preview-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 380px) minmax(320px, 1fr);
+      gap: 12px;
+      padding: 12px;
+      box-sizing: border-box;
+      align-items: start;
+    }
+    .annolid-preview-grid.annolid-preview-citation {
+      grid-template-columns: 1fr;
+    }
+    @media (max-width: 980px) {
+      .annolid-preview-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .annolid-notes-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(320px, 1fr);
+      gap: 12px;
+      padding: 12px;
+      box-sizing: border-box;
+      align-items: start;
+    }
+    @media (max-width: 980px) {
+      .annolid-notes-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .annolid-notes-left {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .annolid-notes-search {
+      width: 100%;
+      background: #202020;
+      color: #f5f5f5;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 10px;
+      padding: 8px 10px;
+      box-sizing: border-box;
+      font-size: 13px;
+      outline: none;
+    }
+    .annolid-notes-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0.9;
+      margin: 2px 0 6px 2px;
+    }
+    .annolid-notes-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .annolid-notes-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 8px 10px;
+      color: #f5f5f5;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    .annolid-notes-item:hover {
+      background: rgba(255, 255, 255, 0.07);
+    }
+    .annolid-notes-item.annolid-active {
+      border-color: rgba(25, 118, 210, 0.85);
+      box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.25);
+    }
+    .annolid-notes-item-title {
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .annolid-notes-item-sub {
+      font-size: 12px;
+      opacity: 0.75;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      margin-top: 2px;
+    }
+    .annolid-notes-item-meta {
+      font-size: 12px;
+      opacity: 0.8;
+      white-space: nowrap;
+    }
+    .annolid-notes-right {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 260px;
+    }
+    .annolid-notes-meta {
+      padding: 8px 10px;
+      background: #202020;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .annolid-notes-editor {
+      flex: 1 1 auto;
+      width: 100%;
+      resize: none;
+      background: #202020;
+      color: #f5f5f5;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      font-size: 13px;
+      line-height: 1.35;
+      outline: none;
+      min-height: 220px;
+    }
+    .annolid-preview-text {
+      background: #202020;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: #f0f0f0;
+      font-size: 13px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      overflow: auto;
+      max-height: 100%;
+      min-height: 120px;
+    }
+    .annolid-muted {
+      opacity: 0.72;
+    }
+    .annolid-modal-canvas-wrap {
+      position: relative;
+      margin: 12px auto;
+      width: max-content;
+      background: #2b2b2b;
+      box-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+    }
+    .annolid-cite-popover {
+      position: fixed;
+      z-index: 25000;
+      display: none;
+      max-width: 420px;
+      min-width: 240px;
+      pointer-events: auto;
+    }
+    .annolid-cite-popover.annolid-open {
+      display: block;
+    }
+    .annolid-cite-card {
+      background: #242424;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      padding: 10px 12px;
+      color: #f5f5f5;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .annolid-cite-title {
+      font-weight: 600;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .annolid-cite-body {
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    #annolidPreviewHighlight {
+      position: absolute;
+      border: 2px solid rgba(255, 193, 7, 0.95);
+      background: rgba(255, 193, 7, 0.20);
+      border-radius: 4px;
+      pointer-events: none;
+      display: none;
+    }
