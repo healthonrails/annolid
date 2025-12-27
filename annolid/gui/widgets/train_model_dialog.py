@@ -64,13 +64,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.radio_btn1.toggled.connect(self.on_radio_button_checked)
         hbox_layout.addWidget(self.radio_btn1)
 
-        self.radio_btn2 = QtWidgets.QRadioButton("YOLACT")
+        self.radio_btn2 = QtWidgets.QRadioButton("YOLO")
         self.radio_btn2.toggled.connect(self.on_radio_button_checked)
         hbox_layout.addWidget(self.radio_btn2)
-
-        self.radio_btn3 = QtWidgets.QRadioButton("YOLO")
-        self.radio_btn3.toggled.connect(self.on_radio_button_checked)
-        hbox_layout.addWidget(self.radio_btn3)
 
         self.groupBox.setLayout(hbox_layout)
 
@@ -290,15 +286,6 @@ class TrainModelDialog(QtWidgets.QDialog):
                                               f"Config: {self.config_file}\n"
                                               f"Batch Size: {self.batch_size}\n"
                                               f"Max Iterations: {self.max_iterations}\n"
-                                              f"Trained Model: {self.trained_model}\n"
-                                              f"Output Directory: {self.out_dir}")
-            super().accept()
-        elif self.algo == "YOLACT":
-            # Placeholder for YOLACT Training
-            QtWidgets.QMessageBox.information(self, "Training Info",
-                                              f"YOLACT Training Selected:\n"
-                                              f"Config: {self.config_file}\n"
-                                              f"Batch Size: {self.batch_size}\n"
                                               f"Trained Model: {self.trained_model}\n"
                                               f"Output Directory: {self.out_dir}")
             super().accept()
