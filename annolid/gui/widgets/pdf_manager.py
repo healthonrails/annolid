@@ -282,6 +282,8 @@ class PdfManager(QtCore.QObject):
         self._disable_labelme_file_selection()
         self._close_unrelated_docks_for_pdf()
         self.ensure_pdf_tts_dock()
+        # Pick a reasonable default TTS language/voice early so the dock reflects it immediately.
+        self._auto_select_tts_from_pdf_language(str(pdf_path))
         self.ensure_pdf_controls_dock()
         self.ensure_pdf_reader_dock()
         self.ensure_pdf_log_dock()
@@ -469,6 +471,200 @@ class PdfManager(QtCore.QObject):
         self._pdf_files = self._pdf_files[-self._RECENT_PDFS_LIMIT:]
         self._save_recent_pdfs()
         self._populate_pdf_file_list()
+
+    def _auto_select_tts_from_pdf_language(self, pdf_path: str) -> None:
+        controls = self.pdf_tts_controls
+        if controls is None:
+            return
+        sample = self._extract_pdf_text_sample(pdf_path)
+        lang = self._detect_kokoro_language(sample)
+        if not lang:
+            return
+        voice = self._suggest_default_voice(lang)
+        try:
+            controls.set_language_and_voice(
+                lang=lang, voice=voice, persist=True)
+        except Exception:
+            return
+
+    @staticmethod
+    def _extract_pdf_text_sample(pdf_path: str) -> str:
+        """Extract a small text sample to infer document language."""
+        parts: list[str] = []
+        try:
+            path = Path(pdf_path)
+            parts.append(path.stem)
+        except Exception:
+            pass
+        try:
+            import fitz  # type: ignore[import]
+
+            path = Path(pdf_path)
+            with fitz.open(str(path)) as doc:
+                meta = getattr(doc, "metadata", None) or {}
+                if isinstance(meta, dict):
+                    for key in ("title", "subject", "keywords"):
+                        try:
+                            v = str(meta.get(key) or "").strip()
+                            if v:
+                                parts.append(v)
+                        except Exception:
+                            continue
+                pages = min(3, int(getattr(doc, "page_count", 0) or 0))
+                for i in range(pages):
+                    try:
+                        page = doc.load_page(i)
+                    except Exception:
+                        continue
+                    chunk = ""
+                    try:
+                        chunk = str(page.get_text("text") or "")
+                    except Exception:
+                        chunk = ""
+                    chunk = chunk.replace("\u2029", "\n").strip()
+
+                    # Some PDFs return empty/fragmented results for "text" but have usable
+                    # strings in blocks/words.
+                    if len(chunk) < 60:
+                        try:
+                            blocks = page.get_text("blocks") or []
+                            block_texts: list[str] = []
+                            for b in blocks:
+                                if not isinstance(b, (list, tuple)) or len(b) < 5:
+                                    continue
+                                t = str(b[4] or "").strip()
+                                if t:
+                                    block_texts.append(t)
+                            if block_texts:
+                                chunk = (chunk + "\n" +
+                                         "\n".join(block_texts)).strip()
+                        except Exception:
+                            pass
+                    if len(chunk) < 60:
+                        try:
+                            words = page.get_text("words") or []
+                            ws: list[str] = []
+                            for w in words:
+                                if not isinstance(w, (list, tuple)) or len(w) < 5:
+                                    continue
+                                t = str(w[4] or "").strip()
+                                if t:
+                                    ws.append(t)
+                            if ws:
+                                chunk = (chunk + "\n" + " ".join(ws)).strip()
+                        except Exception:
+                            pass
+                    if chunk:
+                        parts.append(chunk)
+                    if sum(len(p) for p in parts) >= 12000:
+                        break
+        except Exception:
+            pass
+        # Keep sample bounded to stay fast.
+        sample = "\n".join([p for p in parts if p]).strip()
+        return sample[:12000]
+
+    @staticmethod
+    def _detect_kokoro_language(text: str) -> str:
+        """Return a Kokoro language code best-effort (e.g. zh, ja, en-us)."""
+        s = (text or "").strip()
+        if not s:
+            return ""
+        # Consider only a prefix to stay fast.
+        s = s[:8000]
+        counts = {
+            "hiragana": 0,
+            "katakana": 0,
+            "han": 0,
+            "hangul": 0,
+            "cyrillic": 0,
+            "devanagari": 0,
+            "latin": 0,
+        }
+        for ch in s:
+            o = ord(ch)
+            if 0x3040 <= o <= 0x309F:
+                counts["hiragana"] += 1
+            elif 0x30A0 <= o <= 0x30FF:
+                counts["katakana"] += 1
+            elif 0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF:
+                counts["han"] += 1
+            elif 0xAC00 <= o <= 0xD7AF:
+                counts["hangul"] += 1
+            elif 0x0400 <= o <= 0x04FF:
+                counts["cyrillic"] += 1
+            elif 0x0900 <= o <= 0x097F:
+                counts["devanagari"] += 1
+            elif (0x0041 <= o <= 0x007A) or (0x00C0 <= o <= 0x024F):
+                counts["latin"] += 1
+
+        kana = counts["hiragana"] + counts["katakana"]
+        han = counts["han"]
+        total = (
+            kana
+            + han
+            + counts["hangul"]
+            + counts["cyrillic"]
+            + counts["devanagari"]
+            + counts["latin"]
+        )
+        total = max(1, int(total))
+
+        if kana >= 8 and kana / total >= 0.06:
+            return "ja"
+        if counts["hangul"] >= 8 and counts["hangul"] / total >= 0.06:
+            return "ko"
+        # Chinese: require enough Han chars and meaningful dominance.
+        if han >= 5 and kana < 6 and (han / total >= 0.12 or han >= 30):
+            return "zh"
+        if counts["cyrillic"] >= 10 and counts["cyrillic"] / total >= 0.08:
+            return "ru"
+        if counts["devanagari"] >= 10 and counts["devanagari"] / total >= 0.08:
+            return "hi"
+        if counts["latin"] >= 24 and counts["latin"] / total >= 0.20:
+            # Conservative: most papers are English; keep a stable default.
+            return "en-us"
+        return ""
+
+    @staticmethod
+    def _suggest_default_voice(lang: str) -> str:
+        """Pick a reasonable default voice for the given Kokoro language code."""
+        lang = (lang or "").strip().lower()
+        try:
+            from annolid.agents.kokoro_tts import (
+                DEFAULT_VOICE,
+                get_available_voices,
+            )
+        except Exception:
+            return "af_sarah"
+
+        voices = get_available_voices(lang=lang) or []
+        if not voices:
+            return DEFAULT_VOICE
+
+        def first_with_prefix(prefixes: tuple[str, ...]) -> str:
+            for v in voices:
+                lv = str(v).strip().lower()
+                if any(lv.startswith(p) for p in prefixes):
+                    return str(v)
+            return ""
+
+        if lang.startswith("ja"):
+            v = first_with_prefix(("j",))
+            return v or DEFAULT_VOICE
+        if lang.startswith("zh") or lang in {"cmn"}:
+            v = first_with_prefix(("z",))
+            return v or DEFAULT_VOICE
+        if lang.startswith("en-gb") or lang == "en-gb":
+            # Prefer "bf_*" (British female) if available.
+            v = first_with_prefix(("bf_", "bm_", "b"))
+            return v or DEFAULT_VOICE
+        if lang.startswith("en"):
+            # Prefer an American female voice when possible.
+            v = first_with_prefix(("af_", "am_", "a"))
+            return v or DEFAULT_VOICE
+        # For languages without dedicated voices, keep a stable default.
+        return DEFAULT_VOICE
 
     def _populate_pdf_file_list(self) -> None:
         widget = getattr(self.window, "fileListWidget", None)

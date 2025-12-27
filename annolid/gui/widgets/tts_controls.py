@@ -80,6 +80,27 @@ class TtsControlsWidget(QWidget):
         speed = float(self.speed_spin.value())
         return {"voice": voice, "lang": lang, "speed": speed}
 
+    def set_language_and_voice(
+        self,
+        lang: str,
+        voice: str,
+        *,
+        persist: bool = True,
+    ) -> None:
+        """Programmatically set language + voice and optionally persist once."""
+        lang = (lang or "").strip() or DEFAULT_LANG
+        voice = (voice or "").strip() or DEFAULT_VOICE
+        try:
+            self.voice_combo.blockSignals(True)
+            self.language_combo.blockSignals(True)
+            self.voice_combo.setCurrentText(voice)
+            self.language_combo.setCurrentText(lang)
+        finally:
+            self.voice_combo.blockSignals(False)
+            self.language_combo.blockSignals(False)
+        if persist:
+            self._persist_settings()
+
     def _persist_settings(self) -> None:
         settings = self.current_settings()
         save_tts_settings(settings)
