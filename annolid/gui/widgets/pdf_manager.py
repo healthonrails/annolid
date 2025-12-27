@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 class PdfManager(QtCore.QObject):
     """Encapsulates PDF viewer, controls, and docks wiring for the main window."""
 
+    _RECENT_PDFS_KEY = "pdf/recent_files"
+    _RECENT_PDFS_LIMIT = 40
+
     def __init__(
         self, window: "AnnolidWindow", viewer_stack: QtWidgets.QStackedWidget
     ) -> None:
@@ -39,6 +42,63 @@ class PdfManager(QtCore.QObject):
         self._pdf_file_signals_connected = False
         self._hidden_docks: list[QtWidgets.QDockWidget] = []
         self._labelme_file_selection_disabled = False
+        self._load_recent_pdfs()
+
+    def _settings(self) -> Optional[QtCore.QSettings]:
+        return getattr(self.window, "settings", None)
+
+    def _load_recent_pdfs(self) -> None:
+        settings = self._settings()
+        if settings is None:
+            return
+        try:
+            raw = settings.value(self._RECENT_PDFS_KEY, [])
+        except Exception:
+            raw = []
+        paths: list[str] = []
+        if isinstance(raw, (list, tuple)):
+            paths = [str(p) for p in raw if p]
+        elif isinstance(raw, str) and raw.strip():
+            # Backwards/portable: allow comma-separated or JSON list payloads.
+            text = raw.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    import json
+
+                    loaded = json.loads(text)
+                    if isinstance(loaded, list):
+                        paths = [str(p) for p in loaded if p]
+                except Exception:
+                    paths = []
+            if not paths:
+                paths = [p.strip() for p in text.split(",") if p.strip()]
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for p in paths:
+            try:
+                resolved = str(Path(p).expanduser().resolve())
+            except Exception:
+                resolved = str(p)
+            if not resolved or resolved in seen:
+                continue
+            try:
+                if not Path(resolved).exists():
+                    continue
+            except Exception:
+                continue
+            seen.add(resolved)
+            cleaned.append(resolved)
+        self._pdf_files = cleaned[-self._RECENT_PDFS_LIMIT:]
+
+    def _save_recent_pdfs(self) -> None:
+        settings = self._settings()
+        if settings is None:
+            return
+        try:
+            settings.setValue(self._RECENT_PDFS_KEY, list(self._pdf_files))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ setup
     def ensure_pdf_viewer(self) -> PdfViewerWidget:
@@ -395,8 +455,19 @@ class PdfManager(QtCore.QObject):
             resolved = str(Path(pdf_path).resolve())
         except Exception:
             resolved = pdf_path
-        if resolved not in self._pdf_files:
-            self._pdf_files.append(resolved)
+        try:
+            if not Path(resolved).exists():
+                return
+        except Exception:
+            pass
+        if resolved in self._pdf_files:
+            try:
+                self._pdf_files.remove(resolved)
+            except ValueError:
+                pass
+        self._pdf_files.append(resolved)
+        self._pdf_files = self._pdf_files[-self._RECENT_PDFS_LIMIT:]
+        self._save_recent_pdfs()
         self._populate_pdf_file_list()
 
     def _populate_pdf_file_list(self) -> None:
