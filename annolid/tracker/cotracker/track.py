@@ -51,14 +51,16 @@ class CoTrackerProcessor:
 
         first_frame = self.video_loader.get_first_frame()
         if first_frame is None:
-            raise RuntimeError("Video contains no frames for CoTracker to process.")
+            raise RuntimeError(
+                "Video contains no frames for CoTracker to process.")
         self.video_height, self.video_width, _ = first_frame.shape
 
         self.is_online = is_online
         self.start_frame = 0
         self.end_frame = 0
         self.predict_interval = 60
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
         self.manual_json_path = Path(json_path) if json_path else None
 
         self.point_labels: list[str] = []
@@ -81,18 +83,21 @@ class CoTrackerProcessor:
         model_name = "cotracker3_online" if self.is_online else "cotracker3_offline"
         cache_key = (model_name, str(self.device))
         if cache_key in _MODEL_CACHE:
-            logger.debug("Reusing cached CoTracker model '%s' on %s", model_name, self.device)
+            logger.debug("Reusing cached CoTracker model '%s' on %s",
+                         model_name, self.device)
             return _MODEL_CACHE[cache_key].to(self.device)
 
         try:
             cotracker = torch.hub.load(
                 "facebookresearch/co-tracker:release_cotracker3", model_name)
         except Exception as exc:  # pragma: no cover - hub/network failure
-            raise RuntimeError(f"Failed to load CoTracker model '{model_name}'.") from exc
+            raise RuntimeError(
+                f"Failed to load CoTracker model '{model_name}'.") from exc
 
         cotracker = cotracker.to(self.device).eval()
         _MODEL_CACHE[cache_key] = cotracker
-        logger.info("Loaded CoTracker model '%s' on %s", model_name, self.device)
+        logger.info("Loaded CoTracker model '%s' on %s",
+                    model_name, self.device)
         return cotracker
 
     def load_queries(self):
@@ -128,7 +133,8 @@ class CoTrackerProcessor:
                 data = json.load(file)
 
             frame_number = get_frame_number_from_json(json_path.name)
-            queries.extend(self._process_shapes(data.get('shapes', []), frame_number))
+            queries.extend(self._process_shapes(
+                data.get('shapes', []), frame_number))
 
         if not queries:
             raise RuntimeError(
@@ -167,7 +173,8 @@ class CoTrackerProcessor:
             self.mask = torch.from_numpy(self.mask)[None, None].to(self.device)
 
         points_in_polygon = sample_grid_in_polygon(points)
-        logger.info("Sampled %d points for polygon '%s'.", len(points_in_polygon), label)
+        logger.info("Sampled %d points for polygon '%s'.",
+                    len(points_in_polygon), label)
         for point in points_in_polygon:
             self.point_labels.append(label)
             queries.append([frame_number] + list(point))
@@ -198,7 +205,8 @@ class CoTrackerProcessor:
         if not os.path.isfile(self.video_path):
             raise ValueError("Video file does not exist")
 
-        logger.info("Processing CoTracker from frame %s to %s", start_frame, end_frame)
+        logger.info("Processing CoTracker from frame %s to %s",
+                    start_frame, end_frame)
         self.start_frame = start_frame
         self.end_frame = end_frame
         self.queries = self.load_queries()
@@ -223,12 +231,15 @@ class CoTrackerProcessor:
         window_frames = []
         is_first_step = True
         frame_idx = -1
+        last_saved_frame = self.start_frame - 1
 
         for i, frame in enumerate(iio.imiter(self.video_path, plugin="FFMPEG")):
             frame_idx = i
             if self._should_stop():
                 self._stop_triggered = True
                 logger.info("CoTracker stop requested at frame %s", i)
+                break
+            if self.end_frame >= 0 and i > self.end_frame:
                 break
             if self.video_height is None or self.video_width is None:
                 self.video_height, self.video_width, _ = frame.shape
@@ -239,8 +250,20 @@ class CoTrackerProcessor:
                     if i % 100 == 0:
                         logger.info("Tracking frame %d: tracks %s, visibility %s",
                                     i, pred_tracks.shape, pred_visibility.shape)
-                    batch_size = model.step * 2 if is_first_step else model.step
-                    self.extract_frame_points(pred_tracks, pred_visibility, batch_size, i)
+                    num_local_frames = int(pred_tracks.shape[1])
+                    chunk_start_frame = max(0, i - num_local_frames)
+                    local_start = max(
+                        0, (last_saved_frame + 1) - chunk_start_frame)
+                    self.extract_frame_points(
+                        pred_tracks,
+                        pred_visibility,
+                        chunk_start_frame=chunk_start_frame,
+                        local_frame_indices=range(
+                            local_start, num_local_frames),
+                    )
+                    last_saved_frame = max(
+                        last_saved_frame, chunk_start_frame + num_local_frames - 1
+                    )
                 is_first_step = False
             window_frames.append(frame)
             if len(window_frames) > model.step * 2:
@@ -259,16 +282,51 @@ class CoTrackerProcessor:
             grid_size,
             grid_query_frame,
         )
-        return self._finalize_tracking(pred_tracks, pred_visibility, window_frames,
-                                       grid_query_frame, need_visualize, model)
+        if pred_tracks is not None:
+            num_local_frames = int(pred_tracks.shape[1])
+            chunk_end_exclusive = frame_idx + 1
+            chunk_start_frame = max(0, chunk_end_exclusive - num_local_frames)
+            local_start = max(0, (last_saved_frame + 1) - chunk_start_frame)
+            message = self.extract_frame_points(
+                pred_tracks,
+                pred_visibility,
+                chunk_start_frame=chunk_start_frame,
+                local_frame_indices=range(local_start, num_local_frames),
+            )
+        else:
+            message = self._stop_message(max(frame_idx, self.start_frame))
+
+        if need_visualize and pred_tracks is not None:
+            vis_video_name = f'{self.video_result_folder.name}_tracked'
+            vis = Visualizer(
+                save_dir=str(self.video_result_folder.parent),
+                linewidth=6,
+                mode='cool',
+                tracks_leave_trace=-1,
+            )
+            frames_for_vis = window_frames[-num_local_frames:] if window_frames else []
+            if frames_for_vis:
+                video = torch.tensor(
+                    np.stack(frames_for_vis), device=self.device).permute(0, 3, 1, 2)[None]
+                vis.visualize(
+                    video,
+                    pred_tracks,
+                    pred_visibility,
+                    query_frame=grid_query_frame,
+                    filename=vis_video_name,
+                )
+        return message
 
     def _finalize_tracking(self, pred_tracks, pred_visibility, video_source,
                            grid_query_frame, need_visualize, model=None):
         if pred_tracks is None or pred_visibility is None:
             return self._stop_message(self.start_frame)
         logger.info("CoTracker tracks computed")
-        message = self.extract_frame_points(pred_tracks, pred_visibility,
-                                            start_frame=self.start_frame)
+        message = self.extract_frame_points(
+            pred_tracks,
+            pred_visibility,
+            chunk_start_frame=self.start_frame,
+        )
 
         if need_visualize:
             model = model or self._ensure_model()
@@ -300,7 +358,8 @@ class CoTrackerProcessor:
                     grid_size, grid_query_frame, self.mask_label)
 
         video = self.video_loader.get_frames_between(start_frame, end_frame)
-        video = torch.from_numpy(video).permute(0, 3, 1, 2)[None].float().to(self.device)
+        video = torch.from_numpy(video).permute(0, 3, 1, 2)[
+            None].float().to(self.device)
         model = self._ensure_model()
         pred_tracks, pred_visibility = model(
             video,
@@ -333,25 +392,56 @@ class CoTrackerProcessor:
         if frame_number % 100 == 0:
             logger.info("Saved %s", json_file_path)
 
-    def extract_frame_points(self, tracks: torch.Tensor,
-                             visibility: torch.Tensor = None,
-                             query_frame: int = 0,
-                             start_frame: int = 0
-                             ):
-        tracks = tracks[0].long().detach().cpu().numpy()
-        batch_start = start_frame-query_frame
-        for t in range(batch_start, tracks.shape[0]):
-            _points = []
-            for i in range(tracks.shape[1]):
-                coord = (tracks[t, i, 0], tracks[t, i, 1])
-                coord = np.array(coord)
+    def extract_frame_points(
+        self,
+        tracks: torch.Tensor,
+        visibility: torch.Tensor | None = None,
+        *,
+        chunk_start_frame: int = 0,
+        local_frame_indices=None,
+    ):
+        """Persist tracked points as per-frame JSON files.
+
+        Notes:
+        - `tracks` is indexed by *local* time (0..S-1). `chunk_start_frame` maps
+          local indices to *global* video frame numbers.
+        - This mapping is critical for online CoTracker inference where each
+          inference step returns a sliding window of frames.
+        """
+        tracks_np = tracks[0].long().detach().cpu().numpy()  # S, N, 2
+        num_local_frames = tracks_np.shape[0]
+
+        if local_frame_indices is None:
+            local_frame_indices = range(num_local_frames)
+
+        last_saved_frame = None
+        for local_t in local_frame_indices:
+            if local_t < 0 or local_t >= num_local_frames:
+                continue
+            global_frame = chunk_start_frame + int(local_t)
+
+            if global_frame < self.start_frame:
+                continue
+            if self.end_frame >= 0 and global_frame > self.end_frame:
+                continue
+
+            points = []
+            for point_idx in range(tracks_np.shape[1]):
+                coord = np.array((tracks_np[local_t, point_idx, 0],
+                                  tracks_np[local_t, point_idx, 1]))
                 visible = True
                 if visibility is not None:
-                    visible = visibility[0, t, i].item()
-                _points.append((coord, visible))
+                    visible = visibility[0, local_t, point_idx].item()
+                points.append((coord, visible))
+
             self.save_current_frame_tracked_points_to_json(
-                t, _points)
-        message = f"Saved all json file #{tracks.shape[0]}"
+                global_frame, points)
+            last_saved_frame = global_frame
+
+        if last_saved_frame is None:
+            message = f"Saved all json file #{max(self.start_frame, 0)}"
+        else:
+            message = f"Saved all json file #{last_saved_frame}"
         logger.info(message)
         return message
 
