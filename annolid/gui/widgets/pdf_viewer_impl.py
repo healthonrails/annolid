@@ -104,6 +104,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._speaking = False
         self._selection_cache = ""
         self._selection_cache_time = 0.0
+        self._dictionary_lookup_id = ""
+        self._dictionary_popup_pos: Optional[QtCore.QPoint] = None
+        self._dictionary_save_to_notes = False
+        self._dictionary_note_anchor: Optional[dict[str, float]] = None
+        self._active_dictionary_dialog: Optional[QtWidgets.QDialog] = None
         self._highlight_mode: Optional[str] = None
         self._selection_anchor_start: Optional[int] = None
         self._selection_anchor_end: Optional[int] = None
@@ -725,7 +730,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
       </div>
     </div>
   </div>
-  <div class="annolid-modal" id="annolidNotesModal" role="dialog" aria-modal="true">
+  <div class="annolid-popup" id="annolidNotesModal" role="dialog" aria-label="Notes &amp; Bookmarks">
     <div class="annolid-modal-content" role="document">
       <div class="annolid-modal-header">
         <div class="annolid-modal-title" id="annolidNotesTitle">Notes &amp; Bookmarks</div>
@@ -837,6 +842,32 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def _show_context_menu(self, position: QtCore.QPoint) -> None:
         menu = self.text_view.createStandardContextMenu()
         menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
+        selected_text = self._selected_text()
+        lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
+        lookup_action.setEnabled(
+            bool(self._extract_single_word(selected_text)))
+        lookup_action.triggered.connect(
+            lambda: self._request_dictionary_lookup(
+                selected_text, global_pos=self.text_view.mapToGlobal(position)
+            )
+        )
+        menu.insertAction(
+            menu.actions()[0] if menu.actions() else None, lookup_action
+        )
+        lookup_save_action = QtWidgets.QAction(
+            "Look up and save to notes", self)
+        lookup_save_action.setEnabled(
+            bool(self._extract_single_word(selected_text)))
+        lookup_save_action.triggered.connect(
+            lambda: self._request_dictionary_lookup(
+                selected_text,
+                global_pos=self.text_view.mapToGlobal(position),
+                save_to_notes=True,
+            )
+        )
+        menu.insertAction(
+            menu.actions()[0] if menu.actions() else None, lookup_save_action
+        )
         speak_action = QtWidgets.QAction("Speak selection", self)
         speak_action.setEnabled(self._has_selection() and not self._speaking)
         speak_action.triggered.connect(self._request_speak_selection)
@@ -871,6 +902,30 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 self._clear_selection_cache()
             menu = page.createStandardContextMenu()
             menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
+            lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
+            lookup_action.setEnabled(
+                bool(self._extract_single_word(selected_text)))
+            lookup_action.triggered.connect(
+                lambda: self._request_dictionary_lookup(
+                    selected_text, global_pos=global_pos
+                )
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, lookup_action
+            )
+            lookup_save_action = QtWidgets.QAction(
+                "Look up and save to notes", self)
+            lookup_save_action.setEnabled(
+                bool(self._extract_single_word(selected_text)))
+            lookup_save_action.triggered.connect(
+                lambda: self._request_dictionary_lookup(
+                    selected_text, global_pos=global_pos, save_to_notes=True
+                )
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions(
+                ) else None, lookup_save_action
+            )
             speak_action = QtWidgets.QAction("Speak selection", self)
             speak_action.setEnabled(not self._speaking)
             speak_action.triggered.connect(
@@ -1400,6 +1455,335 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if not cursor or not cursor.hasSelection():
             return ""
         return cursor.selectedText().replace("\u2029", "\n").strip()
+
+    def _extract_single_word(self, text: str) -> str:
+        import re
+
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return ""
+        tokens = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", cleaned)
+        if len(tokens) != 1:
+            return ""
+        return tokens[0]
+
+    def _request_dictionary_lookup(
+        self,
+        selected_text: str,
+        *,
+        global_pos: Optional[QtCore.QPoint] = None,
+        save_to_notes: bool = False,
+    ) -> None:
+        word = self._extract_single_word(selected_text)
+        if not word:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                "Select a single word to look it up.",
+                self,
+            )
+            return
+        self._capture_dictionary_note_anchor(
+            global_pos=global_pos,
+            done=lambda anchor: self._start_dictionary_lookup(
+                word,
+                global_pos=global_pos,
+                save_to_notes=save_to_notes,
+                note_anchor=anchor,
+            ),
+        )
+
+    def _capture_dictionary_note_anchor(
+        self,
+        *,
+        global_pos: Optional[QtCore.QPoint] = None,
+        done: Optional[object] = None,
+    ) -> None:
+        callback = done if callable(done) else None
+        if callback is None:
+            return
+        page_num = int(self._current_page) + 1
+        offset_frac = 0.0
+
+        if (
+            self._use_web_engine
+            and self._web_view is not None
+            and self._web_container is not None
+            and self._stack.currentWidget() is self._web_container
+        ):
+            try:
+                self._dictionary_popup_pos = global_pos
+
+                def handle(payload: object) -> None:
+                    anchor = {"pageNum": float(
+                        page_num), "offsetFrac": float(offset_frac)}
+                    if isinstance(payload, dict):
+                        try:
+                            pn = int(payload.get("pageNum") or page_num)
+                            frac = float(payload.get("offsetFrac") or 0.0)
+                            anchor = {"pageNum": float(
+                                pn), "offsetFrac": float(frac)}
+                        except Exception:
+                            pass
+                    callback(anchor)
+
+                self._web_view.page().runJavaScript(
+                    """(() => {
+  try {
+    const st = (window.__annolidExportUserState && window.__annolidExportUserState()) || (window.__annolidUserState || {});
+    const reading = (st && st.reading) ? st.reading : {};
+    return { pageNum: reading.pageNum || 1, offsetFrac: reading.offsetFrac || 0 };
+  } catch (e) { return null; }
+})()""",
+                    handle,
+                )
+                return
+            except Exception:
+                pass
+
+        try:
+            if self.text_view is not None:
+                sb = self.text_view.verticalScrollBar()
+                maximum = float(sb.maximum() or 0)
+                if maximum > 0:
+                    offset_frac = float(sb.value()) / maximum
+        except Exception:
+            offset_frac = 0.0
+        callback({"pageNum": float(page_num), "offsetFrac": float(offset_frac)})
+
+    def _start_dictionary_lookup(
+        self,
+        word: str,
+        *,
+        global_pos: Optional[QtCore.QPoint] = None,
+        save_to_notes: bool = False,
+        note_anchor: Optional[dict[str, float]] = None,
+    ) -> None:
+        self._dictionary_lookup_id = uuid.uuid4().hex
+        self._dictionary_popup_pos = global_pos
+        self._dictionary_save_to_notes = bool(save_to_notes)
+        self._dictionary_note_anchor = (
+            dict(note_anchor) if isinstance(note_anchor, dict) else None
+        )
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(),
+            f"Looking up “{word}”…",
+            self,
+        )
+        self._thread_pool.start(
+            _DictionaryLookupTask(
+                widget=self,
+                request_id=self._dictionary_lookup_id,
+                word=word,
+            )
+        )
+
+    @QtCore.Slot(str, str, str, str)
+    def _on_dictionary_lookup_finished(  # pragma: no cover - UI glue
+        self,
+        request_id: str,
+        word: str,
+        html: str,
+        error: str,
+    ) -> None:
+        if request_id != self._dictionary_lookup_id:
+            return
+        note_id: str = ""
+        if self._dictionary_save_to_notes and not error:
+            note_id = self._save_dictionary_lookup_to_notes(
+                word, html=html, anchor=self._dictionary_note_anchor
+            )
+        self._show_dictionary_popup(
+            word,
+            html=html,
+            error=error,
+            global_pos=self._dictionary_popup_pos,
+            saved_note_id=note_id,
+            note_anchor=self._dictionary_note_anchor,
+        )
+
+    def _html_to_plain_text(self, html: str) -> str:
+        doc = QtGui.QTextDocument()
+        try:
+            doc.setHtml(html or "")
+        except Exception:
+            return (html or "").strip()
+        return doc.toPlainText().strip()
+
+    def _push_user_state_to_web(self) -> None:
+        if self._web_view is None:
+            return
+        if not self._use_web_engine:
+            return
+        state = self._pdf_user_state if isinstance(
+            self._pdf_user_state, dict) else {}
+        try:
+            state_js = json.dumps(
+                state, ensure_ascii=False).replace("</", "<\\/")
+        except Exception:
+            return
+        try:
+            self._web_view.page().runJavaScript(
+                f"(() => {{ window.__annolidUserState = {state_js}; }})()"
+            )
+        except Exception:
+            pass
+
+    def _open_notes_and_select_web(self, note_id: str) -> None:
+        if not note_id:
+            return
+        if self._web_view is None:
+            return
+        if not self._use_web_engine:
+            return
+        try:
+            note_id_js = json.dumps(str(note_id), ensure_ascii=False)
+        except Exception:
+            return
+        try:
+            self._web_view.page().runJavaScript(
+                f"window.__annolidOpenNotesAndSelect && window.__annolidOpenNotesAndSelect({note_id_js});"
+            )
+        except Exception:
+            pass
+
+    def _save_dictionary_lookup_to_notes(
+        self, word: str, *, html: str, anchor: Optional[dict[str, float]] = None
+    ) -> str:
+        if self._pdf_path is None:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                "Open a PDF first to save notes.",
+                self,
+            )
+            return ""
+        definition_text = self._html_to_plain_text(html)
+        if not definition_text:
+            return ""
+        page_num = int(self._current_page) + 1
+        offset_frac = 0.0
+        if isinstance(anchor, dict):
+            try:
+                page_num = int(anchor.get("pageNum") or page_num)
+            except Exception:
+                pass
+            try:
+                offset_frac = float(anchor.get("offsetFrac") or 0.0)
+            except Exception:
+                offset_frac = 0.0
+        now = float(time.time())
+        note_id = "note:" + uuid.uuid4().hex
+        note_text = f"{word}\n\n{definition_text}".strip()
+        if len(note_text) > 6000:
+            note_text = note_text[:5997] + "…"
+
+        state = self._pdf_user_state if isinstance(
+            self._pdf_user_state, dict) else {}
+        notes = state.get("notes") if isinstance(
+            state.get("notes"), list) else []
+        notes.insert(
+            0,
+            {
+                "id": note_id,
+                "pageNum": page_num,
+                "page": max(0, page_num - 1),
+                "offsetFrac": max(0.0, min(1.0, float(offset_frac))),
+                "snippet": str(word)[:400],
+                "text": note_text,
+                "createdAt": now,
+                "updatedAt": now,
+            },
+        )
+        self._schedule_pdf_user_state_save({"notes": notes})
+        self._append_reading_log_event(
+            {
+                "type": "note_add",
+                "label": "Dictionary note added",
+                "noteId": note_id,
+                "pageNum": page_num,
+                "snippet": str(word)[:120],
+            }
+        )
+        self._push_user_state_to_web()
+        self._open_notes_and_select_web(note_id)
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(),
+            "Saved to notes.",
+            self,
+        )
+        return note_id
+
+    def _show_dictionary_popup(
+        self,
+        word: str,
+        *,
+        html: str = "",
+        error: str = "",
+        global_pos: Optional[QtCore.QPoint] = None,
+        saved_note_id: str = "",
+        note_anchor: Optional[dict[str, float]] = None,
+    ) -> None:
+        if self._active_dictionary_dialog is not None:
+            try:
+                self._active_dictionary_dialog.close()
+            except Exception:
+                pass
+            self._active_dictionary_dialog = None
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dialog.setWindowTitle(f"Dictionary: {word}")
+        dialog.setModal(False)
+        dialog.resize(520, 420)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        view = QtWidgets.QTextBrowser(dialog)
+        view.setOpenExternalLinks(True)
+        if error:
+            view.setPlainText(str(error))
+        else:
+            view.setHtml(html or "")
+        layout.addWidget(view, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Close, parent=dialog
+        )
+        save_btn = buttons.addButton(
+            "Save to Notes", QtWidgets.QDialogButtonBox.ActionRole
+        )
+        save_btn.setEnabled(
+            bool(html)
+            and not bool(error)
+            and not bool(saved_note_id)
+            and self._pdf_path is not None
+        )
+
+        def handle_save() -> None:
+            note_id = self._save_dictionary_lookup_to_notes(
+                word, html=html, anchor=note_anchor
+            )
+            if note_id:
+                try:
+                    save_btn.setEnabled(False)
+                except Exception:
+                    pass
+
+        save_btn.clicked.connect(handle_save)
+        buttons.rejected.connect(dialog.close)
+        buttons.accepted.connect(dialog.close)
+        layout.addWidget(buttons, 0)
+
+        anchor = global_pos if global_pos is not None else QtGui.QCursor.pos()
+        try:
+            dialog.move(anchor + QtCore.QPoint(12, 12))
+        except Exception:
+            pass
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._active_dictionary_dialog = dialog
 
     def _request_speak_selection(self) -> None:
         text = self._selected_text()
@@ -2539,6 +2923,229 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 "snippet": snippet[:120],
             }
         )
+
+
+class _DictionaryLookupTask(QtCore.QRunnable):
+    """Background task to fetch dictionary definitions for a single word."""
+
+    def __init__(self, widget: PdfViewerWidget, request_id: str, word: str) -> None:
+        super().__init__()
+        self.widget = widget
+        self.request_id = request_id
+        self.word = word
+
+    @staticmethod
+    def _format_html(word: str, payload: object) -> str:
+        from html import escape
+
+        safe_word = escape(word)
+        if not isinstance(payload, list):
+            return f"<h2>{safe_word}</h2><pre>{escape(str(payload))}</pre>"
+
+        parts: list[str] = [f"<h2>{safe_word}</h2>"]
+
+        phonetic = ""
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            phonetic = str(entry.get("phonetic") or "").strip()
+            if phonetic:
+                break
+            for ph in entry.get("phonetics") or []:
+                if isinstance(ph, dict):
+                    phonetic = str(ph.get("text") or "").strip()
+                    if phonetic:
+                        break
+            if phonetic:
+                break
+        if phonetic:
+            parts.append(f"<p><i>{escape(phonetic)}</i></p>")
+
+        for entry in payload[:2]:
+            if not isinstance(entry, dict):
+                continue
+            meanings = entry.get("meanings") or []
+            if not isinstance(meanings, list):
+                continue
+            for meaning in meanings[:6]:
+                if not isinstance(meaning, dict):
+                    continue
+                pos = str(meaning.get("partOfSpeech") or "").strip()
+                if pos:
+                    parts.append(f"<h3>{escape(pos)}</h3>")
+                defs = meaning.get("definitions") or []
+                if not isinstance(defs, list):
+                    continue
+                items: list[str] = []
+                for d in defs[:6]:
+                    if not isinstance(d, dict):
+                        continue
+                    definition = str(d.get("definition") or "").strip()
+                    if not definition:
+                        continue
+                    example = str(d.get("example") or "").strip()
+                    block = f"<li>{escape(definition)}"
+                    if example:
+                        block += f"<br/><span style='color:#555'><i>Example: {escape(example)}</i></span>"
+                    block += "</li>"
+                    items.append(block)
+                if items:
+                    parts.append("<ol>" + "".join(items) + "</ol>")
+        parts.append(
+            "<p style='color:#777;font-size:11px'>Source: dictionaryapi.dev</p>"
+        )
+        return "".join(parts)
+
+    @staticmethod
+    def _lookup_macos_dictionary(word: str) -> Optional[str]:
+        import ctypes
+        import ctypes.util
+
+        cf_path = ctypes.util.find_library("CoreFoundation")
+        if not cf_path:
+            return None
+        try:
+            core_foundation = ctypes.cdll.LoadLibrary(cf_path)
+        except Exception:
+            return None
+
+        dictionary_services = None
+        for path in (
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/DictionaryServices.framework/DictionaryServices",
+            "/System/Library/Frameworks/DictionaryServices.framework/DictionaryServices",
+        ):
+            try:
+                dictionary_services = ctypes.cdll.LoadLibrary(path)
+                break
+            except Exception:
+                continue
+        if dictionary_services is None:
+            return None
+
+        kCFStringEncodingUTF8 = 0x08000100
+
+        class CFRange(ctypes.Structure):
+            _fields_ = [("location", ctypes.c_long), ("length", ctypes.c_long)]
+
+        core_foundation.CFStringCreateWithCString.restype = ctypes.c_void_p
+        core_foundation.CFStringCreateWithCString.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+        ]
+
+        core_foundation.CFStringGetLength.restype = ctypes.c_long
+        core_foundation.CFStringGetLength.argtypes = [ctypes.c_void_p]
+
+        core_foundation.CFStringGetMaximumSizeForEncoding.restype = ctypes.c_long
+        core_foundation.CFStringGetMaximumSizeForEncoding.argtypes = [
+            ctypes.c_long,
+            ctypes.c_int32,
+        ]
+
+        core_foundation.CFStringGetCString.restype = ctypes.c_bool
+        core_foundation.CFStringGetCString.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_long,
+            ctypes.c_int32,
+        ]
+
+        core_foundation.CFRelease.restype = None
+        core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
+
+        dictionary_services.DCSCopyTextDefinition.restype = ctypes.c_void_p
+        dictionary_services.DCSCopyTextDefinition.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            CFRange,
+        ]
+
+        cf_word = None
+        cf_definition = None
+        try:
+            cf_word = core_foundation.CFStringCreateWithCString(
+                None, word.encode("utf-8"), kCFStringEncodingUTF8
+            )
+            if not cf_word:
+                return None
+            # NOTE: CFRange uses character indices; for ASCII words len(word) is OK.
+            cf_definition = dictionary_services.DCSCopyTextDefinition(
+                None, cf_word, CFRange(0, len(word))
+            )
+            if not cf_definition:
+                return None
+            length = core_foundation.CFStringGetLength(cf_definition)
+            max_size = (
+                core_foundation.CFStringGetMaximumSizeForEncoding(
+                    length, kCFStringEncodingUTF8
+                )
+                + 1
+            )
+            buffer = ctypes.create_string_buffer(max_size)
+            ok = core_foundation.CFStringGetCString(
+                cf_definition, buffer, max_size, kCFStringEncodingUTF8
+            )
+            if not ok:
+                return None
+            return buffer.value.decode("utf-8", errors="replace").strip()
+        finally:
+            try:
+                if cf_definition:
+                    core_foundation.CFRelease(cf_definition)
+            except Exception:
+                pass
+            try:
+                if cf_word:
+                    core_foundation.CFRelease(cf_word)
+            except Exception:
+                pass
+
+    def run(self) -> None:  # pragma: no cover - network + UI
+        import sys
+
+        word = (self.word or "").strip()
+        html = ""
+        error = ""
+        try:
+            if sys.platform == "darwin":
+                definition = self._lookup_macos_dictionary(word)
+                if definition:
+                    from html import escape
+
+                    html = (
+                        f"<h2>{escape(word)}</h2>"
+                        "<pre style='white-space:pre-wrap'>"
+                        f"{escape(definition)}"
+                        "</pre>"
+                        "<p style='color:#777;font-size:11px'>Source: macOS Dictionary</p>"
+                    )
+            if not html:
+                import requests
+                from urllib.parse import quote
+
+                url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(word)}"
+                response = requests.get(url, timeout=8)
+                if response.status_code == 404:
+                    error = f"No definition found for “{word}”."
+                else:
+                    response.raise_for_status()
+                    html = self._format_html(word, response.json())
+        except Exception as exc:
+            error = f"Dictionary lookup failed: {exc}"
+
+        try:
+            QtCore.QMetaObject.invokeMethod(
+                self.widget,
+                "_on_dictionary_lookup_finished",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, str(self.request_id)),
+                QtCore.Q_ARG(str, str(word)),
+                QtCore.Q_ARG(str, str(html)),
+                QtCore.Q_ARG(str, str(error)),
+            )
+        except Exception:
+            pass
 
 
 class _SpeakTextTask(QtCore.QRunnable):

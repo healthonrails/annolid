@@ -346,6 +346,28 @@ html, body {
     .annolid-modal.annolid-open {
       display: flex;
     }
+    .annolid-popup {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 20000;
+      display: none;
+      width: min(980px, calc(100vw - 36px));
+      height: min(720px, calc(100vh - 96px));
+      box-sizing: border-box;
+    }
+    .annolid-popup.annolid-open {
+      display: block;
+    }
+    .annolid-popup .annolid-modal-content {
+      width: 100%;
+      height: 100%;
+      resize: both;
+      min-width: 420px;
+      min-height: 280px;
+      max-width: calc(100vw - 36px);
+      max-height: calc(100vh - 36px);
+    }
     .annolid-modal-content {
       width: min(1100px, 96vw);
       height: min(880px, 92vh);
