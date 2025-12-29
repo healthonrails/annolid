@@ -49,6 +49,69 @@ from annolid.gui.widgets.pdf_user_state import (
 if _WEBENGINE_AVAILABLE:
     # type: ignore[misc]
     class _AnnolidWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+        def _should_open_url_externally(self, url: QtCore.QUrl) -> bool:
+            try:
+                if not url.isValid():
+                    return False
+                scheme = (url.scheme() or "").lower()
+                if not scheme:
+                    return False
+                if scheme in {"http", "https"}:
+                    host = (url.host() or "").lower()
+                    if host in {"127.0.0.1", "localhost"}:
+                        return False
+                    return True
+                if scheme in {"mailto", "tel"}:
+                    return True
+            except Exception:
+                return False
+            return False
+
+        def acceptNavigationRequest(  # noqa: N802 - Qt override
+            self,
+            url: QtCore.QUrl,
+            # type: ignore[name-defined]
+            navType: "QtWebEngineWidgets.QWebEnginePage.NavigationType",
+            isMainFrame: bool,
+        ) -> bool:
+            try:
+                if isMainFrame and self._should_open_url_externally(url):
+                    QtGui.QDesktopServices.openUrl(url)
+                    return False
+            except Exception:
+                return True
+            return super().acceptNavigationRequest(url, navType, isMainFrame)
+
+        def createWindow(  # noqa: N802 - Qt override
+            self,
+            # type: ignore[name-defined]
+            windowType: "QtWebEngineWidgets.QWebEnginePage.WebWindowType",
+        ) -> "QtWebEngineWidgets.QWebEnginePage":
+            parent_page = self
+
+            class _ExternalBrowserPage(QtWebEngineWidgets.QWebEnginePage):
+                def acceptNavigationRequest(  # noqa: N802 - Qt override
+                    self,
+                    url: QtCore.QUrl,
+                    # type: ignore[name-defined]
+                    navType: "QtWebEngineWidgets.QWebEnginePage.NavigationType",
+                    isMainFrame: bool,
+                ) -> bool:
+                    try:
+                        if isMainFrame and url.isValid():
+                            if parent_page._should_open_url_externally(url):
+                                QtGui.QDesktopServices.openUrl(url)
+                                QtCore.QTimer.singleShot(0, self.deleteLater)
+                                return False
+                    except Exception:
+                        QtCore.QTimer.singleShot(0, self.deleteLater)
+                        return False
+                    # No in-app tabs/windows for the PDF viewer; drop the request.
+                    QtCore.QTimer.singleShot(0, self.deleteLater)
+                    return False
+
+            return _ExternalBrowserPage(self)
+
         def javaScriptConsoleMessage(  # noqa: N802 - Qt override
             self,
             # type: ignore[name-defined]
