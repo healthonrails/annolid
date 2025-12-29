@@ -108,6 +108,13 @@
 </pre></div>
 </div>
 <ul class="simple">
+<li><p>Voice cloning (offline, uses a short voice prompt): Chatterbox Turbo (ONNX)</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>onnxruntime<span class="w"> </span>soundfile
+</pre></div>
+</div>
+<p>Then select <code class="docutils literal notranslate"><span class="pre">Engine</span> <span class="pre">=</span> <span class="pre">Chatterbox</span></code> and choose a voice prompt audio file in the <code class="docutils literal notranslate"><span class="pre">PDF</span> <span class="pre">Speech</span></code> dock (or edit <code class="docutils literal notranslate"><span class="pre">~/.annolid/tts_settings.json</span></code>).</p>
+<ul class="simple">
 <li><p>Language packs for Kokoro when you want Chinese or Japanese voices:</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>misaki<span class="o">[</span>zh<span class="o">]</span><span class="w">  </span><span class="c1"># enables Mandarin (e.g., voice zf_001)</span>
