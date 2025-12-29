@@ -38,6 +38,9 @@ class _PdfReaderBridge(QtCore.QObject):
     def logEvent(self, payload: object) -> None:  # noqa: N802 - Qt slot name
         self._viewer._handle_pdf_log_event(payload)
 
+    @QtCore.Slot("QVariant")
+    def openScholarCitations(self, payload: object) -> None:  # noqa: N802
+        self._viewer._open_scholar_citations(payload)
+
 
 __all__ = ["_PdfReaderBridge", "_SpeakToken"]
-

@@ -172,6 +172,16 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._dictionary_save_to_notes = False
         self._dictionary_note_anchor: Optional[dict[str, float]] = None
         self._active_dictionary_dialog: Optional[QtWidgets.QDialog] = None
+        self._scholar_dialog: Optional[QtWidgets.QDialog] = None
+        self._scholar_web_view = None
+        self._scholar_items: list[dict[str, str]] = []
+        self._scholar_index = 0
+        self._scholar_group_label = ""
+        self._scholar_label = None
+        self._scholar_counter = None
+        self._scholar_prev_btn = None
+        self._scholar_next_btn = None
+        self._scholar_open_btn = None
         self._highlight_mode: Optional[str] = None
         self._selection_anchor_start: Optional[int] = None
         self._selection_anchor_end: Optional[int] = None
@@ -1864,6 +1874,204 @@ class PdfViewerWidget(QtWidgets.QWidget):
             chunks = None
             self._highlight_mode = "text"
         self._speak_text(text, chunks=chunks)
+
+    def _open_scholar_citations(self, payload: object) -> None:
+        if not _WEBENGINE_AVAILABLE:
+            return
+        if QtWebEngineWidgets is None:
+            return
+
+        data = payload if isinstance(payload, dict) else {}
+        raw_items = data.get("items") if isinstance(data, dict) else None
+        items: list[dict[str, str]] = []
+        if isinstance(raw_items, list):
+            for entry in raw_items:
+                if not isinstance(entry, dict):
+                    continue
+                url = str(entry.get("url") or "").strip()
+                if not url:
+                    continue
+                title = str(entry.get("title") or "").strip()
+                number = str(entry.get("number") or "").strip()
+                query = str(entry.get("query") or "").strip()
+                items.append(
+                    {
+                        "url": url,
+                        "title": title,
+                        "number": number,
+                        "query": query,
+                    }
+                )
+        if not items:
+            return
+
+        group_label = str(data.get("groupLabel") or "").strip()
+        active_index = 0
+        try:
+            active_index = int(data.get("activeIndex") or 0)
+        except Exception:
+            active_index = 0
+        active_index = max(0, min(active_index, len(items) - 1))
+
+        self._scholar_items = items
+        self._scholar_index = active_index
+        self._scholar_group_label = group_label
+
+        dialog = self._scholar_dialog
+        if dialog is None:
+            dialog = QtWidgets.QDialog(self)
+            dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+            dialog.setModal(False)
+            dialog.resize(980, 720)
+            dialog.setWindowTitle("Google Scholar")
+
+            layout = QtWidgets.QVBoxLayout(dialog)
+            layout.setContentsMargins(10, 10, 10, 10)
+            layout.setSpacing(8)
+
+            header = QtWidgets.QHBoxLayout()
+            header.setContentsMargins(0, 0, 0, 0)
+            header.setSpacing(8)
+
+            label = QtWidgets.QLabel(dialog)
+            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            label.setStyleSheet("font-weight: 600;")
+            counter = QtWidgets.QLabel(dialog)
+            counter.setStyleSheet("color: #666;")
+
+            prev_btn = QtWidgets.QToolButton(dialog)
+            prev_btn.setText("‹")
+            prev_btn.setAutoRaise(True)
+            next_btn = QtWidgets.QToolButton(dialog)
+            next_btn.setText("›")
+            next_btn.setAutoRaise(True)
+
+            open_btn = QtWidgets.QToolButton(dialog)
+            open_btn.setText("Open in browser")
+            open_btn.setAutoRaise(True)
+
+            close_btn = QtWidgets.QToolButton(dialog)
+            close_btn.setText("✕")
+            close_btn.setAutoRaise(True)
+
+            header.addWidget(label, 1)
+            header.addWidget(counter, 0)
+            header.addWidget(prev_btn, 0)
+            header.addWidget(next_btn, 0)
+            header.addWidget(open_btn, 0)
+            header.addWidget(close_btn, 0)
+            layout.addLayout(header, 0)
+
+            web_view = QtWebEngineWidgets.QWebEngineView(dialog)
+            layout.addWidget(web_view, 1)
+
+            def cleanup() -> None:
+                self._scholar_dialog = None
+                self._scholar_web_view = None
+                self._scholar_label = None
+                self._scholar_counter = None
+                self._scholar_prev_btn = None
+                self._scholar_next_btn = None
+                self._scholar_open_btn = None
+
+            dialog.destroyed.connect(lambda *_: cleanup())
+
+            def nav(delta: int) -> None:
+                if not self._scholar_items:
+                    return
+                self._scholar_index = max(
+                    0,
+                    min(self._scholar_index + int(delta),
+                        len(self._scholar_items) - 1),
+                )
+                self._update_scholar_dialog()
+
+            def open_in_browser() -> None:
+                url = self._current_scholar_url()
+                if not url:
+                    return
+                try:
+                    QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+                except Exception:
+                    return
+
+            prev_btn.clicked.connect(lambda: nav(-1))
+            next_btn.clicked.connect(lambda: nav(1))
+            open_btn.clicked.connect(open_in_browser)
+            close_btn.clicked.connect(dialog.close)
+
+            self._scholar_dialog = dialog
+            self._scholar_web_view = web_view
+            self._scholar_label = label
+            self._scholar_counter = counter
+            self._scholar_prev_btn = prev_btn
+            self._scholar_next_btn = next_btn
+            self._scholar_open_btn = open_btn
+
+        self._update_scholar_dialog()
+        try:
+            self._scholar_dialog.show()
+            self._scholar_dialog.raise_()
+            self._scholar_dialog.activateWindow()
+        except Exception:
+            pass
+
+    def _current_scholar_url(self) -> str:
+        try:
+            if not self._scholar_items:
+                return ""
+            idx = max(0, min(int(self._scholar_index),
+                      len(self._scholar_items) - 1))
+            return str(self._scholar_items[idx].get("url") or "")
+        except Exception:
+            return ""
+
+    def _update_scholar_dialog(self) -> None:
+        if self._scholar_dialog is None:
+            return
+        items = self._scholar_items
+        if not items:
+            try:
+                self._scholar_dialog.close()
+            except Exception:
+                pass
+            return
+        idx = max(0, min(int(self._scholar_index), len(items) - 1))
+        item = items[idx]
+        label_text = self._scholar_group_label or ""
+        if not label_text:
+            nums = [str(it.get("number") or "").strip() for it in items]
+            nums = [n for n in nums if n]
+            label_text = "[" + ", ".join(nums) + "]" if nums else "Citation"
+        title = str(item.get("title") or "").strip()
+        if title:
+            label_text = f"{label_text}  —  {title}"
+        if self._scholar_label is not None:
+            try:
+                self._scholar_label.setText(label_text)
+            except Exception:
+                pass
+        if self._scholar_counter is not None:
+            try:
+                self._scholar_counter.setText(f"{idx + 1} / {len(items)}")
+            except Exception:
+                pass
+        if self._scholar_prev_btn is not None:
+            try:
+                self._scholar_prev_btn.setEnabled(idx > 0)
+            except Exception:
+                pass
+        if self._scholar_next_btn is not None:
+            try:
+                self._scholar_next_btn.setEnabled(idx + 1 < len(items))
+            except Exception:
+                pass
+        url = str(item.get("url") or "").strip()
+        if url and self._scholar_web_view is not None:
+            try:
+                self._scholar_web_view.load(QtCore.QUrl(url))
+            except Exception:
+                pass
 
     def _speak_text(self, text: str, *, chunks: Optional[list[str]] = None) -> None:
         """Kick off background speech for the provided text."""

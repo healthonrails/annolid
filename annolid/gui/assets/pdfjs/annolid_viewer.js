@@ -2848,6 +2848,11 @@
         if (m) return parseInt(m[1], 10);
         m = /^\(\s*(\d{1,4})\s*\)/.exec(t);
         if (m) return parseInt(m[1], 10);
+        m = /^(\d{1,4})$/.exec(t);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= 999) return n;
+        }
         m = /^(\d{1,4})\s*[\.)]\s*/.exec(t);
         if (m) {
           const n = parseInt(m[1], 10);
@@ -3403,13 +3408,13 @@
         const minP = Math.max(1, total - maxScan + 1);
         let inRefsBlock = false;
         let earliestRefsPage = null;
+        let nonRefStreak = 0;
         for (let p = total; p >= minP; p--) {
           try {
             const page = await pdf.getPage(p);
             const tc = await page.getTextContent();
             const lines = _annolidExtractLinesFromTextContent(tc);
             const anyHeading = lines.some((l) => _annolidIsReferencesHeading((l.text || "").trim()));
-            if (anyHeading) return p;
             let starts = 0;
             for (const line of lines) {
               if (_annolidParseReferenceStart((line.text || "").trim()) != null) {
@@ -3417,13 +3422,16 @@
                 if (starts >= 2) break;
               }
             }
-            if (starts >= 2) {
+            const isRefsPage = anyHeading || starts >= 2 || (inRefsBlock && starts >= 1);
+            if (isRefsPage) {
               inRefsBlock = true;
               earliestRefsPage = p;
+              nonRefStreak = 0;
               continue;
             }
             if (inRefsBlock) {
-              break;
+              nonRefStreak += 1;
+              if (nonRefStreak >= 2) break;
             }
           } catch (e) { }
         }
@@ -3459,11 +3467,11 @@
             for (const line of lines) {
               const text = (line.text || "").trim();
               if (!text) continue;
+              if (_annolidIsReferencesHeading(text)) {
+                started = true;
+                continue;
+              }
               if (!started) {
-                if (_annolidIsReferencesHeading(text)) {
-                  started = true;
-                  continue;
-                }
                 const firstN = _annolidParseReferenceStart(text);
                 if (firstN == null) {
                   continue;
@@ -3545,6 +3553,167 @@
           anchorEl || citePopoverState.anchor
         );
         return true;
+      }
+
+      function _annolidStripReferenceNumberPrefix(text) {
+        const t = String(text || "").trim();
+        if (!t) return "";
+        return t
+          .replace(/^\[\s*\d{1,4}\s*\]\s*/g, "")
+          .replace(/^\(\s*\d{1,4}\s*\)\s*/g, "")
+          .replace(/^\d{1,4}\s*[\.)]\s*/g, "")
+          .replace(/^\d{1,4}\s+(?=[A-Za-z])/g, "")
+          .trim();
+      }
+
+      function _annolidBuildScholarUrl(query) {
+        const q = String(query || "").trim();
+        const base = "https://scholar.google.com/scholar?hl=en&q=";
+        return base + encodeURIComponent(q || "");
+      }
+
+      function _annolidBuildContextQueryFromLine(lineText, citationMatchText) {
+        const text = String(lineText || "");
+        const match = String(citationMatchText || "");
+        if (!text) return "";
+        let idx = -1;
+        if (match) idx = text.indexOf(match);
+        if (idx < 0) idx = Math.floor(text.length * 0.5);
+        const start = Math.max(0, idx - 120);
+        const end = Math.min(text.length, idx + 120);
+        let snippet = text.slice(start, end);
+        if (match) snippet = snippet.replace(match, " ");
+        // Remove other bracketed numeric groups to keep the query focused.
+        snippet = snippet.replace(/[\[(]\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?(?:\s*[,;]\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?)*\s*[\])]/g, " ");
+        snippet = _annolidNormalizeText(snippet);
+        // Drop trailing sentence fragments if the snippet is too long.
+        if (snippet.length > 180) snippet = snippet.slice(0, 180).trim();
+        return snippet;
+      }
+
+      function _annolidPickClosestIndex(localCenter, tokens) {
+        if (!tokens || !tokens.length) return 0;
+        let bestIndex = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < tokens.length; i++) {
+          const t = tokens[i];
+          const s0 = (typeof t.start === "number") ? t.start : 0;
+          const e0 = (typeof t.end === "number") ? t.end : s0;
+          const c0 = (s0 + e0) * 0.5;
+          const dist = Math.abs(c0 - localCenter);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIndex = i;
+          }
+        }
+        return bestIndex;
+      }
+
+      function _annolidFindNumericCitationGroupFromSpan(span, clientX = null, clientY = null) {
+        if (!span) return null;
+        const lineSpans = _annolidGetLineSpansForSpan(span);
+        const lineInfo = _annolidBuildLineText(lineSpans);
+        const range = lineInfo.ranges.get(span);
+        if (!lineInfo.text || !range) return null;
+        let anchorPos = null;
+        const off = _annolidTextOffsetInSpanAtPoint(span, clientX, clientY);
+        if (off != null) {
+          anchorPos = range.start + off;
+        }
+        const center = (anchorPos != null) ? anchorPos : ((range.start + range.end) * 0.5);
+        const matches = _annolidExtractCitationMatches(lineInfo.text);
+        for (const match of matches) {
+          if (!(range.start < match.end && range.end > match.start)) continue;
+          const str = String(match.text || "");
+          const tokens = [];
+          const numRe = /\d{1,4}/g;
+          let mm;
+          while ((mm = numRe.exec(str)) !== null) {
+            const n = parseInt(mm[0], 10);
+            if (!n) continue;
+            const start = mm.index;
+            const end = mm.index + mm[0].length;
+            tokens.push({ number: n, start, end });
+          }
+          if (!tokens.length) return null;
+          const localCenter = center - match.start;
+          const pickedIndex = _annolidPickClosestIndex(localCenter, tokens);
+          return {
+            raw: str,
+            numbers: tokens.map((t) => parseInt(t.number || 0, 10)).filter((n) => n),
+            pickedIndex,
+            contextQuery: _annolidBuildContextQueryFromLine(lineInfo.text, str),
+          };
+        }
+        return null;
+      }
+
+      async function _annolidOpenScholarForCitationGroup(group, anchorEl = null) {
+        try {
+          if (!group || !group.numbers || !group.numbers.length) return false;
+          const numbers = group.numbers.map((n) => parseInt(n, 10)).filter((n) => n);
+          if (!numbers.length) return false;
+          const activeIndex = Math.max(0, Math.min(parseInt(group.pickedIndex || 0, 10) || 0, numbers.length - 1));
+          try { await _annolidBuildReferenceIndex(); } catch (e) { }
+          const refs = await Promise.all(numbers.map((n) => _annolidGetReference(n).catch(() => null)));
+          const contextQuery = String(group.contextQuery || "").trim();
+          const items = [];
+          for (let i = 0; i < numbers.length; i++) {
+            const n = numbers[i];
+            const ref = refs[i];
+            const refText = ref && ref.text ? String(ref.text) : "";
+            const stripped = _annolidStripReferenceNumberPrefix(refText);
+            const query = (stripped || refText || contextQuery || ("Reference " + String(n))).slice(0, 240);
+            const title = (stripped || "").slice(0, 120);
+            items.push({
+              number: String(n),
+              title: title,
+              query: query,
+              url: _annolidBuildScholarUrl(query),
+            });
+          }
+          const payload = {
+            groupLabel: String(group.raw || "").trim() || ("[" + numbers.join(", ") + "]"),
+            activeIndex: activeIndex,
+            items: items,
+          };
+          if (window.__annolidBridge && typeof window.__annolidBridge.openScholarCitations === "function") {
+            window.__annolidBridge.openScholarCitations(payload);
+            return true;
+          }
+          const first = items[activeIndex] || items[0];
+          if (first && first.url) window.open(String(first.url), "_blank");
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      async function _annolidOpenScholarForAuthorYear(citation, anchorEl = null) {
+        try {
+          const chosen = citation && citation.chosen ? citation.chosen : null;
+          const raw = citation ? String(citation.raw || "").trim() : "";
+          const query = chosen && chosen.display ? String(chosen.display) : (raw || "citation");
+          const item = {
+            number: "",
+            title: "",
+            query: query,
+            url: _annolidBuildScholarUrl(query),
+          };
+          const payload = {
+            groupLabel: raw || "Citation",
+            activeIndex: 0,
+            items: [item],
+          };
+          if (window.__annolidBridge && typeof window.__annolidBridge.openScholarCitations === "function") {
+            window.__annolidBridge.openScholarCitations(payload);
+            return true;
+          }
+          window.open(String(item.url), "_blank");
+          return true;
+        } catch (e) {
+          return false;
+        }
       }
 
       async function _annolidResolveDestination(dest) {
@@ -3760,6 +3929,32 @@
       let _annolidHoverSpan = null;
       let _annolidHoverCiteKey = null;
       if (container) {
+        container.addEventListener("click", (ev) => {
+          try {
+            if (ev.button !== 0) return;
+            if (ev.defaultPrevented) return;
+            const tool = (window.__annolidMarks && window.__annolidMarks.tool) ? window.__annolidMarks.tool : "select";
+            if (tool !== "select") return;
+            const link = ev.target && ev.target.closest ? ev.target.closest(".annotationLayer a") : null;
+            if (link) return;
+            const span = ev.target && ev.target.closest ? ev.target.closest(".textLayer span") : null;
+            if (!span) return;
+            const cite = _annolidFindCitationFromSpan(span, ev.clientX, ev.clientY);
+            if (!cite) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (cite.kind === "numeric") {
+              const group = _annolidFindNumericCitationGroupFromSpan(span, ev.clientX, ev.clientY) || {
+                raw: "[" + String(cite.number || "") + "]",
+                numbers: [parseInt(cite.number || 0, 10)],
+                pickedIndex: 0,
+              };
+              _annolidOpenScholarForCitationGroup(group, span).catch(() => { });
+              return;
+            }
+            _annolidOpenScholarForAuthorYear(cite, span).catch(() => { });
+          } catch (e) { }
+        });
         container.addEventListener("mousemove", (ev) => {
           try {
             if (ev.buttons && ev.buttons !== 0) return;
@@ -4888,20 +5083,15 @@
                 const cite = _annolidFindCitationFromSpan(span, ev.clientX, ev.clientY);
                 if (cite) {
                   if (cite.kind === "numeric") {
-                    await _annolidOpenCitationPreview(
-                      cite.number,
-                      payload.dest,
-                      true,
-                      span || link
-                    );
+                    const group = _annolidFindNumericCitationGroupFromSpan(span, ev.clientX, ev.clientY) || {
+                      raw: "[" + String(cite.number || "") + "]",
+                      numbers: [parseInt(cite.number || 0, 10)],
+                      pickedIndex: 0,
+                    };
+                    await _annolidOpenScholarForCitationGroup(group, span || link);
                     return;
                   }
-                  await _annolidOpenAuthorYearPreview(
-                    cite,
-                    payload.dest,
-                    true,
-                    span || link
-                  );
+                  await _annolidOpenScholarForAuthorYear(cite, span || link);
                   return;
                 }
                 await _annolidOpenDestinationPreview(payload.dest, "Link preview");
