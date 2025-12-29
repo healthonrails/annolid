@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -13,6 +14,19 @@ from annolid.data.audios import AudioLoader
 
 class AudioWidget(QtWidgets.QWidget):
     """A QWidget that displays audio waveform and spectrum using Matplotlib."""
+
+    AUDIO_EXTENSIONS = (
+        "*.mp3",
+        "*.wav",
+        "*.flac",
+        "*.ogg",
+        "*.m4a",
+        "*.aac",
+        "*.opus",
+        "*.wma",
+        "*.aiff",
+        "*.aif",
+    )
 
     def __init__(
         self,
@@ -50,6 +64,59 @@ class AudioWidget(QtWidgets.QWidget):
             'button_press_event', self.on_canvas_clicked)
 
         self._refresh_plots()
+
+    @classmethod
+    def file_dialog_filter(cls) -> str:
+        formats = " ".join(cls.AUDIO_EXTENSIONS)
+        return f"Audio Files ({formats});;All Files (*.*)"
+
+    @classmethod
+    def select_audio_file(
+        cls,
+        parent=None,
+        start_dir: Optional[str] = None,
+        caption: str = "Choose Audio",
+    ) -> Optional[str]:
+        start_dir = start_dir or str(Path.home())
+        selection = QtWidgets.QFileDialog.getOpenFileName(
+            parent,
+            caption,
+            start_dir,
+            cls.file_dialog_filter(),
+        )
+        if isinstance(selection, tuple):
+            selection = selection[0]
+        selection = str(selection)
+        return selection or None
+
+    @classmethod
+    def create_from_dialog(
+        cls,
+        parent=None,
+        start_dir: Optional[str] = None,
+        caption: str = "Choose Audio",
+        *,
+        show_error: bool = True,
+        error_title: str = "Audio",
+        error_message: str = "Unable to load the selected audio file.",
+    ):
+        audio_path = cls.select_audio_file(
+            parent=parent, start_dir=start_dir, caption=caption
+        )
+        if not audio_path:
+            return None, None
+
+        widget = cls(audio_path, parent=parent)
+        if widget.audio_loader is None:
+            if show_error:
+                QtWidgets.QMessageBox.information(
+                    parent,
+                    error_title,
+                    error_message,
+                )
+            widget.close()
+            return None, None
+        return widget, audio_path
 
     def _refresh_plots(self):
         """Refresh the plotted data to reflect the current audio loader."""

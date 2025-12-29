@@ -755,7 +755,41 @@ class AnnolidWindow(MainWindow):
     def openAudio(self):
         from annolid.gui.widgets.audio import AudioWidget
         if not self.video_file:
+            start_dir = getattr(self, "lastOpenDir", None) or str(Path.home())
+            audio_widget, audio_filename = AudioWidget.create_from_dialog(
+                parent=self,
+                start_dir=start_dir,
+                caption=self.tr(f"{__appname__} - Choose Audio"),
+                error_title=self.tr("Audio"),
+                error_message=self.tr(
+                    "Unable to load the selected audio file."),
+            )
+            if not audio_widget or not audio_filename:
+                return
+
+            self.lastOpenDir = str(Path(audio_filename).parent)
+            if self.audio_dock:
+                self.audio_dock.close()
+            self.audio_dock = None
+            if self.audio_widget:
+                self.audio_widget.close()
+            self.audio_widget = None
+            self._release_audio_loader()
+
+            self.audio_widget = audio_widget
+
+            self.audio_dock = QtWidgets.QDockWidget(self.tr("Audio"), self)
+            self.audio_dock.setObjectName("Audio")
+            self.audio_dock.setWidget(self.audio_widget)
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
             return
+
+        if self.audio_dock:
+            self.audio_dock.close()
+        self.audio_dock = None
+        if self.audio_widget:
+            self.audio_widget.close()
+        self.audio_widget = None
 
         if self._audio_loader is None:
             self._configure_audio_for_video(self.video_file, self.fps)
