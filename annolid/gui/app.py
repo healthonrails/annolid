@@ -782,6 +782,9 @@ class AnnolidWindow(MainWindow):
             self.audio_dock.setObjectName("Audio")
             self.audio_dock.setWidget(self.audio_widget)
             self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+            self.audio_dock.visibilityChanged.connect(
+                self._on_audio_dock_visibility_changed
+            )
             return
 
         if self.audio_dock:
@@ -809,6 +812,37 @@ class AnnolidWindow(MainWindow):
         self.audio_dock.setObjectName("Audio")
         self.audio_dock.setWidget(self.audio_widget)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.audio_dock)
+        self.audio_dock.visibilityChanged.connect(
+            self._on_audio_dock_visibility_changed
+        )
+
+    def _on_audio_dock_visibility_changed(self, visible: bool) -> None:
+        if visible:
+            return
+        QtCore.QTimer.singleShot(0, self._cleanup_audio_ui)
+
+    def _cleanup_audio_ui(self) -> None:
+        """Close the audio dock/widget and release any associated audio loader."""
+        if getattr(self, "_cleaning_audio_ui", False):
+            return
+        self._cleaning_audio_ui = True
+        try:
+            if self.audio_widget and getattr(self.audio_widget, "audio_loader", None):
+                with contextlib.suppress(Exception):
+                    self.audio_widget.audio_loader.stop()
+            if self.audio_widget:
+                with contextlib.suppress(Exception):
+                    self.audio_widget.close()
+            self.audio_widget = None
+            if self.audio_dock:
+                with contextlib.suppress(Exception):
+                    self.audio_dock.close()
+                with contextlib.suppress(Exception):
+                    self.audio_dock.deleteLater()
+            self.audio_dock = None
+            self._release_audio_loader()
+        finally:
+            self._cleaning_audio_ui = False
 
     def _configure_audio_for_video(
         self, video_path: Optional[str], fps: Optional[float]
@@ -4229,6 +4263,8 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.setEnabled(True)
 
         if video_filename:
+            # If an audio-only dock is open, close it before switching to a video.
+            self._cleanup_audio_ui()
             cur_video_folder = Path(video_filename).parent
             self.video_results_folder = Path(video_filename).with_suffix('')
 
