@@ -5,8 +5,8 @@
 To run dense motion estimation:
 
 1. Open Annolid.
-2. Click on the View menu and select Glitter2.
-3. In the open dialog, choose a video file and the corresponding tracking CSV file.
+2. Click on the File menu and select **Glitter2**.
+3. In the dialog, choose a video file and the corresponding tracking CSV file (for example, `<video_stem>_tracking.csv`).
 4. Select a motion threshold greater than zero, for example, 0.09 as shown in the screenshot below. This motion threshold will be used to decide whether freezing behavior is present or not.
 
 ![Visualizing and Dense Motion Estimation Dialog](../images/fish_motion_estimation.png)

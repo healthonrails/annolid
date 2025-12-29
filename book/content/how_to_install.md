@@ -6,8 +6,9 @@ We also provide a PyPI version of Annolid that you can use, but it may not be as
 
 ## Requirements
 - Ubuntu / macOS / Windows
-- Python >= 3.10
-- [PyQt4 / PyQt5]
+- Python >= 3.10 (recommended: 3.11)
+- Qt bindings (installed automatically via Annolid’s dependencies)
+- Optional: CUDA/MPS GPU for faster inference/training
 
 ## Install Annolid locally
 
@@ -49,41 +50,21 @@ annolid
 
 For detailed installation instructions, please check [Annolid Installation and Quick Start (PDF)](https://annolid.com/assets/pdfs/install_annolid.pdf).
 
-# The following section is optional.
-## Install Detectron2 locally only for training custom Mask R-CNN models and video inferences.
+# The following sections are optional.
+## Detectron2 (optional): train Mask R-CNN / batch inference
 
-::::{Important}
-If you intend to process your tagged videos using Google Colab (which you should do unless you are using a workstation with a higher-end GPU), then you do not need to install Detectron2 on your local machine, and you can ignore this section.
+::::{important}
+Detectron2 is **not required** for the core Annolid GUI workflow (AI polygons, Cutie/EfficientTAM tracking, YOLO-based inference, exports, and analyses).
+
+Install Detectron2 only if you specifically need **Mask R-CNN training/inference** through Detectron2.
 ::::
 
 
-### Requirements:
+### Installation guidance
+Detectron2 wheels depend on **your exact** Python / PyTorch / CUDA combination, and the recommended installation method changes over time.
 
-Windows, Linux or MacOS with Python ≥ 3.7, PyTorch ≥ 1.5 and torchvision that matches the PyTorch installation. Install them together at [pytorch.org](http://pytorch.org) to make sure of this. Presently, the combination of torch 1.8 and torchvision 0.9.1 works well, along with pyyaml 5.3, as shown below.
-For purposes of using Annolid, it is OK to downgrade pyyaml from its current version to 5.3.
-
-### Install Detectron2 dependencies:
-```
-pip install pyyaml==5.3
-pip install pycocotools>=2.0.1
-pip install torch==1.9.0+cu102 torchvision==0.10.0+cu102 -f https://download.pytorch.org/whl/torch_stable.html
-```
-### Install Detectron2
-```
-import torch
-assert torch.__version__.startswith("1.9")    
-pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.9/index.html
-```
-See https://detectron2.readthedocs.io/tutorials/install.html for further information.
-
-
-### Install Detectron2 on Windows 10
-
-```
-git clone https://github.com/facebookresearch/detectron2.git
-cd detectron2
-pip install -e .
-```
+- Official instructions: https://detectron2.readthedocs.io/tutorials/install.html
+- If you want the simplest path, use the Annolid Colab notebook (below), which comes with a compatible GPU runtime.
 
 
 ```{note}
@@ -96,23 +77,15 @@ If you encounter an error on windows with message says:
 If you installed Detectron2 locally you can skip this section.
 ```
 
-This step is only if you did not install Detectron2 locally and intend to process your tagged videos using Google Colab.
-Google Colab uses CUDA 10.2 + torch 1.9.0.
+This step is only if you did not install Detectron2 locally and intend to train/run Detectron2 models on Google Colab.
 
-[![Google Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb)
+[![Google Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/healthonrails/annolid/blob/main/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb)
 
-# Using YOLACT instead of Detectron2:
-```{note}
-YOLACT models are less accurate comparing to Mask-RCNN in Detectron2. However, it is faster in terms of inference.
-```
-DCNv2 will not work if Pytorch is greater than 1.4.0
-
-```
-!pip install torchvision==0.5.0
-!pip install torch==1.4.0
-```
-
-For more information, please check https://github.com/healthonrails/annolid/blob/master/docs/tutorials/Train_networks_tutorial_v1.0.1.ipynb and https://github.com/healthonrails/yolac
+## YOLO (recommended for many custom models)
+Annolid includes Ultralytics YOLO support (segmentation and pose) and a GUI training workflow. A typical path is:
+1. Label frames in Annolid (LabelMe JSONs).
+2. Convert to YOLO dataset format (Annolid menu: *File → Convert Labelme to YOLO format*).
+3. Train from Annolid (menu: *File → Train models* → select **YOLO**).
 
 
 # Alternative installation

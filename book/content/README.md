@@ -1,7 +1,8 @@
-# Annolid\:  Start Here
+# Annolid: Start Here
 
-[![Annolid Build](https://github.com/healthonrails/annolid/workflows/Annolid%20CI/badge.svg)](https://github.com/healthonrails/annolid/actions)
-[![Annolid Release](https://github.com/healthonrails/annolid/workflows/Upload%20Python%20Package/badge.svg)](https://github.com/healthonrails/annolid/actions)
+[![Annolid CI](https://github.com/healthonrails/annolid/actions/workflows/CI.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/CI.yml)
+[![Release](https://github.com/healthonrails/annolid/actions/workflows/release.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/release.yml)
+[![Publish to PyPI](https://github.com/healthonrails/annolid/actions/workflows/annolid-publish.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/annolid-publish.yml)
 [![DOI](https://zenodo.org/badge/290017987.svg)](https://zenodo.org/badge/latestdoi/290017987)
 [![PyPI version](https://badge.fury.io/py/annolid.svg)](https://badge.fury.io/py/annolid)
 [![Downloads](https://pepy.tech/badge/annolid)](https://pepy.tech/project/annolid)

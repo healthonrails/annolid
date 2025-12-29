@@ -1,11 +1,20 @@
-# Introduction with examples
-Annolid stands for:  Annotation + Annelid (segmentation).
+# Introduction
+Annolid stands for **Annotation + Annelid** (segmentation).
 
-Annolid is based on instance segmentation models. Instance segmentation is the task of attributing every pixel of an image to a specific category. It can be used to detect and delineate each distinct object of interest appearing in that image. As such it facilitates the tracking of multiple animals and along with it the flexible state identification (e.g., behavior classification, urine deposition, interactions among objects). Annolid has self-supervised, weakly-supervised, and unsupervised training options. We are striving to incorporate optical flow mechanics to improve performances as well as improving labeling efficiency via autolabeling and iterative model training.
+Annolid is a toolkit for video-based research workflows that combines:
+- Annotation (polygons, keypoints, and event labels)
+- Instance segmentation and multi-object tracking
+- Keypoint tracking and downstream analysis (e.g., place preference, motion/freezing metrics)
 
-Currently, Annolid is a work-in-progress, still in its alpha version, and subject to major changes. Nevertheless we hope you can use this jupyterbook as an efficient support to guide you through the process of using Annolid for your specific use case.
+## What Annolid can do today
+Annolid’s feature set evolves quickly, but the core workflows are stable:
+- **Fast labeling in the GUI** (LabelMe-based), with manual tools plus AI-assisted tools.
+- **AI-assisted polygons** using point prompts (Segment Anything family) and **text prompts** (Grounding DINO → SAM).
+- **Video tracking backends** including Cutie / EfficientTAM-style VOS, plus model-driven segmentation/pose options (e.g., YOLO).
+- **Export and interoperability**: LabelMe JSON, CSV summaries, COCO, and YOLO dataset conversion.
+- **Behavior/event utilities**: event marking in the GUI, time-budget summaries, and post-hoc analyses.
 
-If you need help or encounter an issue don't hesitate to reach out to the developers by openning an [issue](get_in_touch) on Github.
+If you need help or encounter an issue, please open an issue or use the community links in [Get in touch](get_in_touch).
 
 ## Video introduction
 Below is a brief introduction to annolid:
@@ -39,7 +48,7 @@ Video courtesy of Caitlyn Finton and Alex Ophir:
 - Masking and automatic scoring of lone animals and huddles of multiple animals
 - Confidence of identification reported
 
-Video courtesy of Rikki Laser and Alex OphirL:
+Video courtesy of Rikki Laser and Alex Ophir:
 <figure class="video_container">
   <iframe width="720" height="480" src="https://lh5.googleusercontent.com/FyOrtO6nEGeBEgEnZeuPf66cfqanl7NNmJFnHG7tJRnnvEOrf0FFfKNjT64pIS2HHjMs3queacFYFBVt4n18s4U1Dr6r7m3IYfEJzit83dh4UVRuUOpRUlU0UUjl0a7Bd6LACqGBuVc" frameborder="0" allowfullscreen="true"> </iframe>
 </figure>
@@ -58,8 +67,7 @@ Video courtesy of Emily Sattora and Christiane Linster:
 - Identification of freezing behavior  (e.g., from fear conditioning)
 - Reporting of motion score based on optical flow measurements applied selectively to the body mask
 <figure class="video_container">
-  <iframe width="720" height="480" src="https://www.youtube.com/embed/qFABuhoGr_E
-" frameborder="0" allowfullscreen="true"> </iframe>
+  <iframe width="720" height="480" src="https://www.youtube.com/embed/qFABuhoGr_E" frameborder="0" allowfullscreen="true"> </iframe>
 </figure>
 
 

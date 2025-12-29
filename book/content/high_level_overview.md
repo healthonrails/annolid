@@ -1,28 +1,34 @@
 # Technical overview
 
-At a high level Annolid's workflow consists of the following steps:
+Annolid supports multiple “paths” depending on your goal (manual annotation, semi-automatic tracking, or training a custom model), but most workflows follow the same loop:
 
-1. Labeling of frames (annotation) & COCO formatting
-
-2. Training (fine-tuning) and inference (local worstation or Google Colab)
-
-3. Post-processing and analysis
+1. **Prepare videos** (optional downsampling/cropping for speed).
+2. **Label** a starting frame (or a small set of frames) with polygons and/or keypoints.
+3. **Run AI** for segmentation/tracking/keypoints (choose a backend that fits your task).
+4. **Review + correct** and re-run from the first error if needed.
+5. **Export** (LabelMe JSON, CSV summaries, COCO/YOLO datasets).
+6. **Analyze** (place preference, motion/freezing metrics, event time budgets, reports).
 
 ![Overview of Annolid workflow](../../docs/imgs/annolid_workflow.png)
 
+## Supported workflows (today)
+### 1) “Track from one frame” (no training required)
+For many videos, you can get high-quality tracking without training:
+- Create polygons (manually or with AI polygons).
+- Use a video-object-segmentation tracker (e.g., Cutie / EfficientTAM-style backends) to propagate masks through the video.
+- Export results to CSV for analysis.
 
+### 2) Prompt-assisted labeling (fewer clicks)
+To speed up annotation:
+- **Point prompt**: click an object → SAM-family model returns a mask → Annolid converts it to a polygon.
+- **Text prompt**: type labels (e.g., `mouse, feeder`) → Grounding DINO proposes boxes → SAM refines masks → polygons.
 
-# Accessibility and efficiency
-We work hard toward making Annolid as accessible as possible to anyone trying to use it and are striving to make all the code be also runnable on Google Colab.
+### 3) Train domain-specific models (optional)
+When you need a model tuned to your camera, arena, or species:
+- Convert LabelMe JSON to **YOLO** format and train a segmentation/pose model.
+- Train Mask R-CNN via Detectron2 (optional, best on GPUs / Colab).
 
-- Options for training on Google Colab as well as on a local workstation
-- Fast training with quality- and speed-optimized options
-  - Model training :
-      - 200 labeled images
-      - < 2 hours for 3000 iterations on Google Colab
-      - 30 min on NVidia 1080Ti
-  - Inference (applying trained model to behavior videos)
-      - Mask R-CNN: ~7 FPS
-      - YOLACT: ~30 FPS
-- Transfer learning based on existing models trained on COCO dataset improves performance
-- Capacities for autolabeling and human-in-the-loop iterative model training
+## Practical performance notes
+Performance depends strongly on video resolution, model choice, and hardware (CPU vs CUDA/MPS GPU). In general:
+- Downsampling/cropping videos speeds up both interactive work and batch processing.
+- Foundation-model tracking helps with occlusions and reduces the number of labeled frames needed.

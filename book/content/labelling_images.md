@@ -10,19 +10,19 @@ Here is an example image :
 ![](../images/labelling_0.png)
 
 
-Labelling in done on a frame by frame basis. We'll show you how to label zones in a given frame. Start the Annolid GUI. Click the 'Open dir' button and select the directory where you exported your images in the previous [step](extract_frames). All the extracted images are shown in File List in the bottom right. Select the first image you want to annotate. Click the 'Create Polygon' button and delineate the structure/zone you want to label. When you finish labelling your zone, you can give it a name that will appear in the 'Polygon Labels'. Repeat until all the desired zones are labelled. You can adjust or delete the polygons by clicking on the 'Edit Polygon' button. Then click the polygon to be edited and directly edit the nodes. If you want to delete it, once you selected it, just click the 'delete Polygon' button.
+Labeling is done on a frame-by-frame basis. We'll show you how to label zones in a given frame. Start the Annolid GUI. Click the 'Open dir' button and select the directory where you exported your images in the previous [step](extract_frames). All the extracted images are shown in File List in the bottom right. Select the first image you want to annotate. Click the 'Create Polygon' button and delineate the structure/zone you want to label. When you finish labeling your zone, you can give it a name that will appear in the 'Polygon Labels'. Repeat until all the desired zones are labeled. You can adjust or delete the polygons by clicking on the 'Edit Polygon' button. Then click the polygon to be edited and directly edit the nodes. If you want to delete it, once you selected it, just click the 'delete Polygon' button.
 When done, save the zone information to a json file by clicking the Save icon.
 
 ```{note}
-If you need to delinate something other than a Polygon (you need a keypoint for example), then right click directly on the image and and click 'Create Point'. You can also create Rectangle, Circle, Line or LineStrip.  
+If you need to delineate something other than a polygon (for example a keypoint), right click on the image and click 'Create Point'. You can also create Rectangle, Circle, Line or LineStrip.
 ```
 
 # Save Labels
 
-In the previous [step](labelling_images), we delinated zone and their associated labels. Those label need to be save using the 'Save Labels' button.
+In the previous [step](labelling_images), we delineated zones and their associated labels. Those labels need to be saved using the 'Save Labels' button.
 
 ```{note}
-You can manually edit those label by openning the label file and adding/removing labels. Those will then appear inside the GUI.
+You can manually edit those labels by opening the label file and adding/removing labels. They will then appear inside the GUI.
 ```
 
 ```{warning}
@@ -46,7 +46,7 @@ To help guide you through the process we made the following video:
 
 
 
-Depending on your behavioral apparatus and overall configuration, Annolid might need very few images to perform accurage instance segmentation. We recommend as a first pass to label ~100 frames.
+Depending on your behavioral apparatus and overall configuration, Annolid might need very few images to perform accurate instance segmentation. We recommend as a first pass to label ~100 frames.
 ![](../images/labelling_1.png)
 
 ## Tracking and re-identification

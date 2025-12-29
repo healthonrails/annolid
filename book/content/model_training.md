@@ -1,19 +1,41 @@
-
 # Model training
 
-To achieve this, install Detectron2 and/or YOLACT. You can find detailed instructions on how to install them in additional pages. Once you've installed these packages, there's no need to repeat the process. Refer to [Install Options](how_to_install.md) for installation options.
+You do **not** always need to train a model to use Annolid effectively. For many videos, you can label a single frame and track with a video-object-segmentation backend (e.g., Cutie / EfficientTAM-style trackers), then review and correct.
 
-# Create your COCO format dataset
+Train a model when you need:
+- higher speed for long recordings,
+- better generalisation to your camera/arena/species,
+- a domain-specific detector/segmenter (e.g., custom objects, special backgrounds),
+- a pose model with named keypoints.
 
-In order to use the deep learning models that power Annolid, your dataset needs to be in a format that is compatible with it (in this case the COCO format).
-Click on the 'COCO dataset' buttom. Click and select the annotation directory, the label file and the number of frames to use for training.
+## Option A (recommended): train YOLO segmentation/pose
+Annolid integrates Ultralytics YOLO for segmentation and pose.
+
+### 1) Create a YOLO dataset from your Annolid labels
+1. Label frames in Annolid (polygons/keypoints saved as LabelMe JSON).
+2. Convert your LabelMe JSON folder to YOLO format:
+   - GUI: *File → Convert Labelme to YOLO format*
+   - CLI: `python -m annolid.main --labelme2yolo /path/to/json_folder --val_size 0.1 --test_size 0.1`
+
+This produces a dataset folder containing images, label files, and a `data.yaml`.
+
+### 2) Train from the Annolid GUI
+Use *File → Train models* and select **YOLO**. Choose:
+- a base model (or a custom YOLO export),
+- epochs and image size,
+- an output directory for runs/checkpoints.
+
+After training, you can select the resulting weights in the AI model selector (or “Browse Custom YOLO…”).
+
+## Option B: Mask R-CNN via Detectron2 (optional)
+If you specifically need Detectron2-based Mask R-CNN training/inference:
+- Prefer the Colab notebook (*File → Open in Colab*) for a working GPU environment.
+- Or follow the Detectron2 installation guide linked from [Install options](how_to_install.md).
+
+## COCO export
+If you need COCO format for interoperability with other toolchains:
+- GUI: *File → COCO format*
 
 ```{note}
-If you choose a number of frame for training that is more than the number of available frame, the software will automatically split the dataset to use 70% of the data for training and 30% for testing.
+Annolid can export multiple formats (COCO/YOLO/CSV). Pick the one that matches your training/inference stack.
 ```
-
-To help guide you through the process we made the following video:
-
-<figure class="video_container">
-  <iframe width="720" height="480" src="https://www.youtube.com/embed/zX8cUImRI_s" frameborder="0" allowfullscreen="true"> </iframe>
-</figure>

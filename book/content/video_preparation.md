@@ -1,5 +1,5 @@
 # Video preparation
-In our paper, we find that when compress and downsample the video size will significally increase the processing speed and saving computation resources and time. 
+In our paper, we find that compressing and downsampling videos can significantly increase processing speed and save compute resources and time.
 Here is one example:
 ```
 ffmpeg -i mouse.avi -vcodec libx264 -vf scale=720x480 mouse.mp4

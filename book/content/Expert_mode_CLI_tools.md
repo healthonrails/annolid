@@ -1,7 +1,40 @@
-# Expert mode\:  CLI tools
+# Expert mode: CLI tools
 
-# GUI or CLI ?
+Most Annolid users work in the GUI (`annolid`). The CLI is useful when you want to automate conversions, run batch processing, or integrate Annolid into a pipeline.
 
-To use Annolid you can either use the command line (CLI) or the graphical user interface (GUI) we developed and based on an heavily modified version of LabelMe, an annotating software developed by Kentaro Wada https://github.com/wkentaro/labelme.
+## The `annolid` command (GUI entry point)
+`annolid` launches the GUI, but it also accepts a few helpful CLI flags:
 
-In the following pages we will provide you with guidelines for getting started using Annolid through the GUI or the CLI. As we expect most people to use the GUI interface, explanation will start with it. If you are looking for CLI commands look at the bottom of eachs pages.  
+- Print version: `annolid --version`
+- Load custom label list: `annolid --labels labels.txt` (or `--labels "mouse_1,mouse_2"`)
+- Enable event flags: `annolid --flags flags.txt` (or `--flags "rearing,grooming"`)
+- Use a specific config: `annolid --config ~/.labelmerc`
+- Auto-save annotations: `annolid --autosave`
+
+Run `annolid --help` to see the full list.
+
+## Batch utilities (run as Python modules)
+Annolid also ships “utility” modules you can run with `python -m ...`.
+
+### Convert LabelMe JSON → CSV
+Export per-frame segmentation/keypoint annotations into a single tracking-style CSV:
+
+```bash
+python -m annolid.annotation.labelme2csv --json_folder /path/to/video_results_folder
+```
+
+### Convert LabelMe JSON → YOLO dataset
+Create a YOLO dataset (images + labels + `data.yaml`) from LabelMe JSON files:
+
+```bash
+python -m annolid.main --labelme2yolo /path/to/labelme_json_folder --val_size 0.1 --test_size 0.1
+```
+
+### Behavior time budgets from event exports
+If you export behavior events from the GUI, compute a “time budget” summary:
+
+```bash
+python -m annolid.behavior.time_budget /path/to/exported_events.csv -o time_budget.csv --bin-size 60
+```
+
+If you use a project schema (categories/modifiers), pass it with `--schema`.
