@@ -1007,66 +1007,23 @@ class CaptionWidget(QtWidgets.QWidget):
         tts_settings = tts_settings or self._load_tts_settings_snapshot()
         text_to_read = (text_to_read or "").strip()
         try:
-            from annolid.agents.kokoro_tts import text_to_speech
-            from annolid.agents.kokoro_tts import play_audio
             if not text_to_read:
                 print("Caption is empty. Nothing to read.")
                 return
-            audio_data = text_to_speech(
-                text_to_read,
-                voice=str(tts_settings.get("voice", "af_sarah")),
-                speed=float(tts_settings.get("speed", 1.0)),
-                lang=str(tts_settings.get("lang", "en-us")),
-            )
-            if audio_data:
-                samples, sample_rate = audio_data
-                print("\nText-to-speech conversion successful!")
-                # Play the audio using sounddevice
-                play_audio(samples, sample_rate)
-            else:
+            from annolid.agents.tts_router import synthesize_tts
+
+            audio_data = synthesize_tts(text_to_read, tts_settings)
+            if not audio_data:
                 print("\nText-to-speech conversion failed.")
+                return
+            samples, sample_rate = audio_data
+            played = play_audio_buffer(samples, sample_rate, blocking=True)
+            if not played:
+                print(
+                    "Audio playback skipped while reading caption because no usable audio device was detected."
+                )
         except Exception as e:
-            from gtts import gTTS
-            from pydub import AudioSegment
-            import numpy as np
-            try:
-                if not text_to_read:
-                    print("Caption is empty. Nothing to read.")
-                    return
-
-                lang = str(tts_settings.get("lang", "en-us")).lower()
-                gtts_lang = lang.split("-")[0] if lang else "en"
-                tts = gTTS(text=text_to_read, lang=gtts_lang)
-
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    temp_file_path = os.path.join(
-                        tmpdir, "temp_caption.mp3")  # mp3 file inside temp dir
-                    tts.save(temp_file_path)
-
-                    try:
-                        audio = AudioSegment.from_file(
-                            temp_file_path, format="mp3")
-                        samples = np.array(audio.get_array_of_samples())
-                        if samples.size == 0:
-                            print("Warning: Attempted to play empty audio.")
-                            return
-                        if audio.channels == 2:
-                            samples = samples.reshape((-1, 2))
-                        played = play_audio_buffer(
-                            samples, audio.frame_rate, blocking=True
-                        )
-                        if not played:
-                            print(
-                                "Audio playback skipped while reading caption "
-                                "because no usable audio device was detected."
-                            )
-
-                    except Exception as e:
-                        # More specific error message
-                        print(f"Error playing MP3: {e}")
-
-            except Exception as e:
-                print(f"Error in gTTS: {e}")
+            print(f"Error in TTS: {e}")
         finally:
             self.readCaptionFinished.emit()
 
@@ -1074,9 +1031,29 @@ class CaptionWidget(QtWidgets.QWidget):
         settings = load_tts_settings()
         defaults = default_tts_settings()
         return {
+            "engine": settings.get("engine", defaults.get("engine", "auto")),
             "voice": settings.get("voice", defaults["voice"]),
             "lang": settings.get("lang", defaults["lang"]),
             "speed": settings.get("speed", defaults["speed"]),
+            "chatterbox_voice_path": settings.get(
+                "chatterbox_voice_path", defaults.get(
+                    "chatterbox_voice_path", "")
+            ),
+            "chatterbox_dtype": settings.get(
+                "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
+            ),
+            "chatterbox_max_new_tokens": settings.get(
+                "chatterbox_max_new_tokens",
+                defaults.get("chatterbox_max_new_tokens", 1024),
+            ),
+            "chatterbox_repetition_penalty": settings.get(
+                "chatterbox_repetition_penalty",
+                defaults.get("chatterbox_repetition_penalty", 1.2),
+            ),
+            "chatterbox_apply_watermark": settings.get(
+                "chatterbox_apply_watermark",
+                defaults.get("chatterbox_apply_watermark", False),
+            ),
         }
 
     @QtCore.Slot()

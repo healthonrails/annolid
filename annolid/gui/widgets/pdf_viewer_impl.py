@@ -1833,9 +1833,29 @@ class PdfViewerWidget(QtWidgets.QWidget):
         settings = load_tts_settings()
         defaults = default_tts_settings()
         merged = {
+            "engine": settings.get("engine", defaults.get("engine", "auto")),
             "voice": settings.get("voice", defaults["voice"]),
             "lang": settings.get("lang", defaults["lang"]),
             "speed": settings.get("speed", defaults["speed"]),
+            "chatterbox_voice_path": settings.get(
+                "chatterbox_voice_path", defaults.get(
+                    "chatterbox_voice_path", "")
+            ),
+            "chatterbox_dtype": settings.get(
+                "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
+            ),
+            "chatterbox_max_new_tokens": settings.get(
+                "chatterbox_max_new_tokens",
+                defaults.get("chatterbox_max_new_tokens", 1024),
+            ),
+            "chatterbox_repetition_penalty": settings.get(
+                "chatterbox_repetition_penalty",
+                defaults.get("chatterbox_repetition_penalty", 1.2),
+            ),
+            "chatterbox_apply_watermark": settings.get(
+                "chatterbox_apply_watermark",
+                defaults.get("chatterbox_apply_watermark", False),
+            ),
         }
         self._thread_pool.start(_SpeakTextTask(
             self, cleaned, merged, chunks=chunks, token=token))
@@ -3171,7 +3191,10 @@ class _SpeakTextTask(QtCore.QRunnable):
             text = (self.text or "").strip()
             if not text:
                 return
-            chunks = self.chunks or self._chunk_text(text, max_chars=420)
+            engine = str(self.tts_settings.get("engine", "kokoro")
+                         or "kokoro").strip().lower()
+            max_chars = 800 if engine == "chatterbox" else 420
+            chunks = self.chunks or self._chunk_text(text, max_chars=max_chars)
             if not chunks:
                 return
 
@@ -3195,23 +3218,13 @@ class _SpeakTextTask(QtCore.QRunnable):
                     )
 
             try:
-                from annolid.agents.kokoro_tts import text_to_speech, play_audio
-
                 from concurrent.futures import ThreadPoolExecutor
-
-                voice = str(self.tts_settings.get("voice", "af_sarah"))
-                speed = float(self.tts_settings.get("speed", 1.0))
-                lang = str(self.tts_settings.get("lang", "en-us"))
+                from annolid.agents.tts_router import synthesize_tts
 
                 def synthesize(chunk: str) -> tuple[object, int, int]:
-                    audio_data = text_to_speech(
-                        chunk,
-                        voice=voice,
-                        speed=speed,
-                        lang=lang,
-                    )
+                    audio_data = synthesize_tts(chunk, self.tts_settings)
                     if not audio_data:
-                        raise RuntimeError("Kokoro returned no audio")
+                        raise RuntimeError("No audio returned by TTS engine")
                     samples, sample_rate = audio_data
                     duration_ms = 0
                     try:
@@ -3222,7 +3235,6 @@ class _SpeakTextTask(QtCore.QRunnable):
                         duration_ms = 0
                     return samples, int(sample_rate), int(duration_ms)
 
-                # Pipeline synthesis (next chunk) while playback runs (current chunk).
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     current_future = executor.submit(synthesize, chunks[0])
                     for idx, chunk in enumerate(chunks):
@@ -3233,60 +3245,6 @@ class _SpeakTextTask(QtCore.QRunnable):
                         if idx + 1 < len(chunks):
                             next_future = executor.submit(
                                 synthesize, chunks[idx + 1]
-                            )
-                        notify_chunk(idx, duration_ms)
-                        if cancelled():
-                            return
-                        play_audio(samples, sample_rate)
-                        if next_future is None:
-                            break
-                        current_future = next_future
-                return
-            except Exception:
-                pass
-
-            # Fallback to gTTS + in-memory playback
-            try:
-                from gtts import gTTS
-                from pydub import AudioSegment
-                import numpy as np
-                from io import BytesIO
-
-                lang = str(self.tts_settings.get("lang", "en-us")).lower()
-                gtts_lang = lang.split("-")[0] if lang else "en"
-                from concurrent.futures import ThreadPoolExecutor
-
-                def synthesize_gtts(chunk: str) -> tuple[object, int, int]:
-                    tts = gTTS(text=chunk, lang=gtts_lang)
-                    buf = BytesIO()
-                    tts.write_to_fp(buf)
-                    buf.seek(0)
-                    audio = AudioSegment.from_file(buf, format="mp3")
-                    samples = np.array(audio.get_array_of_samples())
-                    if samples.size == 0:
-                        raise RuntimeError("gTTS produced empty audio")
-                    if audio.channels == 2:
-                        samples = samples.reshape((-1, 2))
-                    duration_ms = 0
-                    try:
-                        duration_ms = int(
-                            round((len(samples) / float(audio.frame_rate)) * 1000)
-                        )
-                    except Exception:
-                        duration_ms = 0
-                    return samples, int(audio.frame_rate), int(duration_ms)
-
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    current_future = executor.submit(
-                        synthesize_gtts, chunks[0])
-                    for idx, chunk in enumerate(chunks):
-                        if cancelled():
-                            return
-                        samples, sample_rate, duration_ms = current_future.result()
-                        next_future = None
-                        if idx + 1 < len(chunks):
-                            next_future = executor.submit(
-                                synthesize_gtts, chunks[idx + 1]
                             )
                         notify_chunk(idx, duration_ms)
                         if cancelled():

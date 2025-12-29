@@ -18,6 +18,12 @@ pip install pymupdf
 pip install kokoro-onnx onnxruntime gdown
 ```
 
+- Voice cloning (offline, uses a short voice prompt): Chatterbox Turbo (ONNX)
+```bash
+pip install onnxruntime soundfile
+```
+Then select `Engine = Chatterbox` and choose a voice prompt audio file in the `PDF Speech` dock (or edit `~/.annolid/tts_settings.json`).
+
 - Language packs for Kokoro when you want Chinese or Japanese voices:
 ```bash
 pip install misaki[zh]  # enables Mandarin (e.g., voice zf_001)

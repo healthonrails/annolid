@@ -9,9 +9,15 @@ _SETTINGS_DIR = Path.home() / ".annolid"
 _SETTINGS_FILE = _SETTINGS_DIR / "tts_settings.json"
 
 _DEFAULT_SETTINGS: Dict[str, Any] = {
+    "engine": "kokoro",
     "voice": "af_sarah",
     "speed": 1.0,
     "lang": "en-us",
+    "chatterbox_voice_path": "",
+    "chatterbox_dtype": "fp32",
+    "chatterbox_max_new_tokens": 1024,
+    "chatterbox_repetition_penalty": 1.2,
+    "chatterbox_apply_watermark": False,
 }
 
 
@@ -39,10 +45,14 @@ def load_tts_settings() -> Dict[str, Any]:
 
 
 def save_tts_settings(settings: Dict[str, Any]) -> None:
-    """Persist TTS settings to disk."""
+    """Persist (and merge) TTS settings to disk."""
+    merged = load_tts_settings()
+    if isinstance(settings, dict):
+        merged.update(settings)
+    merged = _normalise_settings(merged)
     _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
     with _SETTINGS_FILE.open("w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent=2)
+        json.dump(merged, fh, indent=2)
 
 
 def default_tts_settings() -> Dict[str, Any]:
