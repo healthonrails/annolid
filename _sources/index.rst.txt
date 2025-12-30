@@ -9,6 +9,7 @@ Welcome to annolid's documentation!
    read_pdf_with_ai_voice
    extract_frames
    track_animals
+   video_depth_anything
    keypoints_definitions
    faqs
 
