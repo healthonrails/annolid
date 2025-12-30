@@ -58,8 +58,8 @@ If the `result` dictionary contains keys such as `npz`, `exr`, `point_cloud_csv`
 
 The tool always writes to the directory you pass as `output_dir`. Within that directory you will typically see:
 
-- `depth.ndjson` – one JSON record per processed frame. Each record follows the Annolid shape schema and stores the depth map as a base64-encoded `uint16` image under `otherData.depth_map`. The `"scale"` tells you how to map the quantized values back to meters.
-- `depth_vis.mp4` (if `save_depth_video=True`) – a short MP4 where depth maps are overlaid with the inferno palette (or grayscale if you asked for it).
+- `depth.ndjson` – one JSON record per processed frame. Each record stores the depth map as a base64-encoded `uint16` PNG under `otherData.depth_map`. The per-frame `"scale"` tells you how to map the quantized values back to float depths (metric units only when `metric=True`).
+- `<video_stem>_vis.mp4` (if `save_depth_video=True`) – a short MP4 where depth maps are rendered with the inferno palette (or grayscale if you asked for it).
 - `depth_frames/depth_00000.png` (if `save_depth_frames=True`) – per-frame PNGs with either palette colors or grayscale values.
 - `point_clouds/point_0000.csv` (if `save_point_clouds=True`) – XYZ-intensity CSVs. Columns are `x,y,z,intensity`, followed by an optional `region` column (if you enabled `include_region_labels` and annotated regions exist) and `red,green,blue` when color data is available.
 - `*_depths.npz` (if `save_npz=True`) and/or `*_depths_exr/*` (if `save_exr=True`) – compressed NumPy or EXR stacks for downstream processing.

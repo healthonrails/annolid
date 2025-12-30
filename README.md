@@ -159,7 +159,7 @@ annolid
 
 ## Video Depth Anything
 
-- The toolbar now includes a **Video Depth Anything…** action (also under *View*) that opens a dialog mirroring the original CLI. Choose your video, encoder, resolution, and output folder, and the bundled inference code runs inside Annolid without extra installs.
+- Run depth estimation on the currently loaded video via **View → Video Depth Anything…**. Use **View → Depth Settings…** to pick the encoder, resolution, FPS downsampling, and which outputs to save.
 - Pretrained weights belong under `annolid/depth/checkpoints`. Download just what you need via the bundled Python helper (uses `huggingface-hub`, already listed in dependencies):
   ```bash
   cd annolid
@@ -168,7 +168,8 @@ annolid
   Pass `--all` to fetch every checkpoint, or run `python -m annolid.depth.download_weights --list` for the full menu. Existing files are never re-downloaded.
 - The GUI runner now auto-downloads whichever checkpoint you select in the dialog, so you only need to invoke the helper when you want to prefetch models ahead of time.
 - Depth run now streams inference frame-by-frame, emits a single `depth.ndjson` record alongside the video (with per-frame base64 depth PNGs plus scale metadata) instead of writing separate JSON files per frame, and still shows a live blended overlay while processing. Enable `save_depth_video` or `save_depth_frames` only if you also need rendered outputs.
-- Metric depth exports also save PLY point clouds; enable `Metric depth model` in the dialog and view them in the built-in VTk viewer. EXR outputs require `OpenEXR`/`Imath`.
+- Optional exports include `depth_frames/`, `<video_stem>_vis.mp4`, point cloud CSVs, `*.npz`, and `*_depths_exr/` (EXR requires `OpenEXR`/`Imath`).
+- Full walkthrough: `docs/source/video_depth_anything.md`.
 
 ## Annotation Guide
 ![Annolid UI based on LabelMe](docs/imgs/annolid_ui.png)

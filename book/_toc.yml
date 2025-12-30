@@ -14,6 +14,7 @@ parts:
     - file: content/labelling_images
     - file: content/labeling_instances_under_the_hood.md
     - file: content/tracking_with_Cutie.md
+    - file: content/video_depth_anything.md
     - file: content/model_training.md
     - file: content/combining_models.md
     - file: content/Annolid_on_Google_Colab.md
