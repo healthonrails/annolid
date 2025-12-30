@@ -820,11 +820,36 @@ class MaskShape(MultipoinstShape):
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
     def toPolygons(self, epsilon=2.0, merge_contours=False):
-        # Fill the holes inside the mask
-        filled_mask = cv2.morphologyEx((self.mask*255).astype(
-            np.uint8), cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-        # Find the contours of the filled mask
-        contours, hierarchy = cv2.findContours(
+        if self.mask is None:
+            return []
+
+        mask = np.asarray(self.mask)
+        if mask.ndim != 2:
+            mask = mask[..., 0]
+        mask_uint8 = (mask.astype(bool).astype(np.uint8) * 255)
+        if not mask_uint8.any():
+            return []
+
+        # Crop to the non-zero region to reduce contour/morphology work.
+        nonzero = cv2.findNonZero(mask_uint8)
+        if nonzero is None:
+            return []
+        x, y, w, h = cv2.boundingRect(nonzero)
+        pad = 2  # accounts for the 5x5 morphology kernel radius
+        height, width = mask_uint8.shape[:2]
+        x0 = max(0, x - pad)
+        y0 = max(0, y - pad)
+        x1 = min(width, x + w + pad)
+        y1 = min(height, y + h + pad)
+
+        cropped = mask_uint8[y0:y1, x0:x1]
+
+        # Fill small holes inside the mask.
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        filled_mask = cv2.morphologyEx(cropped, cv2.MORPH_CLOSE, kernel)
+
+        # Find the contours of the filled mask.
+        contours, _ = cv2.findContours(
             filled_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         shapes = []
         if len(contours) == 0:
@@ -834,9 +859,7 @@ class MaskShape(MultipoinstShape):
             # Merge all the contours into a single contour
             merged_contour = np.concatenate(contours)
             merged_contour = cv2.approxPolyDP(merged_contour, epsilon, True)
-            merged_contour = merged_contour[:, 0, :] / self.scale
-            merged_contour = np.concatenate(
-                [merged_contour, merged_contour[:1, :]], axis=0)
+            merged_contour = merged_contour[:, 0, :].astype(np.float32)
         else:
             # Find the contour with the largest area
             largest_contour = max(contours, key=cv2.contourArea)
@@ -845,12 +868,17 @@ class MaskShape(MultipoinstShape):
             approximated_contour = cv2.approxPolyDP(
                 largest_contour, epsilon, True)
 
-            # Scale the merged contour if necessary
-            scaled_contour = approximated_contour[:, 0, :] / self.scale
+            merged_contour = approximated_contour[:, 0, :].astype(np.float32)
 
-            # Close the contour by duplicating its first point at the end
-            merged_contour = np.concatenate(
-                [scaled_contour, scaled_contour[:1, :]], axis=0)
+        # Offset by crop origin and scale back if needed.
+        merged_contour[:, 0] += float(x0)
+        merged_contour[:, 1] += float(y0)
+        scale = float(self.scale) if getattr(self, "scale", 1) else 1.0
+        merged_contour = merged_contour / scale
+
+        # Close the contour by duplicating its first point at the end.
+        merged_contour = np.concatenate(
+            [merged_contour, merged_contour[:1, :]], axis=0)
 
         # Create a Shape object from the merged contour
         shape = Shape(shape_type="polygon",

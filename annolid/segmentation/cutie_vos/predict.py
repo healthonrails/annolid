@@ -17,7 +17,6 @@ from annolid.segmentation.cutie_vos.interactive_utils import (
     overlay_davis,
     color_id_mask,
 )
-from shapely.geometry import Polygon
 from omegaconf import open_dict
 from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
@@ -439,10 +438,13 @@ class CutieVideoProcessor:
         # A linearring requires at least 4 coordinates.
         # good quality polygon
         if len(points) >= 4:
-            # Create a Shapely Polygon object from the list of points
-            polygon = Polygon(points)
-            # Get the bounding box coordinates (minx, miny, maxx, maxy)
-            _bbox = polygon.bounds
+            xs = [float(pt[0]) for pt in points]
+            ys = [float(pt[1]) for pt in points]
+            minx = min(xs)
+            miny = min(ys)
+            maxx = max(xs)
+            maxy = max(ys)
+            _bbox = (minx, miny, maxx, maxy)
             # Calculate the area of the bounding box
             bbox_area = (_bbox[2] - _bbox[0]) * (_bbox[3] - _bbox[1])
             # bbox area should bigger enough

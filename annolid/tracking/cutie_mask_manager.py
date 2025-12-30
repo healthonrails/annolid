@@ -242,20 +242,39 @@ class CutieMaskManager:
             return bitmap
         cv2 = self._lazy_cv2()
         kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        dilated = cv2.dilate(bitmap.astype(np.uint8), kernel, iterations=iterations)
+        dilated = cv2.dilate(bitmap.astype(np.uint8),
+                             kernel, iterations=iterations)
         return dilated.astype(bool)
 
     def _mask_to_polygon(self, mask: np.ndarray) -> List[Tuple[float, float]]:
         cv2 = self._lazy_cv2()
-        mask_uint8 = (mask.astype(np.uint8) * 255)
+        mask_uint8 = (mask.astype(bool).astype(np.uint8) * 255)
+        if not mask_uint8.any():
+            return []
+
+        nonzero = cv2.findNonZero(mask_uint8)
+        if nonzero is None:
+            return []
+        x, y, w, h = cv2.boundingRect(nonzero)
+        pad = 2
+        height, width = mask_uint8.shape[:2]
+        x0 = max(0, x - pad)
+        y0 = max(0, y - pad)
+        x1 = min(width, x + w + pad)
+        y1 = min(height, y + h + pad)
+
+        cropped = mask_uint8[y0:y1, x0:x1]
         contours, _ = cv2.findContours(
-            mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return []
         largest = max(contours, key=cv2.contourArea)
         epsilon = 0.003 * cv2.arcLength(largest, True)
         approx = cv2.approxPolyDP(largest, epsilon, True)
-        points = [(float(pt[0][0]), float(pt[0][1])) for pt in approx]
+        points = [
+            (float(pt[0][0] + x0), float(pt[0][1] + y0))
+            for pt in approx
+        ]
         if points and points[0] != points[-1]:
             points.append(points[0])
         return points
