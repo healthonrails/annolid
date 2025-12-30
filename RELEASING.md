@@ -2,7 +2,7 @@
 
 This repository publishes:
 - **PyPI distributions** from GitHub Releases (`.github/workflows/annolid-publish.yml`).
-- **Platform executables** from `v*` tags (`.github/workflows/release.yml`).
+- **Platform executables** via manual workflow dispatch on a `v*` tag (`.github/workflows/release.yml`).
 - **Docs to `gh-pages`** on pushes to `main` (`.github/workflows/CI.yml`).
 
 ## Bump the version
