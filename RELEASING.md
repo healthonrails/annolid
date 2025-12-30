@@ -16,4 +16,4 @@ This repository publishes:
 
 ## Cut the release
 - Push a tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
-- Publish the GitHub Release for that tag (PyPI publish requires `PYPI_TOKEN` in repo secrets).
+- PyPI publish runs on `v*` tag pushes (and on manually-published GitHub Releases) and requires `PYPI_TOKEN` in repo secrets.
