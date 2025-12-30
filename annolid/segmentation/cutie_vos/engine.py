@@ -1,12 +1,11 @@
 # cutie_engine.py
 
-import os
 import cv2
 import torch
 import gdown
 import numpy as np
 from pathlib import Path
-from typing import Dict, Optional, Iterator, Tuple
+from typing import Dict, Optional, Iterator, Tuple, Union
 
 from omegaconf import open_dict
 from hydra import compose, initialize
@@ -35,7 +34,7 @@ class CutieEngine:
     def __init__(self,
                  # e.g., mem_every, t_max_value
                  cutie_config_overrides: Optional[Dict] = None,
-                 device: Optional[torch.device] = None,
+                 device: Optional[Union[torch.device, str]] = None,
                  model_weights_path: Optional[str] = None):
 
         self.device = device or get_device()
@@ -57,6 +56,24 @@ class CutieEngine:
                 f"CutieEngine: Failed to initialize model or InferenceCore: {e}", exc_info=True)
             # Propagate error or handle gracefully
             raise
+
+    def _device_type(self) -> str:
+        """Return device type ('cuda', 'mps', 'cpu') for autocast/gating."""
+        if isinstance(self.device, torch.device):
+            return self.device.type
+        device_str = str(self.device).lower()
+        if "cuda" in device_str:
+            return "cuda"
+        if "mps" in device_str:
+            return "mps"
+        return "cpu"
+
+    def reset_inference_core(self) -> None:
+        """Reset inference state (objects + memory) while keeping model weights loaded."""
+        if self.cutie_model is None:
+            raise RuntimeError(
+                "CutieEngine reset requested before model initialization.")
+        self.inference_core = InferenceCore(self.cutie_model, cfg=self.cfg)
 
     def _get_model_weights_path(self) -> str:
         """Determines and potentially downloads the model weights."""
@@ -197,8 +214,9 @@ class CutieEngine:
                        num_objects_in_mask: int,
                        # How many frames to process *including* the start_frame_index
                        frames_to_propagate: int,
-                       pred_worker: Optional[object] = None
-                       ) -> Iterator[Tuple[int, np.ndarray]]:  # Yields (current_frame_idx, predicted_mask_np)
+                       pred_worker: Optional[object] = None,
+                       reset_core: bool = True,
+                       ) -> Iterator[Tuple[int, np.ndarray, np.ndarray]]:  # (frame_idx, frame_bgr, pred_mask_np)
         """
         Processes a sequence of frames from the video_capture.
 
@@ -212,24 +230,41 @@ class CutieEngine:
             pred_worker: Optional object with an `is_stopped()` method for early termination.
 
         Yields:
-            Tuple[int, np.ndarray]: (current_video_frame_index, predicted_numpy_mask)
+            Tuple[int, np.ndarray, np.ndarray]: (current_video_frame_index, frame_bgr, predicted_numpy_mask)
                                     The mask is an object ID mask (H, W).
         """
-        if not self.cutie_model or not self.inference_core:
+        if not self.cutie_model:
             logger.error(
-                "CutieEngine: Model or InferenceCore not initialized.")
+                "CutieEngine: Model not initialized.")
             return  # Or raise exception
 
         if not video_capture.isOpened():
             logger.error("CutieEngine: VideoCapture is not open.")
             return
 
+        if reset_core or self.inference_core is None:
+            self.reset_inference_core()
+
         total_video_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         frames_processed_in_this_call = 0
         current_video_frame_idx = start_frame_index
 
         with torch.inference_mode():
-            with torch.amp.autocast('cuda', enabled=self.cfg.amp and self.device == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=bool(self.cfg.amp) and self._device_type() == 'cuda'):
+                if current_video_frame_idx < 0:
+                    current_video_frame_idx = 0
+                if current_video_frame_idx >= total_video_frames:
+                    logger.info(
+                        "CutieEngine: Start frame %s is beyond video length %s.",
+                        current_video_frame_idx,
+                        total_video_frames,
+                    )
+                    return
+
+                if int(video_capture.get(cv2.CAP_PROP_POS_FRAMES)) != current_video_frame_idx:
+                    video_capture.set(cv2.CAP_PROP_POS_FRAMES,
+                                      current_video_frame_idx)
+
                 while True:
                     if pred_worker and pred_worker.is_stopped():
                         logger.info(
@@ -246,8 +281,6 @@ class CutieEngine:
                             f"CutieEngine: Reached end of video ({current_video_frame_idx}) while processing segment.")
                         break
 
-                    video_capture.set(cv2.CAP_PROP_POS_FRAMES,
-                                      current_video_frame_idx)
                     ret, frame_bgr = video_capture.read()
 
                     if not ret or frame_bgr is None:
@@ -279,7 +312,7 @@ class CutieEngine:
                     predicted_mask_np = torch_prob_to_numpy_mask(
                         predicted_probs_torch)
 
-                    yield current_video_frame_idx, predicted_mask_np
+                    yield current_video_frame_idx, frame_bgr, predicted_mask_np
 
                     frames_processed_in_this_call += 1
                     current_video_frame_idx += 1

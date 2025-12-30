@@ -171,6 +171,29 @@ class TrackAllWorker(QThread):
         total_segments = len(segments)
         successful_segments = 0
 
+        shared_cutie_engine = None
+        try:
+            from annolid.segmentation.cutie_vos.engine import CutieEngine
+        except Exception:
+            CutieEngine = None  # type: ignore[assignment]
+
+        if CutieEngine is not None:
+            cutie_engine_config_overrides = {
+                "mem_every": self.config.get("mem_every", 5),
+                "max_mem_frames": self.config.get("t_max_value", 5),
+            }
+            try:
+                shared_cutie_engine = CutieEngine(
+                    cutie_config_overrides=cutie_engine_config_overrides,
+                    device=device,
+                )
+            except Exception as exc:
+                error_msg = (
+                    f"Failed to initialize CutieEngine for {video_name}: {exc}")
+                self.error.emit(error_msg)
+                self.logger.error(error_msg, exc_info=True)
+                return False
+
         for seg_idx, segment in enumerate(segments, start=1):
             if not self.is_running:
                 self.logger.info(
@@ -215,7 +238,8 @@ class TrackAllWorker(QThread):
                     segment_end_frame=segment.segment_end_frame,
                     processing_config=self.config,
                     pred_worker=self,
-                    device=device
+                    device=device,
+                    cutie_engine=shared_cutie_engine,
                 )
                 result_message = segment_executor.process_segment()
                 if any(keyword in result_message for keyword in ["Error", "not found", "Failed"]):
@@ -236,6 +260,12 @@ class TrackAllWorker(QThread):
                 if segment_executor is not None:
                     segment_executor.cleanup()
                 self.log_gpu_memory(video_name, f"Segment {seg_idx} - After")
+
+        if shared_cutie_engine is not None:
+            try:
+                shared_cutie_engine.cleanup()
+            except Exception:
+                pass
 
         if successful_segments > 0:
             try:

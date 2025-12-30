@@ -36,7 +36,9 @@ class SegmentedCutieExecutor:
                  segment_end_frame: int,
                  processing_config: Dict,  # Contains Cutie engine configs and other executor configs
                  pred_worker: Optional[object] = None,
-                 device: Optional[torch.device] = None):  # Pass device explicitly
+                 # Pass device explicitly
+                 device: Optional[torch.device] = None,
+                 cutie_engine: Optional[CutieEngine] = None):
 
         self.video_path = Path(video_path_str)
         self.video_folder = self.video_path.with_suffix('')
@@ -51,7 +53,8 @@ class SegmentedCutieExecutor:
         self.optical_flow_backend = processing_config.get(
             'optical_flow_backend', 'farneback')
 
-        self.cutie_engine: Optional[CutieEngine] = None
+        self.cutie_engine: Optional[CutieEngine] = cutie_engine
+        self._owns_engine = cutie_engine is None
         # {'mask': np.array, 'labels_dict': dict, 'num_objects': int}
         self.initial_mask_info: Optional[Dict] = None
         self.video_writer: Optional[cv2.VideoWriter] = None
@@ -68,7 +71,8 @@ class SegmentedCutieExecutor:
 
         self._current_frame_idx_for_saving: Optional[int] = None
 
-        self._initialize_engine()
+        if self.cutie_engine is None:
+            self._initialize_engine()
 
     def _initialize_engine(self):
         """Initializes the CutieEngine."""
@@ -92,6 +96,7 @@ class SegmentedCutieExecutor:
             logger.error(
                 f"Failed to initialize CutieEngine for {self.video_path.name}: {e}", exc_info=True)
             self.cutie_engine = None
+            self._owns_engine = True
 
     def _prepare_initial_mask(self) -> bool:
         """
@@ -314,22 +319,15 @@ class SegmentedCutieExecutor:
             # Engine reads from this frame
             start_frame_for_cutie_engine = self.segment_start_frame
 
-            for frame_idx, pred_mask_np_obj_ids in self.cutie_engine.process_frames(
+            for frame_idx, current_frame_bgr, pred_mask_np_obj_ids in self.cutie_engine.process_frames(
                 video_capture=cap,
                 start_frame_index=start_frame_for_cutie_engine,
                 initial_mask_np=self.initial_mask_info['mask_np'],
                 num_objects_in_mask=self.initial_mask_info['num_objects'],
                 frames_to_propagate=frames_to_propagate_this_segment,
-                pred_worker=self.pred_worker
+                pred_worker=self.pred_worker,
+                reset_core=True,
             ):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret_curr, current_frame_bgr = cap.read()
-                if not ret_curr:
-                    logger.warning(
-                        f"Could not read current frame {frame_idx} for flow/viz. Skipping metrics for this frame.")
-                    prev_frame_bgr = None  # Cannot compute flow for next iteration
-                    continue  # Skip to next prediction from engine
-
                 dense_flow_for_this_frame: Optional[np.ndarray] = None
                 if self.config.get('compute_optical_flow', True) and prev_frame_bgr is not None:
                     backend_val = str(self.optical_flow_backend).lower()
@@ -363,8 +361,6 @@ class SegmentedCutieExecutor:
                     else:
                         self.video_writer.write(overlay)
 
-                # Current becomes previous for next iteration
-                prev_frame_bgr = current_frame_bgr.copy()
                 final_message = f"Segment processed up to frame {frame_idx}."
 
             final_message = (f"Segment processing completed. Processed {frames_actually_processed_count} frames "
@@ -408,6 +404,6 @@ class SegmentedCutieExecutor:
         if self.video_writer:
             self.video_writer.release()
             self.video_writer = None
-        if self.cutie_engine:
+        if self.cutie_engine and self._owns_engine:
             self.cutie_engine.cleanup()  # Ask engine to clean its resources
             self.cutie_engine = None

@@ -9,6 +9,7 @@ from qtpy.QtCore import QThread, Signal, Slot, QObject
 from .tracking_jobs import VideoProcessingJob, JobType, TrackingSegment
 
 from annolid.segmentation.cutie_vos.processor import SegmentedCutieExecutor
+from annolid.segmentation.cutie_vos.engine import CutieEngine
 
 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 
@@ -225,6 +226,28 @@ class TrackingWorker(QThread):
         num_segments_in_job = len(tracking_segments)
         segments_processed_successfully_count = 0
 
+        shared_cutie_engine: Optional[CutieEngine] = None
+        if "cutie" in model_name:
+            cutie_engine_config_overrides = {
+                "mem_every": job_config.get("mem_every", 5),
+                "max_mem_frames": job_config.get("t_max_value", 5),
+            }
+            try:
+                shared_cutie_engine = CutieEngine(
+                    cutie_config_overrides=cutie_engine_config_overrides,
+                    device=device,
+                )
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to initialize shared CutieEngine for %s: %s",
+                    video_name,
+                    exc,
+                    exc_info=True,
+                )
+                self.error.emit(
+                    f"Failed to initialize CutieEngine for {video_name}: {exc}")
+                return False
+
         for seg_idx, segment_obj in enumerate(tracking_segments):
             if not self._is_running:
                 self.logger.info(
@@ -261,7 +284,8 @@ class TrackingWorker(QThread):
                         segment_end_frame=segment_obj.segment_end_frame,
                         processing_config=segment_config,  # Pass effective config
                         pred_worker=self,  # TrackingWorker itself
-                        device=device
+                        device=device,
+                        cutie_engine=shared_cutie_engine,
                     )
                     status_message = segment_executor.process_segment()
 
@@ -292,6 +316,13 @@ class TrackingWorker(QThread):
                 if segment_executor:
                     segment_executor.cleanup()
                 self._log_gpu_memory(f"Seg {video_name}-{seg_idx+1}", "After")
+
+        if shared_cutie_engine is not None:
+            try:
+                shared_cutie_engine.cleanup()
+            except Exception:
+                # Best-effort cleanup; avoid failing the run due to teardown.
+                pass
 
         if segments_processed_successfully_count > 0:  # If at least one segment was attempted/succeeded
             try:
