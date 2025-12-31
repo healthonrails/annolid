@@ -14,6 +14,7 @@ import labelme.utils
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
+from annolid.annotation.pose_schema import PoseSchema
 from annolid.detector.grounding_dino import GroundingDINO
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 # TODO(unknown):
@@ -149,6 +150,12 @@ class Canvas(QtWidgets.QWidget):
         self._depth_preview_pixmap = None
         self._flow_preview_pixmap = None
 
+        # Pose skeleton overlay (optional)
+        self._pose_schema: PoseSchema | None = None
+        self._show_pose_edges: bool = False
+        self._pose_edge_color = QtGui.QColor(0, 255, 255, 190)
+        self._pose_edge_shadow = QtGui.QColor(0, 0, 0, 160)
+
     def fillDrawing(self):
         return self._fill_drawing
 
@@ -163,6 +170,124 @@ class Canvas(QtWidgets.QWidget):
 
     def getCaption(self):
         return self.caption_label.toPlainText()
+
+    # ------------------------------------------------------------------
+    # Pose skeleton overlay
+    # ------------------------------------------------------------------
+    def setPoseSchema(self, schema: PoseSchema | None) -> None:
+        self._pose_schema = schema
+        self.update()
+
+    def setShowPoseEdges(self, enabled: bool) -> None:
+        self._show_pose_edges = bool(enabled)
+        self.update()
+
+    def showPoseEdges(self) -> bool:
+        return bool(self._show_pose_edges)
+
+    def _infer_pose_instance_label(self, shape, candidate_labels, default_label: str = "object") -> str:
+        flags = getattr(shape, "flags", None)
+        if isinstance(flags, dict):
+            instance_label = flags.get("instance_label")
+            if isinstance(instance_label, str) and instance_label.strip():
+                return instance_label.strip()
+
+        group_id = getattr(shape, "group_id", None)
+        if group_id not in (None, ""):
+            return str(group_id)
+
+        label = str(getattr(shape, "label", "") or "").strip()
+        lower_label = label.lower()
+        for candidate in sorted(candidate_labels, key=len, reverse=True):
+            if not candidate:
+                continue
+            if lower_label.startswith(candidate.lower()):
+                return candidate
+        for delimiter in ("_", "-", ":", "|", " "):
+            if delimiter in label:
+                return label.split(delimiter, 1)[0].strip() or default_label
+        return default_label
+
+    def _infer_pose_keypoint_label(self, shape, instance_label: str) -> str:
+        flags = getattr(shape, "flags", None)
+        if isinstance(flags, dict):
+            display_label = flags.get("display_label")
+            if isinstance(display_label, str) and display_label.strip():
+                return display_label.strip()
+
+        label = str(getattr(shape, "label", "") or "").strip()
+        if instance_label:
+            inst_len = len(instance_label)
+            if label.lower().startswith(instance_label.lower()) and inst_len < len(label):
+                suffix = label[inst_len:].lstrip("_-:| ")
+                if suffix:
+                    return suffix
+        for delimiter in ("_", "-", ":", "|"):
+            if delimiter in label:
+                suffix = label.split(delimiter, 1)[1].strip()
+                if suffix:
+                    return suffix
+        return label
+
+    def _draw_pose_edges(self, painter: QtGui.QPainter) -> None:
+        if not self._show_pose_edges or not self._pose_schema or not self._pose_schema.edges:
+            return
+
+        candidate_labels = {
+            str(getattr(s, "label", "") or "").strip()
+            for s in self.shapes
+            if str(getattr(s, "shape_type", "") or "").lower() != "point"
+        }
+        candidate_labels.discard("")
+
+        instances = {}
+        for shape in self.shapes:
+            if str(getattr(shape, "shape_type", "") or "").lower() != "point":
+                continue
+            if not self.isVisible(shape):
+                continue
+            points = getattr(shape, "points", None) or []
+            if not points:
+                continue
+            point = points[0]
+            instance_label = self._infer_pose_instance_label(
+                shape, candidate_labels, default_label="object")
+            kp_label = self._infer_pose_keypoint_label(shape, instance_label)
+            if not kp_label:
+                continue
+            instances.setdefault(instance_label, {})[kp_label] = point
+
+        if not instances:
+            return
+
+        edge_width = max(1, int(round(3.0 / max(self.scale, 1e-6))))
+        shadow_width = edge_width + \
+            max(1, int(round(2.0 / max(self.scale, 1e-6))))
+
+        shadow_pen = QtGui.QPen(self._pose_edge_shadow)
+        shadow_pen.setWidth(shadow_width)
+        shadow_pen.setCapStyle(QtCore.Qt.RoundCap)
+        shadow_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+
+        edge_pen = QtGui.QPen(self._pose_edge_color)
+        edge_pen.setWidth(edge_width)
+        edge_pen.setCapStyle(QtCore.Qt.RoundCap)
+        edge_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+
+        painter.save()
+        try:
+            for kp_map in instances.values():
+                for a, b in self._pose_schema.edges:
+                    p1 = kp_map.get(a)
+                    p2 = kp_map.get(b)
+                    if p1 is None or p2 is None:
+                        continue
+                    painter.setPen(shadow_pen)
+                    painter.drawLine(p1, p2)
+                    painter.setPen(edge_pen)
+                    painter.drawLine(p1, p2)
+        finally:
+            painter.restore()
 
     # ------------------------------------------------------------------
     # Patch similarity helpers (DINO visualization)
@@ -1292,6 +1417,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         else:
             image_width = None
             image_height = None
+
+        # Draw pose edges behind the keypoints (but above the image).
+        self._draw_pose_edges(p)
 
         for shape in self.shapes:
             if (shape.selected or not self._hideBackround) and self.isVisible(shape):

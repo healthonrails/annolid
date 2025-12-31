@@ -280,6 +280,14 @@ class MenuController:
                 "icon_path": here / "icons/visualization.png",
             },
             {
+                "name": "toggle_pose_edges",
+                "text": w.tr("Show Pose &Edges"),
+                "slot": w.toggle_pose_edges_display,
+                "tip": w.tr("Show/hide pose skeleton edges on the canvas"),
+                "checkable": True,
+                "checked": bool(getattr(w, "_show_pose_edges", False)),
+            },
+            {
                 "name": "video_depth_anything",
                 "text": w.tr("Video Depth Anything..."),
                 "slot": w.run_video_depth_anything,
@@ -518,6 +526,7 @@ class MenuController:
             ),
             (
                 actions["visualization"],
+                actions["toggle_pose_edges"],
                 w.patch_similarity_action,
                 w.pca_map_action,
                 w.open_3d_viewer_action,

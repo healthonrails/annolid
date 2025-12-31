@@ -232,6 +232,8 @@ class AnnolidWindow(MainWindow):
 
         self.here = Path(__file__).resolve().parent
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
+        self._show_pose_edges = self.settings.value(
+            "pose/show_edges", True, type=bool)
         self._df = None
         self._df_deeplabcut = None
         self._df_deeplabcut_scorer = None
@@ -304,6 +306,10 @@ class AnnolidWindow(MainWindow):
             crosshair=self._config["canvas"]["crosshair"],
             sam=self._config["sam"]
         )
+        try:
+            self.canvas.setShowPoseEdges(self._show_pose_edges)
+        except Exception:
+            pass
         self._viewer_stack = QtWidgets.QStackedWidget()
         self._viewer_stack.setContentsMargins(0, 0, 0, 0)
         self._viewer_stack.addWidget(self.canvas)
@@ -797,6 +803,10 @@ class AnnolidWindow(MainWindow):
             self._pose_schema_path = path
             self._pose_schema = dlg.schema
             self._persist_pose_schema_to_project_schema(dlg.schema, path)
+            try:
+                self.canvas.setPoseSchema(self._pose_schema)
+            except Exception:
+                pass
             QtWidgets.QMessageBox.information(
                 self,
                 "Pose Schema Saved",
@@ -4265,6 +4275,23 @@ class AnnolidWindow(MainWindow):
                 self._pose_schema_path = str(p)
             except Exception:
                 self._pose_schema_path = str(schema_path_value)
+
+        try:
+            self.canvas.setPoseSchema(self._pose_schema)
+        except Exception:
+            pass
+
+    def toggle_pose_edges_display(self, checked: bool = False) -> None:
+        """Toggle skeleton edge overlay for pose keypoints."""
+        self._show_pose_edges = bool(checked)
+        try:
+            self.settings.setValue("pose/show_edges", self._show_pose_edges)
+        except Exception:
+            pass
+        try:
+            self.canvas.setShowPoseEdges(self._show_pose_edges)
+        except Exception:
+            pass
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Load behavior events from CSV and populate the slider timeline.
