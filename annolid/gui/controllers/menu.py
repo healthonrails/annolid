@@ -198,6 +198,12 @@ class MenuController:
                 "tip": w.tr("Convert Labelme to YOLO format"),
             },
             {
+                "name": "pose_schema",
+                "text": w.tr("Pose &Schema (Keypoints)"),
+                "slot": w.open_pose_schema_dialog,
+                "tip": w.tr("Define keypoint order, symmetry, and edges"),
+            },
+            {
                 "name": "place_preference",
                 "text": w.tr("&Place Preference"),
                 "slot": w.place_preference_analyze,
@@ -488,6 +494,7 @@ class MenuController:
                 actions["tracking_reports"],
                 actions["behavior_time_budget"],
                 actions["project_schema"],
+                actions["pose_schema"],
                 actions["place_preference"],
                 actions["add_stamps_action"],
             ),

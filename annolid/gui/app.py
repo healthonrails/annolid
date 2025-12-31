@@ -109,6 +109,7 @@ import io
 
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.annotation import labelme2csv
+from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
@@ -260,6 +261,8 @@ class AnnolidWindow(MainWindow):
         self.behavior_controller = BehaviorController(self._get_rgb_by_label)
         self.project_schema: Optional[ProjectSchema] = None
         self.project_schema_path: Optional[Path] = None
+        self._pose_schema_path: Optional[str] = None
+        self._pose_schema: Optional[PoseSchema] = None
         self.behavior_controller.configure_from_schema(self.project_schema)
         self.annotation_dir = None
         self.step_size = 5
@@ -729,6 +732,114 @@ class AnnolidWindow(MainWindow):
         from annolid.gui.widgets import convert_labelme2yolo
         convert_labelme2yolo_widget = convert_labelme2yolo.YOLOConverterWidget()
         convert_labelme2yolo_widget.exec_()
+
+    def open_pose_schema_dialog(self):
+        """Define keypoint order + symmetry pairs and save a pose schema file."""
+        from annolid.gui.widgets.pose_schema_dialog import PoseSchemaDialog
+
+        keypoints = sorted(
+            {
+                getattr(shape, "label", None)
+                for shape in getattr(self.canvas, "shapes", []) or []
+                if str(getattr(shape, "shape_type", "")).lower() == "point"
+                and getattr(shape, "label", None)
+            }
+        )
+        if not keypoints:
+            try:
+                keypoints = [
+                    self.uniqLabelList.item(i).text().strip()
+                    for i in range(self.uniqLabelList.count())
+                    if self.uniqLabelList.item(i).text().strip()
+                ]
+            except Exception:
+                keypoints = []
+
+        start_dir = (
+            str(self.video_results_folder)
+            if getattr(self, "video_results_folder", None)
+            else getattr(self, "outputDir", None)
+            or getattr(self, "lastOpenDir", None)
+            or str(Path.home())
+        )
+
+        default_path = None
+        for candidate in ("pose_schema.json", "pose_schema.yaml", "pose_schema.yml"):
+            maybe = Path(start_dir) / candidate
+            if maybe.exists():
+                default_path = str(maybe)
+                break
+        if default_path is None:
+            default_path = str(Path(start_dir) / "pose_schema.json")
+
+        schema = self._pose_schema
+        if schema is None and self.project_schema and getattr(self.project_schema, "pose_schema", None):
+            try:
+                schema = PoseSchema.from_dict(
+                    self.project_schema.pose_schema)  # type: ignore[arg-type]
+            except Exception:
+                schema = None
+
+        dlg = PoseSchemaDialog(
+            keypoints=keypoints or None,
+            schema=schema,
+            schema_path=default_path,
+            parent=self,
+        )
+        if not dlg.exec_():
+            return
+
+        try:
+            path = dlg.schema_path or default_path
+            if not path:
+                path = str(Path(start_dir) / "pose_schema.json")
+            dlg.schema.save(path)
+            self._pose_schema_path = path
+            self._pose_schema = dlg.schema
+            self._persist_pose_schema_to_project_schema(dlg.schema, path)
+            QtWidgets.QMessageBox.information(
+                self,
+                "Pose Schema Saved",
+                f"Pose schema saved to:\n{path}\n\n"
+                "Use this file in LabelMe→YOLO conversion to generate flip_idx.",
+            )
+        except Exception as exc:
+            logger.error("Failed to save pose schema: %s", exc, exc_info=True)
+            QtWidgets.QMessageBox.critical(
+                self, "Save Failed", f"Failed to save pose schema:\n{exc}"
+            )
+
+    def _persist_pose_schema_to_project_schema(self, schema: PoseSchema, schema_path: str) -> None:
+        """Store pose schema metadata inside `project.annolid.json` by default."""
+        project_schema = self.project_schema or default_schema()
+        project_path = self.project_schema_path
+        if project_path is None:
+            if self.video_file:
+                project_path = Path(self.video_file).with_suffix(
+                    "") / DEFAULT_SCHEMA_FILENAME
+            else:
+                project_path = Path.cwd() / DEFAULT_SCHEMA_FILENAME
+
+        try:
+            project_path.parent.mkdir(parents=True, exist_ok=True)
+            # Prefer storing a relative path when the schema lives alongside the project schema.
+            stored_path = schema_path
+            try:
+                stored_path = str(
+                    Path(schema_path).resolve().relative_to(
+                        project_path.parent.resolve())
+                )
+            except Exception:
+                stored_path = schema_path
+
+            project_schema.pose_schema_path = stored_path
+            project_schema.pose_schema = schema.to_dict()
+            save_project_schema(project_schema, project_path)
+            self.project_schema = project_schema
+            self.project_schema_path = project_path
+        except Exception:
+            logger.debug(
+                "Failed to persist pose schema into project schema.", exc_info=True)
 
     def extract_and_save_shape_keypoints(self):
         extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog()
@@ -2007,9 +2118,17 @@ class AnnolidWindow(MainWindow):
                     class_names = text_prompt.split(",")
                     logger.info(
                         f"Extracted class names from text prompt: {class_names}")
+                pose_keypoint_names = None
+                pose_schema_path = None
+                if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):
+                    pose_keypoint_names = list(self._pose_schema.keypoints)
+                if getattr(self, "_pose_schema_path", None):
+                    pose_schema_path = self._pose_schema_path
                 self.video_processor = InferenceProcessor(model_name=model_weight,
                                                           model_type="yolo",
-                                                          class_names=class_names)
+                                                          class_names=class_names,
+                                                          keypoint_names=pose_keypoint_names,
+                                                          pose_schema_path=pose_schema_path)
             else:
                 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
                 from annolid.motion.optical_flow import optical_flow_settings_from
@@ -4121,6 +4240,31 @@ class AnnolidWindow(MainWindow):
         self.behavior_controller.configure_from_schema(schema)
         self._populate_behavior_controls_from_schema(schema)
         self._update_modifier_controls_for_behavior(self.event_type)
+        self._configure_pose_schema_from_project()
+
+    def _configure_pose_schema_from_project(self) -> None:
+        schema = self.project_schema
+        self._pose_schema = None
+        self._pose_schema_path = None
+        if schema is None:
+            return
+
+        embedded = getattr(schema, "pose_schema", None)
+        schema_path_value = getattr(schema, "pose_schema_path", None)
+        if embedded and isinstance(embedded, dict):
+            try:
+                self._pose_schema = PoseSchema.from_dict(embedded)
+            except Exception:
+                self._pose_schema = None
+
+        if schema_path_value:
+            try:
+                p = Path(schema_path_value)
+                if not p.is_absolute() and self.project_schema_path:
+                    p = self.project_schema_path.parent / p
+                self._pose_schema_path = str(p)
+            except Exception:
+                self._pose_schema_path = str(schema_path_value)
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Load behavior events from CSV and populate the slider timeline.

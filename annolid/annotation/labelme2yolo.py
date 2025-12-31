@@ -16,6 +16,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     train_test_split = None
 from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
+from annolid.annotation.pose_schema import PoseSchema
+from annolid.behavior.project_schema import (
+    DEFAULT_SCHEMA_FILENAME,
+    load_schema as load_project_schema,
+)
 
 
 def point_list_to_numpy_array(point_list: List[str]) -> np.ndarray:
@@ -107,7 +112,9 @@ class Labelme2YOLO:
     def __init__(self,
                  json_dir,
                  yolo_dataset_name="YOLO_dataset",
-                 include_visibility=False
+                 include_visibility=False,
+                 pose_schema_path: Optional[str] = None,
+                 **_ignored_kwargs,
                  ):
         self.json_file_dir = json_dir
         labels, keypoints = self._scan_labels_and_keypoints(self.json_file_dir)
@@ -119,7 +126,42 @@ class Labelme2YOLO:
         # e.g. [17, 2] or [17, 3] if visibility is included
         self.kpt_shape = None
         self.include_visibility = include_visibility
-        self.keypoint_labels_order: List[str] = keypoints
+        if pose_schema_path is None:
+            base = Path(self.json_file_dir).expanduser()
+            for name in ("pose_schema.json", "pose_schema.yaml", "pose_schema.yml"):
+                candidate = base / name
+                if candidate.exists():
+                    pose_schema_path = str(candidate)
+                    break
+
+        self.pose_schema_path = pose_schema_path
+        self.pose_schema: Optional[PoseSchema] = None
+        if pose_schema_path:
+            try:
+                self.pose_schema = PoseSchema.load(pose_schema_path)
+            except Exception:
+                self.pose_schema = None
+
+        if self.pose_schema is None:
+            try:
+                project_path = Path(
+                    self.json_file_dir).expanduser() / DEFAULT_SCHEMA_FILENAME
+                if project_path.exists():
+                    project_schema = load_project_schema(project_path)
+                    embedded = getattr(project_schema, "pose_schema", None)
+                    if isinstance(embedded, dict) and embedded:
+                        self.pose_schema = PoseSchema.from_dict(embedded)
+            except Exception:
+                self.pose_schema = None
+
+        if self.pose_schema and self.pose_schema.keypoints:
+            merged = list(self.pose_schema.keypoints)
+            for kp in keypoints:
+                if kp not in merged:
+                    merged.append(kp)
+            self.keypoint_labels_order = merged
+        else:
+            self.keypoint_labels_order = list(keypoints)
         if self.keypoint_labels_order:
             dims = 3 if self.include_visibility else 2
             self.kpt_shape = [len(self.keypoint_labels_order), dims]
@@ -843,13 +885,31 @@ class Labelme2YOLO:
                 dims = 3 if self.include_visibility else 2
                 yaml_file.write(f"kpt_shape: [{self.kpt_shape[0]}, {dims}]\n")
                 if self.keypoint_labels_order:
+                    # Annolid internal mapping (kept for backwards compatibility)
                     yaml_file.write("kpt_labels:\n")
                     for idx, name in enumerate(self.keypoint_labels_order):
                         yaml_file.write(f"  {idx}: {name}\n")
-                yaml_file.write(
-                    "#(Optional) if the points are symmetric then need flip_idx, like left-right side of human or face. For example if we assume five keypoints of facial landmark: [left eye, right eye, nose, left mouth, right mouth], and the original index is [0, 1, 2, 3, 4], then flip_idx is [1, 0, 2, 4, 3] (just exchange the left-right index, i.e. 0-1 and 3-4, and do not modify others like nose in this example.)\n")
-                yaml_file.write(
-                    "#flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]\n")
+
+                    # Ultralytics canonical mapping (per-class)
+                    yaml_file.write("\n")
+                    yaml_file.write("kpt_names:\n")
+                    for class_id in sorted(self.label_to_id_dict.values()):
+                        yaml_file.write(f"  {class_id}:\n")
+                        for name in self.keypoint_labels_order:
+                            yaml_file.write(f"    - {name}\n")
+
+                flip_idx = None
+                if self.pose_schema:
+                    flip_idx = self.pose_schema.compute_flip_idx(
+                        self.keypoint_labels_order)
+                if flip_idx:
+                    yaml_file.write("\n")
+                    yaml_file.write(f"flip_idx: {flip_idx}\n")
+                else:
+                    yaml_file.write(
+                        "#(Optional) if the points are symmetric then need flip_idx, like left-right side of human or face. For example if we assume five keypoints of facial landmark: [left eye, right eye, nose, left mouth, right mouth], and the original index is [0, 1, 2, 3, 4], then flip_idx is [1, 0, 2, 4, 3] (just exchange the left-right index, i.e. 0-1 and 3-4, and do not modify others like nose in this example.)\n")
+                    yaml_file.write(
+                        "#flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]\n")
 
             yaml_file.write(names_section)
 

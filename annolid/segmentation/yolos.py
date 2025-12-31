@@ -3,17 +3,27 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import yaml
 from ultralytics import SAM, YOLO, YOLOE
 
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.polygons import simplify_polygons
 from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
+from annolid.annotation.pose_schema import PoseSchema
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
 
 
 class InferenceProcessor:
-    def __init__(self, model_name: str, model_type: str, class_names: Optional[list] = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        model_type: str,
+        class_names: Optional[list] = None,
+        *,
+        keypoint_names: Optional[list] = None,
+        pose_schema_path: Optional[str] = None,
+    ) -> None:
         """
         Initializes the InferenceProcessor with a specified model.
 
@@ -32,16 +42,176 @@ class InferenceProcessor:
         self.model = self._load_model(class_names)
         self.frame_count: int = 0
         self.track_history = defaultdict(list)
-        self.keypoint_names = None
+        self.keypoint_names = self._resolve_keypoint_names(
+            keypoint_names=keypoint_names,
+            pose_schema_path=pose_schema_path,
+        )
 
-        # Load keypoint names if the model is for pose detection
-        if "pose" in self.model_name.lower():
+    def _resolve_keypoint_names(
+        self,
+        *,
+        keypoint_names: Optional[list],
+        pose_schema_path: Optional[str],
+    ) -> Optional[list]:
+        if keypoint_names:
+            cleaned = [str(k).strip()
+                       for k in keypoint_names if isinstance(k, str) and k.strip()]
+            if cleaned:
+                return cleaned
+
+        if pose_schema_path:
+            try:
+                schema = PoseSchema.load(pose_schema_path)
+                if schema.keypoints:
+                    return list(schema.keypoints)
+            except Exception:
+                pass
+
+        inferred = self._infer_keypoint_names_from_training_artifacts()
+        if inferred:
+            return inferred
+
+        inferred = self._infer_keypoint_names_from_model()
+        if inferred:
+            return inferred
+
+        # Only fall back to COCO-style defaults when the model's keypoint count matches.
+        inferred_count = self._infer_keypoint_count()
+        if inferred_count:
+            default_names = self._load_default_keypoint_names()
+            if default_names and len(default_names) == inferred_count:
+                return default_names
+
+        return None
+
+    def _infer_keypoint_count(self) -> Optional[int]:
+        for candidate in (self.model, getattr(self.model, "model", None)):
+            if candidate is None:
+                continue
+            kpt_shape = getattr(candidate, "kpt_shape", None)
+            if isinstance(kpt_shape, (list, tuple)) and kpt_shape:
+                try:
+                    return int(kpt_shape[0])
+                except Exception:
+                    continue
+        return None
+
+    def _load_default_keypoint_names(self) -> Optional[list]:
+        try:
             from annolid.utils.config import get_config
+
             cfg_folder = Path(__file__).resolve().parent.parent
             keypoint_config_file = cfg_folder / 'configs' / 'keypoints.yaml'
             keypoint_config = get_config(keypoint_config_file)
-            self.keypoint_names = keypoint_config['KEYPOINTS'].split(" ")
-            logger.info("Keypoint names: %s", self.keypoint_names)
+            names = keypoint_config.get('KEYPOINTS')
+            if isinstance(names, str):
+                items = [k.strip() for k in names.split(" ") if k.strip()]
+                return items or None
+            if isinstance(names, list):
+                items = [str(k).strip() for k in names if str(k).strip()]
+                return items or None
+        except Exception:
+            return None
+        return None
+
+    def _infer_keypoint_names_from_training_artifacts(self) -> Optional[list]:
+        model_path = Path(self.model_name)
+        candidates = []
+        for parent in [model_path.parent, model_path.parent.parent, model_path.parent.parent.parent]:
+            args_path = parent / "args.yaml"
+            if args_path.exists():
+                candidates.append(args_path)
+        for args_path in candidates:
+            try:
+                args = yaml.safe_load(
+                    args_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if not isinstance(args, dict):
+                continue
+            data_path = args.get("data")
+            if not data_path:
+                continue
+            try:
+                data_yaml = Path(str(data_path)).expanduser()
+                if not data_yaml.is_absolute():
+                    data_yaml = (args_path.parent / data_yaml).resolve()
+                if not data_yaml.exists():
+                    continue
+                return self._infer_keypoint_names_from_data_yaml(data_yaml)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _infer_keypoint_names_from_data_yaml(data_yaml: Path) -> Optional[list]:
+        try:
+            payload = yaml.safe_load(
+                data_yaml.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        kpt_names = payload.get("kpt_names")
+        if isinstance(kpt_names, dict) and kpt_names:
+            if 0 in kpt_names:
+                names = kpt_names.get(0)
+            elif "0" in kpt_names:
+                names = kpt_names.get("0")
+            else:
+                names = next(iter(kpt_names.values()))
+            if isinstance(names, list):
+                cleaned = [str(k).strip() for k in names if str(k).strip()]
+                return cleaned or None
+
+        kpt_labels = payload.get("kpt_labels")
+        if isinstance(kpt_labels, dict) and kpt_labels:
+            items = []
+            try:
+                for key, value in sorted(kpt_labels.items(), key=lambda kv: int(kv[0])):
+                    name = str(value).strip()
+                    items.append(name)
+            except Exception:
+                items = [str(v).strip() for v in kpt_labels.values()]
+            cleaned = [k for k in items if k]
+            return cleaned or None
+
+        return None
+
+    def _infer_keypoint_names_from_model(self) -> Optional[list]:
+        for container in (self.model, getattr(self.model, "model", None)):
+            if container is None:
+                continue
+            for attr in ("names_kpt", "kpt_names", "kpt_labels"):
+                value = getattr(container, attr, None)
+                if not value:
+                    continue
+                if isinstance(value, list):
+                    cleaned = [str(k).strip() for k in value if str(k).strip()]
+                    return cleaned or None
+                if isinstance(value, dict):
+                    if attr == "kpt_labels":
+                        items = []
+                        try:
+                            for key, val in sorted(value.items(), key=lambda kv: int(kv[0])):
+                                items.append(str(val).strip())
+                        except Exception:
+                            items = [str(v).strip() for v in value.values()]
+                        cleaned = [k for k in items if k]
+                        return cleaned or None
+                    # kpt_names may be {0: [..]}
+                    if 0 in value:
+                        names = value.get(0)
+                    elif "0" in value:
+                        names = value.get("0")
+                    else:
+                        names = next(iter(value.values()))
+                    if isinstance(names, list):
+                        cleaned = [str(k).strip()
+                                   for k in names if str(k).strip()]
+                        return cleaned or None
+        return None
 
     @staticmethod
     def _detect_coreml_export(model_name: str) -> bool:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:  # YAML is optional; fall back to JSON-only when unavailable.
     import yaml  # type: ignore
@@ -64,6 +64,8 @@ class ProjectSchema:
     categories: List[CategoryDefinition] = field(default_factory=list)
     modifiers: List[ModifierDefinition] = field(default_factory=list)
     subjects: List[SubjectDefinition] = field(default_factory=list)
+    pose_schema_path: Optional[str] = None
+    pose_schema: Optional[Dict[str, Any]] = None
     version: str = SchemaVersion
 
     def category_map(self) -> Dict[str, CategoryDefinition]:
@@ -106,13 +108,18 @@ def default_schema() -> ProjectSchema:
 
 
 def _schema_to_dict(schema: ProjectSchema) -> Dict[str, object]:
-    return {
+    payload: Dict[str, object] = {
         "version": schema.version,
         "categories": [vars(cat) for cat in schema.categories],
         "modifiers": [vars(mod) for mod in schema.modifiers],
         "subjects": [vars(subj) for subj in schema.subjects],
         "behaviors": [vars(beh) for beh in schema.behaviors],
     }
+    if schema.pose_schema_path:
+        payload["pose_schema_path"] = schema.pose_schema_path
+    if schema.pose_schema:
+        payload["pose_schema"] = schema.pose_schema
+    return payload
 
 
 def _dict_to_schema(payload: Dict[str, object]) -> ProjectSchema:
@@ -125,6 +132,10 @@ def _dict_to_schema(payload: Dict[str, object]) -> ProjectSchema:
         modifiers=_load_list("modifiers", ModifierDefinition),
         subjects=_load_list("subjects", SubjectDefinition),
         behaviors=_load_list("behaviors", BehaviorDefinition),
+        pose_schema_path=str(payload.get("pose_schema_path"))
+        if payload.get("pose_schema_path") else None,
+        pose_schema=dict(payload.get("pose_schema"))
+        if isinstance(payload.get("pose_schema"), dict) else None,
         version=str(payload.get("version", SchemaVersion)),
     )
     return schema

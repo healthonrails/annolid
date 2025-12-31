@@ -341,6 +341,8 @@ class ProjectDialog(QtWidgets.QDialog):
             categories=categories,
             modifiers=modifiers,
             subjects=subjects,
+            pose_schema_path=getattr(self._schema, "pose_schema_path", None),
+            pose_schema=getattr(self._schema, "pose_schema", None),
             version=self._schema.version,
         )
 

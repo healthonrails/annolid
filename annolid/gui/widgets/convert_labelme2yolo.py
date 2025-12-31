@@ -12,17 +12,19 @@ class YOLOConverterWorker(QThread):
     message = Signal(str)
     error = Signal(str)
 
-    def __init__(self, json_dir, val_size, test_size):
+    def __init__(self, json_dir, val_size, test_size, pose_schema_path=None):
         super().__init__()
         self.json_dir = json_dir
         self.val_size = val_size
         self.test_size = test_size
+        self.pose_schema_path = pose_schema_path
 
     def run(self):
         try:
             self.progress.emit(10)
             self.message.emit("Starting conversion...")
-            converter = Labelme2YOLO(self.json_dir)
+            converter = Labelme2YOLO(
+                self.json_dir, pose_schema_path=self.pose_schema_path)
             converter.convert(val_size=self.val_size, test_size=self.test_size)
             self.progress.emit(100)
             self.message.emit("Conversion successful!")
@@ -49,6 +51,16 @@ class YOLOConverterWidget(QDialog):
         self.layout.addWidget(self.json_dir_label)
         self.layout.addWidget(self.json_dir_input)
         self.layout.addWidget(self.browse_button)
+
+        # Optional pose schema selector (for flip_idx + keypoint order)
+        self.pose_schema_label = QLabel("Pose schema (optional):")
+        self.pose_schema_input = QLineEdit()
+        self.pose_schema_input.setPlaceholderText("pose_schema.json (or .yaml)")
+        self.pose_schema_browse = QPushButton("Browse")
+        self.pose_schema_browse.clicked.connect(self.select_pose_schema_file)
+        self.layout.addWidget(self.pose_schema_label)
+        self.layout.addWidget(self.pose_schema_input)
+        self.layout.addWidget(self.pose_schema_browse)
 
         # Validation and test size inputs
         self.val_size_label = QLabel("Validation Size (0.0 to 1.0):")
@@ -84,6 +96,22 @@ class YOLOConverterWidget(QDialog):
             self, "Select JSON Directory")
         if json_dir:
             self.json_dir_input.setText(json_dir)
+            # Auto-fill pose schema if present in folder
+            for name in ("pose_schema.json", "pose_schema.yaml", "pose_schema.yml"):
+                candidate = os.path.join(json_dir, name)
+                if os.path.isfile(candidate):
+                    self.pose_schema_input.setText(candidate)
+                    break
+
+    def select_pose_schema_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select pose schema file",
+            self.pose_schema_input.text().strip() or os.path.expanduser("~"),
+            "Pose schema (*.json *.yaml *.yml);;All files (*)",
+        )
+        if path:
+            self.pose_schema_input.setText(path)
 
     def run_conversion(self):
         """
@@ -92,6 +120,7 @@ class YOLOConverterWidget(QDialog):
         json_dir = self.json_dir_input.text().strip()
         val_size = self.val_size_input.text().strip()
         test_size = self.test_size_input.text().strip()
+        pose_schema_path = self.pose_schema_input.text().strip() or None
 
         if not os.path.isdir(json_dir):
             QMessageBox.warning(
@@ -111,7 +140,14 @@ class YOLOConverterWidget(QDialog):
 
         self.convert_button.setEnabled(False)  # Disable the button
 
-        self.worker = YOLOConverterWorker(json_dir, val_size, test_size)
+        if pose_schema_path and not os.path.isfile(pose_schema_path):
+            QMessageBox.warning(
+                self, "Error", "Pose schema file does not exist.")
+            self.convert_button.setEnabled(True)
+            return
+
+        self.worker = YOLOConverterWorker(
+            json_dir, val_size, test_size, pose_schema_path=pose_schema_path)
         self.worker.finished.connect(self.on_conversion_finished)
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.message.connect(self.message_label.setText)
