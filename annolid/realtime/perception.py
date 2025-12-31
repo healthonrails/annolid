@@ -30,6 +30,7 @@ from ultralytics.engine.results import Masks
 from ultralytics import YOLO
 
 from annolid.utils.logger import logger
+from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
 
 
 # --- Configuration and Validation ---
@@ -143,19 +144,23 @@ class FrameSource(Protocol):
 class DetectionResult:
     """Structured detection result with support for pre-encoded segmentation masks."""
 
-    def __init__(self, behavior: str, confidence: float, bbox: List[float],
+    def __init__(self, behavior: str, confidence: float, bbox_normalized: List[float],
                  timestamp: float, metadata: Dict[str, Any],
+                 bbox_pixels: Optional[List[float]] = None,
                  mask_data: Optional[Dict[str, Any]] = None,
-                 keypoints: Optional[List[List[float]]] = None,
+                 keypoints_normalized: Optional[List[List[float]]] = None,
+                 keypoints_pixels: Optional[List[List[float]]] = None,
                  keypoint_scores: Optional[List[float]] = None,
                  keypoint_labels: Optional[List[str]] = None):
         self.behavior = behavior
         self.confidence = confidence
-        self.bbox = bbox
+        self.bbox_normalized = bbox_normalized
+        self.bbox_pixels = bbox_pixels
         self.timestamp = timestamp
         self.metadata = metadata
         self.mask_data = mask_data  # Stores the pre-encoded mask dictionary
-        self.keypoints = keypoints
+        self.keypoints_normalized = keypoints_normalized
+        self.keypoints_pixels = keypoints_pixels
         self.keypoint_scores = keypoint_scores
         self.keypoint_labels = keypoint_labels
 
@@ -164,7 +169,10 @@ class DetectionResult:
         result = {
             "behavior": self.behavior,
             "confidence": self.confidence,
-            "bbox_normalized": self.bbox,
+            # Normalized coordinates in [0..1] (x1, y1, x2, y2) for easy transport.
+            "bbox_normalized": self.bbox_normalized,
+            # Pixel coordinates in the input frame space (x1, y1, x2, y2).
+            "bbox_pixels": self.bbox_pixels,
             "timestamp": self.timestamp,
             "metadata": self.metadata,
             "has_mask": self.mask_data is not None
@@ -173,10 +181,15 @@ class DetectionResult:
         if self.mask_data:
             result["mask"] = self.mask_data
 
-        result["has_keypoints"] = self.keypoints is not None
+        result["has_keypoints"] = self.keypoints_normalized is not None or self.keypoints_pixels is not None
 
-        if self.keypoints is not None:
-            result["keypoints"] = self.keypoints
+        # Backward compatibility: keep `keypoints` as normalized coordinates.
+        if self.keypoints_normalized is not None:
+            result["keypoints"] = self.keypoints_normalized
+            result["keypoints_normalized"] = self.keypoints_normalized
+
+        if self.keypoints_pixels is not None:
+            result["keypoints_pixels"] = self.keypoints_pixels
 
         if self.keypoint_scores is not None:
             result["keypoint_scores"] = self.keypoint_scores
@@ -974,8 +987,9 @@ class PerceptionProcess:
     async def _model_context(self) -> AsyncIterator[YOLO]:
         """Context manager for YOLO model."""
         try:
-            logger.info(f"Loading YOLO model: {self.config.model_base_name}")
-            model = await asyncio.to_thread(YOLO, self.config.model_base_name)
+            model_ref = str(resolve_weight_path(self.config.model_base_name))
+            logger.info("Loading YOLO model: %s", model_ref)
+            model = await asyncio.to_thread(YOLO, model_ref)
             self.class_names = model.names
             keypoint_labels = self._extract_keypoint_labels(model)
             if keypoint_labels:
@@ -1005,13 +1019,16 @@ class PerceptionProcess:
         """Setup the perception process."""
         logger.info("Setting up perception process...")
 
+        configure_ultralytics_cache()
+
         # Verify model exists or download
-        model_path = Path(self.config.model_base_name)
+        model_ref = str(resolve_weight_path(self.config.model_base_name))
+        model_path = Path(model_ref)
         if not (model_path.is_file() or model_path.is_dir()):
             logger.info(
                 f"Model '{model_path}' not found locally, attempting Ultralytics resolution..."
             )
-            await asyncio.to_thread(YOLO, self.config.model_base_name)
+            await asyncio.to_thread(YOLO, model_ref)
 
         # Initialize video source
         await self.video_source.connect()
@@ -1155,7 +1172,17 @@ class PerceptionProcess:
                 mask_tensor = masks_obj.data[detection_index]
 
                 # Convert to a numpy array in the format pycocotools expects
-                mask_bitmap = mask_tensor.cpu().numpy().astype(np.uint8)
+                mask_bitmap = (mask_tensor > 0.5).cpu(
+                ).numpy().astype(np.uint8)
+                target_shape = getattr(masks_obj, "orig_shape", None)
+                if target_shape and mask_bitmap.shape[:2] != tuple(target_shape):
+                    target_h, target_w = int(
+                        target_shape[0]), int(target_shape[1])
+                    mask_bitmap = cv2.resize(
+                        mask_bitmap,
+                        (target_w, target_h),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
                 mask_fortran = np.asfortranarray(mask_bitmap)
 
                 # Encode to RLE
@@ -1234,29 +1261,37 @@ class PerceptionProcess:
                     encoded_mask_data = self._encode_mask(masks, i)
 
                 # Prepare pose information if available
-                keypoints = None
+                keypoints_normalized = None
+                keypoints_pixels = None
                 keypoint_scores = None
 
                 if keypoints_obj is not None:
-                    keypoints_data = getattr(keypoints_obj, "xyn", None)
-                    if keypoints_data is not None and i < len(keypoints_data):
-                        keypoints = _to_list(keypoints_data[i])
+                    keypoints_data_norm = getattr(keypoints_obj, "xyn", None)
+                    if keypoints_data_norm is not None and i < len(keypoints_data_norm):
+                        keypoints_normalized = _to_list(keypoints_data_norm[i])
+
+                    keypoints_data_px = getattr(keypoints_obj, "xy", None)
+                    if keypoints_data_px is not None and i < len(keypoints_data_px):
+                        keypoints_pixels = _to_list(keypoints_data_px[i])
 
                     conf_data = getattr(keypoints_obj, "conf", None)
                     if conf_data is not None and i < len(conf_data):
                         keypoint_scores = _to_list(conf_data[i])
 
-                keypoint_labels = self.keypoint_labels if self.keypoint_labels and keypoints is not None else None
+                keypoint_labels = self.keypoint_labels if self.keypoint_labels and (
+                    keypoints_pixels is not None or keypoints_normalized is not None) else None
 
                 # Create the DetectionResult with the pre-encoded mask and pose data
                 detection = DetectionResult(
                     behavior=class_name,
                     confidence=float(boxes.conf[i]),
-                    bbox=boxes.xyxyn[i].cpu().numpy().tolist(),
+                    bbox_normalized=boxes.xyxyn[i].cpu().numpy().tolist(),
                     timestamp=timestamp,
                     metadata=metadata,
+                    bbox_pixels=boxes.xyxy[i].cpu().numpy().tolist(),
                     mask_data=encoded_mask_data,  # Pass the encoded dictionary here
-                    keypoints=keypoints,
+                    keypoints_normalized=keypoints_normalized,
+                    keypoints_pixels=keypoints_pixels,
                     keypoint_scores=keypoint_scores,
                     keypoint_labels=keypoint_labels
                 )

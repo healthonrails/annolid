@@ -1,10 +1,105 @@
 from dataclasses import dataclass
+import os
+import shutil
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
 import torch
 
 from annolid.utils.logger import logger
+
+
+def _looks_like_ultralytics_asset_weight(name: str) -> bool:
+    name_lower = str(name or "").strip().lower()
+    if not name_lower.endswith(".pt"):
+        return False
+    if name_lower in {"best.pt", "last.pt"}:
+        return False
+    return name_lower.startswith(("yolo", "yolov"))
+
+
+def _maybe_cache_asset_weight(resolved_path: Path) -> Path:
+    """
+    For Ultralytics-provided asset weights, prefer (and optionally populate) Annolid's cache.
+
+    Ultralytics will happily load from any absolute path. By copying an already-present weight
+    from the working directory into the cache, we ensure subsequent runs reuse the cached copy.
+    """
+    try:
+        if not resolved_path.is_file():
+            return resolved_path
+    except OSError:
+        return resolved_path
+
+    if not _looks_like_ultralytics_asset_weight(resolved_path.name):
+        return resolved_path
+
+    cache_target = get_ultralytics_weights_cache_dir() / resolved_path.name
+    try:
+        if resolved_path.resolve() == cache_target.resolve():
+            return resolved_path
+    except OSError:
+        return resolved_path
+
+    try:
+        cache_target.parent.mkdir(parents=True, exist_ok=True)
+        if cache_target.is_file():
+            try:
+                if cache_target.stat().st_size == resolved_path.stat().st_size:
+                    return cache_target
+            except OSError:
+                return resolved_path
+        shutil.copy2(resolved_path, cache_target)
+        logger.info("Cached YOLO weight %s -> %s", resolved_path, cache_target)
+        return cache_target
+    except OSError as exc:
+        logger.debug("Failed to cache YOLO weight '%s': %s",
+                     resolved_path, exc)
+        return resolved_path
+
+
+def get_cache_root() -> Path:
+    """Return the base cache directory (XDG_CACHE_HOME or ~/.cache)."""
+    env_override = os.getenv("XDG_CACHE_HOME")
+    if env_override:
+        return Path(env_override).expanduser()
+    return Path.home() / ".cache"
+
+
+def get_ultralytics_weights_cache_dir() -> Path:
+    """
+    Return the directory where Annolid should cache Ultralytics YOLO weights.
+
+    This prevents pretrained checkpoints (e.g. yolo11x-pose.pt) from being
+    downloaded into the current working directory.
+    """
+    return get_cache_root() / "annolid" / "ultralytics" / "weights"
+
+
+def configure_ultralytics_cache(weights_dir: Optional[Path] = None) -> Path:
+    """
+    Configure Ultralytics to download/load weights from a stable cache directory.
+
+    Note: This updates Ultralytics' in-memory SETTINGS for the current process
+    (it does not persist changes to the user's Ultralytics settings file).
+    """
+    target = (weights_dir or get_ultralytics_weights_cache_dir()).expanduser()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.debug(
+            "Unable to create Ultralytics cache dir '%s': %s", target, exc)
+        return target
+
+    try:
+        from ultralytics.utils import SETTINGS  # type: ignore
+    except Exception as exc:
+        logger.debug("Ultralytics SETTINGS unavailable: %s", exc)
+        return target
+
+    # Ensure an absolute path so downloads never end up in the CWD.
+    SETTINGS["weights_dir"] = str(target.resolve())
+    return target
 
 
 def _is_supported_model_path(candidate: Path) -> bool:
@@ -56,6 +151,8 @@ def _candidate_weight_paths(weight_name: str,
         project_root,
         Path.cwd(),
         Path.home() / "Downloads",
+        get_ultralytics_weights_cache_dir(),
+        Path.home() / ".cache" / "ultralytics",
     ]
 
     for subdir in ("realtime", "segmentation", "detector", "gui"):
@@ -114,8 +211,40 @@ def resolve_weight_path(weight_name: str,
     """
     for candidate in _candidate_weight_paths(weight_name, search_roots):
         if _is_supported_model_path(candidate):
-            logger.info("YOLO weight resolved to %s", candidate)
-            return candidate
+            resolved = _maybe_cache_asset_weight(candidate)
+            logger.info("YOLO weight resolved to %s", resolved)
+            return resolved
+
+    # If this looks like an Ultralytics asset weight name (e.g. yolo11n.pt), direct downloads
+    # to Annolid's cache directory by returning an absolute target path.
+    #
+    # Ultralytics' internal download helper saves to the provided filename (defaulting to the
+    # current working directory), so passing a cache path is the most reliable way to ensure
+    # weights are cached for reuse across runs.
+    requested = str(weight_name or "").strip()
+    requested_path = Path(requested)
+    requested_name = requested_path.name
+    has_path_separators = ("/" in requested) or ("\\" in requested)
+    is_remote = requested.startswith(("http://", "https://"))
+    looks_like_ultralytics_asset = _looks_like_ultralytics_asset_weight(
+        requested_name if requested_path.suffix else f"{requested_name}.pt"
+    )
+    if (
+        requested
+        and not is_remote
+        and not requested_path.is_absolute()
+        and not has_path_separators
+        and looks_like_ultralytics_asset
+    ):
+        cache_target = get_ultralytics_weights_cache_dir() / (
+            requested_name if requested_path.suffix else f"{requested_name}.pt"
+        )
+        logger.info(
+            "YOLO weight '%s' not found; will download to cache path %s",
+            weight_name,
+            cache_target,
+        )
+        return cache_target
 
     logger.info(
         "YOLO weight '%s' not found on disk; relying on Ultralytics resolution.",
@@ -187,6 +316,7 @@ def load_yolo_model(weight_name: str,
     Returns:
         tuple(model, YOLOModelSpec)
     """
+    configure_ultralytics_cache()
     spec = select_backend(weight_name, search_roots=search_roots)
     from ultralytics import YOLO  # Imported lazily to avoid heavy import cost.
 

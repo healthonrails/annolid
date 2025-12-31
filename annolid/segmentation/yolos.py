@@ -1,19 +1,19 @@
-import logging
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
-from ultralytics import YOLO, SAM, YOLOE
-from annolid.gui.shape import Shape
+from ultralytics import SAM, YOLO, YOLOE
+
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.polygons import simplify_polygons
-
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+from annolid.gui.shape import Shape
+from annolid.utils.logger import logger
+from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
 
 
 class InferenceProcessor:
-    def __init__(self, model_name: str, model_type: str, class_names: list = None) -> None:
+    def __init__(self, model_name: str, model_type: str, class_names: Optional[list] = None) -> None:
         """
         Initializes the InferenceProcessor with a specified model.
 
@@ -24,22 +24,24 @@ class InferenceProcessor:
                                           Only provided if the model doesn't have
                                           built-in classes.
         """
-        self.model_type = model_type
-        self.model_name = self._find_best_model(model_name)
+        self.model_type = (model_type or "").strip().lower()
+        configure_ultralytics_cache()
+        self.model_path = resolve_weight_path(model_name)
+        self.model_name = str(self.model_path)
         self._is_coreml = self._detect_coreml_export(self.model_name)
-        self.model = self._load_model(self.model_name, class_names)
+        self.model = self._load_model(class_names)
         self.frame_count: int = 0
         self.track_history = defaultdict(list)
         self.keypoint_names = None
 
         # Load keypoint names if the model is for pose detection
-        if 'pose' in self.model_name:
+        if "pose" in self.model_name.lower():
             from annolid.utils.config import get_config
             cfg_folder = Path(__file__).resolve().parent.parent
             keypoint_config_file = cfg_folder / 'configs' / 'keypoints.yaml'
             keypoint_config = get_config(keypoint_config_file)
             self.keypoint_names = keypoint_config['KEYPOINTS'].split(" ")
-            logging.info(f"Keypoint names: {self.keypoint_names}")
+            logger.info("Keypoint names: %s", self.keypoint_names)
 
     @staticmethod
     def _detect_coreml_export(model_name: str) -> bool:
@@ -53,26 +55,7 @@ class InferenceProcessor:
         # Handle cases where the path might not yet exist on disk but still ends with .mlpackage
         return str(model_name).lower().endswith(".mlpackage")
 
-    def _find_best_model(self, model_name: str) -> str:
-        """
-        Searches for 'best.pt' in common directories and returns its path.
-        If not found, returns the provided model_name.
-        """
-        search_paths = [
-            Path.home() / "Downloads" / "best.pt",
-            Path.home() / "Downloads" / "runs" / "segment" / "train" / "weights" / "best.pt",
-            Path.home() / "Downloads" / "segment" / "train" / "weights" / "best.pt",
-            Path("runs/segment/train/weights/best.pt"),
-            Path("segment/train/weights/best.pt")
-        ]
-        for path in search_paths:
-            if path.is_file():
-                logging.info(f"Found model: {path}")
-                return str(path)
-        logging.info("best.pt not found, using default model")
-        return model_name
-
-    def _load_model(self, model_name: str, class_names: list = None):
+    def _load_model(self, class_names: Optional[list] = None):
         """
         Loads the specified model based on the model_type.
 
@@ -84,46 +67,48 @@ class InferenceProcessor:
             filtered_classes = [
                 cls for cls in class_names if isinstance(cls, str) and cls.strip()]
 
-        if self.model_type == 'yolo':
-            model_name_lower = model_name.lower()
-            if 'yoloe' in model_name_lower:
-                model = YOLOE(model_name)
+        model_ref = str(self.model_path)
+        model_name_lower = model_ref.lower()
+
+        if self.model_type == "yolo":
+            if "yoloe" in model_name_lower:
+                model = YOLOE(model_ref)
                 if filtered_classes:
                     model.set_classes(
                         filtered_classes, model.get_text_pe(filtered_classes))
             else:
-                model = YOLO(model_name)
-                if filtered_classes and 'pose' not in model_name_lower and 'seg' not in model_name_lower:
+                model = YOLO(model_ref)
+                if filtered_classes and "pose" not in model_name_lower and "seg" not in model_name_lower:
                     if hasattr(model, "set_classes"):
                         model.set_classes(filtered_classes)
                     else:
-                        logging.warning(
+                        logger.warning(
                             "Custom class assignment requested, but model '%s' does not support set_classes.",
-                            model_name)
+                            model_ref)
             return model
-        elif self.model_type == 'sam':
-            model = SAM(model_name)
+        if self.model_type == "sam":
+            model = SAM(model_ref)
             model.info()
             return model
-        else:
-            raise ValueError("Unsupported model type. Use 'yolo' or 'sam'.")
+
+        raise ValueError("Unsupported model type. Use 'yolo' or 'sam'.")
 
     def _validate_visual_prompts(self, visual_prompts: dict) -> bool:
         required_keys = {"bboxes", "cls"}
         if not required_keys.issubset(visual_prompts.keys()):
-            logging.error(
+            logger.error(
                 "Visual prompts must contain keys: %s", required_keys)
             return False
 
         bboxes = visual_prompts["bboxes"]
         cls = visual_prompts["cls"]
         if not isinstance(bboxes, np.ndarray) or not isinstance(cls, np.ndarray):
-            logging.error("Both 'bboxes' and 'cls' must be numpy arrays.")
+            logger.error("Both 'bboxes' and 'cls' must be numpy arrays.")
             return False
 
         if bboxes.shape[0] != cls.shape[0]:
-            logging.error("Mismatch: %d bboxes vs %d classes.",
-                          bboxes.shape[0], cls.shape[0])
+            logger.error("Mismatch: %d bboxes vs %d classes.",
+                         bboxes.shape[0], cls.shape[0])
             return False
 
         return True
@@ -142,25 +127,26 @@ class InferenceProcessor:
         output_directory.mkdir(parents=True, exist_ok=True)
 
         if visual_prompts is not None and not self._validate_visual_prompts(visual_prompts):
-            logging.error("Invalid visual prompts; proceeding without them.")
+            logger.error("Invalid visual prompts; proceeding without them.")
             visual_prompts = None
 
         # Use visual prompts if supported by the model (YOLOE)
         if visual_prompts is not None and 'yoloe' in self.model_name.lower():
             try:
                 from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
-                logging.info("Running prediction with visual prompts.")
+                logger.info("Running prediction with visual prompts.")
                 results = self.model.predict(
                     source,
                     visual_prompts=visual_prompts,
                     predictor=YOLOEVPSegPredictor,
                 )
             except Exception as e:
-                logging.error("Error during visual prompt prediction: %s", e)
+                logger.error("Error during visual prompt prediction: %s", e)
                 return f"Error: {e}"
         else:
             if self._is_coreml:
-                logging.info("Detected CoreML export; using predict() instead of track().")
+                logger.info(
+                    "Detected CoreML export; using predict() instead of track().")
                 results = self.model.predict(source, stream=True)
             else:
                 results = self.model.track(source, persist=True, stream=True)
@@ -256,7 +242,7 @@ class InferenceProcessor:
                             segmentation_shape.points = contour_points
                             annotations.append(segmentation_shape)
                 except Exception as e:
-                    logging.error(f"Error processing mask: {e}")
+                    logger.error("Error processing mask: %s", e)
 
         return annotations
 
@@ -288,4 +274,4 @@ if __name__ == "__main__":
     video_path = str(Path.home() / "Downloads" / "people-detection.mp4")
     processor = InferenceProcessor("yolo11n-seg.pt", model_type="yolo")
     result_message = processor.run_inference(video_path)
-    logging.info(result_message)
+    logger.info(result_message)

@@ -251,7 +251,10 @@ class RealtimeManager(QtCore.QObject):
         candidate_paths.append(p)
         candidate_paths.append(Path.cwd() / name)
         # Common Ultralytics/torch cache paths.
+        from annolid.yolo import get_ultralytics_weights_cache_dir
+
         home = Path.home()
+        candidate_paths.append(get_ultralytics_weights_cache_dir() / name)
         candidate_paths.append(home / ".cache" / "ultralytics" / name)
         candidate_paths.append(home / ".cache" / "torch" /
                                "hub" / "checkpoints" / name)
@@ -347,16 +350,26 @@ class RealtimeManager(QtCore.QObject):
                 60
             )
 
-            bbox = detection.get("bbox_normalized") or []
-            if len(bbox) != 4:
-                bbox = None
+            bbox_pixels = detection.get("bbox_pixels") or []
+            if len(bbox_pixels) != 4:
+                bbox_pixels = None
+
+            bbox_norm = detection.get("bbox_normalized") or []
+            if len(bbox_norm) != 4:
+                bbox_norm = None
 
             rect_shape = None
-            if bbox:
-                x1 = max(0.0, min(1.0, float(bbox[0]))) * width
-                y1 = max(0.0, min(1.0, float(bbox[1]))) * height
-                x2 = max(0.0, min(1.0, float(bbox[2]))) * width
-                y2 = max(0.0, min(1.0, float(bbox[3]))) * height
+            if bbox_pixels or bbox_norm:
+                if bbox_pixels:
+                    x1 = max(0.0, min(float(width), float(bbox_pixels[0])))
+                    y1 = max(0.0, min(float(height), float(bbox_pixels[1])))
+                    x2 = max(0.0, min(float(width), float(bbox_pixels[2])))
+                    y2 = max(0.0, min(float(height), float(bbox_pixels[3])))
+                else:
+                    x1 = max(0.0, min(1.0, float(bbox_norm[0]))) * width
+                    y1 = max(0.0, min(1.0, float(bbox_norm[1]))) * height
+                    x2 = max(0.0, min(1.0, float(bbox_norm[2]))) * width
+                    y2 = max(0.0, min(1.0, float(bbox_norm[3]))) * height
 
                 if x2 > x1 and y2 > y1:
                     rect_shape = Shape(
@@ -415,7 +428,10 @@ class RealtimeManager(QtCore.QObject):
                         detection.get("confidence", 0.0))
                     shapes.append(mask_shape)
 
-            keypoints = detection.get("keypoints")
+            keypoints_pixels = detection.get("keypoints_pixels")
+            keypoints_norm = detection.get("keypoints")
+            keypoints = keypoints_pixels if keypoints_pixels is not None else keypoints_norm
+            keypoints_are_pixels = keypoints_pixels is not None
             if keypoints:
                 try:
                     kp_array = np.array(
@@ -434,8 +450,12 @@ class RealtimeManager(QtCore.QObject):
                     points_shape.points = []
                     points_shape.point_labels = []
                     for point in kp_array:
-                        px = max(0.0, min(1.0, float(point[0]))) * width
-                        py = max(0.0, min(1.0, float(point[1]))) * height
+                        if keypoints_are_pixels:
+                            px = max(0.0, min(float(width), float(point[0])))
+                            py = max(0.0, min(float(height), float(point[1])))
+                        else:
+                            px = max(0.0, min(1.0, float(point[0]))) * width
+                            py = max(0.0, min(1.0, float(point[1]))) * height
                         points_shape.points.append(QtCore.QPointF(px, py))
                         points_shape.point_labels.append(1)
                     points_shape.line_color = QtGui.QColor(base_color)

@@ -124,8 +124,9 @@ class YOLOTrainingManager(QtCore.QObject):
             self._release_temp_config(data_config_path)
             return False
 
+        from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+        configure_ultralytics_cache()
         from ultralytics import YOLO
-
         self._training_running = True
         self._window.statusBar().showMessage(
             self._window.tr("YOLO training started in the background...")
@@ -133,7 +134,8 @@ class YOLOTrainingManager(QtCore.QObject):
         self._show_start_notification()
 
         def train_task():
-            model = YOLO(yolo_model_file)
+            weight_path = resolve_weight_path(yolo_model_file)
+            model = YOLO(str(weight_path))
             if model_path:
                 try:
                     model.load(model_path)
