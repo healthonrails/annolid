@@ -14,7 +14,11 @@ from labelme.utils.shape import shapes_to_label
 from annolid.utils.logger import logger
 
 # Optional: For flow and visualization if kept here
-from annolid.motion.optical_flow import compute_optical_flow
+from annolid.motion.optical_flow import (
+    compute_optical_flow,
+    optical_flow_compute_kwargs,
+    optical_flow_settings_from,
+)
 from annolid.utils import draw  # For drawing flow
 # For visualization video
 from annolid.segmentation.cutie_vos.interactive_utils import overlay_davis
@@ -50,8 +54,15 @@ class SegmentedCutieExecutor:
         self.config = processing_config  # Store the full config
         self.pred_worker = pred_worker
         self.device = device  # Store the device for CutieEngine
-        self.optical_flow_backend = processing_config.get(
-            'optical_flow_backend', 'farneback')
+        self._optical_flow_settings = optical_flow_settings_from(
+            processing_config)
+        self.optical_flow_backend = str(
+            self._optical_flow_settings.get(
+                "optical_flow_backend", "farneback")
+        )
+        self._optical_flow_kwargs = optical_flow_compute_kwargs(
+            self._optical_flow_settings
+        )
 
         self.cutie_engine: Optional[CutieEngine] = cutie_engine
         self._owns_engine = cutie_engine is None
@@ -339,6 +350,7 @@ class SegmentedCutieExecutor:
                         current_frame_bgr,
                         use_raft=use_raft,
                         use_torch_farneback=use_torch_farneback,
+                        **self._optical_flow_kwargs,
                     )
 
                 self._save_frame_annotation(

@@ -1,10 +1,152 @@
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple, Dict
 
 import cv2
 import numpy as np
 from annolid.utils.devices import get_device
 
 AVAILABLE_DEVICE = get_device()
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not np.isfinite(out):
+        return float(default)
+    return float(out)
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return int(out)
+
+
+def _coerce_pos_int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    if out <= 0:
+        return None
+    return out
+
+
+def _read_setting(source: Any, key: str, default: Any = None) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def optical_flow_settings_from(source: Any) -> Dict[str, Any]:
+    """
+    Return a normalized optical-flow settings mapping using the same keys
+    the Settings menu exposes (mirrored onto the window/manager).
+
+    This is the preferred way to thread optical flow preferences into
+    prediction/tracking code without duplicating per-key plumbing.
+    """
+    compute_enabled = bool(
+        _read_setting(source, "compute_optical_flow",
+                      _read_setting(source, "optical_flow/compute", False))
+    )
+    backend = str(
+        _read_setting(source, "optical_flow_backend",
+                      _read_setting(source, "optical_flow/backend", "farneback"))
+    ).strip().lower()
+    raft_model = str(
+        _read_setting(source, "optical_flow_raft_model",
+                      _read_setting(source, "optical_flow/raft_model", "small"))
+    ).strip().lower()
+    if raft_model not in {"small", "large"}:
+        raft_model = "small"
+
+    # Prefer the GUI-exposed names, fall back to internal names used elsewhere.
+    farneback_pyr_scale = _coerce_float(
+        _read_setting(source, "flow_farneback_pyr_scale",
+                      _read_setting(source, "farneback_pyr_scale", 0.5)),
+        0.5,
+    )
+    farneback_levels = max(1, _coerce_int(
+        _read_setting(source, "flow_farneback_levels",
+                      _read_setting(source, "farneback_levels", 1)),
+        1,
+    ))
+    farneback_winsize = max(1, _coerce_int(
+        _read_setting(source, "flow_farneback_winsize",
+                      _read_setting(source, "farneback_winsize", 1)),
+        1,
+    ))
+    farneback_iterations = max(1, _coerce_int(
+        _read_setting(source, "flow_farneback_iterations",
+                      _read_setting(source, "farneback_iterations", 3)),
+        3,
+    ))
+    farneback_poly_n = max(3, _coerce_int(
+        _read_setting(source, "flow_farneback_poly_n",
+                      _read_setting(source, "farneback_poly_n", 3)),
+        3,
+    ))
+    farneback_poly_sigma = _coerce_float(
+        _read_setting(source, "flow_farneback_poly_sigma",
+                      _read_setting(source, "farneback_poly_sigma", 1.1)),
+        1.1,
+    )
+
+    scale = _coerce_float(_read_setting(
+        source, "optical_flow_scale", 1.0), 1.0)
+    if scale <= 0:
+        scale = 1.0
+    scale = min(1.0, scale)
+    max_dim = _coerce_pos_int_or_none(
+        _read_setting(source, "optical_flow_max_dim"))
+
+    return {
+        "compute_optical_flow": compute_enabled,
+        "optical_flow_backend": backend,
+        "optical_flow_raft_model": raft_model,
+        "flow_farneback_pyr_scale": farneback_pyr_scale,
+        "flow_farneback_levels": farneback_levels,
+        "flow_farneback_winsize": farneback_winsize,
+        "flow_farneback_iterations": farneback_iterations,
+        "flow_farneback_poly_n": farneback_poly_n,
+        "flow_farneback_poly_sigma": farneback_poly_sigma,
+        "optical_flow_scale": scale,
+        "optical_flow_max_dim": max_dim,
+    }
+
+
+def optical_flow_compute_kwargs(settings: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    Extract `compute_optical_flow()` keyword arguments from Annolid settings/config.
+
+    Supports GUI settings-menu keys (mirrored onto the window):
+      - `optical_flow_raft_model`
+      - `flow_farneback_pyr_scale`, `flow_farneback_levels`, `flow_farneback_winsize`,
+        `flow_farneback_iterations`, `flow_farneback_poly_n`, `flow_farneback_poly_sigma`
+
+    Also supports backend-agnostic speed knobs:
+      - `optical_flow_scale`
+      - `optical_flow_max_dim`
+    """
+    normalized = optical_flow_settings_from(settings)
+
+    return {
+        "raft_model": normalized["optical_flow_raft_model"],
+        "farneback_pyr_scale": normalized["flow_farneback_pyr_scale"],
+        "farneback_levels": normalized["flow_farneback_levels"],
+        "farneback_winsize": normalized["flow_farneback_winsize"],
+        "farneback_iterations": normalized["flow_farneback_iterations"],
+        "farneback_poly_n": normalized["flow_farneback_poly_n"],
+        "farneback_poly_sigma": normalized["flow_farneback_poly_sigma"],
+        "scale": normalized["optical_flow_scale"],
+        "max_dim": normalized["optical_flow_max_dim"],
+    }
 
 
 def _to_gray(frame: np.ndarray) -> np.ndarray:

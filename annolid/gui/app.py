@@ -1935,6 +1935,9 @@ class AnnolidWindow(MainWindow):
                                                           class_names=class_names)
             else:
                 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+                from annolid.motion.optical_flow import optical_flow_settings_from
+                flow_settings = optical_flow_settings_from(
+                    self.optical_flow_manager)
                 self.video_processor = VideoProcessor(
                     self.video_file,
                     model_name=model_name,
@@ -1944,12 +1947,7 @@ class AnnolidWindow(MainWindow):
                     use_cpu_only=self.use_cpu_only,
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
                     save_video_with_color_mask=self.save_video_with_color_mask,
-                    compute_optical_flow=getattr(
-                        self.optical_flow_manager, "compute_optical_flow", True
-                    ),
-                    optical_flow_backend=getattr(
-                        self.optical_flow_manager, "optical_flow_backend", "farneback"
-                    ),
+                    **flow_settings,
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder else None,
                 )

@@ -262,8 +262,15 @@ class SegmentEditorDialog(QDialog):
         # Get relevant global config from Annolid's config for the worker
         # This assumes annolid_config is structured to provide these easily.
         # Example: worker_global_config = self.annolid_config.get('tracking_worker_global_config', self.annolid_config)
-        worker_global_config = self.annolid_config.get(
-            'tracking_parameters', self.annolid_config)
+        worker_global_config = dict(
+            self.annolid_config.get(
+                'tracking_parameters', self.annolid_config) or {}
+        )
+        # Prefer the Optical Flow Settings menu values when available.
+        of_manager = getattr(annolid_main_window, "optical_flow_manager", None)
+        if of_manager is not None:
+            from annolid.motion.optical_flow import optical_flow_settings_from
+            worker_global_config.update(optical_flow_settings_from(of_manager))
 
         try:
             # Dialog creates the worker

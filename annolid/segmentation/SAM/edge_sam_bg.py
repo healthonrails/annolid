@@ -19,6 +19,7 @@ from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
 from annolid.utils.logger import logger
 from annolid.tracker.cotracker.track import CoTrackerProcessor
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
+from annolid.motion.optical_flow import optical_flow_settings_from
 
 
 def uniform_points_inside_polygon(polygon, num_points):
@@ -193,9 +194,14 @@ class VideoProcessor:
         self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
         self.save_video_with_color_mask = kwargs.get(
             'save_video_with_color_mask', False)
-        self.compute_optical_flow = kwargs.get('compute_optical_flow', False)
-        self.optical_flow_backend = kwargs.get(
-            'optical_flow_backend', 'farneback')
+        self._optical_flow_settings = optical_flow_settings_from(kwargs)
+        self.compute_optical_flow = bool(
+            self._optical_flow_settings.get("compute_optical_flow", False)
+        )
+        self.optical_flow_backend = str(
+            self._optical_flow_settings.get(
+                "optical_flow_backend", "farneback")
+        )
         self._cotracker_grid_size = kwargs.get('cotracker_grid_size', 10)
 
     def set_pred_worker(self, pred_worker):
@@ -217,8 +223,7 @@ class VideoProcessor:
             epsilon_for_polygon=self.epsilon_for_polygon,
             t_max_value=self.t_max_value,
             use_cpu_only=self.use_cpu_only,
-            compute_optical_flow=self.compute_optical_flow,
-            optical_flow_backend=self.optical_flow_backend,
+            **self._optical_flow_settings,
             results_folder=self.results_folder,
         )
         if VideoProcessor.sam_hq is None:

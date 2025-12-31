@@ -25,7 +25,11 @@ from labelme.utils.shape import shapes_to_label
 from annolid.utils.shapes import extract_flow_points_in_mask
 from annolid.utils.devices import get_device
 from annolid.utils.logger import logger
-from annolid.motion.optical_flow import compute_optical_flow
+from annolid.motion.optical_flow import (
+    compute_optical_flow,
+    optical_flow_compute_kwargs,
+    optical_flow_settings_from,
+)
 from annolid.utils import draw
 from annolid.utils.files import create_tracking_csv_file
 from annolid.utils.lru_cache import BboxCache
@@ -118,9 +122,17 @@ class CutieVideoProcessor:
         self.output_tracking_csvpath = str(
             self.video_folder) + f"_tracked.csv"
         self.showing_KMedoids_in_mask = False
-        self.compute_optical_flow = kwargs.get('compute_optical_flow', False)
-        self.optical_flow_backend = kwargs.get(
-            'optical_flow_backend', 'farneback')
+        self._optical_flow_settings = optical_flow_settings_from(kwargs)
+        self.compute_optical_flow = bool(
+            self._optical_flow_settings.get("compute_optical_flow", False)
+        )
+        self.optical_flow_backend = str(
+            self._optical_flow_settings.get(
+                "optical_flow_backend", "farneback")
+        )
+        self._optical_flow_kwargs = optical_flow_compute_kwargs(
+            self._optical_flow_settings
+        )
         self.auto_missing_instance_recovery = kwargs.get(
             "auto_missing_instance_recovery", False)
         logger.info(
@@ -1050,6 +1062,7 @@ class CutieVideoProcessor:
                             frame,
                             use_raft=use_raft,
                             use_torch_farneback=use_torch_farneback,
+                            **self._optical_flow_kwargs,
                         )
 
                     self._save_annotation(filename, mask_dict, frame.shape)
