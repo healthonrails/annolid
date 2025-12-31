@@ -1,8 +1,9 @@
 import atexit
 import os
+import platform
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 from qtpy import QtCore, QtWidgets
@@ -102,7 +103,74 @@ class YOLOTrainingManager(QtCore.QObject):
             )
             return None
 
+        # Pose datasets: auto-generate flip_idx if missing, so fliplr/flipud augmentations work.
+        if data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
+            flip_idx = self._infer_flip_idx(data_cfg)
+            if flip_idx:
+                data_cfg["flip_idx"] = flip_idx
+
         return self._write_temp_config(data_cfg, config_path)
+
+    def _infer_flip_idx(self, data_cfg: Dict[str, Any]) -> Optional[List[int]]:
+        kpt_shape = data_cfg.get("kpt_shape")
+        if not isinstance(kpt_shape, (list, tuple)) or len(kpt_shape) < 1:
+            return None
+        try:
+            nkpt = int(kpt_shape[0])
+        except Exception:
+            return None
+        if nkpt <= 0:
+            return None
+
+        kpt_labels = data_cfg.get("kpt_labels")
+        if not isinstance(kpt_labels, dict) or not kpt_labels:
+            return None
+
+        labels_by_idx: Dict[int, str] = {}
+        for key, value in kpt_labels.items():
+            try:
+                idx = int(key)
+            except Exception:
+                continue
+            if idx < 0 or idx >= nkpt:
+                continue
+            label = str(value or "").strip()
+            if not label:
+                continue
+            labels_by_idx[idx] = label
+
+        if len(labels_by_idx) != nkpt:
+            return None
+
+        idx_by_label = {lbl.lower(): i for i, lbl in labels_by_idx.items()}
+
+        def counterpart(label: str) -> Optional[str]:
+            s = label.lower()
+            swaps = [
+                ("left", "right"),
+                ("right", "left"),
+                ("l_", "r_"),
+                ("r_", "l_"),
+                ("l-", "r-"),
+                ("r-", "l-"),
+            ]
+            for a, b in swaps:
+                if a in s:
+                    return s.replace(a, b)
+            return None
+
+        flip_idx: List[int] = []
+        for i in range(nkpt):
+            label = labels_by_idx[i]
+            other = counterpart(label)
+            if other and other in idx_by_label:
+                flip_idx.append(idx_by_label[other])
+            else:
+                flip_idx.append(i)
+
+        if len(flip_idx) != nkpt:
+            return None
+        return flip_idx
 
     def start_training(
         self,
@@ -112,6 +180,10 @@ class YOLOTrainingManager(QtCore.QObject):
         data_config_path: str,
         epochs: int,
         image_size: int,
+        batch_size: int,
+        device: Optional[str],
+        plots: bool,
+        train_overrides: Optional[Dict[str, Any]],
         out_dir: Optional[str],
     ) -> bool:
         """Launch YOLO training on a background thread."""
@@ -127,6 +199,16 @@ class YOLOTrainingManager(QtCore.QObject):
         from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
         configure_ultralytics_cache()
         from ultralytics import YOLO
+
+        if not self._confirm_preflight(
+            data_config_path=data_config_path,
+            batch_size=batch_size,
+            device=device,
+            plots=plots,
+        ):
+            self._release_temp_config(data_config_path)
+            return False
+
         self._training_running = True
         self._window.statusBar().showMessage(
             self._window.tr("YOLO training started in the background...")
@@ -143,14 +225,31 @@ class YOLOTrainingManager(QtCore.QObject):
                     raise RuntimeError(
                         f"Failed to load trained model: {exc}"
                     ) from exc
-            return model.train(
-                data=data_config_path,
-                epochs=epochs,
-                imgsz=image_size,
-                project=out_dir if out_dir else None,
-                workers=0,  # Avoid multiprocessing issues when invoked from GUI threads
-                plots=False,  # Matplotlib is not thread-safe on macOS; disable GUI plotting
-            )
+
+            # Ensure plot generation does not require a GUI backend.
+            os.environ.setdefault("MPLBACKEND", "Agg")
+            try:
+                import matplotlib  # type: ignore
+
+                matplotlib.use("Agg", force=True)
+            except Exception:
+                pass
+            kwargs: Dict[str, Any] = {
+                "data": data_config_path,
+                "epochs": epochs,
+                "imgsz": image_size,
+                "batch": int(batch_size),
+                "device": (str(device).strip() if device else None),
+                "project": out_dir if out_dir else None,
+                "workers": 0,  # Avoid multiprocessing issues when invoked from GUI threads
+                "plots": bool(plots),
+            }
+            if train_overrides:
+                for key, value in dict(train_overrides).items():
+                    if value is None:
+                        continue
+                    kwargs[key] = value
+            return model.train(**kwargs)
 
         worker = FlexibleWorker(train_task)
         thread = QtCore.QThread(self)
@@ -166,6 +265,116 @@ class YOLOTrainingManager(QtCore.QObject):
         thread.start()
         return True
 
+    def _confirm_preflight(
+        self,
+        *,
+        data_config_path: str,
+        batch_size: int,
+        device: Optional[str],
+        plots: bool,
+    ) -> bool:
+        warnings: List[str] = []
+
+        data_cfg: Dict[str, Any] = {}
+        resolved_yaml = Path(data_config_path).expanduser()
+        try:
+            data_cfg = yaml.safe_load(
+                resolved_yaml.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data_cfg = {}
+
+        train_count = self._count_images(data_cfg.get("train"))
+        val_count = self._count_images(data_cfg.get("val"))
+
+        if train_count and batch_size > train_count:
+            warnings.append(
+                f"Batch size ({batch_size}) is larger than the training set ({train_count} images). "
+                "This can result in very few optimizer steps and poor convergence."
+            )
+
+        if train_count and train_count < 50:
+            warnings.append(
+                f"Training set is very small ({train_count} images). Consider labeling more frames for better accuracy."
+            )
+
+        if val_count and val_count < 10:
+            warnings.append(
+                f"Validation set is very small ({val_count} images). Metrics may be unstable/noisy."
+            )
+
+        kpt_shape = data_cfg.get("kpt_shape")
+        if kpt_shape and not data_cfg.get("flip_idx"):
+            warnings.append(
+                "Pose dataset has 'kpt_shape' but no 'flip_idx' in data.yaml; Ultralytics disables flip augmentations."
+            )
+
+        device_str = str(device or "").strip().lower()
+        if not device_str:
+            warnings.append(
+                "Device is set to Auto. If training is slow, explicitly select 'mps' (Apple Silicon) or CUDA GPU."
+            )
+        elif device_str == "cpu":
+            warnings.append(
+                "Training on CPU is usually much slower. If available, prefer 'mps' (Apple Silicon) or CUDA GPU."
+            )
+
+        if plots and platform.system().lower() == "darwin":
+            warnings.append(
+                "Ultralytics training plots may crash on macOS in GUI/threaded runs (Bus error). If this happens, disable plots."
+            )
+
+        if not warnings:
+            return True
+
+        message = (
+            "Potential training issues detected:\n\n- "
+            + "\n- ".join(warnings)
+            + "\n\nDo you want to start training anyway?"
+        )
+        reply = QtWidgets.QMessageBox.warning(
+            self._window,
+            "YOLO Training Preflight",
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+
+    def _count_images(self, entry: Union[str, List[str], Tuple[str, ...], None]) -> int:
+        if not entry:
+            return 0
+
+        if isinstance(entry, (list, tuple)):
+            return sum(self._count_images(item) for item in entry)
+
+        path_str = str(entry).strip()
+        if not path_str or path_str.startswith(("http://", "https://")):
+            return 0
+        if any(ch in path_str for ch in ("*", "?", "[")):
+            return 0
+
+        p = Path(path_str).expanduser()
+        try:
+            if p.is_dir():
+                exts = {".jpg", ".jpeg", ".png",
+                        ".bmp", ".tif", ".tiff", ".webp"}
+                return sum(1 for f in p.rglob("*") if f.suffix.lower() in exts)
+            if p.is_file() and p.suffix.lower() == ".txt":
+                count = 0
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    candidate = Path(line)
+                    if not candidate.is_absolute():
+                        candidate = p.parent / candidate
+                    if candidate.exists():
+                        count += 1
+                return count
+        except OSError:
+            return 0
+        return 0
+
     def is_running(self) -> bool:
         return self._training_running
 
@@ -174,8 +383,7 @@ class YOLOTrainingManager(QtCore.QObject):
         while self._active_jobs:
             thread, worker, temp_config = self._active_jobs.pop()
             try:
-                thread.quit()
-                thread.wait()
+                self._stop_thread(thread, "YOLO training thread")
             except RuntimeError:
                 logger.info("YOLO training thread already stopped.")
             try:
@@ -186,6 +394,25 @@ class YOLOTrainingManager(QtCore.QObject):
                 self._release_temp_config(temp_config)
         self._close_start_notification()
         self._cleanup_temp_configs()
+
+    def _stop_thread(self, thread: QtCore.QThread, label: str) -> None:
+        """Attempt graceful thread shutdown; terminate as a last resort."""
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                try:
+                    thread.requestInterruption()
+                except Exception:
+                    pass
+                thread.quit()
+                if not thread.wait(2000):
+                    logger.warning(
+                        "%s did not stop in time; terminating.", label)
+                    thread.terminate()
+                    thread.wait(2000)
+        except RuntimeError:
+            logger.debug("%s already stopped.", label)
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -203,8 +430,7 @@ class YOLOTrainingManager(QtCore.QObject):
         ]
 
         try:
-            thread.quit()
-            thread.wait()
+            self._stop_thread(thread, "YOLO training thread")
         except RuntimeError:
             logger.debug("YOLO training thread already stopped.")
         try:

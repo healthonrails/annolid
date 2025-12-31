@@ -103,7 +103,8 @@ class InferenceProcessor:
         bboxes = visual_prompts["bboxes"]
         cls = visual_prompts["cls"]
         if not isinstance(bboxes, np.ndarray) or not isinstance(cls, np.ndarray):
-            logger.error("Both 'bboxes' and 'cls' must be numpy arrays.")
+            logger.error(
+                "Both 'bboxes' and 'cls' must be numpy arrays after normalization.")
             return False
 
         if bboxes.shape[0] != cls.shape[0]:
@@ -113,7 +114,14 @@ class InferenceProcessor:
 
         return True
 
-    def run_inference(self, source: str, visual_prompts: dict = None) -> str:
+    def run_inference(
+        self,
+        source: str,
+        visual_prompts: dict = None,
+        *,
+        pred_worker=None,
+        stop_event=None,
+    ) -> str:
         """
         Runs inference on the given video source and saves the results as LabelMe JSON files.
 
@@ -125,6 +133,38 @@ class InferenceProcessor:
         """
         output_directory = Path(source).with_suffix("")
         output_directory.mkdir(parents=True, exist_ok=True)
+
+        def should_stop() -> bool:
+            try:
+                if stop_event is not None and stop_event.is_set():
+                    return True
+            except Exception:
+                pass
+            try:
+                if pred_worker is not None and hasattr(pred_worker, "is_stopped") and pred_worker.is_stopped():
+                    return True
+            except Exception:
+                pass
+            try:
+                from qtpy import QtCore  # Optional dependency for GUI runs
+
+                thread = QtCore.QThread.currentThread()
+                if thread is not None and thread.isInterruptionRequested():
+                    return True
+            except Exception:
+                pass
+            return False
+
+        if visual_prompts is not None:
+            try:
+                bboxes = np.asarray(visual_prompts.get(
+                    "bboxes", []), dtype=float)
+                cls = np.asarray(visual_prompts.get("cls", []), dtype=int)
+                visual_prompts = {"bboxes": bboxes, "cls": cls}
+            except Exception as exc:
+                logger.error(
+                    "Failed to normalize visual prompts; proceeding without them: %s", exc)
+                visual_prompts = None
 
         if visual_prompts is not None and not self._validate_visual_prompts(visual_prompts):
             logger.error("Invalid visual prompts; proceeding without them.")
@@ -139,6 +179,7 @@ class InferenceProcessor:
                     source,
                     visual_prompts=visual_prompts,
                     predictor=YOLOEVPSegPredictor,
+                    stream=True,
                 )
             except Exception as e:
                 logger.error("Error during visual prompt prediction: %s", e)
@@ -151,15 +192,30 @@ class InferenceProcessor:
             else:
                 results = self.model.track(source, persist=True, stream=True)
 
-        for result in results:
-            if result.boxes and len(result.boxes) > 0:
-                frame_shape = (result.orig_shape[0], result.orig_shape[1], 3)
-                annotations = self.extract_yolo_results(result)
-                self.save_yolo_to_labelme(
-                    annotations, frame_shape, output_directory)
-            else:
-                self.frame_count += 1
+        stopped = False
+        try:
+            for result in results:
+                if should_stop():
+                    stopped = True
+                    break
+                if result.boxes and len(result.boxes) > 0:
+                    frame_shape = (
+                        result.orig_shape[0], result.orig_shape[1], 3)
+                    annotations = self.extract_yolo_results(result)
+                    self.save_yolo_to_labelme(
+                        annotations, frame_shape, output_directory)
+                else:
+                    self.frame_count += 1
+        finally:
+            try:
+                close = getattr(results, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
 
+        if stopped:
+            return f"Stopped#{self.frame_count}"
         return f"Done#{self.frame_count}"
 
     def extract_yolo_results(self, detection_result, save_bbox: bool = False, save_track: bool = False) -> list:

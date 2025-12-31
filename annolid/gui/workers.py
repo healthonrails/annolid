@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import inspect
 from collections import deque
 from pathlib import Path
 from threading import Lock
@@ -799,9 +800,14 @@ class FlexibleWorker(QtCore.QObject):
         self._args = args
         self._kwargs = kwargs
         self._is_stopped = False
+        self._stop_event = threading.Event()
 
         # Connect the stop signal to the stop method
         self.stop_signal.connect(self._stop)
+
+    @property
+    def stop_event(self) -> threading.Event:
+        return self._stop_event
 
     def run(self):
         """
@@ -809,8 +815,14 @@ class FlexibleWorker(QtCore.QObject):
         Emits signals for result and completion when done.
         """
         self._is_stopped = False
+        self._stop_event.clear()
         try:
-            result = self._task_function(*self._args, **self._kwargs)
+            if self._is_stopped:
+                result = "Stopped"
+            else:
+                kwargs = dict(self._kwargs)
+                kwargs = self._inject_cancellation_kwargs(kwargs)
+                result = self._task_function(*self._args, **kwargs)
             self.result_signal.emit(result)
             self.finished_signal.emit(result)
         except Exception as e:
@@ -822,6 +834,8 @@ class FlexibleWorker(QtCore.QObject):
         Stops the worker by setting the stop flag.
         """
         self._is_stopped = True
+        self._stop_event.set()
+        self._request_stop_on_target()
 
     def is_stopped(self):
         """
@@ -830,6 +844,39 @@ class FlexibleWorker(QtCore.QObject):
         :return: True if the worker is stopped, otherwise False.
         """
         return self._is_stopped
+
+    def request_stop(self):
+        """Public helper to request a cooperative stop."""
+        self.stop_signal.emit()
+
+    def _inject_cancellation_kwargs(self, kwargs: dict) -> dict:
+        """Inject pred_worker/stop_event if the task function supports them."""
+        try:
+            sig = inspect.signature(self._task_function)
+        except (TypeError, ValueError):
+            return kwargs
+
+        params = sig.parameters
+        if "pred_worker" in params and "pred_worker" not in kwargs:
+            kwargs["pred_worker"] = self
+        if "stop_event" in params and "stop_event" not in kwargs:
+            kwargs["stop_event"] = self._stop_event
+        return kwargs
+
+    def _request_stop_on_target(self) -> None:
+        """If the task function exposes a stop API, invoke it."""
+        target = self._task_function
+        for candidate in (target, getattr(target, "__self__", None)):
+            if candidate is None:
+                continue
+            request_stop = getattr(candidate, "request_stop", None)
+            if callable(request_stop):
+                try:
+                    request_stop()
+                except Exception:
+                    logger.debug(
+                        "FlexibleWorker target stop request failed.", exc_info=True)
+                return
 
     def report_progress(self, progress):
         """

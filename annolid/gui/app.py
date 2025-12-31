@@ -1767,17 +1767,94 @@ class AnnolidWindow(MainWindow):
         return "efficienttam" in key
 
     def stop_prediction(self):
-        # Emit the stop signal to signal the prediction thread to stop
-        self.pred_worker.stop_signal.emit()
-        self.seg_pred_thread.quit()
-        self.seg_pred_thread.wait()
-        self.stepSizeWidget.predict_button.setText(
-            "Pred")  # Change button text
-        self.stepSizeWidget.predict_button.setStyleSheet(
-            "background-color: green; color: white;")
+        worker = getattr(self, "pred_worker", None)
+        thread = getattr(self, "seg_pred_thread", None)
 
+        # Update UI immediately and request a cooperative stop (non-blocking).
         self.stop_prediction_flag = False
-        logger.info(f"Prediction was stopped.")
+        try:
+            self.stepSizeWidget.predict_button.setText("Stopping...")
+            self.stepSizeWidget.predict_button.setStyleSheet(
+                "background-color: orange; color: white;")
+            self.stepSizeWidget.predict_button.setEnabled(False)
+        except Exception:
+            pass
+
+        if worker is None:
+            self._finalize_prediction_progress("Stop requested (no worker).")
+            return
+
+        try:
+            if hasattr(worker, "request_stop"):
+                worker.request_stop()
+            else:
+                worker.stop_signal.emit()
+        except Exception:
+            logger.debug("Failed to signal prediction worker stop.",
+                         exc_info=True)
+
+        try:
+            if thread is not None and hasattr(thread, "requestInterruption"):
+                thread.requestInterruption()
+        except Exception:
+            pass
+
+        try:
+            if thread is not None:
+                thread.quit()
+        except Exception:
+            pass
+
+        # If a non-cooperative task ignores stop requests, don't hang the UI;
+        # attempt a best-effort force-stop after a short grace period.
+        self._force_stop_thread_ref = thread
+        QtCore.QTimer.singleShot(8000, self._force_stop_prediction_thread)
+        logger.info("Prediction stop requested.")
+
+    def _force_stop_prediction_thread(self):
+        """Last-resort termination for stuck prediction threads."""
+        thread = getattr(self, "seg_pred_thread", None)
+        if getattr(self, "_force_stop_thread_ref", None) is not thread:
+            return
+        worker = getattr(self, "pred_worker", None)
+        if thread is None or not isinstance(thread, QtCore.QThread):
+            return
+        if not thread.isRunning():
+            return
+
+        logger.warning(
+            "Prediction thread did not stop in time; terminating as a last resort.")
+        try:
+            thread.terminate()
+            thread.wait(2000)
+        except Exception:
+            logger.debug("Failed to terminate prediction thread.",
+                         exc_info=True)
+        try:
+            if worker is not None:
+                worker.deleteLater()
+        except Exception:
+            pass
+        try:
+            thread.deleteLater()
+        except Exception:
+            pass
+        self.pred_worker = None
+        self.seg_pred_thread = None
+        self._force_stop_thread_ref = None
+        self._finalize_prediction_progress("Prediction force-stopped.")
+
+    def _cleanup_prediction_worker(self):
+        """Clear references once the prediction thread has fully finished."""
+        try:
+            thread = getattr(self, "seg_pred_thread", None)
+            if isinstance(thread, QtCore.QThread) and thread.isRunning():
+                return
+        except Exception:
+            pass
+        self.pred_worker = None
+        self.seg_pred_thread = None
+        self._force_stop_thread_ref = None
 
     def extract_visual_prompts_from_canvas(self) -> dict:
         """
@@ -1951,9 +2028,25 @@ class AnnolidWindow(MainWindow):
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder else None,
                 )
-            if not self.seg_pred_thread.isRunning():
-                self.seg_pred_thread = QtCore.QThread()
-            self.seg_pred_thread.start()
+            if getattr(self, "seg_pred_thread", None) is not None:
+                try:
+                    if self.seg_pred_thread.isRunning():
+                        logger.warning(
+                            "Prediction thread already running; stop it before starting a new run.")
+                        self.stop_prediction()
+                        return
+                except RuntimeError:
+                    self.seg_pred_thread = None
+
+            old_thread = getattr(self, "seg_pred_thread", None)
+            if isinstance(old_thread, QtCore.QThread):
+                try:
+                    if not old_thread.isRunning():
+                        old_thread.deleteLater()
+                except RuntimeError:
+                    pass
+
+            self.seg_pred_thread = QtCore.QThread(self)
             # Determine end_frame
             # step_size is -1, i.e., predict to the end
             if self.step_size < 0:
@@ -1995,10 +2088,9 @@ class AnnolidWindow(MainWindow):
             elif self._is_yolo_model(model_name, model_weight):
                 # Pass visual_prompts to run_inference if extracted successfully.
                 self.pred_worker = FlexibleWorker(
-                    task_function=lambda: self.video_processor.run_inference(
-                        source=self.video_file,
-                        visual_prompts=visual_prompts if visual_prompts else None
-                    )
+                    task_function=self.video_processor.run_inference,
+                    source=self.video_file,
+                    visual_prompts=visual_prompts if visual_prompts else None,
                 )
             else:
                 self.pred_worker = FlexibleWorker(
@@ -2021,11 +2113,21 @@ class AnnolidWindow(MainWindow):
                 "background-color: red; color: white;")
             self.stop_prediction_flag = True
             self.pred_worker.moveToThread(self.seg_pred_thread)
-            self.pred_worker.start_signal.connect(self.pred_worker.run)
-            self.pred_worker.result_signal.connect(self.lost_tracking_instance)
-            self.pred_worker.finished_signal.connect(self.predict_is_ready)
-            self.seg_pred_thread.finished.connect(self.seg_pred_thread.quit)
-            self.pred_worker.start_signal.emit()
+            self.seg_pred_thread.started.connect(
+                self.pred_worker.run, QtCore.Qt.QueuedConnection)
+            self.pred_worker.result_signal.connect(
+                self.lost_tracking_instance, QtCore.Qt.QueuedConnection)
+            self.pred_worker.finished_signal.connect(
+                self.predict_is_ready, QtCore.Qt.QueuedConnection)
+            self.pred_worker.finished_signal.connect(
+                self.seg_pred_thread.quit, QtCore.Qt.QueuedConnection)
+            self.pred_worker.finished_signal.connect(
+                self.pred_worker.deleteLater, QtCore.Qt.QueuedConnection)
+            self.seg_pred_thread.finished.connect(
+                self._cleanup_prediction_worker, QtCore.Qt.QueuedConnection)
+            self.seg_pred_thread.finished.connect(
+                self.seg_pred_thread.deleteLater, QtCore.Qt.QueuedConnection)
+            self.seg_pred_thread.start()
 
     def lost_tracking_instance(self, message):
         if message is None or "#" not in str(message):
@@ -3103,6 +3205,10 @@ class AnnolidWindow(MainWindow):
             epochs = dlg.epochs
             image_size = dlg.image_size
             yolo_model_file = dlg.yolo_model_file
+            yolo_device = getattr(dlg, "yolo_device", None)
+            yolo_plots = getattr(dlg, "yolo_plots", False)
+            yolo_train_overrides = dlg.get_yolo_train_overrides() if hasattr(
+                dlg, "get_yolo_train_overrides") else {}
 
         if config_file is None:
             return
@@ -3117,6 +3223,10 @@ class AnnolidWindow(MainWindow):
                 data_config_path=data_config,
                 epochs=epochs,
                 image_size=image_size,
+                batch_size=batch_size,
+                device=yolo_device,
+                plots=yolo_plots,
+                train_overrides=yolo_train_overrides,
                 out_dir=out_dir,
             )
 
