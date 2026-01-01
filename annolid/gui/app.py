@@ -2131,7 +2131,11 @@ class AnnolidWindow(MainWindow):
                 pose_keypoint_names = None
                 pose_schema_path = None
                 if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):
-                    pose_keypoint_names = list(self._pose_schema.keypoints)
+                    pose_keypoint_names = (
+                        self._pose_schema.expand_keypoints()
+                        if getattr(self._pose_schema, "instances", None)
+                        else list(self._pose_schema.keypoints)
+                    )
                 if getattr(self, "_pose_schema_path", None):
                     pose_schema_path = self._pose_schema_path
                 self.video_processor = InferenceProcessor(model_name=model_weight,

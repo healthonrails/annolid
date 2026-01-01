@@ -76,6 +76,31 @@ class PoseSchemaDialog(QtWidgets.QDialog):
         file_row.addWidget(save_as_btn)
         layout.addLayout(file_row)
 
+        # Instance prefix support (optional)
+        instance_row = QtWidgets.QHBoxLayout()
+        self.instance_edit = QtWidgets.QLineEdit()
+        self.instance_edit.setPlaceholderText(
+            "Instances/prefixes (comma separated), e.g. intruder,resident"
+        )
+        self.instance_edit.textChanged.connect(self._update_flip_preview)
+
+        self.separator_edit = QtWidgets.QLineEdit()
+        self.separator_edit.setFixedWidth(60)
+        self.separator_edit.setPlaceholderText("_")
+        self.separator_edit.setText(
+            getattr(self._schema, "instance_separator", "_") or "_")
+        self.separator_edit.textChanged.connect(self._update_flip_preview)
+
+        normalize_btn = QtWidgets.QPushButton("Normalize prefixes")
+        normalize_btn.clicked.connect(self._normalize_prefixed_schema)
+
+        instance_row.addWidget(QtWidgets.QLabel("Instance prefixes:"))
+        instance_row.addWidget(self.instance_edit, 1)
+        instance_row.addWidget(QtWidgets.QLabel("Separator:"))
+        instance_row.addWidget(self.separator_edit)
+        instance_row.addWidget(normalize_btn)
+        layout.addLayout(instance_row)
+
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
 
         # Left panel: keypoints
@@ -231,6 +256,12 @@ class PoseSchemaDialog(QtWidgets.QDialog):
         self.path_edit.setText(str(path))
 
     def _refresh_from_schema(self) -> None:
+        self.instance_edit.setText(
+            ", ".join(self._schema.instances) if getattr(
+                self._schema, "instances", None) else ""
+        )
+        self.separator_edit.setText(
+            getattr(self._schema, "instance_separator", "_") or "_")
         self._set_keypoints(self._schema.keypoints)
         # type: ignore[attr-defined]
         self._set_pair_table(self.sym_table._table,
@@ -350,18 +381,27 @@ class PoseSchemaDialog(QtWidgets.QDialog):
 
     def _update_flip_preview(self) -> None:
         self._sync_schema_from_ui(update_preview_only=True)
-        flip = self._schema.compute_flip_idx(self._schema.keypoints)
+        order = self._schema.expand_keypoints() if hasattr(
+            self._schema, "expand_keypoints") else self._schema.keypoints
+        flip = self._schema.compute_flip_idx(order)
         self.flip_preview.setText(str(flip) if flip else "")
 
     def _sync_schema_from_ui(self, update_preview_only: bool = False) -> None:
+        instances = [
+            item.strip().rstrip("_")
+            for item in self.instance_edit.text().split(",")
+            if item.strip()
+        ]
+        self._schema.instances = instances
+        self._schema.instance_separator = self.separator_edit.text().strip() or "_"
         self._schema.keypoints = self._keypoints()
         self._schema.symmetry_pairs = self._pairs_from_table(
             self.sym_table._table)  # type: ignore[attr-defined]
         self._schema.edges = self._pairs_from_table(
             self.edge_table._table)  # type: ignore[attr-defined]
         if not update_preview_only:
-            self._schema.flip_idx = self._schema.compute_flip_idx(
-                self._schema.keypoints)
+            order = self._schema.expand_keypoints()
+            self._schema.flip_idx = self._schema.compute_flip_idx(order)
 
     def _on_accept(self) -> None:
         self._sync_schema_from_ui(update_preview_only=False)
@@ -370,3 +410,16 @@ class PoseSchemaDialog(QtWidgets.QDialog):
                 self, "Missing keypoints", "Please define at least one keypoint.")
             return
         self.accept()
+
+    def _normalize_prefixed_schema(self) -> None:
+        """Convert a schema that uses fully-qualified keypoint labels into base+instances."""
+        self._sync_schema_from_ui(update_preview_only=True)
+        if not self._schema.instances:
+            inferred = []
+            for kp in self._schema.keypoints:
+                inst, _ = self._schema.strip_instance_prefix(kp)
+                if inst and inst not in inferred:
+                    inferred.append(inst)
+            self._schema.instances = inferred
+        self._schema.normalize_prefixed_keypoints()
+        self._refresh_from_schema()

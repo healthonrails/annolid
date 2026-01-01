@@ -155,7 +155,12 @@ class Labelme2YOLO:
                 self.pose_schema = None
 
         if self.pose_schema and self.pose_schema.keypoints:
-            merged = list(self.pose_schema.keypoints)
+            schema_keypoints = (
+                self.pose_schema.expand_keypoints()
+                if getattr(self.pose_schema, "instances", None)
+                else list(self.pose_schema.keypoints)
+            )
+            merged = list(schema_keypoints)
             for kp in keypoints:
                 if kp not in merged:
                     merged.append(kp)

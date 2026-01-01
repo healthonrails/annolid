@@ -250,9 +250,26 @@ class Canvas(QtWidgets.QWidget):
             if not points:
                 continue
             point = points[0]
-            instance_label = self._infer_pose_instance_label(
-                shape, candidate_labels, default_label="object")
-            kp_label = self._infer_pose_keypoint_label(shape, instance_label)
+            instance_label = None
+            kp_label = None
+
+            try:
+                inst_from_schema, base_from_schema = self._pose_schema.strip_instance_prefix(
+                    str(getattr(shape, "label", "") or "")
+                )
+                if inst_from_schema and base_from_schema:
+                    instance_label = inst_from_schema
+                    kp_label = base_from_schema
+            except Exception:
+                instance_label = None
+                kp_label = None
+
+            if not instance_label:
+                instance_label = self._infer_pose_instance_label(
+                    shape, candidate_labels, default_label="object")
+            if not kp_label:
+                kp_label = self._infer_pose_keypoint_label(
+                    shape, instance_label)
             if not kp_label:
                 continue
             instances.setdefault(instance_label, {})[kp_label] = point
@@ -276,10 +293,57 @@ class Canvas(QtWidgets.QWidget):
 
         painter.save()
         try:
-            for kp_map in instances.values():
-                for a, b in self._pose_schema.edges:
-                    p1 = kp_map.get(a)
-                    p2 = kp_map.get(b)
+            schema_instances = [
+                inst for inst in (self._pose_schema.instances or []) if inst
+            ]
+            active_instances = list(instances.keys())
+            if schema_instances:
+                instance_order = [
+                    inst for inst in schema_instances if inst in instances
+                ] + [inst for inst in active_instances if inst not in schema_instances]
+            else:
+                instance_order = active_instances
+
+            for edge in self._pose_schema.edges:
+                a, b = edge
+                inst_a, kp_a = self._pose_schema.strip_instance_prefix(a)
+                inst_b, kp_b = self._pose_schema.strip_instance_prefix(b)
+                if not self._pose_schema.instances:
+                    sep = getattr(self._pose_schema,
+                                  "instance_separator", "_") or "_"
+                    if inst_a is None and isinstance(a, str) and sep in a:
+                        candidate_inst, candidate_kp = a.split(sep, 1)
+                        if candidate_inst in instances:
+                            inst_a = candidate_inst
+                            kp_a = candidate_kp.strip()
+                    if inst_b is None and isinstance(b, str) and sep in b:
+                        candidate_inst, candidate_kp = b.split(sep, 1)
+                        if candidate_inst in instances:
+                            inst_b = candidate_inst
+                            kp_b = candidate_kp.strip()
+
+                if inst_a or inst_b:
+                    inst = inst_a or inst_b
+                    if not inst:
+                        continue
+                    if inst_a and inst_b and inst_a != inst_b:
+                        continue
+                    kp_map = instances.get(inst, {})
+                    p1 = kp_map.get(kp_a)
+                    p2 = kp_map.get(kp_b)
+                    if p1 is None or p2 is None:
+                        continue
+                    painter.setPen(shadow_pen)
+                    painter.drawLine(p1, p2)
+                    painter.setPen(edge_pen)
+                    painter.drawLine(p1, p2)
+                    continue
+
+                # Base edges: replicate per instance.
+                for inst in instance_order:
+                    kp_map = instances.get(inst, {})
+                    p1 = kp_map.get(kp_a)
+                    p2 = kp_map.get(kp_b)
                     if p1 is None or p2 is None:
                         continue
                     painter.setPen(shadow_pen)

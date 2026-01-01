@@ -63,6 +63,10 @@ class InferenceProcessor:
             try:
                 schema = PoseSchema.load(pose_schema_path)
                 if schema.keypoints:
+                    if getattr(schema, "instances", None):
+                        expanded = schema.expand_keypoints()
+                        if expanded:
+                            return expanded
                     return list(schema.keypoints)
             except Exception:
                 pass

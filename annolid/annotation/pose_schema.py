@@ -41,6 +41,7 @@ class PoseSchema:
     symmetry_pairs: List[Tuple[str, str]] = field(default_factory=list)
     flip_idx: Optional[List[int]] = None
     instances: List[str] = field(default_factory=list)
+    instance_separator: str = "_"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PoseSchema":
@@ -68,7 +69,9 @@ class PoseSchema:
         for item in instances_raw:
             name = _clean_name(item)
             if name and name not in instances:
-                instances.append(name)
+                instances.append(name.rstrip("_"))
+
+        instance_separator = _clean_name(data.get("instance_separator")) or "_"
 
         return cls(
             version=str(data.get("version") or "1.0"),
@@ -77,6 +80,7 @@ class PoseSchema:
             symmetry_pairs=symmetry_pairs,
             flip_idx=flip_idx,
             instances=instances,
+            instance_separator=instance_separator,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -87,7 +91,47 @@ class PoseSchema:
             "flip_idx": list(self.flip_idx) if self.flip_idx is not None else None,
             "symmetry_pairs": [[a, b] for a, b in self.symmetry_pairs],
             "instances": list(self.instances),
+            "instance_separator": self.instance_separator,
         }
+
+    def instance_prefix(self, instance: str) -> str:
+        sep = self.instance_separator or "_"
+        inst = str(instance or "").strip().rstrip("_")
+        return f"{inst}{sep}" if inst else ""
+
+    def expand_keypoints(self) -> List[str]:
+        """Return keypoint names expanded with instance prefixes when configured."""
+        if not self.instances:
+            return list(self.keypoints)
+        if not self.keypoints:
+            return []
+        sep = self.instance_separator or "_"
+        expanded: List[str] = []
+        for inst in self.instances:
+            inst = str(inst or "").strip().rstrip("_")
+            if not inst:
+                continue
+            prefix = f"{inst}{sep}"
+            for kp in self.keypoints:
+                kp = str(kp or "").strip()
+                if kp:
+                    expanded.append(f"{prefix}{kp}")
+        return expanded
+
+    def strip_instance_prefix(self, label: str) -> Tuple[Optional[str], str]:
+        """Return (instance, base_keypoint) if the label matches an instance prefix."""
+        sep = self.instance_separator or "_"
+        text = str(label or "").strip()
+        if not text:
+            return None, ""
+        if self.instances:
+            for inst in self.instances:
+                prefix = self.instance_prefix(inst)
+                if prefix and text.lower().startswith(prefix.lower()):
+                    return inst, text[len(prefix):].lstrip(sep).strip()
+            # Instances are configured but no known prefix matched: treat as base label.
+            return None, text
+        return None, text
 
     @classmethod
     def load(cls, path: str | Path) -> "PoseSchema":
@@ -136,14 +180,97 @@ class PoseSchema:
 
         index_by_name = {name: idx for idx, name in enumerate(order)}
         flip = list(range(len(order)))
-        for left, right in self.symmetry_pairs:
+        applied_any = False
+
+        def apply_pair(left: str, right: str) -> None:
+            nonlocal applied_any
             li = index_by_name.get(left)
             ri = index_by_name.get(right)
             if li is None or ri is None:
-                continue
+                return
             flip[li] = ri
             flip[ri] = li
+            applied_any = True
+
+        # Direct match (schemas that store fully-qualified names).
+        for left, right in self.symmetry_pairs:
+            apply_pair(left, right)
+
+        # If no direct matches happened, try expanding base symmetry pairs per instance.
+        if not applied_any and self.instances:
+            sep = self.instance_separator or "_"
+            for inst in self.instances:
+                inst = str(inst or "").strip().rstrip("_")
+                if not inst:
+                    continue
+                prefix = f"{inst}{sep}"
+                for left, right in self.symmetry_pairs:
+                    apply_pair(f"{prefix}{left}", f"{prefix}{right}")
+
         return flip
+
+    def normalize_prefixed_keypoints(self) -> None:
+        """Convert prefixed keypoints/edges into base+instances when possible."""
+        sep = self.instance_separator or "_"
+        if not self.keypoints:
+            return
+
+        inferred_instances: List[str] = []
+        base_keypoints: List[str] = []
+        seen_base = set()
+        for name in self.keypoints:
+            text = str(name or "").strip()
+            if sep not in text:
+                continue
+            inst, base = text.split(sep, 1)
+            inst = inst.strip().rstrip("_")
+            base = base.strip()
+            if inst and inst not in inferred_instances:
+                inferred_instances.append(inst)
+            if base and base not in seen_base:
+                seen_base.add(base)
+                base_keypoints.append(base)
+
+        if not inferred_instances or not base_keypoints:
+            return
+
+        # Only normalize when at least one keypoint appears to be prefixed.
+        if not any(sep in kp for kp in self.keypoints):
+            return
+
+        self.instances = inferred_instances
+        self.keypoints = base_keypoints
+
+        def strip_pair(pair: Tuple[str, str]) -> Optional[Tuple[str, str]]:
+            a_text = str(pair[0] or "").strip()
+            b_text = str(pair[1] or "").strip()
+            if sep in a_text:
+                _, a = a_text.split(sep, 1)
+                a = a.strip()
+            else:
+                a = a_text
+            if sep in b_text:
+                _, b = b_text.split(sep, 1)
+                b = b.strip()
+            else:
+                b = b_text
+            if not a or not b or a == b:
+                return None
+            return a, b
+
+        new_edges: List[Tuple[str, str]] = []
+        for edge in self.edges:
+            stripped = strip_pair(edge)
+            if stripped:
+                new_edges.append(stripped)
+        self.edges = new_edges
+
+        new_pairs: List[Tuple[str, str]] = []
+        for pair in self.symmetry_pairs:
+            stripped = strip_pair(pair)
+            if stripped:
+                new_pairs.append(stripped)
+        self.symmetry_pairs = new_pairs
 
     @staticmethod
     def infer_symmetry_pairs(keypoints: Iterable[str]) -> List[Tuple[str, str]]:
