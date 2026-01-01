@@ -235,20 +235,32 @@ class Labelme2YOLO:
 
             return train_jsons, val_jsons, test_jsons
 
+        if not json_names:
+            return [], [], []
+        if len(json_names) == 1:
+            return [json_names[0]], [], []
+
         # Randomly split the input data into train, validation, and test sets.
         if train_test_split is not None:
-            train_idxs, val_idxs = train_test_split(range(len(json_names)),
-                                                    test_size=val_size)
-            tmp_train_len = len(train_idxs)
-            test_idxs = []
-            if test_size is None:
-                test_size = 0.0
-            if test_size > 1e-8 and tmp_train_len:
-                train_subset_indices = list(range(tmp_train_len))
-                train_idxs_sub, test_subset = train_test_split(
-                    train_subset_indices, test_size=test_size / max(1 - val_size, 1e-8))
-                test_idxs = [train_idxs[idx] for idx in test_subset]
-                train_idxs = [train_idxs[idx] for idx in train_idxs_sub]
+            try:
+                train_idxs, val_idxs = train_test_split(
+                    range(len(json_names)), test_size=val_size
+                )
+                tmp_train_len = len(train_idxs)
+                test_idxs = []
+                if test_size is None:
+                    test_size = 0.0
+                if test_size > 1e-8 and tmp_train_len:
+                    train_subset_indices = list(range(tmp_train_len))
+                    train_idxs_sub, test_subset = train_test_split(
+                        train_subset_indices,
+                        test_size=test_size / max(1 - val_size, 1e-8),
+                    )
+                    test_idxs = [train_idxs[idx] for idx in test_subset]
+                    train_idxs = [train_idxs[idx] for idx in train_idxs_sub]
+            except ValueError:
+                # sklearn can fail for small n (e.g. n_samples=1 with non-zero fractions).
+                train_idxs, val_idxs, test_idxs = [], [], []
         else:
             total = len(json_names)
             indices = list(range(total))
@@ -270,6 +282,21 @@ class Labelme2YOLO:
             val_idxs = indices[:val_count]
             test_idxs = indices[val_count: val_count + test_count]
             train_idxs = indices[val_count + test_count:]
+
+        # Ensure we always have at least one training sample when possible.
+        if not train_idxs:
+            train_idxs = []
+        if not val_idxs:
+            val_idxs = []
+        if not test_idxs:
+            test_idxs = []
+        if not train_idxs:
+            if val_idxs:
+                train_idxs.append(val_idxs.pop())
+            elif test_idxs:
+                train_idxs.append(test_idxs.pop())
+            else:
+                train_idxs = [0]
 
         train_jsons = [json_names[train_idx]
                        for train_idx in train_idxs] if train_idxs else []
