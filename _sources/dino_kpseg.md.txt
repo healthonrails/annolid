@@ -17,6 +17,38 @@ python -m annolid.segmentation.dino_kpseg.train \
   --epochs 50
 ```
 
+### Relational (Attention) Head
+
+For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
+When `kpt_names` are available, DinoKPSEG will automatically treat asymmetric keypoints (e.g. `nose`, `head`, `tailbase`)
+as orientation anchors and inject them into other keypoints via cross-attention.
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --head-type attn \
+  --attn-heads 4 \
+  --attn-layers 2
+```
+
+Optional symmetric-pair regularizers (requires `flip_idx` or inferable keypoint names):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --lr-pair-loss-weight 0.05 \
+  --lr-pair-margin-px 8
+```
+
+Optional left/right side-consistency (uses asymmetric anchors like `nose`/`tailbase` to define an axis):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --lr-side-loss-weight 0.10 \
+  --lr-side-loss-margin 0.0
+```
+
 Outputs:
 
 - A new run directory under `ANNOLID_RUNS_ROOT` (or `~/annolid_logs/runs`) such as:

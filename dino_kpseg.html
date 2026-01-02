@@ -52,7 +52,10 @@
 <li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
 <li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">DINOv3 Keypoint Segmentation (DinoKPSEG)</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#training">Training</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#training">Training</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#relational-attention-head">Relational (Attention) Head</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#running-inference-gui">Running Inference (GUI)</a></li>
 </ul>
 </li>
@@ -101,6 +104,32 @@
 <span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
 </pre></div>
 </div>
+<section id="relational-attention-head">
+<h3>Relational (Attention) Head<a class="headerlink" href="#relational-attention-head" title="Link to this heading"></a></h3>
+<p>For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
+When <code class="docutils literal notranslate"><span class="pre">kpt_names</span></code> are available, DinoKPSEG will automatically treat asymmetric keypoints (e.g. <code class="docutils literal notranslate"><span class="pre">nose</span></code>, <code class="docutils literal notranslate"><span class="pre">head</span></code>, <code class="docutils literal notranslate"><span class="pre">tailbase</span></code>)
+as orientation anchors and inject them into other keypoints via cross-attention.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--head-type<span class="w"> </span>attn<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--attn-heads<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--attn-layers<span class="w"> </span><span class="m">2</span>
+</pre></div>
+</div>
+<p>Optional symmetric-pair regularizers (requires <code class="docutils literal notranslate"><span class="pre">flip_idx</span></code> or inferable keypoint names):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lr-pair-loss-weight<span class="w"> </span><span class="m">0</span>.05<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lr-pair-margin-px<span class="w"> </span><span class="m">8</span>
+</pre></div>
+</div>
+<p>Optional left/right side-consistency (uses asymmetric anchors like <code class="docutils literal notranslate"><span class="pre">nose</span></code>/<code class="docutils literal notranslate"><span class="pre">tailbase</span></code> to define an axis):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lr-side-loss-weight<span class="w"> </span><span class="m">0</span>.10<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lr-side-loss-margin<span class="w"> </span><span class="m">0</span>.0
+</pre></div>
+</div>
 <p>Outputs:</p>
 <ul class="simple">
 <li><p>A new run directory under <code class="docutils literal notranslate"><span class="pre">ANNOLID_RUNS_ROOT</span></code> (or <code class="docutils literal notranslate"><span class="pre">~/annolid_logs/runs</span></code>) such as:</p>
@@ -120,6 +149,7 @@
 <span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
 </pre></div>
 </div>
+</section>
 </section>
 <section id="running-inference-gui">
 <h2>Running Inference (GUI)<a class="headerlink" href="#running-inference-gui" title="Link to this heading"></a></h2>
