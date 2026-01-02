@@ -6,6 +6,7 @@ from typing import Any, Dict
 from qtpy import QtCore, QtWidgets
 
 from annolid.utils.devices import get_device
+from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS, PATCH_SIMILARITY_DEFAULT_MODEL
 
 
 YOLO11_TASK_SUFFIXES = {
@@ -37,6 +38,29 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_model_file = "yolo11n-seg.pt"
         self.yolo_device = self._default_yolo_device()
         self.yolo_plots = True
+
+        # DinoKPSEG defaults
+        self.dino_model_name = PATCH_SIMILARITY_DEFAULT_MODEL
+        self.dino_short_side = 768
+        self.dino_layers = "-1"
+        self.dino_radius_px = 6.0
+        self.dino_hidden_dim = 128
+        self.dino_lr = 0.002
+        self.dino_threshold = 0.4
+        self.dino_cache_features = True
+        self.dino_patience = 10
+        self.dino_min_delta = 0.0
+        self.dino_min_epochs = 10
+        self.dino_augment_enabled = False
+        self.dino_hflip_prob = 0.5
+        self.dino_degrees = 0.0
+        self.dino_translate = 0.0
+        self.dino_scale = 0.0
+        self.dino_brightness = 0.0
+        self.dino_contrast = 0.0
+        self.dino_saturation = 0.0
+        self.dino_seed = -1
+        self.dino_tb_add_graph = False
 
         # YOLO hyperparams (Advanced tab)
         self.yolo_lr0 = 0.01
@@ -95,6 +119,11 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.radio_btn_yolo = QtWidgets.QRadioButton("YOLO", self.groupBoxAlgo)
         self.radio_btn_yolo.toggled.connect(self.on_radio_button_checked)
         row.addWidget(self.radio_btn_yolo)
+
+        self.radio_btn_dino_kpseg = QtWidgets.QRadioButton(
+            "DINO KPSEG", self.groupBoxAlgo)
+        self.radio_btn_dino_kpseg.toggled.connect(self.on_radio_button_checked)
+        row.addWidget(self.radio_btn_dino_kpseg)
 
         row.addStretch(1)
 
@@ -177,6 +206,40 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_size_combo.setCurrentText("N")
         self.update_yolo_model_filename()
 
+    def _build_dino_model_selector(self) -> None:
+        self.dino_model_groupbox = QtWidgets.QGroupBox("DINO Backbone", self)
+        form = QtWidgets.QFormLayout(self.dino_model_groupbox)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        self.dino_model_combo = QtWidgets.QComboBox(self.dino_model_groupbox)
+        for cfg in PATCH_SIMILARITY_MODELS:
+            self.dino_model_combo.addItem(cfg.display_name, cfg.identifier)
+        idx = self.dino_model_combo.findData(self.dino_model_name)
+        if idx >= 0:
+            self.dino_model_combo.setCurrentIndex(idx)
+        self.dino_model_combo.currentIndexChanged.connect(
+            lambda _=None: setattr(self, "dino_model_name", str(
+                self.dino_model_combo.currentData() or "").strip())
+        )
+
+        short_side = QtWidgets.QSpinBox(self.dino_model_groupbox)
+        short_side.setRange(224, 2048)
+        short_side.setSingleStep(32)
+        short_side.setValue(int(self.dino_short_side))
+        short_side.valueChanged.connect(
+            lambda v: setattr(self, "dino_short_side", int(v)))
+
+        layers = QtWidgets.QLineEdit(self.dino_model_groupbox)
+        layers.setPlaceholderText("-1 or -2,-1")
+        layers.setText(str(self.dino_layers))
+        layers.textChanged.connect(
+            lambda text: setattr(self, "dino_layers", str(text).strip())
+        )
+
+        form.addRow("Model", self.dino_model_combo)
+        form.addRow("Short side", short_side)
+        form.addRow("Layers", layers)
+
     def _default_yolo_device(self) -> str:
         device = str(get_device() or "cpu").strip().lower()
         if device == "cuda":
@@ -257,6 +320,8 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._io_form.addRow(self._io_out_label, self._io_out_row)
 
         grid.addWidget(self.yolo_model_groupbox, 0, 0, 1, 2)
+        self._build_dino_model_selector()
+        grid.addWidget(self.dino_model_groupbox, 0, 0, 1, 2)
         grid.addWidget(self.training_groupbox, 1, 0, 1, 1)
         grid.addWidget(self.io_groupbox, 1, 1, 1, 1)
 
@@ -271,10 +336,20 @@ class TrainModelDialog(QtWidgets.QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
 
         self.yolo_hyperparams_groupbox = self._build_yolo_hyperparams_groupbox()
+
+        self.dino_hyperparams_groupbox = self._build_dino_hyperparams_groupbox()
+        self.dino_augment_groupbox = self._build_dino_augment_groupbox()
         scroll = QtWidgets.QScrollArea(self.advanced_tab)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setWidget(self.yolo_hyperparams_groupbox)
+        container = QtWidgets.QWidget(self.advanced_tab)
+        stack = QtWidgets.QVBoxLayout(container)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.addWidget(self.yolo_hyperparams_groupbox)
+        stack.addWidget(self.dino_hyperparams_groupbox)
+        stack.addWidget(self.dino_augment_groupbox)
+        stack.addStretch(1)
+        scroll.setWidget(container)
         layout.addWidget(scroll)
 
     def _build_buttons(self) -> None:
@@ -307,30 +382,49 @@ class TrainModelDialog(QtWidgets.QDialog):
 
     def update_ui_for_algorithm(self):
         yolo_selected = self.algo == "YOLO"
+        dino_selected = self.algo == "DINO KPSEG"
+        classic_selected = not (yolo_selected or dino_selected)
 
         self.yolo_model_groupbox.setVisible(yolo_selected)
-        self.tabs.setTabEnabled(1, bool(yolo_selected))
+        self.dino_model_groupbox.setVisible(dino_selected)
+        self.tabs.setTabEnabled(1, bool(yolo_selected or dino_selected))
+        self.yolo_hyperparams_groupbox.setVisible(yolo_selected)
+        self.dino_hyperparams_groupbox.setVisible(dino_selected)
+        self.dino_augment_groupbox.setVisible(dino_selected)
 
         # Training form rows
         self._set_form_row_visible(
-            self._training_form, self.yolo_device_combo, yolo_selected)
+            self._training_form, self.yolo_device_combo, yolo_selected or dino_selected)
         self._set_form_row_visible(
             self._training_form, self.imgsz_spin, yolo_selected)
         self._set_form_row_visible(
-            self._training_form, self.epochs_spin, yolo_selected)
+            self._training_form, self.epochs_spin, yolo_selected or dino_selected)
         self._set_form_row_visible(
-            self._training_form, self.max_iter_spin, not yolo_selected)
+            self._training_form, self.max_iter_spin, classic_selected)
         self._set_form_row_visible(
             self._training_form, self.yolo_plots_checkbox, yolo_selected)
 
+        # Batch size: DinoKPSEG currently trains with batch_size=1 (variable feature grids).
+        if dino_selected:
+            self.batch_spin.setValue(1)
+            self.batch_spin.setEnabled(False)
+        else:
+            self.batch_spin.setEnabled(True)
+
         # IO labels
         self._io_config_label.setText(
-            "Dataset YAML" if yolo_selected else "Config file")
+            "Dataset YAML" if (yolo_selected or dino_selected) else "Config file")
         self._io_model_label.setText(
             "Resume from (.pt)" if yolo_selected else "Model weights (.pt)")
 
         self.configFileButton.setText(
-            "Browse YAML…" if yolo_selected else "Browse…")
+            "Browse YAML…" if (yolo_selected or dino_selected) else "Browse…")
+
+        # Resume row only for YOLO / classic trainers.
+        self._set_form_row_visible(
+            self._io_form, self._io_model_row, bool(yolo_selected))
+
+        self._update_dino_augment_enabled_state()
 
     def update_yolo_model_filename(self):
         task_text = self.yolo_task_combo.currentText()
@@ -347,7 +441,7 @@ class TrainModelDialog(QtWidgets.QDialog):
     def on_config_file_button_clicked(self):
         file_dialog = QtWidgets.QFileDialog(self)
         file_dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
-        if self.algo == "YOLO":
+        if self.algo in {"YOLO", "DINO KPSEG"}:
             file_dialog.setNameFilter("YAML files (*.yaml *.yml)")
         else:
             file_dialog.setNameFilter("All files (*)")
@@ -460,9 +554,195 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("", cos_lr)
         return box
 
+    def _build_dino_hyperparams_groupbox(self) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox("DINO KPSEG Hyperparameters", self)
+        form = QtWidgets.QFormLayout(box)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        lr = QtWidgets.QDoubleSpinBox(box)
+        lr.setDecimals(6)
+        lr.setRange(1e-6, 1.0)
+        lr.setSingleStep(0.0005)
+        lr.setValue(float(self.dino_lr))
+        lr.valueChanged.connect(lambda v: setattr(self, "dino_lr", float(v)))
+
+        radius = QtWidgets.QDoubleSpinBox(box)
+        radius.setDecimals(2)
+        radius.setRange(1.0, 64.0)
+        radius.setSingleStep(0.5)
+        radius.setValue(float(self.dino_radius_px))
+        radius.valueChanged.connect(
+            lambda v: setattr(self, "dino_radius_px", float(v)))
+
+        hidden = QtWidgets.QSpinBox(box)
+        hidden.setRange(16, 2048)
+        hidden.setSingleStep(16)
+        hidden.setValue(int(self.dino_hidden_dim))
+        hidden.valueChanged.connect(
+            lambda v: setattr(self, "dino_hidden_dim", int(v)))
+
+        thr = QtWidgets.QDoubleSpinBox(box)
+        thr.setDecimals(3)
+        thr.setRange(0.01, 0.99)
+        thr.setSingleStep(0.01)
+        thr.setValue(float(self.dino_threshold))
+        thr.valueChanged.connect(
+            lambda v: setattr(self, "dino_threshold", float(v)))
+
+        cache = QtWidgets.QCheckBox("Cache frozen DINO features to disk", box)
+        cache.setChecked(bool(self.dino_cache_features))
+        cache.stateChanged.connect(lambda _=None: setattr(
+            self, "dino_cache_features", bool(cache.isChecked())))
+
+        tb_graph = QtWidgets.QCheckBox(
+            "Log model graph to TensorBoard (slow)", box)
+        tb_graph.setChecked(bool(self.dino_tb_add_graph))
+        tb_graph.stateChanged.connect(lambda _=None: setattr(
+            self, "dino_tb_add_graph", bool(tb_graph.isChecked())))
+
+        patience = QtWidgets.QSpinBox(box)
+        patience.setRange(0, 1000)
+        patience.setValue(int(self.dino_patience))
+        patience.valueChanged.connect(
+            lambda v: setattr(self, "dino_patience", int(v)))
+
+        min_delta = QtWidgets.QDoubleSpinBox(box)
+        min_delta.setDecimals(6)
+        min_delta.setRange(0.0, 1.0)
+        min_delta.setSingleStep(0.0001)
+        min_delta.setValue(float(self.dino_min_delta))
+        min_delta.valueChanged.connect(
+            lambda v: setattr(self, "dino_min_delta", float(v)))
+
+        min_epochs = QtWidgets.QSpinBox(box)
+        min_epochs.setRange(0, 1000)
+        min_epochs.setValue(int(self.dino_min_epochs))
+        min_epochs.valueChanged.connect(
+            lambda v: setattr(self, "dino_min_epochs", int(v)))
+
+        form.addRow("Learning rate", lr)
+        form.addRow("Circle radius (px)", radius)
+        form.addRow("Head hidden dim", hidden)
+        form.addRow("Mask threshold", thr)
+        form.addRow("Early stop patience (0=off)", patience)
+        form.addRow("Early stop min delta", min_delta)
+        form.addRow("Early stop min epochs", min_epochs)
+        form.addRow("", tb_graph)
+        form.addRow("", cache)
+        return box
+
+    def _build_dino_augment_groupbox(self) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox("DINO KPSEG Augmentations", self)
+        form = QtWidgets.QFormLayout(box)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        enable = QtWidgets.QCheckBox(
+            "Enable YOLO-like pose augmentations", box)
+        enable.setChecked(bool(self.dino_augment_enabled))
+        enable.stateChanged.connect(
+            lambda _=None: setattr(
+                self, "dino_augment_enabled", bool(enable.isChecked()))
+        )
+        enable.stateChanged.connect(
+            lambda _=None: self._update_dino_augment_enabled_state())
+
+        hflip = QtWidgets.QDoubleSpinBox(box)
+        hflip.setDecimals(3)
+        hflip.setRange(0.0, 1.0)
+        hflip.setSingleStep(0.05)
+        hflip.setValue(float(self.dino_hflip_prob))
+        hflip.valueChanged.connect(lambda v: setattr(
+            self, "dino_hflip_prob", float(v)))
+
+        degrees = QtWidgets.QDoubleSpinBox(box)
+        degrees.setDecimals(2)
+        degrees.setRange(0.0, 45.0)
+        degrees.setSingleStep(1.0)
+        degrees.setValue(float(self.dino_degrees))
+        degrees.valueChanged.connect(
+            lambda v: setattr(self, "dino_degrees", float(v)))
+
+        translate = QtWidgets.QDoubleSpinBox(box)
+        translate.setDecimals(3)
+        translate.setRange(0.0, 0.5)
+        translate.setSingleStep(0.01)
+        translate.setValue(float(self.dino_translate))
+        translate.valueChanged.connect(
+            lambda v: setattr(self, "dino_translate", float(v)))
+
+        scale = QtWidgets.QDoubleSpinBox(box)
+        scale.setDecimals(3)
+        scale.setRange(0.0, 0.9)
+        scale.setSingleStep(0.01)
+        scale.setValue(float(self.dino_scale))
+        scale.valueChanged.connect(
+            lambda v: setattr(self, "dino_scale", float(v)))
+
+        brightness = QtWidgets.QDoubleSpinBox(box)
+        brightness.setDecimals(3)
+        brightness.setRange(0.0, 1.0)
+        brightness.setSingleStep(0.01)
+        brightness.setValue(float(self.dino_brightness))
+        brightness.valueChanged.connect(
+            lambda v: setattr(self, "dino_brightness", float(v)))
+
+        contrast = QtWidgets.QDoubleSpinBox(box)
+        contrast.setDecimals(3)
+        contrast.setRange(0.0, 1.0)
+        contrast.setSingleStep(0.01)
+        contrast.setValue(float(self.dino_contrast))
+        contrast.valueChanged.connect(
+            lambda v: setattr(self, "dino_contrast", float(v)))
+
+        saturation = QtWidgets.QDoubleSpinBox(box)
+        saturation.setDecimals(3)
+        saturation.setRange(0.0, 1.0)
+        saturation.setSingleStep(0.01)
+        saturation.setValue(float(self.dino_saturation))
+        saturation.valueChanged.connect(
+            lambda v: setattr(self, "dino_saturation", float(v)))
+
+        seed = QtWidgets.QSpinBox(box)
+        seed.setRange(-1, 2_147_483_647)
+        seed.setValue(int(self.dino_seed))
+        seed.valueChanged.connect(lambda v: setattr(self, "dino_seed", int(v)))
+
+        self._dino_augment_controls = [
+            hflip,
+            degrees,
+            translate,
+            scale,
+            brightness,
+            contrast,
+            saturation,
+            seed,
+        ]
+
+        form.addRow("", enable)
+        form.addRow("HFlip prob", hflip)
+        form.addRow("Rotate degrees", degrees)
+        form.addRow("Translate (frac)", translate)
+        form.addRow("Scale (frac)", scale)
+        form.addRow("Brightness", brightness)
+        form.addRow("Contrast", contrast)
+        form.addRow("Saturation", saturation)
+        form.addRow("Seed (-1=random)", seed)
+        return box
+
+    def _update_dino_augment_enabled_state(self) -> None:
+        enabled = bool(getattr(self, "dino_augment_enabled", False))
+        controls = getattr(self, "_dino_augment_controls", None)
+        if not controls:
+            return
+        for widget in controls:
+            try:
+                widget.setEnabled(enabled)
+            except Exception:
+                pass
+
     # -------------------- Accept
     def accept(self) -> None:
-        if self.algo == "YOLO" and not self.config_file:
+        if self.algo in {"YOLO", "DINO KPSEG"} and not self.config_file:
             QtWidgets.QMessageBox.warning(
                 self, "Error", "Please select a dataset YAML file.")
             return

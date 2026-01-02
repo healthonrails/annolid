@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -7,12 +7,11 @@ from torch.utils.data import DataLoader, random_split
 import os
 import argparse
 from annolid.behavior.data_loading.datasets import BehaviorDataset
-from annolid.behavior.data_loading.transforms import IdentityTransform, ResizeCenterCropNormalize
-from annolid.behavior.models.classifier import BehaviorClassifier
-from annolid.behavior.models.feature_extractors import (
-    CLIPFeatureExtractor,
-    Dinov3BehaviorFeatureExtractor,
-    ResNetFeatureExtractor,
+from annolid.behavior.pipeline import (
+    BACKBONE_CHOICES,
+    DEFAULT_DINOV3_MODEL,
+    build_classifier,
+    build_transform,
 )
 from torch.utils.tensorboard import SummaryWriter  # Import TensorBoard
 
@@ -27,41 +26,6 @@ VALIDATION_SPLIT = 0.2  # Proportion of the dataset to use for validation
 TENSORBOARD_LOG_DIR = "runs"  # Directory for TensorBoard logs
 
 logger = logging.getLogger(__name__)
-
-BACKBONE_CHOICES = ("clip", "resnet18", "dinov3")
-DEFAULT_DINOV3_MODEL = "facebook/dinov3-vits16-pretrain-lvd1689m"
-
-
-def build_feature_extractor(
-    backbone: str,
-    device: torch.device,
-    *,
-    dinov3_model: str,
-    feature_dim: Optional[int],
-    unfreeze_dino: bool,
-) -> Tuple[nn.Module, int]:
-    """Factory for feature extractors."""
-    if backbone == "clip":
-        extractor = CLIPFeatureExtractor()
-        if feature_dim is not None and feature_dim != extractor.feature_dim:
-            raise ValueError(
-                "CLIP backbone does not support overriding feature_dim.")
-        return extractor.to(device), extractor.feature_dim
-    if backbone == "resnet18":
-        target_dim = feature_dim or 512
-        extractor = ResNetFeatureExtractor(feature_dim=target_dim)
-        return extractor.to(device), extractor.feature_dim
-    if backbone == "dinov3":
-        target_dim = feature_dim or 768
-        extractor = Dinov3BehaviorFeatureExtractor(
-            model_name=dinov3_model,
-            feature_dim=target_dim,
-            freeze=not unfreeze_dino,
-            device=device.type,
-        )
-        return extractor.to(device), extractor.feature_dim
-    raise ValueError(
-        f"Unsupported backbone '{backbone}'. Valid options: {BACKBONE_CHOICES}")
 
 
 def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, criterion, checkpoint_dir, writer):
@@ -181,8 +145,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    transform = IdentityTransform(
-    ) if args.feature_backbone == "dinov3" else ResizeCenterCropNormalize()
+    transform = build_transform(args.feature_backbone)
 
     try:
         dataset = BehaviorDataset(args.video_folder, transform=transform)
@@ -202,19 +165,15 @@ def main():
     val_loader = DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    feature_extractor, backbone_dim = build_feature_extractor(
-        args.feature_backbone,
-        device,
+    model = build_classifier(
+        num_classes=num_of_classes,
+        backbone=args.feature_backbone,
+        device=device,
         dinov3_model=args.dinov3_model_name,
         feature_dim=args.feature_dim,
-        unfreeze_dino=args.unfreeze_dinov3,
+        transformer_dim=args.transformer_dim,
+        unfreeze_dinov3=bool(args.unfreeze_dinov3),
     )
-    model = BehaviorClassifier(
-        feature_extractor,
-        num_classes=num_of_classes,
-        d_model=args.transformer_dim,
-        feature_dim=backbone_dim,
-    ).to(device)
     print(model)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)

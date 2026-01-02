@@ -8,7 +8,6 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torchvision.transforms.functional as TF
 from PIL import Image, ImageOps
 try:  # transformers is an optional dependency
     from transformers import AutoImageProcessor, AutoModel
@@ -214,9 +213,26 @@ class Dinov3FeatureExtractor:
 
     def _preprocess(self, pil: Image.Image) -> torch.Tensor:
         new_h, new_w = self._compute_resized_hw(*pil.size)
-        x = TF.to_tensor(pil).unsqueeze(0)
-        x = TF.resize(x, size=[new_h, new_w], antialias=True)
-        x = TF.normalize(x, mean=self._mean, std=self._std)
+        # Use a writable, contiguous array to avoid undefined behavior warnings
+        # (and potential low-level crashes on some builds).
+        arr = np.array(pil, dtype=np.uint8, copy=True)
+        if arr.ndim != 3 or arr.shape[2] < 3:
+            raise ValueError("Expected HxWx3 image for preprocessing")
+        arr = arr[..., :3]
+        x = torch.from_numpy(arr).permute(
+            2, 0, 1).to(dtype=torch.float32) / 255.0
+        x = x.unsqueeze(0)  # NCHW
+
+        kwargs = {"mode": "bilinear", "align_corners": False}
+        try:
+            x = F.interpolate(x, size=(int(new_h), int(new_w)),
+                              antialias=True, **kwargs)  # type: ignore[arg-type]
+        except TypeError:
+            x = F.interpolate(x, size=(int(new_h), int(new_w)), **kwargs)
+
+        mean = torch.tensor(self._mean, dtype=torch.float32).view(1, 3, 1, 1)
+        std = torch.tensor(self._std, dtype=torch.float32).view(1, 3, 1, 1)
+        x = (x - mean) / std
         return x.to(self.device, non_blocking=True)
 
     # --------------------------
@@ -255,23 +271,30 @@ class Dinov3FeatureExtractor:
 
         ret_mode = return_layer or self.cfg.return_layer
 
+        # Requesting all hidden states is expensive (and can OOM on MPS).
+        # Only do it when we actually need intermediate layers.
+        need_hidden_states = True
+        if ret_mode == "last":
+            # If the only requested layer is the last transformer block, we can
+            # use `last_hidden_state` directly.
+            resolved = []
+            for layer_idx in self._layers:
+                resolved_idx = layer_idx
+                if layer_idx < 0:
+                    resolved_idx = self.num_hidden_layers + layer_idx
+                resolved.append(int(resolved_idx))
+            if resolved and set(resolved) == {int(self.num_hidden_layers - 1)}:
+                need_hidden_states = False
+
         with torch.autocast(device_type=autocast_device, enabled=use_amp):
             outputs = self.model(
                 pixel_values=x,
-                output_hidden_states=True,
+                output_hidden_states=bool(need_hidden_states),
             )
 
-        hidden_states = outputs.hidden_states  # (num_layers + 1) tensors
         selected_grids = []
-        num_layers = len(hidden_states) - 1
-        for layer_idx in self._layers:
-            resolved_idx = layer_idx
-            if layer_idx < 0:
-                resolved_idx = num_layers + layer_idx
-            if resolved_idx < 0 or resolved_idx >= num_layers:
-                raise IndexError(
-                    f"Requested layer {layer_idx} outside available range -{num_layers}..{num_layers - 1}")
-            tokens = hidden_states[resolved_idx + 1]
+        if not need_hidden_states:
+            tokens = outputs.last_hidden_state
             grid = self._tokens_to_grid(
                 tokens,
                 spatial_hw=(x.shape[-2], x.shape[-1]),
@@ -279,6 +302,25 @@ class Dinov3FeatureExtractor:
                 normalize=normalize,
             )
             selected_grids.append(grid)
+        else:
+            hidden_states = outputs.hidden_states  # (num_layers + 1) tensors
+            selected_grids = []
+            num_layers = len(hidden_states) - 1
+            for layer_idx in self._layers:
+                resolved_idx = layer_idx
+                if layer_idx < 0:
+                    resolved_idx = num_layers + layer_idx
+                if resolved_idx < 0 or resolved_idx >= num_layers:
+                    raise IndexError(
+                        f"Requested layer {layer_idx} outside available range -{num_layers}..{num_layers - 1}")
+                tokens = hidden_states[resolved_idx + 1]
+                grid = self._tokens_to_grid(
+                    tokens,
+                    spatial_hw=(x.shape[-2], x.shape[-1]),
+                    detach=True,
+                    normalize=normalize,
+                )
+                selected_grids.append(grid)
 
         if not selected_grids:
             raise RuntimeError("No layers selected for feature extraction")
@@ -357,7 +399,12 @@ class Dinov3FeatureExtractor:
         # Resize to match feature grid snaps
         h, w = mask.shape[:2]
         new_h, new_w = self._compute_resized_hw(w, h)
-        tens = TF.resize(tens, size=[new_h, new_w], antialias=True)
+        kwargs = {"mode": "bilinear", "align_corners": False}
+        try:
+            tens = F.interpolate(tens, size=(int(new_h), int(
+                new_w)), antialias=True, **kwargs)  # type: ignore[arg-type]
+        except TypeError:
+            tens = F.interpolate(tens, size=(int(new_h), int(new_w)), **kwargs)
 
         # Average into patch cells
         q = self._patch_quant_filter.to(tens.device)(tens)

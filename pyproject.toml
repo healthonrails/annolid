@@ -76,6 +76,7 @@ Repository = "https://github.com/healthonrails/annolid"
 
 [project.scripts]
 annolid = "annolid.gui.launcher:main"
+annolid-run = "annolid.engine.cli:main"
 
 [tool.setuptools.packages.find]
 # This automatically finds your packages, same as setuptools.find_packages()

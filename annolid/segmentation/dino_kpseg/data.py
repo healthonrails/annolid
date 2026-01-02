@@ -1,0 +1,690 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import numpy as np
+import torch
+import yaml
+from PIL import Image, ImageOps
+
+from annolid.features import Dinov3Config, Dinov3FeatureExtractor
+from annolid.segmentation.dino_kpseg.keypoints import infer_flip_idx_from_names
+
+
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
+
+def _resolve_yaml_path(value: str, *, yaml_path: Path) -> Path:
+    path = Path(str(value)).expanduser()
+    if path.is_absolute():
+        return path
+    return (yaml_path.parent / path).resolve()
+
+
+def _yolo_list_images(images_root: Path) -> List[Path]:
+    if not images_root.exists():
+        return []
+    paths: List[Path] = []
+    for suffix in _IMAGE_SUFFIXES:
+        paths.extend(sorted(images_root.rglob(f"*{suffix}")))
+    return paths
+
+
+def _image_to_label_path(image_path: Path) -> Path:
+    parts = list(image_path.parts)
+    try:
+        idx = parts.index("images")
+        parts[idx] = "labels"
+    except ValueError:
+        pass
+    label_path = Path(*parts).with_suffix(".txt")
+    return label_path
+
+
+@dataclass(frozen=True)
+class YoloPoseLabelsSummary:
+    images_total: int
+    label_files_found: int
+    images_with_pose_instances: int
+    pose_instances_total: int
+    invalid_lines_total: int
+    example_issues: List[str]
+
+
+def summarize_yolo_pose_labels(
+    image_paths: Iterable[Path],
+    *,
+    kpt_count: int,
+    kpt_dims: int,
+    max_issues: int = 10,
+) -> YoloPoseLabelsSummary:
+    """Lightweight integrity check for a YOLO pose dataset."""
+    total = 0
+    label_found = 0
+    images_with_instances = 0
+    instances_total = 0
+    invalid_lines = 0
+    issues: List[str] = []
+
+    for image_path in image_paths:
+        total += 1
+        label_path = _image_to_label_path(Path(image_path))
+        if not label_path.exists():
+            if len(issues) < int(max_issues):
+                issues.append(f"Missing label file: {label_path}")
+            continue
+        label_found += 1
+        try:
+            lines = label_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            if len(issues) < int(max_issues):
+                issues.append(f"Unreadable label file: {label_path}")
+            continue
+
+        valid_instances = 0
+        for line in lines:
+            tokens = str(line).strip().split()
+            if not tokens:
+                continue
+            kpts = _parse_yolo_pose_line(
+                tokens, kpt_count=int(kpt_count), dims=int(kpt_dims))
+            if kpts is None:
+                invalid_lines += 1
+                continue
+            valid_instances += 1
+        if valid_instances <= 0:
+            if len(issues) < int(max_issues):
+                issues.append(f"No pose instances in: {label_path}")
+            continue
+        images_with_instances += 1
+        instances_total += valid_instances
+
+    return YoloPoseLabelsSummary(
+        images_total=int(total),
+        label_files_found=int(label_found),
+        images_with_pose_instances=int(images_with_instances),
+        pose_instances_total=int(instances_total),
+        invalid_lines_total=int(invalid_lines),
+        example_issues=issues,
+    )
+
+
+def _parse_yolo_pose_line(tokens: List[str], *, kpt_count: int, dims: int) -> Optional[np.ndarray]:
+    # YOLO pose format: cls x y w h (kpt_count * dims)
+    start = 5
+    required = start + kpt_count * dims
+    if len(tokens) < required:
+        return None
+    raw = tokens[start:required]
+    try:
+        values = [float(v) for v in raw]
+    except ValueError:
+        return None
+
+    values = np.asarray(values, dtype=np.float32).reshape(kpt_count, dims)
+    if dims == 2:
+        xy = values
+        vis = np.ones((kpt_count, 1), dtype=np.float32) * 2.0
+        return np.concatenate([xy, vis], axis=1)
+    if dims >= 3:
+        return values[:, :3].astype(np.float32, copy=False)
+    return None
+
+
+def _union_keypoint_masks(
+    keypoints_instances: Iterable[np.ndarray],
+    *,
+    grid_hw: Tuple[int, int],
+    patch_size: int,
+    resized_hw_px: Tuple[int, int],
+    radius_px: float,
+    original_hw_px: Tuple[int, int],
+) -> torch.Tensor:
+    kpt_instances = list(keypoints_instances)
+    if not kpt_instances:
+        raise ValueError("Expected at least one keypoint instance array")
+
+    kpt_count = int(kpt_instances[0].shape[0])
+    h_p, w_p = int(grid_hw[0]), int(grid_hw[1])
+    resized_h, resized_w = int(resized_hw_px[0]), int(resized_hw_px[1])
+    orig_h, orig_w = int(original_hw_px[0]), int(original_hw_px[1])
+
+    scale = 0.5 * ((resized_w / max(1, orig_w)) + (resized_h / max(1, orig_h)))
+    radius_res = max(1.0, float(radius_px) * float(scale))
+    radius2 = radius_res * radius_res
+
+    x_centers = (np.arange(w_p, dtype=np.float32) + 0.5) * float(patch_size)
+    y_centers = (np.arange(h_p, dtype=np.float32) + 0.5) * float(patch_size)
+    yy = y_centers[:, None]
+    xx = x_centers[None, :]
+
+    masks = np.zeros((kpt_count, h_p, w_p), dtype=np.float32)
+    for keypoints in kpt_instances:
+        if keypoints.shape[0] != kpt_count:
+            continue
+        for k in range(kpt_count):
+            x_norm, y_norm, v = keypoints[k].tolist()
+            if v <= 0:
+                continue
+            x_res = float(x_norm) * float(resized_w)
+            y_res = float(y_norm) * float(resized_h)
+            dist2 = (xx - x_res) ** 2 + (yy - y_res) ** 2
+            masks[k] = np.maximum(
+                masks[k], (dist2 <= radius2).astype(np.float32))
+    return torch.from_numpy(masks)
+
+
+@dataclass(frozen=True)
+class YoloPoseDatasetSpec:
+    root: Path
+    train_images: List[Path]
+    val_images: List[Path]
+    kpt_count: int
+    kpt_dims: int
+    keypoint_names: Optional[List[str]]
+    flip_idx: Optional[List[int]]
+
+
+def load_yolo_pose_spec(data_yaml: Path) -> YoloPoseDatasetSpec:
+    payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid YAML: {data_yaml}")
+
+    root = payload.get("path")
+    if root:
+        root_path = _resolve_yaml_path(str(root), yaml_path=data_yaml)
+    else:
+        root_path = data_yaml.parent
+
+    train_val: Dict[str, List[Path]] = {}
+    for split in ("train", "val"):
+        split_value = payload.get(split)
+        if not split_value:
+            train_val[split] = []
+            continue
+        split_path = _resolve_yaml_path(str(split_value), yaml_path=data_yaml)
+        if not split_path.is_absolute():
+            split_path = (root_path / split_path).resolve()
+        train_val[split] = _yolo_list_images(split_path)
+
+    kpt_shape = payload.get("kpt_shape") or []
+    if not isinstance(kpt_shape, (list, tuple)) or len(kpt_shape) < 2:
+        raise ValueError("data.yaml missing kpt_shape for pose dataset")
+    kpt_count = int(kpt_shape[0])
+    kpt_dims = int(kpt_shape[1])
+
+    keypoint_names = None
+    kpt_names = payload.get("kpt_names")
+    if isinstance(kpt_names, dict) and kpt_names:
+        if 0 in kpt_names:
+            names = kpt_names.get(0)
+        elif "0" in kpt_names:
+            names = kpt_names.get("0")
+        else:
+            names = next(iter(kpt_names.values()))
+        if isinstance(names, list):
+            cleaned = [str(k).strip() for k in names if str(k).strip()]
+            if cleaned:
+                keypoint_names = cleaned
+
+    if keypoint_names is None:
+        kpt_labels = payload.get("kpt_labels")
+        if isinstance(kpt_labels, dict) and kpt_labels:
+            names_by_idx: Dict[int, str] = {}
+            for key, value in kpt_labels.items():
+                try:
+                    idx = int(key)
+                except Exception:
+                    continue
+                label = str(value or "").strip()
+                if label:
+                    names_by_idx[idx] = label
+            if names_by_idx:
+                ordered = [names_by_idx.get(i, "") for i in range(kpt_count)]
+                if all(ordered):
+                    keypoint_names = ordered
+
+    flip_idx = None
+    raw_flip = payload.get("flip_idx")
+    if isinstance(raw_flip, (list, tuple)) and raw_flip:
+        try:
+            candidate = [int(v) for v in raw_flip]
+        except Exception:
+            candidate = None
+        if candidate and len(candidate) == kpt_count:
+            flip_idx = candidate
+    if flip_idx is None and keypoint_names:
+        inferred = _infer_flip_idx_from_names(
+            keypoint_names, kpt_count=kpt_count)
+        if inferred is not None:
+            flip_idx = inferred
+
+    return YoloPoseDatasetSpec(
+        root=root_path,
+        train_images=train_val["train"],
+        val_images=train_val["val"],
+        kpt_count=kpt_count,
+        kpt_dims=kpt_dims,
+        keypoint_names=keypoint_names,
+        flip_idx=flip_idx,
+    )
+
+
+def _infer_flip_idx_from_names(names: List[str], *, kpt_count: int) -> Optional[List[int]]:
+    # Backwards-compatible wrapper for older imports/tests.
+    return infer_flip_idx_from_names(names, kpt_count=int(kpt_count))
+
+
+@dataclass(frozen=True)
+class DinoKPSEGAugmentConfig:
+    """YOLO-style, lightweight pose augmentations.
+
+    Note: This intentionally avoids mosaic/mixup to keep geometry and feature extraction simple.
+    """
+
+    enabled: bool = False
+    hflip_prob: float = 0.5
+    degrees: float = 0.0
+    translate: float = 0.0
+    scale: float = 0.0
+    brightness: float = 0.0
+    contrast: float = 0.0
+    saturation: float = 0.0
+    seed: Optional[int] = None
+
+
+def _pil_color_jitter(
+    pil: Image.Image,
+    *,
+    rng: np.random.Generator,
+    brightness: float,
+    contrast: float,
+    saturation: float,
+) -> Image.Image:
+    if brightness <= 0 and contrast <= 0 and saturation <= 0:
+        return pil
+
+    from PIL import ImageEnhance
+
+    out = pil
+    if brightness > 0:
+        out = ImageEnhance.Brightness(out).enhance(
+            float(rng.uniform(1.0 - brightness, 1.0 + brightness)))
+    if contrast > 0:
+        out = ImageEnhance.Contrast(out).enhance(
+            float(rng.uniform(1.0 - contrast, 1.0 + contrast)))
+    if saturation > 0:
+        out = ImageEnhance.Color(out).enhance(
+            float(rng.uniform(1.0 - saturation, 1.0 + saturation)))
+    return out
+
+
+def _affine_matrix(
+    *,
+    width: int,
+    height: int,
+    rng: np.random.Generator,
+    degrees: float,
+    translate: float,
+    scale: float,
+) -> Optional[np.ndarray]:
+    if degrees <= 0 and translate <= 0 and scale <= 0:
+        return None
+
+    angle = float(rng.uniform(-degrees, degrees)) if degrees > 0 else 0.0
+    sc = float(rng.uniform(1.0 - scale, 1.0 + scale)) if scale > 0 else 1.0
+    tx = float(rng.uniform(-translate, translate)
+               * width) if translate > 0 else 0.0
+    ty = float(rng.uniform(-translate, translate)
+               * height) if translate > 0 else 0.0
+
+    cx = 0.5 * float(width)
+    cy = 0.5 * float(height)
+    rad = np.deg2rad(angle)
+    c = float(np.cos(rad))
+    s = float(np.sin(rad))
+
+    m = np.array(
+        [
+            [c * sc, -s * sc, 0.0],
+            [s * sc, c * sc, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    t1 = np.array([[1.0, 0.0, -cx], [0.0, 1.0, -cy],
+                  [0.0, 0.0, 1.0]], dtype=np.float32)
+    t2 = np.array([[1.0, 0.0, cx + tx], [0.0, 1.0, cy + ty],
+                  [0.0, 0.0, 1.0]], dtype=np.float32)
+    return (t2 @ m @ t1).astype(np.float32, copy=False)
+
+
+def _apply_affine_to_keypoints(
+    keypoints_instances: List[np.ndarray],
+    *,
+    width: int,
+    height: int,
+    m: np.ndarray,
+) -> List[np.ndarray]:
+    out: List[np.ndarray] = []
+    for kpts in keypoints_instances:
+        if kpts.ndim != 2 or kpts.shape[1] < 3:
+            out.append(kpts)
+            continue
+
+        xy = kpts[:, :2].astype(np.float32, copy=True)
+        v = kpts[:, 2:3].astype(np.float32, copy=True)
+
+        xy[:, 0] *= float(width)
+        xy[:, 1] *= float(height)
+
+        ones = np.ones((xy.shape[0], 1), dtype=np.float32)
+        pts = np.concatenate([xy, ones], axis=1)  # [K,3]
+        pts_t = (pts @ m.T)[:, :2]
+
+        x_norm = pts_t[:, 0] / max(1.0, float(width))
+        y_norm = pts_t[:, 1] / max(1.0, float(height))
+
+        inside = (x_norm >= 0.0) & (x_norm <= 1.0) & (
+            y_norm >= 0.0) & (y_norm <= 1.0)
+        v = np.where(inside[:, None], v, np.zeros_like(v))
+        updated = np.concatenate([x_norm[:, None], y_norm[:, None], v], axis=1).astype(
+            np.float32, copy=False)
+        out.append(updated)
+    return out
+
+
+def _apply_hflip_to_keypoints(
+    keypoints_instances: List[np.ndarray],
+    *,
+    flip_idx: Optional[List[int]],
+) -> List[np.ndarray]:
+    out: List[np.ndarray] = []
+    for kpts in keypoints_instances:
+        if kpts.ndim != 2 or kpts.shape[1] < 2:
+            out.append(kpts)
+            continue
+        updated = kpts.astype(np.float32, copy=True)
+        updated[:, 0] = 1.0 - updated[:, 0]
+        if flip_idx and len(flip_idx) == int(updated.shape[0]):
+            updated = updated[np.asarray(flip_idx, dtype=np.int64)]
+        out.append(updated)
+    return out
+
+
+def _apply_pose_augmentations(
+    pil: Image.Image,
+    keypoints_instances: List[np.ndarray],
+    *,
+    cfg: DinoKPSEGAugmentConfig,
+    flip_idx: Optional[List[int]],
+    rng: np.random.Generator,
+) -> tuple[Image.Image, List[np.ndarray]]:
+    if not cfg.enabled:
+        return pil, keypoints_instances
+
+    width, height = pil.size
+    if width <= 1 or height <= 1:
+        return pil, keypoints_instances
+
+    pil = _pil_color_jitter(
+        pil,
+        rng=rng,
+        brightness=float(cfg.brightness),
+        contrast=float(cfg.contrast),
+        saturation=float(cfg.saturation),
+    )
+
+    m = _affine_matrix(
+        width=width,
+        height=height,
+        rng=rng,
+        degrees=float(cfg.degrees),
+        translate=float(cfg.translate),
+        scale=float(cfg.scale),
+    )
+    if m is not None:
+        try:
+            coeffs = _invert_affine_3x3_to_pil_coeffs(m)
+            pil = pil.transform(
+                (width, height),
+                Image.Transform.AFFINE,
+                coeffs,
+                resample=Image.Resampling.BILINEAR,
+                fillcolor=(114, 114, 114),
+            )
+        except Exception:
+            m = None
+        if m is not None:
+            keypoints_instances = _apply_affine_to_keypoints(
+                keypoints_instances,
+                width=width,
+                height=height,
+                m=m,
+            )
+
+    if float(cfg.hflip_prob) > 0 and float(rng.random()) < float(cfg.hflip_prob):
+        pil = ImageOps.mirror(pil)
+        keypoints_instances = _apply_hflip_to_keypoints(
+            keypoints_instances, flip_idx=flip_idx)
+
+    return pil, keypoints_instances
+
+
+def _invert_affine_3x3_to_pil_coeffs(m: np.ndarray) -> tuple[float, float, float, float, float, float]:
+    """Invert a 3x3 affine matrix (with last row [0,0,1]) and return PIL coeffs.
+
+    PIL expects (a, b, c, d, e, f) mapping output->input:
+      x_in = a*x_out + b*y_out + c
+      y_in = d*x_out + e*y_out + f
+    """
+    mat = np.asarray(m, dtype=np.float64)
+    if mat.shape != (3, 3):
+        raise ValueError("Expected 3x3 matrix")
+    if not np.allclose(mat[2, :], [0.0, 0.0, 1.0], atol=1e-8):
+        raise ValueError("Expected affine matrix with last row [0,0,1]")
+
+    a, b, c = float(mat[0, 0]), float(mat[0, 1]), float(mat[0, 2])
+    d, e, f = float(mat[1, 0]), float(mat[1, 1]), float(mat[1, 2])
+    det = a * e - b * d
+    if abs(det) < 1e-12:
+        raise ValueError("Singular affine matrix")
+
+    inv_a = e / det
+    inv_b = -b / det
+    inv_d = -d / det
+    inv_e = a / det
+    inv_c = (b * f - c * e) / det
+    inv_f = (c * d - a * f) / det
+    return (inv_a, inv_b, inv_c, inv_d, inv_e, inv_f)
+
+
+class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
+    """Dataset yielding frozen DINO features + circular keypoint masks at patch resolution."""
+
+    def __init__(
+        self,
+        image_paths: List[Path],
+        *,
+        kpt_count: int,
+        kpt_dims: int,
+        radius_px: float,
+        extractor: Dinov3FeatureExtractor,
+        flip_idx: Optional[List[int]] = None,
+        augment: Optional[DinoKPSEGAugmentConfig] = None,
+        cache_dir: Optional[Path] = None,
+        cache_dtype: torch.dtype = torch.float16,
+        return_images: bool = False,
+    ) -> None:
+        self.image_paths = list(image_paths)
+        self.kpt_count = int(kpt_count)
+        self.kpt_dims = int(kpt_dims)
+        self.radius_px = float(radius_px)
+        self.extractor = extractor
+        self.flip_idx = list(flip_idx) if flip_idx else None
+        self.augment = augment or DinoKPSEGAugmentConfig(enabled=False)
+        self.rng = np.random.default_rng(self.augment.seed)
+        self.return_images = bool(return_images)
+
+        # Feature caching is incompatible with random image augmentations.
+        self.cache_dir = None if self.augment.enabled else cache_dir
+        self.cache_dtype = cache_dtype
+
+        if self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def __len__(self) -> int:  # pragma: no cover - trivial
+        return len(self.image_paths)
+
+    def _cache_path(self, image_path: Path) -> Path:
+        assert self.cache_dir is not None
+        # Cache key must include extractor config; otherwise switching DINO backbones
+        # will reuse incompatible cached features (e.g., 384 vs 1024 channels).
+        cfg = getattr(self.extractor, "cfg", None)
+        layers = getattr(cfg, "layers", None)
+        if layers is None:
+            layers_token = ""
+        else:
+            try:
+                layers_token = ",".join(str(int(x))
+                                        for x in layers)  # type: ignore[arg-type]
+            except Exception:
+                layers_token = str(layers)
+
+        model_id = str(getattr(self.extractor, "model_id", "") or "")
+        short_side = str(getattr(cfg, "short_side", "") or "")
+        patch_size = str(getattr(self.extractor, "patch_size", "") or "")
+        payload = f"{model_id}|{short_side}|{patch_size}|{layers_token}|{image_path}".encode(
+            "utf-8", errors="ignore"
+        )
+        digest = hashlib.sha1(payload).hexdigest()
+        return self.cache_dir / f"{digest}.pt"
+
+    def _load_or_compute_features(self, image_path: Path, pil: Image.Image) -> torch.Tensor:
+        if self.cache_dir is None:
+            feats = self.extractor.extract(pil, return_type="torch")
+            return feats.to(dtype=self.cache_dtype)
+
+        cache_path = self._cache_path(image_path)
+        if cache_path.exists():
+            try:
+                payload = torch.load(cache_path, map_location="cpu")
+                if isinstance(payload, torch.Tensor):
+                    if self._is_compatible_cached_features(payload):
+                        return payload
+                if isinstance(payload, dict) and isinstance(payload.get("feats"), torch.Tensor):
+                    cached = payload["feats"]
+                    if self._is_compatible_cached_features(cached):
+                        return cached
+            except Exception:
+                pass
+
+        feats = self.extractor.extract(
+            pil, return_type="torch").to(dtype=self.cache_dtype)
+        try:
+            torch.save({"feats": feats}, cache_path)
+        except Exception:
+            pass
+        return feats
+
+    def _is_compatible_cached_features(self, feats: torch.Tensor) -> bool:
+        try:
+            if feats.ndim != 3:
+                return False
+            expected = getattr(
+                getattr(self.extractor, "model", None), "config", None)
+            expected_dim = int(getattr(expected, "hidden_size", 0) or 0)
+            if expected_dim <= 0:
+                return True
+            return int(feats.shape[0]) == expected_dim
+        except Exception:
+            return False
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        image_path = self.image_paths[idx]
+        pil = Image.open(image_path)
+        pil = ImageOps.exif_transpose(pil.convert("RGB"))
+        width, height = pil.size
+
+        label_path = _image_to_label_path(image_path)
+        keypoint_instances: List[np.ndarray] = []
+        if label_path.exists():
+            try:
+                lines = label_path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                lines = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                tokens = line.split()
+                kpts = _parse_yolo_pose_line(
+                    tokens, kpt_count=self.kpt_count, dims=self.kpt_dims)
+                if kpts is not None:
+                    keypoint_instances.append(kpts)
+
+        pil, keypoint_instances = _apply_pose_augmentations(
+            pil,
+            keypoint_instances,
+            cfg=self.augment,
+            flip_idx=self.flip_idx,
+            rng=self.rng,
+        )
+        width, height = pil.size
+
+        feats = self._load_or_compute_features(image_path, pil)
+        _, h_p, w_p = feats.shape
+        resized_h = int(h_p) * int(self.extractor.patch_size)
+        resized_w = int(w_p) * int(self.extractor.patch_size)
+
+        if not keypoint_instances:
+            masks = torch.zeros((self.kpt_count, h_p, w_p),
+                                dtype=torch.float32)
+        else:
+            masks = _union_keypoint_masks(
+                keypoint_instances,
+                grid_hw=(h_p, w_p),
+                patch_size=int(self.extractor.patch_size),
+                resized_hw_px=(resized_h, resized_w),
+                radius_px=self.radius_px,
+                original_hw_px=(height, width),
+            )
+
+        sample = {
+            "feats": feats.to(dtype=torch.float32),
+            "masks": masks.to(dtype=torch.float32),
+        }
+        if self.return_images:
+            try:
+                pil_resized = pil.resize(
+                    (int(resized_w), int(resized_h)), resample=Image.BILINEAR)
+                # Use a writable array for safe torch conversion on all platforms.
+                arr = np.array(pil_resized, dtype=np.uint8, copy=True)
+                if arr.ndim == 3 and arr.shape[2] >= 3:
+                    arr = arr[..., :3]
+                img = torch.from_numpy(arr).permute(
+                    2, 0, 1).to(dtype=torch.float32) / 255.0
+                sample["image"] = img
+            except Exception:
+                pass
+        return sample
+
+
+def build_extractor(
+    *,
+    model_name: str,
+    short_side: int,
+    layers: Tuple[int, ...] = (-1,),
+    device: Optional[str] = None,
+) -> Dinov3FeatureExtractor:
+    cfg = Dinov3Config(
+        model_name=model_name,
+        short_side=int(short_side),
+        device=device,
+        layers=layers,
+        return_layer="last",
+    )
+    return Dinov3FeatureExtractor(cfg)

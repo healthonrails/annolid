@@ -212,6 +212,7 @@ annolid
 - macOS Qt warning (`Class QCocoaPageLayoutDelegate is implemented in both ...`):  
   `conda install qtpy` resolves the conflict between OpenCV and PyQt.
 - If the GUI does not launch, confirm the correct environment is active and run `annolid --help` for CLI usage.
+- For model training/inference from the terminal, use `annolid-run list-models`, `annolid-run train <model> --help-model`, and `annolid-run predict <model> --help-model`.
 
 ## Docker
 Ensure [Docker](https://www.docker.com/) is installed, then run:

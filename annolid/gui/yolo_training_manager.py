@@ -10,10 +10,14 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
+from annolid.utils.runs import new_run_dir, shared_runs_root
 
 
 class YOLOTrainingManager(QtCore.QObject):
     """Encapsulates YOLO training orchestration for the Annolid GUI."""
+
+    training_started = QtCore.Signal(object)
+    training_finished = QtCore.Signal(object)
 
     def __init__(self, window: QtWidgets.QMainWindow) -> None:
         super().__init__(parent=window)
@@ -215,6 +219,21 @@ class YOLOTrainingManager(QtCore.QObject):
         )
         self._show_start_notification()
 
+        runs_root = Path(out_dir).expanduser().resolve() if out_dir else shared_runs_root()
+        run_dir = new_run_dir(
+            task="yolo",
+            model=Path(yolo_model_file).stem,
+            runs_root=runs_root,
+        )
+        run_rel = run_dir.relative_to(runs_root)
+        self.training_started.emit(
+            {
+                "task": "yolo",
+                "model": Path(yolo_model_file).stem,
+                "run_dir": str(run_dir),
+            }
+        )
+
         def train_task():
             weight_path = resolve_weight_path(yolo_model_file)
             model = YOLO(str(weight_path))
@@ -240,7 +259,8 @@ class YOLOTrainingManager(QtCore.QObject):
                 "imgsz": image_size,
                 "batch": int(batch_size),
                 "device": (str(device).strip() if device else None),
-                "project": out_dir if out_dir else None,
+                "project": str(runs_root),
+                "name": str(run_rel),
                 "workers": 0,  # Avoid multiprocessing issues when invoked from GUI threads
                 "plots": bool(plots),
             }
@@ -258,11 +278,20 @@ class YOLOTrainingManager(QtCore.QObject):
 
         def on_finished(outcome):
             self._handle_finished(outcome, thread, worker, data_config_path)
+            save_dir = getattr(outcome, "save_dir", None)
+            self.training_finished.emit(
+                {
+                    "task": "yolo",
+                    "model": Path(yolo_model_file).stem,
+                    "run_dir": str(save_dir or run_dir),
+                    "ok": not isinstance(outcome, Exception),
+                }
+            )
 
         worker.finished_signal.connect(on_finished, QtCore.Qt.QueuedConnection)
         thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
         thread.finished.connect(thread.deleteLater, QtCore.Qt.QueuedConnection)
-        thread.start()
+        QtCore.QTimer.singleShot(0, thread.start)
         return True
 
     def _confirm_preflight(

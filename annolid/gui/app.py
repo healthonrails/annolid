@@ -82,9 +82,11 @@ from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import TrackDialog
 from annolid.gui.widgets import SystemInfoDialog
 from annolid.gui.widgets import FlagTableWidget
+from annolid.gui.widgets import LabelCollectionDialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
+from annolid.gui.widgets import TrainingDashboardDialog
 import webbrowser
 import atexit
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
@@ -128,9 +130,11 @@ from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
-from annolid.gui.tensorboard import start_tensorboard, VisualizationWindow
+from annolid.gui.tensorboard import ensure_tensorboard, start_tensorboard, VisualizationWindow
+from annolid.utils.runs import find_latest_checkpoint, shared_runs_root
 from annolid.realtime.perception import Config as RealtimeConfig
 from annolid.gui.yolo_training_manager import YOLOTrainingManager
+from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
 from annolid.gui.cli import parse_cli
 from annolid.gui.application import create_qapp
 from annolid.gui.controllers import (
@@ -254,6 +258,14 @@ class AnnolidWindow(MainWindow):
             canvas_getter=lambda: getattr(self, "canvas", None),
         )
         self.yolo_training_manager = YOLOTrainingManager(self)
+        self.dino_kpseg_training_manager = DinoKPSEGTrainingManager(self)
+        self._training_dashboard_dialog = None
+        self.yolo_training_manager.training_started.connect(
+            self._show_training_dashboard_for_training
+        )
+        self.dino_kpseg_training_manager.training_started.connect(
+            self._show_training_dashboard_for_training
+        )
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
@@ -425,6 +437,7 @@ class AnnolidWindow(MainWindow):
         self.pdf_import_widget = PdfImportWidget(self)
         self._setup_canvas_screenshot_action()
         self._setup_open_pdf_action()
+        self._setup_label_collection_action()
 
         self.populateModeActions()
 
@@ -525,6 +538,26 @@ class AnnolidWindow(MainWindow):
                 file_menu.insertAction(target_action, self.open_pdf_action)
             else:
                 file_menu.addAction(self.open_pdf_action)
+
+    def _setup_label_collection_action(self) -> None:
+        """Adds a 'Collect Labels' entry to the File menu."""
+        action = functools.partial(newAction, self)
+        self.collect_labels_action = action(
+            self.tr("Collect &Labels..."),
+            self._open_label_collection_dialog,
+            None,
+            "open",
+            self.tr(
+                "Index labeled PNG/JSON pairs into a central dataset JSONL file."),
+            enabled=True,
+        )
+        file_menu = getattr(self.menus, "file", None)
+        if file_menu is not None:
+            file_menu.addAction(self.collect_labels_action)
+
+    def _open_label_collection_dialog(self) -> None:
+        dlg = LabelCollectionDialog(settings=self.settings, parent=self)
+        dlg.exec_()
 
     def _set_active_view(self, mode: str = "canvas") -> None:
         """Switch the central view between the canvas and PDF viewer."""
@@ -1838,6 +1871,42 @@ class AnnolidWindow(MainWindow):
             weight = fallback
         return model_config, identifier or "", weight or ""
 
+    def _resolve_dino_kpseg_weight(self, model_weight: str) -> Optional[str]:
+        raw = str(model_weight or "").strip()
+        if raw:
+            try:
+                p = Path(raw).expanduser()
+                if p.is_absolute() and p.exists():
+                    return str(p.resolve())
+                if not p.is_absolute():
+                    resolved = p.resolve()
+                    if resolved.exists():
+                        return str(resolved)
+            except Exception:
+                pass
+
+        try:
+            saved = self.settings.value(
+                "ai/dino_kpseg_last_best", "", type=str)
+        except Exception:
+            saved = ""
+        if saved:
+            try:
+                p = Path(saved).expanduser().resolve()
+                if p.exists():
+                    return str(p)
+            except Exception:
+                pass
+
+        try:
+            latest = find_latest_checkpoint(task="dino_kpseg", model="train")
+            if latest is not None:
+                return str(latest)
+        except Exception:
+            pass
+
+        return None
+
     @staticmethod
     def _is_cotracker_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
@@ -1849,6 +1918,18 @@ class AnnolidWindow(MainWindow):
         identifier = identifier.lower()
         weight = weight.lower()
         return identifier == "dinov3_keypoint_tracker" or weight == "dino_keypoint_tracker"
+
+    @staticmethod
+    def _is_dino_kpseg_model(identifier: str, weight: str) -> bool:
+        identifier = (identifier or "").lower()
+        weight = (weight or "").lower()
+        key = f"{identifier} {weight}"
+        return (
+            identifier == "dino_kpseg"
+            or "dino_kpseg" in key
+            or "dinokpseg" in key
+            or "kpseg" in key
+        )
 
     @staticmethod
     def _is_yolo_model(identifier: str, weight: str) -> bool:
@@ -2044,6 +2125,7 @@ class AnnolidWindow(MainWindow):
             return
         elif len(self.canvas.shapes) <= 0 and not (
             self._is_yolo_model(model_name, model_weight)
+            or self._is_dino_kpseg_model(model_name, model_weight)
             or (
                 self.sam3_manager.is_sam3_model(model_name, model_weight)
                 and text_prompt
@@ -2143,6 +2225,53 @@ class AnnolidWindow(MainWindow):
                                                           class_names=class_names,
                                                           keypoint_names=pose_keypoint_names,
                                                           pose_schema_path=pose_schema_path)
+            elif self._is_dino_kpseg_model(model_name, model_weight):
+                from annolid.segmentation.yolos import InferenceProcessor
+
+                pose_keypoint_names = None
+                pose_schema_path = None
+                if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):
+                    pose_keypoint_names = (
+                        self._pose_schema.expand_keypoints()
+                        if getattr(self._pose_schema, "instances", None)
+                        else list(self._pose_schema.keypoints)
+                    )
+                if getattr(self, "_pose_schema_path", None):
+                    pose_schema_path = self._pose_schema_path
+
+                resolved = self._resolve_dino_kpseg_weight(model_weight)
+                if not resolved:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("DINO Keypoint Segmentation"),
+                        self.tr(
+                            "No DinoKPSEG checkpoint found.\n\n"
+                            "Train a DinoKPSEG model first (Train Models → DINO KPSEG), "
+                            "or ensure the best checkpoint exists under your runs folder."
+                        ),
+                    )
+                    return
+
+                try:
+                    self.video_processor = InferenceProcessor(
+                        model_name=resolved,
+                        model_type="dinokpseg",
+                        keypoint_names=pose_keypoint_names,
+                        pose_schema_path=pose_schema_path,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to load DINO keypoint segmentation model '%s': %s",
+                        model_weight,
+                        exc,
+                        exc_info=True,
+                    )
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("DINO Keypoint Segmentation"),
+                        self.tr(f"Failed to load model:\n{exc}"),
+                    )
+                    return
             else:
                 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
                 from annolid.motion.optical_flow import optical_flow_settings_from
@@ -2217,6 +2346,11 @@ class AnnolidWindow(MainWindow):
             elif self.sam3_manager.is_sam3_model(model_name, model_weight):
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
+                )
+            elif self._is_dino_kpseg_model(model_name, model_weight):
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.run_inference,
+                    source=self.video_file,
                 )
             elif self._is_yolo_model(model_name, model_weight):
                 # Pass visual_prompts to run_inference if extracted successfully.
@@ -2541,6 +2675,7 @@ class AnnolidWindow(MainWindow):
                 _ = self._saveImageFile(
                     str(changed_filename).replace('.json', '.png'))
             image_filename = self._saveImageFile(filename)
+            self._auto_collect_labelme_pair(filename, image_filename)
             self._save_ai_mask_renders(image_filename)
             self.imageList.append(image_filename)
             self.addRecentFile(filename)
@@ -2551,6 +2686,47 @@ class AnnolidWindow(MainWindow):
                 self.caption_widget.set_image_path(image_filename)
 
             self.setClean()
+
+    def _auto_collect_labelme_pair(self, json_path: str, image_path: str) -> None:
+        index_file = os.environ.get("ANNOLID_LABEL_INDEX_FILE", "").strip()
+        if not index_file:
+            index_file = (
+                (self.config or {}).get("label_index_file")
+                or self.settings.value("dataset/label_index_file", "", type=str)
+            )
+        if not index_file:
+            dataset_root = (
+                os.environ.get("ANNOLID_LABEL_COLLECTION_DIR")
+                or (self.config or {}).get("label_collection_dir")
+                or self.settings.value("dataset/label_collection_dir", "", type=str)
+            )
+            if not dataset_root:
+                return
+            try:
+                from annolid.datasets.labelme_collection import default_label_index_path
+            except Exception:
+                index_file = str(Path(dataset_root) /
+                                 "annolid_logs" / "annolid_dataset.jsonl")
+            else:
+                index_file = str(default_label_index_path(Path(dataset_root)))
+
+        include_empty_value = os.environ.get(
+            "ANNOLID_LABEL_INDEX_INCLUDE_EMPTY", "0").strip().lower()
+        include_empty = include_empty_value in {"1", "true", "yes", "on"}
+
+        try:
+            from annolid.datasets.labelme_collection import index_labelme_pair
+
+            index_labelme_pair(
+                json_path=Path(json_path),
+                index_file=Path(index_file),
+                image_path=Path(image_path) if image_path else None,
+                include_empty=include_empty,
+                source="annolid_gui",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auto label indexing failed for %s: %s", json_path, exc)
 
     def getLabelFile(self):
         if str(self.filename).lower().endswith(".json"):
@@ -3342,6 +3518,27 @@ class AnnolidWindow(MainWindow):
             yolo_plots = getattr(dlg, "yolo_plots", False)
             yolo_train_overrides = dlg.get_yolo_train_overrides() if hasattr(
                 dlg, "get_yolo_train_overrides") else {}
+            dino_model_name = getattr(dlg, "dino_model_name", None)
+            dino_short_side = getattr(dlg, "dino_short_side", 768)
+            dino_layers = getattr(dlg, "dino_layers", "-1")
+            dino_radius_px = getattr(dlg, "dino_radius_px", 6.0)
+            dino_hidden_dim = getattr(dlg, "dino_hidden_dim", 128)
+            dino_lr = getattr(dlg, "dino_lr", 0.002)
+            dino_threshold = getattr(dlg, "dino_threshold", 0.4)
+            dino_cache_features = getattr(dlg, "dino_cache_features", True)
+            dino_patience = getattr(dlg, "dino_patience", 0)
+            dino_min_delta = getattr(dlg, "dino_min_delta", 0.0)
+            dino_min_epochs = getattr(dlg, "dino_min_epochs", 0)
+            dino_augment_enabled = getattr(dlg, "dino_augment_enabled", False)
+            dino_hflip_prob = getattr(dlg, "dino_hflip_prob", 0.5)
+            dino_degrees = getattr(dlg, "dino_degrees", 0.0)
+            dino_translate = getattr(dlg, "dino_translate", 0.0)
+            dino_scale = getattr(dlg, "dino_scale", 0.0)
+            dino_brightness = getattr(dlg, "dino_brightness", 0.0)
+            dino_contrast = getattr(dlg, "dino_contrast", 0.0)
+            dino_saturation = getattr(dlg, "dino_saturation", 0.0)
+            dino_seed = getattr(dlg, "dino_seed", -1)
+            dino_tb_add_graph = getattr(dlg, "dino_tb_add_graph", False)
 
         if config_file is None:
             return
@@ -3363,6 +3560,39 @@ class AnnolidWindow(MainWindow):
                 out_dir=out_dir,
             )
 
+        elif algo == "DINO KPSEG":
+            data_config = self.dino_kpseg_training_manager.prepare_data_config(
+                config_file)
+            if data_config is None:
+                return
+            self.dino_kpseg_training_manager.start_training(
+                data_config_path=data_config,
+                out_dir=out_dir,
+                model_name=str(dino_model_name or ""),
+                short_side=int(dino_short_side),
+                layers=str(dino_layers or "-1"),
+                radius_px=float(dino_radius_px),
+                hidden_dim=int(dino_hidden_dim),
+                lr=float(dino_lr),
+                epochs=int(epochs),
+                threshold=float(dino_threshold),
+                device=yolo_device,
+                cache_features=bool(dino_cache_features),
+                early_stop_patience=int(dino_patience),
+                early_stop_min_delta=float(dino_min_delta),
+                early_stop_min_epochs=int(dino_min_epochs),
+                augment=bool(dino_augment_enabled),
+                hflip=float(dino_hflip_prob),
+                degrees=float(dino_degrees),
+                translate=float(dino_translate),
+                scale=float(dino_scale),
+                brightness=float(dino_brightness),
+                contrast=float(dino_contrast),
+                saturation=float(dino_saturation),
+                seed=(int(dino_seed) if int(dino_seed) >= 0 else None),
+                tb_add_graph=bool(dino_tb_add_graph),
+            )
+
         elif algo == 'YOLACT':
             # start training models
             if torch is None or not torch.cuda.is_available():
@@ -3378,12 +3608,12 @@ class AnnolidWindow(MainWindow):
                               f'--batch_size={batch_size}'])
 
             if out_dir is None:
-                out_runs_dir = Path(__file__).parent.parent / 'runs'
+                out_runs_dir = shared_runs_root()
             else:
                 out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
 
             out_runs_dir.mkdir(exist_ok=True, parents=True)
-            process = start_tensorboard(log_dir=out_runs_dir)
+            process = start_tensorboard(log_dir=shared_runs_root())
             QtWidgets.QMessageBox.about(self,
                                         "Started",
                                         f"Results are in folder: \
@@ -3392,13 +3622,13 @@ class AnnolidWindow(MainWindow):
         elif algo == 'MaskRCNN':
             from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
             dataset_dir = str(Path(config_file).parent)
-            segmentor = Segmentor(dataset_dir, out_dir,
+            segmentor = Segmentor(dataset_dir, out_dir or str(shared_runs_root()),
                                   max_iterations=max_iterations,
                                   batch_size=batch_size,
                                   model_pth_path=model_path
                                   )
             out_runs_dir = segmentor.out_put_dir
-            process = start_tensorboard(log_dir=out_runs_dir)
+            process = start_tensorboard(log_dir=shared_runs_root())
             try:
                 self.seg_train_thread.start()
                 train_worker = FlexibleWorker(task_function=segmentor.train)
@@ -5174,6 +5404,20 @@ class AnnolidWindow(MainWindow):
         quit_and_wait(self.seg_pred_thread, "Bye!")
         if hasattr(self, "yolo_training_manager") and self.yolo_training_manager:
             self.yolo_training_manager.cleanup()
+        if hasattr(self, "dino_kpseg_training_manager") and self.dino_kpseg_training_manager:
+            self.dino_kpseg_training_manager.cleanup()
+        try:
+            dialog = getattr(self, "_training_dashboard_dialog", None)
+            if dialog is not None:
+                dialog.close()
+        except Exception:
+            pass
+        try:
+            from annolid.gui.tensorboard import stop_tensorboard
+
+            stop_tensorboard()
+        except Exception:
+            pass
 
     def loadLabels(self, shapes):
         s = []
@@ -5682,13 +5926,48 @@ class AnnolidWindow(MainWindow):
 
     def visualization(self):
         try:
-            url = 'http://localhost:6006/'
-            process = start_tensorboard(tensorboard_url=url)
+            process, url = ensure_tensorboard(
+                log_dir=shared_runs_root(), preferred_port=6006, host="127.0.0.1")
+            self._tensorboard_process = process
             webbrowser.open(url)
         except Exception:
             vdlg = VisualizationWindow()
             if vdlg.exec_():
                 pass
+
+    @QtCore.Slot(object)
+    def _show_training_dashboard_for_training(self, payload: object) -> None:
+        """Auto-open the training dashboard window when training starts."""
+        dialog = getattr(self, "_training_dashboard_dialog", None)
+        if dialog is None:
+            dialog = TrainingDashboardDialog(
+                settings=self.settings, parent=None)
+            dialog.dashboard.register_training_manager(
+                self.yolo_training_manager)
+            dialog.dashboard.register_training_manager(
+                self.dino_kpseg_training_manager)
+            dialog.finished.connect(
+                lambda *_: setattr(self, "_training_dashboard_dialog", None)
+            )
+            dialog.destroyed.connect(
+                lambda *_: setattr(self, "_training_dashboard_dialog", None)
+            )
+            self._training_dashboard_dialog = dialog
+
+        try:
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() &
+                                  ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+
+        try:
+            dialog.dashboard._on_training_started(payload)
+        except Exception:
+            pass
 
     def train_on_colab(self):
         url = "https://colab.research.google.com/github/healthonrails/annolid/blob/main/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb"

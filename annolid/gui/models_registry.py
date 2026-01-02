@@ -27,6 +27,11 @@ MODEL_REGISTRY = [
     ModelConfig("yoloe-11l-seg.pt", "yoloe-11l-seg.pt", "yoloe-11l-seg.pt"),
     ModelConfig("DINOv3 Keypoint Tracker",
                 "dinov3_keypoint_tracker", "DINO_KEYPOINT_TRACKER"),
+    ModelConfig(
+        "DINOv3 Keypoint Segmentation",
+        "dino_kpseg",
+        "runs/dino_kpseg/train/weights/best.pt",
+    ),
 ]
 
 

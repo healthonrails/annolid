@@ -3,6 +3,7 @@ import cv2
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from annolid.features import Embedding
+from annolid.utils.runs import shared_runs_root
 # Temp fix of the no attribute 'get_filesytem' error
 # import tensorflow as tf
 # import tensorboard as tb
@@ -12,8 +13,7 @@ from annolid.features import Embedding
 def tensorboard_writer(logdir=None):
 
     if logdir is None:
-        here = Path(__file__).parent.resolve()
-        logdir = here.parent / 'runs' / 'logs'
+        logdir = shared_runs_root()
     writer = SummaryWriter(log_dir=str(logdir))
     return writer
 

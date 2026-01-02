@@ -29,7 +29,7 @@ class InferenceProcessor:
 
         Args:
             model_name (str): Path or identifier for the model file.
-            model_type (str): Type of model ('yolo' or 'sam').
+            model_type (str): Type of model ('yolo', 'sam', or 'dinokpseg').
             class_names (list, optional): List of class names for YOLO. 
                                           Only provided if the model doesn't have
                                           built-in classes.
@@ -264,8 +264,13 @@ class InferenceProcessor:
             model = SAM(model_ref)
             model.info()
             return model
+        if self.model_type == "dinokpseg":
+            from annolid.segmentation.dino_kpseg import DinoKPSEGPredictor
 
-        raise ValueError("Unsupported model type. Use 'yolo' or 'sam'.")
+            return DinoKPSEGPredictor(model_ref)
+
+        raise ValueError(
+            "Unsupported model type. Use 'yolo', 'sam', or 'dinokpseg'.")
 
     def _validate_visual_prompts(self, visual_prompts: dict) -> bool:
         required_keys = {"bboxes", "cls"}
@@ -344,6 +349,14 @@ class InferenceProcessor:
             logger.error("Invalid visual prompts; proceeding without them.")
             visual_prompts = None
 
+        if self.model_type == "dinokpseg":
+            return self._run_dino_kpseg_inference(
+                source,
+                output_directory=output_directory,
+                pred_worker=pred_worker,
+                stop_event=stop_event,
+            )
+
         # Use visual prompts if supported by the model (YOLOE)
         if visual_prompts is not None and 'yoloe' in self.model_name.lower():
             try:
@@ -391,6 +404,113 @@ class InferenceProcessor:
         if stopped:
             return f"Stopped#{self.frame_count}"
         return f"Done#{self.frame_count}"
+
+    def _run_dino_kpseg_inference(
+        self,
+        source: str,
+        *,
+        output_directory: Path,
+        pred_worker=None,
+        stop_event=None,
+    ) -> str:
+        import cv2
+
+        def should_stop() -> bool:
+            try:
+                if stop_event is not None and stop_event.is_set():
+                    return True
+            except Exception:
+                pass
+            try:
+                if pred_worker is not None and hasattr(pred_worker, "is_stopped") and pred_worker.is_stopped():
+                    return True
+            except Exception:
+                pass
+            try:
+                from qtpy import QtCore  # Optional dependency for GUI runs
+
+                thread = QtCore.QThread.currentThread()
+                if thread is not None and thread.isInterruptionRequested():
+                    return True
+            except Exception:
+                pass
+            return False
+
+        cap = cv2.VideoCapture(str(source))
+        if not cap.isOpened():
+            return f"Error: unable to open {source}"
+
+        stopped = False
+        try:
+            while True:
+                if should_stop():
+                    stopped = True
+                    break
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                frame_shape = (frame.shape[0], frame.shape[1], 3)
+                annotations = self.extract_dino_kpseg_results(frame)
+                if annotations:
+                    self.save_yolo_to_labelme(
+                        annotations, frame_shape, output_directory)
+                else:
+                    self.frame_count += 1
+        finally:
+            cap.release()
+
+        if stopped:
+            return f"Stopped#{self.frame_count}"
+        return f"Done#{self.frame_count}"
+
+    def extract_dino_kpseg_results(self, frame_bgr: np.ndarray) -> list:
+        annotations = []
+        try:
+            prediction = self.model.predict(
+                frame_bgr, return_patch_masks=True, stabilize_lr=True)
+        except Exception as exc:
+            logger.error("DinoKPSEG inference failed: %s", exc, exc_info=True)
+            return annotations
+
+        kp_names = self.keypoint_names or getattr(
+            self.model, "keypoint_names", None)
+        if not kp_names:
+            kp_names = [str(i) for i in range(len(prediction.keypoints_xy))]
+
+        masks_patch = getattr(prediction, "masks_patch", None)
+        resized_h, resized_w = int(prediction.resized_hw[0]), int(
+            prediction.resized_hw[1])
+        patch_size = int(getattr(prediction, "patch_size", 16))
+        frame_h, frame_w = int(frame_bgr.shape[0]), int(frame_bgr.shape[1])
+
+        for kpt_id, (xy, score) in enumerate(
+            zip(prediction.keypoints_xy, prediction.keypoint_scores)
+        ):
+            label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
+            x, y = float(xy[0]), float(xy[1])
+
+            if isinstance(masks_patch, np.ndarray) and masks_patch.ndim == 3 and kpt_id < masks_patch.shape[0]:
+                mask = masks_patch[kpt_id]
+                if np.any(mask):
+                    rows, cols = np.nonzero(mask)
+                    x_res = (cols.astype(float) + 0.5) * patch_size
+                    y_res = (rows.astype(float) + 0.5) * patch_size
+                    x_res_mean = float(np.mean(x_res))
+                    y_res_mean = float(np.mean(y_res))
+                    x = x_res_mean * (float(frame_w) / float(resized_w))
+                    y = y_res_mean * (float(frame_h) / float(resized_h))
+
+            flags = {"score": float(score)}
+            point_shape = Shape(
+                label,
+                shape_type="point",
+                description=self.model_type,
+                flags=flags,
+            )
+            point_shape.points = [[x, y]]
+            annotations.append(point_shape)
+
+        return annotations
 
     def extract_yolo_results(self, detection_result, save_bbox: bool = False, save_track: bool = False) -> list:
         """

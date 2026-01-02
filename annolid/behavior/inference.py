@@ -1,16 +1,15 @@
 import argparse
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader
 from annolid.behavior.data_loading.datasets import BehaviorDataset
-from annolid.behavior.data_loading.transforms import IdentityTransform, ResizeCenterCropNormalize
-from annolid.behavior.models.classifier import BehaviorClassifier
-from annolid.behavior.models.feature_extractors import (
-    CLIPFeatureExtractor,
-    Dinov3BehaviorFeatureExtractor,
-    ResNetFeatureExtractor,
+from annolid.behavior.pipeline import (
+    BACKBONE_CHOICES,
+    DEFAULT_DINOV3_MODEL,
+    build_transform,
+    load_classifier,
 )
 
 # Configuration
@@ -19,8 +18,6 @@ CHECKPOINT_PATH = "checkpoints/best_model.pth"  # Path to the saved model
 BATCH_SIZE = 1  # Batch size for inference
 
 logger = logging.getLogger(__name__)
-BACKBONE_CHOICES = ("clip", "resnet18", "dinov3")
-DEFAULT_DINOV3_MODEL = "facebook/dinov3-vits16-pretrain-lvd1689m"
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,57 +37,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--transformer_dim", type=int, default=768,
                         help="Transformer embedding dimension (d_model).")
     return parser.parse_args()
-
-
-def build_feature_extractor(
-    backbone: str,
-    device: torch.device,
-    *,
-    dinov3_model: str,
-    feature_dim: Optional[int],
-) -> Tuple[torch.nn.Module, int]:
-    if backbone == "clip":
-        extractor = CLIPFeatureExtractor()
-        if feature_dim is not None and feature_dim != extractor.feature_dim:
-            raise ValueError(
-                "CLIP backbone does not support overriding feature_dim.")
-        return extractor.to(device), extractor.feature_dim
-    if backbone == "resnet18":
-        target_dim = feature_dim or 512
-        extractor = ResNetFeatureExtractor(feature_dim=target_dim)
-        return extractor.to(device), extractor.feature_dim
-    if backbone == "dinov3":
-        target_dim = feature_dim or 768
-        extractor = Dinov3BehaviorFeatureExtractor(
-            model_name=dinov3_model,
-            feature_dim=target_dim,
-            device=device.type,
-            freeze=True,
-        )
-        return extractor.to(device), extractor.feature_dim
-    raise ValueError(
-        f"Unsupported backbone '{backbone}'. Valid options: {BACKBONE_CHOICES}")
-
-
-def load_model(checkpoint_path, num_classes, device, backbone, *, dinov3_model, feature_dim, transformer_dim):
-    """Loads the trained model from the checkpoint."""
-    feature_extractor, backbone_dim = build_feature_extractor(
-        backbone,
-        device,
-        dinov3_model=dinov3_model,
-        feature_dim=feature_dim,
-    )
-    model = BehaviorClassifier(
-        feature_extractor,
-        num_classes=num_classes,
-        d_model=transformer_dim,
-        feature_dim=backbone_dim,
-    ).to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    model.eval()
-    logger.info(f"Model loaded from {checkpoint_path}")
-    return model
-
 
 def predict(model, data_loader, device):
     """Runs inference and prints predictions."""
@@ -120,8 +66,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    transform = IdentityTransform(
-    ) if args.feature_backbone == "dinov3" else ResizeCenterCropNormalize()
+    transform = build_transform(args.feature_backbone)
 
     try:
         # Dataset and DataLoader for inference
@@ -136,15 +81,16 @@ def main():
         exit(1)
 
     # Load the trained model
-    model = load_model(
-        args.checkpoint_path,
-        num_of_classes,
-        device,
-        args.feature_backbone,
-        dinov3_model=args.dinov3_model_name,
+    model = load_classifier(
+        checkpoint_path=str(args.checkpoint_path),
+        num_classes=int(num_of_classes),
+        backbone=str(args.feature_backbone),
+        device=device,
+        dinov3_model=str(args.dinov3_model_name),
         feature_dim=args.feature_dim,
-        transformer_dim=args.transformer_dim,
+        transformer_dim=int(args.transformer_dim),
     )
+    logger.info(f"Model loaded from {args.checkpoint_path}")
 
     # Run inference
     logger.info("Starting inference...")

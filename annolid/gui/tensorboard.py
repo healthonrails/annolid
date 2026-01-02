@@ -1,37 +1,169 @@
 """TensorBoard launch utilities used by the Annolid GUI."""
 
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 from qtpy import QtCore, QtWidgets, QtGui
+
+from annolid.utils.runs import shared_runs_root
+
+_STARTED_PROCESSES: list[subprocess.Popen] = []
+_LAST_URL: Optional[str] = None
+_PRIMARY: Optional[Tuple[subprocess.Popen, str, str]
+                   ] = None  # (proc, url, logdir)
+
+
+def _tensorboard_env() -> dict:
+    env = dict(os.environ)
+    sitecustomize_dir = (
+        Path(__file__).resolve().parent.parent
+        / "utils"
+        / "tensorboard_sitecustomize"
+    )
+    if sitecustomize_dir.exists():
+        existing = env.get("PYTHONPATH", "")
+        prefix = str(sitecustomize_dir)
+        env["PYTHONPATH"] = prefix if not existing else f"{prefix}{os.pathsep}{existing}"
+    return env
+
+
+def _can_connect(url: str, *, timeout: float = 0.5) -> bool:
+    try:
+        requests.get(url, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _pick_free_port(*, preferred: int = 6006, host: str = "127.0.0.1") -> int:
+    import socket
+
+    def port_free(port: int) -> bool:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((host, int(port)))
+            return True
+        except OSError:
+            return False
+
+    start = max(1024, int(preferred))
+    if port_free(start):
+        return start
+    for port in range(start + 1, start + 50):
+        if port_free(port):
+            return port
+
+    # Fallback: ask OS for an ephemeral port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
+def ensure_tensorboard(
+    *,
+    log_dir: Optional[Path] = None,
+    preferred_port: int = 6006,
+    host: str = "127.0.0.1",
+    startup_timeout_s: float = 15.0,
+) -> Tuple[Optional[subprocess.Popen], str]:
+    """
+    Ensure a TensorBoard server started by Annolid is available.
+
+    Always starts a new TensorBoard instance on an available local port to avoid
+    reusing an external (possibly incompatible) server.
+    """
+    if log_dir is None:
+        log_dir = shared_runs_root()
+
+    global _PRIMARY
+    if _PRIMARY is not None:
+        proc, url, existing_logdir = _PRIMARY
+        if proc.poll() is None and str(Path(existing_logdir)) == str(Path(log_dir)):
+            if _can_connect(url, timeout=0.5):
+                return proc, url
+
+    port = _pick_free_port(preferred=int(preferred_port), host=str(host))
+    url = f"http://{host}:{int(port)}/"
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "tensorboard.main",
+        f"--logdir={str(log_dir)}",
+        f"--host={host}",
+        f"--port={int(port)}",
+    ]
+    process = subprocess.Popen(cmd, env=_tensorboard_env())
+    _STARTED_PROCESSES.append(process)
+
+    t0 = time.time()
+    while time.time() - t0 < float(startup_timeout_s):
+        if process.poll() is not None:
+            raise RuntimeError(
+                "TensorBoard exited unexpectedly while starting.")
+        if _can_connect(url, timeout=0.5):
+            global _LAST_URL
+            _LAST_URL = url
+            _PRIMARY = (process, url, str(Path(log_dir)))
+            return process, url
+        time.sleep(0.25)
+
+    raise TimeoutError(
+        f"TensorBoard did not respond at {url} within {startup_timeout_s}s")
 
 
 def start_tensorboard(
     log_dir: Optional[Path] = None,
     tensorboard_url: str = "http://localhost:6006",
 ) -> Optional[subprocess.Popen]:
-    """
-    Ensure a TensorBoard server is available and return the launched process.
-
-    If TensorBoard is already responding at ``tensorboard_url`` the existing
-    server is reused and ``None`` is returned. Otherwise a new instance is
-    spawned pointing at ``log_dir``.
-    """
-    process = None
-    if log_dir is None:
-        here = Path(__file__).parent
-        log_dir = here.parent.resolve() / "runs" / "logs"
+    """Backward-compatible wrapper: starts TensorBoard and returns the process."""
+    preferred_port = 6006
     try:
-        requests.get(tensorboard_url)
-    except requests.exceptions.ConnectionError:
-        process = subprocess.Popen(
-            ["tensorboard", f"--logdir={str(log_dir)}"]
-        )
-        time.sleep(8)
+        parsed = QtCore.QUrl(tensorboard_url)
+        if parsed.port() != -1:
+            preferred_port = int(parsed.port())
+    except Exception:
+        pass
+    process, _url = ensure_tensorboard(
+        log_dir=log_dir,
+        preferred_port=int(preferred_port),
+        host="127.0.0.1",
+    )
     return process
+
+
+def stop_tensorboard(process: Optional[subprocess.Popen] = None) -> None:
+    """Stop a TensorBoard process started via this module (best-effort)."""
+    targets = []
+    if process is not None:
+        targets = [process]
+    else:
+        targets = list(_STARTED_PROCESSES)
+
+    for proc in targets:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    if process is None:
+        _STARTED_PROCESSES.clear()
+        global _PRIMARY, _LAST_URL
+        _PRIMARY = None
+        _LAST_URL = None
+    else:
+        try:
+            _STARTED_PROCESSES.remove(process)
+        except ValueError:
+            pass
+        if _PRIMARY is not None and _PRIMARY[0] is process:
+            _PRIMARY = None
 
 
 class VisualizationWindow(QtWidgets.QDialog):
@@ -47,9 +179,12 @@ class VisualizationWindow(QtWidgets.QDialog):
         from qtpy.QtWebEngineWidgets import QWebEngineView
 
         self.setWindowTitle("Visualization Tensorboard")
-        self.tensorboard_url = tensorboard_url
-        self.process = start_tensorboard(log_dir=log_dir,
-                                         tensorboard_url=tensorboard_url)
+        self.process, self.tensorboard_url = ensure_tensorboard(
+            log_dir=log_dir,
+            preferred_port=QtCore.QUrl(tensorboard_url).port() if QtCore.QUrl(
+                tensorboard_url).port() != -1 else 6006,
+            host="127.0.0.1",
+        )
         self.browser = QWebEngineView()
         self.browser.setUrl(QtCore.QUrl(self.tensorboard_url))
         vbox = QtWidgets.QVBoxLayout()
@@ -60,5 +195,5 @@ class VisualizationWindow(QtWidgets.QDialog):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if self.process is not None:
             time.sleep(3)
-            self.process.kill()
+            stop_tensorboard(self.process)
         event.accept()
