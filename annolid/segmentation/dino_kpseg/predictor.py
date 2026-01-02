@@ -18,7 +18,6 @@ from annolid.segmentation.dino_kpseg.keypoints import (
 )
 from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGCheckpointMeta,
-    DinoKPSEGHead,
     checkpoint_unpack,
 )
 
@@ -69,7 +68,8 @@ class DinoKPSEGPredictor:
             device=str(self.device),
         )
 
-        self.head: DinoKPSEGHead = head.to(self.device)
+        # head can be conv or attention; both expose `.in_dim` and return [B,K,H,W] logits.
+        self.head = head.to(self.device)
         self.head.eval()
 
     @staticmethod

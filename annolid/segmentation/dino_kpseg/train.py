@@ -27,9 +27,16 @@ from annolid.segmentation.dino_kpseg.data import (
 from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGCheckpointMeta,
     DinoKPSEGHead,
+    DinoKPSEGAttentionHead,
+    DinoKPSEGHybridHead,
     checkpoint_pack,
 )
 from annolid.segmentation.dino_kpseg.cli_utils import normalize_device, parse_layers
+from annolid.segmentation.dino_kpseg.keypoints import (
+    infer_left_right_pairs,
+    infer_orientation_anchor_indices,
+    symmetric_pairs_from_flip_idx,
+)
 from annolid.utils.runs import new_run_dir, shared_runs_root
 from annolid.utils.logger import logger
 
@@ -279,6 +286,13 @@ def train(
     early_stop_min_delta: float = 0.0,
     early_stop_min_epochs: int = 0,
     tb_add_graph: bool = False,
+    head_type: str = "conv",
+    attn_heads: int = 4,
+    attn_layers: int = 1,
+    lr_pair_loss_weight: float = 0.0,
+    lr_pair_margin_px: float = 0.0,
+    lr_side_loss_weight: float = 0.0,
+    lr_side_loss_margin: float = 0.0,
 ) -> Path:
     spec = load_yolo_pose_spec(data_yaml)
     if not spec.train_images:
@@ -369,8 +383,43 @@ def train(
     feats = sample["feats"]
     in_dim = int(feats.shape[0])
 
-    head = DinoKPSEGHead(in_dim=in_dim, hidden_dim=hidden_dim,
-                         num_parts=spec.kpt_count).to(device_str)
+    head_type_norm = str(head_type or "conv").strip().lower()
+    if head_type_norm not in ("conv", "attn", "hybrid"):
+        raise ValueError(
+            f"Unsupported head_type: {head_type!r} (expected 'conv', 'attn', or 'hybrid')"
+        )
+
+    orientation_anchor_idx = (
+        infer_orientation_anchor_indices(spec.keypoint_names or [])
+        if spec.keypoint_names
+        else []
+    )
+    if orientation_anchor_idx:
+        logger.info("DinoKPSEG orientation anchors (idx): %s",
+                    orientation_anchor_idx)
+
+    if head_type_norm == "attn":
+        head = DinoKPSEGAttentionHead(
+            in_dim=in_dim,
+            hidden_dim=hidden_dim,
+            num_parts=spec.kpt_count,
+            num_heads=int(attn_heads),
+            num_layers=int(attn_layers),
+            orientation_anchor_idx=orientation_anchor_idx,
+        ).to(device_str)
+    elif head_type_norm == "hybrid":
+        head = DinoKPSEGHybridHead(
+            in_dim=in_dim,
+            hidden_dim=hidden_dim,
+            num_parts=spec.kpt_count,
+            num_heads=int(attn_heads),
+            num_layers=int(attn_layers),
+            orientation_anchor_idx=orientation_anchor_idx,
+        ).to(device_str)
+    else:
+        head = DinoKPSEGHead(in_dim=in_dim, hidden_dim=hidden_dim,
+                             num_parts=spec.kpt_count).to(device_str)
+
     opt = torch.optim.AdamW(head.parameters(), lr=float(lr))
     loss_fn = nn.BCEWithLogitsLoss()
 
@@ -392,6 +441,10 @@ def train(
         hidden_dim=int(hidden_dim),
         keypoint_names=spec.keypoint_names,
         flip_idx=spec.flip_idx,
+        head_type=head_type_norm,
+        attn_heads=int(attn_heads),
+        attn_layers=int(attn_layers),
+        orientation_anchor_idx=orientation_anchor_idx if orientation_anchor_idx else None,
     )
 
     # Best-effort args.yaml compatible with existing YOLO training artifacts.
@@ -404,6 +457,9 @@ def train(
             f"short_side: {short_side}",
             f"layers: {list(layers)}",
             f"radius_px: {radius_px}",
+            f"head_type: {head_type_norm}",
+            f"attn_heads: {int(attn_heads)}",
+            f"attn_layers: {int(attn_layers)}",
             f"hidden_dim: {hidden_dim}",
             f"lr0: {lr}",
             f"epochs: {epochs}",
@@ -412,6 +468,10 @@ def train(
             f"early_stop_min_delta: {float(early_stop_min_delta)}",
             f"early_stop_min_epochs: {int(early_stop_min_epochs)}",
             f"tb_add_graph: {bool(tb_add_graph)}",
+            f"lr_pair_loss_weight: {float(lr_pair_loss_weight)}",
+            f"lr_pair_margin_px: {float(lr_pair_margin_px)}",
+            f"lr_side_loss_weight: {float(lr_side_loss_weight)}",
+            f"lr_side_loss_margin: {float(lr_side_loss_margin)}",
             f"augment: {bool(augment_cfg.enabled)}",
             f"hflip: {float(augment_cfg.hflip_prob)}",
             f"degrees: {float(augment_cfg.degrees)}",
@@ -424,6 +484,20 @@ def train(
         ]
     )
     args_path.write_text(args_text, encoding="utf-8")
+
+    symmetric_pairs = (
+        symmetric_pairs_from_flip_idx(spec.flip_idx) if spec.flip_idx else []
+    )
+    lr_pairs = (
+        infer_left_right_pairs(spec.keypoint_names or [],
+                               flip_idx=spec.flip_idx)
+        if spec.keypoint_names and spec.flip_idx
+        else []
+    )
+    if symmetric_pairs:
+        logger.info("DinoKPSEG symmetric keypoint pairs: %s", symmetric_pairs)
+    if lr_pairs:
+        logger.info("DinoKPSEG left/right keypoint pairs: %s", lr_pairs)
 
     # NOTE: variable feature grid sizes mean batching > 1 requires padding; keep it simple.
     train_loader = DataLoader(train_ds, batch_size=1,
@@ -459,6 +533,22 @@ def train(
         tb_writer.add_text("config/early_stop_min_delta", str(min_delta), 0)
         tb_writer.add_text("config/early_stop_min_epochs", str(min_epochs), 0)
         tb_writer.add_text("config/tb_add_graph", str(bool(tb_add_graph)), 0)
+        tb_writer.add_text("config/head_type", str(head_type_norm), 0)
+        tb_writer.add_text("config/attn_heads", str(int(attn_heads)), 0)
+        tb_writer.add_text("config/attn_layers", str(int(attn_layers)), 0)
+        tb_writer.add_text(
+            "config/orientation_anchor_idx",
+            str(orientation_anchor_idx),
+            0,
+        )
+        tb_writer.add_text("config/lr_pair_loss_weight",
+                           str(float(lr_pair_loss_weight)), 0)
+        tb_writer.add_text("config/lr_pair_margin_px",
+                           str(float(lr_pair_margin_px)), 0)
+        tb_writer.add_text("config/lr_side_loss_weight",
+                           str(float(lr_side_loss_weight)), 0)
+        tb_writer.add_text("config/lr_side_loss_margin",
+                           str(float(lr_side_loss_margin)), 0)
         tb_writer.add_text("model/architecture", f"```\n{head}\n```", 0)
         try:
             total_params = int(sum(p.numel() for p in head.parameters()))
@@ -471,8 +561,27 @@ def train(
         # Optional: export the computation graph (can be expensive / crash-prone on some builds).
         if bool(tb_add_graph) or os.environ.get("ANNOLID_TB_ADD_GRAPH", "").strip().lower() in {"1", "true", "yes", "on"}:
             try:
-                cpu_head = DinoKPSEGHead(
-                    in_dim=in_dim, hidden_dim=hidden_dim, num_parts=spec.kpt_count).cpu().eval()
+                if head_type_norm == "attn":
+                    cpu_head = DinoKPSEGAttentionHead(
+                        in_dim=in_dim,
+                        hidden_dim=hidden_dim,
+                        num_parts=spec.kpt_count,
+                        num_heads=int(attn_heads),
+                        num_layers=int(attn_layers),
+                        orientation_anchor_idx=orientation_anchor_idx,
+                    ).cpu().eval()
+                elif head_type_norm == "hybrid":
+                    cpu_head = DinoKPSEGHybridHead(
+                        in_dim=in_dim,
+                        hidden_dim=hidden_dim,
+                        num_parts=spec.kpt_count,
+                        num_heads=int(attn_heads),
+                        num_layers=int(attn_layers),
+                        orientation_anchor_idx=orientation_anchor_idx,
+                    ).cpu().eval()
+                else:
+                    cpu_head = DinoKPSEGHead(
+                        in_dim=in_dim, hidden_dim=hidden_dim, num_parts=spec.kpt_count).cpu().eval()
                 state = {k: v.detach().cpu()
                          for k, v in head.state_dict().items()}
                 cpu_head.load_state_dict(state, strict=True)
@@ -511,22 +620,125 @@ def train(
                 head.train()
                 t0 = time.time()
                 train_loss = 0.0
+                train_loss_total = 0.0
                 n_train = 0
                 batch_dice_sum = 0.0
                 batch_dice_count = 0
+                pair_overlap_sum = 0.0
+                pair_margin_sum = 0.0
+                pair_terms_count = 0
+                side_loss_sum = 0.0
+                side_terms_count = 0
                 for batch in train_loader:
                     feats = batch["feats"][0].to(
                         device_str, non_blocking=True)  # CHW
                     masks = batch["masks"][0].to(
                         device_str, non_blocking=True)  # KHW
                     logits = head(feats.unsqueeze(0))[0]
-                    loss = loss_fn(logits, masks)
+                    loss_base = loss_fn(logits, masks)
+                    loss = loss_base
+
+                    pair_overlap = None
+                    pair_margin = None
+                    side_loss = None
+                    if (
+                        float(lr_pair_loss_weight) > 0.0
+                        and symmetric_pairs
+                        and int(logits.shape[0]) == int(spec.kpt_count)
+                    ):
+                        k, h_p, w_p = logits.shape
+                        probs = torch.sigmoid(logits).reshape(k, -1)
+                        norm = probs.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                        dist = probs / norm  # [K, HW]
+
+                        overlap_acc = 0.0
+                        margin_acc = 0.0
+                        for i, j in symmetric_pairs:
+                            overlap_acc = overlap_acc + \
+                                (dist[int(i)] * dist[int(j)]).sum()
+                            if float(lr_pair_margin_px) > 0.0:
+                                patch = float(extractor.patch_size)
+                                xs = (torch.arange(w_p, device=logits.device,
+                                      dtype=logits.dtype) + 0.5) * patch
+                                ys = (torch.arange(h_p, device=logits.device,
+                                      dtype=logits.dtype) + 0.5) * patch
+
+                                pi = dist[int(i)].view(h_p, w_p)
+                                pj = dist[int(j)].view(h_p, w_p)
+                                mux_i = (pi.sum(dim=0) * xs).sum()
+                                muy_i = (pi.sum(dim=1) * ys).sum()
+                                mux_j = (pj.sum(dim=0) * xs).sum()
+                                muy_j = (pj.sum(dim=1) * ys).sum()
+                                d = torch.sqrt((mux_i - mux_j) **
+                                               2 + (muy_i - muy_j) ** 2 + 1e-8)
+                                margin_acc = margin_acc + \
+                                    F.relu(float(lr_pair_margin_px) - d)
+
+                        denom_pairs = float(max(1, len(symmetric_pairs)))
+                        pair_overlap = overlap_acc / denom_pairs
+                        pair_margin = margin_acc / denom_pairs
+                        loss = loss + float(lr_pair_loss_weight) * \
+                            (pair_overlap + pair_margin)
+
+                    if (
+                        float(lr_side_loss_weight) > 0.0
+                        and lr_pairs
+                        and len(orientation_anchor_idx) >= 2
+                        and int(logits.shape[0]) == int(spec.kpt_count)
+                    ):
+                        k, h_p, w_p = logits.shape
+                        probs = torch.sigmoid(logits).reshape(k, -1)
+                        norm = probs.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                        dist = (probs / norm).view(k, h_p, w_p)
+
+                        xs = torch.arange(
+                            w_p, device=logits.device, dtype=logits.dtype) + 0.5
+                        ys = torch.arange(
+                            h_p, device=logits.device, dtype=logits.dtype) + 0.5
+                        px = (dist.sum(dim=1) * xs[None, :]).sum(dim=1)  # [K]
+                        py = (dist.sum(dim=2) * ys[None, :]).sum(dim=1)  # [K]
+
+                        a0 = int(orientation_anchor_idx[0])
+                        a1 = int(orientation_anchor_idx[1])
+                        ax = px[a1] - px[a0]
+                        ay = py[a1] - py[a0]
+                        an = torch.sqrt(ax * ax + ay * ay + 1e-8)
+
+                        margin = float(lr_side_loss_margin)
+                        loss_acc = 0.0
+                        for li, ri in lr_pairs:
+                            li = int(li)
+                            ri = int(ri)
+                            vx_l = px[li] - px[a0]
+                            vy_l = py[li] - py[a0]
+                            vx_r = px[ri] - px[a0]
+                            vy_r = py[ri] - py[a0]
+                            vn_l = torch.sqrt(vx_l * vx_l + vy_l * vy_l + 1e-8)
+                            vn_r = torch.sqrt(vx_r * vx_r + vy_r * vy_r + 1e-8)
+                            s_l = (ax * vy_l - ay * vx_l) / (an * vn_l + 1e-8)
+                            s_r = (ax * vy_r - ay * vx_r) / (an * vn_r + 1e-8)
+                            # Encourage left/right to fall on opposite sides of the axis:
+                            # s_l * s_r should be <= -margin (margin in [0,1]).
+                            loss_acc = loss_acc + F.relu(s_l * s_r + margin)
+                        denom_lr = float(max(1, len(lr_pairs)))
+                        side_loss = loss_acc / denom_lr
+                        loss = loss + float(lr_side_loss_weight) * side_loss
 
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
                     opt.step()
 
-                    train_loss += float(loss.detach().cpu().item())
+                    train_loss += float(loss_base.detach().cpu().item())
+                    train_loss_total += float(loss.detach().cpu().item())
+                    if pair_overlap is not None:
+                        pair_overlap_sum += float(
+                            pair_overlap.detach().cpu().item())
+                        pair_margin_sum += float(pair_margin.detach().cpu().item()
+                                                 ) if pair_margin is not None else 0.0
+                        pair_terms_count += 1
+                    if side_loss is not None:
+                        side_loss_sum += float(side_loss.detach().cpu().item())
+                        side_terms_count += 1
                     n_train += 1
 
                     # Lightweight "YOLO-like" qualitative logging: visualize GT vs prediction
@@ -630,6 +842,7 @@ def train(
                                     "qual/overlay_pred_mean_batch0", overlay.clamp(0.0, 1.0), epoch)
 
                 train_loss /= max(1, n_train)
+                train_loss_total /= max(1, n_train)
 
                 val_loss = None
                 if val_loader is not None:
@@ -713,14 +926,32 @@ def train(
                 elapsed = float(time.time() - t0)
                 row = {
                     "epoch": epoch,
-                    "train_loss": f"{train_loss:.6f}",
+                    "train_loss": f"{train_loss_total:.6f}",
                     "val_loss": f"{val_loss:.6f}" if val_loss is not None else "",
                     "seconds": f"{elapsed:.2f}",
                 }
                 writer.writerow(row)
                 fh.flush()
 
-                tb_writer.add_scalar("loss/train", train_loss, epoch)
+                tb_writer.add_scalar("loss/train_base", train_loss, epoch)
+                tb_writer.add_scalar("loss/train", train_loss_total, epoch)
+                if pair_terms_count:
+                    tb_writer.add_scalar(
+                        "loss/pair_overlap",
+                        pair_overlap_sum / max(1, pair_terms_count),
+                        epoch,
+                    )
+                    tb_writer.add_scalar(
+                        "loss/pair_margin",
+                        pair_margin_sum / max(1, pair_terms_count),
+                        epoch,
+                    )
+                if side_terms_count:
+                    tb_writer.add_scalar(
+                        "loss/lr_side",
+                        side_loss_sum / max(1, side_terms_count),
+                        epoch,
+                    )
                 if val_loss is not None:
                     tb_writer.add_scalar("loss/val", val_loss, epoch)
                     tb_writer.add_scalar("val/dice_mean", dice_mean, epoch)
@@ -753,7 +984,7 @@ def train(
 
                 payload = checkpoint_pack(head=head, meta=meta)
                 torch.save(payload, last_path)
-                metric = val_loss if val_loss is not None else train_loss
+                metric = val_loss if val_loss is not None else train_loss_total
                 if metric < best_loss:
                     best_loss = metric
                     torch.save(payload, best_path)
@@ -850,6 +1081,36 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--device", default=None)
     p.add_argument("--no-cache", action="store_true",
                    help="Disable feature caching")
+    p.add_argument("--head-type", choices=("conv", "attn", "hybrid"),
+                   default="conv", help="Head architecture")
+    p.add_argument("--attn-heads", type=int, default=4,
+                   help="Attention heads (attn head only)")
+    p.add_argument("--attn-layers", type=int, default=1,
+                   help="Attention layers (attn head only)")
+    p.add_argument(
+        "--lr-pair-loss-weight",
+        type=float,
+        default=0.0,
+        help="Optional symmetric-pair regularizer weight (0=off).",
+    )
+    p.add_argument(
+        "--lr-pair-margin-px",
+        type=float,
+        default=0.0,
+        help="Optional minimum separation margin in pixels for symmetric pairs (0=off).",
+    )
+    p.add_argument(
+        "--lr-side-loss-weight",
+        type=float,
+        default=0.0,
+        help="Optional left/right side-consistency loss weight (0=off). Uses orientation anchors when available.",
+    )
+    p.add_argument(
+        "--lr-side-loss-margin",
+        type=float,
+        default=0.0,
+        help="Margin for side-consistency in [0,1] (0=enforce opposite sign).",
+    )
     p.add_argument("--early-stop-patience", type=int, default=0,
                    help="Early stop patience (0=off)")
     p.add_argument("--early-stop-min-delta", type=float, default=0.0,
@@ -905,6 +1166,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         threshold=float(args.threshold),
         device=args.device,
         cache_features=not bool(args.no_cache),
+        head_type=str(args.head_type),
+        attn_heads=int(args.attn_heads),
+        attn_layers=int(args.attn_layers),
+        lr_pair_loss_weight=float(args.lr_pair_loss_weight),
+        lr_pair_margin_px=float(args.lr_pair_margin_px),
+        lr_side_loss_weight=float(args.lr_side_loss_weight),
+        lr_side_loss_margin=float(args.lr_side_loss_margin),
         early_stop_patience=int(args.early_stop_patience),
         early_stop_min_delta=float(args.early_stop_min_delta),
         early_stop_min_epochs=int(args.early_stop_min_epochs),

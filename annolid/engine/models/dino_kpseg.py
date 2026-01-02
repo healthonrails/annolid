@@ -42,6 +42,36 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--device", default=None)
         parser.add_argument("--no-cache", action="store_true",
                             help="Disable feature caching")
+        parser.add_argument("--head-type", choices=("conv", "attn", "hybrid"),
+                            default="conv", help="Head architecture")
+        parser.add_argument("--attn-heads", type=int, default=4,
+                            help="Attention heads (attn head only)")
+        parser.add_argument("--attn-layers", type=int, default=1,
+                            help="Attention layers (attn head only)")
+        parser.add_argument(
+            "--lr-pair-loss-weight",
+            type=float,
+            default=0.0,
+            help="Optional symmetric-pair regularizer weight (0=off).",
+        )
+        parser.add_argument(
+            "--lr-pair-margin-px",
+            type=float,
+            default=0.0,
+            help="Optional minimum separation margin in pixels for symmetric pairs (0=off).",
+        )
+        parser.add_argument(
+            "--lr-side-loss-weight",
+            type=float,
+            default=0.0,
+            help="Optional left/right side-consistency loss weight (0=off). Uses orientation anchors when available.",
+        )
+        parser.add_argument(
+            "--lr-side-loss-margin",
+            type=float,
+            default=0.0,
+            help="Margin for side-consistency in [0,1] (0=enforce opposite sign).",
+        )
         parser.add_argument("--early-stop-patience", type=int,
                             default=0, help="Early stop patience (0=off)")
         parser.add_argument("--early-stop-min-delta", type=float,
@@ -97,6 +127,13 @@ class DinoKPSEGPlugin(ModelPluginBase):
             threshold=float(args.threshold),
             device=(str(args.device).strip() if args.device else None),
             cache_features=not bool(args.no_cache),
+            head_type=str(args.head_type),
+            attn_heads=int(args.attn_heads),
+            attn_layers=int(args.attn_layers),
+            lr_pair_loss_weight=float(args.lr_pair_loss_weight),
+            lr_pair_margin_px=float(args.lr_pair_margin_px),
+            lr_side_loss_weight=float(args.lr_side_loss_weight),
+            lr_side_loss_margin=float(args.lr_side_loss_margin),
             early_stop_patience=int(args.early_stop_patience),
             early_stop_min_delta=float(args.early_stop_min_delta),
             early_stop_min_epochs=int(args.early_stop_min_epochs),

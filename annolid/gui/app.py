@@ -1179,11 +1179,30 @@ class AnnolidWindow(MainWindow):
                     self.epsilon_for_polygon)
 
     def segmentAnything(self,):
-        try:
-            self.toggleDrawMode(False, createMode="polygonSAM")
-            self.canvas.loadSamPredictor()
-        except ImportError as e:
-            print(e)
+        self.toggleDrawMode(False, createMode="polygonSAM")
+        self.canvas.loadSamPredictor()
+        if not getattr(self.canvas, "sam_predictor", None):
+            error = getattr(self.canvas, "_sam_last_load_error", None)
+            if error == "missing_dependency":
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Segment Anything not installed",
+                    "Install Segment Anything first:\n\n"
+                    "  pip install git+https://github.com/facebookresearch/segment-anything.git",
+                )
+            elif error == "no_pixmap":
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "No image loaded",
+                    "Open an image first, then enable Segment Anything.",
+                )
+            else:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Segment Anything unavailable",
+                    "SAM predictor was not initialized.",
+                )
+            self.toggleDrawMode(True)
 
     def populateModeActions(self):
         tool, menu = self.actions.tool, self.actions.menu
@@ -3523,6 +3542,17 @@ class AnnolidWindow(MainWindow):
             dino_layers = getattr(dlg, "dino_layers", "-1")
             dino_radius_px = getattr(dlg, "dino_radius_px", 6.0)
             dino_hidden_dim = getattr(dlg, "dino_hidden_dim", 128)
+            dino_head_type = getattr(dlg, "dino_head_type", "conv")
+            dino_attn_heads = getattr(dlg, "dino_attn_heads", 4)
+            dino_attn_layers = getattr(dlg, "dino_attn_layers", 1)
+            dino_lr_pair_loss_weight = getattr(
+                dlg, "dino_lr_pair_loss_weight", 0.0)
+            dino_lr_pair_margin_px = getattr(
+                dlg, "dino_lr_pair_margin_px", 0.0)
+            dino_lr_side_loss_weight = getattr(
+                dlg, "dino_lr_side_loss_weight", 0.0)
+            dino_lr_side_loss_margin = getattr(
+                dlg, "dino_lr_side_loss_margin", 0.0)
             dino_lr = getattr(dlg, "dino_lr", 0.002)
             dino_threshold = getattr(dlg, "dino_threshold", 0.4)
             dino_cache_features = getattr(dlg, "dino_cache_features", True)
@@ -3578,6 +3608,13 @@ class AnnolidWindow(MainWindow):
                 threshold=float(dino_threshold),
                 device=yolo_device,
                 cache_features=bool(dino_cache_features),
+                head_type=str(dino_head_type or "conv"),
+                attn_heads=int(dino_attn_heads),
+                attn_layers=int(dino_attn_layers),
+                lr_pair_loss_weight=float(dino_lr_pair_loss_weight),
+                lr_pair_margin_px=float(dino_lr_pair_margin_px),
+                lr_side_loss_weight=float(dino_lr_side_loss_weight),
+                lr_side_loss_margin=float(dino_lr_side_loss_margin),
                 early_stop_patience=int(dino_patience),
                 early_stop_min_delta=float(dino_min_delta),
                 early_stop_min_epochs=int(dino_min_epochs),

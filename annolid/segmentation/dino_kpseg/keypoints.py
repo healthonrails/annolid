@@ -77,6 +77,98 @@ def symmetric_pairs_from_flip_idx(flip_idx: Sequence[int]) -> List[Tuple[int, in
     return pairs
 
 
+def infer_left_right_pairs(
+    keypoint_names: Sequence[str],
+    *,
+    flip_idx: Sequence[int],
+) -> List[Tuple[int, int]]:
+    """Infer directed (left_idx, right_idx) pairs using keypoint names + flip_idx."""
+    names = [str(n or "").strip().lower() for n in keypoint_names]
+    pairs = symmetric_pairs_from_flip_idx(flip_idx)
+    out: List[Tuple[int, int]] = []
+
+    def is_left(name: str) -> bool:
+        return (
+            "left" in name
+            or name.startswith("l_")
+            or name.startswith("l-")
+            or name.startswith("l.")
+            or name.startswith("lf")
+        )
+
+    def is_right(name: str) -> bool:
+        return (
+            "right" in name
+            or name.startswith("r_")
+            or name.startswith("r-")
+            or name.startswith("r.")
+            or name.startswith("rt")
+        )
+
+    for i, j in pairs:
+        if i >= len(names) or j >= len(names):
+            continue
+        ni, nj = names[i], names[j]
+        if is_left(ni) and is_right(nj):
+            out.append((i, j))
+        elif is_left(nj) and is_right(ni):
+            out.append((j, i))
+    return out
+
+
+def infer_orientation_anchor_indices(
+    keypoint_names: Sequence[str],
+    *,
+    max_anchors: int = 4,
+) -> List[int]:
+    """Pick asymmetric keypoints that define body orientation (e.g., nose, head, tailbase).
+
+    These anchors can provide a stable orientation cue to help disambiguate left/right parts.
+    """
+    names = [str(n or "").strip().lower() for n in keypoint_names]
+    if not names:
+        return []
+
+    # Prefer strong, asymmetric anchors first.
+    priority_tokens = (
+        "nose",
+        "snout",
+        "head",
+        "tailbase",
+        "tail_base",
+        "tail-base",
+        "tailroot",
+        "tail_root",
+        "tail-root",
+        "rump",
+        "spine",
+        "center",
+        "midline",
+        "body",
+        "base",
+    )
+
+    def is_symmetric(name: str) -> bool:
+        return (
+            "left" in name
+            or "right" in name
+            or name.startswith(("l_", "r_", "l-", "r-", "l.", "r."))
+        )
+
+    anchors: List[int] = []
+    for token in priority_tokens:
+        for idx, name in enumerate(names):
+            if idx in anchors:
+                continue
+            if not name or is_symmetric(name):
+                continue
+            if token in name:
+                anchors.append(idx)
+                if len(anchors) >= int(max_anchors):
+                    return anchors
+    return anchors
+
+
 @dataclass
 class LRStabilizeConfig:
     """Heuristic left/right identity stabilizer for symmetric keypoints."""

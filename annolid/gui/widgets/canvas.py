@@ -136,6 +136,8 @@ class Canvas(QtWidgets.QWidget):
         self.sam_predictor = None
         self.sam_hq_model = None
         self.sam_mask = MaskShape()
+        self._sam_predictor_missing_logged = False
+        self._sam_last_load_error = None
         self.behavior_text_position = "top-left"  # Default position
         self.behavior_text_color = QtGui.QColor(255, 255, 255)
         # Semi-transparent background keeps overlay text readable on bright images
@@ -662,14 +664,20 @@ To install Segment Anything, run the following command in your terminal:
 pip install git+https://github.com/facebookresearch/segment-anything.git
 
         """
+        self._sam_last_load_error = None
         if self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
+            self._sam_last_load_error = "no_pixmap"
             return
         if not self.sam_predictor:
-            import torch
-            from pathlib import Path
-            from segment_anything import sam_model_registry, SamPredictor
-            from annolid.utils.devices import has_gpu
+            try:
+                import torch
+                from pathlib import Path
+                from segment_anything import sam_model_registry, SamPredictor
+                from annolid.utils.devices import has_gpu
+            except ImportError:
+                self._sam_last_load_error = "missing_dependency"
+                return
             if not has_gpu() and not torch.cuda.is_available():
                 QtWidgets.QMessageBox.about(self,
                                             "GPU not available",
@@ -696,6 +704,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             if self.sam_config["device"] == "cuda" and torch.cuda.is_available():
                 sam.to(device="cuda")
             self.sam_predictor = SamPredictor(sam)
+            self._sam_predictor_missing_logged = False
         self.samEmbedding()
 
     def samEmbedding(self,):
@@ -717,6 +726,19 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         if self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
             return
+        if not self.sam_predictor:
+            if not self._sam_predictor_missing_logged:
+                logger.warning(
+                    "SAM predictor is not initialized; run 'Segment Anything' to load the model."
+                )
+                self._sam_predictor_missing_logged = True
+            return
+        if not hasattr(self, "sam_image_scale"):
+            try:
+                self.samEmbedding()
+            except Exception:
+                logger.exception("Failed to set SAM image embedding.")
+                return
         masks, scores, logits = self.sam_predictor.predict(
             point_coords=points*self.sam_image_scale,
             point_labels=labels,

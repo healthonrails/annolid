@@ -45,6 +45,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_layers = "-1"
         self.dino_radius_px = 6.0
         self.dino_hidden_dim = 128
+        self.dino_head_type = "conv"
+        self.dino_attn_heads = 4
+        self.dino_attn_layers = 1
+        self.dino_lr_pair_loss_weight = 0.0
+        self.dino_lr_pair_margin_px = 0.0
+        self.dino_lr_side_loss_weight = 0.0
+        self.dino_lr_side_loss_margin = 0.0
         self.dino_lr = 0.002
         self.dino_threshold = 0.4
         self.dino_cache_features = True
@@ -559,6 +566,75 @@ class TrainModelDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(box)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
+        head_type = QtWidgets.QComboBox(box)
+        head_type.addItem("Conv head (fast)", userData="conv")
+        head_type.addItem("Attention head (relational)", userData="attn")
+        head_type.addItem("Hybrid head (conv + attn)", userData="hybrid")
+        head_default_idx = head_type.findData(
+            str(getattr(self, "dino_head_type", "conv")))
+        if head_default_idx >= 0:
+            head_type.setCurrentIndex(head_default_idx)
+
+        def _on_head_changed(_=None) -> None:
+            setattr(self, "dino_head_type", str(
+                head_type.currentData() or "conv"))
+            self._update_dino_head_controls()
+
+        head_type.currentIndexChanged.connect(_on_head_changed)
+        self._dino_head_type_combo = head_type
+
+        attn_heads = QtWidgets.QSpinBox(box)
+        attn_heads.setRange(1, 32)
+        attn_heads.setValue(int(getattr(self, "dino_attn_heads", 4)))
+        attn_heads.valueChanged.connect(
+            lambda v: setattr(self, "dino_attn_heads", int(v)))
+        self._dino_attn_heads_spin = attn_heads
+
+        attn_layers = QtWidgets.QSpinBox(box)
+        attn_layers.setRange(1, 8)
+        attn_layers.setValue(int(getattr(self, "dino_attn_layers", 1)))
+        attn_layers.valueChanged.connect(
+            lambda v: setattr(self, "dino_attn_layers", int(v)))
+        self._dino_attn_layers_spin = attn_layers
+
+        pair_w = QtWidgets.QDoubleSpinBox(box)
+        pair_w.setDecimals(6)
+        pair_w.setRange(0.0, 10.0)
+        pair_w.setSingleStep(0.01)
+        pair_w.setValue(float(getattr(self, "dino_lr_pair_loss_weight", 0.0)))
+        pair_w.valueChanged.connect(lambda v: setattr(
+            self, "dino_lr_pair_loss_weight", float(v)))
+        self._dino_pair_loss_weight = pair_w
+
+        pair_margin = QtWidgets.QDoubleSpinBox(box)
+        pair_margin.setDecimals(2)
+        pair_margin.setRange(0.0, 256.0)
+        pair_margin.setSingleStep(1.0)
+        pair_margin.setValue(
+            float(getattr(self, "dino_lr_pair_margin_px", 0.0)))
+        pair_margin.valueChanged.connect(lambda v: setattr(
+            self, "dino_lr_pair_margin_px", float(v)))
+        self._dino_pair_margin_px = pair_margin
+
+        side_w = QtWidgets.QDoubleSpinBox(box)
+        side_w.setDecimals(6)
+        side_w.setRange(0.0, 10.0)
+        side_w.setSingleStep(0.01)
+        side_w.setValue(float(getattr(self, "dino_lr_side_loss_weight", 0.0)))
+        side_w.valueChanged.connect(lambda v: setattr(
+            self, "dino_lr_side_loss_weight", float(v)))
+        self._dino_side_loss_weight = side_w
+
+        side_margin = QtWidgets.QDoubleSpinBox(box)
+        side_margin.setDecimals(3)
+        side_margin.setRange(0.0, 1.0)
+        side_margin.setSingleStep(0.05)
+        side_margin.setValue(
+            float(getattr(self, "dino_lr_side_loss_margin", 0.0)))
+        side_margin.valueChanged.connect(lambda v: setattr(
+            self, "dino_lr_side_loss_margin", float(v)))
+        self._dino_side_loss_margin = side_margin
+
         lr = QtWidgets.QDoubleSpinBox(box)
         lr.setDecimals(6)
         lr.setRange(1e-6, 1.0)
@@ -620,6 +696,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         min_epochs.valueChanged.connect(
             lambda v: setattr(self, "dino_min_epochs", int(v)))
 
+        form.addRow("Head type", head_type)
+        form.addRow("Attn heads", attn_heads)
+        form.addRow("Attn layers", attn_layers)
+        form.addRow("Pair loss weight", pair_w)
+        form.addRow("Pair margin (px)", pair_margin)
+        form.addRow("LR side loss weight", side_w)
+        form.addRow("LR side loss margin", side_margin)
         form.addRow("Learning rate", lr)
         form.addRow("Circle radius (px)", radius)
         form.addRow("Head hidden dim", hidden)
@@ -629,7 +712,16 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("Early stop min epochs", min_epochs)
         form.addRow("", tb_graph)
         form.addRow("", cache)
+        self._update_dino_head_controls()
         return box
+
+    def _update_dino_head_controls(self) -> None:
+        head_type = str(getattr(self, "dino_head_type", "conv")
+                        or "conv").strip().lower()
+        attn_enabled = head_type in {"attn", "hybrid"}
+        for w in (getattr(self, "_dino_attn_heads_spin", None), getattr(self, "_dino_attn_layers_spin", None)):
+            if w is not None:
+                w.setEnabled(attn_enabled)
 
     def _build_dino_augment_groupbox(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("DINO KPSEG Augmentations", self)
