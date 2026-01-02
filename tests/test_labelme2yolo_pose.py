@@ -162,3 +162,36 @@ def test_labelme2yolo_pose_points_only(tmp_path):
     # Keypoints should match the normalized coordinates
     assert floats[4:6] == pytest.approx([30 / 120, 40 / 90])
     assert floats[6:8] == pytest.approx([80 / 120, 60 / 90])
+
+
+def test_labelme2yolo_does_not_split_concatenated_keypoint_labels(tmp_path):
+    image_width = 120
+    image_height = 90
+    image_path = tmp_path / "mouse.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "tail",
+                "points": [[10, 20], [30, 20], [30, 40], [10, 40]],
+                "shape_type": "polygon",
+            },
+            {
+                # This should remain "tailbase" rather than being split into instance "tail" + kp "base".
+                "label": "tailbase",
+                "points": [[80, 60]],
+                "shape_type": "point",
+            },
+        ],
+    }
+    json_path = tmp_path / "mouse_000000000.json"
+    json_path.write_text(json.dumps(annotation))
+
+    converter = Labelme2YOLO(str(tmp_path))
+    assert "tailbase" in converter.keypoint_labels_order
+    assert "base" not in converter.keypoint_labels_order

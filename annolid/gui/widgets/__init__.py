@@ -12,3 +12,5 @@ from annolid.gui.widgets.screen_shot import CanvasScreenshotWidget
 from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.realtime_control_widget import RealtimeControlWidget
 from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
+from annolid.gui.widgets.label_collection_dialog import LabelCollectionDialog
+from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog, TrainingDashboardWidget

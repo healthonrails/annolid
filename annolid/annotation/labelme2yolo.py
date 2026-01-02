@@ -471,9 +471,11 @@ class Labelme2YOLO:
             inst_len = len(instance_label)
             if label.lower().startswith(instance_label.lower()) and inst_len < len(label):
                 suffix = label[inst_len:]
-                suffix = suffix.lstrip("_-:| ")
-                if suffix:
-                    return suffix
+                # Only strip when the instance/keypoint boundary is explicit.
+                if suffix and suffix[0] in "_-:| ":
+                    suffix = suffix.lstrip("_-:| ")
+                    if suffix:
+                        return suffix
         for delimiter in ("_", "-", ":", "|"):
             if delimiter in label:
                 suffix = label.split(delimiter, 1)[1].strip()
@@ -767,7 +769,7 @@ class Labelme2YOLO:
 
         # Save the image file in the YOLO format.
         img_path = self.save_or_copy_image(
-            json_data, json_name, self.image_folder, target_dir)
+            json_data, json_name, self.image_folder, target_dir, json_path=json_path)
 
         # Get a list of YOLO objects from the JSON data and save the output text file.
         yolo_objects = self.get_yolo_objects(json_name, json_data, img_path)
@@ -866,7 +868,8 @@ class Labelme2YOLO:
     def save_or_copy_image(json_data: dict,
                            json_name: str,
                            image_dir_path: str,
-                           target_dir: str) -> str:
+                           target_dir: str,
+                           json_path: Optional[str] = None) -> str:
         """
         Save an image in YOLO format.
 
@@ -887,8 +890,21 @@ class Labelme2YOLO:
                 PIL.Image.fromarray(img).save(img_path)
             else:
                 src_img_path = json_data.get('imagePath') or ""
-                if os.path.exists(src_img_path):
-                    shutil.copy(src_img_path, img_path)
+                candidates = []
+                if src_img_path:
+                    candidates.append(src_img_path)
+                    if json_path:
+                        candidates.append(
+                            os.path.join(os.path.dirname(
+                                json_path), src_img_path)
+                        )
+                chosen = None
+                for candidate in candidates:
+                    if candidate and os.path.exists(candidate):
+                        chosen = candidate
+                        break
+                if chosen:
+                    shutil.copy(chosen, img_path)
         return img_path
 
     def save_data_yaml(self):
