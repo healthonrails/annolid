@@ -29,7 +29,7 @@ from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGHead,
     checkpoint_pack,
 )
-from annolid.segmentation.dino_kpseg.cli_utils import parse_layers
+from annolid.segmentation.dino_kpseg.cli_utils import normalize_device, parse_layers
 from annolid.utils.runs import new_run_dir, shared_runs_root
 from annolid.utils.logger import logger
 
@@ -311,7 +311,7 @@ def train(
             "; ".join(summary.example_issues[:3]),
         )
 
-    device_str = device or _default_device()
+    device_str = normalize_device(device)
     logger.info("Training DinoKPSEG on %s with device=%s",
                 data_yaml, device_str)
 

@@ -152,8 +152,24 @@ class Dinov3FeatureExtractor:
     # --------------------------
     @staticmethod
     def _select_device(preferred: Optional[str]) -> torch.device:
-        if preferred:
-            return torch.device(preferred)
+        if preferred is not None:
+            raw = str(preferred).strip()
+            if raw:
+                lowered = raw.lower()
+                if lowered.isdigit():
+                    if torch.cuda.is_available():
+                        return torch.device(f"cuda:{int(lowered)}")
+                    if torch.backends.mps.is_available():
+                        return torch.device("mps")
+                    return torch.device("cpu")
+                if lowered.startswith("cuda") and ":" not in lowered:
+                    suffix = lowered[4:]
+                    if suffix.isdigit():
+                        return torch.device(f"cuda:{int(suffix)}")
+                if lowered in ("auto", "best"):
+                    preferred = None
+                else:
+                    return torch.device(raw)
         if torch.cuda.is_available():
             return torch.device("cuda")
         if torch.backends.mps.is_available():

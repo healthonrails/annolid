@@ -9,6 +9,7 @@ import torch
 
 from annolid.features import Dinov3FeatureExtractor
 from annolid.segmentation.dino_kpseg.data import build_extractor
+from annolid.segmentation.dino_kpseg.cli_utils import normalize_device
 from annolid.segmentation.dino_kpseg.keypoints import (
     LRStabilizeConfig,
     infer_flip_idx_from_names,
@@ -59,12 +60,8 @@ class DinoKPSEGPredictor:
         self._prev_keypoints_xy: Optional[List[Tuple[float, float]]] = None
         self._prev_keypoint_scores: Optional[List[float]] = None
 
-        self.device = torch.device(device) if device else (
-            torch.device("cuda") if torch.cuda.is_available() else (
-                torch.device("mps") if torch.backends.mps.is_available(
-                ) else torch.device("cpu")
-            )
-        )
+        device_norm = normalize_device(device)
+        self.device = torch.device(device_norm)
         self.extractor: Dinov3FeatureExtractor = build_extractor(
             model_name=meta.model_name,
             short_side=meta.short_side,
