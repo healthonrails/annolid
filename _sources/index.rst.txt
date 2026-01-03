@@ -10,6 +10,7 @@ Welcome to annolid's documentation!
    extract_frames
    track_animals
    video_depth_anything
+   image_editing
    dino_kpseg
    keypoints_definitions
    faqs
