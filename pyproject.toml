@@ -70,6 +70,12 @@ sam3 = [
     "ftfy>=6.1.1",
 ]
 
+image_editing = [
+    "diffusers>=0.32.0",
+    "accelerate>=0.27.0",
+    "safetensors>=0.4.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"

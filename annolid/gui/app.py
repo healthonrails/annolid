@@ -118,6 +118,7 @@ from annolid.data.videos import get_video_files
 from annolid.data.audios import AudioLoader
 from annolid.gui.widgets.caption import CaptionWidget
 from annolid.gui.widgets.florence2_widget import Florence2DockWidget
+from annolid.gui.widgets.image_editing_widget import ImageEditingDockWidget
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.model_manager import AIModelManager
 from annolid.postprocessing.video_timestamp_annotator import process_directory
@@ -1092,6 +1093,24 @@ class AnnolidWindow(MainWindow):
             self.florence_dock = dock
 
         if isinstance(dock, Florence2DockWidget):
+            dock.show_or_raise()
+        else:
+            if dock.isHidden():
+                dock.show()
+            dock.raise_()
+
+    def openImageEditing(self):
+        """Open or show the Image Editing dock widget."""
+        dock = getattr(self, "image_editing_dock", None)
+        if dock is None:
+            dock = ImageEditingDockWidget(self)
+            dock.destroyed.connect(
+                lambda *_: setattr(self, "image_editing_dock", None)
+            )
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+            self.image_editing_dock = dock
+
+        if isinstance(dock, ImageEditingDockWidget):
             dock.show_or_raise()
         else:
             if dock.isHidden():

@@ -138,6 +138,15 @@ class MenuController:
                 "icon_name": "objects",
             },
             {
+                "name": "open_image_editing",
+                "text": w.tr("Image &Editing…"),
+                "slot": w.openImageEditing,
+                "tip": w.tr(
+                    "Generate/edit images with Diffusers or stable-diffusion.cpp (supports Qwen-Image GGUF presets)"
+                ),
+                "icon_name": "objects",
+            },
+            {
                 "name": "downsample_video",
                 "text": w.tr("&Downsample Videos"),
                 "slot": w.downsample_videos,
@@ -465,6 +474,7 @@ class MenuController:
         tool_actions.append(actions["sam3d_reconstruct"])
         tool_actions.append(actions["visualization"])
         tool_actions.append(actions["open_florence2"])
+        tool_actions.append(actions["open_image_editing"])
         tool_actions.append(w.patch_similarity_action)
         tool_actions.append(w.pca_map_action)
         tool_actions.append(w.recording_widget.record_action)
@@ -488,6 +498,7 @@ class MenuController:
                 actions["open_audio"],
                 actions["open_caption"],
                 actions["open_florence2"],
+                actions["open_image_editing"],
                 actions["colab"],
             ),
             (
