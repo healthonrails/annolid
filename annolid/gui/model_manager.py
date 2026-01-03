@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Set
 
 from labelme.ai import MODELS
 from qtpy import QtCore, QtWidgets
@@ -30,6 +30,7 @@ class AIModelManager(QtCore.QObject):
         self._canvas_getter = canvas_getter
 
         self._browse_custom_label = parent.tr("Browse Custom YOLO…")
+        self._missing_custom_weights_logged: Set[str] = set()
         self._custom_model_configs: List[ModelConfig] = self._load_custom_models(
         )
         self._last_selection: Optional[str] = None
@@ -46,14 +47,27 @@ class AIModelManager(QtCore.QObject):
     def get_current_model(self) -> Optional[ModelConfig]:
         """Return the ModelConfig associated with the current combo selection."""
         current_text = self._combo.currentText()
-        return next(
-            (cfg for cfg in self.all_model_configs if cfg.display_name == current_text),
-            None,
-        )
+        selected = self._find_model_config(current_text)
+        if selected and self._is_custom_model(selected):
+            if not self._is_model_available(selected):
+                self._warn_missing_custom_weight(selected)
+                fallback = self._restore_previous_selection(
+                    exclude=selected.display_name)
+                return fallback
+        return selected
 
     def get_current_weight(self) -> str:
         model = self.get_current_model()
-        return model.weight_file if model else "Segment-Anything (Edge)"
+        if not model:
+            return "Segment-Anything (Edge)"
+        if self._is_custom_model(model) and not self._is_model_available(model):
+            self._warn_missing_custom_weight(model)
+            fallback = self._restore_previous_selection(
+                exclude=model.display_name)
+            if fallback:
+                return fallback.weight_file
+            return "Segment-Anything (Edge)"
+        return model.weight_file
 
     @property
     def custom_model_names(self) -> List[str]:
@@ -125,6 +139,14 @@ class AIModelManager(QtCore.QObject):
             self._prompt_for_custom_model()
             return
 
+        selected_model = self._find_model_config(current_text)
+        if selected_model and self._is_custom_model(selected_model):
+            if not self._is_model_available(selected_model):
+                self._warn_missing_custom_weight(selected_model)
+                self._restore_previous_selection(
+                    exclude=selected_model.display_name)
+                return
+
         self._last_selection = current_text
 
         canvas = self._canvas_getter()
@@ -137,15 +159,7 @@ class AIModelManager(QtCore.QObject):
             )
 
     def _prompt_for_custom_model(self) -> None:
-        parent_obj = self.parent()
-        if isinstance(parent_obj, QtWidgets.QWidget):
-            parent_widget: Optional[QtWidgets.QWidget] = parent_obj
-        else:
-            # Fallback to the combo box's top-level window if the manager's parent
-            # is not a QWidget instance (should not happen, but keeps it robust).
-            window = self._combo.window()
-            parent_widget = window if isinstance(
-                window, QtWidgets.QWidget) else None
+        parent_widget = self._get_parent_widget()
 
         dialog = QtWidgets.QFileDialog(parent_widget)
         dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
@@ -208,6 +222,84 @@ class AIModelManager(QtCore.QObject):
 
         self._refresh_combo(target_display)
 
+    def _get_parent_widget(self) -> Optional[QtWidgets.QWidget]:
+        parent_obj = self.parent()
+        if isinstance(parent_obj, QtWidgets.QWidget):
+            return parent_obj
+        window = self._combo.window()
+        return window if isinstance(window, QtWidgets.QWidget) else None
+
+    def _find_model_config(self, display_name: str) -> Optional[ModelConfig]:
+        return next(
+            (
+                cfg
+                for cfg in self.all_model_configs
+                if cfg.display_name == display_name
+            ),
+            None,
+        )
+
+    def _is_custom_model(self, model: ModelConfig) -> bool:
+        return model in self._custom_model_configs
+
+    def _is_model_available(self, model: ModelConfig) -> bool:
+        if not self._is_custom_model(model):
+            return True
+        resolved = Path(model.weight_file).expanduser()
+        exists = resolved.exists()
+        if exists:
+            resolved_str = str(resolved.resolve())
+            self._missing_custom_weights_logged.discard(resolved_str)
+        return exists
+
+    def _warn_missing_custom_weight(self, model: ModelConfig) -> None:
+        resolved = Path(model.weight_file).expanduser().resolve()
+        resolved_str = str(resolved)
+        first_time = resolved_str not in self._missing_custom_weights_logged
+        if first_time:
+            logger.warning("Custom YOLO weights not found: %s", resolved_str)
+            self._missing_custom_weights_logged.add(resolved_str)
+
+        parent_widget = self._get_parent_widget()
+        if parent_widget and first_time:
+            QtWidgets.QMessageBox.warning(
+                parent_widget,
+                self.tr("Custom model weights not found"),
+                self.tr(
+                    "The custom YOLO weights for \"{name}\" were not found at:\n"
+                    "{path}\n"
+                    "Please reconnect the storage location or choose a different model."
+                ).format(name=model.display_name, path=resolved_str),
+            )
+
+    def _restore_previous_selection(
+        self, *, exclude: Optional[str] = None
+    ) -> Optional[ModelConfig]:
+        candidates = []
+        if self._last_selection:
+            candidates.append(self._last_selection)
+        default_text = self._config.get("ai", {}).get("default")
+        if default_text and default_text not in candidates:
+            candidates.append(default_text)
+        candidates.extend(
+            cfg.display_name for cfg in self.all_model_configs
+            if cfg.display_name not in candidates
+        )
+
+        for name in candidates:
+            if exclude and name == exclude:
+                continue
+            cfg = self._find_model_config(name)
+            if cfg and self._is_model_available(cfg):
+                index = self._combo.findText(cfg.display_name)
+                if index != -1:
+                    self._combo.blockSignals(True)
+                    self._combo.setCurrentIndex(index)
+                    self._combo.blockSignals(False)
+                    self._last_selection = self._combo.currentText()
+                return cfg
+        return None
+
     def _load_custom_models(self) -> List[ModelConfig]:
         stored = self._settings.value("ai/custom_yolo_models", [])
         entries: List[ModelConfig] = []
@@ -234,10 +326,6 @@ class AIModelManager(QtCore.QObject):
             if not weight:
                 continue
             resolved = Path(weight).expanduser().resolve()
-            if not resolved.exists():
-                logger.warning(
-                    "Skipping missing custom YOLO weights: %s", resolved)
-                continue
             display = item.get("display") or resolved.stem
             identifier = item.get("identifier") or str(resolved)
             entries.append(
