@@ -72,33 +72,37 @@ def _cmd_index_to_yolo(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_import_mouse_training_data(args: argparse.Namespace) -> int:
-    from annolid.datasets.importers.mouse_training_data import (
-        MouseTrainingImportConfig,
-        import_mouse_training_data,
+def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
+    from annolid.datasets.importers.deeplabcut_training_data import (
+        DeepLabCutTrainingImportConfig,
+        import_deeplabcut_training_data,
     )
     from annolid.datasets.labelme_collection import index_labelme_dataset
 
     source_dir = Path(args.source_dir).expanduser().resolve()
-    summary = import_mouse_training_data(
-        MouseTrainingImportConfig(
+    labeled_data = Path(args.labeled_data)
+    labeled_data = labeled_data if labeled_data.is_absolute() else (source_dir / labeled_data)
+
+    summary = import_deeplabcut_training_data(
+        DeepLabCutTrainingImportConfig(
             source_dir=source_dir,
-            annotations_json=Path(args.annotations_json),
-            images_root=Path(args.images_root),
-            keypoints_csv=Path(args.keypoints_csv),
+            labeled_data_root=Path(args.labeled_data),
             instance_label=str(args.instance_label),
             overwrite=bool(args.overwrite),
-        )
+            recursive=not bool(args.no_recursive),
+        ),
+        write_pose_schema=bool(args.write_pose_schema),
+        pose_schema_out=Path(args.pose_schema_out) if args.pose_schema_out else None,
+        pose_schema_preset=str(args.pose_schema_preset),
+        instance_separator=str(args.instance_separator or "_"),
     )
 
     if bool(args.write_index):
         index_file = Path(args.index_file)
         if not index_file.is_absolute():
             index_file = source_dir / index_file
-        images_root = Path(args.images_root)
-        images_root = images_root if images_root.is_absolute() else (source_dir / images_root)
         index_summary = index_labelme_dataset(
-            sources=[images_root],
+            sources=[labeled_data],
             index_file=index_file,
             recursive=True,
             include_empty=False,
@@ -188,21 +192,39 @@ def _build_root_parser() -> argparse.ArgumentParser:
     yolo_p.set_defaults(_handler=_cmd_index_to_yolo)
 
     imp_p = sub.add_parser(
-        "import-mouse-training-data",
-        help="Convert mouse_training_data (mouse.json + labeled-data) into LabelMe JSON next to images, then (optionally) index it.",
+        "import-deeplabcut-training-data",
+        help="Convert DeepLabCut labeled-data (CollectedData_*.csv) into LabelMe JSON next to images, then (optionally) index it.",
     )
     imp_p.add_argument("--source-dir", required=True,
                        help="Dataset root, e.g. /Users/.../mouse_training_data")
-    imp_p.add_argument("--annotations-json", default="mouse.json",
-                       help="Path to mouse.json (default: mouse.json)")
-    imp_p.add_argument("--images-root", default="labeled-data",
-                       help="Images root relative to --source-dir (default: labeled-data)")
-    imp_p.add_argument("--keypoints-csv", default="keypoint_definitions.csv",
-                       help="Keypoint CSV (default: keypoint_definitions.csv)")
+    imp_p.add_argument("--labeled-data", default="labeled-data",
+                       help="labeled-data root relative to --source-dir (default: labeled-data)")
     imp_p.add_argument("--instance-label", default="mouse",
-                       help="Instance label to use in LabelMe shapes (default: mouse)")
+                       help="Instance label prefix to use for point shapes (default: mouse)")
     imp_p.add_argument("--overwrite", action="store_true",
                        help="Overwrite existing per-image LabelMe JSON files.")
+    imp_p.add_argument("--no-recursive", action="store_true",
+                       help="Do not search for CollectedData_*.csv recursively under --labeled-data.")
+    imp_p.add_argument(
+        "--write-pose-schema",
+        action="store_true",
+        help="Write pose_schema.json derived from DeepLabCut bodyparts.",
+    )
+    imp_p.add_argument(
+        "--pose-schema-out",
+        default="labeled-data/pose_schema.json",
+        help="Path (relative to --source-dir) for the pose schema (default: labeled-data/pose_schema.json).",
+    )
+    imp_p.add_argument(
+        "--pose-schema-preset",
+        default="mouse",
+        help="Edge preset to use when building the schema (default: mouse).",
+    )
+    imp_p.add_argument(
+        "--instance-separator",
+        default="_",
+        help="Separator used for instance prefixes (default: _).",
+    )
     imp_p.add_argument(
         "--index-file",
         default="annolid_logs/annolid_dataset.jsonl",
@@ -211,7 +233,7 @@ def _build_root_parser() -> argparse.ArgumentParser:
     imp_p.add_argument("--no-index", dest="write_index",
                        action="store_false", help="Skip writing annolid_dataset.jsonl")
     imp_p.set_defaults(
-        write_index=True, _handler=_cmd_import_mouse_training_data)
+        write_index=True, _handler=_cmd_import_deeplabcut_training_data)
 
     train_p = sub.add_parser("train", help="Train a model.")
     train_p.add_argument("model", help="Model plugin name (see list-models).")
