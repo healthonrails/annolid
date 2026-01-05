@@ -140,6 +140,63 @@ def test_labelme2yolo_pose_with_visibility(tmp_path):
     assert converter.kpt_shape == [2, 3]
 
 
+def test_labelme2yolo_does_not_expand_single_instance_pose_schema(tmp_path: Path):
+    image_width = 100
+    image_height = 80
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    (tmp_path / "pose_schema.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "keypoints": ["head", "tail"],
+                "edges": [],
+                "symmetry_pairs": [],
+                # Single-instance schemas should not force prefix expansion in YOLO export.
+                "instances": ["mouse"],
+                "instance_separator": "_",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "mouse",
+                "points": [[10, 20], [60, 20], [60, 50], [10, 50]],
+                "shape_type": "polygon",
+                "flags": {"instance_label": "mouse"},
+            },
+            {
+                "label": "mouse_head",
+                "points": [[20, 30]],
+                "shape_type": "point",
+                "flags": {"instance_label": "mouse", "display_label": "head"},
+                "visible": True,
+            },
+            {
+                "label": "mouse_tail",
+                "points": [[55, 45]],
+                "shape_type": "point",
+                "flags": {"instance_label": "mouse", "display_label": "tail"},
+                "visible": True,
+            },
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(str(tmp_path))
+    assert converter.pose_schema is not None
+    assert converter.pose_schema.instances == ["mouse"]
+    assert converter.keypoint_labels_order == ["head", "tail"]
+
+
 def test_labelme2yolo_pose_points_only(tmp_path):
     _write_points_only_annotation(tmp_path)
     converter = Labelme2YOLO(str(tmp_path))

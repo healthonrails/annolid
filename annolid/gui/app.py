@@ -2508,7 +2508,9 @@ class AnnolidWindow(MainWindow):
 
     def loadFlags(self, flags):
         """Delegate flag loading to the flags controller."""
-        self.flags_controller.load_flags(flags)
+        from annolid.utils.labelme_flags import sanitize_labelme_flags
+
+        self.flags_controller.load_flags(sanitize_labelme_flags(flags))
 
     @property
     def pinned_flags(self):

@@ -30,9 +30,11 @@ def _detect_dlc_header_levels(csv_path: Path) -> int:
     if len(lines) < 3:
         return 3
     first = lines[0].split(",", 1)[0].strip().lower()
-    second = lines[1].split(",", 1)[0].strip().lower() if len(lines) > 1 else ""
+    second = lines[1].split(",", 1)[0].strip(
+    ).lower() if len(lines) > 1 else ""
     third = lines[2].split(",", 1)[0].strip().lower() if len(lines) > 2 else ""
-    fourth = lines[3].split(",", 1)[0].strip().lower() if len(lines) > 3 else ""
+    fourth = lines[3].split(",", 1)[0].strip(
+    ).lower() if len(lines) > 3 else ""
 
     if first == "scorer" and second in ("individuals", "animals") and third == "bodyparts" and fourth == "coords":
         return 4
@@ -102,7 +104,8 @@ def build_pose_schema_from_keypoints(
         keypoints=base_keypoints,
         edges=edges,
         symmetry_pairs=symmetry_pairs,
-        instances=[str(i).strip() for i in (instances or []) if str(i).strip()],
+        instances=[str(i).strip()
+                   for i in (instances or []) if str(i).strip()],
         instance_separator=str(instance_separator or "_"),
     )
 
@@ -226,11 +229,13 @@ def import_deeplabcut_training_data(
 ) -> Dict[str, Any]:
     source_dir = Path(cfg.source_dir).expanduser().resolve()
     labeled_root = Path(cfg.labeled_data_root)
-    labeled_root = labeled_root if labeled_root.is_absolute() else (source_dir / labeled_root)
+    labeled_root = labeled_root if labeled_root.is_absolute() else (source_dir /
+                                                                    labeled_root)
     if not labeled_root.exists():
         raise FileNotFoundError(f"labeled-data root not found: {labeled_root}")
 
-    collected_csvs = [p for p in _iter_collected_data_csvs(labeled_root, recursive=cfg.recursive) if p.is_file()]
+    collected_csvs = [p for p in _iter_collected_data_csvs(
+        labeled_root, recursive=cfg.recursive) if p.is_file()]
     written = 0
     skipped_existing = 0
     missing_images = 0
@@ -287,9 +292,6 @@ def import_deeplabcut_training_data(
                     missing_images += 1
                     continue
                 out_json = image_path.with_suffix(".json")
-                if out_json.exists() and not bool(cfg.overwrite):
-                    skipped_existing += 1
-                    continue
 
                 shapes, instances, keypoints = _extract_keypoints_from_row(
                     row,
@@ -303,6 +305,10 @@ def import_deeplabcut_training_data(
                 for inst in instances:
                     if inst not in instances_seen:
                         instances_seen.append(inst)
+
+                if out_json.exists() and not bool(cfg.overwrite):
+                    skipped_existing += 1
+                    continue
 
                 try:
                     pil = Image.open(image_path)
@@ -324,7 +330,8 @@ def import_deeplabcut_training_data(
                 if not multi_animal:
                     payload["instance_label"] = str(cfg.instance_label)
 
-                out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                out_json.write_text(json.dumps(
+                    payload, indent=2), encoding="utf-8")
                 written += 1
             except Exception:
                 errors += 1

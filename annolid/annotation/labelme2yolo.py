@@ -1,13 +1,16 @@
 # How to use it?
 # python annolid/main.py --labelme2yolo /path/to/labelme_json_folder/ --val_size 0.1 --test_size 0.1
 # Refer to https://docs.ultralytics.com/datasets/pose/#dataset-yaml-format for more details.
+import hashlib
 import math
 import os
+import re
 from pathlib import Path
 import numpy as np
 import PIL.Image
 import shutil
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
 from random import Random
 from collections import OrderedDict
 from labelme.utils.image import img_b64_to_arr
@@ -114,9 +117,11 @@ class Labelme2YOLO:
                  yolo_dataset_name="YOLO_dataset",
                  include_visibility=False,
                  pose_schema_path: Optional[str] = None,
+                 recursive: bool = True,
                  **_ignored_kwargs,
                  ):
         self.json_file_dir = json_dir
+        self.recursive = bool(recursive)
         labels, keypoints = self._scan_labels_and_keypoints(self.json_file_dir)
         self.label_to_id_dict = OrderedDict(
             (label, label_id) for label_id, label in enumerate(labels)
@@ -155,9 +160,11 @@ class Labelme2YOLO:
                 self.pose_schema = None
 
         if self.pose_schema and self.pose_schema.keypoints:
+            instances = list(
+                getattr(self.pose_schema, "instances", None) or [])
             schema_keypoints = (
                 self.pose_schema.expand_keypoints()
-                if getattr(self.pose_schema, "instances", None)
+                if instances and len(instances) > 1
                 else list(self.pose_schema.keypoints)
             )
             merged = list(schema_keypoints)
@@ -244,22 +251,28 @@ class Labelme2YOLO:
             return [], [], []
         if len(json_names) == 1:
             return [json_names[0]], [], []
+        if val_size is None:
+            val_size = 0.0
+        if test_size is None:
+            test_size = 0.0
+        if float(val_size) <= 1e-8 and float(test_size) <= 1e-8:
+            return list(json_names), [], []
 
         # Randomly split the input data into train, validation, and test sets.
         if train_test_split is not None:
             try:
                 train_idxs, val_idxs = train_test_split(
-                    range(len(json_names)), test_size=val_size
+                    range(len(json_names)), test_size=val_size, random_state=0, shuffle=True
                 )
                 tmp_train_len = len(train_idxs)
                 test_idxs = []
-                if test_size is None:
-                    test_size = 0.0
                 if test_size > 1e-8 and tmp_train_len:
                     train_subset_indices = list(range(tmp_train_len))
                     train_idxs_sub, test_subset = train_test_split(
                         train_subset_indices,
                         test_size=test_size / max(1 - val_size, 1e-8),
+                        random_state=0,
+                        shuffle=True,
                     )
                     test_idxs = [train_idxs[idx] for idx in test_subset]
                     train_idxs = [train_idxs[idx] for idx in train_idxs_sub]
@@ -271,10 +284,6 @@ class Labelme2YOLO:
             indices = list(range(total))
             rng = Random(0)
             rng.shuffle(indices)
-            if val_size is None:
-                val_size = 0.0
-            if test_size is None:
-                test_size = 0.0
             val_count = int(round(total * val_size))
             val_count = min(max(val_count, 0), total)
             remaining = total - val_count
@@ -312,6 +321,103 @@ class Labelme2YOLO:
 
         return train_jsons, val_jsons, test_jsons
 
+    @dataclass(frozen=True)
+    class _LabelmeItem:
+        json_path: Path
+        image_path: Optional[Path]
+        output_stem: str
+        preset_split: Optional[str] = None  # train/val/test or None
+
+    @staticmethod
+    def _safe_output_stem(relative_path: Path) -> str:
+        raw = relative_path.as_posix()
+        if raw.lower().endswith(".json"):
+            raw = raw[:-5]
+        raw = raw.strip().strip("/")
+        if not raw:
+            raw = "item"
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw.replace("/", "__"))
+        if len(safe) <= 200:
+            return safe
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+        return f"{safe[:180]}_{digest}"
+
+    @staticmethod
+    def _resolve_image_path(json_data: Dict[str, object], *, json_path: Path) -> Optional[Path]:
+        image_path = json_data.get("imagePath")
+        if isinstance(image_path, str) and image_path.strip():
+            candidate = Path(image_path).expanduser()
+            if candidate.is_absolute() and candidate.exists():
+                return candidate
+            rel = (json_path.parent / image_path).expanduser()
+            if rel.exists():
+                return rel
+        for suffix in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"):
+            candidate = json_path.with_suffix(suffix)
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _iter_labelme_json_paths(self) -> Iterable[Path]:
+        root = Path(self.json_file_dir).expanduser()
+        if not root.exists():
+            return []
+        ignore_prefixes = {
+            self.yolo_dataset_name,
+            "YOLO_dataset",
+            "YOLO_pose_vis",
+            "annolid_logs",
+        }
+
+        def should_ignore(path: Path) -> bool:
+            try:
+                rel_parts = set(path.relative_to(root).parts)
+            except Exception:
+                rel_parts = set(path.parts)
+            for name in ignore_prefixes:
+                if name and name in rel_parts:
+                    return True
+            return False
+
+        paths = root.rglob("*.json") if self.recursive else root.glob("*.json")
+        return (p for p in paths if p.is_file() and not should_ignore(p))
+
+    def _discover_items(self, *, require_image: bool = True) -> List["_LabelmeItem"]:
+        root = Path(self.json_file_dir).expanduser().resolve()
+        items: List[Labelme2YOLO._LabelmeItem] = []
+        for json_path in self._iter_labelme_json_paths():
+            try:
+                data = load_labelme_json(json_path)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if "shapes" not in data:
+                continue
+            rel = None
+            try:
+                rel = json_path.resolve().relative_to(root)
+            except Exception:
+                rel = Path(json_path.name)
+            output_stem = self._safe_output_stem(rel)
+            image_path = self._resolve_image_path(data, json_path=json_path)
+            if require_image and not image_path and not data.get("imageData"):
+                continue
+
+            preset_split = None
+            if rel.parts and rel.parts[0] in ("train", "val", "test"):
+                preset_split = rel.parts[0]
+
+            items.append(
+                Labelme2YOLO._LabelmeItem(
+                    json_path=json_path,
+                    image_path=image_path,
+                    output_stem=output_stem,
+                    preset_split=preset_split,
+                )
+            )
+        return items
+
     @staticmethod
     def _scan_labels_and_keypoints(json_dir: str) -> Tuple[List[str], List[str]]:
         """Scan annotation directory to collect class and keypoint label order."""
@@ -323,13 +429,34 @@ class Labelme2YOLO:
         if not os.path.isdir(json_dir):
             return label_order, keypoint_order
 
-        for file_name in sorted(os.listdir(json_dir)):
-            if not file_name.endswith(".json"):
-                continue
-            json_path = os.path.join(json_dir, file_name)
+        root = Path(json_dir).expanduser()
+        candidates = sorted(root.rglob("*.json"))
+        # Avoid scanning YOLO outputs (which can contain JSON metadata) and annolid logs
+        # within the provided root directory (but allow roots that live inside those dirs,
+        # e.g. staging folders under annolid_logs).
+
+        def should_ignore(path: Path) -> bool:
             try:
-                data = load_labelme_json(json_path)
+                parts = set(path.relative_to(root).parts)
             except Exception:
+                parts = set(path.parts)
+            if "annolid_logs" in parts:
+                return True
+            for name in ("YOLO_dataset", "YOLO_pose_vis"):
+                if name in parts:
+                    return True
+            if any(p.startswith("YOLO_") for p in parts):
+                return True
+            return False
+
+        for json_path in candidates:
+            if not json_path.is_file() or should_ignore(json_path):
+                continue
+            try:
+                data = load_labelme_json(str(json_path))
+            except Exception:
+                continue
+            if not isinstance(data, dict) or "shapes" not in data:
                 continue
             shapes = data.get("shapes") or []
             polygon_labels: Set[str] = set()
@@ -412,6 +539,11 @@ class Labelme2YOLO:
         )
         if flag_label:
             return flag_label
+
+        payload_label = Labelme2YOLO._clean_label(
+            payload.get("instance_label"))
+        if payload_label:
+            return payload_label
 
         stem = json_path.stem
         if "_" in stem:
@@ -649,11 +781,8 @@ class Labelme2YOLO:
             val_size (float): The percentage of data to set aside for the validation set.
             test_size (float): The percentage of data to set aside for the test set.
         """
-        # Get a list of JSON file names from the input directory
-        json_names = [file_name for file_name in os.listdir(self.json_file_dir)
-                      if os.path.isfile(os.path.join(self.json_file_dir, file_name)) and
-                      file_name.endswith('.json')]
-        if not json_names:
+        items = self._discover_items(require_image=True)
+        if not items:
             folder = Path(self.json_file_dir)
             store = AnnotationStore.for_frame_path(
                 folder / f"{folder.name}_000000000.json")
@@ -661,39 +790,58 @@ class Labelme2YOLO:
                 json_names = [
                     f"{folder.name}_{frame:09d}.json" for frame in sorted(store.iter_frames())
                 ]
-        # filter and only keep the JSON files with a image associated with it
-        json_names = [json_name for json_name in json_names if
-                      os.path.exists(os.path.join(self.json_file_dir, json_name.replace('.json', '.png')))]
+                items = [
+                    Labelme2YOLO._LabelmeItem(
+                        json_path=(folder / name),
+                        image_path=None,
+                        output_stem=Path(name).stem,
+                        preset_split=None,
+                    )
+                    for name in json_names
+                ]
 
-        # Get a list of folder names from the input directory
-        folders = [file_name for file_name in os.listdir(self.json_file_dir)
-                   if os.path.isdir(os.path.join(self.json_file_dir, file_name))]
+        if not items:
+            return
 
-        # Split the JSON files into train, validation and test sets
-        train_jsons, val_jsons, test_jsons = self.split_jsons(
-            folders, json_names, val_size, test_size)
+        # If dataset already has train/val/test directories, respect them.
+        preset = [item for item in items if item.preset_split in (
+            "train", "val", "test")]
+        if preset:
+            train_items = [i for i in items if i.preset_split == "train"]
+            val_items = [i for i in items if i.preset_split == "val"]
+            test_items = [i for i in items if i.preset_split == "test"]
+            # If preset exists but any split is empty, fall back to random split for robustness.
+            if not train_items:
+                train_items, val_items, test_items = self.split_jsons(
+                    [], items, val_size, test_size)
+        else:
+            train_items, val_items, test_items = self.split_jsons(
+                [], items, val_size, test_size)
 
         # Create the train and validation directories if they don't exist already
         self.create_yolo_dataset_dirs()
 
         # Convert labelme object to yolo format object, and save them to files
         # Also get image from labelme json file and save them under images folder
-        for target_dir, json_names in zip(('train/', 'val/', 'test/'),
-                                          (train_jsons, val_jsons, test_jsons)):
-
-            for json_name in json_names:
-                self.json_to_text(target_dir, json_name)
+        for target_dir, split_items in zip(
+            ('train/', 'val/', 'test/'),
+            (train_items, val_items, test_items),
+        ):
+            for item in split_items:
+                self.json_to_text(target_dir, item)
 
         # Save the dataset configuration file
         self.save_data_yaml()
 
-    def get_yolo_objects(self, json_name, json_data, img_path):
+    def get_yolo_objects(self, json_path: Union[str, Path], json_data, img_path):
         """Return a list of YOLO formatted objects from a JSON annotation file and image."""
         image_height = json_data['imageHeight']
         image_width = json_data['imageWidth']
         shapes = json_data.get("shapes") or []
 
-        json_path = Path(self.json_file_dir) / json_name
+        json_path = Path(json_path)
+        if not json_path.is_absolute():
+            json_path = Path(self.json_file_dir) / json_path
         default_label = self._default_instance_label(json_path, json_data)
 
         pose_instances = self._collect_pose_instances(
@@ -763,18 +911,34 @@ class Labelme2YOLO:
         Returns:
             None
         """
-        # Get the path to the input JSON file and load its data.
-        json_path = os.path.join(self.json_file_dir, json_name)
-        json_data = load_labelme_json(json_path)
+        if isinstance(json_name, Labelme2YOLO._LabelmeItem):
+            item = json_name
+            json_path = str(item.json_path)
+            json_data = load_labelme_json(json_path)
+            output_stem = item.output_stem
+            img_src = item.image_path or self._resolve_image_path(
+                json_data, json_path=item.json_path)
+        else:
+            output_stem = Path(str(json_name)).stem
+            json_path = os.path.join(self.json_file_dir, str(json_name))
+            json_data = load_labelme_json(json_path)
+            img_src = self._resolve_image_path(
+                json_data, json_path=Path(json_path))
 
-        # Save the image file in the YOLO format.
         img_path = self.save_or_copy_image(
-            json_data, json_name, self.image_folder, target_dir, json_path=json_path)
+            json_data,
+            output_stem,
+            self.image_folder,
+            target_dir,
+            json_path=json_path,
+            source_image_path=str(img_src) if img_src else None,
+        )
 
-        # Get a list of YOLO objects from the JSON data and save the output text file.
-        yolo_objects = self.get_yolo_objects(json_name, json_data, img_path)
-        self.save_yolo_txt_label_file(json_name, self.label_folder,
-                                      target_dir, yolo_objects)
+        yolo_objects = self.get_yolo_objects(
+            Path(json_path), json_data, img_path)
+        self.save_yolo_txt_label_file(
+            output_stem, self.label_folder, target_dir, yolo_objects
+        )
 
     def scale_points(self,
                      labelme_shape: dict,
@@ -866,10 +1030,11 @@ class Labelme2YOLO:
 
     @staticmethod
     def save_or_copy_image(json_data: dict,
-                           json_name: str,
+                           output_stem: str,
                            image_dir_path: str,
                            target_dir: str,
-                           json_path: Optional[str] = None) -> str:
+                           json_path: Optional[str] = None,
+                           source_image_path: Optional[str] = None) -> str:
         """
         Save an image in YOLO format.
 
@@ -879,7 +1044,25 @@ class Labelme2YOLO:
         :param target_dir: Target directory to save the image in.
         :return: Path of the saved image.
         """
-        img_name = json_name.replace('.json', '.png')
+        output_stem = str(output_stem or "").strip() or "image"
+        ext = ".png"
+        if source_image_path:
+            try:
+                src_ext = Path(source_image_path).suffix.lower()
+                if src_ext in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"):
+                    ext = src_ext
+            except Exception:
+                pass
+        if ext == ".png":
+            image_path_field = json_data.get("imagePath")
+            if isinstance(image_path_field, str) and image_path_field.strip():
+                try:
+                    field_ext = Path(image_path_field).suffix.lower()
+                    if field_ext in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"):
+                        ext = field_ext
+                except Exception:
+                    pass
+        img_name = f"{output_stem}{ext}"
         img_path = os.path.join(image_dir_path, target_dir, img_name)
 
         # if the image is not already saved, then save it
@@ -891,6 +1074,8 @@ class Labelme2YOLO:
             else:
                 src_img_path = json_data.get('imagePath') or ""
                 candidates = []
+                if source_image_path:
+                    candidates.append(source_image_path)
                 if src_img_path:
                     candidates.append(src_img_path)
                     if json_path:
@@ -977,8 +1162,10 @@ class Labelme2YOLO:
         Returns:
             None
         """
-        txt_path = os.path.join(label_folder_path, target_dir,
-                                json_name.replace('.json', '.txt'))
+        base = str(json_name)
+        if base.lower().endswith(".json"):
+            base = base[:-5]
+        txt_path = os.path.join(label_folder_path, target_dir, f"{base}.txt")
 
         with open(txt_path, 'w+') as f:
             # Write each YOLO object as a line in the label file
