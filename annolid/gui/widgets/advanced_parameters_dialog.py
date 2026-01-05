@@ -81,6 +81,12 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_agent_output_dir = str(
             sam3_runtime.get("agent_output_dir") or "sam3_agent_out"
         )
+        raw_compile = sam3_runtime.get("compile_model")
+        self.sam3_compile_model = bool(
+            raw_compile) if raw_compile is not None else False
+        raw_offload = sam3_runtime.get("offload_video_to_cpu")
+        self.sam3_offload_video_to_cpu = True if raw_offload is None else bool(
+            raw_offload)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(14, 14, 14, 14)
@@ -631,6 +637,21 @@ class AdvancedParametersDialog(QDialog):
             "Optional device override for SAM3 tracker (e.g., cuda, mps, cpu). Leave empty for auto."
         )
 
+        self.sam3_compile_checkbox = QCheckBox(
+            "Enable torch.compile (CUDA only)")
+        self.sam3_compile_checkbox.setChecked(bool(self.sam3_compile_model))
+        self.sam3_compile_checkbox.setToolTip(
+            "Uses torch.compile to speed up SAM3 on NVIDIA GPUs. First run may be slower due to compilation."
+        )
+
+        self.sam3_offload_checkbox = QCheckBox(
+            "Offload video to CPU (lower VRAM)")
+        self.sam3_offload_checkbox.setChecked(
+            bool(self.sam3_offload_video_to_cpu))
+        self.sam3_offload_checkbox.setToolTip(
+            "Keep frame storage on CPU to reduce VRAM usage. Disable on powerful GPUs to reduce CPU↔GPU transfers."
+        )
+
         self.sam3_window_size_spinbox = QSpinBox()
         self.sam3_window_size_spinbox.setRange(1, 1000)
         self.sam3_window_size_spinbox.setValue(self.sam3_sliding_window_size)
@@ -718,6 +739,20 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_with_hint(
                 self.sam3_device_lineedit,
                 "Force a compute device (cuda, mps, cpu). Empty uses the best available.",
+            ),
+        )
+        form.addRow(
+            "Performance",
+            self._wrap_checkbox(
+                self.sam3_compile_checkbox,
+                "Enabling compile often yields a 1.2–2× speedup on NVIDIA GPUs after warmup.",
+            ),
+        )
+        form.addRow(
+            "",
+            self._wrap_checkbox(
+                self.sam3_offload_checkbox,
+                "Leave on for low-VRAM GPUs; disable if you have enough VRAM and want higher throughput.",
             ),
         )
         form.addRow(
@@ -873,6 +908,8 @@ class AdvancedParametersDialog(QDialog):
             self.sam3_agent_output_dir_lineedit.text().strip()
             or "sam3_agent_out"
         )
+        self.sam3_compile_model = self.sam3_compile_checkbox.isChecked()
+        self.sam3_offload_video_to_cpu = self.sam3_offload_checkbox.isChecked()
 
     def get_epsilon_value(self) -> float:
         return self.epsilon_value
@@ -919,6 +956,8 @@ class AdvancedParametersDialog(QDialog):
             "device": self.sam3_device_override,
             "sliding_window_size": self.sam3_sliding_window_size,
             "sliding_window_stride": self.sam3_sliding_window_stride,
+            "compile_model": bool(self.sam3_compile_model),
+            "offload_video_to_cpu": bool(self.sam3_offload_video_to_cpu),
             "agent_det_thresh": self.sam3_agent_det_thresh,
             "agent_window_size": self.sam3_agent_window_size,
             "agent_stride": self.sam3_agent_stride,

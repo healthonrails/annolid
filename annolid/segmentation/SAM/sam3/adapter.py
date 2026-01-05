@@ -7,10 +7,12 @@ later add interactive prompts without changing call sites.
 from __future__ import annotations
 
 import os
+import gc
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 from qtpy import QtCore
 
 from annolid.segmentation.SAM.sam_v2 import load_annotations_from_video
@@ -41,6 +43,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
         device: Optional[str] = None,
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
+        compile_model: bool = False,
+        offload_video_to_cpu: bool = True,
         sliding_window_size: int = 5,
         sliding_window_stride: Optional[int] = None,
         use_sliding_window_for_text_prompt: bool = True,
@@ -57,6 +61,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
             device=device,
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
+            compile_model=compile_model,
+            offload_video_to_cpu=offload_video_to_cpu,
             sliding_window_size=sliding_window_size,
             sliding_window_stride=sliding_window_stride,
             use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
@@ -91,6 +97,14 @@ class SAM3VideoProcessor(Sam3SessionManager):
                 logger.warning(
                     "SAM3 hit MPS OOM; retrying on CPU. Original error: %s", msg
                 )
+                try:
+                    gc.collect()
+                    empty_cache = getattr(
+                        getattr(torch, "mps", None), "empty_cache", None)
+                    if callable(empty_cache):
+                        empty_cache()
+                except Exception:
+                    pass
                 frames, masks = self._run_once("cpu")
             else:
                 raise
@@ -127,6 +141,8 @@ def process_video(
     propagation_direction: str = "both",
     max_frame_num_to_track: Optional[int] = None,
     device: Optional[str] = None,
+    compile_model: bool = False,
+    offload_video_to_cpu: bool = True,
     sliding_window_size: int = 5,
     sliding_window_stride: Optional[int] = None,
     use_sliding_window_for_text_prompt: bool = True,
@@ -153,6 +169,8 @@ def process_video(
         propagation_direction=propagation_direction,
         max_frame_num_to_track=max_frame_num_to_track,
         device=device,
+        compile_model=compile_model,
+        offload_video_to_cpu=offload_video_to_cpu,
         sliding_window_size=sliding_window_size,
         sliding_window_stride=sliding_window_stride,
         use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
@@ -173,6 +191,8 @@ def process_video_with_agent(
     device: Optional[str] = None,
     score_threshold_detection: Optional[float] = None,
     new_det_thresh: Optional[float] = None,
+    compile_model: bool = False,
+    offload_video_to_cpu: bool = True,
 ) -> Tuple[int, int]:
     """
     Run SAM3 video propagation using SAM3 Agent to refine the first frame of
@@ -195,6 +215,8 @@ def process_video_with_agent(
         device=device,
         score_threshold_detection=score_threshold_detection,
         new_det_thresh=new_det_thresh,
+        compile_model=compile_model,
+        offload_video_to_cpu=offload_video_to_cpu,
     )
     frames, masks = run_agent_seeded_sam3_video(
         video_path=str(video_path),

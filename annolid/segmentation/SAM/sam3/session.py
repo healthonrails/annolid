@@ -43,6 +43,27 @@ def _default_bpe_path() -> Path:
     return Path(__file__).resolve().parent / "assets" / "bpe_simple_vocab_16e6.txt.gz"
 
 
+def _is_mps_oom(exc: BaseException) -> bool:
+    msg = str(exc)
+    return "MPS backend out of memory" in msg or "mps backend out of memory" in msg
+
+
+def _clear_mps_cache() -> None:
+    """Best-effort cache clearing after MPS OOM to allow CPU fallback."""
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+    except Exception:
+        pass
+
+
 @dataclass
 class Sam3SessionConfig:
     """Container for session-level settings."""
@@ -56,6 +77,9 @@ class Sam3SessionConfig:
     device: Optional[str] = None
     score_threshold_detection: Optional[float] = None
     new_det_thresh: Optional[float] = None
+    # Performance knobs (safe defaults).
+    compile_model: bool = False
+    offload_video_to_cpu: bool = True
     async_loading_frames: bool = False  # keep memory usage low; no preloading
     sliding_window_size: int = 5  # frames per window for text-only runs
     sliding_window_stride: Optional[int] = None
@@ -74,6 +98,8 @@ def _resolve_session_config(
     device: Optional[str],
     score_threshold_detection: Optional[float],
     new_det_thresh: Optional[float],
+    compile_model: bool,
+    offload_video_to_cpu: bool,
     async_loading_frames: bool,
     sliding_window_size: int,
     sliding_window_stride: Optional[int],
@@ -92,6 +118,8 @@ def _resolve_session_config(
         device=device,
         score_threshold_detection=score_threshold_detection,
         new_det_thresh=new_det_thresh,
+        compile_model=compile_model,
+        offload_video_to_cpu=offload_video_to_cpu,
         async_loading_frames=async_loading_frames,
         sliding_window_size=sliding_window_size,
         sliding_window_stride=sliding_window_stride,
@@ -119,6 +147,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         device: Optional[str] = None,
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
+        compile_model: bool = False,
+        offload_video_to_cpu: bool = True,
         async_loading_frames: bool = False,
         sliding_window_size: int = 5,
         sliding_window_stride: Optional[int] = None,
@@ -142,6 +172,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             device=device,
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
+            compile_model=compile_model,
+            offload_video_to_cpu=offload_video_to_cpu,
             async_loading_frames=async_loading_frames,
             sliding_window_size=sliding_window_size,
             sliding_window_stride=sliding_window_stride,
@@ -180,6 +212,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.default_device = cfg.device
         self.score_threshold_detection = cfg.score_threshold_detection
         self.new_det_thresh = cfg.new_det_thresh
+        self.compile_model = bool(cfg.compile_model)
+        self.offload_video_to_cpu = bool(cfg.offload_video_to_cpu)
         self.async_loading_frames = cfg.async_loading_frames
         self.sliding_window_size = cfg.sliding_window_size
         self.sliding_window_stride = cfg.sliding_window_stride
@@ -215,7 +249,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             bpe_path=str(self.bpe_path),
             apply_temporal_disambiguation=True,
             device=device,
-            offload_video_to_cpu=True,
+            compile_model=self.compile_model,
+            offload_video_to_cpu=self.offload_video_to_cpu,
             async_loading_frames=self.async_loading_frames,
             score_threshold_detection=self.score_threshold_detection,
             new_det_thresh=self.new_det_thresh,
@@ -699,31 +734,84 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         of frames in memory while still writing masks/metadata through the
         usual annotation pipeline.
         """
-        device_str = str(target_device) if target_device is not None else None
+        resolved_device = set_default_device(
+            target_device or self.default_device)
+        device_str = str(
+            resolved_device) if resolved_device is not None else None
         total_frames = self.total_frames_estimate()
         yielded_frames = 0
         total_masks = 0
+
+        window_size = int(self.sliding_window_size or 1)
+        stride = self.sliding_window_stride
+        if stride is not None:
+            try:
+                stride = int(stride)
+            except Exception:
+                stride = None
+
+        # Heuristic: MPS is prone to OOM on larger windows. Clamp to a safer
+        # default while still allowing CUDA users to run larger windows.
+        if resolved_device.type == "mps" and window_size > 5:
+            logger.warning(
+                "SAM3: clamping sliding-window size from %d to %d for MPS to reduce OOM risk.",
+                window_size,
+                5,
+            )
+            window_size = 5
+            if stride is None or stride > window_size:
+                stride = window_size
 
         # Enable global-id remapping for the sliding-window run.
         self._reset_global_tracks()
         self._sliding_window_mode_active = True
         try:
-            for frame_idx, outputs in run_video_sliding_window(
-                video_path=str(self.video_path),
-                mode="sam3",
-                text_prompt=text_prompt,
-                window_size=self.sliding_window_size,
-                stride=self.sliding_window_stride,
-                device=device_str,
-            ):
-                yielded_frames += 1
-                masks_in_frame, _ = self._handle_frame_outputs(
-                    frame_idx=frame_idx,
-                    outputs=outputs,
-                    total_frames=total_frames,
-                    yielded_frames=yielded_frames,
-                )
-                total_masks += masks_in_frame
+            try:
+                for frame_idx, outputs in run_video_sliding_window(
+                    video_path=str(self.video_path),
+                    mode="sam3",
+                    text_prompt=text_prompt,
+                    window_size=window_size,
+                    stride=stride,
+                    device=device_str,
+                ):
+                    yielded_frames += 1
+                    masks_in_frame, _ = self._handle_frame_outputs(
+                        frame_idx=frame_idx,
+                        outputs=outputs,
+                        total_frames=total_frames,
+                        yielded_frames=yielded_frames,
+                    )
+                    total_masks += masks_in_frame
+            except RuntimeError as exc:
+                # CPU fallback for Apple MPS OOM to avoid crashing the GUI.
+                if resolved_device.type == "mps" and _is_mps_oom(exc) and yielded_frames == 0:
+                    logger.warning(
+                        "SAM3 sliding-window propagation hit MPS OOM; retrying on CPU. "
+                        "Tip: reduce 'Sliding window size' for MPS to lower memory usage. Error: %s",
+                        str(exc),
+                    )
+                    _clear_mps_cache()
+                    resolved_device = set_default_device("cpu")
+                    device_str = "cpu"
+                    for frame_idx, outputs in run_video_sliding_window(
+                        video_path=str(self.video_path),
+                        mode="sam3",
+                        text_prompt=text_prompt,
+                        window_size=window_size,
+                        stride=stride,
+                        device=device_str,
+                    ):
+                        yielded_frames += 1
+                        masks_in_frame, _ = self._handle_frame_outputs(
+                            frame_idx=frame_idx,
+                            outputs=outputs,
+                            total_frames=total_frames,
+                            yielded_frames=yielded_frames,
+                        )
+                        total_masks += masks_in_frame
+                else:
+                    raise
         finally:
             self._sliding_window_mode_active = False
 
@@ -852,11 +940,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 and self.text_prompt
                 and not boxes
             ):
+                resolved_device = set_default_device(
+                    target_device or self.default_device
+                )
+                window_size = int(self.sliding_window_size or 1)
+                stride = self.sliding_window_stride or window_size
+                if resolved_device.type == "mps" and window_size > 5:
+                    window_size = 5
+                    stride = min(int(stride or window_size), window_size)
                 logger.info(
                     "SAM3: running sliding-window text propagation "
                     "(window_size=%d, stride=%s) to keep memory low.",
-                    self.sliding_window_size,
-                    self.sliding_window_stride or self.sliding_window_size,
+                    window_size,
+                    stride,
                 )
                 return self._propagate_text_prompt_with_sliding_window(
                     text_prompt=self.text_prompt,

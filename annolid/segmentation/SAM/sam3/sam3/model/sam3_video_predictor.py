@@ -35,6 +35,7 @@ class Sam3VideoPredictor:
         video_loader_type="cv2",
         apply_temporal_disambiguation: bool = True,
         device: Optional[torch.device | str] = None,
+        compile_model: bool = False,
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
     ):
@@ -44,6 +45,13 @@ class Sam3VideoPredictor:
         self.device = select_device(device)
         from sam3.model_builder import build_sam3_video_model
 
+        enable_compile = bool(compile_model) and self.device.type == "cuda"
+        if compile_model and not enable_compile:
+            logger.info(
+                "SAM3 torch.compile requested but disabled for device=%s; enable only on CUDA for now.",
+                self.device,
+            )
+
         self.model = build_sam3_video_model(
             checkpoint_path=checkpoint_path,
             bpe_path=bpe_path,
@@ -52,6 +60,7 @@ class Sam3VideoPredictor:
             strict_state_dict_loading=strict_state_dict_loading,
             apply_temporal_disambiguation=apply_temporal_disambiguation,
             device=self.device,
+            compile=enable_compile,
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
         )

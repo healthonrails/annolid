@@ -27,6 +27,8 @@ class Sam3Manager:
         self.device_override: Optional[str] = None
         self.sliding_window_size: Optional[int] = None
         self.sliding_window_stride: Optional[int] = None
+        self.compile_model: Optional[bool] = None
+        self.offload_video_to_cpu: Optional[bool] = None
         self.agent_det_thresh: Optional[float] = None
         self.agent_window_size: Optional[int] = None
         self.agent_stride: Optional[int] = None
@@ -101,6 +103,14 @@ class Sam3Manager:
             self.sliding_window_stride,
             sam3_cfg.get("sliding_window_stride"),
         )
+        compile_model = _pick(
+            self.compile_model,
+            sam3_cfg.get("compile_model"),
+        )
+        offload_video_to_cpu = _pick(
+            self.offload_video_to_cpu,
+            sam3_cfg.get("offload_video_to_cpu"),
+        )
         agent_det_thresh = _pick(
             self.agent_det_thresh,
             agent_cfg.get("det_thresh"),
@@ -126,6 +136,8 @@ class Sam3Manager:
             "device": device_override,
             "sliding_window_size": sliding_window_size,
             "sliding_window_stride": sliding_window_stride,
+            "compile_model": compile_model,
+            "offload_video_to_cpu": offload_video_to_cpu,
             "agent_det_thresh": agent_det_thresh,
             "agent_window_size": agent_window_size
             if agent_window_size is not None
@@ -150,6 +162,8 @@ class Sam3Manager:
         self.device_override = sam3_runtime.get("device")
         self.sliding_window_size = sam3_runtime.get("sliding_window_size")
         self.sliding_window_stride = sam3_runtime.get("sliding_window_stride")
+        self.compile_model = sam3_runtime.get("compile_model")
+        self.offload_video_to_cpu = sam3_runtime.get("offload_video_to_cpu")
         self.agent_det_thresh = sam3_runtime.get("agent_det_thresh")
         self.agent_window_size = sam3_runtime.get("agent_window_size")
         self.agent_stride = sam3_runtime.get("agent_stride")
@@ -167,6 +181,8 @@ class Sam3Manager:
             "device": self.device_override,
             "sliding_window_size": self.sliding_window_size,
             "sliding_window_stride": self.sliding_window_stride,
+            "compile_model": self.compile_model,
+            "offload_video_to_cpu": self.offload_video_to_cpu,
         }
         agent_updates = {
             "det_thresh": self.agent_det_thresh,
@@ -335,6 +351,8 @@ class Sam3Manager:
         new_det_thresh = sam3_cfg.get("new_det_thresh")
         sliding_window_size = sam3_cfg.get("sliding_window_size", 5)
         sliding_window_stride = sam3_cfg.get("sliding_window_stride")
+        compile_model_cfg = sam3_cfg.get("compile_model", False)
+        offload_video_to_cpu_cfg = sam3_cfg.get("offload_video_to_cpu", True)
         agent_cfg = sam3_cfg.get("agent", {}) or {}
         agent_det_thresh_cfg = agent_cfg.get("det_thresh")
         agent_window_size_cfg = agent_cfg.get("window_size")
@@ -380,6 +398,30 @@ class Sam3Manager:
                     sliding_window_size = 5
                 else:
                     agent_det_thresh_cfg = None
+
+        def _parse_bool(value, default: bool) -> bool:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if lowered in {"0", "false", "no", "n", "off"}:
+                    return False
+            return default
+
+        compile_model = _parse_bool(
+            self.compile_model if self.compile_model is not None else compile_model_cfg,
+            False,
+        )
+        offload_video_to_cpu = _parse_bool(
+            self.offload_video_to_cpu if self.offload_video_to_cpu is not None else offload_video_to_cpu_cfg,
+            True,
+        )
         if self.score_threshold_detection is not None:
             score_threshold_detection = self.score_threshold_detection
         if self.new_det_thresh is not None:
@@ -462,6 +504,8 @@ class Sam3Manager:
                     device=device_override,
                     score_threshold_detection=score_threshold_detection,
                     new_det_thresh=new_det_thresh,
+                    compile_model=compile_model,
+                    offload_video_to_cpu=offload_video_to_cpu,
                     sliding_window_size=sliding_window_size,
                     sliding_window_stride=sliding_window_stride,
                 )
@@ -522,6 +566,8 @@ class Sam3Manager:
                         device=device_override,
                         score_threshold_detection=score_threshold_detection,
                         new_det_thresh=new_det_thresh,
+                        compile_model=compile_model,
+                        offload_video_to_cpu=offload_video_to_cpu,
                     )
                     if masks <= 0:
                         raise RuntimeError(

@@ -5,6 +5,7 @@ from typing import Generator, Iterable, List, Dict, Any, Optional, Tuple, Litera
 import cv2
 import numpy as np
 from PIL import Image
+import torch
 
 from .sam3.model_builder import build_sam3_video_model
 from .sam3.agent.agent_core import agent_inference
@@ -102,27 +103,48 @@ def run_sam3_video_sliding_window(
         stride=stride,
     ):
         pil_frames: List[Image.Image] = _frames_to_pil(frames)
+        inference_state = None
+        try:
+            inference_state = sam3_model.init_state(
+                resource_path=pil_frames,
+                offload_video_to_cpu=True,
+                async_loading_frames=False,
+                video_loader_type="cv2",
+            )
 
-        inference_state = sam3_model.init_state(
-            resource_path=pil_frames,
-            offload_video_to_cpu=True,
-            async_loading_frames=False,
-            video_loader_type="cv2",
-        )
+            sam3_model.add_prompt(
+                inference_state,
+                frame_idx=0,
+                text_str=text_prompt,
+            )
 
-        sam3_model.add_prompt(
-            inference_state,
-            frame_idx=0,
-            text_str=text_prompt,
-        )
+            for local_frame_idx, out in sam3_model.propagate_in_video(
+                inference_state,
+                start_frame_idx=0,
+                reverse=False,
+            ):
+                global_idx = start_idx + local_frame_idx
+                yield global_idx, out
+        finally:
+            # Best-effort cleanup between windows to avoid unbounded MPS memory growth.
+            if inference_state is not None:
+                try:
+                    sam3_model.reset_state(inference_state)
+                except Exception:
+                    pass
+            try:
+                import gc
 
-        for local_frame_idx, out in sam3_model.propagate_in_video(
-            inference_state,
-            start_frame_idx=0,
-            reverse=False,
-        ):
-            global_idx = start_idx + local_frame_idx
-            yield global_idx, out
+                gc.collect()
+            except Exception:
+                pass
+            try:
+                empty_cache = getattr(
+                    getattr(torch, "mps", None), "empty_cache", None)
+                if callable(empty_cache):
+                    empty_cache()
+            except Exception:
+                pass
 
 
 def run_sam3_agent_sliding_window(

@@ -98,6 +98,9 @@ sam3:
   device: null  # e.g. "cuda", "mps", or null for auto
   score_threshold_detection: 0.2
   new_det_thresh: 0.30
+  # Performance knobs (CUDA-only compile).
+  compile_model: false
+  offload_video_to_cpu: true
   sliding_window_size: 15 # best accuracy from the paper
   sliding_window_stride: null
   # Agent seeding defaults
