@@ -29,6 +29,15 @@ python -m annolid.segmentation.dino_kpseg.train \
   --coord-loss-type smooth_l1
 ```
 
+To train per instance (avoid multi-animal mask unions), use bounding-box crops:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --instance-mode per_instance \
+  --bbox-scale 1.25
+```
+
 ### Relational (Attention) Head
 
 For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
@@ -96,6 +105,9 @@ python -m annolid.segmentation.dino_kpseg.eval \
 1. Train the model (or point Annolid to a DinoKPSEG checkpoint).
 2. In Annolid, select **AI Model → DINOv3 Keypoint Segmentation**.
 3. Click **Pred** to run prediction.
+
+Optional instance-aware inference: draw rectangle prompts on the canvas (one per animal).
+Annolid will run DinoKPSEG per box and keep keypoints grouped by instance.
 
 The predictor saves:
 
