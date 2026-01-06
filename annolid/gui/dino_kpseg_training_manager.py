@@ -197,6 +197,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 output_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
+            layers_arg = ",".join(str(int(x)) for x in layer_tuple)
             cmd: list[str] = [
                 sys.executable,
                 "-m",
@@ -209,8 +210,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(model_name),
                 "--short-side",
                 str(int(short_side)),
-                "--layers",
-                ",".join(str(int(x)) for x in layer_tuple),
+                f"--layers={layers_arg}",
                 "--radius-px",
                 str(float(radius_px)),
                 "--mask-type",
