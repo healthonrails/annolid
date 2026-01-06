@@ -38,6 +38,14 @@ python -m annolid.segmentation.dino_kpseg.train \
   --bbox-scale 1.25
 ```
 
+To fuse multiple DINO layers, pass a comma-separated list (features are concatenated):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --layers -2,-1
+```
+
 ### Relational (Attention) Head
 
 For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
