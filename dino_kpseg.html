@@ -95,7 +95,7 @@
 <ul class="simple">
 <li><p>Extracts <strong>frozen DINOv3 dense features</strong> (ViT patch grid).</p></li>
 <li><p>Trains a <strong>small convolutional head</strong> to predict per-keypoint masks.</p></li>
-<li><p>Uses <strong>small circular masks around each keypoint</strong> as supervision.</p></li>
+<li><p>Uses <strong>Gaussian keypoint heatmaps</strong> (or circular masks) as supervision.</p></li>
 <li><p>Runs inference via the same prediction pipeline used for YOLO, saving results as LabelMe JSON.</p></li>
 </ul>
 <section id="training">
@@ -104,6 +104,16 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
+</pre></div>
+</div>
+<p>Defaults include Gaussian heatmaps, Dice loss, and a coordinate regression loss. Override as needed:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mask-type<span class="w"> </span>gaussian<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--heatmap-sigma<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dice-loss-weight<span class="w"> </span><span class="m">0</span>.5<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--coord-loss-weight<span class="w"> </span><span class="m">0</span>.25<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--coord-loss-type<span class="w"> </span>smooth_l1
 </pre></div>
 </div>
 <section id="relational-attention-head">

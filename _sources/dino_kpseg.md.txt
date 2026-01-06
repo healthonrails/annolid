@@ -4,7 +4,7 @@ Annolid includes an experimental keypoint-centric segmentation model that:
 
 - Extracts **frozen DINOv3 dense features** (ViT patch grid).
 - Trains a **small convolutional head** to predict per-keypoint masks.
-- Uses **small circular masks around each keypoint** as supervision.
+- Uses **Gaussian keypoint heatmaps** (or circular masks) as supervision.
 - Runs inference via the same prediction pipeline used for YOLO, saving results as LabelMe JSON.
 
 ## Training
@@ -15,6 +15,18 @@ This trainer consumes a standard YOLO pose dataset (`data.yaml` with `kpt_shape`
 python -m annolid.segmentation.dino_kpseg.train \
   --data /path/to/YOLO_dataset/data.yaml \
   --epochs 50
+```
+
+Defaults include Gaussian heatmaps, Dice loss, and a coordinate regression loss. Override as needed:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --mask-type gaussian \
+  --heatmap-sigma 3 \
+  --dice-loss-weight 0.5 \
+  --coord-loss-weight 0.25 \
+  --coord-loss-type smooth_l1
 ```
 
 ### Relational (Attention) Head
