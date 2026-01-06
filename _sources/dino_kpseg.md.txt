@@ -67,6 +67,18 @@ python -m annolid.segmentation.dino_kpseg.train \
   --epochs 50
 ```
 
+## Evaluation
+
+Run evaluation on the train/val split and report mean pixel error, PCK, and left/right swap rate:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.eval \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --weights /path/to/dino_kpseg/weights/best.pt \
+  --split val \
+  --thresholds 4,8,16
+```
+
 ## Running Inference (GUI)
 
 1. Train the model (or point Annolid to a DinoKPSEG checkpoint).

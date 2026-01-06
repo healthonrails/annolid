@@ -57,6 +57,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#relational-attention-head">Relational (Attention) Head</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#evaluation">Evaluation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#running-inference-gui">Running Inference (GUI)</a></li>
 </ul>
 </li>
@@ -151,6 +152,17 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 </pre></div>
 </div>
 </section>
+</section>
+<section id="evaluation">
+<h2>Evaluation<a class="headerlink" href="#evaluation" title="Link to this heading"></a></h2>
+<p>Run evaluation on the train/val split and report mean pixel error, PCK, and left/right swap rate:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.eval<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>/path/to/dino_kpseg/weights/best.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--split<span class="w"> </span>val<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thresholds<span class="w"> </span><span class="m">4</span>,8,16
+</pre></div>
+</div>
 </section>
 <section id="running-inference-gui">
 <h2>Running Inference (GUI)<a class="headerlink" href="#running-inference-gui" title="Link to this heading"></a></h2>
