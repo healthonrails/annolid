@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -58,6 +59,8 @@ class DinoKPSEGPredictor:
 
         self._prev_keypoints_xy: Optional[List[Tuple[float, float]]] = None
         self._prev_keypoint_scores: Optional[List[float]] = None
+        self._prev_by_instance: dict[int,
+                                     Tuple[List[Tuple[float, float]], List[float]]] = {}
 
         device_norm = normalize_device(device)
         self.device = torch.device(device_norm)
@@ -116,6 +119,7 @@ class DinoKPSEGPredictor:
         """Reset any temporal stabilization state."""
         self._prev_keypoints_xy = None
         self._prev_keypoint_scores = None
+        self._prev_by_instance = {}
 
     @torch.inference_mode()
     def predict(
@@ -126,7 +130,17 @@ class DinoKPSEGPredictor:
         return_patch_masks: bool = False,
         stabilize_lr: bool = False,
         stabilize_cfg: Optional[LRStabilizeConfig] = None,
+        instance_id: Optional[int] = None,
     ) -> DinoKPSEGPrediction:
+        prev_xy = self._prev_keypoints_xy
+        prev_scores = self._prev_keypoint_scores
+        if instance_id is not None:
+            cached = self._prev_by_instance.get(int(instance_id))
+            if cached is not None:
+                prev_xy, prev_scores = cached
+            else:
+                prev_xy, prev_scores = None, None
+
         feats = self.extractor.extract(
             frame_bgr, color_space="BGR", return_type="torch")
         if feats.ndim != 3:
@@ -171,18 +185,24 @@ class DinoKPSEGPredictor:
             y_orig = float(y_res) * (float(h0) / float(resized_h))
             keypoints_xy.append((float(x_orig), float(y_orig)))
 
-        if stabilize_lr and self._symmetric_pairs and self._prev_keypoints_xy is not None:
+        if stabilize_lr and self._symmetric_pairs and prev_xy is not None:
             keypoints_xy = stabilize_symmetric_keypoints_xy(
-                self._prev_keypoints_xy,
+                prev_xy,
                 list(keypoints_xy),
                 pairs=self._symmetric_pairs,
-                prev_scores=self._prev_keypoint_scores,
+                prev_scores=prev_scores,
                 curr_scores=[float(s) for s in scores],
                 cfg=stabilize_cfg,
             )
 
-        self._prev_keypoints_xy = list(keypoints_xy)
-        self._prev_keypoint_scores = [float(s) for s in scores]
+        if instance_id is not None:
+            self._prev_by_instance[int(instance_id)] = (
+                list(keypoints_xy),
+                [float(s) for s in scores],
+            )
+        else:
+            self._prev_keypoints_xy = list(keypoints_xy)
+            self._prev_keypoint_scores = [float(s) for s in scores]
 
         return DinoKPSEGPrediction(
             keypoints_xy=keypoints_xy,
@@ -191,3 +211,71 @@ class DinoKPSEGPredictor:
             resized_hw=(resized_h, resized_w),
             patch_size=patch_size,
         )
+
+    def predict_instances(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        bboxes_xyxy: Sequence[Sequence[float]],
+        threshold: Optional[float] = None,
+        return_patch_masks: bool = False,
+        stabilize_lr: bool = False,
+        stabilize_cfg: Optional[LRStabilizeConfig] = None,
+        bbox_scale: float = 1.0,
+        normalized: bool = False,
+    ) -> List[Tuple[int, DinoKPSEGPrediction]]:
+        if frame_bgr.ndim != 3:
+            raise ValueError("Expected BGR frame with shape HxWx3")
+        frame_h, frame_w = int(frame_bgr.shape[0]), int(frame_bgr.shape[1])
+        if frame_h <= 1 or frame_w <= 1:
+            return []
+
+        results: List[Tuple[int, DinoKPSEGPrediction]] = []
+        scale = float(bbox_scale) if bbox_scale is not None else 1.0
+        for idx, bbox in enumerate(list(bboxes_xyxy)):
+            if len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+            if normalized:
+                x1 *= float(frame_w)
+                x2 *= float(frame_w)
+                y1 *= float(frame_h)
+                y2 *= float(frame_h)
+
+            cx = 0.5 * (x1 + x2)
+            cy = 0.5 * (y1 + y2)
+            bw = max(1.0, float(x2 - x1)) * scale
+            bh = max(1.0, float(y2 - y1)) * scale
+            rx1 = max(0, int(math.floor(cx - bw / 2.0)))
+            ry1 = max(0, int(math.floor(cy - bh / 2.0)))
+            rx2 = min(frame_w, int(math.ceil(cx + bw / 2.0)))
+            ry2 = min(frame_h, int(math.ceil(cy + bh / 2.0)))
+            if rx2 - rx1 < 2 or ry2 - ry1 < 2:
+                continue
+
+            crop = frame_bgr[ry1:ry2, rx1:rx2]
+            pred = self.predict(
+                crop,
+                threshold=threshold,
+                return_patch_masks=return_patch_masks,
+                stabilize_lr=stabilize_lr,
+                stabilize_cfg=stabilize_cfg,
+                instance_id=int(idx),
+            )
+            shifted_xy = [
+                (float(x) + float(rx1), float(y) + float(ry1))
+                for x, y in pred.keypoints_xy
+            ]
+            results.append(
+                (
+                    int(idx),
+                    DinoKPSEGPrediction(
+                        keypoints_xy=shifted_xy,
+                        keypoint_scores=pred.keypoint_scores,
+                        masks_patch=pred.masks_patch,
+                        resized_hw=pred.resized_hw,
+                        patch_size=pred.patch_size,
+                    ),
+                )
+            )
+        return results

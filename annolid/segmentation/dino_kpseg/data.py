@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import hashlib
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -132,6 +133,89 @@ def _parse_yolo_pose_line(tokens: List[str], *, kpt_count: int, dims: int) -> Op
     if dims >= 3:
         return values[:, :3].astype(np.float32, copy=False)
     return None
+
+
+def _parse_yolo_pose_instance(
+    tokens: List[str],
+    *,
+    kpt_count: int,
+    dims: int,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    # YOLO pose format: cls x y w h (kpt_count * dims)
+    start = 5
+    required = start + kpt_count * dims
+    if len(tokens) < required:
+        return None
+    try:
+        bbox = np.asarray(
+            [float(tokens[1]), float(tokens[2]),
+             float(tokens[3]), float(tokens[4])],
+            dtype=np.float32,
+        )
+    except ValueError:
+        return None
+    kpts = _parse_yolo_pose_line(tokens, kpt_count=kpt_count, dims=dims)
+    if kpts is None:
+        return None
+    return bbox, kpts
+
+
+def _crop_instance(
+    pil: Image.Image,
+    *,
+    bbox: np.ndarray,
+    keypoints: np.ndarray,
+    bbox_scale: float,
+) -> Tuple[Image.Image, np.ndarray]:
+    width, height = pil.size
+    if width <= 1 or height <= 1:
+        return pil, keypoints
+    if bbox.shape[0] < 4:
+        return pil, keypoints
+
+    cx, cy, bw, bh = [float(x) for x in bbox[:4]]
+    if bw <= 0 or bh <= 0:
+        return pil, keypoints
+
+    bw_px = float(bw) * float(width) * float(bbox_scale)
+    bh_px = float(bh) * float(height) * float(bbox_scale)
+    if bw_px <= 1.0 or bh_px <= 1.0:
+        return pil, keypoints
+
+    x1 = cx * float(width) - bw_px / 2.0
+    y1 = cy * float(height) - bh_px / 2.0
+    x2 = cx * float(width) + bw_px / 2.0
+    y2 = cy * float(height) + bh_px / 2.0
+
+    x1 = max(0, int(math.floor(x1)))
+    y1 = max(0, int(math.floor(y1)))
+    x2 = min(int(width), int(math.ceil(x2)))
+    y2 = min(int(height), int(math.ceil(y2)))
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return pil, keypoints
+
+    crop = pil.crop((x1, y1, x2, y2))
+    crop_w = float(max(1, x2 - x1))
+    crop_h = float(max(1, y2 - y1))
+
+    kpts = keypoints.astype(np.float32, copy=True)
+    if kpts.ndim != 2 or kpts.shape[1] < 2:
+        return crop, kpts
+
+    x_px = kpts[:, 0] * float(width)
+    y_px = kpts[:, 1] * float(height)
+    x_norm = (x_px - float(x1)) / crop_w
+    y_norm = (y_px - float(y1)) / crop_h
+    inside = (x_norm >= 0.0) & (x_norm <= 1.0) & (
+        y_norm >= 0.0) & (y_norm <= 1.0)
+
+    kpts[:, 0] = np.clip(x_norm, 0.0, 1.0)
+    kpts[:, 1] = np.clip(y_norm, 0.0, 1.0)
+    if kpts.shape[1] >= 3:
+        vis = kpts[:, 2]
+        vis = np.where(inside, vis, np.zeros_like(vis))
+        kpts[:, 2] = vis
+    return crop, kpts
 
 
 def _build_keypoint_targets(
@@ -554,6 +638,8 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         cache_dir: Optional[Path] = None,
         mask_type: str = "gaussian",
         heatmap_sigma_px: Optional[float] = None,
+        instance_mode: str = "union",
+        bbox_scale: float = 1.25,
         cache_dtype: torch.dtype = torch.float16,
         return_images: bool = False,
     ) -> None:
@@ -570,6 +656,13 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         self.heatmap_sigma_px = (
             float(heatmap_sigma_px) if heatmap_sigma_px is not None else None
         )
+        self.instance_mode = str(instance_mode or "union").strip().lower()
+        if self.instance_mode not in {"union", "per_instance"}:
+            raise ValueError(
+                f"Unsupported instance_mode: {self.instance_mode!r}"
+            )
+        self.bbox_scale = float(bbox_scale) if bbox_scale is not None else 1.25
+        self._instance_records: List[Tuple[Path, np.ndarray, np.ndarray]] = []
 
         # Feature caching is incompatible with random image augmentations.
         self.cache_dir = None if self.augment.enabled else cache_dir
@@ -578,8 +671,48 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+        if self.instance_mode == "per_instance":
+            self._build_instance_records()
+            # Avoid cache collisions when using per-instance crops.
+            self.cache_dir = None
+
     def __len__(self) -> int:  # pragma: no cover - trivial
+        if self.instance_mode == "per_instance":
+            return len(self._instance_records)
         return len(self.image_paths)
+
+    def _build_instance_records(self) -> None:
+        records: List[Tuple[Path, np.ndarray, np.ndarray]] = []
+        for image_path in self.image_paths:
+            label_path = _image_to_label_path(Path(image_path))
+            if not label_path.exists():
+                continue
+            try:
+                lines = label_path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for line in lines:
+                tokens = line.strip().split()
+                if not tokens:
+                    continue
+                parsed = _parse_yolo_pose_instance(
+                    tokens, kpt_count=self.kpt_count, dims=self.kpt_dims
+                )
+                if parsed is None:
+                    continue
+                bbox, kpts = parsed
+                if kpts.ndim != 2 or kpts.shape[1] < 3:
+                    continue
+                if not bool((kpts[:, 2] > 0).any()):
+                    continue
+                records.append(
+                    (
+                        Path(image_path),
+                        bbox.astype(np.float32, copy=True),
+                        kpts.astype(np.float32, copy=True),
+                    )
+                )
+        self._instance_records = records
 
     def _cache_path(self, image_path: Path) -> Path:
         assert self.cache_dir is not None
@@ -646,27 +779,44 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             return False
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        image_path = self.image_paths[idx]
+        if self.instance_mode == "per_instance":
+            image_path, instance_bbox, instance_kpts = self._instance_records[idx]
+        else:
+            image_path = self.image_paths[idx]
+            instance_kpts = None
+
         pil = Image.open(image_path)
         pil = ImageOps.exif_transpose(pil.convert("RGB"))
         width, height = pil.size
 
-        label_path = _image_to_label_path(image_path)
         keypoint_instances: List[np.ndarray] = []
-        if label_path.exists():
-            try:
-                lines = label_path.read_text(encoding="utf-8").splitlines()
-            except Exception:
-                lines = []
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                tokens = line.split()
-                kpts = _parse_yolo_pose_line(
-                    tokens, kpt_count=self.kpt_count, dims=self.kpt_dims)
-                if kpts is not None:
-                    keypoint_instances.append(kpts)
+        if self.instance_mode == "per_instance":
+            keypoint_instances = [
+                instance_kpts] if instance_kpts is not None else []
+            if instance_bbox is not None and keypoint_instances:
+                pil, instance_kpts = _crop_instance(
+                    pil,
+                    bbox=instance_bbox,
+                    keypoints=keypoint_instances[0],
+                    bbox_scale=self.bbox_scale,
+                )
+                keypoint_instances = [instance_kpts]
+        else:
+            label_path = _image_to_label_path(image_path)
+            if label_path.exists():
+                try:
+                    lines = label_path.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    lines = []
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    tokens = line.split()
+                    kpts = _parse_yolo_pose_line(
+                        tokens, kpt_count=self.kpt_count, dims=self.kpt_dims)
+                    if kpts is not None:
+                        keypoint_instances.append(kpts)
 
         pil, keypoint_instances = _apply_pose_augmentations(
             pil,

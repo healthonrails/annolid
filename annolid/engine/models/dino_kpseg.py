@@ -47,6 +47,18 @@ class DinoKPSEGPlugin(ModelPluginBase):
             default=None,
             help="Gaussian sigma in pixels (original image space). Defaults to radius_px/2.",
         )
+        parser.add_argument(
+            "--instance-mode",
+            choices=("union", "per_instance"),
+            default="union",
+            help="How to handle multiple pose instances per image.",
+        )
+        parser.add_argument(
+            "--bbox-scale",
+            type=float,
+            default=1.25,
+            help="Scale factor for per-instance bounding box crops.",
+        )
         parser.add_argument("--hidden-dim", type=int, default=128)
         parser.add_argument("--lr", type=float, default=2e-3)
         parser.add_argument("--epochs", type=int, default=50)
@@ -155,6 +167,8 @@ class DinoKPSEGPlugin(ModelPluginBase):
             heatmap_sigma_px=(
                 float(args.heatmap_sigma) if args.heatmap_sigma is not None else None
             ),
+            instance_mode=str(args.instance_mode),
+            bbox_scale=float(args.bbox_scale),
             hidden_dim=int(args.hidden_dim),
             lr=float(args.lr),
             epochs=int(args.epochs),

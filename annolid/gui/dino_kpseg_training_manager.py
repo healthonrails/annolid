@@ -117,6 +117,10 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         short_side: int,
         layers: str,
         radius_px: float,
+        mask_type: str = "gaussian",
+        heatmap_sigma: Optional[float] = None,
+        instance_mode: str = "union",
+        bbox_scale: float = 1.25,
         hidden_dim: int,
         lr: float,
         epochs: int,
@@ -209,6 +213,12 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 ",".join(str(int(x)) for x in layer_tuple),
                 "--radius-px",
                 str(float(radius_px)),
+                "--mask-type",
+                str(mask_type or "gaussian"),
+                "--instance-mode",
+                str(instance_mode or "union"),
+                "--bbox-scale",
+                str(float(bbox_scale)),
                 "--hidden-dim",
                 str(int(hidden_dim)),
                 "--lr",
@@ -244,6 +254,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 cmd += ["--device", str(device).strip()]
             if not bool(cache_features):
                 cmd.append("--no-cache")
+            if heatmap_sigma is not None:
+                cmd += ["--heatmap-sigma", str(float(heatmap_sigma))]
             if bool(augment):
                 cmd.append("--augment")
                 cmd += ["--hflip", str(float(hflip))]

@@ -336,6 +336,8 @@ def train(
     radius_px: float,
     mask_type: str = "gaussian",
     heatmap_sigma_px: Optional[float] = None,
+    instance_mode: str = "union",
+    bbox_scale: float = 1.25,
     hidden_dim: int,
     lr: float,
     epochs: int,
@@ -427,6 +429,8 @@ def train(
         cache_dir=cache_dir,
         mask_type=str(mask_type),
         heatmap_sigma_px=heatmap_sigma_px,
+        instance_mode=str(instance_mode),
+        bbox_scale=float(bbox_scale),
         return_images=True,
     )
     val_ds = (
@@ -441,6 +445,8 @@ def train(
             cache_dir=cache_dir,
             mask_type=str(mask_type),
             heatmap_sigma_px=heatmap_sigma_px,
+            instance_mode=str(instance_mode),
+            bbox_scale=float(bbox_scale),
             return_images=True,
         )
         if spec.val_images
@@ -527,6 +533,8 @@ def train(
             f"radius_px: {radius_px}",
             f"mask_type: {str(mask_type)}",
             f"heatmap_sigma_px: {heatmap_sigma_px}",
+            f"instance_mode: {str(instance_mode)}",
+            f"bbox_scale: {float(bbox_scale)}",
             f"head_type: {head_type_norm}",
             f"attn_heads: {int(attn_heads)}",
             f"attn_layers: {int(attn_layers)}",
@@ -605,6 +613,8 @@ def train(
         tb_writer.add_text("config/mask_type", str(mask_type), 0)
         tb_writer.add_text(
             "config/heatmap_sigma_px", str(heatmap_sigma_px), 0)
+        tb_writer.add_text("config/instance_mode", str(instance_mode), 0)
+        tb_writer.add_text("config/bbox_scale", str(float(bbox_scale)), 0)
         tb_writer.add_text("config/early_stop_patience", str(patience), 0)
         tb_writer.add_text("config/early_stop_min_delta", str(min_delta), 0)
         tb_writer.add_text("config/early_stop_min_epochs", str(min_epochs), 0)
@@ -1252,6 +1262,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=None,
         help="Gaussian sigma in pixels (original image space). Defaults to radius_px/2.",
     )
+    p.add_argument(
+        "--instance-mode",
+        choices=("union", "per_instance"),
+        default="union",
+        help="How to handle multiple pose instances per image.",
+    )
+    p.add_argument(
+        "--bbox-scale",
+        type=float,
+        default=1.25,
+        help="Scale factor for per-instance bounding box crops.",
+    )
     p.add_argument("--hidden-dim", type=int, default=128)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--epochs", type=int, default=50)
@@ -1360,6 +1382,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         heatmap_sigma_px=(
             float(args.heatmap_sigma) if args.heatmap_sigma is not None else None
         ),
+        instance_mode=str(args.instance_mode),
+        bbox_scale=float(args.bbox_scale),
         hidden_dim=int(args.hidden_dim),
         lr=float(args.lr),
         epochs=int(args.epochs),

@@ -355,6 +355,7 @@ class InferenceProcessor:
                 output_directory=output_directory,
                 pred_worker=pred_worker,
                 stop_event=stop_event,
+                visual_prompts=visual_prompts,
             )
 
         # Use visual prompts if supported by the model (YOLOE)
@@ -412,6 +413,7 @@ class InferenceProcessor:
         output_directory: Path,
         pred_worker=None,
         stop_event=None,
+        visual_prompts: dict = None,
     ) -> str:
         import cv2
 
@@ -450,7 +452,11 @@ class InferenceProcessor:
                 if not ok:
                     break
                 frame_shape = (frame.shape[0], frame.shape[1], 3)
-                annotations = self.extract_dino_kpseg_results(frame)
+                bboxes = None
+                if visual_prompts is not None:
+                    bboxes = visual_prompts.get("bboxes")
+                annotations = self.extract_dino_kpseg_results(
+                    frame, bboxes=bboxes)
                 if annotations:
                     self.save_yolo_to_labelme(
                         annotations, frame_shape, output_directory)
@@ -463,35 +469,54 @@ class InferenceProcessor:
             return f"Stopped#{self.frame_count}"
         return f"Done#{self.frame_count}"
 
-    def extract_dino_kpseg_results(self, frame_bgr: np.ndarray) -> list:
+    def extract_dino_kpseg_results(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        bboxes: Optional[np.ndarray] = None,
+    ) -> list:
         annotations = []
         try:
-            prediction = self.model.predict(
-                frame_bgr, return_patch_masks=True, stabilize_lr=True)
+            if bboxes is not None and len(bboxes) > 0:
+                predictions = self.model.predict_instances(
+                    frame_bgr,
+                    bboxes_xyxy=bboxes,
+                    return_patch_masks=False,
+                    stabilize_lr=True,
+                )
+            else:
+                predictions = [(None, self.model.predict(
+                    frame_bgr, return_patch_masks=False, stabilize_lr=True))]
         except Exception as exc:
             logger.error("DinoKPSEG inference failed: %s", exc, exc_info=True)
             return annotations
 
         kp_names = self.keypoint_names or getattr(
             self.model, "keypoint_names", None)
-        if not kp_names:
-            kp_names = [str(i) for i in range(len(prediction.keypoints_xy))]
+        if not kp_names and predictions:
+            first_pred = predictions[0][1]
+            kp_names = [str(i)
+                        for i in range(len(first_pred.keypoints_xy))]
 
-        for kpt_id, (xy, score) in enumerate(
-            zip(prediction.keypoints_xy, prediction.keypoint_scores)
-        ):
-            label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
-            x, y = float(xy[0]), float(xy[1])
+        for instance_id, prediction in predictions:
+            group_id = int(instance_id) if instance_id is not None else None
+            for kpt_id, (xy, score) in enumerate(
+                zip(prediction.keypoints_xy, prediction.keypoint_scores)
+            ):
+                label = kp_names[kpt_id] if kpt_id < len(
+                    kp_names) else str(kpt_id)
+                x, y = float(xy[0]), float(xy[1])
 
-            flags = {"score": float(score)}
-            point_shape = Shape(
-                label,
-                shape_type="point",
-                description=self.model_type,
-                flags=flags,
-            )
-            point_shape.points = [[x, y]]
-            annotations.append(point_shape)
+                flags = {"score": float(score)}
+                point_shape = Shape(
+                    label,
+                    shape_type="point",
+                    description=self.model_type,
+                    flags=flags,
+                    group_id=group_id,
+                )
+                point_shape.points = [[x, y]]
+                annotations.append(point_shape)
 
         return annotations
 
