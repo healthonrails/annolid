@@ -398,6 +398,20 @@ def _infer_flip_idx_from_names(names: List[str], *, kpt_count: int) -> Optional[
     return infer_flip_idx_from_names(names, kpt_count=int(kpt_count))
 
 
+def merge_feature_layers(feats: torch.Tensor) -> torch.Tensor:
+    """Merge multi-layer DINO features into a single CHW tensor.
+
+    When multiple transformer layers are requested, the extractor returns
+    [L, D, H, W]. We flatten layers into the channel dimension -> [L*D, H, W].
+    """
+    if feats.ndim == 3:
+        return feats
+    if feats.ndim != 4:
+        raise ValueError("Expected DINO features as CHW or LDHW")
+    l, d, h, w = feats.shape
+    return feats.contiguous().view(int(l * d), int(h), int(w))
+
+
 @dataclass(frozen=True)
 class DinoKPSEGAugmentConfig:
     """YOLO-style, lightweight pose augmentations.
@@ -741,6 +755,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
     def _load_or_compute_features(self, image_path: Path, pil: Image.Image) -> torch.Tensor:
         if self.cache_dir is None:
             feats = self.extractor.extract(pil, return_type="torch")
+            feats = merge_feature_layers(feats)
             return feats.to(dtype=self.cache_dtype)
 
         cache_path = self._cache_path(image_path)
@@ -748,17 +763,19 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             try:
                 payload = torch.load(cache_path, map_location="cpu")
                 if isinstance(payload, torch.Tensor):
-                    if self._is_compatible_cached_features(payload):
-                        return payload
+                    cached = merge_feature_layers(payload)
+                    if self._is_compatible_cached_features(cached):
+                        return cached
                 if isinstance(payload, dict) and isinstance(payload.get("feats"), torch.Tensor):
-                    cached = payload["feats"]
+                    cached = merge_feature_layers(payload["feats"])
                     if self._is_compatible_cached_features(cached):
                         return cached
             except Exception:
                 pass
 
         feats = self.extractor.extract(
-            pil, return_type="torch").to(dtype=self.cache_dtype)
+            pil, return_type="torch")
+        feats = merge_feature_layers(feats).to(dtype=self.cache_dtype)
         try:
             torch.save({"feats": feats}, cache_path)
         except Exception:
@@ -767,6 +784,8 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
 
     def _is_compatible_cached_features(self, feats: torch.Tensor) -> bool:
         try:
+            if feats.ndim == 4:
+                feats = merge_feature_layers(feats)
             if feats.ndim != 3:
                 return False
             expected = getattr(
@@ -774,7 +793,16 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             expected_dim = int(getattr(expected, "hidden_size", 0) or 0)
             if expected_dim <= 0:
                 return True
-            return int(feats.shape[0]) == expected_dim
+            layers = getattr(
+                getattr(self.extractor, "cfg", None), "layers", None)
+            if layers is not None:
+                try:
+                    layer_count = len(list(layers))
+                except Exception:
+                    layer_count = 1
+            else:
+                layer_count = 1
+            return int(feats.shape[0]) == int(expected_dim) * int(layer_count)
         except Exception:
             return False
 
@@ -878,11 +906,12 @@ def build_extractor(
     layers: Tuple[int, ...] = (-1,),
     device: Optional[str] = None,
 ) -> Dinov3FeatureExtractor:
+    return_layer = "all" if len(layers) > 1 else "last"
     cfg = Dinov3Config(
         model_name=model_name,
         short_side=int(short_side),
         device=device,
         layers=layers,
-        return_layer="last",
+        return_layer=return_layer,
     )
     return Dinov3FeatureExtractor(cfg)

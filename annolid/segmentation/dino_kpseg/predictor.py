@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from annolid.features import Dinov3FeatureExtractor
-from annolid.segmentation.dino_kpseg.data import build_extractor
+from annolid.segmentation.dino_kpseg.data import build_extractor, merge_feature_layers
 from annolid.segmentation.dino_kpseg.cli_utils import normalize_device
 from annolid.segmentation.dino_kpseg.keypoints import (
     LRStabilizeConfig,
@@ -143,13 +143,14 @@ class DinoKPSEGPredictor:
 
         feats = self.extractor.extract(
             frame_bgr, color_space="BGR", return_type="torch")
+        feats = merge_feature_layers(feats)
         if feats.ndim != 3:
             raise ValueError("Expected DINO features as CHW")
         if int(feats.shape[0]) != int(self.head.in_dim):
             raise RuntimeError(
                 "DinoKPSEG checkpoint/backbone mismatch: "
                 f"checkpoint expects {self.head.in_dim} channels but extractor produced {int(feats.shape[0])}. "
-                "This often happens when training reused stale cached features from a different DINO backbone. "
+                "This often happens when training reused stale cached features from a different DINO backbone or layer set. "
                 "Fix by retraining with cache disabled (--no-cache) or clearing "
                 "~/.cache/annolid/dinokpseg/features, and ensure the checkpoint matches the backbone."
             )

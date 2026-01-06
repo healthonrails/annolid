@@ -21,7 +21,10 @@ from annolid.segmentation.dino_kpseg.keypoints import (
     symmetric_pairs_from_flip_idx,
 )
 from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
-from annolid.segmentation.dino_kpseg.data import build_extractor
+from annolid.segmentation.dino_kpseg.data import (
+    build_extractor,
+    merge_feature_layers,
+)
 
 
 @dataclass
@@ -391,13 +394,14 @@ def evaluate(
             continue
 
         feats = extractor.extract(pil, return_type="torch")
+        feats = merge_feature_layers(feats)
         if feats.ndim != 3:
             continue
         if int(feats.shape[0]) != int(head.in_dim):
             raise RuntimeError(
                 "DinoKPSEG checkpoint/backbone mismatch in eval: "
                 f"checkpoint expects {head.in_dim} channels but extractor produced {int(feats.shape[0])}. "
-                "Retrain with matching backbone or clear the DinoKPSEG cache."
+                "Retrain with matching backbone/layers or clear the DinoKPSEG cache."
             )
         patch_size = int(extractor.patch_size)
         h_p, w_p = int(feats.shape[1]), int(feats.shape[2])
