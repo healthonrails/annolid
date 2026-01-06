@@ -823,11 +823,11 @@ class FlexibleWorker(QtCore.QObject):
                 kwargs = dict(self._kwargs)
                 kwargs = self._inject_cancellation_kwargs(kwargs)
                 result = self._task_function(*self._args, **kwargs)
-            self.result_signal.emit(result)
-            self.finished_signal.emit(result)
+            self._safe_emit(self.result_signal, result)
+            self._safe_emit(self.finished_signal, result)
         except Exception as e:
             # Optionally handle exceptions and emit an error signal if needed
-            self.finished_signal.emit(e)
+            self._safe_emit(self.finished_signal, e)
 
     def _stop(self):
         """
@@ -884,7 +884,17 @@ class FlexibleWorker(QtCore.QObject):
 
         :param progress: An integer representing the progress percentage.
         """
-        self.progress_signal.emit(progress)
+        self._safe_emit(self.progress_signal, progress)
+
+    def _safe_emit(self, signal, *args) -> bool:
+        """Emit a Qt signal defensively if the QObject is still alive."""
+        try:
+            signal.emit(*args)
+            return True
+        except RuntimeError:
+            logger.debug(
+                "FlexibleWorker signal emission failed (object deleted).")
+            return False
 
 
 class FrameExtractorWorker(QThread):
