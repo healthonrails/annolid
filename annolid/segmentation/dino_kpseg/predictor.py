@@ -73,6 +73,25 @@ class DinoKPSEGPredictor:
         self.head.eval()
 
     @staticmethod
+    def _soft_argmax_coords(
+        probs: torch.Tensor,
+        *,
+        patch_size: int,
+    ) -> List[Tuple[float, float]]:
+        if probs.ndim != 3:
+            raise ValueError("Expected probs in KHW format")
+        k, h_p, w_p = int(probs.shape[0]), int(
+            probs.shape[1]), int(probs.shape[2])
+        norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
+        xs = (torch.arange(w_p, device=probs.device,
+              dtype=probs.dtype) + 0.5) * float(patch_size)
+        ys = (torch.arange(h_p, device=probs.device,
+              dtype=probs.dtype) + 0.5) * float(patch_size)
+        x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
+        y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
+        return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
+
+    @staticmethod
     def _resolve_checkpoint_path(weight_path: str | Path) -> Path:
         p = Path(weight_path).expanduser()
         if p.is_dir():
@@ -136,38 +155,20 @@ class DinoKPSEGPredictor:
             masks_t = probs >= thr
             masks = masks_t.numpy().astype(np.uint8, copy=False)
 
-        # Argmax per keypoint channel
+        # Soft-argmax per keypoint channel for sub-patch localization.
+        coords_resized = self._soft_argmax_coords(
+            probs.to(dtype=torch.float32), patch_size=patch_size)
+
+        # Scores from peak probability for consistency with prior outputs.
         flat = probs.view(probs.shape[0], -1)
         best_idx = torch.argmax(flat, dim=1)
         scores = torch.gather(flat, 1, best_idx[:, None]).squeeze(1).tolist()
-        best_idx = best_idx.tolist()
 
         keypoints_xy: List[Tuple[float, float]] = []
-        for kpt_id, idx in enumerate(best_idx):
-            x_res = None
-            y_res = None
-            if masks_t is not None:
-                try:
-                    mask_k = masks_t[int(kpt_id)]
-                    if bool(mask_k.any()):
-                        rows, cols = torch.nonzero(mask_k, as_tuple=True)
-                        if rows.numel() > 0:
-                            x_res = (cols.to(dtype=torch.float32) +
-                                     0.5).mean().item() * float(patch_size)
-                            y_res = (rows.to(dtype=torch.float32) +
-                                     0.5).mean().item() * float(patch_size)
-                except Exception:
-                    x_res = None
-                    y_res = None
-            if x_res is None or y_res is None:
-                r = int(idx // w_p)
-                c0 = int(idx % w_p)
-                x_res = (float(c0) + 0.5) * patch_size
-                y_res = (float(r) + 0.5) * patch_size
-
-            h0, w0 = frame_bgr.shape[0], frame_bgr.shape[1]
-            x_orig = x_res * (float(w0) / float(resized_w))
-            y_orig = y_res * (float(h0) / float(resized_h))
+        h0, w0 = frame_bgr.shape[0], frame_bgr.shape[1]
+        for x_res, y_res in coords_resized:
+            x_orig = float(x_res) * (float(w0) / float(resized_w))
+            y_orig = float(y_res) * (float(h0) / float(resized_h))
             keypoints_xy.append((float(x_orig), float(y_orig)))
 
         if stabilize_lr and self._symmetric_pairs and self._prev_keypoints_xy is not None:

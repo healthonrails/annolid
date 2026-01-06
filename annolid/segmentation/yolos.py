@@ -477,28 +477,11 @@ class InferenceProcessor:
         if not kp_names:
             kp_names = [str(i) for i in range(len(prediction.keypoints_xy))]
 
-        masks_patch = getattr(prediction, "masks_patch", None)
-        resized_h, resized_w = int(prediction.resized_hw[0]), int(
-            prediction.resized_hw[1])
-        patch_size = int(getattr(prediction, "patch_size", 16))
-        frame_h, frame_w = int(frame_bgr.shape[0]), int(frame_bgr.shape[1])
-
         for kpt_id, (xy, score) in enumerate(
             zip(prediction.keypoints_xy, prediction.keypoint_scores)
         ):
             label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
             x, y = float(xy[0]), float(xy[1])
-
-            if isinstance(masks_patch, np.ndarray) and masks_patch.ndim == 3 and kpt_id < masks_patch.shape[0]:
-                mask = masks_patch[kpt_id]
-                if np.any(mask):
-                    rows, cols = np.nonzero(mask)
-                    x_res = (cols.astype(float) + 0.5) * patch_size
-                    y_res = (rows.astype(float) + 0.5) * patch_size
-                    x_res_mean = float(np.mean(x_res))
-                    y_res_mean = float(np.mean(y_res))
-                    x = x_res_mean * (float(frame_w) / float(resized_w))
-                    y = y_res_mean * (float(frame_h) / float(resized_h))
 
             flags = {"score": float(score)}
             point_shape = Shape(

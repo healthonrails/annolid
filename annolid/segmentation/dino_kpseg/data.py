@@ -134,7 +134,7 @@ def _parse_yolo_pose_line(tokens: List[str], *, kpt_count: int, dims: int) -> Op
     return None
 
 
-def _union_keypoint_masks(
+def _build_keypoint_targets(
     keypoints_instances: Iterable[np.ndarray],
     *,
     grid_hw: Tuple[int, int],
@@ -142,7 +142,9 @@ def _union_keypoint_masks(
     resized_hw_px: Tuple[int, int],
     radius_px: float,
     original_hw_px: Tuple[int, int],
-) -> torch.Tensor:
+    mask_type: str = "gaussian",
+    heatmap_sigma_px: Optional[float] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     kpt_instances = list(keypoints_instances)
     if not kpt_instances:
         raise ValueError("Expected at least one keypoint instance array")
@@ -161,7 +163,24 @@ def _union_keypoint_masks(
     yy = y_centers[:, None]
     xx = x_centers[None, :]
 
+    mask_mode = str(mask_type or "gaussian").strip().lower()
+    if mask_mode not in {"disk", "gaussian"}:
+        raise ValueError(f"Unsupported mask_type: {mask_type!r}")
+
+    sigma_res = None
+    denom = None
+    if mask_mode == "gaussian":
+        if heatmap_sigma_px is not None and float(heatmap_sigma_px) > 0:
+            sigma_res = float(heatmap_sigma_px) * float(scale)
+        else:
+            sigma_res = radius_res / 2.0
+        sigma_res = max(1.0, float(sigma_res))
+        denom = 2.0 * sigma_res * sigma_res
+
     masks = np.zeros((kpt_count, h_p, w_p), dtype=np.float32)
+    coords = np.zeros((kpt_count, 2), dtype=np.float32)
+    coord_counts = np.zeros((kpt_count,), dtype=np.int32)
+
     for keypoints in kpt_instances:
         if keypoints.shape[0] != kpt_count:
             continue
@@ -172,9 +191,26 @@ def _union_keypoint_masks(
             x_res = float(x_norm) * float(resized_w)
             y_res = float(y_norm) * float(resized_h)
             dist2 = (xx - x_res) ** 2 + (yy - y_res) ** 2
-            masks[k] = np.maximum(
-                masks[k], (dist2 <= radius2).astype(np.float32))
-    return torch.from_numpy(masks)
+            if mask_mode == "gaussian" and denom is not None:
+                blob = np.exp(-dist2 / float(denom)
+                              ).astype(np.float32, copy=False)
+            else:
+                blob = (dist2 <= radius2).astype(np.float32)
+            masks[k] = np.maximum(masks[k], blob)
+
+            if coord_counts[k] == 0:
+                coords[k, 0] = x_res
+                coords[k, 1] = y_res
+                coord_counts[k] = 1
+            else:
+                coord_counts[k] += 1
+
+    coord_mask = (coord_counts == 1).astype(np.float32)
+    return (
+        torch.from_numpy(masks),
+        torch.from_numpy(coords),
+        torch.from_numpy(coord_mask),
+    )
 
 
 @dataclass(frozen=True)
@@ -503,7 +539,7 @@ def _invert_affine_3x3_to_pil_coeffs(m: np.ndarray) -> tuple[float, float, float
 
 
 class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
-    """Dataset yielding frozen DINO features + circular keypoint masks at patch resolution."""
+    """Dataset yielding frozen DINO features + keypoint masks at patch resolution."""
 
     def __init__(
         self,
@@ -516,6 +552,8 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         flip_idx: Optional[List[int]] = None,
         augment: Optional[DinoKPSEGAugmentConfig] = None,
         cache_dir: Optional[Path] = None,
+        mask_type: str = "gaussian",
+        heatmap_sigma_px: Optional[float] = None,
         cache_dtype: torch.dtype = torch.float16,
         return_images: bool = False,
     ) -> None:
@@ -528,6 +566,10 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         self.augment = augment or DinoKPSEGAugmentConfig(enabled=False)
         self.rng = np.random.default_rng(self.augment.seed)
         self.return_images = bool(return_images)
+        self.mask_type = str(mask_type or "gaussian").strip().lower()
+        self.heatmap_sigma_px = (
+            float(heatmap_sigma_px) if heatmap_sigma_px is not None else None
+        )
 
         # Feature caching is incompatible with random image augmentations.
         self.cache_dir = None if self.augment.enabled else cache_dir
@@ -643,19 +685,25 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         if not keypoint_instances:
             masks = torch.zeros((self.kpt_count, h_p, w_p),
                                 dtype=torch.float32)
+            coords = torch.zeros((self.kpt_count, 2), dtype=torch.float32)
+            coord_mask = torch.zeros((self.kpt_count,), dtype=torch.float32)
         else:
-            masks = _union_keypoint_masks(
+            masks, coords, coord_mask = _build_keypoint_targets(
                 keypoint_instances,
                 grid_hw=(h_p, w_p),
                 patch_size=int(self.extractor.patch_size),
                 resized_hw_px=(resized_h, resized_w),
                 radius_px=self.radius_px,
                 original_hw_px=(height, width),
+                mask_type=self.mask_type,
+                heatmap_sigma_px=self.heatmap_sigma_px,
             )
 
         sample = {
             "feats": feats.to(dtype=torch.float32),
             "masks": masks.to(dtype=torch.float32),
+            "coords": coords.to(dtype=torch.float32),
+            "coord_mask": coord_mask.to(dtype=torch.float32),
         }
         if self.return_images:
             try:

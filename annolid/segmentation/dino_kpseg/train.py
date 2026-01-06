@@ -186,6 +186,65 @@ def _draw_loss_curve_image(csv_path: Path, *, width: int = 720, height: int = 42
     return tens
 
 
+def _dice_loss(probs: torch.Tensor, targets: torch.Tensor, *, eps: float = 1e-6) -> torch.Tensor:
+    if probs.shape != targets.shape:
+        raise ValueError(
+            "Dice loss requires probs and targets with the same shape")
+    dims = tuple(range(1, probs.ndim))
+    inter = (probs * targets).sum(dim=dims)
+    denom = probs.sum(dim=dims) + targets.sum(dim=dims)
+    dice = (2.0 * inter + eps) / (denom + eps)
+    return 1.0 - dice.mean()
+
+
+def _soft_argmax_coords(
+    probs: torch.Tensor,
+    *,
+    patch_size: int,
+) -> torch.Tensor:
+    if probs.ndim != 3:
+        raise ValueError("Expected probs in KHW format")
+    k, h_p, w_p = int(probs.shape[0]), int(probs.shape[1]), int(probs.shape[2])
+    norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
+    xs = (torch.arange(w_p, device=probs.device,
+          dtype=probs.dtype) + 0.5) * float(patch_size)
+    ys = (torch.arange(h_p, device=probs.device,
+          dtype=probs.dtype) + 0.5) * float(patch_size)
+    x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
+    y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
+    return torch.stack([x_exp, y_exp], dim=1)
+
+
+def _coord_loss(
+    pred_xy: torch.Tensor,
+    target_xy: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    mode: str,
+) -> torch.Tensor:
+    if pred_xy.shape != target_xy.shape:
+        raise ValueError(
+            "coord loss expects pred_xy and target_xy with same shape")
+    mask = mask.to(dtype=pred_xy.dtype)
+    if mask.ndim == 1:
+        mask = mask[:, None]
+    valid = mask.sum()
+    if valid <= 0:
+        return torch.zeros((), dtype=pred_xy.dtype, device=pred_xy.device)
+
+    mode_norm = str(mode or "smooth_l1").strip().lower()
+    if mode_norm == "l2":
+        per = (pred_xy - target_xy) ** 2
+        per = per.sum(dim=1, keepdim=True)
+    elif mode_norm == "l1":
+        per = torch.abs(pred_xy - target_xy).sum(dim=1, keepdim=True)
+    else:
+        per = F.smooth_l1_loss(pred_xy, target_xy, reduction="none").sum(
+            dim=1, keepdim=True
+        )
+    return (per * mask).sum() / valid
+
+
 def _compute_resize_hw(*, width: int, height: int, short_side: int, patch_size: int) -> tuple[int, int]:
     if height <= width:
         scale = float(short_side) / max(1, int(height))
@@ -275,6 +334,8 @@ def train(
     short_side: int,
     layers: Tuple[int, ...],
     radius_px: float,
+    mask_type: str = "gaussian",
+    heatmap_sigma_px: Optional[float] = None,
     hidden_dim: int,
     lr: float,
     epochs: int,
@@ -289,6 +350,9 @@ def train(
     head_type: str = "conv",
     attn_heads: int = 4,
     attn_layers: int = 1,
+    dice_loss_weight: float = 0.5,
+    coord_loss_weight: float = 0.25,
+    coord_loss_type: str = "smooth_l1",
     lr_pair_loss_weight: float = 0.0,
     lr_pair_margin_px: float = 0.0,
     lr_side_loss_weight: float = 0.0,
@@ -361,6 +425,8 @@ def train(
         flip_idx=spec.flip_idx,
         augment=augment_cfg,
         cache_dir=cache_dir,
+        mask_type=str(mask_type),
+        heatmap_sigma_px=heatmap_sigma_px,
         return_images=True,
     )
     val_ds = (
@@ -373,6 +439,8 @@ def train(
             flip_idx=spec.flip_idx,
             augment=DinoKPSEGAugmentConfig(enabled=False),
             cache_dir=cache_dir,
+            mask_type=str(mask_type),
+            heatmap_sigma_px=heatmap_sigma_px,
             return_images=True,
         )
         if spec.val_images
@@ -457,6 +525,8 @@ def train(
             f"short_side: {short_side}",
             f"layers: {list(layers)}",
             f"radius_px: {radius_px}",
+            f"mask_type: {str(mask_type)}",
+            f"heatmap_sigma_px: {heatmap_sigma_px}",
             f"head_type: {head_type_norm}",
             f"attn_heads: {int(attn_heads)}",
             f"attn_layers: {int(attn_layers)}",
@@ -468,6 +538,9 @@ def train(
             f"early_stop_min_delta: {float(early_stop_min_delta)}",
             f"early_stop_min_epochs: {int(early_stop_min_epochs)}",
             f"tb_add_graph: {bool(tb_add_graph)}",
+            f"dice_loss_weight: {float(dice_loss_weight)}",
+            f"coord_loss_weight: {float(coord_loss_weight)}",
+            f"coord_loss_type: {str(coord_loss_type)}",
             f"lr_pair_loss_weight: {float(lr_pair_loss_weight)}",
             f"lr_pair_margin_px: {float(lr_pair_margin_px)}",
             f"lr_side_loss_weight: {float(lr_side_loss_weight)}",
@@ -529,6 +602,9 @@ def train(
         tb_writer.add_text("config/short_side", str(short_side), 0)
         tb_writer.add_text("config/patch_size",
                            str(int(extractor.patch_size)), 0)
+        tb_writer.add_text("config/mask_type", str(mask_type), 0)
+        tb_writer.add_text(
+            "config/heatmap_sigma_px", str(heatmap_sigma_px), 0)
         tb_writer.add_text("config/early_stop_patience", str(patience), 0)
         tb_writer.add_text("config/early_stop_min_delta", str(min_delta), 0)
         tb_writer.add_text("config/early_stop_min_epochs", str(min_epochs), 0)
@@ -541,6 +617,12 @@ def train(
             str(orientation_anchor_idx),
             0,
         )
+        tb_writer.add_text("config/dice_loss_weight",
+                           str(float(dice_loss_weight)), 0)
+        tb_writer.add_text("config/coord_loss_weight",
+                           str(float(coord_loss_weight)), 0)
+        tb_writer.add_text("config/coord_loss_type",
+                           str(coord_loss_type), 0)
         tb_writer.add_text("config/lr_pair_loss_weight",
                            str(float(lr_pair_loss_weight)), 0)
         tb_writer.add_text("config/lr_pair_margin_px",
@@ -624,6 +706,10 @@ def train(
                 n_train = 0
                 batch_dice_sum = 0.0
                 batch_dice_count = 0
+                dice_loss_sum = 0.0
+                dice_terms_count = 0
+                coord_loss_sum = 0.0
+                coord_terms_count = 0
                 pair_overlap_sum = 0.0
                 pair_margin_sum = 0.0
                 pair_terms_count = 0
@@ -634,9 +720,41 @@ def train(
                         device_str, non_blocking=True)  # CHW
                     masks = batch["masks"][0].to(
                         device_str, non_blocking=True)  # KHW
+                    coords = batch.get("coords")
+                    coord_mask = batch.get("coord_mask")
+                    if isinstance(coords, torch.Tensor):
+                        coords = coords[0].to(
+                            device_str, non_blocking=True)  # Kx2
+                    else:
+                        coords = None
+                    if isinstance(coord_mask, torch.Tensor):
+                        coord_mask = coord_mask[0].to(
+                            device_str, non_blocking=True)  # K
+                    else:
+                        coord_mask = None
                     logits = head(feats.unsqueeze(0))[0]
                     loss_base = loss_fn(logits, masks)
                     loss = loss_base
+                    probs = torch.sigmoid(logits)
+
+                    dice_loss = None
+                    if float(dice_loss_weight) > 0.0:
+                        dice_loss = _dice_loss(probs, masks)
+                        loss = loss + float(dice_loss_weight) * dice_loss
+
+                    coord_loss = None
+                    if (
+                        float(coord_loss_weight) > 0.0
+                        and isinstance(coords, torch.Tensor)
+                        and isinstance(coord_mask, torch.Tensor)
+                        and coords.numel() > 0
+                        and coord_mask.numel() > 0
+                    ):
+                        pred_xy = _soft_argmax_coords(
+                            probs, patch_size=int(extractor.patch_size))
+                        coord_loss = _coord_loss(
+                            pred_xy, coords, coord_mask, mode=coord_loss_type)
+                        loss = loss + float(coord_loss_weight) * coord_loss
 
                     pair_overlap = None
                     pair_margin = None
@@ -647,9 +765,10 @@ def train(
                         and int(logits.shape[0]) == int(spec.kpt_count)
                     ):
                         k, h_p, w_p = logits.shape
-                        probs = torch.sigmoid(logits).reshape(k, -1)
-                        norm = probs.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                        dist = probs / norm  # [K, HW]
+                        probs_flat = probs.reshape(k, -1)
+                        norm = probs_flat.sum(
+                            dim=1, keepdim=True).clamp(min=1e-6)
+                        dist = probs_flat / norm  # [K, HW]
 
                         overlap_acc = 0.0
                         margin_acc = 0.0
@@ -687,9 +806,10 @@ def train(
                         and int(logits.shape[0]) == int(spec.kpt_count)
                     ):
                         k, h_p, w_p = logits.shape
-                        probs = torch.sigmoid(logits).reshape(k, -1)
-                        norm = probs.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                        dist = (probs / norm).view(k, h_p, w_p)
+                        probs_flat = probs.reshape(k, -1)
+                        norm = probs_flat.sum(
+                            dim=1, keepdim=True).clamp(min=1e-6)
+                        dist = (probs_flat / norm).view(k, h_p, w_p)
 
                         xs = torch.arange(
                             w_p, device=logits.device, dtype=logits.dtype) + 0.5
@@ -730,6 +850,12 @@ def train(
 
                     train_loss += float(loss_base.detach().cpu().item())
                     train_loss_total += float(loss.detach().cpu().item())
+                    if dice_loss is not None:
+                        dice_loss_sum += float(dice_loss.detach().cpu().item())
+                        dice_terms_count += 1
+                    if coord_loss is not None:
+                        coord_loss_sum += float(coord_loss.detach().cpu().item())
+                        coord_terms_count += 1
                     if pair_overlap is not None:
                         pair_overlap_sum += float(
                             pair_overlap.detach().cpu().item())
@@ -864,11 +990,39 @@ def train(
                                 device_str, non_blocking=True)
                             masks = batch["masks"][0].to(
                                 device_str, non_blocking=True)
+                            coords = batch.get("coords")
+                            coord_mask = batch.get("coord_mask")
+                            if isinstance(coords, torch.Tensor):
+                                coords = coords[0].to(
+                                    device_str, non_blocking=True)
+                            else:
+                                coords = None
+                            if isinstance(coord_mask, torch.Tensor):
+                                coord_mask = coord_mask[0].to(
+                                    device_str, non_blocking=True)
+                            else:
+                                coord_mask = None
                             logits = head(feats.unsqueeze(0))[0]
-                            losses.append(
-                                float(loss_fn(logits, masks).cpu().item()))
-
                             probs = torch.sigmoid(logits)
+                            loss_val = loss_fn(logits, masks)
+                            if float(dice_loss_weight) > 0.0:
+                                loss_val = loss_val + \
+                                    float(dice_loss_weight) * _dice_loss(
+                                        probs, masks)
+                            if (
+                                float(coord_loss_weight) > 0.0
+                                and isinstance(coords, torch.Tensor)
+                                and isinstance(coord_mask, torch.Tensor)
+                                and coords.numel() > 0
+                                and coord_mask.numel() > 0
+                            ):
+                                pred_xy = _soft_argmax_coords(
+                                    probs, patch_size=int(extractor.patch_size))
+                                loss_val = loss_val + \
+                                    float(coord_loss_weight) * _coord_loss(
+                                        pred_xy, coords, coord_mask, mode=coord_loss_type)
+                            losses.append(float(loss_val.cpu().item()))
+
                             gt = masks > 0.5
                             pred = probs >= float(threshold)
                             tp += (pred & gt).sum(dim=(1, 2)
@@ -935,6 +1089,18 @@ def train(
 
                 tb_writer.add_scalar("loss/train_base", train_loss, epoch)
                 tb_writer.add_scalar("loss/train", train_loss_total, epoch)
+                if dice_terms_count:
+                    tb_writer.add_scalar(
+                        "loss/dice",
+                        dice_loss_sum / max(1, dice_terms_count),
+                        epoch,
+                    )
+                if coord_terms_count:
+                    tb_writer.add_scalar(
+                        "loss/coord",
+                        coord_loss_sum / max(1, coord_terms_count),
+                        epoch,
+                    )
                 if pair_terms_count:
                     tb_writer.add_scalar(
                         "loss/pair_overlap",
@@ -1074,6 +1240,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--layers", type=str, default="-1",
                    help="Comma-separated transformer block indices")
     p.add_argument("--radius-px", type=float, default=6.0)
+    p.add_argument(
+        "--mask-type",
+        choices=("disk", "gaussian"),
+        default="gaussian",
+        help="Keypoint supervision mask type",
+    )
+    p.add_argument(
+        "--heatmap-sigma",
+        type=float,
+        default=None,
+        help="Gaussian sigma in pixels (original image space). Defaults to radius_px/2.",
+    )
     p.add_argument("--hidden-dim", type=int, default=128)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--epochs", type=int, default=50)
@@ -1110,6 +1288,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         type=float,
         default=0.0,
         help="Margin for side-consistency in [0,1] (0=enforce opposite sign).",
+    )
+    p.add_argument(
+        "--dice-loss-weight",
+        type=float,
+        default=0.5,
+        help="Dice loss weight (0=off).",
+    )
+    p.add_argument(
+        "--coord-loss-weight",
+        type=float,
+        default=0.25,
+        help="Coordinate regression loss weight (0=off).",
+    )
+    p.add_argument(
+        "--coord-loss-type",
+        choices=("smooth_l1", "l1", "l2"),
+        default="smooth_l1",
+        help="Coordinate regression loss type.",
     )
     p.add_argument("--early-stop-patience", type=int, default=0,
                    help="Early stop patience (0=off)")
@@ -1160,6 +1356,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         short_side=int(args.short_side),
         layers=layers,
         radius_px=float(args.radius_px),
+        mask_type=str(args.mask_type),
+        heatmap_sigma_px=(
+            float(args.heatmap_sigma) if args.heatmap_sigma is not None else None
+        ),
         hidden_dim=int(args.hidden_dim),
         lr=float(args.lr),
         epochs=int(args.epochs),
@@ -1173,6 +1373,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         lr_pair_margin_px=float(args.lr_pair_margin_px),
         lr_side_loss_weight=float(args.lr_side_loss_weight),
         lr_side_loss_margin=float(args.lr_side_loss_margin),
+        dice_loss_weight=float(args.dice_loss_weight),
+        coord_loss_weight=float(args.coord_loss_weight),
+        coord_loss_type=str(args.coord_loss_type),
         early_stop_patience=int(args.early_stop_patience),
         early_stop_min_delta=float(args.early_stop_min_delta),
         early_stop_min_epochs=int(args.early_stop_min_epochs),

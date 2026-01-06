@@ -35,6 +35,18 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--layers", type=str, default="-1",
                             help="Comma-separated transformer block indices")
         parser.add_argument("--radius-px", type=float, default=6.0)
+        parser.add_argument(
+            "--mask-type",
+            choices=("disk", "gaussian"),
+            default="gaussian",
+            help="Keypoint supervision mask type",
+        )
+        parser.add_argument(
+            "--heatmap-sigma",
+            type=float,
+            default=None,
+            help="Gaussian sigma in pixels (original image space). Defaults to radius_px/2.",
+        )
         parser.add_argument("--hidden-dim", type=int, default=128)
         parser.add_argument("--lr", type=float, default=2e-3)
         parser.add_argument("--epochs", type=int, default=50)
@@ -71,6 +83,24 @@ class DinoKPSEGPlugin(ModelPluginBase):
             type=float,
             default=0.0,
             help="Margin for side-consistency in [0,1] (0=enforce opposite sign).",
+        )
+        parser.add_argument(
+            "--dice-loss-weight",
+            type=float,
+            default=0.5,
+            help="Dice loss weight (0=off).",
+        )
+        parser.add_argument(
+            "--coord-loss-weight",
+            type=float,
+            default=0.25,
+            help="Coordinate regression loss weight (0=off).",
+        )
+        parser.add_argument(
+            "--coord-loss-type",
+            choices=("smooth_l1", "l1", "l2"),
+            default="smooth_l1",
+            help="Coordinate regression loss type.",
         )
         parser.add_argument("--early-stop-patience", type=int,
                             default=0, help="Early stop patience (0=off)")
@@ -121,6 +151,10 @@ class DinoKPSEGPlugin(ModelPluginBase):
             short_side=int(args.short_side),
             layers=layers,
             radius_px=float(args.radius_px),
+            mask_type=str(args.mask_type),
+            heatmap_sigma_px=(
+                float(args.heatmap_sigma) if args.heatmap_sigma is not None else None
+            ),
             hidden_dim=int(args.hidden_dim),
             lr=float(args.lr),
             epochs=int(args.epochs),
@@ -134,6 +168,9 @@ class DinoKPSEGPlugin(ModelPluginBase):
             lr_pair_margin_px=float(args.lr_pair_margin_px),
             lr_side_loss_weight=float(args.lr_side_loss_weight),
             lr_side_loss_margin=float(args.lr_side_loss_margin),
+            dice_loss_weight=float(args.dice_loss_weight),
+            coord_loss_weight=float(args.coord_loss_weight),
+            coord_loss_type=str(args.coord_loss_type),
             early_stop_patience=int(args.early_stop_patience),
             early_stop_min_delta=float(args.early_stop_min_delta),
             early_stop_min_epochs=int(args.early_stop_min_epochs),

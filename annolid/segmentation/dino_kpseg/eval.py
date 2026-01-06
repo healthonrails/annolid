@@ -292,16 +292,14 @@ def _predict_keypoints(
     if probs.ndim != 3:
         raise ValueError("Expected probs in KHW format")
     k, h_p, w_p = int(probs.shape[0]), int(probs.shape[1]), int(probs.shape[2])
-    flat = probs.view(k, -1)
-    best_idx = torch.argmax(flat, dim=1).tolist()
-    out: List[Tuple[float, float]] = []
-    for idx in best_idx:
-        r = int(idx // w_p)
-        c0 = int(idx % w_p)
-        x_res = (float(c0) + 0.5) * float(patch_size)
-        y_res = (float(r) + 0.5) * float(patch_size)
-        out.append((x_res, y_res))
-    return out
+    norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
+    xs = (torch.arange(w_p, device=probs.device,
+          dtype=probs.dtype) + 0.5) * float(patch_size)
+    ys = (torch.arange(h_p, device=probs.device,
+          dtype=probs.dtype) + 0.5) * float(patch_size)
+    x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
+    y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
+    return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
 
 
 def _parse_thresholds(value: str) -> List[float]:
