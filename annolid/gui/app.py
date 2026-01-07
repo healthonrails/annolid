@@ -129,6 +129,7 @@ from annolid.jobs.tracking_jobs import TrackingSegment
 
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
+from annolid.tracking.dino_kpseg_tracker import DinoKPSEGVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
 from annolid.gui.tensorboard import ensure_tensorboard, start_tensorboard, VisualizationWindow
@@ -1963,10 +1964,21 @@ class AnnolidWindow(MainWindow):
         return identifier == "dinov3_keypoint_tracker" or weight == "dino_keypoint_tracker"
 
     @staticmethod
+    def _is_dino_kpseg_tracker_model(identifier: str, weight: str) -> bool:
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return (
+            identifier.lower() == "dino_kpseg_tracker"
+            or "dino_kpseg_tracker" in key
+            or "dinokpseg_tracker" in key
+        )
+
+    @staticmethod
     def _is_dino_kpseg_model(identifier: str, weight: str) -> bool:
         identifier = (identifier or "").lower()
         weight = (weight or "").lower()
         key = f"{identifier} {weight}"
+        if "dino_kpseg_tracker" in key or "dinokpseg_tracker" in key:
+            return False
         return (
             identifier == "dino_kpseg"
             or "dino_kpseg" in key
@@ -2169,6 +2181,7 @@ class AnnolidWindow(MainWindow):
             return
         elif len(self.canvas.shapes) <= 0 and not (
             self._is_yolo_model(model_name, model_weight)
+            or self._is_dino_kpseg_tracker_model(model_name, model_weight)
             or self._is_dino_kpseg_model(model_name, model_weight)
             or (
                 self.sam3_manager.is_sam3_model(model_name, model_weight)
@@ -2187,7 +2200,27 @@ class AnnolidWindow(MainWindow):
                 self._setup_prediction_folder_watcher(
                     str(self.video_results_folder))
 
-            if self._is_dino_keypoint_model(model_name, model_weight):
+            if self._is_dino_kpseg_tracker_model(model_name, model_weight):
+                resolved = self._resolve_dino_kpseg_weight(model_weight)
+                if resolved is None:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("Cutie + DINO Keypoint Segmentation"),
+                        self.tr(
+                            "No DinoKPSEG checkpoint found. Train a model first or select a valid checkpoint."
+                        ),
+                    )
+                    return
+                fresh_tracker_config = copy.deepcopy(
+                    self.tracker_runtime_config)
+                self.video_processor = DinoKPSEGVideoProcessor(
+                    video_path=self.video_file,
+                    result_folder=self.video_results_folder,
+                    kpseg_weights=resolved,
+                    device=None,
+                    runtime_config=fresh_tracker_config,
+                )
+            elif self._is_dino_keypoint_model(model_name, model_weight):
                 dino_model = self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
                 # Instead of passing a reference to the shared config object,
                 # pass a deep copy. This ensures every tracking run starts with
@@ -2364,7 +2397,18 @@ class AnnolidWindow(MainWindow):
                 end_frame = self.num_frames - 1
             stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                 or self.automatic_pause_enabled)
-            if self._is_dino_keypoint_model(model_name, model_weight):
+            if self._is_dino_kpseg_tracker_model(model_name, model_weight):
+                end_frame = self.num_frames - 1
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video,
+                    start_frame=self.frame_number,
+                    end_frame=end_frame,
+                    step=1,
+                    pred_worker=None,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+            elif self._is_dino_keypoint_model(model_name, model_weight):
                 # Run the Cutie + DINO tracker over the full video by default.
                 end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(

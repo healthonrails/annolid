@@ -181,6 +181,8 @@ class DinoKeypointTracker:
         self._manual_anchor_codebooks: Dict[str, torch.Tensor] = {}
         self._part_shared_descriptors: Dict[str, torch.Tensor] = {}
         self._part_shared_counts: Dict[str, int] = {}
+        self._last_norm_feats: Optional[torch.Tensor] = None
+        self._last_grid_hw: Optional[Tuple[int, int]] = None
         self.keypoint_refine_radius = max(
             0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
         )
@@ -211,6 +213,8 @@ class DinoKeypointTracker:
             self._manual_anchor_codebooks = {}
         self._part_shared_descriptors = {}
         self._part_shared_counts = {}
+        self._last_norm_feats = None
+        self._last_grid_hw = None
 
     def start(
         self,
@@ -336,6 +340,8 @@ class DinoKeypointTracker:
         roi_changed = self._roi_box != prev_roi_box
         grid_h, grid_w = grid_hw
         normalized_feats = self._normalize_feature_grid(feats)
+        self._last_norm_feats = normalized_feats
+        self._last_grid_hw = grid_hw
         context_map = self._compute_context_map(normalized_feats)
         inv_scale_x = 1.0 / max(scale_x, 1e-6)
         inv_scale_y = 1.0 / max(scale_y, 1e-6)
@@ -903,6 +909,59 @@ class DinoKeypointTracker:
         if self._is_fresh_start:
             self._is_fresh_start = False  # Clear the fresh start flag
         return results
+
+    def apply_external_corrections(
+        self,
+        corrections: Dict[str, Tuple[float, float]],
+        *,
+        blend_alpha: Optional[float] = None,
+        clear_cache: bool = True,
+    ) -> None:
+        """Adjust tracker state to externally corrected keypoints."""
+        if not corrections:
+            return
+        feats = self._last_norm_feats
+        grid_hw = self._last_grid_hw
+        if feats is None or grid_hw is None:
+            return
+        scale_x, scale_y = self.prev_scale
+        alpha = (
+            float(blend_alpha)
+            if blend_alpha is not None
+            else float(getattr(self.runtime_config, "kpseg_blend_alpha", 1.0))
+        )
+        alpha = float(max(0.0, min(1.0, alpha)))
+
+        for track_key, coord in corrections.items():
+            track = self.tracks.get(track_key)
+            if track is None:
+                continue
+            x, y = float(coord[0]), float(coord[1])
+            dx = x - float(track.last_position[0])
+            dy = y - float(track.last_position[1])
+            if (dx * dx + dy * dy) < 1e-6:
+                continue
+            rr, cc = self._pixel_to_patch(x, y, scale_x, scale_y, grid_hw)
+            if rr < 0 or cc < 0:
+                continue
+            if rr >= feats.shape[1] or cc >= feats.shape[2]:
+                continue
+            new_desc = feats[:, rr, cc].detach().clone()
+            if alpha >= 1.0:
+                blended = new_desc
+            else:
+                blended = (1.0 - alpha) * track.descriptor + alpha * new_desc
+            track.descriptor = self._normalize_descriptor(blended)
+            track.patch_rc = (rr, cc)
+            track.last_position = (x, y)
+            track.velocity = (0.0, 0.0)
+            track.misses = 0
+            track.quality = max(track.quality, 0.0)
+            self._update_appearance_codebook(track, new_desc)
+
+        if clear_cache:
+            self._last_norm_feats = None
+            self._last_grid_hw = None
 
     def _refine_keypoint_xy(
         self,

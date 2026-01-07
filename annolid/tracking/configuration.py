@@ -120,6 +120,16 @@ class CutieDinoTrackerConfig:
     keypoint_refine_radius: int = 0
     keypoint_refine_sigma: float = 1.25
     keypoint_refine_temperature: float = 0.35
+    kpseg_apply_mode: str = "never"  # never|auto|always
+    kpseg_min_reliable_frames: int = 5
+    kpseg_reliable_ratio: float = 0.6
+    kpseg_disable_patience: int = 5
+    kpseg_update_tracker_state: bool = True
+    kpseg_min_score: float = 0.25
+    kpseg_blend_alpha: float = 0.7
+    kpseg_use_mask_gate: bool = True
+    kpseg_fallback_to_track: bool = True
+    kpseg_max_jump_px: float = 0.0
     progress_hook: Optional[ProgressHook] = None
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None
@@ -174,6 +184,24 @@ class CutieDinoTrackerConfig:
         self.keypoint_refine_temperature = max(
             1e-4, float(self.keypoint_refine_temperature)
         )
+        mode = str(self.kpseg_apply_mode or "never").strip().lower()
+        if mode not in ("never", "auto", "always"):
+            mode = "never"
+        self.kpseg_apply_mode = mode
+        self.kpseg_min_reliable_frames = max(
+            1, int(self.kpseg_min_reliable_frames))
+        self.kpseg_reliable_ratio = float(
+            min(1.0, max(0.0, float(self.kpseg_reliable_ratio)))
+        )
+        self.kpseg_disable_patience = max(1, int(self.kpseg_disable_patience))
+        self.kpseg_update_tracker_state = bool(self.kpseg_update_tracker_state)
+        self.kpseg_min_score = max(0.0, float(self.kpseg_min_score))
+        self.kpseg_blend_alpha = float(
+            min(1.0, max(0.0, float(self.kpseg_blend_alpha)))
+        )
+        self.kpseg_use_mask_gate = bool(self.kpseg_use_mask_gate)
+        self.kpseg_fallback_to_track = bool(self.kpseg_fallback_to_track)
+        self.kpseg_max_jump_px = max(0.0, float(self.kpseg_max_jump_px))
         self.part_shared_weight = max(
             0.0, min(1.0, float(self.part_shared_weight)))
         self.part_shared_momentum = max(

@@ -28,6 +28,11 @@ MODEL_REGISTRY = [
     ModelConfig("DINOv3 Keypoint Tracker",
                 "dinov3_keypoint_tracker", "DINO_KEYPOINT_TRACKER"),
     ModelConfig(
+        "Cutie + DINOv3 Keypoint Segmentation",
+        "dino_kpseg_tracker",
+        "runs/dino_kpseg/train/weights/best.pt",
+    ),
+    ModelConfig(
         "DINOv3 Keypoint Segmentation",
         "dino_kpseg",
         "runs/dino_kpseg/train/weights/best.pt",

@@ -121,11 +121,30 @@ class DinoKPSEGPredictor:
         self._prev_keypoint_scores = None
         self._prev_by_instance = {}
 
+    def seed_instance_state(
+        self,
+        instance_id: int,
+        *,
+        keypoints_xy: Sequence[Sequence[float]],
+        keypoint_scores: Optional[Sequence[float]] = None,
+    ) -> None:
+        """Seed per-instance stabilization state from external keypoints (e.g., manual labels)."""
+        instance_id_int = int(instance_id)
+        coords = [(float(x), float(y)) for x, y in keypoints_xy]
+        if keypoint_scores is None:
+            scores = [1.0 for _ in coords]
+        else:
+            scores = [float(s) for s in keypoint_scores]
+        if len(scores) != len(coords):
+            raise ValueError("keypoint_scores must match keypoints_xy length")
+        self._prev_by_instance[instance_id_int] = (coords, scores)
+
     @torch.inference_mode()
     def predict(
         self,
         frame_bgr: np.ndarray,
         *,
+        mask: Optional[np.ndarray] = None,
         threshold: Optional[float] = None,
         return_patch_masks: bool = False,
         stabilize_lr: bool = False,
@@ -160,7 +179,34 @@ class DinoKPSEGPredictor:
 
         x = feats.unsqueeze(0).to(self.device, dtype=torch.float32)
         logits = self.head(x)[0]  # [K, H_p, W_p]
-        probs = torch.sigmoid(logits).to("cpu")
+        probs_raw = torch.sigmoid(logits).to("cpu")
+        probs = probs_raw
+
+        if mask is not None:
+            mask_arr = np.asarray(mask)
+            if mask_arr.shape[:2] != frame_bgr.shape[:2]:
+                raise ValueError(
+                    "mask must have the same HxW as frame_bgr (use a cropped mask for cropped inference)"
+                )
+            if mask_arr.dtype == bool:
+                mask_arr = mask_arr.astype(np.uint8) * 255
+            elif np.issubdtype(mask_arr.dtype, np.floating):
+                mask_arr = np.clip(mask_arr, 0.0, 1.0)
+                mask_arr = (mask_arr * 255.0).astype(np.uint8)
+            elif mask_arr.dtype != np.uint8:
+                mask_arr = np.clip(mask_arr, 0, 255).astype(np.uint8)
+
+            mask_patch = self.extractor.quantize_mask(mask_arr).to(
+                dtype=probs_raw.dtype, device=probs_raw.device
+            )
+            gated = probs_raw * mask_patch.unsqueeze(0)
+            gated_mass = gated.sum(dim=(1, 2))
+            fallback = gated_mass <= 1e-6
+            if bool(torch.any(fallback)):
+                probs = probs_raw.clone()
+                probs[~fallback] = gated[~fallback]
+            else:
+                probs = gated
 
         thr = float(threshold) if threshold is not None else float(
             self.meta.threshold)
