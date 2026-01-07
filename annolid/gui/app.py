@@ -312,6 +312,9 @@ class AnnolidWindow(MainWindow):
         self.last_known_predicted_frame = -1  # Track the latest frame seen
         self.prediction_start_timestamp = 0.0
         self._prediction_progress_mark = None
+        self._prediction_start_frame = None
+        self._prediction_existing_store_frames = set()
+        self._prediction_existing_json_frames = set()
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
@@ -1406,6 +1409,7 @@ class AnnolidWindow(MainWindow):
         # Clear "predicted" marks from the slider when file is closed
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")
+            self.seekbar.removeMarksByType("predicted_existing")
 
         if self.tracking_controller.is_tracking_busy():
             if suppress_tracking_prompt or self.tracking_controller.is_track_all_running():
@@ -2935,6 +2939,7 @@ class AnnolidWindow(MainWindow):
             )
             if self.seekbar:
                 self.seekbar.removeMarksByType("predicted")
+                self.seekbar.removeMarksByType("predicted_existing")
                 self.seekbar.removeMarksByType("prediction_progress")
             self.last_known_predicted_frame = -1
             self.prediction_start_timestamp = 0.0
@@ -2951,16 +2956,153 @@ class AnnolidWindow(MainWindow):
                 "No future prediction files or store records required removal."
             )
 
+    def _collect_seed_frames(self, prediction_folder: Path) -> Set[int]:
+        seed_frames: Set[int] = set()
+        pattern = re.compile(r"(\d+)(?=\.(png|jpg|jpeg)$)", re.IGNORECASE)
+        for path in prediction_folder.iterdir():
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                continue
+            match = pattern.search(path.name)
+            if not match:
+                continue
+            try:
+                seed_frames.add(int(match.group(1)))
+            except (TypeError, ValueError):
+                continue
+        return seed_frames
+
+    def deletePredictionsFromSeedToNext(self):
+        """
+        Delete predicted frames starting from the current seed frame up to the
+        next seed frame (exclusive), keeping manual labels intact.
+        """
+        if not self.video_loader or not self.video_results_folder:
+            return False, None, None
+
+        prediction_folder = Path(self.video_results_folder)
+        if not prediction_folder.exists():
+            return False, None, None
+
+        seed_frames = sorted(self._collect_seed_frames(prediction_folder))
+        protected_frames: Set[int] = set(seed_frames)
+
+        current_seed = None
+        if seed_frames:
+            for seed in seed_frames:
+                if seed <= self.frame_number:
+                    current_seed = seed
+                else:
+                    break
+        if current_seed is None:
+            current_seed = self.frame_number
+
+        next_seed = None
+        for seed in seed_frames:
+            if seed > current_seed:
+                next_seed = seed
+                break
+
+        if next_seed is not None and next_seed - 1 < current_seed:
+            return False, current_seed, next_seed
+
+        deleted_files = 0
+        logger.info(
+            "Deleting predictions from seed frame %s to %s.",
+            current_seed,
+            next_seed if next_seed is not None else "end",
+        )
+
+        for prediction_path in prediction_folder.iterdir():
+            if not prediction_path.is_file():
+                continue
+            if prediction_path.suffix.lower() != ".json":
+                continue
+
+            match = re.search(r"(\d+)(?=\.json$)", prediction_path.name)
+            if not match:
+                continue
+
+            try:
+                frame_number = int(float(match.group(1)))
+            except (ValueError, IndexError):
+                continue
+
+            if frame_number < current_seed:
+                continue
+            if next_seed is not None and frame_number >= next_seed:
+                continue
+            if frame_number in protected_frames:
+                continue
+
+            try:
+                prediction_path.unlink()
+                deleted_files += 1
+            except OSError as e:
+                logger.error(
+                    "Failed to delete file %s: %s", prediction_path, e
+                )
+
+        store_removed = 0
+        try:
+            store = AnnotationStore.for_frame_path(
+                prediction_folder / f"{prediction_folder.name}_000000000.json"
+            )
+            store_removed = store.remove_frames_in_range(
+                current_seed,
+                next_seed - 1 if next_seed is not None else None,
+                protected_frames=protected_frames,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to prune annotation store in %s: %s",
+                prediction_folder,
+                exc,
+            )
+
+        if deleted_files or store_removed:
+            logger.info(
+                "%s prediction JSON(s) removed and %s store record(s) pruned.",
+                deleted_files,
+                store_removed,
+            )
+            if self.seekbar:
+                self.seekbar.removeMarksByType("predicted")
+                self.seekbar.removeMarksByType("predicted_existing")
+                self.seekbar.removeMarksByType("prediction_progress")
+            self.last_known_predicted_frame = -1
+            self.prediction_start_timestamp = 0.0
+            if hasattr(self, "_update_progress_bar"):
+                self._update_progress_bar(0)
+            try:
+                self._scan_prediction_folder(str(prediction_folder))
+            except Exception as exc:  # pragma: no cover - GUI safeguard
+                logger.debug(
+                    "Failed to rescan prediction folder after deletion: %s", exc
+                )
+        else:
+            logger.info(
+                "No predicted files required removal for the current seed range."
+            )
+
+        return bool(deleted_files or store_removed), current_seed, next_seed
+
     def deleteFile(self):
         mb = QtWidgets.QMessageBox
         msg = self.tr(
             "You are about to permanently delete this label file, "
-            "Or all the predicted label files from the next frame, "
-            "what would you like to do?"
+            "Or delete predicted label files from the current seed frame "
+            "to the next seed frame. "
+            "What would you like to do?"
         )
         msg_box = mb(self)
         msg_box.setIcon(mb.Warning)
         msg_box.setText(msg)
+        msg_box.setInformativeText(
+            self.tr("Yes: delete the current label file. "
+                    "Yes to All: delete predicted frames for the current seed range.")
+        )
         msg_box.setStandardButtons(mb.No | mb.Yes | mb.YesToAll)
         msg_box.setDefaultButton(mb.No)
         answer = msg_box.exec_()
@@ -2968,8 +3110,20 @@ class AnnolidWindow(MainWindow):
         if answer == mb.No:
             return
         elif answer == mb.YesToAll:
-            # Handle the case to delete all predictions from now on
-            self.deleteAllFuturePredictions()
+            removed, start_seed, next_seed = self.deletePredictionsFromSeedToNext()
+            if removed:
+                msg = self.tr(
+                    "Delete all remaining predicted frames after this seed range?"
+                )
+                follow_up = mb.question(
+                    self,
+                    self.tr("Delete All Predictions"),
+                    msg,
+                    mb.Yes | mb.No,
+                    mb.No,
+                )
+                if follow_up == mb.Yes:
+                    self.deleteAllFuturePredictions()
         else:
             label_file = self.getLabelFile()
             if osp.exists(label_file):
@@ -3123,10 +3277,14 @@ class AnnolidWindow(MainWindow):
             f"Generating tracking CSV: {csv_output_path.name}", 3000)
 
         try:
+            tracked_csv_path = out_folder.parent / \
+                f"{out_folder.name}_tracked.csv"
             self.csv_worker = FlexibleWorker(
                 task_function=labelme2csv.convert_json_to_csv,
                 json_folder=str(out_folder),
                 csv_file=str(csv_output_path),
+                tracked_csv_file=str(tracked_csv_path),
+                fps=self.fps,
                 progress_callback=self._csv_worker_progress_proxy
             )
             self.csv_thread = QtCore.QThread()
@@ -3238,6 +3396,7 @@ class AnnolidWindow(MainWindow):
         # Clear prediction-related marks from the slider
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")  # Use the new method
+            self.seekbar.removeMarksByType("predicted_existing")
             self.seekbar.removeMarksByType("prediction_progress")
             self._prediction_progress_mark = None
 
@@ -3258,6 +3417,41 @@ class AnnolidWindow(MainWindow):
         if osp.isdir(folder_path_to_watch):
             self.prediction_progress_folder = folder_path_to_watch
             self.prediction_start_timestamp = time.time()
+            self._prediction_start_frame = int(
+                self.frame_number) if self.frame_number is not None else 0
+            self._prediction_existing_store_frames = set()
+            self._prediction_existing_json_frames = set()
+            path = Path(folder_path_to_watch)
+            json_pattern = re.compile(r'_(\d{9,})\.json$')
+            try:
+                for f_name in os.listdir(path):
+                    if not f_name.endswith(".json"):
+                        continue
+                    if path.name not in f_name:
+                        continue
+                    match = json_pattern.search(f_name)
+                    if match:
+                        try:
+                            frame_num = int(float(match.group(1)))
+                            self._prediction_existing_json_frames.add(
+                                frame_num)
+                        except (ValueError, IndexError):
+                            continue
+            except OSError as exc:
+                logger.debug(
+                    "Failed to read existing prediction JSONs in %s: %s",
+                    path,
+                    exc,
+                )
+            try:
+                store = AnnotationStore.for_frame_path(
+                    path / f"{path.name}_000000000.json"
+                )
+                if store.store_path.exists():
+                    self._prediction_existing_store_frames = set(
+                        store.iter_frames())
+            except Exception:
+                self._prediction_existing_store_frames = set()
             self.prediction_progress_watcher.start(1000)  # Poll every 1000 ms
             logger.info(
                 f"Prediction progress watcher started for: {folder_path_to_watch}")
@@ -3284,6 +3478,7 @@ class AnnolidWindow(MainWindow):
             path = Path(folder_path)
             # Use a robust regex to extract frame numbers from filenames
             json_pattern = re.compile(r'_(\d{9,})\.json$')
+            prediction_active = bool(self.prediction_start_timestamp)
 
             # --- 1. Efficiently Scan and Parse All Relevant Frame Numbers ---
             all_frame_nums = []
@@ -3310,48 +3505,99 @@ class AnnolidWindow(MainWindow):
                 store = AnnotationStore.for_frame_path(
                     path / f"{path.name}_000000000.json")
                 if store.store_path.exists():
-                    all_frame_nums = sorted(store.iter_frames())
-                if not all_frame_nums:
-                    return
+                    store_frames = sorted(store.iter_frames())
+                    if prediction_active and self._prediction_existing_store_frames:
+                        store_frames = [
+                            frame for frame in store_frames
+                            if frame not in self._prediction_existing_store_frames
+                        ]
+                    all_frame_nums = store_frames
+            existing_frame_set = set()
+            if prediction_active:
+                existing_frame_set.update(
+                    self._prediction_existing_json_frames)
+                if self._prediction_existing_store_frames:
+                    existing_frame_set.update(
+                        self._prediction_existing_store_frames)
+                if all_frame_nums:
+                    existing_frame_set.difference_update(all_frame_nums)
+            existing_frame_nums = sorted(existing_frame_set)
 
             all_frame_nums.sort()
             num_total_frames = len(all_frame_nums)
 
             # --- 2. Dynamic Marker Decimation Logic ---
-            frames_to_mark = []
             # Define the threshold at which we start thinning the markers
             DECIMATION_THRESHOLD = 2000
 
-            if num_total_frames < DECIMATION_THRESHOLD:
-                # If the number of files is manageable, mark all of them
-                frames_to_mark = all_frame_nums
-            else:
-                # If there are too many files, apply the decimation strategy
-                step = 100 if num_total_frames > 10000 else 20
-                # Add every Nth frame
-                frames_to_mark = all_frame_nums[::step]
+            def decimate_frames(frame_nums):
+                if not frame_nums:
+                    return []
+                if len(frame_nums) < DECIMATION_THRESHOLD:
+                    return frame_nums
+                step = 100 if len(frame_nums) > 10000 else 20
+                decimated = frame_nums[::step]
+                # Always ensure the very last frame is included to show completion
+                if frame_nums[-1] not in decimated:
+                    decimated.append(frame_nums[-1])
+                return decimated
 
-                # IMPORTANT: Always ensure the very last frame is included to show completion
-                if all_frame_nums[-1] not in frames_to_mark:
-                    frames_to_mark.append(all_frame_nums[-1])
+            frames_to_mark = decimate_frames(all_frame_nums)
+            existing_frames_to_mark = decimate_frames(existing_frame_nums)
+
+            if not frames_to_mark and not existing_frames_to_mark:
+                if prediction_active and self._prediction_start_frame is not None:
+                    start_frame = self._prediction_start_frame
+                    if 0 <= start_frame < self.num_frames:
+                        self.seekbar.removeMarksByType("prediction_progress")
+                        progress_mark = VideoSliderMark(
+                            mark_type="prediction_progress",
+                            val=start_frame
+                        )
+                        self.seekbar.addMark(progress_mark)
+                        self._prediction_progress_mark = progress_mark
+                        if self.frame_number != start_frame:
+                            self.set_frame_number(start_frame)
+                        self.seekbar.setValue(start_frame)
+                        self._update_progress_bar(0)
+                return
 
             # --- 3. Update the GUI Efficiently ---
-            if not frames_to_mark:
-                return
             # Get existing markers once to avoid repeated calls inside the loop
             existing_predicted_vals = {
                 mark.val for mark in self.seekbar.getMarks() if mark.mark_type == "predicted"
+            }
+            existing_existing_vals = {
+                mark.val for mark in self.seekbar.getMarks() if mark.mark_type == "predicted_existing"
             }
 
             # Block signals to prevent the UI from trying to update thousands of times
             self.seekbar.blockSignals(True)
 
             new_marks_added = False
+            for frame_num in existing_frames_to_mark:
+                if 0 <= frame_num < self.num_frames:
+                    if frame_num in existing_existing_vals or frame_num in existing_predicted_vals:
+                        continue
+                    existing_mark = VideoSliderMark(
+                        mark_type="predicted_existing", val=frame_num
+                    )
+                    self.seekbar.addMark(existing_mark)
+                    existing_existing_vals.add(frame_num)
+                    new_marks_added = True
             for frame_num in frames_to_mark:
-                if 0 <= frame_num < self.num_frames and frame_num not in existing_predicted_vals:
+                if 0 <= frame_num < self.num_frames:
+                    if frame_num in existing_predicted_vals:
+                        continue
+                    if frame_num in existing_existing_vals:
+                        for mark in self.seekbar.getMarksAtVal(frame_num):
+                            if mark.mark_type == "predicted_existing":
+                                self.seekbar.removeMark(mark)
+                        existing_existing_vals.discard(frame_num)
                     pred_mark = VideoSliderMark(
                         mark_type="predicted", val=frame_num)
                     self.seekbar.addMark(pred_mark)
+                    existing_predicted_vals.add(frame_num)
                     new_marks_added = True
 
             # Re-enable signals and force a single repaint if we added anything
@@ -3360,28 +3606,46 @@ class AnnolidWindow(MainWindow):
                 self.seekbar.update()
 
             # Update the progress bar and slider position to the latest actual frame
-            latest_frame = all_frame_nums[-1]
-            self.last_known_predicted_frame = max(
-                self.last_known_predicted_frame, latest_frame)
+            if all_frame_nums:
+                latest_frame = all_frame_nums[-1]
+                if prediction_active:
+                    self.last_known_predicted_frame = latest_frame
+                else:
+                    self.last_known_predicted_frame = max(
+                        self.last_known_predicted_frame, latest_frame)
 
-            if self.num_frames > 0:
-                progress = int(
-                    (self.last_known_predicted_frame / self.num_frames) * 100)
-                self._update_progress_bar(progress)
+                if self.num_frames > 0:
+                    progress = int(
+                        (self.last_known_predicted_frame / self.num_frames) * 100)
+                    self._update_progress_bar(progress)
 
-            # The original code moved the slider on every found frame.
-            # This is not ideal for user experience. We will move it only once to the latest frame.
-            if 0 <= latest_frame < self.num_frames:
-                self.seekbar.removeMarksByType("prediction_progress")
-                progress_mark = VideoSliderMark(
-                    mark_type="prediction_progress",
-                    val=latest_frame
-                )
-                self.seekbar.addMark(progress_mark)
-                self._prediction_progress_mark = progress_mark
-                if self.frame_number != latest_frame:
-                    self.set_frame_number(latest_frame)
-                self.seekbar.setValue(latest_frame)
+                # The original code moved the slider on every found frame.
+                # This is not ideal for user experience. We will move it only once to the latest frame.
+                if 0 <= latest_frame < self.num_frames:
+                    self.seekbar.removeMarksByType("prediction_progress")
+                    progress_mark = VideoSliderMark(
+                        mark_type="prediction_progress",
+                        val=latest_frame
+                    )
+                    self.seekbar.addMark(progress_mark)
+                    self._prediction_progress_mark = progress_mark
+                    if self.frame_number != latest_frame:
+                        self.set_frame_number(latest_frame)
+                    self.seekbar.setValue(latest_frame)
+            elif prediction_active and self._prediction_start_frame is not None:
+                start_frame = self._prediction_start_frame
+                if 0 <= start_frame < self.num_frames:
+                    self.seekbar.removeMarksByType("prediction_progress")
+                    progress_mark = VideoSliderMark(
+                        mark_type="prediction_progress",
+                        val=start_frame
+                    )
+                    self.seekbar.addMark(progress_mark)
+                    self._prediction_progress_mark = progress_mark
+                    if self.frame_number != start_frame:
+                        self.set_frame_number(start_frame)
+                    self.seekbar.setValue(start_frame)
+                    self._update_progress_bar(0)
 
         except Exception as e:
             logger.error(
@@ -3401,6 +3665,9 @@ class AnnolidWindow(MainWindow):
         self.prediction_progress_folder = None
         self.last_known_predicted_frame = -1  # Reset
         self.prediction_start_timestamp = 0.0
+        self._prediction_start_frame = None
+        self._prediction_existing_store_frames = set()
+        self._prediction_existing_json_frames = set()
         if self.seekbar:
             self.seekbar.removeMarksByType("prediction_progress")
         self._prediction_progress_mark = None
@@ -3422,6 +3689,7 @@ class AnnolidWindow(MainWindow):
 
         worker.progress_signal.connect(self._update_progress_bar)
         self.seekbar.removeMarksByType("predicted")  # Clear previous marks
+        self.seekbar.removeMarksByType("predicted_existing")
 
     def _cleanup_csv_worker(self):
         """Clear references once the CSV conversion thread has fully finished."""

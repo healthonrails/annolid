@@ -212,7 +212,10 @@ class SegmentedCutieExecutor:
         """Calculates centroid and motion index for a single object mask."""
 
         motion_index = -1.0
-        cx, cy = find_mask_center_opencv(object_mask_np)
+        try:
+            cx, cy = find_mask_center_opencv(object_mask_np)
+        except ZeroDivisionError:
+            return None
 
         if dense_flow_xy is not None and self.config.get('compute_optical_flow', True):
             magnitude = np.sqrt(
@@ -231,7 +234,7 @@ class SegmentedCutieExecutor:
             self._csv_cy_values.append(cy)
             self._csv_motion_indices.append(motion_index)
 
-        return motion_index  # Return for direct use in description
+        return cx, cy, motion_index
 
     def _save_frame_annotation(self,
                                frame_idx: int,
@@ -256,15 +259,23 @@ class SegmentedCutieExecutor:
             single_obj_mask_bool = (predicted_mask_np_object_ids == obj_id)
 
             # Calculate motion index for this specific object's mask
-            motion_idx_for_this_object = self._process_object_metrics(
+            metrics = self._process_object_metrics(
                 obj_label_str, single_obj_mask_bool, dense_flow_for_this_frame
             )
+            if metrics is None:
+                continue
+            cx, cy, motion_idx_for_this_object = metrics
 
             mask_shape_obj = MaskShape(
                 label=obj_label_str, flags={},
                 # Include motion index
                 description=f'cutie_vos_segment; motion_index: {motion_idx_for_this_object:.2f}'
             )
+            mask_shape_obj.other_data = {
+                "cx": cx,
+                "cy": cy,
+                "motion_index": motion_idx_for_this_object,
+            }
             mask_shape_obj.mask = single_obj_mask_bool
 
             polygon_shapes = mask_shape_obj.toPolygons(
@@ -273,6 +284,7 @@ class SegmentedCutieExecutor:
                 main_polygon = polygon_shapes[0]
                 shape_to_save = Shape(label=obj_label_str, shape_type='polygon',
                                       flags=main_polygon.flags, description=main_polygon.description)
+                shape_to_save.other_data = dict(main_polygon.other_data)
                 shape_to_save.points = [[p.x(), p.y()]
                                         for p in main_polygon.points]
                 label_list_for_save.append(shape_to_save)

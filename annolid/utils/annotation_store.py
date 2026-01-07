@@ -224,6 +224,112 @@ class AnnotationStore:
 
         return removed
 
+    def remove_frames_in_range(
+        self,
+        start_frame: int,
+        end_frame: Optional[int],
+        protected_frames: Optional[Iterable[int]] = None,
+    ) -> int:
+        """Remove frames in a specific inclusive range unless protected.
+
+        Args:
+            start_frame: Lowest frame index to remove.
+            end_frame: Highest frame index to remove. When None, remove frames
+                greater than or equal to ``start_frame``.
+            protected_frames: Optional iterable of frame numbers that should never
+                be removed, even if they are in range.
+
+        Returns:
+            The number of store records that were removed.
+        """
+        if not self.store_path.exists():
+            return 0
+
+        try:
+            protected: Set[int] = {
+                int(frame) for frame in (protected_frames or []) if frame is not None
+            }
+        except Exception:
+            protected = set()
+
+        lines_to_keep = []
+        removed = 0
+
+        try:
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.rstrip("\n")
+                    stripped = line.strip()
+                    if not stripped:
+                        lines_to_keep.append(raw_line)
+                        continue
+
+                    try:
+                        payload = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        lines_to_keep.append(raw_line)
+                        continue
+
+                    frame_value = payload.get("frame")
+                    try:
+                        frame_number = int(frame_value)
+                    except (TypeError, ValueError):
+                        lines_to_keep.append(raw_line)
+                        continue
+
+                    if frame_number in protected:
+                        lines_to_keep.append(
+                            raw_line if raw_line.endswith(
+                                "\n") else f"{raw_line}\n"
+                        )
+                        continue
+
+                    in_range = frame_number >= start_frame
+                    if end_frame is not None:
+                        in_range = start_frame <= frame_number <= end_frame
+
+                    if in_range:
+                        removed += 1
+                        continue
+
+                    lines_to_keep.append(
+                        raw_line if raw_line.endswith(
+                            "\n") else f"{raw_line}\n"
+                    )
+        except OSError as exc:
+            logger.error(
+                "Unable to read annotation store %s for pruning: %s",
+                self.store_path,
+                exc,
+            )
+            return 0
+
+        if removed == 0:
+            return 0
+
+        temp_path = self.store_path.with_suffix(
+            self.store_path.suffix + ".tmp")
+
+        try:
+            with temp_path.open("w", encoding="utf-8") as fh:
+                fh.writelines(lines_to_keep)
+            temp_path.replace(self.store_path)
+        except OSError as exc:
+            logger.error(
+                "Failed to rewrite annotation store %s: %s", self.store_path, exc
+            )
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            return 0
+
+        AnnotationStore._CACHE.pop(self.store_path, None)
+        self._load_records(force_reload=True)
+
+        return removed
+
     def write_stub(
         self,
         frame_file: Union[str, Path],

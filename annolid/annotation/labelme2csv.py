@@ -1,5 +1,6 @@
 import csv
 import os
+import re
 from pathlib import Path
 from tqdm import tqdm
 import argparse
@@ -7,6 +8,7 @@ from labelme.utils import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
 from annolid.annotation.keypoints import keypoint_to_polygon_points
+from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.utils.annotation_store import (
     AnnotationStore,
     AnnotationStoreError,
@@ -43,6 +45,24 @@ def get_frame_number_from_filename(file_name):
     return int(file_name.split('_')[-1].replace('.json', ''))
 
 
+def _normalize_fps(value):
+    try:
+        fps_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return fps_value if fps_value > 0 else None
+
+
+def _find_video_for_json_folder(json_folder_path: Path):
+    stem = json_folder_path.name
+    parent = json_folder_path.parent
+    for ext in (".mp4", ".avi", ".mov", ".mkv", ".m4v", ".mpg", ".mpeg"):
+        candidate = parent / f"{stem}{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def convert_shape_to_mask(img_shape, points):
     """
     Convert shape points to a binary mask.
@@ -59,7 +79,12 @@ def convert_shape_to_mask(img_shape, points):
     return mask
 
 
-def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None, stop_event=None):
+def convert_json_to_csv(json_folder,
+                        csv_file=None,
+                        progress_callback=None,
+                        stop_event=None,
+                        tracked_csv_file=None,
+                        fps=None):
     """
     Convert JSON files in a folder to annolid CSV format file.
 
@@ -67,6 +92,7 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None, stop
     - json_folder (str): Path to the folder containing JSON files.
     - csv_file (str): Output CSV file.
     - progress_callback (function): Callback function to report progress.
+    - fps (float): Frames per second used for timestamp estimation.
 
 
     Returns:
@@ -86,83 +112,169 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None, stop
         except Exception:
             return
 
-    with open(csv_file, 'w', newline='') as csv_output:
-        csv_writer = csv.writer(csv_output)
-        csv_writer.writerow(csv_header)
+    tracked_writer = None
+    tracked_seen = set()
+    tracked_header = ["frame_number", "instance_name",
+                      "cx", "cy", "motion_index", "timestamps"]
+    fps_value = _normalize_fps(fps)
+    video_fps_checked = False
+    if tracked_csv_file:
+        try:
+            tracked_output = open(tracked_csv_file, 'w', newline='')
+            tracked_writer = csv.writer(tracked_output)
+            tracked_writer.writerow(tracked_header)
+        except OSError:
+            tracked_output = None
+            tracked_writer = None
 
-        json_folder_path = Path(json_folder)
-        json_files = sorted(
-            f for f in os.listdir(json_folder) if f.endswith('.json')
-        )
+    json_folder_path = Path(json_folder)
+    video_path = None
+    if tracked_writer is not None:
+        video_path = _find_video_for_json_folder(json_folder_path)
 
-        store = AnnotationStore.for_frame_path(
-            json_folder_path / f"{json_folder_path.name}_000000000.json")
-        if store.store_path.exists():
-            store_files = [
-                f"{json_folder_path.name}_{frame:09d}.json"
-                for frame in sorted(store.iter_frames())
-            ]
-            json_files = sorted(set(json_files) | set(store_files))
+    try:
+        with open(csv_file, 'w', newline='') as csv_output:
+            csv_writer = csv.writer(csv_output)
+            csv_writer.writerow(csv_header)
 
-        if not json_files:
-            return f"No annotation files found in {json_folder}."
+            json_files = sorted(
+                f for f in os.listdir(json_folder) if f.endswith('.json')
+            )
 
-        total_files = len(json_files)
-        num_processed_files = 0
+            store = AnnotationStore.for_frame_path(
+                json_folder_path / f"{json_folder_path.name}_000000000.json")
+            if store.store_path.exists():
+                store_files = [
+                    f"{json_folder_path.name}_{frame:09d}.json"
+                    for frame in sorted(store.iter_frames())
+                ]
+                json_files = sorted(set(json_files) | set(store_files))
 
-        for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
-            if stop_event is not None and stop_event.is_set():
-                return "Stopped"
-            json_path = os.path.join(json_folder, json_file)
-            data = read_json_file(json_path)
-            if not data:
+            if not json_files:
+                return f"No annotation files found in {json_folder}."
+
+            total_files = len(json_files)
+            num_processed_files = 0
+
+            for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
+                if stop_event is not None and stop_event.is_set():
+                    return "Stopped"
+                json_path = os.path.join(json_folder, json_file)
+                data = read_json_file(json_path)
+                if not data:
+                    num_processed_files += 1
+                    progress = int((num_processed_files / total_files) * 100)
+                    _report_progress(progress)
+                    continue
+
+                try:
+                    frame_number = get_frame_number_from_filename(json_file)
+                except ValueError:
+                    # Skip metadata files that do not follow the frame naming scheme
+                    num_processed_files += 1
+                    progress = int((num_processed_files / total_files) * 100)
+                    _report_progress(progress)
+                    continue
+                img_height = data.get("imageHeight")
+                img_width = data.get("imageWidth")
+                shapes = data.get("shapes") or []
+
+                if img_height is None or img_width is None:
+                    num_processed_files += 1
+                    progress = int((num_processed_files / total_files) * 100)
+                    _report_progress(progress)
+                    continue
+
+                img_shape = (img_height, img_width)
+                timestamp_value = ""
+                if tracked_writer is not None:
+                    if fps_value is None:
+                        fps_value = _normalize_fps(
+                            data.get("fps") or data.get("video_fps") or (
+                                data.get("flags") or {}).get("fps")
+                        )
+                    if fps_value is None and not video_fps_checked:
+                        video_fps_checked = True
+                        if video_path is not None:
+                            try:
+                                from annolid.data.videos import get_video_fps
+                                fps_value = _normalize_fps(
+                                    get_video_fps(str(video_path)))
+                            except Exception:
+                                fps_value = None
+                    if fps_value is None:
+                        fps_value = 29.97
+                    timestamp_value = convert_frame_number_to_time(
+                        frame_number, fps_value)
+
+                for shape in shapes:
+                    instance_name = shape.get("label")
+                    points = shape.get("points") or []
+                    if shape.get('shape_type') == 'point':
+                        points = keypoint_to_polygon_points(points)
+                        shape['shape_type'] = 'polygon'
+                    if len(points) > 2:
+                        mask = convert_shape_to_mask(img_shape, points)
+                        bboxs = masks_to_bboxes(mask[None, :, :])
+                        segmentation = binary_mask_to_coco_rle(mask)
+                        class_score = 1.0
+
+                        if len(bboxs) > 0:
+                            cx, cy = polygon_center(points)
+                            x1, y1, x2, y2 = bboxs[0]
+                            csv_writer.writerow(
+                                [frame_number, x1, y1, x2, y2, cx, cy,
+                                    instance_name, class_score,
+                                    segmentation, 0])
+                            if tracked_writer is not None and instance_name:
+                                motion_index = shape.get("motion_index")
+                                if motion_index is None:
+                                    description = shape.get(
+                                        "description") or ""
+                                    match = re.search(
+                                        r"motion_index\s*[:=]\s*([\-0-9\.eE]+)", description)
+                                    if match:
+                                        try:
+                                            motion_index = float(
+                                                match.group(1))
+                                        except ValueError:
+                                            motion_index = None
+                                try:
+                                    stored_cx = float(shape.get("cx"))
+                                    stored_cy = float(shape.get("cy"))
+                                except (TypeError, ValueError):
+                                    stored_cx = cx
+                                    stored_cy = cy
+                                try:
+                                    motion_index = float(
+                                        motion_index) if motion_index is not None else -1
+                                except (TypeError, ValueError):
+                                    motion_index = -1
+                                key = (frame_number, instance_name)
+                                if key not in tracked_seen:
+                                    tracked_seen.add(key)
+                                tracked_writer.writerow(
+                                    [frame_number, instance_name, stored_cx, stored_cy, motion_index, timestamp_value])
                 num_processed_files += 1
                 progress = int((num_processed_files / total_files) * 100)
                 _report_progress(progress)
-                continue
-
+    finally:
+        if tracked_writer is not None:
             try:
-                frame_number = get_frame_number_from_filename(json_file)
-            except ValueError:
-                # Skip metadata files that do not follow the frame naming scheme
-                num_processed_files += 1
-                progress = int((num_processed_files / total_files) * 100)
-                _report_progress(progress)
-                continue
-            img_height = data.get("imageHeight")
-            img_width = data.get("imageWidth")
-            shapes = data.get("shapes") or []
+                tracked_output.close()
+            except Exception:
+                pass
 
-            if img_height is None or img_width is None:
-                num_processed_files += 1
-                progress = int((num_processed_files / total_files) * 100)
-                _report_progress(progress)
-                continue
-
-            img_shape = (img_height, img_width)
-
-            for shape in shapes:
-                instance_name = shape.get("label")
-                points = shape.get("points") or []
-                if shape.get('shape_type') == 'point':
-                    points = keypoint_to_polygon_points(points)
-                    shape['shape_type'] = 'polygon'
-                if len(points) > 2:
-                    mask = convert_shape_to_mask(img_shape, points)
-                    bboxs = masks_to_bboxes(mask[None, :, :])
-                    segmentation = binary_mask_to_coco_rle(mask)
-                    class_score = 1.0
-
-                    if len(bboxs) > 0:
-                        cx, cy = polygon_center(points)
-                        x1, y1, x2, y2 = bboxs[0]
-                        csv_writer.writerow(
-                            [frame_number, x1, y1, x2, y2, cx, cy,
-                                instance_name, class_score,
-                                segmentation, 0])
-            num_processed_files += 1
-            progress = int((num_processed_files / total_files) * 100)
-            _report_progress(progress)
+    if tracked_csv_file:
+        try:
+            from annolid.postprocessing.video_timestamp_annotator import (
+                annotate_csv,
+            )
+            video_path = _find_video_for_json_folder(Path(json_folder))
+            if video_path is not None and video_path.exists():
+                annotate_csv(Path(tracked_csv_file), video_path)
+        except Exception:
+            pass
 
     return str(csv_file)
 
