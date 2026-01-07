@@ -816,6 +816,8 @@ class FlexibleWorker(QtCore.QObject):
         """
         self._is_stopped = False
         self._stop_event.clear()
+        result = None
+        error = None
         try:
             if self._is_stopped:
                 result = "Stopped"
@@ -823,11 +825,14 @@ class FlexibleWorker(QtCore.QObject):
                 kwargs = dict(self._kwargs)
                 kwargs = self._inject_cancellation_kwargs(kwargs)
                 result = self._task_function(*self._args, **kwargs)
-            self._safe_emit(self.result_signal, result)
-            self._safe_emit(self.finished_signal, result)
-        except Exception as e:
-            # Optionally handle exceptions and emit an error signal if needed
-            self._safe_emit(self.finished_signal, e)
+        except Exception as exc:
+            error = exc
+
+        if error is not None:
+            self._emit_if_alive(self.finished_signal, error)
+            return
+        self._emit_if_alive(self.result_signal, result)
+        self._emit_if_alive(self.finished_signal, result)
 
     def _stop(self):
         """
@@ -884,7 +889,16 @@ class FlexibleWorker(QtCore.QObject):
 
         :param progress: An integer representing the progress percentage.
         """
-        self._safe_emit(self.progress_signal, progress)
+        self._emit_if_alive(self.progress_signal, progress)
+
+    def _emit_if_alive(self, signal, *args) -> bool:
+        """Emit a signal if the QObject is still alive."""
+        try:
+            return self._safe_emit(signal, *args)
+        except RuntimeError:
+            logger.debug(
+                "FlexibleWorker signal emission failed (object deleted).")
+            return False
 
     def _safe_emit(self, signal, *args) -> bool:
         """Emit a Qt signal defensively if the QObject is still alive."""

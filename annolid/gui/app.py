@@ -207,6 +207,7 @@ class AnnolidWindow(MainWindow):
         self.csv_worker = None
         self._last_tracking_csv_path = None
         self._csv_conversion_queue = []
+        self._prediction_stop_requested = False
         self.florence_dock: Optional[QtWidgets.QDockWidget] = None
         self.tracking_controller = TrackingController(self)
 
@@ -2011,6 +2012,7 @@ class AnnolidWindow(MainWindow):
         thread = getattr(self, "seg_pred_thread", None)
 
         # Update UI immediately and request a cooperative stop (non-blocking).
+        self._prediction_stop_requested = True
         self.stop_prediction_flag = False
         try:
             self.stepSizeWidget.predict_button.setText("Stopping...")
@@ -2176,6 +2178,7 @@ class AnnolidWindow(MainWindow):
 
         if self.video_file:
 
+            self._prediction_stop_requested = False
             if self.video_results_folder:  # video_results_folder is Path object
                 self._setup_prediction_folder_watcher(
                     str(self.video_results_folder))
@@ -2467,11 +2470,28 @@ class AnnolidWindow(MainWindow):
                     f"Prediction failed with error:\n{messege}",
                 )
                 return
-            if messege is not None and "last frame" in str(messege):
+            message_text = ""
+            stop_from_message = False
+            if isinstance(messege, tuple):
+                if messege:
+                    message_text = str(messege[0])
+                if len(messege) > 1 and isinstance(messege[1], bool):
+                    stop_from_message = messege[1]
+            elif messege is not None:
+                message_text = str(messege)
+
+            if message_text.startswith("Stopped") or "missing instance(s)" in message_text:
+                stop_from_message = True
+
+            if message_text and "last frame" in message_text:
+                stop_from_message = True
                 QtWidgets.QMessageBox.information(
                     self, "Stop early",
-                    messege
+                    message_text
                 )
+            if self._prediction_stop_requested or stop_from_message:
+                logger.info(
+                    "Prediction stopped early; skipping tracking CSV conversion.")
             else:
                 if self.video_loader is not None:
                     json_count = count_json_files(self.video_results_folder)
@@ -2499,6 +2519,7 @@ class AnnolidWindow(MainWindow):
         self.reset_predict_button()
         self._finalize_prediction_progress(
             "Manual prediction worker finished.")
+        self._prediction_stop_requested = False
 
     def reset_predict_button(self):
         """Reset the predict button text and style"""
@@ -3145,6 +3166,10 @@ class AnnolidWindow(MainWindow):
         except Exception:
             pass
 
+        if result == "Stopped":
+            self._cleanup_csv_worker()
+            return
+
         if isinstance(result, str) and result.startswith("No annotation"):
             QtWidgets.QMessageBox.information(
                 self,
@@ -3192,7 +3217,13 @@ class AnnolidWindow(MainWindow):
         """Route worker progress updates through thread-safe signal emission."""
         worker = getattr(self, "csv_worker", None)
         if worker is not None:
-            worker.report_progress(progress)
+            try:
+                worker.report_progress(progress)
+            except RuntimeError:
+                logger.debug(
+                    "CSV progress update skipped (worker deleted).",
+                    exc_info=True,
+                )
 
     def _update_progress_bar(self, progress):
         """Update the progress bar's value."""
@@ -3406,6 +3437,28 @@ class AnnolidWindow(MainWindow):
         if self._csv_conversion_queue:
             next_out, next_csv = self._csv_conversion_queue.pop(0)
             self._start_csv_conversion(next_out, next_csv)
+
+    def _stop_csv_worker(self):
+        """Request a graceful stop of any active CSV conversion."""
+        if self._csv_conversion_queue:
+            self._csv_conversion_queue.clear()
+
+        worker = getattr(self, "csv_worker", None)
+        if worker is not None:
+            try:
+                worker.request_stop()
+            except RuntimeError:
+                logger.debug("CSV worker already deleted.", exc_info=True)
+
+        thread = getattr(self, "csv_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+                thread.wait(2000)
+            except RuntimeError:
+                logger.debug("CSV thread already cleaned up.", exc_info=True)
+
+        self._cleanup_csv_worker()
 
     def tracks(self):
         """
@@ -5457,6 +5510,7 @@ class AnnolidWindow(MainWindow):
                     logger.info(message)
 
         self._stop_frame_loader()
+        self._stop_csv_worker()
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
         quit_and_wait(self.seg_pred_thread, "Bye!")

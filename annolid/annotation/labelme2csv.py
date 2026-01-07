@@ -59,7 +59,7 @@ def convert_shape_to_mask(img_shape, points):
     return mask
 
 
-def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
+def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None, stop_event=None):
     """
     Convert JSON files in a folder to annolid CSV format file.
 
@@ -77,6 +77,14 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
 
     if csv_file is None:
         csv_file = json_folder + '_tracking.csv'
+
+    def _report_progress(progress):
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(progress)
+        except Exception:
+            return
 
     with open(csv_file, 'w', newline='') as csv_output:
         csv_writer = csv.writer(csv_output)
@@ -103,13 +111,14 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
         num_processed_files = 0
 
         for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
+            if stop_event is not None and stop_event.is_set():
+                return "Stopped"
             json_path = os.path.join(json_folder, json_file)
             data = read_json_file(json_path)
             if not data:
                 num_processed_files += 1
-                if progress_callback:
-                    progress = int((num_processed_files / total_files) * 100)
-                    progress_callback(progress)
+                progress = int((num_processed_files / total_files) * 100)
+                _report_progress(progress)
                 continue
 
             try:
@@ -117,9 +126,8 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
             except ValueError:
                 # Skip metadata files that do not follow the frame naming scheme
                 num_processed_files += 1
-                if progress_callback:
-                    progress = int((num_processed_files / total_files) * 100)
-                    progress_callback(progress)
+                progress = int((num_processed_files / total_files) * 100)
+                _report_progress(progress)
                 continue
             img_height = data.get("imageHeight")
             img_width = data.get("imageWidth")
@@ -127,9 +135,8 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
 
             if img_height is None or img_width is None:
                 num_processed_files += 1
-                if progress_callback:
-                    progress = int((num_processed_files / total_files) * 100)
-                    progress_callback(progress)
+                progress = int((num_processed_files / total_files) * 100)
+                _report_progress(progress)
                 continue
 
             img_shape = (img_height, img_width)
@@ -154,9 +161,8 @@ def convert_json_to_csv(json_folder, csv_file=None, progress_callback=None):
                                 instance_name, class_score,
                                 segmentation, 0])
             num_processed_files += 1
-            if progress_callback:
-                progress = int((num_processed_files / total_files) * 100)
-                progress_callback(progress)
+            progress = int((num_processed_files / total_files) * 100)
+            _report_progress(progress)
 
     return str(csv_file)
 
