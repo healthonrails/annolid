@@ -2,6 +2,7 @@ import atexit
 import os
 import platform
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -11,6 +12,11 @@ from qtpy import QtCore, QtWidgets
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
 from annolid.utils.runs import new_run_dir, shared_runs_root
+
+
+@dataclass(frozen=True)
+class _CLITrainingOutcome:
+    save_dir: str
 
 
 class YOLOTrainingManager(QtCore.QObject):
@@ -200,9 +206,12 @@ class YOLOTrainingManager(QtCore.QObject):
             self._release_temp_config(data_config_path)
             return False
 
-        from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
-        configure_ultralytics_cache()
-        from ultralytics import YOLO
+        from annolid.yolo import resolve_weight_path
+        from annolid.yolo.ultralytics_cli import (
+            build_yolo_train_command,
+            ensure_parent_dir,
+            run_yolo_cli,
+        )
 
         if not self._confirm_preflight(
             data_config_path=data_config_path,
@@ -235,42 +244,58 @@ class YOLOTrainingManager(QtCore.QObject):
             }
         )
 
-        def train_task():
-            weight_path = resolve_weight_path(yolo_model_file)
-            model = YOLO(str(weight_path))
+        def train_task(*, stop_event=None):
+            chosen_model = model_path or yolo_model_file
             if model_path:
-                try:
-                    model.load(model_path)
-                except Exception as exc:
+                model_candidate = Path(model_path).expanduser()
+                if not model_candidate.exists():
                     raise RuntimeError(
-                        f"Failed to load trained model: {exc}"
-                    ) from exc
+                        f"Selected model checkpoint does not exist:\n{model_candidate}"
+                    )
+                model_arg = str(model_candidate.resolve())
+            else:
+                weight_path = resolve_weight_path(yolo_model_file)
+                model_arg = ensure_parent_dir(str(weight_path))
 
-            # Ensure plot generation does not require a GUI backend.
-            os.environ.setdefault("MPLBACKEND", "Agg")
-            try:
-                import matplotlib  # type: ignore
-
-                matplotlib.use("Agg", force=True)
-            except Exception:
-                pass
-            kwargs: Dict[str, Any] = {
-                "data": data_config_path,
-                "epochs": epochs,
-                "imgsz": image_size,
-                "batch": int(batch_size),
-                "device": (str(device).strip() if device else None),
-                "project": str(runs_root),
-                "name": str(run_rel),
-                "workers": 0,  # Avoid multiprocessing issues when invoked from GUI threads
-                "plots": bool(plots),
-            }
+            overrides: Dict[str, Any] = {}
             if train_overrides:
                 for key, value in dict(train_overrides).items():
                     if value is None:
                         continue
-                    kwargs[key] = value
-            return model.train(**kwargs)
+                    overrides[str(key)] = value
+
+            cmd = build_yolo_train_command(
+                model=str(model_arg),
+                data=str(Path(data_config_path).expanduser().resolve()),
+                epochs=int(epochs),
+                imgsz=int(image_size),
+                batch=int(batch_size),
+                device=(str(device).strip() if device else None),
+                project=str(runs_root),
+                name=str(run_rel),
+                plots=bool(plots),
+                workers=0,  # avoid multiprocessing when invoked from GUI threads
+                overrides=overrides,
+            )
+
+            def sink(line: str) -> None:
+                line = line.rstrip("\n")
+                if line:
+                    logger.info("[yolo] %s", line)
+
+            completed = run_yolo_cli(
+                cmd,
+                stop_event=stop_event,
+                output_sink=sink,
+            )
+            if completed.returncode != 0:
+                tail = "\n".join(completed.output_tail[-50:])
+                raise RuntimeError(
+                    f"YOLO CLI failed (exit {completed.returncode}) while training {chosen_model!r}.\n\n"
+                    f"Command: {' '.join(completed.command)}\n\n"
+                    f"Last output:\n{tail}"
+                )
+            return _CLITrainingOutcome(save_dir=str(run_dir))
 
         worker = FlexibleWorker(train_task)
         thread = QtCore.QThread(self)

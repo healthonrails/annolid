@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -11,7 +11,7 @@ from annolid.engine.registry import ModelPluginBase, register_model
 @register_model
 class YOLOUltralyticsPlugin(ModelPluginBase):
     name = "yolo"
-    description = "Ultralytics YOLO train/predict wrapper (delegates to ultralytics.YOLO)."
+    description = "Ultralytics YOLO train/predict wrapper (training delegates to the 'yolo' CLI)."
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--weights", default="yolo11n-seg.pt",
@@ -35,25 +35,12 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
         )
 
     def train(self, args: argparse.Namespace) -> int:
-        from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
-
-        configure_ultralytics_cache()
-        try:
-            from ultralytics import YOLO  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(
-                "YOLO training requires the optional dependency 'ultralytics'.") from exc
-
-        os.environ.setdefault("MPLBACKEND", "Agg")
-        try:
-            import matplotlib  # type: ignore
-
-            matplotlib.use("Agg", force=True)
-        except Exception:
-            pass
-
-        weight_path = resolve_weight_path(str(args.weights))
-        model = YOLO(str(weight_path))
+        from annolid.yolo import resolve_weight_path
+        from annolid.yolo.ultralytics_cli import (
+            build_yolo_train_command,
+            ensure_parent_dir,
+            run_yolo_cli,
+        )
 
         overrides: Dict[str, Any] = {}
         for item in list(args.override or []):
@@ -63,25 +50,38 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
             k, v = str(item).split("=", 1)
             overrides[k.strip()] = v.strip()
 
-        kwargs: Dict[str, Any] = {
-            "data": str(Path(args.data).expanduser().resolve()),
-            "epochs": int(args.epochs),
-            "imgsz": int(args.imgsz),
-            "batch": int(args.batch),
-            "device": (str(args.device).strip() if args.device is not None else None),
-            "project": (str(Path(args.project).expanduser().resolve()) if args.project else None),
-            "plots": bool(args.plots),
-        }
-        kwargs.update(overrides)
+        weight_path = resolve_weight_path(str(args.weights))
+        model_arg = ensure_parent_dir(str(weight_path))
 
-        res = model.train(**kwargs)
-        # Ultralytics returns a Results object; print a stable summary.
-        try:
-            save_dir = getattr(res, "save_dir", None)
-            if save_dir:
-                print(str(save_dir))
-        except Exception:
-            pass
+        cmd = build_yolo_train_command(
+            model=str(model_arg),
+            data=str(Path(args.data).expanduser().resolve()),
+            epochs=int(args.epochs),
+            imgsz=int(args.imgsz),
+            batch=int(args.batch),
+            device=(str(args.device).strip()
+                    if args.device is not None else None),
+            project=(str(Path(args.project).expanduser().resolve())
+                     if args.project else None),
+            plots=bool(args.plots) if bool(args.plots) else None,
+            overrides=overrides,
+        )
+
+        def sink(line: str) -> None:
+            try:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+        completed = run_yolo_cli(cmd, output_sink=sink)
+        if completed.returncode != 0:
+            tail = "\n".join(completed.output_tail[-50:])
+            raise RuntimeError(
+                f"YOLO CLI failed (exit {completed.returncode}).\n\n"
+                f"Command: {' '.join(completed.command)}\n\n"
+                f"Last output:\n{tail}"
+            )
         return 0
 
     def add_predict_args(self, parser: argparse.ArgumentParser) -> None:
