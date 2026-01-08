@@ -219,7 +219,8 @@ class YOLOTrainingManager(QtCore.QObject):
         )
         self._show_start_notification()
 
-        runs_root = Path(out_dir).expanduser().resolve() if out_dir else shared_runs_root()
+        runs_root = Path(out_dir).expanduser(
+        ).resolve() if out_dir else shared_runs_root()
         run_dir = new_run_dir(
             task="yolo",
             model=Path(yolo_model_file).stem,
@@ -514,15 +515,19 @@ class YOLOTrainingManager(QtCore.QObject):
         self._start_dialog = dialog
 
     def _close_start_notification(self) -> None:
-        if not self._start_dialog:
+        dialog = self._start_dialog
+        if dialog is None:
             return
+        # Clear the reference early to avoid races with the dialog's finished signal
+        self._start_dialog = None
         try:
-            if self._start_dialog.isVisible():
-                self._start_dialog.close()
-            self._start_dialog.deleteLater()
+            if dialog.isVisible():
+                dialog.close()
+            dialog.deleteLater()
         except RuntimeError:
             pass
-        self._start_dialog = None
+        except Exception:
+            logger.debug("Could not close start notification dialog.")
 
     def _clear_start_dialog(self) -> None:
         self._start_dialog = None
