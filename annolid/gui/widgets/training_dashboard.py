@@ -219,6 +219,12 @@ _TIMELINE_KEYS: Tuple[Tuple[str, str], ...] = (
     ("metrics/mAP50-95(B)", "mAP5095_B"),
     ("metrics/mAP50(M)", "mAP50_M"),
     ("metrics/mAP50-95(M)", "mAP5095_M"),
+    ("metrics/mAP50(P)", "mAP50_P"),
+    ("metrics/mAP50-95(P)", "mAP5095_P"),
+    ("metrics/precision(P)", "prec_P"),
+    ("metrics/recall(P)", "recall_P"),
+    ("metrics/precision(M)", "prec_M"),
+    ("metrics/recall(M)", "recall_M"),
     ("seconds", "sec"),
 )
 

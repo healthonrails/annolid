@@ -9,7 +9,7 @@ import time
 import gc
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -39,6 +39,62 @@ from annolid.segmentation.dino_kpseg.keypoints import (
 )
 from annolid.utils.runs import new_run_dir, shared_runs_root
 from annolid.utils.logger import logger
+
+
+_AP_IOU_THRESHOLDS: Tuple[float, ...] = tuple(
+    0.50 + 0.05 * i for i in range(10))
+
+
+def _average_precision(
+    scores: Sequence[float],
+    is_true_positive: Sequence[bool],
+    *,
+    num_gt: int,
+) -> float:
+    """Compute COCO-style AP (area under interpolated precision-recall curve).
+
+    This assumes one-to-one matching is already enforced (for DinoKPSEG it's
+    naturally 1 prediction per keypoint per image at most).
+    """
+    n = len(scores)
+    if num_gt <= 0:
+        return 0.0
+    if n == 0:
+        return 0.0
+
+    order = sorted(range(n), key=lambda i: float(scores[i]), reverse=True)
+    tp = [1.0 if bool(is_true_positive[i]) else 0.0 for i in order]
+    fp = [0.0 if bool(is_true_positive[i]) else 1.0 for i in order]
+
+    tp_cum: List[float] = []
+    fp_cum: List[float] = []
+    t, f = 0.0, 0.0
+    for i in range(n):
+        t += tp[i]
+        f += fp[i]
+        tp_cum.append(t)
+        fp_cum.append(f)
+
+    recalls = [tpi / float(num_gt) for tpi in tp_cum]
+    precisions = [tpi / max(1e-12, (tpi + fpi))
+                  for tpi, fpi in zip(tp_cum, fp_cum)]
+
+    mrec = [0.0] + recalls + [1.0]
+    mpre = [0.0] + precisions + [0.0]
+    for i in range(len(mpre) - 2, -1, -1):
+        mpre[i] = max(mpre[i], mpre[i + 1])
+
+    ap = 0.0
+    for i in range(len(mrec) - 1):
+        if mrec[i + 1] != mrec[i]:
+            ap += (mrec[i + 1] - mrec[i]) * mpre[i + 1]
+    return float(ap)
+
+
+def _oks_from_distance(dist_px: torch.Tensor, *, sigma_px: float) -> torch.Tensor:
+    """OKS-like similarity in [0,1] from pixel distance."""
+    sigma = max(1e-6, float(sigma_px))
+    return torch.exp(-(dist_px ** 2) / (2.0 * sigma * sigma))
 
 
 def _ensure_dir(path: Path) -> None:
@@ -215,6 +271,180 @@ def _soft_argmax_coords(
     return torch.stack([x_exp, y_exp], dim=1)
 
 
+def _soft_argmax_coords_batched(
+    probs_bkhw: torch.Tensor,
+    *,
+    patch_size: int,
+) -> torch.Tensor:
+    if probs_bkhw.ndim != 4:
+        raise ValueError("Expected probs in BKHW format")
+    b, k, h_p, w_p = (
+        int(probs_bkhw.shape[0]),
+        int(probs_bkhw.shape[1]),
+        int(probs_bkhw.shape[2]),
+        int(probs_bkhw.shape[3]),
+    )
+    norm = probs_bkhw.sum(dim=(2, 3), keepdim=False).clamp(min=1e-6)  # [B,K]
+    xs = (torch.arange(w_p, device=probs_bkhw.device,
+          dtype=probs_bkhw.dtype) + 0.5) * float(patch_size)
+    ys = (torch.arange(h_p, device=probs_bkhw.device,
+          dtype=probs_bkhw.dtype) + 0.5) * float(patch_size)
+    x_exp = (probs_bkhw.sum(dim=2) * xs[None, None, :]).sum(dim=2) / norm
+    y_exp = (probs_bkhw.sum(dim=3) * ys[None, None, :]).sum(dim=2) / norm
+    out = torch.stack([x_exp, y_exp], dim=2)
+    if out.shape != (b, k, 2):
+        raise RuntimeError("Unexpected soft-argmax output shape")
+    return out
+
+
+def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
+    if not samples:
+        raise ValueError("No samples to collate")
+
+    feats0 = samples[0].get("feats")
+    masks0 = samples[0].get("masks")
+    if not isinstance(feats0, torch.Tensor) or feats0.ndim != 3:
+        raise ValueError("Sample feats must be a CHW torch.Tensor")
+    if not isinstance(masks0, torch.Tensor) or masks0.ndim != 3:
+        raise ValueError("Sample masks must be a KHW torch.Tensor")
+
+    b = len(samples)
+    c = int(feats0.shape[0])
+    k = int(masks0.shape[0])
+    hs: List[int] = []
+    ws: List[int] = []
+    for s in samples:
+        feats = s.get("feats")
+        masks = s.get("masks")
+        if not isinstance(feats, torch.Tensor) or feats.ndim != 3:
+            raise ValueError("Sample feats must be a CHW torch.Tensor")
+        if not isinstance(masks, torch.Tensor) or masks.ndim != 3:
+            raise ValueError("Sample masks must be a KHW torch.Tensor")
+        if int(feats.shape[0]) != c:
+            raise ValueError("Mismatched feature channels in batch")
+        if int(masks.shape[0]) != k:
+            raise ValueError("Mismatched keypoint count in batch")
+        hs.append(int(feats.shape[1]))
+        ws.append(int(feats.shape[2]))
+
+    h_max = max(1, max(hs))
+    w_max = max(1, max(ws))
+    feats_bchw = torch.zeros((b, c, h_max, w_max), dtype=feats0.dtype)
+    masks_bkhw = torch.zeros((b, k, h_max, w_max), dtype=masks0.dtype)
+    valid_mask = torch.zeros((b, 1, h_max, w_max), dtype=torch.bool)
+
+    coords_list: List[torch.Tensor] = []
+    coord_mask_list: List[torch.Tensor] = []
+
+    have_images = any(isinstance(s.get("image"), torch.Tensor)
+                      for s in samples)
+    images_bchw = None
+    if have_images:
+        images_bchw = torch.zeros(
+            (b, 3, h_max * int(patch_size), w_max * int(patch_size)),
+            dtype=torch.float32,
+        )
+
+    for idx, s in enumerate(samples):
+        feats = s["feats"]
+        masks = s["masks"]
+        h_i = int(feats.shape[1])
+        w_i = int(feats.shape[2])
+        feats_bchw[idx, :, :h_i, :w_i] = feats
+        masks_bkhw[idx, :, :h_i, :w_i] = masks
+        valid_mask[idx, 0, :h_i, :w_i] = True
+
+        coords = s.get("coords")
+        coord_mask = s.get("coord_mask")
+        if isinstance(coords, torch.Tensor):
+            coords_list.append(coords)
+        else:
+            coords_list.append(torch.zeros((k, 2), dtype=torch.float32))
+        if isinstance(coord_mask, torch.Tensor):
+            coord_mask_list.append(coord_mask)
+        else:
+            coord_mask_list.append(torch.zeros((k,), dtype=torch.float32))
+
+        if images_bchw is not None:
+            img = s.get("image")
+            if isinstance(img, torch.Tensor) and img.ndim == 3 and int(img.shape[0]) == 3:
+                images_bchw[idx, :, : int(img.shape[1]), : int(
+                    img.shape[2])] = img.to(dtype=torch.float32)
+
+    coords_bk2 = torch.stack(coords_list, dim=0).to(dtype=torch.float32)
+    coord_mask_bk = torch.stack(coord_mask_list, dim=0).to(dtype=torch.float32)
+    key_padding_mask = (~valid_mask.view(b, -1)).contiguous()
+
+    batch = {
+        "feats": feats_bchw,
+        "masks": masks_bkhw,
+        "coords": coords_bk2,
+        "coord_mask": coord_mask_bk,
+        "valid_mask": valid_mask,
+        "key_padding_mask": key_padding_mask,
+    }
+    if images_bchw is not None:
+        batch["image"] = images_bchw
+    return batch
+
+
+def _masked_bce_with_logits(
+    logits_bkhw: torch.Tensor,
+    targets_bkhw: torch.Tensor,
+    valid_mask_b1hw: torch.Tensor,
+    *,
+    balanced: bool,
+    max_pos_weight: float,
+) -> torch.Tensor:
+    if logits_bkhw.shape != targets_bkhw.shape:
+        raise ValueError("Logits and targets must have the same shape")
+    if valid_mask_b1hw.ndim != 4:
+        raise ValueError("valid_mask must be B1HW")
+    valid = valid_mask_b1hw.to(dtype=logits_bkhw.dtype)
+    denom = (valid.sum() * float(logits_bkhw.shape[1])).clamp(min=1.0)
+
+    pos_weight = None
+    if balanced:
+        with torch.no_grad():
+            pos = (targets_bkhw * valid).sum(dim=(0, 2, 3))
+            neg = ((1.0 - targets_bkhw) * valid).sum(dim=(0, 2, 3))
+            pos_weight = (neg / pos.clamp(min=1e-6))
+            # If a keypoint has no positives in this batch, don't upweight it.
+            pos_weight = torch.where(
+                pos >= 1.0, pos_weight, torch.ones_like(pos_weight))
+            pos_weight = pos_weight.clamp(1.0, float(max_pos_weight))
+            # Ensure broadcasting targets the channel dimension for BKHW.
+            pos_weight = pos_weight.view(
+                1, -1, 1, 1).to(dtype=logits_bkhw.dtype, device=logits_bkhw.device)
+
+    bce = F.binary_cross_entropy_with_logits(
+        logits_bkhw,
+        targets_bkhw,
+        reduction="none",
+        pos_weight=pos_weight,
+    )
+    return (bce * valid).sum() / denom
+
+
+def _dice_loss_masked(
+    probs_bkhw: torch.Tensor,
+    targets_bkhw: torch.Tensor,
+    valid_mask_b1hw: torch.Tensor,
+    *,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    if probs_bkhw.shape != targets_bkhw.shape:
+        raise ValueError(
+            "Dice loss requires probs and targets with the same shape")
+    valid = valid_mask_b1hw.to(dtype=probs_bkhw.dtype)
+    dims = (0, 2, 3)
+    inter = (probs_bkhw * targets_bkhw * valid).sum(dim=dims)
+    denom = (probs_bkhw * valid).sum(dim=dims) + \
+        (targets_bkhw * valid).sum(dim=dims)
+    dice = (2.0 * inter + float(eps)) / (denom + float(eps))
+    return 1.0 - dice.mean()
+
+
 def _coord_loss(
     pred_xy: torch.Tensor,
     target_xy: torch.Tensor,
@@ -342,6 +572,14 @@ def train(
     lr: float,
     epochs: int,
     threshold: float,
+    batch_size: int = 1,
+    accumulate: int = 1,
+    grad_clip: float = 1.0,
+    balanced_bce: bool = True,
+    max_pos_weight: float = 50.0,
+    cos_lr: bool = True,
+    warmup_epochs: int = 3,
+    lr_final_frac: float = 0.01,
     device: Optional[str] = None,
     cache_features: bool = True,
     augment: Optional[DinoKPSEGAugmentConfig] = None,
@@ -494,8 +732,25 @@ def train(
         head = DinoKPSEGHead(in_dim=in_dim, hidden_dim=hidden_dim,
                              num_parts=spec.kpt_count).to(device_str)
 
-    opt = torch.optim.AdamW(head.parameters(), lr=float(lr))
-    loss_fn = nn.BCEWithLogitsLoss()
+    base_lr = float(lr)
+    opt = torch.optim.AdamW(head.parameters(), lr=base_lr)
+    scheduler = None
+    warmup_epochs = max(0, int(warmup_epochs))
+    lr_final_frac = float(lr_final_frac)
+    if lr_final_frac <= 0:
+        lr_final_frac = 0.01
+    if bool(cos_lr):
+        try:
+            from torch.optim.lr_scheduler import CosineAnnealingLR  # type: ignore
+
+            t_max = max(1, int(epochs) - int(warmup_epochs))
+            scheduler = CosineAnnealingLR(
+                opt,
+                T_max=int(t_max),
+                eta_min=float(base_lr) * float(lr_final_frac),
+            )
+        except Exception:
+            scheduler = None
 
     weights_dir = output_dir / "weights"
     _ensure_dir(weights_dir)
@@ -540,6 +795,14 @@ def train(
             f"attn_layers: {int(attn_layers)}",
             f"hidden_dim: {hidden_dim}",
             f"lr0: {lr}",
+            f"batch: {int(batch_size)}",
+            f"accumulate: {int(accumulate)}",
+            f"grad_clip: {float(grad_clip)}",
+            f"balanced_bce: {bool(balanced_bce)}",
+            f"max_pos_weight: {float(max_pos_weight)}",
+            f"cos_lr: {bool(cos_lr)}",
+            f"warmup_epochs: {int(warmup_epochs)}",
+            f"lr_final_frac: {float(lr_final_frac)}",
             f"epochs: {epochs}",
             f"threshold: {threshold}",
             f"early_stop_patience: {int(early_stop_patience)}",
@@ -580,12 +843,30 @@ def train(
     if lr_pairs:
         logger.info("DinoKPSEG left/right keypoint pairs: %s", lr_pairs)
 
-    # NOTE: variable feature grid sizes mean batching > 1 requires padding; keep it simple.
-    train_loader = DataLoader(train_ds, batch_size=1,
-                              shuffle=True, num_workers=0)
+    batch_size = max(1, int(batch_size))
+    accumulate = max(1, int(accumulate))
+    patch_size = int(extractor.patch_size)
+
+    def collate_fn(batch: list[dict]) -> dict:
+        return _pad_collate(batch, patch_size=patch_size)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=collate_fn,
+    )
     val_loader = (
-        DataLoader(val_ds, batch_size=1, shuffle=False,
-                   num_workers=0) if val_ds is not None else None
+        DataLoader(
+            val_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=collate_fn,
+        )
+        if val_ds is not None
+        else None
     )
 
     best_loss = float("inf")
@@ -704,12 +985,26 @@ def train(
         with csv_path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(
                 fh,
-                fieldnames=["epoch", "train_loss", "val_loss", "seconds"],
+                fieldnames=[
+                    "epoch",
+                    "train_loss",
+                    "val_loss",
+                    "metrics/precision(P)",
+                    "metrics/recall(P)",
+                    "metrics/mAP50(P)",
+                    "metrics/mAP50-95(P)",
+                    "seconds",
+                ],
             )
             writer.writeheader()
 
             for epoch in range(1, int(epochs) + 1):
                 head.train()
+                if warmup_epochs > 0 and int(epoch) <= int(warmup_epochs):
+                    warm_lr = float(base_lr) * float(epoch) / \
+                        float(max(1, warmup_epochs))
+                    for pg in opt.param_groups:
+                        pg["lr"] = float(warm_lr)
                 t0 = time.time()
                 train_loss = 0.0
                 train_loss_total = 0.0
@@ -725,45 +1020,87 @@ def train(
                 pair_terms_count = 0
                 side_loss_sum = 0.0
                 side_terms_count = 0
+                grad_norm_sum = 0.0
+                grad_norm_steps = 0
+                opt.zero_grad(set_to_none=True)
                 for batch in train_loader:
-                    feats = batch["feats"][0].to(
-                        device_str, non_blocking=True)  # CHW
-                    masks = batch["masks"][0].to(
-                        device_str, non_blocking=True)  # KHW
+                    feats = batch["feats"].to(
+                        device_str, non_blocking=True)  # BCHW
+                    masks = batch["masks"].to(
+                        device_str, non_blocking=True)  # BKHW
                     coords = batch.get("coords")
                     coord_mask = batch.get("coord_mask")
-                    if isinstance(coords, torch.Tensor):
-                        coords = coords[0].to(
-                            device_str, non_blocking=True)  # Kx2
+                    valid_mask = batch.get("valid_mask")
+                    key_padding_mask = batch.get("key_padding_mask")
+                    if not isinstance(coords, torch.Tensor):
+                        coords = torch.zeros(
+                            (int(masks.shape[0]), int(masks.shape[1]), 2),
+                            dtype=torch.float32,
+                            device=device_str,
+                        )
                     else:
-                        coords = None
-                    if isinstance(coord_mask, torch.Tensor):
-                        coord_mask = coord_mask[0].to(
-                            device_str, non_blocking=True)  # K
+                        coords = coords.to(device_str, non_blocking=True)
+                    if not isinstance(coord_mask, torch.Tensor):
+                        coord_mask = torch.zeros(
+                            (int(masks.shape[0]), int(masks.shape[1])),
+                            dtype=torch.float32,
+                            device=device_str,
+                        )
                     else:
-                        coord_mask = None
-                    logits = head(feats.unsqueeze(0))[0]
-                    loss_base = loss_fn(logits, masks)
+                        coord_mask = coord_mask.to(
+                            device_str, non_blocking=True)
+                    if not isinstance(valid_mask, torch.Tensor):
+                        valid_mask = torch.ones(
+                            (int(masks.shape[0]), 1, int(
+                                masks.shape[2]), int(masks.shape[3])),
+                            dtype=torch.bool,
+                            device=device_str,
+                        )
+                    else:
+                        valid_mask = valid_mask.to(
+                            device_str, non_blocking=True)
+                    if isinstance(key_padding_mask, torch.Tensor):
+                        key_padding_mask = key_padding_mask.to(
+                            device_str, non_blocking=True)
+                    else:
+                        key_padding_mask = None
+
+                    try:
+                        logits = head(feats, key_padding_mask=key_padding_mask)
+                    except TypeError:
+                        logits = head(feats)
+                    logits = logits.masked_fill(~valid_mask, -20.0)
+
+                    loss_base = _masked_bce_with_logits(
+                        logits,
+                        masks,
+                        valid_mask,
+                        balanced=bool(balanced_bce),
+                        max_pos_weight=float(max_pos_weight),
+                    )
                     loss = loss_base
                     probs = torch.sigmoid(logits)
 
                     dice_loss = None
                     if float(dice_loss_weight) > 0.0:
-                        dice_loss = _dice_loss(probs, masks)
+                        dice_loss = _dice_loss_masked(probs, masks, valid_mask)
                         loss = loss + float(dice_loss_weight) * dice_loss
 
                     coord_loss = None
                     if (
                         float(coord_loss_weight) > 0.0
-                        and isinstance(coords, torch.Tensor)
-                        and isinstance(coord_mask, torch.Tensor)
                         and coords.numel() > 0
                         and coord_mask.numel() > 0
                     ):
-                        pred_xy = _soft_argmax_coords(
-                            probs, patch_size=int(extractor.patch_size))
+                        pred_xy = _soft_argmax_coords_batched(
+                            probs, patch_size=int(extractor.patch_size)
+                        )
                         coord_loss = _coord_loss(
-                            pred_xy, coords, coord_mask, mode=coord_loss_type)
+                            pred_xy.reshape(-1, 2),
+                            coords.reshape(-1, 2),
+                            coord_mask.reshape(-1),
+                            mode=coord_loss_type,
+                        )
                         loss = loss + float(coord_loss_weight) * coord_loss
 
                     pair_overlap = None
@@ -772,38 +1109,42 @@ def train(
                     if (
                         float(lr_pair_loss_weight) > 0.0
                         and symmetric_pairs
-                        and int(logits.shape[0]) == int(spec.kpt_count)
+                        and int(logits.shape[1]) == int(spec.kpt_count)
                     ):
-                        k, h_p, w_p = logits.shape
-                        probs_flat = probs.reshape(k, -1)
-                        norm = probs_flat.sum(
-                            dim=1, keepdim=True).clamp(min=1e-6)
-                        dist = probs_flat / norm  # [K, HW]
+                        bsz, k, h_p, w_p = probs.shape
+                        overlap_acc = torch.zeros(
+                            (), dtype=probs.dtype, device=probs.device
+                        )
+                        margin_acc = torch.zeros(
+                            (), dtype=probs.dtype, device=probs.device
+                        )
+                        patch = float(extractor.patch_size)
+                        xs = (torch.arange(w_p, device=probs.device,
+                              dtype=probs.dtype) + 0.5) * patch
+                        ys = (torch.arange(h_p, device=probs.device,
+                              dtype=probs.dtype) + 0.5) * patch
+                        for b_i in range(int(bsz)):
+                            probs_flat = probs[b_i].reshape(k, -1)
+                            norm = probs_flat.sum(
+                                dim=1, keepdim=True).clamp(min=1e-6)
+                            dist = probs_flat / norm  # [K, HW]
+                            for i, j in symmetric_pairs:
+                                overlap_acc = overlap_acc + \
+                                    (dist[int(i)] * dist[int(j)]).sum()
+                                if float(lr_pair_margin_px) > 0.0:
+                                    pi = dist[int(i)].view(h_p, w_p)
+                                    pj = dist[int(j)].view(h_p, w_p)
+                                    mux_i = (pi.sum(dim=0) * xs).sum()
+                                    muy_i = (pi.sum(dim=1) * ys).sum()
+                                    mux_j = (pj.sum(dim=0) * xs).sum()
+                                    muy_j = (pj.sum(dim=1) * ys).sum()
+                                    d = torch.sqrt(
+                                        (mux_i - mux_j) ** 2 + (muy_i - muy_j) ** 2 + 1e-8)
+                                    margin_acc = margin_acc + \
+                                        F.relu(float(lr_pair_margin_px) - d)
 
-                        overlap_acc = 0.0
-                        margin_acc = 0.0
-                        for i, j in symmetric_pairs:
-                            overlap_acc = overlap_acc + \
-                                (dist[int(i)] * dist[int(j)]).sum()
-                            if float(lr_pair_margin_px) > 0.0:
-                                patch = float(extractor.patch_size)
-                                xs = (torch.arange(w_p, device=logits.device,
-                                      dtype=logits.dtype) + 0.5) * patch
-                                ys = (torch.arange(h_p, device=logits.device,
-                                      dtype=logits.dtype) + 0.5) * patch
-
-                                pi = dist[int(i)].view(h_p, w_p)
-                                pj = dist[int(j)].view(h_p, w_p)
-                                mux_i = (pi.sum(dim=0) * xs).sum()
-                                muy_i = (pi.sum(dim=1) * ys).sum()
-                                mux_j = (pj.sum(dim=0) * xs).sum()
-                                muy_j = (pj.sum(dim=1) * ys).sum()
-                                d = torch.sqrt((mux_i - mux_j) **
-                                               2 + (muy_i - muy_j) ** 2 + 1e-8)
-                                margin_acc = margin_acc + \
-                                    F.relu(float(lr_pair_margin_px) - d)
-
-                        denom_pairs = float(max(1, len(symmetric_pairs)))
+                        denom_pairs = float(
+                            max(1, len(symmetric_pairs))) * float(max(1, int(bsz)))
                         pair_overlap = overlap_acc / denom_pairs
                         pair_margin = margin_acc / denom_pairs
                         loss = loss + float(lr_pair_loss_weight) * \
@@ -813,50 +1154,64 @@ def train(
                         float(lr_side_loss_weight) > 0.0
                         and lr_pairs
                         and len(orientation_anchor_idx) >= 2
-                        and int(logits.shape[0]) == int(spec.kpt_count)
+                        and int(logits.shape[1]) == int(spec.kpt_count)
                     ):
-                        k, h_p, w_p = logits.shape
-                        probs_flat = probs.reshape(k, -1)
-                        norm = probs_flat.sum(
-                            dim=1, keepdim=True).clamp(min=1e-6)
-                        dist = (probs_flat / norm).view(k, h_p, w_p)
-
+                        bsz, k, h_p, w_p = probs.shape
                         xs = torch.arange(
-                            w_p, device=logits.device, dtype=logits.dtype) + 0.5
+                            w_p, device=probs.device, dtype=probs.dtype) + 0.5
                         ys = torch.arange(
-                            h_p, device=logits.device, dtype=logits.dtype) + 0.5
-                        px = (dist.sum(dim=1) * xs[None, :]).sum(dim=1)  # [K]
-                        py = (dist.sum(dim=2) * ys[None, :]).sum(dim=1)  # [K]
-
+                            h_p, device=probs.device, dtype=probs.dtype) + 0.5
+                        margin = float(lr_side_loss_margin)
+                        loss_acc = torch.zeros(
+                            (), dtype=probs.dtype, device=probs.device)
                         a0 = int(orientation_anchor_idx[0])
                         a1 = int(orientation_anchor_idx[1])
-                        ax = px[a1] - px[a0]
-                        ay = py[a1] - py[a0]
-                        an = torch.sqrt(ax * ax + ay * ay + 1e-8)
-
-                        margin = float(lr_side_loss_margin)
-                        loss_acc = 0.0
-                        for li, ri in lr_pairs:
-                            li = int(li)
-                            ri = int(ri)
-                            vx_l = px[li] - px[a0]
-                            vy_l = py[li] - py[a0]
-                            vx_r = px[ri] - px[a0]
-                            vy_r = py[ri] - py[a0]
-                            vn_l = torch.sqrt(vx_l * vx_l + vy_l * vy_l + 1e-8)
-                            vn_r = torch.sqrt(vx_r * vx_r + vy_r * vy_r + 1e-8)
-                            s_l = (ax * vy_l - ay * vx_l) / (an * vn_l + 1e-8)
-                            s_r = (ax * vy_r - ay * vx_r) / (an * vn_r + 1e-8)
-                            # Encourage left/right to fall on opposite sides of the axis:
-                            # s_l * s_r should be <= -margin (margin in [0,1]).
-                            loss_acc = loss_acc + F.relu(s_l * s_r + margin)
-                        denom_lr = float(max(1, len(lr_pairs)))
+                        for b_i in range(int(bsz)):
+                            probs_flat = probs[b_i].reshape(k, -1)
+                            norm = probs_flat.sum(
+                                dim=1, keepdim=True).clamp(min=1e-6)
+                            dist = (probs_flat / norm).view(k, h_p, w_p)
+                            px = (dist.sum(dim=1) * xs[None, :]).sum(dim=1)
+                            py = (dist.sum(dim=2) * ys[None, :]).sum(dim=1)
+                            ax = px[a1] - px[a0]
+                            ay = py[a1] - py[a0]
+                            an = torch.sqrt(ax * ax + ay * ay + 1e-8)
+                            for li, ri in lr_pairs:
+                                li = int(li)
+                                ri = int(ri)
+                                vx_l = px[li] - px[a0]
+                                vy_l = py[li] - py[a0]
+                                vx_r = px[ri] - px[a0]
+                                vy_r = py[ri] - py[a0]
+                                vn_l = torch.sqrt(
+                                    vx_l * vx_l + vy_l * vy_l + 1e-8)
+                                vn_r = torch.sqrt(
+                                    vx_r * vx_r + vy_r * vy_r + 1e-8)
+                                s_l = (ax * vy_l - ay * vx_l) / \
+                                    (an * vn_l + 1e-8)
+                                s_r = (ax * vy_r - ay * vx_r) / \
+                                    (an * vn_r + 1e-8)
+                                loss_acc = loss_acc + \
+                                    F.relu(s_l * s_r + margin)
+                        denom_lr = float(max(1, len(lr_pairs))) * \
+                            float(max(1, int(bsz)))
                         side_loss = loss_acc / denom_lr
                         loss = loss + float(lr_side_loss_weight) * side_loss
 
-                    opt.zero_grad(set_to_none=True)
-                    loss.backward()
-                    opt.step()
+                    (loss / float(accumulate)).backward()
+                    n_train += 1
+                    if (n_train % int(accumulate)) == 0:
+                        if float(grad_clip) > 0.0:
+                            try:
+                                gn = torch.nn.utils.clip_grad_norm_(
+                                    head.parameters(), max_norm=float(grad_clip)
+                                )
+                                grad_norm_sum += float(gn.detach().cpu().item())
+                                grad_norm_steps += 1
+                            except Exception:
+                                pass
+                        opt.step()
+                        opt.zero_grad(set_to_none=True)
 
                     train_loss += float(loss_base.detach().cpu().item())
                     train_loss_total += float(loss.detach().cpu().item())
@@ -875,17 +1230,18 @@ def train(
                     if side_loss is not None:
                         side_loss_sum += float(side_loss.detach().cpu().item())
                         side_terms_count += 1
-                    n_train += 1
+                    # Flush leftover grads at epoch end.
 
                     # Lightweight "YOLO-like" qualitative logging: visualize GT vs prediction
                     # for the first batch of each epoch, plus basic mask metrics.
                     if n_train == 1:
                         with torch.no_grad():
-                            probs = torch.sigmoid(logits).detach()
-                            preds = (probs >= 0.5).to(dtype=masks.dtype)
-                            inter = (preds * masks).sum(dim=(1, 2))
+                            probs0 = torch.sigmoid(logits[0]).detach()
+                            masks0 = masks[0].detach()
+                            preds = (probs0 >= 0.5).to(dtype=masks0.dtype)
+                            inter = (preds * masks0).sum(dim=(1, 2))
                             denom = preds.sum(dim=(1, 2)) + \
-                                masks.sum(dim=(1, 2))
+                                masks0.sum(dim=(1, 2))
                             dice = (2.0 * inter) / torch.clamp(denom, min=1e-8)
                             tb_writer.add_scalar(
                                 "metrics/dice_mean_train_batch0", float(dice.mean().item()), epoch)
@@ -899,17 +1255,17 @@ def train(
                             # Histograms (bounded to first batch per epoch)
                             try:
                                 tb_writer.add_histogram(
-                                    "debug/logits", logits.detach().float().cpu(), epoch)
+                                    "debug/logits", logits[0].detach().float().cpu(), epoch)
                                 tb_writer.add_histogram(
-                                    "debug/probs", probs.detach().float().cpu(), epoch)
+                                    "debug/probs", probs[0].detach().float().cpu(), epoch)
                             except Exception:
                                 pass
 
                             # Images: keypoint heatmaps at patch resolution.
-                            k = int(min(8, int(masks.shape[0])))
+                            k = int(min(8, int(masks0.shape[0])))
                             try:
                                 imgs = torch.cat(
-                                    [masks[:k], probs[:k]], dim=0).detach().float().cpu()
+                                    [masks0[:k], probs0[:k]], dim=0).detach().float().cpu()
                                 imgs = imgs.unsqueeze(1).clamp(
                                     0.0, 1.0)  # (2k,1,H,W)
                                 grid = _grid_images(
@@ -928,13 +1284,13 @@ def train(
                                 tb_writer.add_image(
                                     "qual/image_batch0", img0, epoch)
 
-                                prob_mean = probs.detach().float().cpu().mean(dim=0)  # HW
+                                prob_mean = probs0.detach().float().cpu().mean(dim=0)  # HW
                                 pmin = float(prob_mean.min().item())
                                 pmax = float(prob_mean.max().item())
                                 prob_norm = (prob_mean - pmin) / \
                                     max(pmax - pmin, 1e-6)
 
-                                gt_sum = masks.detach().float().cpu().sum(dim=0)
+                                gt_sum = masks0.detach().float().cpu().sum(dim=0)
                                 gmin = float(gt_sum.min().item())
                                 gmax = float(gt_sum.max().item())
                                 gt_norm = (gt_sum - gmin) / \
@@ -977,10 +1333,39 @@ def train(
                                 tb_writer.add_image(
                                     "qual/overlay_pred_mean_batch0", overlay.clamp(0.0, 1.0), epoch)
 
+                if int(n_train) % int(accumulate) != 0:
+                    if float(grad_clip) > 0.0:
+                        try:
+                            gn = torch.nn.utils.clip_grad_norm_(
+                                head.parameters(), max_norm=float(grad_clip)
+                            )
+                            grad_norm_sum += float(gn.detach().cpu().item())
+                            grad_norm_steps += 1
+                        except Exception:
+                            pass
+                    opt.step()
+                    opt.zero_grad(set_to_none=True)
+
                 train_loss /= max(1, n_train)
                 train_loss_total /= max(1, n_train)
+                if grad_norm_steps:
+                    tb_writer.add_scalar(
+                        "train/grad_norm", grad_norm_sum /
+                        max(1, grad_norm_steps), epoch
+                    )
+                try:
+                    tb_writer.add_scalar(
+                        "train/lr", float(
+                            opt.param_groups[0].get("lr", 0.0)), epoch
+                    )
+                except Exception:
+                    pass
 
                 val_loss = None
+                precision_pose_mean = None
+                recall_pose_mean = None
+                map50 = None
+                map5095 = None
                 if val_loader is not None:
                     head.eval()
                     losses = []
@@ -994,72 +1379,148 @@ def train(
                         int(spec.kpt_count), device=device_str, dtype=torch.float32)
                     peak_dist_count = torch.zeros(
                         int(spec.kpt_count), device=device_str, dtype=torch.float32)
+                    det_scores: List[List[float]] = [
+                        [] for _ in range(int(spec.kpt_count))
+                    ]
+                    det_oks: List[List[float]] = [
+                        [] for _ in range(int(spec.kpt_count))
+                    ]
+                    gt_counts = [0 for _ in range(int(spec.kpt_count))]
                     with torch.no_grad():
                         for batch in val_loader:
-                            feats = batch["feats"][0].to(
+                            feats = batch["feats"].to(
                                 device_str, non_blocking=True)
-                            masks = batch["masks"][0].to(
+                            masks = batch["masks"].to(
                                 device_str, non_blocking=True)
                             coords = batch.get("coords")
                             coord_mask = batch.get("coord_mask")
-                            if isinstance(coords, torch.Tensor):
-                                coords = coords[0].to(
+                            valid_mask = batch.get("valid_mask")
+                            key_padding_mask = batch.get("key_padding_mask")
+                            if not isinstance(coords, torch.Tensor):
+                                coords = torch.zeros(
+                                    (int(masks.shape[0]), int(
+                                        masks.shape[1]), 2),
+                                    dtype=torch.float32,
+                                    device=device_str,
+                                )
+                            else:
+                                coords = coords.to(
+                                    device_str, non_blocking=True)
+                            if not isinstance(coord_mask, torch.Tensor):
+                                coord_mask = torch.zeros(
+                                    (int(masks.shape[0]), int(masks.shape[1])),
+                                    dtype=torch.float32,
+                                    device=device_str,
+                                )
+                            else:
+                                coord_mask = coord_mask.to(
+                                    device_str, non_blocking=True)
+                            if not isinstance(valid_mask, torch.Tensor):
+                                valid_mask = torch.ones(
+                                    (int(masks.shape[0]), 1, int(
+                                        masks.shape[2]), int(masks.shape[3])),
+                                    dtype=torch.bool,
+                                    device=device_str,
+                                )
+                            else:
+                                valid_mask = valid_mask.to(
+                                    device_str, non_blocking=True)
+                            if isinstance(key_padding_mask, torch.Tensor):
+                                key_padding_mask = key_padding_mask.to(
                                     device_str, non_blocking=True)
                             else:
-                                coords = None
-                            if isinstance(coord_mask, torch.Tensor):
-                                coord_mask = coord_mask[0].to(
-                                    device_str, non_blocking=True)
-                            else:
-                                coord_mask = None
-                            logits = head(feats.unsqueeze(0))[0]
+                                key_padding_mask = None
+
+                            try:
+                                logits = head(
+                                    feats, key_padding_mask=key_padding_mask)
+                            except TypeError:
+                                logits = head(feats)
+                            logits = logits.masked_fill(~valid_mask, -20.0)
                             probs = torch.sigmoid(logits)
-                            loss_val = loss_fn(logits, masks)
+
+                            loss_val = _masked_bce_with_logits(
+                                logits,
+                                masks,
+                                valid_mask,
+                                balanced=bool(balanced_bce),
+                                max_pos_weight=float(max_pos_weight),
+                            )
                             if float(dice_loss_weight) > 0.0:
-                                loss_val = loss_val + \
-                                    float(dice_loss_weight) * _dice_loss(
-                                        probs, masks)
-                            if (
-                                float(coord_loss_weight) > 0.0
-                                and isinstance(coords, torch.Tensor)
-                                and isinstance(coord_mask, torch.Tensor)
-                                and coords.numel() > 0
-                                and coord_mask.numel() > 0
-                            ):
-                                pred_xy = _soft_argmax_coords(
-                                    probs, patch_size=int(extractor.patch_size))
-                                loss_val = loss_val + \
-                                    float(coord_loss_weight) * _coord_loss(
-                                        pred_xy, coords, coord_mask, mode=coord_loss_type)
-                            losses.append(float(loss_val.cpu().item()))
+                                loss_val = loss_val + float(dice_loss_weight) * _dice_loss_masked(
+                                    probs, masks, valid_mask
+                                )
+                            if float(coord_loss_weight) > 0.0 and coords.numel() > 0 and coord_mask.numel() > 0:
+                                pred_xy = _soft_argmax_coords_batched(
+                                    probs, patch_size=int(extractor.patch_size)
+                                )
+                                loss_val = loss_val + float(coord_loss_weight) * _coord_loss(
+                                    pred_xy.reshape(-1, 2),
+                                    coords.reshape(-1, 2),
+                                    coord_mask.reshape(-1),
+                                    mode=coord_loss_type,
+                                )
+                            losses.append(
+                                float(loss_val.detach().cpu().item()))
 
-                            gt = masks > 0.5
-                            pred = probs >= float(threshold)
-                            tp += (pred & gt).sum(dim=(1, 2)
+                            gt = (masks > 0.5) & valid_mask
+                            pred = (probs >= float(threshold)) & valid_mask
+                            tp += (pred & gt).sum(dim=(0, 2, 3)
                                                   ).to(dtype=torch.float32)
-                            fp += (pred & ~gt).sum(dim=(1, 2)
+                            fp += (pred & ~gt).sum(dim=(0, 2, 3)
                                                    ).to(dtype=torch.float32)
-                            fn += (~pred & gt).sum(dim=(1, 2)
+                            fn += (~pred & gt).sum(dim=(0, 2, 3)
                                                    ).to(dtype=torch.float32)
 
-                            # Peak localization error (patch-grid -> pixels via patch_size)
-                            k, h_p, w_p = probs.shape
-                            flat_gt = masks.view(k, -1)
-                            valid = (flat_gt.sum(dim=1) > 0).to(
-                                dtype=torch.float32)
-                            pred_idx = probs.view(k, -1).argmax(dim=1)
-                            gt_idx = flat_gt.argmax(dim=1)
+                            bsz, k, h_p, w_p = probs.shape
+                            flat_gt = masks.view(bsz, k, -1)
+                            gt_present = (flat_gt.sum(dim=2) > 0)
+
+                            pred_idx = probs.view(bsz, k, -1).argmax(dim=2)
+                            gt_idx = flat_gt.argmax(dim=2)
                             pred_y = (pred_idx // w_p).to(dtype=torch.float32)
                             pred_x = (pred_idx % w_p).to(dtype=torch.float32)
                             gt_y = (gt_idx // w_p).to(dtype=torch.float32)
                             gt_x = (gt_idx % w_p).to(dtype=torch.float32)
-                            dist = (
-                                torch.sqrt((pred_y - gt_y) ** 2 +
-                                           (pred_x - gt_x) ** 2)
-                                * float(extractor.patch_size)
+
+                            dist = torch.sqrt(
+                                (pred_y - gt_y) ** 2 + (pred_x - gt_x) ** 2) * float(extractor.patch_size)
+                            peak_dist_sum += (dist *
+                                              gt_present.to(dtype=torch.float32)).sum(dim=0)
+                            peak_dist_count += gt_present.to(
+                                dtype=torch.float32).sum(dim=0)
+
+                            conf = probs.view(
+                                bsz, k, -1).max(dim=2).values.to(dtype=torch.float32)
+                            pred_xy = _soft_argmax_coords_batched(
+                                probs, patch_size=int(extractor.patch_size)
+                            )  # B,K,2
+                            peak_xy = torch.stack(
+                                [
+                                    (gt_x + 0.5) * float(extractor.patch_size),
+                                    (gt_y + 0.5) * float(extractor.patch_size),
+                                ],
+                                dim=2,
                             )
-                            peak_dist_sum += dist * valid
-                            peak_dist_count += valid
+                            gt_xy_eval = peak_xy
+                            if coords.numel() == peak_xy.numel():
+                                use_coords = (coord_mask > 0.5) & gt_present
+                                gt_xy_eval = torch.where(
+                                    use_coords[:, :, None], coords.to(dtype=torch.float32), peak_xy)
+
+                            dist_xy = torch.sqrt(
+                                ((pred_xy - gt_xy_eval) ** 2).sum(dim=2))
+                            oks = _oks_from_distance(
+                                dist_xy, sigma_px=float(extractor.patch_size))
+                            oks = oks * gt_present.to(dtype=oks.dtype)
+
+                            for kp in range(int(spec.kpt_count)):
+                                gt_counts[kp] += int(gt_present[:,
+                                                     kp].sum().item())
+                                det_scores[kp].extend(
+                                    [float(x) for x in conf[:, kp].detach().cpu().tolist()])
+                                det_oks[kp].extend(
+                                    [float(x) for x in oks[:, kp].detach().cpu().tolist()])
                     if losses:
                         val_loss = float(sum(losses) / len(losses))
                     # Validation metrics (YOLO-like reporting) averaged over keypoints with GT present.
@@ -1087,11 +1548,70 @@ def train(
                             (peak_dist_sum / peak_dist_count.clamp(min=1.0)).mean().item()
                         )
 
+                    # COCO-style AP over IoU thresholds (0.50:0.95) using confidence = max prob.
+                    ap50_list: List[float] = []
+                    ap5095_list: List[float] = []
+                    prec_list: List[float] = []
+                    rec_list: List[float] = []
+                    conf_gate = 0.25
+                    for i in range(int(spec.kpt_count)):
+                        n_gt = int(gt_counts[i])
+                        if n_gt <= 0:
+                            continue
+                        scores_i = det_scores[i]
+                        oks_i = det_oks[i]
+                        ap_by_thr = []
+                        for thr in _AP_IOU_THRESHOLDS:
+                            tp_flags = [float(v) >= float(thr) for v in oks_i]
+                            ap_by_thr.append(
+                                _average_precision(
+                                    scores_i, tp_flags, num_gt=n_gt)
+                            )
+                        ap50_list.append(
+                            float(ap_by_thr[0] if ap_by_thr else 0.0))
+                        ap5095_list.append(
+                            float(sum(ap_by_thr) / max(1, len(ap_by_thr)))
+                        )
+
+                        tp_i = 0
+                        fp_i = 0
+                        for score, oks_v in zip(scores_i, oks_i):
+                            if float(score) < float(conf_gate):
+                                continue
+                            if float(oks_v) >= 0.50:
+                                tp_i += 1
+                            else:
+                                fp_i += 1
+                        prec_list.append(float(tp_i / max(1, (tp_i + fp_i))))
+                        rec_list.append(float(tp_i / max(1, n_gt)))
+
+                    if ap50_list:
+                        map50 = float(sum(ap50_list) / len(ap50_list))
+                    else:
+                        map50 = 0.0
+                    if ap5095_list:
+                        map5095 = float(sum(ap5095_list) / len(ap5095_list))
+                    else:
+                        map5095 = 0.0
+                    if rec_list:
+                        recall_pose_mean = float(sum(rec_list) / len(rec_list))
+                    else:
+                        recall_pose_mean = 0.0
+                    if prec_list:
+                        precision_pose_mean = float(
+                            sum(prec_list) / len(prec_list))
+                    else:
+                        precision_pose_mean = 0.0
+
                 elapsed = float(time.time() - t0)
                 row = {
                     "epoch": epoch,
                     "train_loss": f"{train_loss_total:.6f}",
                     "val_loss": f"{val_loss:.6f}" if val_loss is not None else "",
+                    "metrics/precision(P)": "" if precision_pose_mean is None else f"{precision_pose_mean:.6f}",
+                    "metrics/recall(P)": "" if recall_pose_mean is None else f"{recall_pose_mean:.6f}",
+                    "metrics/mAP50(P)": "" if map50 is None else f"{map50:.6f}",
+                    "metrics/mAP50-95(P)": "" if map5095 is None else f"{map5095:.6f}",
                     "seconds": f"{elapsed:.2f}",
                 }
                 writer.writerow(row)
@@ -1137,6 +1657,16 @@ def train(
                     tb_writer.add_scalar("val/recall_mean", recall_mean, epoch)
                     tb_writer.add_scalar(
                         "val/peak_dist_px_mean", peak_dist_px_mean, epoch)
+                    if map50 is not None and map5095 is not None:
+                        tb_writer.add_scalar(
+                            "metrics/mAP50(P)", float(map50), epoch)
+                        tb_writer.add_scalar(
+                            "metrics/mAP50-95(P)", float(map5095), epoch)
+                    if precision_pose_mean is not None and recall_pose_mean is not None:
+                        tb_writer.add_scalar(
+                            "metrics/precision(P)", float(precision_pose_mean), epoch)
+                        tb_writer.add_scalar(
+                            "metrics/recall(P)", float(recall_pose_mean), epoch)
                     tb_writer.add_scalar(
                         "val/keypoints_present_frac",
                         float(valid_kpt.float().mean().item()),
@@ -1196,14 +1726,20 @@ def train(
                         break
 
                 logger.info(
-                    "Epoch %d/%d - train_loss=%.6f val_loss=%s time=%.2fs",
+                    "Epoch %d/%d - train_loss=%.6f val_loss=%s mAP50-95(P)=%s time=%.2fs",
                     epoch,
                     epochs,
                     train_loss,
                     f"{val_loss:.6f}" if val_loss is not None else "NA",
+                    f"{map5095:.4f}" if map5095 is not None else "NA",
                     elapsed,
                 )
                 tb_writer.flush()
+                if scheduler is not None and int(epoch) > int(warmup_epochs):
+                    try:
+                        scheduler.step()
+                    except Exception:
+                        pass
 
                 # Best-effort: keep MPS memory stable on long runs.
                 if device_str == "mps":
@@ -1277,6 +1813,74 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--hidden-dim", type=int, default=128)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--epochs", type=int, default=50)
+    p.add_argument(
+        "--batch",
+        "--batch-size",
+        dest="batch",
+        type=int,
+        default=1,
+        help="Batch size (uses padded collation for variable feature sizes).",
+    )
+    p.add_argument(
+        "--accumulate",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps (effective batch = batch * accumulate).",
+    )
+    p.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Gradient clipping max norm (0=off).",
+    )
+    group = p.add_mutually_exclusive_group()
+    group.add_argument(
+        "--balanced-bce",
+        dest="balanced_bce",
+        action="store_true",
+        help="Enable per-batch positive class reweighting for BCE (recommended).",
+    )
+    group.add_argument(
+        "--no-balanced-bce",
+        dest="balanced_bce",
+        action="store_false",
+        help="Disable positive class reweighting for BCE.",
+    )
+    p.set_defaults(balanced_bce=True)
+    p.add_argument(
+        "--max-pos-weight",
+        type=float,
+        default=50.0,
+        help="Clamp for balanced BCE pos_weight (prevents instability).",
+    )
+    sched_group = p.add_mutually_exclusive_group()
+    sched_group.add_argument(
+        "--cos-lr",
+        dest="cos_lr",
+        action="store_true",
+        help="Use cosine LR decay (recommended).",
+    )
+    sched_group.add_argument(
+        "--no-cos-lr",
+        dest="cos_lr",
+        action="store_false",
+        help="Disable cosine LR decay.",
+    )
+    p.set_defaults(cos_lr=True)
+    p.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=3,
+        help="Linear LR warmup epochs (0=off).",
+    )
+    p.add_argument(
+        "--lrf",
+        "--lr-final-frac",
+        dest="lr_final_frac",
+        type=float,
+        default=0.01,
+        help="Final LR fraction for cosine schedule.",
+    )
     p.add_argument("--threshold", type=float, default=0.4)
     p.add_argument("--device", default=None)
     p.add_argument("--no-cache", action="store_true",
@@ -1388,6 +1992,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         lr=float(args.lr),
         epochs=int(args.epochs),
         threshold=float(args.threshold),
+        batch_size=int(args.batch),
+        accumulate=int(args.accumulate),
+        grad_clip=float(args.grad_clip),
+        balanced_bce=bool(args.balanced_bce),
+        max_pos_weight=float(args.max_pos_weight),
+        cos_lr=bool(args.cos_lr),
+        warmup_epochs=int(args.warmup_epochs),
+        lr_final_frac=float(args.lr_final_frac),
         device=args.device,
         cache_features=not bool(args.no_cache),
         head_type=str(args.head_type),

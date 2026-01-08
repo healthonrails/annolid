@@ -411,12 +411,15 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._set_form_row_visible(
             self._training_form, self.yolo_plots_checkbox, yolo_selected)
 
-        # Batch size: DinoKPSEG currently trains with batch_size=1 (variable feature grids).
+        # Batch size: DinoKPSEG supports padded batching (may increase memory usage).
+        self.batch_spin.setEnabled(True)
         if dino_selected:
-            self.batch_spin.setValue(1)
-            self.batch_spin.setEnabled(False)
+            self.batch_spin.setToolTip(
+                "DINO KPSEG supports batch_size > 1 via padded feature grids.\n"
+                "Higher batch sizes use more memory; reduce if you hit OOM."
+            )
         else:
-            self.batch_spin.setEnabled(True)
+            self.batch_spin.setToolTip("")
 
         # IO labels
         self._io_config_label.setText(

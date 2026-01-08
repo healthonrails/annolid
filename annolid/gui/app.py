@@ -3991,6 +3991,7 @@ class AnnolidWindow(MainWindow):
                 hidden_dim=int(dino_hidden_dim),
                 lr=float(dino_lr),
                 epochs=int(epochs),
+                batch_size=int(batch_size),
                 threshold=float(dino_threshold),
                 device=yolo_device,
                 cache_features=bool(dino_cache_features),

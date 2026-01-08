@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import atexit
 import os
+import platform
+import queue
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,6 +19,10 @@ from qtpy import QtCore, QtWidgets
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
 from annolid.utils.runs import new_run_dir, shared_runs_root
+
+
+class _TrainingCancelled(RuntimeError):
+    pass
 
 
 class DinoKPSEGTrainingManager(QtCore.QObject):
@@ -29,6 +38,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self._active_jobs: List[Tuple[QtCore.QThread, FlexibleWorker]] = []
         self._training_running = False
         self._start_dialog: Optional[QtWidgets.QMessageBox] = None
+        self._process_lock = threading.Lock()
+        self._active_process: Optional[subprocess.Popen] = None
         atexit.register(self.cleanup)
 
     def is_running(self) -> bool:
@@ -38,6 +49,10 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         while self._active_jobs:
             thread, worker = self._active_jobs.pop()
             try:
+                worker.request_stop()
+            except Exception:
+                pass
+            try:
                 self._stop_thread(thread, "DinoKPSEG training thread")
             except RuntimeError:
                 logger.debug("DinoKPSEG training thread already stopped.")
@@ -45,6 +60,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 worker.deleteLater()
             except RuntimeError:
                 pass
+        self._terminate_active_process()
+        self._close_start_notification()
         self._cleanup_temp_configs()
 
     def prepare_data_config(self, config_file: str) -> Optional[str]:
@@ -74,6 +91,9 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
 
         def is_remote(path_str: str) -> bool:
             return path_str.startswith(("http://", "https://", "rtsp://", "rtmp://"))
+
+        def has_glob(s: str) -> bool:
+            return any(ch in s for ch in ("*", "?", "["))
 
         def resolve_entry(entry: Any) -> Any:
             if isinstance(entry, str):
@@ -106,7 +126,97 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             )
             return None
 
+        missing_paths: List[str] = []
+        for split in ("train", "val", "test"):
+            value = data_cfg.get(split)
+            if not value:
+                continue
+            entries = value if isinstance(value, list) else [value]
+            for entry in entries:
+                if not isinstance(entry, str) or is_remote(entry):
+                    continue
+                if has_glob(entry):
+                    continue
+                candidate = Path(entry).expanduser()
+                if not candidate.exists():
+                    missing_paths.append(f"{split}: {entry}")
+
+        if missing_paths:
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                "Dataset Missing Files",
+                "The following dataset paths could not be found:\n"
+                + "\n".join(missing_paths),
+            )
+            return None
+
+        if data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
+            flip_idx = self._infer_flip_idx(data_cfg)
+            if flip_idx:
+                data_cfg["flip_idx"] = flip_idx
+
         return self._write_temp_config(data_cfg, config_path)
+
+    def _infer_flip_idx(self, data_cfg: Dict[str, Any]) -> Optional[List[int]]:
+        kpt_shape = data_cfg.get("kpt_shape")
+        if not isinstance(kpt_shape, (list, tuple)) or len(kpt_shape) < 1:
+            return None
+        try:
+            nkpt = int(kpt_shape[0])
+        except Exception:
+            return None
+        if nkpt <= 0:
+            return None
+
+        kpt_labels = data_cfg.get("kpt_labels")
+        if not isinstance(kpt_labels, dict) or not kpt_labels:
+            return None
+
+        labels_by_idx: Dict[int, str] = {}
+        for key, value in kpt_labels.items():
+            try:
+                idx = int(key)
+            except Exception:
+                continue
+            if idx < 0 or idx >= nkpt:
+                continue
+            label = str(value or "").strip()
+            if not label:
+                continue
+            labels_by_idx[idx] = label
+
+        if len(labels_by_idx) != nkpt:
+            return None
+
+        idx_by_label = {lbl.lower(): i for i, lbl in labels_by_idx.items()}
+
+        def counterpart(label: str) -> Optional[str]:
+            s = label.lower()
+            swaps = [
+                ("left", "right"),
+                ("right", "left"),
+                ("l_", "r_"),
+                ("r_", "l_"),
+                ("l-", "r-"),
+                ("r-", "l-"),
+            ]
+            for a, b in swaps:
+                if a in s:
+                    return s.replace(a, b)
+            return None
+
+        flip_idx: List[int] = []
+        for i in range(nkpt):
+            label = labels_by_idx[i]
+            other = counterpart(label)
+            if other and other in idx_by_label:
+                flip_idx.append(idx_by_label[other])
+            else:
+                flip_idx.append(i)
+
+        if len(flip_idx) != nkpt:
+            return None
+        return flip_idx
 
     def start_training(
         self,
@@ -124,6 +234,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         hidden_dim: int,
         lr: float,
         epochs: int,
+        batch_size: int = 1,
         threshold: float,
         device: Optional[str],
         cache_features: bool,
@@ -154,9 +265,16 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 "Training In Progress",
                 "A DinoKPSEG training job is already running in the background.",
             )
+            self._release_temp_config(data_config_path)
             return False
 
-        if not self._preflight_ok(data_config_path=data_config_path):
+        if not self._preflight_ok(
+            data_config_path=data_config_path,
+            augment=augment,
+            device=device,
+            epochs=epochs,
+        ):
+            self._release_temp_config(data_config_path)
             return False
 
         try:
@@ -169,9 +287,23 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 f"Import error: {exc}\n\n"
                 "Install it with:\n  pip install 'transformers>=4.39'",
             )
+            self._release_temp_config(data_config_path)
             return False
 
-        output_dir = self._resolve_output_dir(out_dir)
+        if not str(model_name or "").strip():
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                "Missing Model Name",
+                "Please select a DINO backbone model name before starting training.",
+            )
+            self._release_temp_config(data_config_path)
+            return False
+
+        output_dir = self._resolve_output_dir(
+            out_dir=out_dir,
+            model_name=model_name,
+            data_config_path=data_config_path,
+        )
         self.training_started.emit(
             {
                 "task": "dino_kpseg",
@@ -189,7 +321,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             tail = lines[-max(1, int(max_lines)):]
             return "\n".join(tail)
 
-        def train_task():
+        def train_task(*, stop_event=None):
             layer_tuple = self._parse_layers(layers)
             data_path = Path(data_config_path).expanduser().resolve()
             log_path = output_dir / "train.log"
@@ -225,6 +357,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(float(lr)),
                 "--epochs",
                 str(int(epochs)),
+                "--batch",
+                str(int(batch_size)),
                 "--threshold",
                 str(float(threshold)),
                 "--head-type",
@@ -273,27 +407,119 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             env.setdefault("TOKENIZERS_PARALLELISM", "false")
             env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+            try:
+                (output_dir / "command.txt").write_text(
+                    " ".join(cmd) + "\n", encoding="utf-8"
+                )
+            except Exception:
+                pass
+
             with log_path.open("w", encoding="utf-8") as fh:
                 fh.write("Command:\n")
                 fh.write(" ".join(cmd) + "\n\n")
                 fh.flush()
-                completed = subprocess.run(
+
+                creationflags = 0
+                kwargs: Dict[str, Any] = {}
+                if platform.system().lower() == "windows":
+                    creationflags = getattr(
+                        subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                else:
+                    kwargs["start_new_session"] = True
+
+                proc = subprocess.Popen(
                     cmd,
                     env=env,
-                    stdout=fh,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    bufsize=1,
+                    creationflags=creationflags,
+                    **kwargs,
                 )
+                self._set_active_process(proc)
+                output_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
-            if completed.returncode != 0:
-                if completed.returncode < 0:
-                    sig = -int(completed.returncode)
+                def reader() -> None:
+                    try:
+                        stream = proc.stdout
+                        if stream is None:
+                            output_q.put(None)
+                            return
+                        for line in stream:
+                            output_q.put(line)
+                    except Exception:
+                        pass
+                    finally:
+                        output_q.put(None)
+
+                reader_thread = threading.Thread(
+                    target=reader, name="annolid-dino-kpseg-log", daemon=True
+                )
+                reader_thread.start()
+                try:
+                    while True:
+                        if stop_event is not None and getattr(stop_event, "is_set", None) and stop_event.is_set():
+                            self._terminate_process(proc)
+                            raise _TrainingCancelled(
+                                "DinoKPSEG training was cancelled.")
+                        drained = 0
+                        while drained < 200:
+                            try:
+                                line = output_q.get_nowait()
+                            except queue.Empty:
+                                break
+                            if line is None:
+                                drained = 10_000
+                                break
+                            drained += 1
+                            if line:
+                                fh.write(line)
+                                fh.flush()
+                                logger.info("[dino_kpseg] %s",
+                                            line.rstrip("\n"))
+
+                        if proc.poll() is not None:
+                            # Drain remaining lines (up to a cap) after process exit.
+                            for _ in range(10_000):
+                                try:
+                                    line = output_q.get_nowait()
+                                except queue.Empty:
+                                    break
+                                if line is None:
+                                    break
+                                if line:
+                                    fh.write(line)
+                                    fh.flush()
+                            break
+
+                        if stop_event is not None:
+                            stop_event.wait(0.2)
+                        else:
+                            time.sleep(0.2)
+                finally:
+                    try:
+                        if proc.stdout is not None:
+                            proc.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        reader_thread.join(timeout=1.0)
+                    except Exception:
+                        pass
+                    self._clear_active_process(proc)
+
+            completed_rc = proc.returncode
+
+            if completed_rc != 0:
+                if completed_rc < 0:
+                    sig = -int(completed_rc)
                     raise RuntimeError(
                         f"DinoKPSEG training crashed (signal {sig}).\n\n"
                         f"Log: {log_path}\n\n{_tail_text(log_path)}"
                     )
                 raise RuntimeError(
-                    f"DinoKPSEG training failed (exit code {completed.returncode}).\n\n"
+                    f"DinoKPSEG training failed (exit code {completed_rc}).\n\n"
                     f"Log: {log_path}\n\n{_tail_text(log_path)}"
                 )
 
@@ -341,16 +567,41 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         QtCore.QTimer.singleShot(0, thread.start)
         return True
 
-    def _resolve_output_dir(self, out_dir: Optional[str]) -> Path:
+    def _resolve_output_dir(
+        self,
+        *,
+        out_dir: Optional[str],
+        model_name: str,
+        data_config_path: str,
+    ) -> Path:
         base = Path(out_dir).expanduser().resolve(
         ) if out_dir else shared_runs_root()
-        run_dir = new_run_dir(task="dino_kpseg", model="train", runs_root=base)
+        run_name = self._infer_run_name(data_config_path)
+        run_dir = new_run_dir(
+            task="dino_kpseg",
+            model=str(model_name or "train"),
+            runs_root=base,
+            run_name=run_name,
+        )
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             # Defer failures to the training task (which will surface a clearer message).
             pass
         return run_dir
+
+    @staticmethod
+    def _infer_run_name(data_config_path: str) -> Optional[str]:
+        try:
+            stem = Path(str(data_config_path)).expanduser().stem
+        except Exception:
+            return None
+        if not stem:
+            return None
+        marker = "_resolved_"
+        if marker in stem:
+            stem = stem.split(marker, 1)[0]
+        return stem or None
 
     @staticmethod
     def _parse_layers(value: str) -> Tuple[int, ...]:
@@ -365,7 +616,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             items.append(int(token))
         return tuple(items) if items else (-1,)
 
-    def _preflight_ok(self, *, data_config_path: str) -> bool:
+    def _preflight_ok(
+        self,
+        *,
+        data_config_path: str,
+        augment: bool,
+        device: Optional[str],
+        epochs: int,
+    ) -> bool:
         cfg_path = Path(data_config_path).expanduser()
         try:
             data_cfg = yaml.safe_load(
@@ -389,7 +647,159 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             )
             return False
 
-        return True
+        warnings: List[str] = []
+        train_count = self._count_images(data_cfg.get("train"))
+        val_count = self._count_images(data_cfg.get("val"))
+
+        if train_count and train_count < 50:
+            warnings.append(
+                f"Training set is very small ({train_count} images). Consider labeling more frames for better accuracy."
+            )
+        if val_count and val_count < 10:
+            warnings.append(
+                f"Validation set is very small ({val_count} images). Metrics may be unstable/noisy."
+            )
+
+        if bool(augment) and data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
+            warnings.append(
+                "Augmentations are enabled but the pose dataset has no 'flip_idx' in data.yaml; horizontal flip may be incorrect."
+            )
+
+        if int(epochs) >= 200 and train_count and train_count < 200:
+            warnings.append(
+                f"Epochs ({int(epochs)}) is high relative to a small dataset ({train_count} images); you may overfit."
+            )
+
+        device_str = str(device or "").strip().lower()
+        if not device_str:
+            warnings.append(
+                "Device is set to Auto. If training is slow, explicitly select 'mps' (Apple Silicon) or CUDA GPU."
+            )
+        elif device_str == "cpu":
+            warnings.append(
+                "Training on CPU is usually much slower. If available, prefer 'mps' (Apple Silicon) or CUDA GPU."
+            )
+
+        if not warnings:
+            return True
+
+        message = (
+            "Potential training issues detected:\n\n- "
+            + "\n- ".join(warnings)
+            + "\n\nDo you want to start training anyway?"
+        )
+        reply = QtWidgets.QMessageBox.warning(
+            self._window,
+            "DinoKPSEG Training Preflight",
+            message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+
+    def _count_images(self, entry: Any) -> int:
+        if not entry:
+            return 0
+
+        if isinstance(entry, (list, tuple)):
+            return sum(self._count_images(item) for item in entry)
+
+        path_str = str(entry).strip()
+        if not path_str or path_str.startswith(("http://", "https://")):
+            return 0
+        if any(ch in path_str for ch in ("*", "?", "[")):
+            return 0
+
+        p = Path(path_str).expanduser()
+        try:
+            if p.is_dir():
+                exts = {".jpg", ".jpeg", ".png",
+                        ".bmp", ".tif", ".tiff", ".webp"}
+                return sum(1 for f in p.rglob("*") if f.suffix.lower() in exts)
+            if p.is_file() and p.suffix.lower() == ".txt":
+                count = 0
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    candidate = Path(line)
+                    if not candidate.is_absolute():
+                        candidate = p.parent / candidate
+                    if candidate.exists():
+                        count += 1
+                return count
+        except OSError:
+            return 0
+        return 0
+
+    def _set_active_process(self, proc: subprocess.Popen) -> None:
+        with self._process_lock:
+            self._active_process = proc
+
+    def _clear_active_process(self, proc: subprocess.Popen) -> None:
+        with self._process_lock:
+            if self._active_process is proc:
+                self._active_process = None
+
+    def _terminate_active_process(self) -> None:
+        with self._process_lock:
+            proc = self._active_process
+        if proc is None:
+            return
+        try:
+            self._terminate_process(proc)
+        except Exception:
+            pass
+
+    def _terminate_process(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+
+        system = platform.system().lower()
+        try:
+            if system == "windows":
+                try:
+                    proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT"))
+                    proc.wait(timeout=2.0)
+                    return
+                except Exception:
+                    pass
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2.0)
+                    return
+                except Exception:
+                    pass
+                proc.kill()
+                proc.wait(timeout=2.0)
+                return
+
+            # POSIX: terminate process group if possible.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=3.0)
+                return
+            except Exception:
+                pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+        finally:
+            self._clear_active_process(proc)
 
     def _stop_thread(self, thread: QtCore.QThread, label: str) -> None:
         try:
@@ -435,6 +845,17 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self._release_temp_config(temp_config)
 
         if isinstance(outcome, Exception):
+            if isinstance(outcome, _TrainingCancelled):
+                logger.info("DinoKPSEG training cancelled: %s", outcome)
+                QtWidgets.QMessageBox.information(
+                    self._window,
+                    "Training Cancelled",
+                    str(outcome),
+                )
+                self._window.statusBar().showMessage(
+                    self._window.tr("DinoKPSEG training cancelled.")
+                )
+                return
             logger.error("DinoKPSEG training failed: %s",
                          outcome, exc_info=True)
             QtWidgets.QMessageBox.critical(

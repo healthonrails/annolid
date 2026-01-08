@@ -221,10 +221,21 @@ class DinoKPSEGAttentionHead(nn.Module):
                 anchor_gate_init), dtype=torch.float32)
         )
 
-    def forward(self, feats_bchw: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        feats_bchw: torch.Tensor,
+        *,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         if feats_bchw.ndim != 4:
             raise ValueError("Expected feats in BCHW format")
         b, _, h, w = feats_bchw.shape
+        if key_padding_mask is not None:
+            if not isinstance(key_padding_mask, torch.Tensor):
+                raise ValueError("key_padding_mask must be a torch.Tensor")
+            key_padding_mask = key_padding_mask.to(dtype=torch.bool)
+            if key_padding_mask.ndim != 2 or key_padding_mask.shape[0] != b or key_padding_mask.shape[1] != (h * w):
+                raise ValueError("key_padding_mask must be shaped [B, H*W]")
 
         tokens = self.proj(feats_bchw)  # [B, D, H, W]
         if self.proj_norm:
@@ -243,7 +254,12 @@ class DinoKPSEGAttentionHead(nn.Module):
         for layer in range(self.num_layers):
             q_norm = self.norm_q1[layer](q)
             attn_out, _ = self.cross_attn[layer](
-                q_norm, tokens, tokens, need_weights=False)
+                q_norm,
+                tokens,
+                tokens,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
             q = q + attn_out
 
             # Cross-attention from all keypoints to orientation anchors (if available).
@@ -271,7 +287,11 @@ class DinoKPSEGAttentionHead(nn.Module):
         scale = torch.clamp(self.logit_scale.exp(), 0.1, 10.0)
         logits_flat = torch.matmul(q, tokens.transpose(
             1, 2)) * (scale / (self.hidden_dim**0.5))
-        return logits_flat.view(b, self.num_parts, h, w)
+        logits = logits_flat.view(b, self.num_parts, h, w)
+        if key_padding_mask is not None:
+            mask_hw = key_padding_mask.view(b, h, w)
+            logits = logits.masked_fill(mask_hw[:, None, :, :], -20.0)
+        return logits
 
 
 class DinoKPSEGHybridHead(nn.Module):
@@ -324,12 +344,24 @@ class DinoKPSEGHybridHead(nn.Module):
         self.mix_logit = nn.Parameter(torch.full(
             (self.num_parts,), float(mix_init), dtype=torch.float32))
 
-    def forward(self, feats_bchw: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        feats_bchw: torch.Tensor,
+        *,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         logits_conv = self.conv(feats_bchw)
-        logits_attn = self.attn(feats_bchw)
+        logits_attn = self.attn(feats_bchw, key_padding_mask=key_padding_mask)
         mix = torch.sigmoid(self.mix_logit).to(
             dtype=logits_conv.dtype)[None, :, None, None]
-        return logits_conv * (1.0 - mix) + logits_attn * mix
+        logits = logits_conv * (1.0 - mix) + logits_attn * mix
+        if key_padding_mask is not None:
+            if feats_bchw.ndim != 4:
+                return logits
+            b, _, h, w = feats_bchw.shape
+            mask_hw = key_padding_mask.to(dtype=torch.bool).view(b, h, w)
+            logits = logits.masked_fill(mask_hw[:, None, :, :], -20.0)
+        return logits
 
 
 def checkpoint_pack(
