@@ -2,6 +2,8 @@ import atexit
 import os
 import platform
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -257,6 +259,9 @@ class YOLOTrainingManager(QtCore.QObject):
                 weight_path = resolve_weight_path(yolo_model_file)
                 model_arg = ensure_parent_dir(str(weight_path))
 
+            run_dir.mkdir(parents=True, exist_ok=True)
+            log_path = run_dir / "train.log"
+
             overrides: Dict[str, Any] = {}
             if train_overrides:
                 for key, value in dict(train_overrides).items():
@@ -273,29 +278,102 @@ class YOLOTrainingManager(QtCore.QObject):
                 device=(str(device).strip() if device else None),
                 project=str(runs_root),
                 name=str(run_rel),
+                exist_ok=True,
                 plots=bool(plots),
                 workers=0,  # avoid multiprocessing when invoked from GUI threads
                 overrides=overrides,
             )
 
+            try:
+                (run_dir / "command.txt").write_text(
+                    " ".join(cmd) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+
+            from annolid.yolo.tensorboard_logging import YOLORunTensorBoardLogger
+
+            tb_logger = YOLORunTensorBoardLogger(run_dir=run_dir)
+            tb_logger.write_static_metadata(
+                command=" ".join(cmd),
+                hparams={
+                    "model": str(model_arg),
+                    "data": str(Path(data_config_path).expanduser().resolve()),
+                    "epochs": int(epochs),
+                    "imgsz": int(image_size),
+                    "batch": int(batch_size),
+                    "device": str(device or ""),
+                    "plots": bool(plots),
+                    "run_dir": str(run_dir),
+                    "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                },
+            )
+
+            poll_stop = threading.Event()
+
+            def poll_loop() -> None:
+                while not poll_stop.is_set():
+                    try:
+                        tb_logger.poll_and_log_metrics()
+                        tb_logger.poll_and_log_images()
+                    except Exception:
+                        pass
+                    poll_stop.wait(2.0)
+
+            poll_thread = threading.Thread(
+                target=poll_loop, name="annolid-yolo-tb-poll", daemon=True
+            )
+            poll_thread.start()
+
+            log_fh = None
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_fh = log_path.open("a", encoding="utf-8")
+            except Exception:
+                log_fh = None
+
             def sink(line: str) -> None:
                 line = line.rstrip("\n")
                 if line:
                     logger.info("[yolo] %s", line)
+                tb_logger.record_output_line(line)
+                if log_fh is not None:
+                    try:
+                        log_fh.write(line + "\n")
+                        log_fh.flush()
+                    except Exception:
+                        pass
 
-            completed = run_yolo_cli(
-                cmd,
-                stop_event=stop_event,
-                output_sink=sink,
-            )
-            if completed.returncode != 0:
-                tail = "\n".join(completed.output_tail[-50:])
-                raise RuntimeError(
-                    f"YOLO CLI failed (exit {completed.returncode}) while training {chosen_model!r}.\n\n"
-                    f"Command: {' '.join(completed.command)}\n\n"
-                    f"Last output:\n{tail}"
+            try:
+                completed = run_yolo_cli(
+                    cmd,
+                    stop_event=stop_event,
+                    output_sink=sink,
                 )
-            return _CLITrainingOutcome(save_dir=str(run_dir))
+                if completed.returncode != 0:
+                    tail = "\n".join(completed.output_tail[-50:])
+                    raise RuntimeError(
+                        f"YOLO CLI failed (exit {completed.returncode}) while training {chosen_model!r}.\n\n"
+                        f"Command: {' '.join(completed.command)}\n\n"
+                        f"Last output:\n{tail}"
+                    )
+                tb_logger.poll_and_log_metrics()
+                tb_logger.finalize(ok=True)
+                return _CLITrainingOutcome(save_dir=str(run_dir))
+            except Exception as exc:
+                tb_logger.finalize(ok=False, error=str(exc))
+                raise
+            finally:
+                poll_stop.set()
+                try:
+                    poll_thread.join(timeout=2.0)
+                except Exception:
+                    pass
+                try:
+                    if log_fh is not None:
+                        log_fh.close()
+                except Exception:
+                    pass
+                tb_logger.close()
 
         worker = FlexibleWorker(train_task)
         thread = QtCore.QThread(self)

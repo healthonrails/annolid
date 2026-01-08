@@ -51,6 +51,7 @@ def build_yolo_train_command(
     device: Optional[str] = None,
     project: Optional[str] = None,
     name: Optional[str] = None,
+    exist_ok: Optional[bool] = None,
     plots: Optional[bool] = None,
     workers: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
@@ -68,6 +69,7 @@ def build_yolo_train_command(
     _append_kv(cmd, "device", device_str if device_str else None)
     _append_kv(cmd, "project", project)
     _append_kv(cmd, "name", name)
+    _append_kv(cmd, "exist_ok", exist_ok)
     _append_kv(cmd, "plots", plots)
     _append_kv(cmd, "workers", workers)
 
