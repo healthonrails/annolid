@@ -34,6 +34,7 @@ class AIModelManager(QtCore.QObject):
         self._custom_model_configs: List[ModelConfig] = self._load_custom_models(
         )
         self._last_selection: Optional[str] = None
+        self._refresh_in_progress = False
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -43,6 +44,7 @@ class AIModelManager(QtCore.QObject):
         target = default_selection or self._config.get("ai", {}).get("default")
         self._refresh_combo(target)
         self._combo.currentIndexChanged.connect(self._handle_index_changed)
+        self._combo.installEventFilter(self)
 
     def get_current_model(self) -> Optional[ModelConfig]:
         """Return the ModelConfig associated with the current combo selection."""
@@ -71,21 +73,37 @@ class AIModelManager(QtCore.QObject):
 
     @property
     def custom_model_names(self) -> List[str]:
-        return [cfg.display_name for cfg in self._custom_model_configs]
+        return [cfg.display_name for cfg in self._available_custom_models]
 
     @property
     def all_model_configs(self) -> List[ModelConfig]:
-        return [*MODEL_REGISTRY, *self._custom_model_configs]
+        return [*MODEL_REGISTRY, *self._available_custom_models]
 
     def refresh(self, target_selection: Optional[str] = None) -> None:
         """Rebuild the combo box while preserving or applying a selection."""
         self._refresh_combo(target_selection)
 
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:  # noqa: N802
+        """Keep the model list in sync with on-disk weight files."""
+        if obj is self._combo and event.type() in (
+            QtCore.QEvent.FocusIn,
+            QtCore.QEvent.MouseButtonPress,
+        ):
+            # If the user deleted/moved weights while the app is open, ensure
+            # the next dropdown open reflects current disk state.
+            current = self._combo.currentText()
+            self._refresh_combo(current)
+        return super().eventFilter(obj, event)
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
     def _refresh_combo(self, target_selection: Optional[str]) -> None:
+        if self._refresh_in_progress:
+            return
+        self._refresh_in_progress = True
         combo = self._combo
+        self._prune_missing_custom_models()
         preserve = (
             target_selection
             or self._last_selection
@@ -93,38 +111,40 @@ class AIModelManager(QtCore.QObject):
         )
 
         combo.blockSignals(True)
-        combo.clear()
+        try:
+            combo.clear()
 
-        for model in MODELS:
-            combo.addItem(model.name)
+            for model in MODELS:
+                combo.addItem(model.name)
 
-        registry_names = [cfg.display_name for cfg in MODEL_REGISTRY]
-        for name in registry_names:
-            if combo.findText(name) == -1:
-                combo.addItem(name)
+            registry_names = [cfg.display_name for cfg in MODEL_REGISTRY]
+            for name in registry_names:
+                if combo.findText(name) == -1:
+                    combo.addItem(name)
 
-        for name in self.custom_model_names:
-            if combo.findText(name) == -1:
-                combo.addItem(name)
+            for name in self.custom_model_names:
+                if combo.findText(name) == -1:
+                    combo.addItem(name)
 
-        if combo.findText(self._browse_custom_label) == -1:
-            combo.addItem(self._browse_custom_label)
+            if combo.findText(self._browse_custom_label) == -1:
+                combo.addItem(self._browse_custom_label)
 
-        desired = preserve
-        if desired and combo.findText(desired) != -1:
-            index = combo.findText(desired)
-        else:
-            default_text = self._config.get("ai", {}).get("default")
-            if default_text and combo.findText(default_text) != -1:
-                index = combo.findText(default_text)
+            desired = preserve
+            if desired and combo.findText(desired) != -1:
+                index = combo.findText(desired)
             else:
-                index = 0 if combo.count() else -1
+                default_text = self._config.get("ai", {}).get("default")
+                if default_text and combo.findText(default_text) != -1:
+                    index = combo.findText(default_text)
+                else:
+                    index = 0 if combo.count() else -1
 
-        if index >= 0:
-            combo.setCurrentIndex(index)
-            self._last_selection = combo.currentText()
-
-        combo.blockSignals(False)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+                self._last_selection = combo.currentText()
+        finally:
+            combo.blockSignals(False)
+            self._refresh_in_progress = False
 
     def _handle_index_changed(self) -> None:
         current_text = self._combo.currentText()
@@ -251,6 +271,33 @@ class AIModelManager(QtCore.QObject):
             resolved_str = str(resolved.resolve())
             self._missing_custom_weights_logged.discard(resolved_str)
         return exists
+
+    @property
+    def _available_custom_models(self) -> List[ModelConfig]:
+        """Return custom models whose weight path currently exists on disk."""
+        available: List[ModelConfig] = []
+        for cfg in self._custom_model_configs:
+            if self._is_model_available(cfg):
+                available.append(cfg)
+        return available
+
+    def _prune_missing_custom_models(self) -> None:
+        """Remove custom model entries whose weights are missing from disk."""
+        kept: List[ModelConfig] = []
+        removed: List[ModelConfig] = []
+
+        for cfg in self._custom_model_configs:
+            if self._is_model_available(cfg):
+                kept.append(cfg)
+            else:
+                removed.append(cfg)
+
+        if not removed:
+            return
+
+        self._custom_model_configs = kept
+        self._save_custom_models()
+        self.custom_models_changed.emit()
 
     def _warn_missing_custom_weight(self, model: ModelConfig) -> None:
         resolved = Path(model.weight_file).expanduser().resolve()
