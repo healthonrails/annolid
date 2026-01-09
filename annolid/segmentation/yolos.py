@@ -300,6 +300,10 @@ class InferenceProcessor:
         *,
         pred_worker=None,
         stop_event=None,
+        start_frame: int = 0,
+        end_frame: Optional[int] = None,
+        step: int = 1,
+        skip_existing: bool = True,
     ) -> str:
         """
         Runs inference on the given video source and saves the results as LabelMe JSON files.
@@ -312,6 +316,12 @@ class InferenceProcessor:
         """
         output_directory = Path(source).with_suffix("")
         output_directory.mkdir(parents=True, exist_ok=True)
+        start_frame = max(0, int(start_frame))
+        end_frame = None if end_frame is None else int(end_frame)
+        step = max(1, abs(int(step)))
+        skip_existing = bool(skip_existing)
+        self.frame_count = 0
+        self.track_history.clear()
 
         def should_stop() -> bool:
             try:
@@ -356,6 +366,35 @@ class InferenceProcessor:
                 pred_worker=pred_worker,
                 stop_event=stop_event,
                 visual_prompts=visual_prompts,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                step=step,
+                skip_existing=skip_existing,
+            )
+
+        # For GUI-driven video inference we need stable, correct frame indices for:
+        # - progress watcher (expects <folder>_000000123.json)
+        # - resuming from an arbitrary frame after stopping
+        #
+        # Ultralytics' video streaming API doesn't provide start-frame support,
+        # so use a CV2 loop whenever a non-default window/stride is requested.
+        try:
+            source_path = Path(source)
+        except Exception:
+            source_path = None
+        if source_path is not None and source_path.is_file() and (
+            start_frame != 0 or end_frame is not None or step != 1
+        ):
+            return self._run_yolo_video_inference_cv2(
+                source,
+                output_directory=output_directory,
+                pred_worker=pred_worker,
+                stop_event=stop_event,
+                visual_prompts=visual_prompts,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                step=step,
+                skip_existing=skip_existing,
             )
 
         # Use visual prompts if supported by the model (YOLOE)
@@ -392,8 +431,7 @@ class InferenceProcessor:
                     annotations = self.extract_yolo_results(result)
                     self.save_yolo_to_labelme(
                         annotations, frame_shape, output_directory)
-                else:
-                    self.frame_count += 1
+                self.frame_count += 1
         finally:
             try:
                 close = getattr(results, "close", None)
@@ -414,6 +452,10 @@ class InferenceProcessor:
         pred_worker=None,
         stop_event=None,
         visual_prompts: dict = None,
+        start_frame: int = 0,
+        end_frame: Optional[int] = None,
+        step: int = 1,
+        skip_existing: bool = True,
     ) -> str:
         import cv2
 
@@ -444,10 +486,28 @@ class InferenceProcessor:
 
         stopped = False
         try:
+            if int(start_frame) > 0:
+                try:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(start_frame)))
+                except Exception:
+                    pass
+            frame_index = int(start_frame)
+            step = max(1, abs(int(step)))
             while True:
                 if should_stop():
                     stopped = True
                     break
+                if end_frame is not None and frame_index > int(end_frame):
+                    break
+                if bool(skip_existing) and self._frame_has_existing_output(
+                    output_directory, frame_index=int(frame_index)
+                ):
+                    ok = cap.grab()
+                    if not ok:
+                        break
+                    self.frame_count += 1
+                    frame_index += 1
+                    continue
                 ok, frame = cap.read()
                 if not ok:
                     break
@@ -457,17 +517,183 @@ class InferenceProcessor:
                     bboxes = visual_prompts.get("bboxes")
                 annotations = self.extract_dino_kpseg_results(
                     frame, bboxes=bboxes)
-                if annotations:
-                    self.save_yolo_to_labelme(
-                        annotations, frame_shape, output_directory)
-                else:
-                    self.frame_count += 1
+                self.save_yolo_to_labelme(
+                    annotations,
+                    frame_shape,
+                    output_directory,
+                    frame_index=frame_index,
+                )
+                self.frame_count += 1
+
+                if int(step) > 1:
+                    for _ in range(int(step) - 1):
+                        frame_index += 1
+                        if end_frame is not None and frame_index > int(end_frame):
+                            break
+                        if should_stop():
+                            stopped = True
+                            break
+                        ok = cap.grab()
+                        if not ok:
+                            break
+                    if stopped:
+                        break
+                frame_index += 1
         finally:
             cap.release()
 
         if stopped:
             return f"Stopped#{self.frame_count}"
         return f"Done#{self.frame_count}"
+
+    def _run_yolo_video_inference_cv2(
+        self,
+        source: str,
+        *,
+        output_directory: Path,
+        pred_worker=None,
+        stop_event=None,
+        visual_prompts: dict = None,
+        start_frame: int = 0,
+        end_frame: Optional[int] = None,
+        step: int = 1,
+        skip_existing: bool = True,
+    ) -> str:
+        import cv2
+
+        def should_stop() -> bool:
+            try:
+                if stop_event is not None and stop_event.is_set():
+                    return True
+            except Exception:
+                pass
+            try:
+                if pred_worker is not None and hasattr(pred_worker, "is_stopped") and pred_worker.is_stopped():
+                    return True
+            except Exception:
+                pass
+            try:
+                from qtpy import QtCore  # Optional dependency for GUI runs
+
+                thread = QtCore.QThread.currentThread()
+                if thread is not None and thread.isInterruptionRequested():
+                    return True
+            except Exception:
+                pass
+            return False
+
+        cap = cv2.VideoCapture(str(source))
+        if not cap.isOpened():
+            return f"Error: unable to open {source}"
+
+        stopped = False
+        try:
+            if int(start_frame) > 0:
+                try:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(start_frame)))
+                except Exception:
+                    pass
+            frame_index = int(start_frame)
+            step = max(1, abs(int(step)))
+            while True:
+                if should_stop():
+                    stopped = True
+                    break
+                if end_frame is not None and frame_index > int(end_frame):
+                    break
+                if bool(skip_existing) and self._frame_has_existing_output(
+                    output_directory, frame_index=int(frame_index)
+                ):
+                    ok = cap.grab()
+                    if not ok:
+                        break
+                    self.frame_count += 1
+                    frame_index += 1
+                    continue
+                ok, frame = cap.read()
+                if not ok:
+                    break
+
+                frame_shape = (frame.shape[0], frame.shape[1], 3)
+                annotations = []
+                try:
+                    if visual_prompts is not None and "yoloe" in self.model_name.lower():
+                        try:
+                            from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
+
+                            results = self.model.predict(
+                                frame,
+                                visual_prompts=visual_prompts,
+                                predictor=YOLOEVPSegPredictor,
+                                verbose=False,
+                            )
+                        except Exception:
+                            results = self.model.predict(frame, verbose=False)
+                    else:
+                        if self._is_coreml:
+                            results = self.model.predict(frame, verbose=False)
+                        elif "pose" in self.model_name.lower():
+                            results = self.model.predict(frame, verbose=False)
+                        else:
+                            results = self.model.track(
+                                frame, persist=True, verbose=False
+                            )
+                    if isinstance(results, (list, tuple)) and results:
+                        annotations = self.extract_yolo_results(results[0])
+                except Exception as exc:
+                    logger.error("YOLO inference failed at frame %s: %s",
+                                 frame_index, exc, exc_info=True)
+                    annotations = []
+
+                # Always write a JSON to mark the frame as processed (keeps the GUI progress watcher accurate).
+                self.save_yolo_to_labelme(
+                    annotations,
+                    frame_shape,
+                    output_directory,
+                    frame_index=frame_index,
+                )
+                self.frame_count += 1
+
+                if step > 1:
+                    for _ in range(step - 1):
+                        frame_index += 1
+                        if end_frame is not None and frame_index > int(end_frame):
+                            break
+                        if should_stop():
+                            stopped = True
+                            break
+                        ok = cap.grab()
+                        if not ok:
+                            break
+                    if stopped:
+                        break
+                frame_index += 1
+        finally:
+            cap.release()
+
+        if stopped:
+            return f"Stopped#{self.frame_count}"
+        return f"Done#{self.frame_count}"
+
+    @staticmethod
+    def _legacy_labelme_json_path(output_dir: Path, *, frame_index: int) -> Path:
+        return output_dir / f"{int(frame_index):09d}.json"
+
+    @classmethod
+    def _frame_has_existing_output(cls, output_dir: Path, *, frame_index: int) -> bool:
+        # Support both the current "<folder>_000000123.json" and the legacy "000000123.json".
+        candidates = (
+            cls._labelme_json_path(output_dir, frame_index=int(frame_index)),
+            cls._legacy_labelme_json_path(
+                output_dir, frame_index=int(frame_index)),
+        )
+        for path in candidates:
+            try:
+                if path.exists() and path.stat().st_size > 0:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def extract_dino_kpseg_results(
         self,
@@ -604,7 +830,18 @@ class InferenceProcessor:
 
         return annotations
 
-    def save_yolo_to_labelme(self, annotations: list, frame_shape: tuple, output_dir: Path) -> None:
+    @staticmethod
+    def _labelme_json_path(output_dir: Path, *, frame_index: int) -> Path:
+        return output_dir / f"{output_dir.name}_{int(frame_index):09d}.json"
+
+    def save_yolo_to_labelme(
+        self,
+        annotations: list,
+        frame_shape: tuple,
+        output_dir: Path,
+        *,
+        frame_index: Optional[int] = None,
+    ) -> None:
         """
         Saves YOLO annotations to a LabelMe JSON file.
 
@@ -614,8 +851,10 @@ class InferenceProcessor:
             output_dir (Path): Output directory where JSON will be saved.
         """
         height, width, _ = frame_shape
-        json_filename = f"{self.frame_count:09d}.json"
-        output_path = output_dir / json_filename
+        if frame_index is None:
+            frame_index = int(self.frame_count)
+        output_path = self._labelme_json_path(
+            output_dir, frame_index=int(frame_index))
         save_labels(
             filename=str(output_path),
             imagePath="",
@@ -625,7 +864,8 @@ class InferenceProcessor:
             save_image_to_json=False,
             persist_json=False,
         )
-        self.frame_count += 1
+        # `frame_count` is a processed-frame counter; the JSON file encodes the
+        # actual frame index for the progress watcher / resume logic.
 
 
 if __name__ == "__main__":

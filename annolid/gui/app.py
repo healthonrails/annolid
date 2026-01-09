@@ -2170,6 +2170,50 @@ class AnnolidWindow(MainWindow):
         # Convert arrays to plain Python lists to avoid pop() errors in YOLOE.
         return {"bboxes": bboxes, "cls": cls_list}
 
+    def _max_predicted_frame_index(self, folder: Path) -> int:
+        """Return the maximum frame index present in the prediction folder.
+
+        Supports both "<folder>_000000123.json" and legacy "000000123.json" files,
+        plus AnnotationStore frames if present.
+        """
+        folder = Path(folder)
+        prefixed_pattern = re.compile(r"_(\d{9,})\.json$")
+        bare_pattern = re.compile(r"^(\d{9,})\.json$")
+
+        max_frame = -1
+        try:
+            for name in os.listdir(folder):
+                if not name.endswith(".json"):
+                    continue
+                match = None
+                if folder.name in name:
+                    match = prefixed_pattern.search(name)
+                if match is None:
+                    match = bare_pattern.match(name)
+                if match is None:
+                    continue
+                try:
+                    idx = int(float(match.group(1)))
+                except Exception:
+                    continue
+                if idx > max_frame:
+                    max_frame = idx
+        except Exception:
+            pass
+
+        try:
+            store = AnnotationStore.for_frame_path(
+                folder / f"{folder.name}_000000000.json"
+            )
+            if store.store_path.exists():
+                for idx in store.iter_frames():
+                    if int(idx) > max_frame:
+                        max_frame = int(idx)
+        except Exception:
+            pass
+
+        return int(max_frame)
+
     def predict_from_next_frame(self, to_frame=60):
         """
         Updated prediction routine that extracts visual prompts from the canvas.
@@ -2199,9 +2243,6 @@ class AnnolidWindow(MainWindow):
         if self.video_file:
 
             self._prediction_stop_requested = False
-            if self.video_results_folder:  # video_results_folder is Path object
-                self._setup_prediction_folder_watcher(
-                    str(self.video_results_folder))
 
             if self._is_dino_kpseg_tracker_model(model_name, model_weight):
                 resolved = self._resolve_dino_kpseg_weight(model_weight)
@@ -2334,12 +2375,27 @@ class AnnolidWindow(MainWindow):
                     return
 
                 try:
-                    self.video_processor = InferenceProcessor(
-                        model_name=resolved,
-                        model_type="dinokpseg",
-                        keypoint_names=pose_keypoint_names,
-                        pose_schema_path=pose_schema_path,
-                    )
+                    resolved_path = str(Path(resolved).expanduser().resolve())
+                    cached = getattr(
+                        self, "_dinokpseg_inference_processor", None)
+                    if (
+                        cached is not None
+                        and getattr(cached, "model_type", "").lower() == "dinokpseg"
+                        and str(getattr(cached, "model_name", "")) == resolved_path
+                    ):
+                        # Reuse the heavy DinoKPSEGPredictor (DINOv3 backbone) across repeated runs.
+                        cached.keypoint_names = pose_keypoint_names or getattr(
+                            cached, "keypoint_names", None
+                        )
+                        self.video_processor = cached
+                    else:
+                        self.video_processor = InferenceProcessor(
+                            model_name=resolved_path,
+                            model_type="dinokpseg",
+                            keypoint_names=pose_keypoint_names,
+                            pose_schema_path=pose_schema_path,
+                        )
+                        self._dinokpseg_inference_processor = self.video_processor
                 except Exception as exc:
                     logger.error(
                         "Failed to load DINO keypoint segmentation model '%s': %s",
@@ -2400,6 +2456,19 @@ class AnnolidWindow(MainWindow):
                 end_frame = self.num_frames - 1
             stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
                                                 or self.automatic_pause_enabled)
+            inference_step = 1
+            inference_start_frame = max(0, int(self.frame_number or 0) + 1)
+            inference_end_frame = None  # default: run to end for YOLO/DinoKPSEG inference
+            if self.video_results_folder:
+                try:
+                    max_existing = self._max_predicted_frame_index(
+                        Path(self.video_results_folder)
+                    )
+                    if max_existing >= int(inference_start_frame):
+                        inference_start_frame = int(max_existing) + 1
+                except Exception:
+                    pass
+            watch_start_frame = int(self.frame_number or 0)
             if self._is_dino_kpseg_tracker_model(model_name, model_weight):
                 end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
@@ -2411,6 +2480,7 @@ class AnnolidWindow(MainWindow):
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+                watch_start_frame = int(self.frame_number or 0)
             elif self._is_dino_keypoint_model(model_name, model_weight):
                 # Run the Cutie + DINO tracker over the full video by default.
                 end_frame = self.num_frames - 1
@@ -2423,34 +2493,48 @@ class AnnolidWindow(MainWindow):
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+                watch_start_frame = int(self.frame_number or 0)
             elif self._is_efficienttam_model(model_name, model_weight):
                 frame_idx = max(self.frame_number, 0)
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
                 )
+                watch_start_frame = int(frame_idx)
             elif self.sam2_manager.is_sam2_model(model_name, model_weight):
                 frame_idx = max(self.frame_number, 0)
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
                 )
+                watch_start_frame = int(frame_idx)
             elif self.sam3_manager.is_sam3_model(model_name, model_weight):
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                 )
+                watch_start_frame = int(self.frame_number or 0)
             elif self._is_dino_kpseg_model(model_name, model_weight):
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.run_inference,
                     source=self.video_file,
+                    start_frame=int(inference_start_frame),
+                    end_frame=inference_end_frame,
+                    step=int(inference_step),
+                    skip_existing=True,
                 )
+                watch_start_frame = int(inference_start_frame)
             elif self._is_yolo_model(model_name, model_weight):
                 # Pass visual_prompts to run_inference if extracted successfully.
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.run_inference,
                     source=self.video_file,
                     visual_prompts=visual_prompts if visual_prompts else None,
+                    start_frame=int(inference_start_frame),
+                    end_frame=inference_end_frame,
+                    step=int(inference_step),
+                    skip_existing=True,
                 )
+                watch_start_frame = int(inference_start_frame)
             else:
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.process_video_frames,
@@ -2465,8 +2549,24 @@ class AnnolidWindow(MainWindow):
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
-            self.frame_number += 1
-            logger.info(f"Prediction started from frame: {self.frame_number}")
+                watch_start_frame = int(self.frame_number + 1)
+
+            if self.video_results_folder:  # video_results_folder is Path object
+                try:
+                    self._setup_prediction_folder_watcher(
+                        str(self.video_results_folder),
+                        start_frame=int(watch_start_frame),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to start prediction progress watcher.", exc_info=True
+                    )
+            try:
+                self.frame_number = int(watch_start_frame)
+            except Exception:
+                pass
+            logger.info("Prediction started from frame: %s",
+                        int(watch_start_frame))
             self.stepSizeWidget.predict_button.setText("Stop")
             self.stepSizeWidget.predict_button.setStyleSheet(
                 "background-color: red; color: white;")
@@ -2545,25 +2645,28 @@ class AnnolidWindow(MainWindow):
                     "Prediction stopped early; skipping tracking CSV conversion.")
             else:
                 if self.video_loader is not None:
-                    json_count = count_json_files(self.video_results_folder)
-                    store_count = self._annotation_store_frame_count()
-                    total_predicted = max(json_count, store_count)
-                    expected_total_frames = self.num_frames or total_predicted
-                    missing_frames = max(
-                        0, expected_total_frames - total_predicted)
+                    max_predicted = -1
+                    try:
+                        if self.video_results_folder:
+                            max_predicted = self._max_predicted_frame_index(
+                                Path(self.video_results_folder)
+                            )
+                    except Exception:
+                        max_predicted = -1
                     logger.info(
-                        f"Predicted frames available: json={json_count}, store={store_count}, total={total_predicted} of {self.num_frames}")
-                    if total_predicted >= max(1, expected_total_frames - 1):
-                        self.convert_json_to_tracked_csv()
-                    elif total_predicted > 0:
-                        logger.info(
-                            "Prediction finished with %d missing frame(s); generating CSV with available results.",
-                            missing_frames
-                        )
+                        "Predicted frames available: max_frame=%s of %s",
+                        int(max_predicted),
+                        int(self.num_frames or 0),
+                    )
+                    if (
+                        self.num_frames
+                        and int(max_predicted) >= int(self.num_frames) - 1
+                        and int(max_predicted) >= 0
+                    ):
                         self.convert_json_to_tracked_csv()
                     else:
                         logger.info(
-                            "Prediction finished without any frames to convert; skipping CSV generation."
+                            "Prediction did not reach the last frame; skipping tracking CSV conversion."
                         )
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
@@ -3454,7 +3557,7 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False  # This flag is specific to AnnolidWindow
 
-    def _setup_prediction_folder_watcher(self, folder_path_to_watch):
+    def _setup_prediction_folder_watcher(self, folder_path_to_watch, *, start_frame: int | None = None):
         if self.prediction_progress_watcher is None:
             self.prediction_progress_watcher = QtCore.QTimer(self)
             self.prediction_progress_watcher.timeout.connect(
@@ -3464,19 +3567,24 @@ class AnnolidWindow(MainWindow):
         if osp.isdir(folder_path_to_watch):
             self.prediction_progress_folder = folder_path_to_watch
             self.prediction_start_timestamp = time.time()
-            self._prediction_start_frame = int(
-                self.frame_number) if self.frame_number is not None else 0
+            if start_frame is None:
+                start_frame = int(
+                    self.frame_number) if self.frame_number is not None else 0
+            self._prediction_start_frame = max(0, int(start_frame))
             self._prediction_existing_store_frames = set()
             self._prediction_existing_json_frames = set()
             path = Path(folder_path_to_watch)
-            json_pattern = re.compile(r'_(\d{9,})\.json$')
+            prefixed_pattern = re.compile(r'_(\d{9,})\.json$')
+            bare_pattern = re.compile(r'^(\d{9,})\.json$')
             try:
                 for f_name in os.listdir(path):
                     if not f_name.endswith(".json"):
                         continue
-                    if path.name not in f_name:
-                        continue
-                    match = json_pattern.search(f_name)
+                    match = None
+                    if path.name in f_name:
+                        match = prefixed_pattern.search(f_name)
+                    if match is None:
+                        match = bare_pattern.match(f_name)
                     if match:
                         try:
                             frame_num = int(float(match.group(1)))
@@ -3524,31 +3632,39 @@ class AnnolidWindow(MainWindow):
         try:
             path = Path(folder_path)
             # Use a robust regex to extract frame numbers from filenames
-            json_pattern = re.compile(r'_(\d{9,})\.json$')
+            prefixed_pattern = re.compile(r'_(\d{9,})\.json$')
+            bare_pattern = re.compile(r'^(\d{9,})\.json$')
             prediction_active = bool(self.prediction_start_timestamp)
 
             # --- 1. Efficiently Scan and Parse All Relevant Frame Numbers ---
-            all_frame_nums = []
+            all_frame_nums_set: set[int] = set()
             for f_name in os.listdir(path):
                 # The check `self.video_results_folder.name in f_name` is kept for consistency
-                if f_name.endswith(".json") and self.video_results_folder.name in f_name:
-                    file_path = path / f_name
-                    if self.prediction_start_timestamp:
-                        try:
-                            if file_path.stat().st_mtime < self.prediction_start_timestamp:
-                                continue
-                        except FileNotFoundError:
+                if not f_name.endswith(".json"):
+                    continue
+                match = None
+                if self.video_results_folder.name in f_name:
+                    match = prefixed_pattern.search(f_name)
+                if match is None:
+                    match = bare_pattern.match(f_name)
+                if match is None:
+                    continue
+                file_path = path / f_name
+                if self.prediction_start_timestamp:
+                    try:
+                        if file_path.stat().st_mtime < self.prediction_start_timestamp:
                             continue
-                    match = json_pattern.search(f_name)
-                    if match:
-                        try:
-                            # Convert via float to handle cases like "123.0"
-                            frame_num = int(float(match.group(1)))
-                            all_frame_nums.append(frame_num)
-                        except (ValueError, IndexError):
-                            continue  # Skip malformed numbers
+                    except FileNotFoundError:
+                        continue
+                try:
+                    # Convert via float to handle cases like "123.0"
+                    frame_num = int(float(match.group(1)))
+                    all_frame_nums_set.add(frame_num)
+                except (ValueError, IndexError):
+                    continue  # Skip malformed numbers
 
-            if not all_frame_nums:
+            all_frame_nums: list[int] = []
+            if not all_frame_nums_set:
                 store = AnnotationStore.for_frame_path(
                     path / f"{path.name}_000000000.json")
                 if store.store_path.exists():
@@ -3559,6 +3675,8 @@ class AnnolidWindow(MainWindow):
                             if frame not in self._prediction_existing_store_frames
                         ]
                     all_frame_nums = store_frames
+            else:
+                all_frame_nums = sorted(all_frame_nums_set)
             existing_frame_set = set()
             if prediction_active:
                 existing_frame_set.update(
@@ -3570,7 +3688,6 @@ class AnnolidWindow(MainWindow):
                     existing_frame_set.difference_update(all_frame_nums)
             existing_frame_nums = sorted(existing_frame_set)
 
-            all_frame_nums.sort()
             num_total_frames = len(all_frame_nums)
 
             # --- 2. Dynamic Marker Decimation Logic ---
