@@ -52,6 +52,109 @@ from annolid.utils.logger import logger
 _AP_IOU_THRESHOLDS: Tuple[float, ...] = tuple(
     0.50 + 0.05 * i for i in range(10))
 
+_PCK_DEFAULT_THRESHOLDS: Tuple[float, ...] = (2.0, 4.0, 8.0, 16.0)
+
+
+def _normalize_metric_name(name: Optional[str]) -> str:
+    return str(name or "").strip().lower().replace(" ", "_")
+
+
+def _metric_higher_is_better(metric_name: str) -> bool:
+    name = _normalize_metric_name(metric_name)
+    if not name:
+        return False
+    if "loss" in name:
+        return False
+    return True
+
+
+def _parse_weight_list(text: Optional[str], *, n: int) -> Tuple[float, ...]:
+    raw = str(text or "").strip()
+    if not raw:
+        return tuple(1.0 for _ in range(int(n)))
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) != int(n):
+        raise ValueError(
+            f"Expected {int(n)} comma-separated floats, got {len(parts)}")
+    out: List[float] = []
+    for p in parts:
+        out.append(float(p))
+    return tuple(out)
+
+
+def _pck_from_summary(
+    pck_vals: Dict[str, object],
+    *,
+    thr_px: float,
+) -> Optional[float]:
+    key = str(float(thr_px))
+    value = pck_vals.get(key)
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def _weighted_pck(
+    pck_vals: Dict[str, object],
+    *,
+    thresholds_px: Sequence[float],
+    weights: Sequence[float],
+) -> Optional[float]:
+    if len(thresholds_px) != len(weights):
+        raise ValueError("thresholds_px and weights must have the same length")
+    num = 0.0
+    denom = 0.0
+    for thr, w in zip(thresholds_px, weights):
+        w = float(w)
+        if w <= 0:
+            continue
+        v = _pck_from_summary(pck_vals, thr_px=float(thr))
+        if v is None:
+            continue
+        num += w * float(v)
+        denom += w
+    if denom <= 0:
+        return None
+    return float(num / denom)
+
+
+def _resolve_selection_metric(
+    metric_name: str,
+    *,
+    train_loss: float,
+    val_loss: Optional[float],
+    pck_vals: Dict[str, object],
+    pck_weighted_weights: Sequence[float],
+) -> Optional[float]:
+    name = _normalize_metric_name(metric_name)
+    if name in {"val_loss", "loss/val", "val"}:
+        if val_loss is None:
+            return None
+        return float(val_loss)
+    if name in {"train_loss", "loss/train", "train"}:
+        return float(train_loss)
+    if name in {"pck@2px", "pck2", "pck_2"}:
+        return _pck_from_summary(pck_vals, thr_px=2.0)
+    if name in {"pck@4px", "pck4", "pck_4"}:
+        return _pck_from_summary(pck_vals, thr_px=4.0)
+    if name in {"pck@8px", "pck8", "pck_8"}:
+        return _pck_from_summary(pck_vals, thr_px=8.0)
+    if name in {"pck@16px", "pck16", "pck_16"}:
+        return _pck_from_summary(pck_vals, thr_px=16.0)
+    if name in {"pck_weighted", "weighted_pck"}:
+        return _weighted_pck(
+            pck_vals,
+            thresholds_px=_PCK_DEFAULT_THRESHOLDS,
+            weights=pck_weighted_weights,
+        )
+    return None
+
 
 def _average_precision(
     scores: Sequence[float],
@@ -694,6 +797,10 @@ def train(
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 0.0,
     early_stop_min_epochs: int = 0,
+    best_metric: str = "pck@8px",
+    early_stop_metric: Optional[str] = None,
+    pck_weighted_weights: Tuple[float, float,
+                                float, float] = (1.0, 1.0, 1.0, 1.0),
     tb_add_graph: bool = False,
     bce_type: str = "bce",
     focal_alpha: float = 0.25,
@@ -957,6 +1064,9 @@ def train(
             f"early_stop_patience: {int(early_stop_patience)}",
             f"early_stop_min_delta: {float(early_stop_min_delta)}",
             f"early_stop_min_epochs: {int(early_stop_min_epochs)}",
+            f"best_metric: {str(best_metric)}",
+            f"early_stop_metric: {str(early_stop_metric) if early_stop_metric is not None else ''}",
+            f"pck_weighted_weights: {','.join(str(float(w)) for w in pck_weighted_weights)}",
             f"coord_warmup_epochs: {int(coord_warmup_epochs)}",
             f"overfit_n: {int(overfit_n)}",
             f"seed: {seed}",
@@ -1033,9 +1143,36 @@ def train(
         else None
     )
 
-    best_loss = float("inf")
     best_path = weights_dir / "best.pt"
     last_path = weights_dir / "last.pt"
+
+    desired_best_metric = _normalize_metric_name(best_metric)
+    desired_early_stop_metric = _normalize_metric_name(early_stop_metric)
+    if not desired_early_stop_metric or desired_early_stop_metric in {"auto", "same", "same_as_best"}:
+        desired_early_stop_metric = desired_best_metric
+
+    best_higher_is_better = _metric_higher_is_better(desired_best_metric)
+    early_stop_higher_is_better = _metric_higher_is_better(
+        desired_early_stop_metric)
+
+    if val_loader is None:
+        if desired_best_metric not in {"train_loss", "loss/train", "train"}:
+            logger.warning(
+                "No validation split detected; overriding best_metric=%r -> train_loss",
+                desired_best_metric,
+            )
+            desired_best_metric = "train_loss"
+            best_higher_is_better = False
+        if desired_early_stop_metric not in {"train_loss", "loss/train", "train"}:
+            logger.warning(
+                "No validation split detected; overriding early_stop_metric=%r -> train_loss",
+                desired_early_stop_metric,
+            )
+            desired_early_stop_metric = "train_loss"
+            early_stop_higher_is_better = False
+
+    best_metric_value = (-float("inf")
+                         if best_higher_is_better else float("inf"))
 
     patience = max(0, int(early_stop_patience))
     min_epochs = max(0, int(early_stop_min_epochs))
@@ -1043,7 +1180,8 @@ def train(
     if min_delta < 0:
         min_delta = 0.0
     early_stop_enabled = patience > 0
-    best_metric_for_stop = float("inf")
+    best_metric_for_stop = (-float("inf")
+                            if early_stop_higher_is_better else float("inf"))
     bad_epochs = 0
 
     tb_writer = SummaryWriter(str(tb_dir))
@@ -1083,6 +1221,22 @@ def train(
         tb_writer.add_text("config/early_stop_patience", str(patience), 0)
         tb_writer.add_text("config/early_stop_min_delta", str(min_delta), 0)
         tb_writer.add_text("config/early_stop_min_epochs", str(min_epochs), 0)
+        tb_writer.add_text("config/best_metric", str(desired_best_metric), 0)
+        tb_writer.add_text(
+            "config/best_metric_mode", "max" if best_higher_is_better else "min", 0
+        )
+        tb_writer.add_text(
+            "config/pck_weighted_weights",
+            ",".join(str(float(w)) for w in pck_weighted_weights),
+            0,
+        )
+        tb_writer.add_text("config/early_stop_metric",
+                           str(desired_early_stop_metric), 0)
+        tb_writer.add_text(
+            "config/early_stop_mode",
+            "max" if early_stop_higher_is_better else "min",
+            0,
+        )
         tb_writer.add_text("config/tb_add_graph", str(bool(tb_add_graph)), 0)
         tb_writer.add_text("config/tb_projector", str(bool(tb_projector)), 0)
         tb_writer.add_text("config/tb_projector_split",
@@ -2107,6 +2261,8 @@ def train(
                 pck_vals = {}
                 if isinstance(pck_summary, dict):
                     pck_vals = pck_summary.get("pck") or {}
+                if not isinstance(pck_vals, dict):
+                    pck_vals = {}
 
                 def _pck_str(thr: float) -> str:
                     value = pck_vals.get(str(float(thr)))
@@ -2309,38 +2465,82 @@ def train(
 
                 payload = checkpoint_pack(head=head, meta=meta)
                 torch.save(payload, last_path)
-                metric = val_loss if val_loss is not None else train_loss_total
-                if metric < best_loss:
-                    best_loss = metric
+                selected_best = _resolve_selection_metric(
+                    desired_best_metric,
+                    train_loss=float(train_loss_total),
+                    val_loss=(float(val_loss)
+                              if val_loss is not None else None),
+                    pck_vals=pck_vals,
+                    pck_weighted_weights=pck_weighted_weights,
+                )
+                if selected_best is None or not math.isfinite(float(selected_best)):
+                    selected_best = float(val_loss) if val_loss is not None else float(
+                        train_loss_total
+                    )
+
+                improved_best = (
+                    float(selected_best) > float(best_metric_value)
+                    if best_higher_is_better
+                    else float(selected_best) < float(best_metric_value)
+                )
+                if improved_best:
+                    best_metric_value = float(selected_best)
                     torch.save(payload, best_path)
 
                 tb_writer.add_scalar(
-                    "checkpoint/best_metric", float(best_loss), epoch)
+                    "checkpoint/best_metric", float(best_metric_value), epoch
+                )
+                tb_writer.add_scalar(
+                    "checkpoint/current_metric", float(selected_best), epoch
+                )
 
-                if early_stop_enabled and math.isfinite(float(metric)):
-                    improved = float(metric) < (
-                        float(best_metric_for_stop) - float(min_delta))
+                metric_for_stop = _resolve_selection_metric(
+                    desired_early_stop_metric,
+                    train_loss=float(train_loss_total),
+                    val_loss=(float(val_loss)
+                              if val_loss is not None else None),
+                    pck_vals=pck_vals,
+                    pck_weighted_weights=pck_weighted_weights,
+                )
+                if metric_for_stop is None or not math.isfinite(float(metric_for_stop)):
+                    metric_for_stop = float(val_loss) if val_loss is not None else float(
+                        train_loss_total
+                    )
+
+                if early_stop_enabled and math.isfinite(float(metric_for_stop)):
+                    improved = (
+                        float(metric_for_stop)
+                        > (float(best_metric_for_stop) + float(min_delta))
+                        if early_stop_higher_is_better
+                        else float(metric_for_stop)
+                        < (float(best_metric_for_stop) - float(min_delta))
+                    )
                     if improved:
-                        best_metric_for_stop = float(metric)
+                        best_metric_for_stop = float(metric_for_stop)
                         bad_epochs = 0
                     else:
                         bad_epochs += 1
                     tb_writer.add_scalar(
-                        "early_stop/current_metric", float(metric), epoch)
+                        "early_stop/current_metric", float(
+                            metric_for_stop), epoch
+                    )
                     tb_writer.add_scalar(
-                        "early_stop/best_metric", float(best_metric_for_stop), epoch)
-                    tb_writer.add_scalar(
-                        "early_stop/bad_epochs", int(bad_epochs), epoch)
+                        "early_stop/best_metric", float(
+                            best_metric_for_stop), epoch
+                    )
+                    tb_writer.add_scalar("early_stop/bad_epochs",
+                                         int(bad_epochs), epoch)
 
                     if int(epoch) >= int(min_epochs) and int(bad_epochs) >= int(patience):
                         reason = (
                             f"Early stopping triggered at epoch {epoch}: "
-                            f"metric={float(metric):.6f} best={float(best_metric_for_stop):.6f} "
+                            f"metric({desired_early_stop_metric})={float(metric_for_stop):.6f} "
+                            f"best={float(best_metric_for_stop):.6f} "
                             f"min_delta={float(min_delta)} patience={int(patience)}"
                         )
                         logger.info(reason)
-                        tb_writer.add_text(
-                            "early_stop/stop_reason", reason, epoch)
+                        tb_writer.add_text("early_stop/stop_reason",
+                                           reason, epoch)
                         tb_writer.flush()
                         break
 
@@ -2588,6 +2788,24 @@ def main(argv: Optional[list[str]] = None) -> int:
                    help="Min metric improvement to reset patience")
     p.add_argument("--early-stop-min-epochs", type=int, default=0,
                    help="Do not early-stop before this epoch")
+    p.add_argument(
+        "--best-metric",
+        choices=("pck@8px", "pck_weighted", "val_loss", "train_loss"),
+        default="pck@8px",
+        help="Metric for best checkpoint selection (default: pck@8px).",
+    )
+    p.add_argument(
+        "--early-stop-metric",
+        choices=("auto", "pck@8px", "pck_weighted", "val_loss", "train_loss"),
+        default="auto",
+        help="Metric for early stopping (default: auto -> same as best-metric).",
+    )
+    p.add_argument(
+        "--pck-weighted-weights",
+        type=str,
+        default="1,1,1,1",
+        help="Comma-separated weights for pck_weighted over thresholds [2,4,8,16] px (default: 1,1,1,1).",
+    )
     p.add_argument("--tb-add-graph", action="store_true",
                    help="Export model graph to TensorBoard (can be slow)")
     p.add_argument(
@@ -2689,6 +2907,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         early_stop_patience=int(args.early_stop_patience),
         early_stop_min_delta=float(args.early_stop_min_delta),
         early_stop_min_epochs=int(args.early_stop_min_epochs),
+        best_metric=str(args.best_metric),
+        early_stop_metric=str(args.early_stop_metric),
+        pck_weighted_weights=_parse_weight_list(
+            args.pck_weighted_weights, n=4),
         tb_add_graph=bool(args.tb_add_graph),
         radius_schedule=str(args.radius_schedule),
         radius_start_px=(

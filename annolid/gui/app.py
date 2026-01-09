@@ -1721,8 +1721,11 @@ class AnnolidWindow(MainWindow):
         shape = item.shape()
         if shape is None:
             return
+        # Ensure flags values are booleans to satisfy LabelMe's setChecked API
+        shape_flags = shape.flags or {}
+        safe_flags = {k: bool(v) for k, v in shape_flags.items()}
         text, flags, group_id, description = self.labelDialog.popUp(
-            text=str(shape.label), flags=shape.flags,
+            text=str(shape.label), flags=safe_flags,
             group_id=shape.group_id,
             description=shape.description,
         )
@@ -3956,6 +3959,11 @@ class AnnolidWindow(MainWindow):
             dino_patience = getattr(dlg, "dino_patience", 0)
             dino_min_delta = getattr(dlg, "dino_min_delta", 0.0)
             dino_min_epochs = getattr(dlg, "dino_min_epochs", 0)
+            dino_best_metric = getattr(dlg, "dino_best_metric", "pck@8px")
+            dino_early_stop_metric = getattr(
+                dlg, "dino_early_stop_metric", "auto")
+            dino_pck_weighted_weights = getattr(
+                dlg, "dino_pck_weighted_weights", "1,1,1,1")
             dino_augment_enabled = getattr(dlg, "dino_augment_enabled", False)
             dino_hflip_prob = getattr(dlg, "dino_hflip_prob", 0.5)
             dino_degrees = getattr(dlg, "dino_degrees", 0.0)
@@ -4047,6 +4055,10 @@ class AnnolidWindow(MainWindow):
                 early_stop_patience=int(dino_patience),
                 early_stop_min_delta=float(dino_min_delta),
                 early_stop_min_epochs=int(dino_min_epochs),
+                best_metric=str(dino_best_metric or "pck@8px"),
+                early_stop_metric=str(dino_early_stop_metric or "auto"),
+                pck_weighted_weights=str(
+                    dino_pck_weighted_weights or "1,1,1,1"),
                 augment=bool(dino_augment_enabled),
                 hflip=float(dino_hflip_prob),
                 degrees=float(dino_degrees),
@@ -6522,7 +6534,8 @@ class AnnolidWindow(MainWindow):
             if self._config["display_label_popup"] or not text:
                 previous_text = self.labelDialog.edit.text()
                 text, flags, group_id, description = self.labelDialog.popUp(
-                    text)
+                    text
+                )
                 if not text:
                     self.labelDialog.edit.setText(previous_text)
             if text and not self.validateLabel(text):

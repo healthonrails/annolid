@@ -66,6 +66,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_patience = 10
         self.dino_min_delta = 0.0
         self.dino_min_epochs = 10
+        self.dino_best_metric = "pck@8px"
+        self.dino_early_stop_metric = "auto"
+        self.dino_pck_weighted_weights = "1,1,1,1"
         self.dino_augment_enabled = False
         self.dino_hflip_prob = 0.5
         self.dino_degrees = 0.0
@@ -925,6 +928,64 @@ class TrainModelDialog(QtWidgets.QDialog):
         min_epochs.valueChanged.connect(
             lambda v: setattr(self, "dino_min_epochs", int(v)))
 
+        best_metric = QtWidgets.QComboBox(box)
+        best_metric.addItem("PCK@8px (pose)", "pck@8px")
+        best_metric.addItem("Weighted PCK (2/4/8/16px)", "pck_weighted")
+        best_metric.addItem("Val loss", "val_loss")
+        best_metric.addItem("Train loss (no val)", "train_loss")
+        best_metric.setCurrentIndex(
+            max(0, best_metric.findData(
+                getattr(self, "dino_best_metric", "pck@8px")))
+        )
+        best_metric.currentIndexChanged.connect(
+            lambda _=None: (
+                setattr(
+                    self,
+                    "dino_best_metric",
+                    str(best_metric.currentData() or "pck@8px"),
+                ),
+                self._update_dino_model_selection_controls(),
+            )
+        )
+
+        early_stop_metric = QtWidgets.QComboBox(box)
+        early_stop_metric.addItem("Same as best (auto)", "auto")
+        early_stop_metric.addItem("PCK@8px (pose)", "pck@8px")
+        early_stop_metric.addItem("Weighted PCK (2/4/8/16px)", "pck_weighted")
+        early_stop_metric.addItem("Val loss", "val_loss")
+        early_stop_metric.addItem("Train loss (no val)", "train_loss")
+        early_stop_metric.setCurrentIndex(
+            max(
+                0,
+                early_stop_metric.findData(
+                    getattr(self, "dino_early_stop_metric", "auto")
+                ),
+            )
+        )
+        early_stop_metric.currentIndexChanged.connect(
+            lambda _=None: (
+                setattr(
+                    self,
+                    "dino_early_stop_metric",
+                    str(early_stop_metric.currentData() or "auto"),
+                ),
+                self._update_dino_model_selection_controls(),
+            )
+        )
+
+        pck_weights = QtWidgets.QLineEdit(box)
+        pck_weights.setPlaceholderText("1,1,1,1")
+        pck_weights.setText(
+            str(getattr(self, "dino_pck_weighted_weights", "1,1,1,1")))
+        pck_weights.textChanged.connect(
+            lambda text: setattr(
+                self, "dino_pck_weighted_weights", str(text).strip())
+        )
+
+        self._dino_best_metric_combo = best_metric
+        self._dino_early_stop_metric_combo = early_stop_metric
+        self._dino_pck_weighted_weights_edit = pck_weights
+
         form.addRow("Head type", head_type)
         form.addRow("Attn heads", attn_heads)
         form.addRow("Attn layers", attn_layers)
@@ -944,6 +1005,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("Focal gamma", focal_gamma)
         form.addRow("Coord warmup (epochs)", coord_warmup)
         form.addRow("Overfit N (debug)", overfit_n)
+        form.addRow("Best checkpoint metric", best_metric)
+        form.addRow("Early stop metric", early_stop_metric)
+        form.addRow("Weighted PCK weights", pck_weights)
         form.addRow("Early stop patience (0=off)", patience)
         form.addRow("Early stop min delta", min_delta)
         form.addRow("Early stop min epochs", min_epochs)
@@ -964,7 +1028,22 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._update_dino_projector_enabled_state()
         self._update_dino_focal_controls()
         self._update_dino_radius_schedule_controls()
+        self._update_dino_model_selection_controls()
         return box
+
+    def _update_dino_model_selection_controls(self) -> None:
+        best_combo = getattr(self, "_dino_best_metric_combo", None)
+        stop_combo = getattr(self, "_dino_early_stop_metric_combo", None)
+        weights_edit = getattr(self, "_dino_pck_weighted_weights_edit", None)
+        if best_combo is None or stop_combo is None or weights_edit is None:
+            return
+        best_val = str(best_combo.currentData() or "")
+        stop_val = str(stop_combo.currentData() or "")
+        enabled = (best_val == "pck_weighted") or (stop_val == "pck_weighted")
+        try:
+            weights_edit.setEnabled(enabled)
+        except Exception:
+            pass
 
     def _update_dino_head_controls(self) -> None:
         head_type = str(getattr(self, "dino_head_type", "conv")

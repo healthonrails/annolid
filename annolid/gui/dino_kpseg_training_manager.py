@@ -256,6 +256,9 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         early_stop_patience: int = 0,
         early_stop_min_delta: float = 0.0,
         early_stop_min_epochs: int = 0,
+        best_metric: str = "pck@8px",
+        early_stop_metric: str = "auto",
+        pck_weighted_weights: str = "1,1,1,1",
         augment: bool = False,
         hflip: float = 0.5,
         degrees: float = 0.0,
@@ -416,6 +419,12 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(float(early_stop_min_delta)),
                 "--early-stop-min-epochs",
                 str(int(early_stop_min_epochs)),
+                "--best-metric",
+                str(best_metric or "pck@8px"),
+                "--early-stop-metric",
+                str(early_stop_metric or "auto"),
+                "--pck-weighted-weights",
+                str(pck_weighted_weights or "1,1,1,1"),
             ]
             if bool(tb_add_graph):
                 cmd.append("--tb-add-graph")
