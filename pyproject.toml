@@ -61,6 +61,7 @@ dependencies = [
     'transformers>=4.45.1',
     'ultralytics>=8.3.34',
     'huggingface-hub>=0.22.0',
+    'tensorboard',   
     # Optional dependency: install SAM / SAM-HQ separately (see README.md).
 ]
 
