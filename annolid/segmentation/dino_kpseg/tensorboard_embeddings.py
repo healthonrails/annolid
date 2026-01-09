@@ -14,7 +14,10 @@ import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-from annolid.segmentation.dino_kpseg.cli_utils import normalize_device, parse_layers
+from annolid.segmentation.dino_kpseg.cli_utils import (
+    normalize_device,
+    parse_layers,
+)
 from annolid.segmentation.dino_kpseg.data import (
     DinoKPSEGAugmentConfig,
     DinoKPSEGPoseDataset,
@@ -23,6 +26,11 @@ from annolid.segmentation.dino_kpseg.data import (
 )
 from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
 from annolid.utils.runs import new_run_dir, shared_runs_root
+
+# Type alias for callables that operate on a single torch.Tensor
+TorchTensorCallable = Callable[
+    [torch.Tensor], torch.Tensor
+]
 
 
 @dataclass(frozen=True)
@@ -71,8 +79,7 @@ def add_dino_kpseg_projector_embeddings(
     sprite_border_px: int = 3,
     seed: int = 0,
     tag: str = "dino_kpseg/patch_embeddings",
-    predict_probs_patch: Optional[Callable[[
-        torch.Tensor], torch.Tensor]] = None,
+    predict_probs_patch: Optional[TorchTensorCallable] = None,
     write_csv: bool = True,
     global_step: int = 0,
 ) -> dict:
@@ -80,15 +87,17 @@ def add_dino_kpseg_projector_embeddings(
 
     Notes
     -----
-    - Uses DINO patch features (CHW) and patch-grid masks (KHW) from the dataset.
-    - Uses dataset-provided resized images to generate sprite thumbnails.
-    - If `predict_probs_patch` is provided, adds an overlay image where red=pred union.
+        - Uses DINO patch features (CHW) and patch-grid masks (KHW).
+        - Uses dataset-provided resized images to generate sprite thumbnails.
+        - If `predict_probs_patch` is provided, adds an overlay image where
+            red=pred union.
     """
     rng = random.Random(int(seed))
     np_rng = np.random.default_rng(int(seed))
     split_norm = str(split or "val").strip().lower()
 
-    patch_size = int(getattr(getattr(ds, "extractor", None), "patch_size", 16))
+    _ext = getattr(ds, "extractor", None)
+    patch_size = int(getattr(_ext, "patch_size", 16))
     crop_px = max(int(patch_size), int(crop_px))
     border_px = max(0, int(sprite_border_px))
     max_images = max(1, int(max_images))
@@ -111,11 +120,18 @@ def add_dino_kpseg_projector_embeddings(
         feats = sample.get("feats")
         masks = sample.get("masks")
         img = sample.get("image")
-        if not isinstance(feats, torch.Tensor) or not isinstance(masks, torch.Tensor) or not isinstance(img, torch.Tensor):
+        if (
+            not isinstance(feats, torch.Tensor)
+            or not isinstance(masks, torch.Tensor)
+            or not isinstance(img, torch.Tensor)
+        ):
             continue
         if feats.ndim != 3 or masks.ndim != 3 or img.ndim != 3:
             continue
-        if int(img.shape[1]) != int(masks.shape[1] * patch_size) or int(img.shape[2]) != int(masks.shape[2] * patch_size):
+        if (
+            int(img.shape[1]) != int(masks.shape[1] * patch_size)
+            or int(img.shape[2]) != int(masks.shape[2] * patch_size)
+        ):
             continue
 
         probs_patch = None
@@ -131,25 +147,41 @@ def add_dino_kpseg_projector_embeddings(
 
         union_gt = masks.max(dim=0).values.clamp(0.0, 1.0)
         union_gt_px = _upsample_patch_map(
-            union_gt.to("cpu"), patch_size=patch_size)
+            union_gt.to("cpu"), patch_size=patch_size
+        )
         overlay = _overlay_heatmap(
-            img.to("cpu"), union_gt_px, color=(0.1, 1.0, 0.1), alpha=0.35)
+            img.to("cpu"),
+            union_gt_px,
+            color=(0.1, 1.0, 0.1),
+            alpha=0.35,
+        )
         if probs_patch is not None:
             union_pred = probs_patch.max(dim=0).values.clamp(0.0, 1.0)
             union_pred_px = _upsample_patch_map(
-                union_pred.to("cpu"), patch_size=patch_size)
+                union_pred.to("cpu"), patch_size=patch_size
+            )
             overlay = _overlay_heatmap(
-                overlay, union_pred_px, color=(1.0, 0.1, 0.1), alpha=0.35)
+                overlay,
+                union_pred_px,
+                color=(1.0, 0.1, 0.1),
+                alpha=0.35,
+            )
         overlay_images.append(overlay)
 
         feats_cpu = feats.to("cpu", dtype=torch.float32)
         masks_cpu = masks.to("cpu", dtype=torch.float32)
         coords = sample.get("coords")
         coord_mask = sample.get("coord_mask")
-        coords_cpu = coords.to("cpu", dtype=torch.float32) if isinstance(
-            coords, torch.Tensor) else None
-        coord_mask_cpu = coord_mask.to("cpu", dtype=torch.float32) if isinstance(
-            coord_mask, torch.Tensor) else None
+        coords_cpu = (
+            coords.to("cpu", dtype=torch.float32)
+            if isinstance(coords, torch.Tensor)
+            else None
+        )
+        coord_mask_cpu = (
+            coord_mask.to("cpu", dtype=torch.float32)
+            if isinstance(coord_mask, torch.Tensor)
+            else None
+        )
 
         kpt_count = int(masks_cpu.shape[0])
         for k in range(kpt_count):
@@ -162,7 +194,8 @@ def add_dino_kpseg_projector_embeddings(
                 continue
             scores = pos[pos_idxs[:, 0], pos_idxs[:, 1]]
             chosen = _select_indices(
-                scores, max_count=per_img_per_kpt, rng=rng)
+                scores, max_count=per_img_per_kpt, rng=rng
+            )
             color = _hsv_color(k, total=kpt_count)
             kpt_name = str(keypoint_names[k]) if k < len(
                 keypoint_names) else f"kpt_{k}"
@@ -181,8 +214,9 @@ def add_dino_kpseg_projector_embeddings(
                 cy = (float(rr) + 0.5) * float(patch_size)
                 x0 = int(math.floor(cx - float(crop_px) / 2.0))
                 y0 = int(math.floor(cy - float(crop_px) / 2.0))
-                thumb = _pad_crop(img.to("cpu"), y0=y0,
-                                  x0=x0, h=crop_px, w=crop_px)
+                thumb = _pad_crop(
+                    img.to("cpu"), y0=y0, x0=x0, h=crop_px, w=crop_px
+                )
                 thumb = _draw_border(thumb, color=color, px=border_px)
                 thumbs.append(thumb)
 
@@ -196,7 +230,10 @@ def add_dino_kpseg_projector_embeddings(
 
                 pred_value = ""
                 pred_hit = ""
-                if probs_patch is not None and int(k) < int(probs_patch.shape[0]):
+                if (
+                    probs_patch is not None
+                    and int(k) < int(probs_patch.shape[0])
+                ):
                     pred_v = float(probs_patch[int(k), rr, cc].item())
                     pred_value = f"{pred_v:.4f}"
                     pred_hit = "1" if pred_v >= float(pos_threshold) else "0"
@@ -218,63 +255,71 @@ def add_dino_kpseg_projector_embeddings(
                     row.extend([pred_value, pred_hit])
                 metadata_rows.append(row)
 
-        if add_negatives and len(embed_rows) < max_patches:
-            union = masks_cpu.max(dim=0).values.numpy()
-            neg_idxs = np.argwhere(union <= float(neg_threshold))
-            if neg_idxs.size > 0:
-                pick_n = min(int(negatives_per_image), int(
-                    neg_idxs.shape[0]), max_patches - len(embed_rows))
-                chosen_rows = np_rng.choice(
-                    int(neg_idxs.shape[0]), size=pick_n, replace=False).tolist()
-                for j in chosen_rows:
-                    if len(embed_rows) >= max_patches:
-                        break
-                    rr = int(neg_idxs[j, 0])
-                    cc = int(neg_idxs[j, 1])
-                    vec = feats_cpu[:, rr, cc].contiguous()
-                    embed_rows.append(vec)
-                    cx = (float(cc) + 0.5) * float(patch_size)
-                    cy = (float(rr) + 0.5) * float(patch_size)
-                    x0 = int(math.floor(cx - float(crop_px) / 2.0))
-                    y0 = int(math.floor(cy - float(crop_px) / 2.0))
-                    thumb = _pad_crop(img.to("cpu"), y0=y0,
-                                      x0=x0, h=crop_px, w=crop_px)
-                    thumbs.append(_draw_border(
-                        thumb, color=(0.4, 0.4, 0.4), px=border_px))
-                    image_path = ds.image_paths[int(ds_idx)]
-                    pred_value = ""
-                    pred_hit = ""
-                    if probs_patch is not None:
-                        union_pred = probs_patch.max(dim=0).values
-                        pred_v = float(union_pred[int(rr), int(cc)].item())
-                        pred_value = f"{pred_v:.4f}"
-                        pred_hit = "1" if pred_v >= float(
-                            pos_threshold) else "0"
-                    row = [
-                        split_norm,
-                        str(image_path),
-                        "-1",
-                        "background",
-                        "0.0",
-                        str(int(rr)),
-                        str(int(cc)),
-                        f"{float(cx):.2f}",
-                        f"{float(cy):.2f}",
-                        "",
-                        "",
-                    ]
-                    if predict_probs_patch is not None:
-                        row.extend([pred_value, pred_hit])
-                    metadata_rows.append(row)
+    if add_negatives and len(embed_rows) < max_patches:
+        union = masks_cpu.max(dim=0).values.numpy()
+        neg_idxs = np.argwhere(union <= float(neg_threshold))
+        if neg_idxs.size > 0:
+            pick_n = min(
+                int(negatives_per_image), int(neg_idxs.shape[0]),
+                max_patches - len(embed_rows)
+            )
+            chosen_rows = np_rng.choice(
+                int(neg_idxs.shape[0]), size=pick_n, replace=False
+            ).tolist()
+            for j in chosen_rows:
+                if len(embed_rows) >= max_patches:
+                    break
+                rr = int(neg_idxs[j, 0])
+                cc = int(neg_idxs[j, 1])
+                vec = feats_cpu[:, rr, cc].contiguous()
+                embed_rows.append(vec)
+                cx = (float(cc) + 0.5) * float(patch_size)
+                cy = (float(rr) + 0.5) * float(patch_size)
+                x0 = int(math.floor(cx - float(crop_px) / 2.0))
+                y0 = int(math.floor(cy - float(crop_px) / 2.0))
+                thumb = _pad_crop(
+                    img.to("cpu"), y0=y0, x0=x0, h=crop_px, w=crop_px
+                )
+                thumbs.append(
+                    _draw_border(thumb, color=(0.4, 0.4, 0.4), px=border_px)
+                )
+                image_path = ds.image_paths[int(ds_idx)]
+                pred_value = ""
+                pred_hit = ""
+                if probs_patch is not None:
+                    union_pred = probs_patch.max(dim=0).values
+                    pred_v = float(union_pred[int(rr), int(cc)].item())
+                    pred_value = f"{pred_v:.4f}"
+                    pred_hit = "1" if pred_v >= float(pos_threshold) else "0"
+                row = [
+                    split_norm,
+                    str(image_path),
+                    "-1",
+                    "background",
+                    "0.0",
+                    str(int(rr)),
+                    str(int(cc)),
+                    f"{float(cx):.2f}",
+                    f"{float(cy):.2f}",
+                    "",
+                    "",
+                ]
+                if predict_probs_patch is not None:
+                    row.extend([pred_value, pred_hit])
+                metadata_rows.append(row)
 
     if not embed_rows:
         raise RuntimeError(
-            "No patch embeddings collected. Try lowering pos_threshold or increasing max_images."
+            "No patch embeddings collected. Try lowering "
+            "pos_threshold or increasing max_images."
         )
 
-    embeddings = torch.stack(embed_rows, dim=0).to("cpu", dtype=torch.float32)
+    embeddings = torch.stack(embed_rows, dim=0).to(
+        "cpu", dtype=torch.float32
+    )
     label_img = torch.stack(thumbs, dim=0).to(
-        "cpu", dtype=torch.float32).clamp(0.0, 1.0)
+        "cpu", dtype=torch.float32
+    ).clamp(0.0, 1.0)
 
     md_header = [
         "split",
@@ -302,10 +347,12 @@ def add_dino_kpseg_projector_embeddings(
 
     if overlay_images:
         grid = torch.stack(
-            overlay_images[: min(16, len(overlay_images))], dim=0)
+            overlay_images[: min(16, len(overlay_images))], dim=0
+        )
         tb_writer.add_images(
-            f"dino_kpseg/overlays/{split_norm}/gt_green_pred_red", grid, int(
-                global_step)
+            f"dino_kpseg/overlays/{split_norm}/gt_green_pred_red",
+            grid,
+            int(global_step),
         )
         if predict_probs_patch is None:
             tb_writer.add_text(
@@ -322,8 +369,10 @@ def add_dino_kpseg_projector_embeddings(
 
     if write_csv:
         log_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = Path(log_dir) / \
-            f"dino_kpseg_patch_embeddings_metadata_{split_norm}.csv"
+        csv_path = (
+            Path(log_dir)
+            / f"dino_kpseg_patch_embeddings_metadata_{split_norm}.csv"
+        )
         with csv_path.open("w", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh)
             w.writerow(md_header)
@@ -362,7 +411,14 @@ def _hsv_color(index: int, *, total: int) -> Tuple[float, float, float]:
     return v, p, q
 
 
-def _pad_crop(img: torch.Tensor, *, y0: int, x0: int, h: int, w: int) -> torch.Tensor:
+def _pad_crop(
+    img: torch.Tensor,
+    *,
+    y0: int,
+    x0: int,
+    h: int,
+    w: int,
+) -> torch.Tensor:
     if img.ndim != 3:
         raise ValueError("Expected CHW image tensor")
     _, H, W = int(img.shape[0]), int(img.shape[1]), int(img.shape[2])
@@ -381,14 +437,22 @@ def _pad_crop(img: torch.Tensor, *, y0: int, x0: int, h: int, w: int) -> torch.T
     pad_bottom = max(0, int(y1) - int(H))
 
     if pad_left or pad_right or pad_top or pad_bottom:
-        crop = F.pad(crop, (pad_left, pad_right,
-                     pad_top, pad_bottom), value=0.0)
+        crop = F.pad(
+            crop,
+            (pad_left, pad_right, pad_top, pad_bottom),
+            value=0.0,
+        )
     if int(crop.shape[1]) != int(h) or int(crop.shape[2]) != int(w):
         crop = crop[:, : int(h), : int(w)]
     return crop
 
 
-def _draw_border(img: torch.Tensor, *, color: Tuple[float, float, float], px: int) -> torch.Tensor:
+def _draw_border(
+    img: torch.Tensor,
+    *,
+    color: Tuple[float, float, float],
+    px: int,
+) -> torch.Tensor:
     if px <= 0:
         return img
     if img.ndim != 3 or int(img.shape[0]) != 3:
@@ -425,7 +489,10 @@ def _overlay_heatmap(
     if heat.ndim != 2:
         raise ValueError("Expected HW heatmap")
     heat = heat.clamp(0.0, 1.0)
-    if int(heat.shape[0]) != int(img.shape[1]) or int(heat.shape[1]) != int(img.shape[2]):
+    if (
+        int(heat.shape[0]) != int(img.shape[1])
+        or int(heat.shape[1]) != int(img.shape[2])
+    ):
         heat = F.interpolate(
             heat[None, None, :, :],
             size=(int(img.shape[1]), int(img.shape[2])),
@@ -433,17 +500,28 @@ def _overlay_heatmap(
             align_corners=False,
         )[0, 0]
         heat = heat.clamp(0.0, 1.0)
-    col = torch.tensor(color, dtype=img.dtype, device=img.device).view(3, 1, 1)
-    return (img * (1.0 - alpha * heat[None, :, :]) + col * (alpha * heat[None, :, :])).clamp(0.0, 1.0)
+    col = torch.tensor(
+        color, dtype=img.dtype, device=img.device
+    ).view(3, 1, 1)
+    alpha_heat = alpha * heat[None, :, :]
+    blended = img * (1.0 - alpha_heat) + col * alpha_heat
+    return blended.clamp(0.0, 1.0)
 
 
-def _upsample_patch_map(patch_map: torch.Tensor, *, patch_size: int) -> torch.Tensor:
+def _upsample_patch_map(
+    patch_map: torch.Tensor,
+    *,
+    patch_size: int,
+) -> torch.Tensor:
     if patch_map.ndim != 2:
         raise ValueError("Expected patch HW map")
     h_p, w_p = int(patch_map.shape[0]), int(patch_map.shape[1])
-    out = patch_map.repeat_interleave(
-        int(patch_size), dim=0).repeat_interleave(int(patch_size), dim=1)
-    if int(out.shape[0]) != int(h_p * patch_size) or int(out.shape[1]) != int(w_p * patch_size):
+    out = patch_map.repeat_interleave(int(patch_size), dim=0)
+    out = out.repeat_interleave(int(patch_size), dim=1)
+    if (
+        int(out.shape[0]) != int(h_p * patch_size)
+        or int(out.shape[1]) != int(w_p * patch_size)
+    ):
         out = out[: int(h_p * patch_size), : int(w_p * patch_size)]
     return out
 
@@ -457,7 +535,8 @@ def _select_indices(
     if scores.size == 0 or max_count <= 0:
         return []
     idxs = np.arange(scores.size)
-    # Favor strong positives but keep diversity: weighted sample without replacement.
+    # Favor strong positives but keep diversity.
+    # Use a weighted sample without replacement.
     weights = scores.astype(np.float64, copy=False)
     weights = np.clip(weights, 0.0, None)
     if float(weights.sum()) <= 0.0:
@@ -482,7 +561,9 @@ def _select_indices(
     return chosen
 
 
-def write_dino_kpseg_tensorboard_embeddings(cfg: DinoKPSEGTensorBoardEmbeddingConfig) -> Path:
+def write_dino_kpseg_tensorboard_embeddings(
+    cfg: DinoKPSEGTensorBoardEmbeddingConfig,
+) -> Path:
     spec = load_yolo_pose_spec(Path(cfg.data_yaml))
     split = str(cfg.split or "val").strip().lower()
     if split not in {"train", "val"}:
@@ -500,7 +581,9 @@ def write_dino_kpseg_tensorboard_embeddings(cfg: DinoKPSEGTensorBoardEmbeddingCo
     layers = tuple(int(x) for x in cfg.layers)
     if cfg.weights is not None:
         payload = torch.load(
-            Path(cfg.weights).expanduser().resolve(), map_location="cpu")
+            Path(cfg.weights).expanduser().resolve(),
+            map_location="cpu",
+        )
         head, meta = checkpoint_unpack(payload)
         model_name = str(meta.model_name)
         short_side = int(meta.short_side)
@@ -515,10 +598,17 @@ def write_dino_kpseg_tensorboard_embeddings(cfg: DinoKPSEGTensorBoardEmbeddingCo
 
     cache_dir = None
     if bool(cfg.cache_features):
-        cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
+        cache_root = (
+            Path.home()
+            / ".cache"
+            / "annolid"
+            / "dinokpseg"
+            / "features"
+        )
         cache_fingerprint = f"{model_name}|{short_side}|{layers}"
         digest = hashlib.sha1(
-            cache_fingerprint.encode("utf-8")).hexdigest()[:12]
+            cache_fingerprint.encode("utf-8")
+        ).hexdigest()[:12]
         cache_dir = cache_root / digest
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -553,6 +643,7 @@ def write_dino_kpseg_tensorboard_embeddings(cfg: DinoKPSEGTensorBoardEmbeddingCo
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(str(cfg.log_dir))
     try:
+        patch_size = int(getattr(extractor, "patch_size", 16))
         writer.add_text("dino_kpseg/data_yaml", str(cfg.data_yaml), 0)
         writer.add_text("dino_kpseg/split", str(split), 0)
         writer.add_text("dino_kpseg/model_name", str(model_name), 0)
@@ -565,8 +656,10 @@ def write_dino_kpseg_tensorboard_embeddings(cfg: DinoKPSEGTensorBoardEmbeddingCo
         if head is not None:
             def _predict_probs(feats: torch.Tensor) -> torch.Tensor:
                 with torch.inference_mode():
-                    logits = head(feats.unsqueeze(0).to(device_str, dtype=torch.float32))[
-                        0].detach().to("cpu")
+                    x = feats.unsqueeze(0).to(
+                        device_str, dtype=torch.float32
+                    )
+                    logits = head(x)[0].detach().to("cpu")
                     return torch.sigmoid(logits).clamp(0.0, 1.0)
 
             predict_fn = _predict_probs
@@ -603,21 +696,47 @@ def write_dino_kpseg_tensorboard_embeddings(cfg: DinoKPSEGTensorBoardEmbeddingCo
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="TensorBoard projector visualization for DinoKPSEG (DINOv3 patch embeddings).",
+        description=(
+            "TensorBoard projector visualization for DinoKPSEG "
+            "(DINOv3 patch embeddings)."
+        ),
     )
     p.add_argument("--data", required=True, help="Path to YOLO pose data.yaml")
     p.add_argument("--split", choices=("train", "val"), default="val")
-    p.add_argument("--weights", default=None,
-                   help="Optional DinoKPSEG checkpoint (.pt); enables pred overlays and keypoint names.")
+    p.add_argument(
+        "--weights",
+        default=None,
+        help=(
+            "Optional DinoKPSEG checkpoint (.pt); enables pred overlays "
+            "and keypoint names."
+        ),
+    )
     p.add_argument(
         "--model-name",
         default="facebook/dinov3-vits16-pretrain-lvd1689m",
-        help="Hugging Face model id or dinov3 alias (ignored when --weights is set).",
+        help=(
+            "Hugging Face model id or dinov3 alias "
+            "(ignored when --weights is set)."
+        ),
     )
-    p.add_argument("--short-side", type=int, default=768,
-                   help="Resize short side before patch snapping (ignored when --weights is set).")
-    p.add_argument("--layers", type=str, default="-1",
-                   help="Comma-separated transformer block indices (ignored when --weights is set).")
+    p.add_argument(
+        "--short-side",
+        type=int,
+        default=768,
+        help=(
+            "Resize short side before patch snapping "
+            "(ignored when --weights is set)."
+        ),
+    )
+    p.add_argument(
+        "--layers",
+        type=str,
+        default="-1",
+        help=(
+            "Comma-separated transformer block indices "
+            "(ignored when --weights is set)."
+        ),
+    )
     p.add_argument("--device", default=None,
                    help="cuda|mps|cpu (default: auto)")
     p.add_argument("--radius-px", type=float, default=6.0)
