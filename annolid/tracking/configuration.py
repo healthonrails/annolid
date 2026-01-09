@@ -130,6 +130,17 @@ class CutieDinoTrackerConfig:
     kpseg_use_mask_gate: bool = True
     kpseg_fallback_to_track: bool = True
     kpseg_max_jump_px: float = 0.0
+    kpseg_fallback_mode: str = "per_keypoint"  # per_keypoint|instance
+    kpseg_fallback_ratio: float = 0.5
+    kpseg_smoothing: str = "none"  # none|ema|one_euro|kalman
+    kpseg_smoothing_alpha: float = 0.7
+    kpseg_smoothing_min_score: float = 0.25
+    kpseg_smoothing_fps: Optional[float] = None
+    kpseg_one_euro_min_cutoff: float = 1.0
+    kpseg_one_euro_beta: float = 0.0
+    kpseg_one_euro_d_cutoff: float = 1.0
+    kpseg_kalman_process_noise: float = 1e-2
+    kpseg_kalman_measurement_noise: float = 1e-1
     progress_hook: Optional[ProgressHook] = None
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None
@@ -202,6 +213,40 @@ class CutieDinoTrackerConfig:
         self.kpseg_use_mask_gate = bool(self.kpseg_use_mask_gate)
         self.kpseg_fallback_to_track = bool(self.kpseg_fallback_to_track)
         self.kpseg_max_jump_px = max(0.0, float(self.kpseg_max_jump_px))
+        fallback_mode = str(
+            self.kpseg_fallback_mode or "per_keypoint").strip().lower()
+        if fallback_mode not in ("per_keypoint", "instance"):
+            fallback_mode = "per_keypoint"
+        self.kpseg_fallback_mode = fallback_mode
+        self.kpseg_fallback_ratio = float(
+            min(1.0, max(0.0, float(self.kpseg_fallback_ratio)))
+        )
+        smoothing = str(self.kpseg_smoothing or "none").strip().lower()
+        if smoothing not in ("none", "ema", "one_euro", "kalman"):
+            smoothing = "none"
+        self.kpseg_smoothing = smoothing
+        self.kpseg_smoothing_alpha = float(
+            min(1.0, max(0.0, float(self.kpseg_smoothing_alpha)))
+        )
+        self.kpseg_smoothing_min_score = max(
+            0.0, float(self.kpseg_smoothing_min_score)
+        )
+        if self.kpseg_smoothing_fps is not None:
+            self.kpseg_smoothing_fps = max(
+                1e-3, float(self.kpseg_smoothing_fps)
+            )
+        self.kpseg_one_euro_min_cutoff = max(
+            1e-6, float(self.kpseg_one_euro_min_cutoff)
+        )
+        self.kpseg_one_euro_d_cutoff = max(
+            1e-6, float(self.kpseg_one_euro_d_cutoff)
+        )
+        self.kpseg_kalman_process_noise = max(
+            1e-8, float(self.kpseg_kalman_process_noise)
+        )
+        self.kpseg_kalman_measurement_noise = max(
+            1e-8, float(self.kpseg_kalman_measurement_noise)
+        )
         self.part_shared_weight = max(
             0.0, min(1.0, float(self.part_shared_weight)))
         self.part_shared_momentum = max(

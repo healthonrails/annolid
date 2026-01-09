@@ -81,7 +81,8 @@ def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
 
     source_dir = Path(args.source_dir).expanduser().resolve()
     labeled_data = Path(args.labeled_data)
-    labeled_data = labeled_data if labeled_data.is_absolute() else (source_dir / labeled_data)
+    labeled_data = labeled_data if labeled_data.is_absolute() else (source_dir /
+                                                                    labeled_data)
 
     summary = import_deeplabcut_training_data(
         DeepLabCutTrainingImportConfig(
@@ -92,7 +93,8 @@ def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
             recursive=not bool(args.no_recursive),
         ),
         write_pose_schema=bool(args.write_pose_schema),
-        pose_schema_out=Path(args.pose_schema_out) if args.pose_schema_out else None,
+        pose_schema_out=Path(
+            args.pose_schema_out) if args.pose_schema_out else None,
         pose_schema_preset=str(args.pose_schema_preset),
         instance_separator=str(args.instance_separator or "_"),
     )
@@ -111,6 +113,109 @@ def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
         summary["index_file"] = str(index_file)
         summary["index_summary"] = index_summary
 
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_dino_kpseg_embeddings(args: argparse.Namespace) -> int:
+    from annolid.segmentation.dino_kpseg.tensorboard_embeddings import main as tb_main
+
+    argv: list[str] = []
+    argv.extend(["--data", str(args.data)])
+    argv.extend(["--split", str(args.split)])
+    if args.weights:
+        argv.extend(["--weights", str(args.weights)])
+    if args.model_name:
+        argv.extend(["--model-name", str(args.model_name)])
+    if args.short_side is not None:
+        argv.extend(["--short-side", str(int(args.short_side))])
+    if args.layers:
+        argv.extend(["--layers", str(args.layers)])
+    if args.device:
+        argv.extend(["--device", str(args.device)])
+    argv.extend(["--radius-px", str(float(args.radius_px))])
+    argv.extend(["--mask-type", str(args.mask_type)])
+    if args.heatmap_sigma is not None:
+        argv.extend(["--heatmap-sigma", str(float(args.heatmap_sigma))])
+    argv.extend(["--instance-mode", str(args.instance_mode)])
+    argv.extend(["--bbox-scale", str(float(args.bbox_scale))])
+    if bool(args.no_cache):
+        argv.append("--no-cache")
+    argv.extend(["--max-images", str(int(args.max_images))])
+    argv.extend(["--max-patches", str(int(args.max_patches))])
+    argv.extend(["--per-image-per-keypoint",
+                str(int(args.per_image_per_keypoint))])
+    argv.extend(["--pos-threshold", str(float(args.pos_threshold))])
+    if bool(args.add_negatives):
+        argv.append("--add-negatives")
+    argv.extend(["--neg-threshold", str(float(args.neg_threshold))])
+    argv.extend(["--negatives-per-image", str(int(args.negatives_per_image))])
+    argv.extend(["--crop-px", str(int(args.crop_px))])
+    argv.extend(["--sprite-border-px", str(int(args.sprite_border_px))])
+    argv.extend(["--seed", str(int(args.seed))])
+    if args.output:
+        argv.extend(["--output", str(args.output)])
+    if args.runs_root:
+        argv.extend(["--runs-root", str(args.runs_root)])
+    if args.run_name:
+        argv.extend(["--run-name", str(args.run_name)])
+    return int(tb_main(argv))
+
+
+def _cmd_dino_kpseg_audit(args: argparse.Namespace) -> int:
+    from annolid.segmentation.dino_kpseg.dataset_tools import audit_yolo_pose_dataset
+
+    report = audit_yolo_pose_dataset(
+        Path(args.data).expanduser().resolve(),
+        split=str(args.split),
+        max_images=(int(args.max_images)
+                    if args.max_images is not None else None),
+        seed=int(args.seed),
+        instance_mode=str(args.instance_mode),
+        bbox_scale=float(args.bbox_scale),
+    )
+    if args.out:
+        out_path = Path(args.out).expanduser().resolve()
+        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    else:
+        print(json.dumps(report, indent=2))
+    return 0
+
+
+def _cmd_dino_kpseg_split(args: argparse.Namespace) -> int:
+    from annolid.segmentation.dino_kpseg.dataset_tools import stratified_split
+
+    summary = stratified_split(
+        Path(args.data).expanduser().resolve(),
+        output_dir=Path(args.output),
+        val_size=float(args.val_size),
+        seed=int(args.seed),
+        group_by=str(args.group_by),
+        group_regex=str(args.group_regex) if args.group_regex else None,
+        include_val=bool(args.include_val),
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_dino_kpseg_precompute(args: argparse.Namespace) -> int:
+    from annolid.segmentation.dino_kpseg.dataset_tools import precompute_features
+    from annolid.segmentation.dino_kpseg.cli_utils import parse_layers
+
+    layers = parse_layers(str(args.layers))
+    summary = precompute_features(
+        data_yaml=Path(args.data).expanduser().resolve(),
+        model_name=str(args.model_name),
+        short_side=int(args.short_side),
+        layers=layers,
+        device=(str(args.device).strip() if args.device else None),
+        split=str(args.split),
+        instance_mode=str(args.instance_mode),
+        bbox_scale=float(args.bbox_scale),
+        cache_dir=(Path(args.cache_dir).expanduser().resolve()
+                   if args.cache_dir else None),
+        cache_dtype=str(args.cache_dtype),
+    )
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -234,6 +339,99 @@ def _build_root_parser() -> argparse.ArgumentParser:
                        action="store_false", help="Skip writing annolid_dataset.jsonl")
     imp_p.set_defaults(
         write_index=True, _handler=_cmd_import_deeplabcut_training_data)
+
+    tb_p = sub.add_parser(
+        "dino-kpseg-embeddings",
+        help="Write TensorBoard projector embeddings for DinoKPSEG (DINOv3 patch features).",
+    )
+    tb_p.add_argument("--data", required=True,
+                      help="Path to YOLO pose data.yaml")
+    tb_p.add_argument("--split", choices=("train", "val"), default="val")
+    tb_p.add_argument("--weights", default=None,
+                      help="Optional DinoKPSEG checkpoint (.pt); enables pred overlays and keypoint names.")
+    tb_p.add_argument(
+        "--model-name", default="facebook/dinov3-vits16-pretrain-lvd1689m")
+    tb_p.add_argument("--short-side", type=int, default=768)
+    tb_p.add_argument("--layers", type=str, default="-1")
+    tb_p.add_argument("--device", default=None)
+    tb_p.add_argument("--radius-px", type=float, default=6.0)
+    tb_p.add_argument("--mask-type", choices=("disk",
+                      "gaussian"), default="gaussian")
+    tb_p.add_argument("--heatmap-sigma", type=float, default=None)
+    tb_p.add_argument("--instance-mode", choices=("union",
+                      "per_instance"), default="union")
+    tb_p.add_argument("--bbox-scale", type=float, default=1.25)
+    tb_p.add_argument("--no-cache", action="store_true")
+    tb_p.add_argument("--max-images", type=int, default=64)
+    tb_p.add_argument("--max-patches", type=int, default=4000)
+    tb_p.add_argument("--per-image-per-keypoint", type=int, default=3)
+    tb_p.add_argument("--pos-threshold", type=float, default=0.35)
+    tb_p.add_argument("--add-negatives", action="store_true")
+    tb_p.add_argument("--neg-threshold", type=float, default=0.02)
+    tb_p.add_argument("--negatives-per-image", type=int, default=6)
+    tb_p.add_argument("--crop-px", type=int, default=96)
+    tb_p.add_argument("--sprite-border-px", type=int, default=3)
+    tb_p.add_argument("--seed", type=int, default=0)
+    tb_p.add_argument("--output", default=None,
+                      help="Run output directory (optional)")
+    tb_p.add_argument("--runs-root", default=None,
+                      help="Runs root (optional)")
+    tb_p.add_argument("--run-name", default=None,
+                      help="Optional run name (default: timestamp)")
+    tb_p.set_defaults(_handler=_cmd_dino_kpseg_embeddings)
+
+    audit_p = sub.add_parser(
+        "dino-kpseg-audit",
+        help="Audit a YOLO pose dataset for DinoKPSEG and emit a report.",
+    )
+    audit_p.add_argument("--data", required=True,
+                         help="Path to YOLO pose data.yaml")
+    audit_p.add_argument(
+        "--split", choices=("train", "val", "both"), default="both")
+    audit_p.add_argument("--max-images", type=int, default=None)
+    audit_p.add_argument("--seed", type=int, default=0)
+    audit_p.add_argument("--instance-mode", choices=("union", "per_instance"),
+                         default="union")
+    audit_p.add_argument("--bbox-scale", type=float, default=1.25)
+    audit_p.add_argument("--out", default=None,
+                         help="Optional output JSON path")
+    audit_p.set_defaults(_handler=_cmd_dino_kpseg_audit)
+
+    split_p = sub.add_parser(
+        "dino-kpseg-split",
+        help="Create a stratified train/val split for a YOLO pose dataset.",
+    )
+    split_p.add_argument("--data", required=True,
+                         help="Path to YOLO pose data.yaml")
+    split_p.add_argument("--output", required=True,
+                         help="Output directory for split lists")
+    split_p.add_argument("--val-size", type=float, default=0.1)
+    split_p.add_argument("--seed", type=int, default=0)
+    split_p.add_argument("--group-by", choices=("parent",
+                         "grandparent", "stem_prefix", "regex"), default="parent")
+    split_p.add_argument("--group-regex", default=None)
+    split_p.add_argument("--include-val", action="store_true")
+    split_p.set_defaults(_handler=_cmd_dino_kpseg_split)
+
+    pre_p = sub.add_parser(
+        "dino-kpseg-precompute",
+        help="Precompute and cache DINOv3 features for a DinoKPSEG dataset.",
+    )
+    pre_p.add_argument("--data", required=True,
+                       help="Path to YOLO pose data.yaml")
+    pre_p.add_argument("--model-name", required=True)
+    pre_p.add_argument("--short-side", type=int, default=768)
+    pre_p.add_argument("--layers", type=str, default="-1")
+    pre_p.add_argument("--device", default=None)
+    pre_p.add_argument("--split", choices=("train",
+                       "val", "both"), default="both")
+    pre_p.add_argument("--instance-mode", choices=("union",
+                       "per_instance"), default="union")
+    pre_p.add_argument("--bbox-scale", type=float, default=1.25)
+    pre_p.add_argument("--cache-dir", default=None)
+    pre_p.add_argument("--cache-dtype", choices=("float16",
+                       "float32"), default="float16")
+    pre_p.set_defaults(_handler=_cmd_dino_kpseg_precompute)
 
     train_p = sub.add_parser("train", help="Train a model.")
     train_p.add_argument("model", help="Model plugin name (see list-models).")

@@ -114,6 +114,36 @@ class DinoKPSEGPlugin(ModelPluginBase):
             default="smooth_l1",
             help="Coordinate regression loss type.",
         )
+        parser.add_argument(
+            "--bce-type",
+            choices=("bce", "focal"),
+            default="bce",
+            help="Loss type for mask supervision (default: bce).",
+        )
+        parser.add_argument("--focal-alpha", type=float,
+                            default=0.25, help="Alpha for focal BCE.")
+        parser.add_argument("--focal-gamma", type=float,
+                            default=2.0, help="Gamma for focal BCE.")
+        parser.add_argument(
+            "--coord-warmup-epochs",
+            type=int,
+            default=0,
+            help="Warm up coordinate loss over N epochs (0=off).",
+        )
+        parser.add_argument(
+            "--radius-schedule",
+            choices=("none", "linear"),
+            default="none",
+            help="Schedule radius_px across epochs (default: none).",
+        )
+        parser.add_argument("--radius-start-px", type=float, default=None)
+        parser.add_argument("--radius-end-px", type=float, default=None)
+        parser.add_argument(
+            "--overfit-n",
+            type=int,
+            default=0,
+            help="Overfit mode: train/val on N images (0=off).",
+        )
         parser.add_argument("--early-stop-patience", type=int,
                             default=0, help="Early stop patience (0=off)")
         parser.add_argument("--early-stop-min-delta", type=float,
@@ -122,6 +152,33 @@ class DinoKPSEGPlugin(ModelPluginBase):
                             default=0, help="Do not early-stop before this epoch")
         parser.add_argument("--tb-add-graph", action="store_true",
                             help="Export model graph to TensorBoard (can be slow)")
+        parser.add_argument(
+            "--tb-projector",
+            action="store_true",
+            help="Write a TensorBoard Projector embedding view for DinoKPSEG patch features.",
+        )
+        parser.add_argument(
+            "--tb-projector-split",
+            choices=("train", "val", "both"),
+            default="val",
+            help="Which dataset split(s) to sample for the projector (default: val).",
+        )
+        parser.add_argument("--tb-projector-max-images", type=int, default=64)
+        parser.add_argument("--tb-projector-max-patches",
+                            type=int, default=4000)
+        parser.add_argument(
+            "--tb-projector-per-image-per-keypoint", type=int, default=3)
+        parser.add_argument("--tb-projector-pos-threshold",
+                            type=float, default=0.35)
+        parser.add_argument("--tb-projector-crop-px", type=int, default=96)
+        parser.add_argument(
+            "--tb-projector-sprite-border-px", type=int, default=3)
+        parser.add_argument("--tb-projector-add-negatives",
+                            action="store_true")
+        parser.add_argument("--tb-projector-neg-threshold",
+                            type=float, default=0.02)
+        parser.add_argument(
+            "--tb-projector-negatives-per-image", type=int, default=6)
         parser.add_argument("--augment", action="store_true",
                             help="Enable YOLO-like pose augmentations")
         parser.add_argument("--hflip", type=float, default=0.5,
@@ -139,7 +196,7 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--saturation", type=float,
                             default=0.0, help="Saturation jitter (+/-)")
         parser.add_argument("--seed", type=int, default=None,
-                            help="Optional augmentation RNG seed")
+                            help="Optional RNG seed (also used for augmentations)")
 
     def train(self, args: argparse.Namespace) -> int:
         from annolid.segmentation.dino_kpseg.train import train as train_kpseg
@@ -185,10 +242,47 @@ class DinoKPSEGPlugin(ModelPluginBase):
             dice_loss_weight=float(args.dice_loss_weight),
             coord_loss_weight=float(args.coord_loss_weight),
             coord_loss_type=str(args.coord_loss_type),
+            bce_type=str(getattr(args, "bce_type", "bce")),
+            focal_alpha=float(getattr(args, "focal_alpha", 0.25)),
+            focal_gamma=float(getattr(args, "focal_gamma", 2.0)),
+            coord_warmup_epochs=int(getattr(args, "coord_warmup_epochs", 0)),
+            radius_schedule=str(getattr(args, "radius_schedule", "none")),
+            radius_start_px=(
+                float(getattr(args, "radius_start_px", 0.0))
+                if getattr(args, "radius_start_px", None) is not None
+                else None
+            ),
+            radius_end_px=(
+                float(getattr(args, "radius_end_px", 0.0))
+                if getattr(args, "radius_end_px", None) is not None
+                else None
+            ),
+            overfit_n=int(getattr(args, "overfit_n", 0)),
+            seed=(int(args.seed) if args.seed is not None else None),
             early_stop_patience=int(args.early_stop_patience),
             early_stop_min_delta=float(args.early_stop_min_delta),
             early_stop_min_epochs=int(args.early_stop_min_epochs),
             tb_add_graph=bool(args.tb_add_graph),
+            tb_projector=bool(getattr(args, "tb_projector", False)),
+            tb_projector_split=str(getattr(args, "tb_projector_split", "val")),
+            tb_projector_max_images=int(
+                getattr(args, "tb_projector_max_images", 64)),
+            tb_projector_max_patches=int(
+                getattr(args, "tb_projector_max_patches", 4000)),
+            tb_projector_per_image_per_keypoint=int(
+                getattr(args, "tb_projector_per_image_per_keypoint", 3)),
+            tb_projector_pos_threshold=float(
+                getattr(args, "tb_projector_pos_threshold", 0.35)),
+            tb_projector_crop_px=int(
+                getattr(args, "tb_projector_crop_px", 96)),
+            tb_projector_sprite_border_px=int(
+                getattr(args, "tb_projector_sprite_border_px", 3)),
+            tb_projector_add_negatives=bool(
+                getattr(args, "tb_projector_add_negatives", False)),
+            tb_projector_neg_threshold=float(
+                getattr(args, "tb_projector_neg_threshold", 0.02)),
+            tb_projector_negatives_per_image=int(
+                getattr(args, "tb_projector_negatives_per_image", 6)),
             augment=DinoKPSEGAugmentConfig(
                 enabled=bool(args.augment),
                 hflip_prob=float(args.hflip),

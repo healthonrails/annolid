@@ -40,6 +40,75 @@ def _can_connect(url: str, *, timeout: float = 0.5) -> bool:
         return False
 
 
+def _plugin_enabled(url: str, plugin_name: str, *, timeout: float = 0.5) -> Optional[bool]:
+    base = url.rstrip("/")
+    try:
+        resp = requests.get(f"{base}/data/plugins_listing", timeout=timeout)
+    except Exception:
+        return None
+    if not resp.ok:
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        return None
+    info = payload.get(str(plugin_name))
+    if isinstance(info, dict):
+        enabled = info.get("enabled")
+        if isinstance(enabled, bool):
+            return enabled
+    return None
+
+
+def _has_projector_config(log_dir: Path, *, max_depth: int = 9) -> bool:
+    """Return True if log_dir contains a projector_config.pbtxt (bounded walk).
+
+    Fast path checks common locations first, then falls back to a bounded walk.
+    """
+    root = Path(log_dir).expanduser().resolve()
+    if not root.exists():
+        return False
+    for candidate in (
+        root / "projector_config.pbtxt",
+        root / "tensorboard" / "projector_config.pbtxt",
+    ):
+        if candidate.is_file():
+            return True
+    root_parts = len(root.parts)
+    try:
+        for dirpath, dirnames, filenames in os.walk(str(root), topdown=True):
+            depth = len(Path(dirpath).parts) - root_parts
+            if depth > int(max_depth):
+                dirnames[:] = []
+                continue
+            # Prefer traversing likely folders first and skip hidden folders.
+            dirnames[:] = [
+                d for d in dirnames if d and not str(d).startswith(".")
+            ]
+            dirnames.sort(key=lambda d: (d != "tensorboard", d != "runs", d))
+            if "projector_config.pbtxt" in filenames:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _wait_for_projector(
+    url: str,
+    *,
+    timeout_s: float = 18.0,
+    poll_s: float = 0.25,
+) -> bool:
+    """Wait until the TensorBoard projector plugin reports enabled=true."""
+    t0 = time.time()
+    while time.time() - t0 < float(timeout_s):
+        enabled = _plugin_enabled(url, "projector", timeout=0.5)
+        if enabled is True:
+            return True
+        time.sleep(float(poll_s))
+    return False
+
+
 def _pick_free_port(*, preferred: int = 6006, host: str = "127.0.0.1") -> int:
     import socket
 
@@ -86,6 +155,9 @@ def ensure_tensorboard(
         proc, url, existing_logdir = _PRIMARY
         if proc.poll() is None and str(Path(existing_logdir)) == str(Path(log_dir)):
             if _can_connect(url, timeout=0.5):
+                if _has_projector_config(Path(log_dir)):
+                    _wait_for_projector(
+                        url, timeout_s=max(8.0, float(startup_timeout_s)))
                 return proc, url
 
     port = _pick_free_port(preferred=int(preferred_port), host=str(host))
@@ -111,6 +183,9 @@ def ensure_tensorboard(
             global _LAST_URL
             _LAST_URL = url
             _PRIMARY = (process, url, str(Path(log_dir)))
+            if _has_projector_config(Path(log_dir)):
+                _wait_for_projector(
+                    url, timeout_s=max(8.0, float(startup_timeout_s)))
             return process, url
         time.sleep(0.25)
 

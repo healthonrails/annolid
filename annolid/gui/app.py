@@ -3941,6 +3941,17 @@ class AnnolidWindow(MainWindow):
                 dlg, "dino_lr_side_loss_margin", 0.0)
             dino_lr = getattr(dlg, "dino_lr", 0.002)
             dino_threshold = getattr(dlg, "dino_threshold", 0.4)
+            dino_bce_type = getattr(dlg, "dino_bce_type", "bce")
+            dino_focal_alpha = getattr(dlg, "dino_focal_alpha", 0.25)
+            dino_focal_gamma = getattr(dlg, "dino_focal_gamma", 2.0)
+            dino_coord_warmup_epochs = getattr(
+                dlg, "dino_coord_warmup_epochs", 0)
+            dino_radius_schedule = getattr(dlg, "dino_radius_schedule", "none")
+            dino_radius_start_px = getattr(
+                dlg, "dino_radius_start_px", dino_radius_px)
+            dino_radius_end_px = getattr(
+                dlg, "dino_radius_end_px", dino_radius_px)
+            dino_overfit_n = getattr(dlg, "dino_overfit_n", 0)
             dino_cache_features = getattr(dlg, "dino_cache_features", True)
             dino_patience = getattr(dlg, "dino_patience", 0)
             dino_min_delta = getattr(dlg, "dino_min_delta", 0.0)
@@ -3955,6 +3966,29 @@ class AnnolidWindow(MainWindow):
             dino_saturation = getattr(dlg, "dino_saturation", 0.0)
             dino_seed = getattr(dlg, "dino_seed", -1)
             dino_tb_add_graph = getattr(dlg, "dino_tb_add_graph", False)
+            dino_tb_projector = getattr(dlg, "dino_tb_projector", True)
+            dino_tb_projector_split = getattr(
+                dlg, "dino_tb_projector_split", "val")
+            dino_tb_projector_max_images = getattr(
+                dlg, "dino_tb_projector_max_images", 64)
+            dino_tb_projector_max_patches = getattr(
+                dlg, "dino_tb_projector_max_patches", 4000)
+            dino_tb_projector_per_image_per_keypoint = getattr(
+                dlg, "dino_tb_projector_per_image_per_keypoint", 3
+            )
+            dino_tb_projector_pos_threshold = getattr(
+                dlg, "dino_tb_projector_pos_threshold", 0.35)
+            dino_tb_projector_crop_px = getattr(
+                dlg, "dino_tb_projector_crop_px", 96)
+            dino_tb_projector_sprite_border_px = getattr(
+                dlg, "dino_tb_projector_sprite_border_px", 3)
+            dino_tb_projector_add_negatives = getattr(
+                dlg, "dino_tb_projector_add_negatives", False)
+            dino_tb_projector_neg_threshold = getattr(
+                dlg, "dino_tb_projector_neg_threshold", 0.02)
+            dino_tb_projector_negatives_per_image = getattr(
+                dlg, "dino_tb_projector_negatives_per_image", 6
+            )
 
         if config_file is None:
             return
@@ -3993,6 +4027,14 @@ class AnnolidWindow(MainWindow):
                 epochs=int(epochs),
                 batch_size=int(batch_size),
                 threshold=float(dino_threshold),
+                bce_type=str(dino_bce_type or "bce"),
+                focal_alpha=float(dino_focal_alpha),
+                focal_gamma=float(dino_focal_gamma),
+                coord_warmup_epochs=int(dino_coord_warmup_epochs),
+                radius_schedule=str(dino_radius_schedule or "none"),
+                radius_start_px=float(dino_radius_start_px),
+                radius_end_px=float(dino_radius_end_px),
+                overfit_n=int(dino_overfit_n),
                 device=yolo_device,
                 cache_features=bool(dino_cache_features),
                 head_type=str(dino_head_type or "conv"),
@@ -4015,6 +4057,23 @@ class AnnolidWindow(MainWindow):
                 saturation=float(dino_saturation),
                 seed=(int(dino_seed) if int(dino_seed) >= 0 else None),
                 tb_add_graph=bool(dino_tb_add_graph),
+                tb_projector=bool(dino_tb_projector),
+                tb_projector_split=str(dino_tb_projector_split or "val"),
+                tb_projector_max_images=int(dino_tb_projector_max_images),
+                tb_projector_max_patches=int(dino_tb_projector_max_patches),
+                tb_projector_per_image_per_keypoint=int(
+                    dino_tb_projector_per_image_per_keypoint),
+                tb_projector_pos_threshold=float(
+                    dino_tb_projector_pos_threshold),
+                tb_projector_crop_px=int(dino_tb_projector_crop_px),
+                tb_projector_sprite_border_px=int(
+                    dino_tb_projector_sprite_border_px),
+                tb_projector_add_negatives=bool(
+                    dino_tb_projector_add_negatives),
+                tb_projector_neg_threshold=float(
+                    dino_tb_projector_neg_threshold),
+                tb_projector_negatives_per_image=int(
+                    dino_tb_projector_negatives_per_image),
             )
 
         elif algo == 'YOLACT':

@@ -510,6 +510,17 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
     def _start_tensorboard(self) -> None:
         self._stop_tensorboard()
         log_dir = self.runs_root()
+        selected_key = self._selected_run_key or self._current_selected_run_key()
+        if selected_key:
+            try:
+                selected_dir = Path(str(selected_key)).expanduser().resolve()
+            except Exception:
+                selected_dir = None
+            if selected_dir is not None and selected_dir.exists():
+                # Prefer the run directory itself: TensorBoard will discover nested
+                # event dirs such as <run_dir>/tensorboard/ without scanning the
+                # entire runs root.
+                log_dir = selected_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         try:
             process, url = ensure_tensorboard(

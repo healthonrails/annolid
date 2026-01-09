@@ -28,6 +28,25 @@ def _resolve_yaml_path(value: str, *, yaml_path: Path) -> Path:
 def _yolo_list_images(images_root: Path) -> List[Path]:
     if not images_root.exists():
         return []
+    if images_root.is_file():
+        if images_root.suffix.lower() in {".txt", ".list"}:
+            try:
+                lines = images_root.read_text(
+                    encoding="utf-8").splitlines()
+            except Exception:
+                return []
+            base = images_root.parent
+            out: List[Path] = []
+            for line in lines:
+                raw = str(line).strip()
+                if not raw:
+                    continue
+                p = Path(raw).expanduser()
+                if not p.is_absolute():
+                    p = (base / p).resolve()
+                if p.exists():
+                    out.append(p)
+            return out
     paths: List[Path] = []
     for suffix in _IMAGE_SUFFIXES:
         paths.extend(sorted(images_root.rglob(f"*{suffix}")))
@@ -656,6 +675,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         bbox_scale: float = 1.25,
         cache_dtype: torch.dtype = torch.float16,
         return_images: bool = False,
+        return_keypoints: bool = False,
     ) -> None:
         self.image_paths = list(image_paths)
         self.kpt_count = int(kpt_count)
@@ -666,6 +686,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         self.augment = augment or DinoKPSEGAugmentConfig(enabled=False)
         self.rng = np.random.default_rng(self.augment.seed)
         self.return_images = bool(return_images)
+        self.return_keypoints = bool(return_keypoints)
         self.mask_type = str(mask_type or "gaussian").strip().lower()
         self.heatmap_sigma_px = (
             float(heatmap_sigma_px) if heatmap_sigma_px is not None else None
@@ -883,6 +904,11 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             "coords": coords.to(dtype=torch.float32),
             "coord_mask": coord_mask.to(dtype=torch.float32),
         }
+        if self.return_keypoints:
+            sample["gt_instances"] = [
+                np.asarray(kpt, dtype=np.float32) for kpt in keypoint_instances
+            ]
+            sample["image_hw"] = (int(height), int(width))
         if self.return_images:
             try:
                 pil_resized = pil.resize(

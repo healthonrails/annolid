@@ -4,7 +4,9 @@ import argparse
 import csv
 import hashlib
 import math
+import json
 import os
+import random
 import time
 import gc
 from dataclasses import asdict
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
+import numpy as np
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -32,6 +35,11 @@ from annolid.segmentation.dino_kpseg.model import (
     checkpoint_pack,
 )
 from annolid.segmentation.dino_kpseg.cli_utils import normalize_device, parse_layers
+from annolid.segmentation.dino_kpseg.eval import (
+    DinoKPSEGEvalAccumulator,
+    _collect_gt_candidates,
+    _min_error_px,
+)
 from annolid.segmentation.dino_kpseg.keypoints import (
     infer_left_right_pairs,
     infer_orientation_anchor_indices,
@@ -133,6 +141,47 @@ def _grid_images(
         x0 = col * (w + pad)
         grid[:, y0:y0 + h, x0:x0 + w] = images[idx]
     return grid
+
+
+def _overlay_keypoints(
+    image: torch.Tensor,
+    *,
+    pred_xy: Sequence[Tuple[float, float]],
+    gt_xy: Sequence[Tuple[float, float]],
+    pred_color: Tuple[int, int, int] = (230, 50, 50),
+    gt_color: Tuple[int, int, int] = (50, 230, 50),
+    radius: int = 3,
+) -> torch.Tensor:
+    if image.ndim != 3 or int(image.shape[0]) != 3:
+        raise ValueError("Expected image in CHW format with 3 channels")
+    img = image.detach().float().cpu().clamp(0.0, 1.0)
+    arr = (img.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8, copy=True)
+    height, width = int(arr.shape[0]), int(arr.shape[1])
+
+    def _draw(points: Sequence[Tuple[float, float]], color: Tuple[int, int, int]) -> None:
+        for x, y in points:
+            if not np.isfinite(x) or not np.isfinite(y):
+                continue
+            cx = int(round(float(x)))
+            cy = int(round(float(y)))
+            if cx < 0 or cy < 0 or cx >= width or cy >= height:
+                continue
+            for dy in range(-radius, radius + 1):
+                yy = cy + dy
+                if yy < 0 or yy >= height:
+                    continue
+                for dx in range(-radius, radius + 1):
+                    xx = cx + dx
+                    if xx < 0 or xx >= width:
+                        continue
+                    arr[yy, xx, 0] = int(color[0])
+                    arr[yy, xx, 1] = int(color[1])
+                    arr[yy, xx, 2] = int(color[2])
+
+    _draw(gt_xy, gt_color)
+    _draw(pred_xy, pred_color)
+    out = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
+    return out
 
 
 def _draw_loss_curve_image(csv_path: Path, *, width: int = 720, height: int = 420) -> Optional[torch.Tensor]:
@@ -345,6 +394,11 @@ def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
             dtype=torch.float32,
         )
 
+    have_gt = any("gt_instances" in s for s in samples)
+    have_hw = any("image_hw" in s for s in samples)
+    gt_instances_batch: list[list[np.ndarray]] = []
+    image_hw_batch: list[tuple[int, int]] = []
+
     for idx, s in enumerate(samples):
         feats = s["feats"]
         masks = s["masks"]
@@ -370,6 +424,18 @@ def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
             if isinstance(img, torch.Tensor) and img.ndim == 3 and int(img.shape[0]) == 3:
                 images_bchw[idx, :, : int(img.shape[1]), : int(
                     img.shape[2])] = img.to(dtype=torch.float32)
+        if have_gt:
+            gt_instances = s.get("gt_instances")
+            if isinstance(gt_instances, list):
+                gt_instances_batch.append(gt_instances)
+            else:
+                gt_instances_batch.append([])
+        if have_hw:
+            image_hw = s.get("image_hw")
+            if isinstance(image_hw, tuple) and len(image_hw) == 2:
+                image_hw_batch.append((int(image_hw[0]), int(image_hw[1])))
+            else:
+                image_hw_batch.append((0, 0))
 
     coords_bk2 = torch.stack(coords_list, dim=0).to(dtype=torch.float32)
     coord_mask_bk = torch.stack(coord_mask_list, dim=0).to(dtype=torch.float32)
@@ -385,6 +451,10 @@ def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
     }
     if images_bchw is not None:
         batch["image"] = images_bchw
+    if have_gt:
+        batch["gt_instances"] = gt_instances_batch
+    if have_hw:
+        batch["image_hw"] = image_hw_batch
     return batch
 
 
@@ -424,6 +494,31 @@ def _masked_bce_with_logits(
         pos_weight=pos_weight,
     )
     return (bce * valid).sum() / denom
+
+
+def _masked_focal_bce_with_logits(
+    logits_bkhw: torch.Tensor,
+    targets_bkhw: torch.Tensor,
+    valid_mask_b1hw: torch.Tensor,
+    *,
+    alpha: float,
+    gamma: float,
+) -> torch.Tensor:
+    if logits_bkhw.shape != targets_bkhw.shape:
+        raise ValueError("Logits and targets must have the same shape")
+    if valid_mask_b1hw.ndim != 4:
+        raise ValueError("valid_mask must be B1HW")
+    valid = valid_mask_b1hw.to(dtype=logits_bkhw.dtype)
+    denom = (valid.sum() * float(logits_bkhw.shape[1])).clamp(min=1.0)
+    probs = torch.sigmoid(logits_bkhw)
+    bce = F.binary_cross_entropy_with_logits(
+        logits_bkhw, targets_bkhw, reduction="none"
+    )
+    alpha_t = float(alpha) * targets_bkhw + \
+        (1.0 - float(alpha)) * (1.0 - targets_bkhw)
+    p_t = probs * targets_bkhw + (1.0 - probs) * (1.0 - targets_bkhw)
+    loss = alpha_t * ((1.0 - p_t) ** float(gamma)) * bce
+    return (loss * valid).sum() / denom
 
 
 def _dice_loss_masked(
@@ -556,6 +651,19 @@ def _default_device() -> str:
     return "cpu"
 
 
+def _set_global_seed(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+    try:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+    except Exception:
+        pass
+
+
 def train(
     *,
     data_yaml: Path,
@@ -587,6 +695,26 @@ def train(
     early_stop_min_delta: float = 0.0,
     early_stop_min_epochs: int = 0,
     tb_add_graph: bool = False,
+    bce_type: str = "bce",
+    focal_alpha: float = 0.25,
+    focal_gamma: float = 2.0,
+    coord_warmup_epochs: int = 0,
+    radius_schedule: str = "none",
+    radius_start_px: Optional[float] = None,
+    radius_end_px: Optional[float] = None,
+    overfit_n: int = 0,
+    seed: Optional[int] = None,
+    tb_projector: bool = False,
+    tb_projector_split: str = "val",
+    tb_projector_max_images: int = 64,
+    tb_projector_max_patches: int = 4000,
+    tb_projector_per_image_per_keypoint: int = 3,
+    tb_projector_pos_threshold: float = 0.35,
+    tb_projector_crop_px: int = 96,
+    tb_projector_sprite_border_px: int = 3,
+    tb_projector_add_negatives: bool = False,
+    tb_projector_neg_threshold: float = 0.02,
+    tb_projector_negatives_per_image: int = 6,
     head_type: str = "conv",
     attn_heads: int = 4,
     attn_layers: int = 1,
@@ -598,12 +726,17 @@ def train(
     lr_side_loss_weight: float = 0.0,
     lr_side_loss_margin: float = 0.0,
 ) -> Path:
+    if seed is not None:
+        _set_global_seed(int(seed))
+
     spec = load_yolo_pose_spec(data_yaml)
-    if not spec.train_images:
+    train_images = list(spec.train_images)
+    val_images = list(spec.val_images)
+    if not train_images:
         raise ValueError("No training images found")
 
     summary = summarize_yolo_pose_labels(
-        spec.train_images,
+        train_images,
         kpt_count=spec.kpt_count,
         kpt_dims=spec.kpt_dims,
         max_issues=8,
@@ -639,6 +772,15 @@ def train(
             "DinoKPSEG augmentations enabled; disabling feature caching.")
         cache_features = False
 
+    overfit_n = max(0, int(overfit_n))
+    if overfit_n > 0:
+        rng = random.Random(int(seed or 0))
+        rng.shuffle(train_images)
+        train_images = train_images[:overfit_n]
+        val_images = list(train_images)
+        logger.info(
+            "DinoKPSEG overfit mode enabled: %d images", len(train_images))
+
     extractor = build_extractor(
         model_name=model_name,
         short_side=short_side,
@@ -657,7 +799,7 @@ def train(
         _ensure_dir(cache_dir)
 
     train_ds = DinoKPSEGPoseDataset(
-        spec.train_images,
+        train_images,
         kpt_count=spec.kpt_count,
         kpt_dims=spec.kpt_dims,
         radius_px=radius_px,
@@ -673,7 +815,7 @@ def train(
     )
     val_ds = (
         DinoKPSEGPoseDataset(
-            spec.val_images,
+            val_images,
             kpt_count=spec.kpt_count,
             kpt_dims=spec.kpt_dims,
             radius_px=radius_px,
@@ -686,8 +828,9 @@ def train(
             instance_mode=str(instance_mode),
             bbox_scale=float(bbox_scale),
             return_images=True,
+            return_keypoints=True,
         )
-        if spec.val_images
+        if val_images
         else None
     )
 
@@ -786,6 +929,9 @@ def train(
             f"short_side: {short_side}",
             f"layers: {list(layers)}",
             f"radius_px: {radius_px}",
+            f"radius_schedule: {str(radius_schedule)}",
+            f"radius_start_px: {radius_start_px}",
+            f"radius_end_px: {radius_end_px}",
             f"mask_type: {str(mask_type)}",
             f"heatmap_sigma_px: {heatmap_sigma_px}",
             f"instance_mode: {str(instance_mode)}",
@@ -794,6 +940,9 @@ def train(
             f"attn_heads: {int(attn_heads)}",
             f"attn_layers: {int(attn_layers)}",
             f"hidden_dim: {hidden_dim}",
+            f"bce_type: {str(bce_type)}",
+            f"focal_alpha: {float(focal_alpha)}",
+            f"focal_gamma: {float(focal_gamma)}",
             f"lr0: {lr}",
             f"batch: {int(batch_size)}",
             f"accumulate: {int(accumulate)}",
@@ -808,7 +957,21 @@ def train(
             f"early_stop_patience: {int(early_stop_patience)}",
             f"early_stop_min_delta: {float(early_stop_min_delta)}",
             f"early_stop_min_epochs: {int(early_stop_min_epochs)}",
+            f"coord_warmup_epochs: {int(coord_warmup_epochs)}",
+            f"overfit_n: {int(overfit_n)}",
+            f"seed: {seed}",
             f"tb_add_graph: {bool(tb_add_graph)}",
+            f"tb_projector: {bool(tb_projector)}",
+            f"tb_projector_split: {str(tb_projector_split)}",
+            f"tb_projector_max_images: {int(tb_projector_max_images)}",
+            f"tb_projector_max_patches: {int(tb_projector_max_patches)}",
+            f"tb_projector_per_image_per_keypoint: {int(tb_projector_per_image_per_keypoint)}",
+            f"tb_projector_pos_threshold: {float(tb_projector_pos_threshold)}",
+            f"tb_projector_crop_px: {int(tb_projector_crop_px)}",
+            f"tb_projector_sprite_border_px: {int(tb_projector_sprite_border_px)}",
+            f"tb_projector_add_negatives: {bool(tb_projector_add_negatives)}",
+            f"tb_projector_neg_threshold: {float(tb_projector_neg_threshold)}",
+            f"tb_projector_negatives_per_image: {int(tb_projector_negatives_per_image)}",
             f"dice_loss_weight: {float(dice_loss_weight)}",
             f"coord_loss_weight: {float(coord_loss_weight)}",
             f"coord_loss_type: {str(coord_loss_type)}",
@@ -842,6 +1005,7 @@ def train(
         logger.info("DinoKPSEG symmetric keypoint pairs: %s", symmetric_pairs)
     if lr_pairs:
         logger.info("DinoKPSEG left/right keypoint pairs: %s", lr_pairs)
+    pck_thresholds = (2.0, 4.0, 8.0, 16.0)
 
     batch_size = max(1, int(batch_size))
     accumulate = max(1, int(accumulate))
@@ -892,14 +1056,37 @@ def train(
         tb_writer.add_text("config/patch_size",
                            str(int(extractor.patch_size)), 0)
         tb_writer.add_text("config/mask_type", str(mask_type), 0)
+        tb_writer.add_text("config/bce_type", str(bce_type), 0)
+        tb_writer.add_text("config/focal_alpha", str(float(focal_alpha)), 0)
+        tb_writer.add_text("config/focal_gamma", str(float(focal_gamma)), 0)
+        tb_writer.add_text("config/coord_warmup_epochs",
+                           str(int(coord_warmup_epochs)), 0)
+        tb_writer.add_text("config/radius_schedule",
+                           str(radius_schedule), 0)
+        tb_writer.add_text("config/radius_start_px",
+                           str(radius_start_px), 0)
+        tb_writer.add_text("config/radius_end_px",
+                           str(radius_end_px), 0)
+        tb_writer.add_text("config/overfit_n",
+                           str(int(overfit_n)), 0)
+        if seed is not None:
+            tb_writer.add_text("config/seed", str(int(seed)), 0)
         tb_writer.add_text(
             "config/heatmap_sigma_px", str(heatmap_sigma_px), 0)
         tb_writer.add_text("config/instance_mode", str(instance_mode), 0)
         tb_writer.add_text("config/bbox_scale", str(float(bbox_scale)), 0)
+        tb_writer.add_text(
+            "config/pck_thresholds_px",
+            ",".join(str(float(x)) for x in pck_thresholds),
+            0,
+        )
         tb_writer.add_text("config/early_stop_patience", str(patience), 0)
         tb_writer.add_text("config/early_stop_min_delta", str(min_delta), 0)
         tb_writer.add_text("config/early_stop_min_epochs", str(min_epochs), 0)
         tb_writer.add_text("config/tb_add_graph", str(bool(tb_add_graph)), 0)
+        tb_writer.add_text("config/tb_projector", str(bool(tb_projector)), 0)
+        tb_writer.add_text("config/tb_projector_split",
+                           str(tb_projector_split), 0)
         tb_writer.add_text("config/head_type", str(head_type_norm), 0)
         tb_writer.add_text("config/attn_heads", str(int(attn_heads)), 0)
         tb_writer.add_text("config/attn_layers", str(int(attn_layers)), 0)
@@ -970,17 +1157,146 @@ def train(
         _log_example_images(
             tb_writer,
             tag="samples/train_images",
-            image_paths=list(spec.train_images),
+            image_paths=list(train_images),
             short_side=int(short_side),
             patch_size=int(extractor.patch_size),
         )
         _log_example_images(
             tb_writer,
             tag="samples/val_images",
-            image_paths=list(spec.val_images),
+            image_paths=list(val_images),
             short_side=int(short_side),
             patch_size=int(extractor.patch_size),
         )
+
+        try:
+            from annolid.segmentation.dino_kpseg.dataset_tools import (
+                audit_yolo_pose_dataset,
+                log_dataset_health,
+            )
+
+            audit_report = audit_yolo_pose_dataset(
+                data_yaml,
+                split="both",
+                instance_mode=str(instance_mode),
+                bbox_scale=float(bbox_scale),
+            )
+            audit_path = output_dir / "dataset_audit.json"
+            audit_path.write_text(
+                json.dumps(audit_report, indent=2), encoding="utf-8"
+            )
+            tb_writer.add_text(
+                "dataset/audit_summary",
+                json.dumps(audit_report.get("splits", {}), indent=2),
+                0,
+            )
+            log_dataset_health(
+                tb_writer=tb_writer,
+                report=audit_report,
+                split_name="train",
+                image_paths=spec.train_images,
+                kpt_count=int(spec.kpt_count),
+                kpt_dims=int(spec.kpt_dims),
+                keypoint_names=list(spec.keypoint_names or []),
+                max_images=12,
+                seed=(int(augment_cfg.seed)
+                      if augment_cfg.seed is not None else 0),
+                tag_prefix="dataset",
+            )
+            if spec.val_images:
+                log_dataset_health(
+                    tb_writer=tb_writer,
+                    report=audit_report,
+                    split_name="val",
+                    image_paths=spec.val_images,
+                    kpt_count=int(spec.kpt_count),
+                    kpt_dims=int(spec.kpt_dims),
+                    keypoint_names=list(spec.keypoint_names or []),
+                    max_images=12,
+                    seed=(int(augment_cfg.seed)
+                          if augment_cfg.seed is not None else 0),
+                    tag_prefix="dataset",
+                )
+        except Exception as exc:
+            tb_writer.add_text(
+                "dataset/audit_error",
+                f"{type(exc).__name__}: {exc}",
+                0,
+            )
+
+        if bool(tb_projector):
+            try:
+                from annolid.segmentation.dino_kpseg.tensorboard_embeddings import (
+                    add_dino_kpseg_projector_embeddings,
+                )
+
+                kpt_names = (
+                    list(spec.keypoint_names)
+                    if spec.keypoint_names
+                    else [f"kpt_{i}" for i in range(int(spec.kpt_count))]
+                )
+                split_pref = str(tb_projector_split or "val").strip().lower()
+                splits: list[tuple[str, list[Path]]] = []
+                if split_pref == "both":
+                    splits = [("train", list(spec.train_images))]
+                    if val_ds is not None:
+                        splits.append(("val", list(spec.val_images)))
+                elif split_pref == "train":
+                    splits = [("train", list(spec.train_images))]
+                else:
+                    splits = [("val", list(spec.val_images)
+                               if val_ds is not None else list(spec.train_images))]
+
+                for split_name, paths in splits:
+                    if not paths:
+                        continue
+                    # Use a deterministic, non-augmented dataset for embeddings even
+                    # when training uses augmentations; this keeps the projector view
+                    # stable and allows feature caching when enabled.
+                    ds_obj = DinoKPSEGPoseDataset(
+                        list(paths),
+                        kpt_count=spec.kpt_count,
+                        kpt_dims=spec.kpt_dims,
+                        radius_px=radius_px,
+                        extractor=extractor,
+                        flip_idx=spec.flip_idx,
+                        augment=DinoKPSEGAugmentConfig(enabled=False),
+                        cache_dir=cache_dir,
+                        mask_type=str(mask_type),
+                        heatmap_sigma_px=heatmap_sigma_px,
+                        instance_mode=str(instance_mode),
+                        bbox_scale=float(bbox_scale),
+                        return_images=True,
+                    )
+                    add_dino_kpseg_projector_embeddings(
+                        tb_writer,
+                        log_dir=tb_dir,
+                        split=str(split_name),
+                        ds=ds_obj,
+                        keypoint_names=kpt_names,
+                        max_images=int(tb_projector_max_images),
+                        max_patches=int(tb_projector_max_patches),
+                        per_image_per_keypoint=int(
+                            tb_projector_per_image_per_keypoint),
+                        pos_threshold=float(tb_projector_pos_threshold),
+                        add_negatives=bool(tb_projector_add_negatives),
+                        neg_threshold=float(tb_projector_neg_threshold),
+                        negatives_per_image=int(
+                            tb_projector_negatives_per_image),
+                        crop_px=int(tb_projector_crop_px),
+                        sprite_border_px=int(tb_projector_sprite_border_px),
+                        seed=(int(augment_cfg.seed)
+                              if augment_cfg.seed is not None else 0),
+                        tag=f"dino_kpseg/patch_embeddings/{split_name}",
+                        predict_probs_patch=None,
+                        write_csv=True,
+                    )
+            except Exception as exc:
+                tb_writer.add_text(
+                    "tensorboard/projector_error",
+                    f"{type(exc).__name__}: {exc}",
+                    0,
+                )
 
         with csv_path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(
@@ -993,12 +1309,47 @@ def train(
                     "metrics/recall(P)",
                     "metrics/mAP50(P)",
                     "metrics/mAP50-95(P)",
+                    "metrics/pck@2px",
+                    "metrics/pck@4px",
+                    "metrics/pck@8px",
+                    "metrics/pck@16px",
+                    "metrics/swap_rate",
                     "seconds",
                 ],
             )
             writer.writeheader()
 
             for epoch in range(1, int(epochs) + 1):
+                radius_epoch = float(radius_px)
+                schedule = str(radius_schedule or "none").strip().lower()
+                if schedule != "none":
+                    start_px = float(
+                        radius_start_px) if radius_start_px is not None else float(radius_px)
+                    end_px = float(
+                        radius_end_px) if radius_end_px is not None else float(radius_px)
+                    if int(epochs) > 1:
+                        t = float(epoch - 1) / float(int(epochs) - 1)
+                    else:
+                        t = 1.0
+                    if schedule == "linear":
+                        radius_epoch = start_px + \
+                            (end_px - start_px) * float(t)
+                    else:
+                        radius_epoch = float(radius_px)
+                    train_ds.radius_px = float(radius_epoch)
+                    if val_ds is not None:
+                        val_ds.radius_px = float(radius_epoch)
+                tb_writer.add_scalar(
+                    "train/radius_px", float(radius_epoch), epoch)
+
+                coord_weight = float(coord_loss_weight)
+                if int(coord_warmup_epochs) > 0:
+                    coord_weight = float(coord_loss_weight) * min(
+                        1.0, float(epoch) / float(coord_warmup_epochs)
+                    )
+                tb_writer.add_scalar(
+                    "train/coord_loss_weight", float(coord_weight), epoch)
+
                 head.train()
                 if warmup_epochs > 0 and int(epoch) <= int(warmup_epochs):
                     warm_lr = float(base_lr) * float(epoch) / \
@@ -1078,6 +1429,15 @@ def train(
                         balanced=bool(balanced_bce),
                         max_pos_weight=float(max_pos_weight),
                     )
+                    bce_mode = str(bce_type or "bce").strip().lower()
+                    if bce_mode == "focal":
+                        loss_base = _masked_focal_bce_with_logits(
+                            logits,
+                            masks,
+                            valid_mask,
+                            alpha=float(focal_alpha),
+                            gamma=float(focal_gamma),
+                        )
                     loss = loss_base
                     probs = torch.sigmoid(logits)
 
@@ -1088,7 +1448,7 @@ def train(
 
                     coord_loss = None
                     if (
-                        float(coord_loss_weight) > 0.0
+                        float(coord_weight) > 0.0
                         and coords.numel() > 0
                         and coord_mask.numel() > 0
                     ):
@@ -1101,7 +1461,7 @@ def train(
                             coord_mask.reshape(-1),
                             mode=coord_loss_type,
                         )
-                        loss = loss + float(coord_loss_weight) * coord_loss
+                        loss = loss + float(coord_weight) * coord_loss
 
                     pair_overlap = None
                     pair_margin = None
@@ -1366,6 +1726,8 @@ def train(
                 recall_pose_mean = None
                 map50 = None
                 map5095 = None
+                pck_summary = None
+                swap_rate = None
                 if val_loader is not None:
                     head.eval()
                     losses = []
@@ -1379,6 +1741,10 @@ def train(
                         int(spec.kpt_count), device=device_str, dtype=torch.float32)
                     peak_dist_count = torch.zeros(
                         int(spec.kpt_count), device=device_str, dtype=torch.float32)
+                    coord_err_sum = torch.zeros(
+                        int(spec.kpt_count), device=device_str, dtype=torch.float32)
+                    coord_err_count = torch.zeros(
+                        int(spec.kpt_count), device=device_str, dtype=torch.float32)
                     det_scores: List[List[float]] = [
                         [] for _ in range(int(spec.kpt_count))
                     ]
@@ -1386,6 +1752,13 @@ def train(
                         [] for _ in range(int(spec.kpt_count))
                     ]
                     gt_counts = [0 for _ in range(int(spec.kpt_count))]
+                    pck_acc = DinoKPSEGEvalAccumulator(
+                        kpt_count=int(spec.kpt_count),
+                        thresholds_px=pck_thresholds,
+                        keypoint_names=spec.keypoint_names,
+                    )
+                    error_samples: List[Tuple[float, torch.Tensor]] = []
+                    error_max = 4
                     with torch.no_grad():
                         for batch in val_loader:
                             feats = batch["feats"].to(
@@ -1446,15 +1819,24 @@ def train(
                                 balanced=bool(balanced_bce),
                                 max_pos_weight=float(max_pos_weight),
                             )
+                            bce_mode = str(bce_type or "bce").strip().lower()
+                            if bce_mode == "focal":
+                                loss_val = _masked_focal_bce_with_logits(
+                                    logits,
+                                    masks,
+                                    valid_mask,
+                                    alpha=float(focal_alpha),
+                                    gamma=float(focal_gamma),
+                                )
                             if float(dice_loss_weight) > 0.0:
                                 loss_val = loss_val + float(dice_loss_weight) * _dice_loss_masked(
                                     probs, masks, valid_mask
                                 )
-                            if float(coord_loss_weight) > 0.0 and coords.numel() > 0 and coord_mask.numel() > 0:
+                            if float(coord_weight) > 0.0 and coords.numel() > 0 and coord_mask.numel() > 0:
                                 pred_xy = _soft_argmax_coords_batched(
                                     probs, patch_size=int(extractor.patch_size)
                                 )
-                                loss_val = loss_val + float(coord_loss_weight) * _coord_loss(
+                                loss_val = loss_val + float(coord_weight) * _coord_loss(
                                     pred_xy.reshape(-1, 2),
                                     coords.reshape(-1, 2),
                                     coord_mask.reshape(-1),
@@ -1503,6 +1885,7 @@ def train(
                                 dim=2,
                             )
                             gt_xy_eval = peak_xy
+                            use_coords = None
                             if coords.numel() == peak_xy.numel():
                                 use_coords = (coord_mask > 0.5) & gt_present
                                 gt_xy_eval = torch.where(
@@ -1510,6 +1893,13 @@ def train(
 
                             dist_xy = torch.sqrt(
                                 ((pred_xy - gt_xy_eval) ** 2).sum(dim=2))
+                            if isinstance(use_coords, torch.Tensor):
+                                coord_err_sum += (
+                                    dist_xy *
+                                    use_coords.to(dtype=dist_xy.dtype)
+                                ).sum(dim=0)
+                                coord_err_count += use_coords.to(
+                                    dtype=dist_xy.dtype).sum(dim=0)
                             oks = _oks_from_distance(
                                 dist_xy, sigma_px=float(extractor.patch_size))
                             oks = oks * gt_present.to(dtype=oks.dtype)
@@ -1521,8 +1911,118 @@ def train(
                                     [float(x) for x in conf[:, kp].detach().cpu().tolist()])
                                 det_oks[kp].extend(
                                     [float(x) for x in oks[:, kp].detach().cpu().tolist()])
+
+                            gt_instances_batch = batch.get("gt_instances")
+                            image_hw_batch = batch.get("image_hw")
+                            image_batch = batch.get("image")
+                            have_gt_meta = (
+                                isinstance(gt_instances_batch, list)
+                                and isinstance(image_hw_batch, list)
+                            )
+                            pred_xy_cpu = pred_xy.detach().cpu()
+                            valid_mask_cpu = valid_mask.detach().cpu()
+                            for bi in range(int(bsz)):
+                                if not have_gt_meta:
+                                    break
+                                if bi >= len(gt_instances_batch) or bi >= len(image_hw_batch):
+                                    continue
+                                gt_instances = gt_instances_batch[bi]
+                                image_hw = image_hw_batch[bi]
+                                if not isinstance(gt_instances, list) or not isinstance(image_hw, tuple):
+                                    continue
+                                orig_h, orig_w = int(
+                                    image_hw[0]), int(image_hw[1])
+                                if orig_h <= 0 or orig_w <= 0:
+                                    continue
+                                valid_rows = valid_mask_cpu[bi, 0].any(dim=1)
+                                valid_cols = valid_mask_cpu[bi, 0].any(dim=0)
+                                h_i = int(valid_rows.sum().item())
+                                w_i = int(valid_cols.sum().item())
+                                if h_i <= 0 or w_i <= 0:
+                                    continue
+                                resized_h = int(h_i) * \
+                                    int(extractor.patch_size)
+                                resized_w = int(w_i) * \
+                                    int(extractor.patch_size)
+                                if resized_h <= 0 or resized_w <= 0:
+                                    continue
+
+                                pred_xy_resized = [
+                                    (float(x), float(y)) for x, y in pred_xy_cpu[bi].tolist()
+                                ]
+                                pred_xy_orig = [
+                                    (
+                                        float(x) * (float(orig_w) /
+                                                    float(resized_w)),
+                                        float(y) * (float(orig_h) /
+                                                    float(resized_h)),
+                                    )
+                                    for x, y in pred_xy_resized
+                                ]
+                                if gt_instances:
+                                    pck_acc.update(
+                                        pred_xy=pred_xy_orig,
+                                        gt_instances=gt_instances,
+                                        image_hw=(orig_h, orig_w),
+                                        lr_pairs=lr_pairs,
+                                    )
+
+                                errors = []
+                                for kpt_idx in range(int(spec.kpt_count)):
+                                    candidates = _collect_gt_candidates(
+                                        gt_instances,
+                                        kpt_idx=kpt_idx,
+                                        image_hw=(orig_h, orig_w),
+                                    )
+                                    if not candidates:
+                                        continue
+                                    err = _min_error_px(
+                                        pred_xy_orig[kpt_idx], candidates)
+                                    if err is not None:
+                                        errors.append(float(err))
+                                if not errors:
+                                    continue
+                                mean_err = float(sum(errors) / len(errors))
+                                if image_batch is not None and isinstance(image_batch, torch.Tensor):
+                                    img = image_batch[bi, :, :resized_h, :resized_w].detach(
+                                    ).cpu()
+                                    gt_xy_resized: List[Tuple[float, float]] = [
+                                    ]
+                                    if gt_instances:
+                                        gt0 = gt_instances[0]
+                                        if isinstance(gt0, np.ndarray) and gt0.ndim == 2:
+                                            for row in gt0:
+                                                if row.shape[0] < 3:
+                                                    continue
+                                                if float(row[2]) <= 0:
+                                                    continue
+                                                gt_xy_resized.append(
+                                                    (
+                                                        float(row[0]) *
+                                                        float(resized_w),
+                                                        float(row[1]) *
+                                                        float(resized_h),
+                                                    )
+                                                )
+                                    overlay = _overlay_keypoints(
+                                        img,
+                                        pred_xy=pred_xy_resized,
+                                        gt_xy=gt_xy_resized,
+                                    )
+                                    if len(error_samples) < int(error_max):
+                                        error_samples.append(
+                                            (mean_err, overlay))
+                                    else:
+                                        error_samples.sort(key=lambda x: x[0])
+                                        if mean_err > error_samples[0][0]:
+                                            error_samples[0] = (
+                                                mean_err, overlay)
                     if losses:
                         val_loss = float(sum(losses) / len(losses))
+                    if pck_acc is not None:
+                        pck_summary = pck_acc.summary(
+                            include_per_keypoint=True)
+                        swap_rate = pck_summary.get("swap_rate")
                     # Validation metrics (YOLO-like reporting) averaged over keypoints with GT present.
                     denom_dice = (2.0 * tp + fp + fn).clamp(min=1e-8)
                     dice = (2.0 * tp) / denom_dice
@@ -1604,6 +2104,18 @@ def train(
                         precision_pose_mean = 0.0
 
                 elapsed = float(time.time() - t0)
+                pck_vals = {}
+                if isinstance(pck_summary, dict):
+                    pck_vals = pck_summary.get("pck") or {}
+
+                def _pck_str(thr: float) -> str:
+                    value = pck_vals.get(str(float(thr)))
+                    if value is None:
+                        return ""
+                    try:
+                        return f"{float(value):.6f}"
+                    except Exception:
+                        return ""
                 row = {
                     "epoch": epoch,
                     "train_loss": f"{train_loss_total:.6f}",
@@ -1612,6 +2124,11 @@ def train(
                     "metrics/recall(P)": "" if recall_pose_mean is None else f"{recall_pose_mean:.6f}",
                     "metrics/mAP50(P)": "" if map50 is None else f"{map50:.6f}",
                     "metrics/mAP50-95(P)": "" if map5095 is None else f"{map5095:.6f}",
+                    "metrics/pck@2px": _pck_str(2.0),
+                    "metrics/pck@4px": _pck_str(4.0),
+                    "metrics/pck@8px": _pck_str(8.0),
+                    "metrics/pck@16px": _pck_str(16.0),
+                    "metrics/swap_rate": "" if swap_rate is None else f"{float(swap_rate):.6f}",
                     "seconds": f"{elapsed:.2f}",
                 }
                 writer.writerow(row)
@@ -1672,6 +2189,36 @@ def train(
                         float(valid_kpt.float().mean().item()),
                         epoch,
                     )
+                    if pck_summary:
+                        pck_vals = pck_summary.get("pck") or {}
+                        for thr in pck_thresholds:
+                            key = str(float(thr))
+                            if key in pck_vals and pck_vals[key] is not None:
+                                tb_writer.add_scalar(
+                                    f"val/pck@{int(thr)}px",
+                                    float(pck_vals[key]),
+                                    epoch,
+                                )
+                        if swap_rate is not None:
+                            tb_writer.add_scalar(
+                                "val/swap_rate", float(swap_rate), epoch
+                            )
+                        per_kpt = pck_summary.get("per_keypoint") if isinstance(
+                            pck_summary, dict) else None
+                        if isinstance(per_kpt, dict):
+                            for name, stats in per_kpt.items():
+                                if not isinstance(stats, dict):
+                                    continue
+                                for thr in pck_thresholds:
+                                    key = str(float(thr))
+                                    pck_k = stats.get("pck", {}).get(key)
+                                    if pck_k is None:
+                                        continue
+                                    tb_writer.add_scalar(
+                                        f"val/pck@{int(thr)}px/{name}",
+                                        float(pck_k),
+                                        epoch,
+                                    )
                     # Per-keypoint metrics
                     names = spec.keypoint_names or []
                     for i in range(int(spec.kpt_count)):
@@ -1680,6 +2227,78 @@ def train(
                             f"val/dice/{name}", float(dice[i].item()), epoch)
                         tb_writer.add_scalar(
                             f"val/iou/{name}", float(iou[i].item()), epoch)
+                        if coord_err_count[i] > 0:
+                            tb_writer.add_scalar(
+                                f"val/coord_error_px/{name}",
+                                float(
+                                    (coord_err_sum[i] / coord_err_count[i]).item()),
+                                epoch,
+                            )
+                    if error_samples:
+                        error_samples.sort(key=lambda x: x[0], reverse=True)
+                        overlay_stack = torch.stack(
+                            [sample[1] for sample in error_samples], dim=0
+                        ).clamp(0.0, 1.0)
+                        tb_writer.add_images(
+                            "val/error_overlays", overlay_stack, epoch
+                        )
+                    if bool(tb_projector) and val_ds is not None:
+                        interval = 5
+                        if int(epoch) == 1 or int(epoch) % int(interval) == 0 or int(epoch) == int(epochs):
+                            try:
+                                from annolid.segmentation.dino_kpseg.tensorboard_embeddings import (
+                                    add_dino_kpseg_projector_embeddings,
+                                )
+
+                                def _predict_probs_patch(feats: torch.Tensor) -> torch.Tensor:
+                                    x = feats.unsqueeze(0).to(
+                                        device_str, dtype=torch.float32
+                                    )
+                                    try:
+                                        logits = head(x)
+                                    except TypeError:
+                                        logits = head(x)
+                                    logits = logits[0].to("cpu")
+                                    return torch.sigmoid(logits)
+
+                                split_tag = f"val_epoch_{int(epoch):03d}"
+                                add_dino_kpseg_projector_embeddings(
+                                    tb_writer,
+                                    log_dir=tb_dir,
+                                    split=split_tag,
+                                    ds=val_ds,
+                                    keypoint_names=spec.keypoint_names
+                                    or [f"kpt_{i}" for i in range(int(spec.kpt_count))],
+                                    max_images=min(
+                                        int(tb_projector_max_images), 32),
+                                    max_patches=min(
+                                        int(tb_projector_max_patches), 2000),
+                                    per_image_per_keypoint=int(
+                                        tb_projector_per_image_per_keypoint),
+                                    pos_threshold=float(
+                                        tb_projector_pos_threshold),
+                                    add_negatives=bool(
+                                        tb_projector_add_negatives),
+                                    neg_threshold=float(
+                                        tb_projector_neg_threshold),
+                                    negatives_per_image=int(
+                                        tb_projector_negatives_per_image),
+                                    crop_px=int(tb_projector_crop_px),
+                                    sprite_border_px=int(
+                                        tb_projector_sprite_border_px),
+                                    seed=(int(augment_cfg.seed)
+                                          if augment_cfg.seed is not None else 0),
+                                    tag=f"dino_kpseg/patch_embeddings/{split_tag}",
+                                    predict_probs_patch=_predict_probs_patch,
+                                    write_csv=True,
+                                    global_step=int(epoch),
+                                )
+                            except Exception as exc:
+                                tb_writer.add_text(
+                                    "tensorboard/projector_error",
+                                    f"{type(exc).__name__}: {exc}",
+                                    epoch,
+                                )
                 tb_writer.add_scalar("time/epoch_seconds", elapsed, epoch)
                 if batch_dice_count:
                     tb_writer.add_scalar(
@@ -1814,6 +2433,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument(
+        "--overfit-n",
+        type=int,
+        default=0,
+        help="Overfit mode: train/val on N images (0=off).",
+    )
+    p.add_argument(
         "--batch",
         "--batch-size",
         dest="batch",
@@ -1853,6 +2478,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=50.0,
         help="Clamp for balanced BCE pos_weight (prevents instability).",
     )
+    p.add_argument(
+        "--bce-type",
+        choices=("bce", "focal"),
+        default="bce",
+        help="Loss type for mask supervision (default: bce).",
+    )
+    p.add_argument("--focal-alpha", type=float,
+                   default=0.25, help="Alpha for focal BCE.")
+    p.add_argument("--focal-gamma", type=float,
+                   default=2.0, help="Gamma for focal BCE.")
     sched_group = p.add_mutually_exclusive_group()
     sched_group.add_argument(
         "--cos-lr",
@@ -1881,7 +2516,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=0.01,
         help="Final LR fraction for cosine schedule.",
     )
+    p.add_argument(
+        "--coord-warmup-epochs",
+        type=int,
+        default=0,
+        help="Warm up coordinate loss over N epochs (0=off).",
+    )
     p.add_argument("--threshold", type=float, default=0.4)
+    p.add_argument(
+        "--radius-schedule",
+        choices=("none", "linear"),
+        default="none",
+        help="Schedule radius_px across epochs (default: none).",
+    )
+    p.add_argument("--radius-start-px", type=float, default=None)
+    p.add_argument("--radius-end-px", type=float, default=None)
     p.add_argument("--device", default=None)
     p.add_argument("--no-cache", action="store_true",
                    help="Disable feature caching")
@@ -1941,6 +2590,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                    help="Do not early-stop before this epoch")
     p.add_argument("--tb-add-graph", action="store_true",
                    help="Export model graph to TensorBoard (can be slow)")
+    p.add_argument(
+        "--tb-projector",
+        action="store_true",
+        help="Write a TensorBoard Projector embedding view for DinoKPSEG patch features.",
+    )
+    p.add_argument(
+        "--tb-projector-split",
+        choices=("train", "val", "both"),
+        default="val",
+        help="Which dataset split(s) to sample for the projector (default: val).",
+    )
+    p.add_argument("--tb-projector-max-images", type=int, default=64)
+    p.add_argument("--tb-projector-max-patches", type=int, default=4000)
+    p.add_argument("--tb-projector-per-image-per-keypoint",
+                   type=int, default=3)
+    p.add_argument("--tb-projector-pos-threshold", type=float, default=0.35)
+    p.add_argument("--tb-projector-crop-px", type=int, default=96)
+    p.add_argument("--tb-projector-sprite-border-px", type=int, default=3)
+    p.add_argument("--tb-projector-add-negatives", action="store_true")
+    p.add_argument("--tb-projector-neg-threshold", type=float, default=0.02)
+    p.add_argument("--tb-projector-negatives-per-image", type=int, default=6)
     p.add_argument("--augment", action="store_true",
                    help="Enable YOLO-like pose augmentations")
     p.add_argument("--hflip", type=float, default=0.5,
@@ -1958,7 +2628,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--saturation", type=float, default=0.0,
                    help="Saturation jitter (+/-)")
     p.add_argument("--seed", type=int, default=None,
-                   help="Optional augmentation RNG seed")
+                   help="Optional RNG seed (also used for augmentations)")
     args = p.parse_args(argv)
 
     layers = parse_layers(args.layers)
@@ -1997,9 +2667,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         grad_clip=float(args.grad_clip),
         balanced_bce=bool(args.balanced_bce),
         max_pos_weight=float(args.max_pos_weight),
+        bce_type=str(args.bce_type),
+        focal_alpha=float(args.focal_alpha),
+        focal_gamma=float(args.focal_gamma),
         cos_lr=bool(args.cos_lr),
         warmup_epochs=int(args.warmup_epochs),
         lr_final_frac=float(args.lr_final_frac),
+        coord_warmup_epochs=int(args.coord_warmup_epochs),
         device=args.device,
         cache_features=not bool(args.no_cache),
         head_type=str(args.head_type),
@@ -2016,6 +2690,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         early_stop_min_delta=float(args.early_stop_min_delta),
         early_stop_min_epochs=int(args.early_stop_min_epochs),
         tb_add_graph=bool(args.tb_add_graph),
+        radius_schedule=str(args.radius_schedule),
+        radius_start_px=(
+            float(args.radius_start_px) if args.radius_start_px is not None else None
+        ),
+        radius_end_px=(
+            float(args.radius_end_px) if args.radius_end_px is not None else None
+        ),
+        overfit_n=int(args.overfit_n),
+        seed=(int(args.seed) if args.seed is not None else None),
+        tb_projector=bool(args.tb_projector),
+        tb_projector_split=str(args.tb_projector_split),
+        tb_projector_max_images=int(args.tb_projector_max_images),
+        tb_projector_max_patches=int(args.tb_projector_max_patches),
+        tb_projector_per_image_per_keypoint=int(
+            args.tb_projector_per_image_per_keypoint),
+        tb_projector_pos_threshold=float(args.tb_projector_pos_threshold),
+        tb_projector_crop_px=int(args.tb_projector_crop_px),
+        tb_projector_sprite_border_px=int(args.tb_projector_sprite_border_px),
+        tb_projector_add_negatives=bool(args.tb_projector_add_negatives),
+        tb_projector_neg_threshold=float(args.tb_projector_neg_threshold),
+        tb_projector_negatives_per_image=int(
+            args.tb_projector_negatives_per_image),
         augment=DinoKPSEGAugmentConfig(
             enabled=bool(args.augment),
             hflip_prob=float(args.hflip),

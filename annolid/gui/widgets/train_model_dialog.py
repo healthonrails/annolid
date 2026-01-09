@@ -54,6 +54,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_lr_side_loss_margin = 0.0
         self.dino_lr = 0.002
         self.dino_threshold = 0.4
+        self.dino_bce_type = "bce"
+        self.dino_focal_alpha = 0.25
+        self.dino_focal_gamma = 2.0
+        self.dino_coord_warmup_epochs = 0
+        self.dino_radius_schedule = "none"
+        self.dino_radius_start_px = float(self.dino_radius_px)
+        self.dino_radius_end_px = float(self.dino_radius_px)
+        self.dino_overfit_n = 0
         self.dino_cache_features = True
         self.dino_patience = 10
         self.dino_min_delta = 0.0
@@ -68,6 +76,17 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_saturation = 0.0
         self.dino_seed = -1
         self.dino_tb_add_graph = False
+        self.dino_tb_projector = True
+        self.dino_tb_projector_split = "val"
+        self.dino_tb_projector_max_images = 64
+        self.dino_tb_projector_max_patches = 4000
+        self.dino_tb_projector_per_image_per_keypoint = 3
+        self.dino_tb_projector_pos_threshold = 0.35
+        self.dino_tb_projector_crop_px = 96
+        self.dino_tb_projector_sprite_border_px = 3
+        self.dino_tb_projector_add_negatives = False
+        self.dino_tb_projector_neg_threshold = 0.02
+        self.dino_tb_projector_negatives_per_image = 6
 
         # YOLO hyperparams (Advanced tab)
         self.yolo_lr0 = 0.01
@@ -668,6 +687,92 @@ class TrainModelDialog(QtWidgets.QDialog):
         thr.valueChanged.connect(
             lambda v: setattr(self, "dino_threshold", float(v)))
 
+        bce_type = QtWidgets.QComboBox(box)
+        bce_type.addItem("Standard BCE", userData="bce")
+        bce_type.addItem("Focal BCE", userData="focal")
+        bce_default = str(getattr(self, "dino_bce_type", "bce") or "bce")
+        bce_idx = bce_type.findData(bce_default)
+        if bce_idx >= 0:
+            bce_type.setCurrentIndex(bce_idx)
+
+        def _on_bce_changed(_=None) -> None:
+            setattr(self, "dino_bce_type", str(
+                bce_type.currentData() or "bce"))
+            self._update_dino_focal_controls()
+
+        bce_type.currentIndexChanged.connect(_on_bce_changed)
+
+        focal_alpha = QtWidgets.QDoubleSpinBox(box)
+        focal_alpha.setDecimals(3)
+        focal_alpha.setRange(0.0, 1.0)
+        focal_alpha.setSingleStep(0.05)
+        focal_alpha.setValue(float(getattr(self, "dino_focal_alpha", 0.25)))
+        focal_alpha.valueChanged.connect(
+            lambda v: setattr(self, "dino_focal_alpha", float(v)))
+
+        focal_gamma = QtWidgets.QDoubleSpinBox(box)
+        focal_gamma.setDecimals(3)
+        focal_gamma.setRange(0.0, 10.0)
+        focal_gamma.setSingleStep(0.1)
+        focal_gamma.setValue(float(getattr(self, "dino_focal_gamma", 2.0)))
+        focal_gamma.valueChanged.connect(
+            lambda v: setattr(self, "dino_focal_gamma", float(v)))
+
+        self._dino_focal_controls = [focal_alpha, focal_gamma]
+
+        coord_warmup = QtWidgets.QSpinBox(box)
+        coord_warmup.setRange(0, 1000)
+        coord_warmup.setValue(
+            int(getattr(self, "dino_coord_warmup_epochs", 0)))
+        coord_warmup.valueChanged.connect(
+            lambda v: setattr(self, "dino_coord_warmup_epochs", int(v)))
+
+        radius_schedule = QtWidgets.QComboBox(box)
+        radius_schedule.addItem("None", userData="none")
+        radius_schedule.addItem("Linear", userData="linear")
+        radius_default = str(
+            getattr(self, "dino_radius_schedule", "none") or "none")
+        radius_idx = radius_schedule.findData(radius_default)
+        if radius_idx >= 0:
+            radius_schedule.setCurrentIndex(radius_idx)
+
+        def _on_radius_schedule_changed(_=None) -> None:
+            setattr(self, "dino_radius_schedule", str(
+                radius_schedule.currentData() or "none"))
+            self._update_dino_radius_schedule_controls()
+
+        radius_schedule.currentIndexChanged.connect(
+            _on_radius_schedule_changed)
+
+        radius_start = QtWidgets.QDoubleSpinBox(box)
+        radius_start.setDecimals(2)
+        radius_start.setRange(1.0, 128.0)
+        radius_start.setSingleStep(0.5)
+        radius_start.setValue(
+            float(getattr(self, "dino_radius_start_px", self.dino_radius_px)))
+        radius_start.valueChanged.connect(
+            lambda v: setattr(self, "dino_radius_start_px", float(v)))
+
+        radius_end = QtWidgets.QDoubleSpinBox(box)
+        radius_end.setDecimals(2)
+        radius_end.setRange(1.0, 128.0)
+        radius_end.setSingleStep(0.5)
+        radius_end.setValue(
+            float(getattr(self, "dino_radius_end_px", self.dino_radius_px)))
+        radius_end.valueChanged.connect(
+            lambda v: setattr(self, "dino_radius_end_px", float(v)))
+
+        self._dino_radius_controls = [radius_start, radius_end]
+
+        overfit_n = QtWidgets.QSpinBox(box)
+        overfit_n.setRange(0, 100000)
+        overfit_n.setSingleStep(10)
+        overfit_n.setValue(int(getattr(self, "dino_overfit_n", 0)))
+        overfit_n.setToolTip(
+            "Debug mode: use N training images and mirror into validation.")
+        overfit_n.valueChanged.connect(
+            lambda v: setattr(self, "dino_overfit_n", int(v)))
+
         cache = QtWidgets.QCheckBox("Cache frozen DINO features to disk", box)
         cache.setChecked(bool(self.dino_cache_features))
         cache.stateChanged.connect(lambda _=None: setattr(
@@ -678,6 +783,127 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_graph.setChecked(bool(self.dino_tb_add_graph))
         tb_graph.stateChanged.connect(lambda _=None: setattr(
             self, "dino_tb_add_graph", bool(tb_graph.isChecked())))
+
+        tb_projector = QtWidgets.QCheckBox(
+            "Write TensorBoard Projector embeddings (interactive)", box
+        )
+        tb_projector.setChecked(bool(getattr(self, "dino_tb_projector", True)))
+
+        def _on_projector_changed(_=None) -> None:
+            setattr(self, "dino_tb_projector", bool(tb_projector.isChecked()))
+            self._update_dino_projector_enabled_state()
+
+        tb_projector.stateChanged.connect(_on_projector_changed)
+
+        tb_projector_split = QtWidgets.QComboBox(box)
+        tb_projector_split.addItem("Validation (recommended)", userData="val")
+        tb_projector_split.addItem("Train", userData="train")
+        tb_projector_split.addItem("Both", userData="both")
+        split_default = str(
+            getattr(self, "dino_tb_projector_split", "val") or "val")
+        idx = tb_projector_split.findData(split_default)
+        if idx >= 0:
+            tb_projector_split.setCurrentIndex(idx)
+        tb_projector_split.currentIndexChanged.connect(
+            lambda _=None: setattr(self, "dino_tb_projector_split", str(
+                tb_projector_split.currentData() or "val"))
+        )
+
+        tb_max_images = QtWidgets.QSpinBox(box)
+        tb_max_images.setRange(1, 10_000)
+        tb_max_images.setValue(
+            int(getattr(self, "dino_tb_projector_max_images", 64)))
+        tb_max_images.valueChanged.connect(
+            lambda v: setattr(self, "dino_tb_projector_max_images", int(v))
+        )
+
+        tb_max_patches = QtWidgets.QSpinBox(box)
+        tb_max_patches.setRange(64, 200_000)
+        tb_max_patches.setSingleStep(256)
+        tb_max_patches.setValue(
+            int(getattr(self, "dino_tb_projector_max_patches", 4000)))
+        tb_max_patches.valueChanged.connect(
+            lambda v: setattr(self, "dino_tb_projector_max_patches", int(v))
+        )
+
+        tb_per_image_per_kpt = QtWidgets.QSpinBox(box)
+        tb_per_image_per_kpt.setRange(0, 1000)
+        tb_per_image_per_kpt.setValue(
+            int(getattr(self, "dino_tb_projector_per_image_per_keypoint", 3)))
+        tb_per_image_per_kpt.valueChanged.connect(
+            lambda v: setattr(
+                self, "dino_tb_projector_per_image_per_keypoint", int(v))
+        )
+
+        tb_pos_thr = QtWidgets.QDoubleSpinBox(box)
+        tb_pos_thr.setDecimals(3)
+        tb_pos_thr.setRange(0.0, 1.0)
+        tb_pos_thr.setSingleStep(0.05)
+        tb_pos_thr.setValue(
+            float(getattr(self, "dino_tb_projector_pos_threshold", 0.35)))
+        tb_pos_thr.valueChanged.connect(
+            lambda v: setattr(
+                self, "dino_tb_projector_pos_threshold", float(v))
+        )
+
+        tb_crop = QtWidgets.QSpinBox(box)
+        tb_crop.setRange(16, 512)
+        tb_crop.setSingleStep(16)
+        tb_crop.setValue(int(getattr(self, "dino_tb_projector_crop_px", 96)))
+        tb_crop.valueChanged.connect(
+            lambda v: setattr(self, "dino_tb_projector_crop_px", int(v))
+        )
+
+        tb_border = QtWidgets.QSpinBox(box)
+        tb_border.setRange(0, 16)
+        tb_border.setValue(
+            int(getattr(self, "dino_tb_projector_sprite_border_px", 3)))
+        tb_border.valueChanged.connect(
+            lambda v: setattr(
+                self, "dino_tb_projector_sprite_border_px", int(v))
+        )
+
+        tb_add_negs = QtWidgets.QCheckBox(
+            "Also sample background patches", box)
+        tb_add_negs.setChecked(
+            bool(getattr(self, "dino_tb_projector_add_negatives", False)))
+        tb_add_negs.stateChanged.connect(
+            lambda _=None: setattr(
+                self, "dino_tb_projector_add_negatives", bool(tb_add_negs.isChecked()))
+        )
+
+        tb_neg_thr = QtWidgets.QDoubleSpinBox(box)
+        tb_neg_thr.setDecimals(3)
+        tb_neg_thr.setRange(0.0, 1.0)
+        tb_neg_thr.setSingleStep(0.01)
+        tb_neg_thr.setValue(
+            float(getattr(self, "dino_tb_projector_neg_threshold", 0.02)))
+        tb_neg_thr.valueChanged.connect(
+            lambda v: setattr(
+                self, "dino_tb_projector_neg_threshold", float(v))
+        )
+
+        tb_negs_per_img = QtWidgets.QSpinBox(box)
+        tb_negs_per_img.setRange(0, 10_000)
+        tb_negs_per_img.setValue(
+            int(getattr(self, "dino_tb_projector_negatives_per_image", 6)))
+        tb_negs_per_img.valueChanged.connect(
+            lambda v: setattr(
+                self, "dino_tb_projector_negatives_per_image", int(v))
+        )
+
+        self._dino_projector_controls = [
+            tb_projector_split,
+            tb_max_images,
+            tb_max_patches,
+            tb_per_image_per_kpt,
+            tb_pos_thr,
+            tb_crop,
+            tb_border,
+            tb_add_negs,
+            tb_neg_thr,
+            tb_negs_per_img,
+        ]
 
         patience = QtWidgets.QSpinBox(box)
         patience.setRange(0, 1000)
@@ -708,14 +934,36 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("LR side loss margin", side_margin)
         form.addRow("Learning rate", lr)
         form.addRow("Circle radius (px)", radius)
+        form.addRow("Radius schedule", radius_schedule)
+        form.addRow("Radius start (px)", radius_start)
+        form.addRow("Radius end (px)", radius_end)
         form.addRow("Head hidden dim", hidden)
         form.addRow("Mask threshold", thr)
+        form.addRow("Mask BCE type", bce_type)
+        form.addRow("Focal alpha", focal_alpha)
+        form.addRow("Focal gamma", focal_gamma)
+        form.addRow("Coord warmup (epochs)", coord_warmup)
+        form.addRow("Overfit N (debug)", overfit_n)
         form.addRow("Early stop patience (0=off)", patience)
         form.addRow("Early stop min delta", min_delta)
         form.addRow("Early stop min epochs", min_epochs)
         form.addRow("", tb_graph)
+        form.addRow("", tb_projector)
+        form.addRow("Projector split", tb_projector_split)
+        form.addRow("Projector max images", tb_max_images)
+        form.addRow("Projector max patches", tb_max_patches)
+        form.addRow("Projector patches / image / kpt", tb_per_image_per_kpt)
+        form.addRow("Projector pos threshold", tb_pos_thr)
+        form.addRow("Projector crop (px)", tb_crop)
+        form.addRow("Projector border (px)", tb_border)
+        form.addRow("", tb_add_negs)
+        form.addRow("Projector neg threshold", tb_neg_thr)
+        form.addRow("Projector negatives / image", tb_negs_per_img)
         form.addRow("", cache)
         self._update_dino_head_controls()
+        self._update_dino_projector_enabled_state()
+        self._update_dino_focal_controls()
+        self._update_dino_radius_schedule_controls()
         return box
 
     def _update_dino_head_controls(self) -> None:
@@ -725,6 +973,43 @@ class TrainModelDialog(QtWidgets.QDialog):
         for w in (getattr(self, "_dino_attn_heads_spin", None), getattr(self, "_dino_attn_layers_spin", None)):
             if w is not None:
                 w.setEnabled(attn_enabled)
+
+    def _update_dino_projector_enabled_state(self) -> None:
+        enabled = bool(getattr(self, "dino_tb_projector", True))
+        controls = getattr(self, "_dino_projector_controls", None)
+        if not controls:
+            return
+        for widget in controls:
+            try:
+                widget.setEnabled(enabled)
+            except Exception:
+                pass
+
+    def _update_dino_focal_controls(self) -> None:
+        bce_type = str(getattr(self, "dino_bce_type", "bce")
+                       or "bce").strip().lower()
+        enabled = bce_type == "focal"
+        controls = getattr(self, "_dino_focal_controls", None)
+        if not controls:
+            return
+        for widget in controls:
+            try:
+                widget.setEnabled(enabled)
+            except Exception:
+                pass
+
+    def _update_dino_radius_schedule_controls(self) -> None:
+        schedule = str(getattr(self, "dino_radius_schedule", "none")
+                       or "none").strip().lower()
+        enabled = schedule != "none"
+        controls = getattr(self, "_dino_radius_controls", None)
+        if not controls:
+            return
+        for widget in controls:
+            try:
+                widget.setEnabled(enabled)
+            except Exception:
+                pass
 
     def _build_dino_augment_groupbox(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("DINO KPSEG Augmentations", self)
@@ -810,7 +1095,6 @@ class TrainModelDialog(QtWidgets.QDialog):
             brightness,
             contrast,
             saturation,
-            seed,
         ]
 
         form.addRow("", enable)

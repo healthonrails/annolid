@@ -12,6 +12,11 @@ from annolid.annotation.keypoints import save_labels
 from annolid.data.videos import CV2Video
 from annolid.gui.shape import Shape
 from annolid.segmentation.dino_kpseg import DinoKPSEGPredictor
+from annolid.segmentation.dino_kpseg.inference_utils import (
+    build_instance_crops,
+    mask_bbox,
+    predict_on_instance_crops,
+)
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.cutie_mask_manager import CutieMaskManager, MaskResult
@@ -21,6 +26,7 @@ from annolid.tracking.dino_kpseg_annotations import (
 )
 from annolid.tracking.domain import InstanceRegistry, KeypointState
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointTracker
+from annolid.tracking.kpseg_smoothing import KeypointSmoother
 from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
@@ -82,6 +88,28 @@ class DinoKPSEGVideoProcessor:
             short_side=int(self.predictor.meta.short_side),
             device=tracker_device,
             runtime_config=self.config,
+        )
+
+        fps = None
+        try:
+            fps = self.video_loader.get_fps()
+        except Exception:
+            fps = None
+        if self.config.kpseg_smoothing_fps is not None:
+            fps = float(self.config.kpseg_smoothing_fps)
+        if not fps or float(fps) <= 0:
+            fps = 30.0
+        self._kpseg_smoother = KeypointSmoother(
+            mode=str(self.config.kpseg_smoothing or "none"),
+            fps=float(fps),
+            ema_alpha=float(self.config.kpseg_smoothing_alpha),
+            min_score=float(self.config.kpseg_smoothing_min_score),
+            one_euro_min_cutoff=float(self.config.kpseg_one_euro_min_cutoff),
+            one_euro_beta=float(self.config.kpseg_one_euro_beta),
+            one_euro_d_cutoff=float(self.config.kpseg_one_euro_d_cutoff),
+            kalman_process_noise=float(self.config.kpseg_kalman_process_noise),
+            kalman_measurement_noise=float(
+                self.config.kpseg_kalman_measurement_noise),
         )
 
         self.pred_worker = None
@@ -148,6 +176,7 @@ class DinoKPSEGVideoProcessor:
         self.mask_manager.reset_state()
         self.predictor.reset_state()
         self.tracker.reset_state()
+        self._kpseg_smoother.reset()
 
         seed_frame_rgb = self.video_loader.load_frame(manual_seed.frame_number)
         self._instance_display_labels.update(manual_seed.display_labels)
@@ -355,6 +384,7 @@ class DinoKPSEGVideoProcessor:
         self.mask_manager.reset_state()
         self.predictor.reset_state()
         self.tracker.reset_state()
+        self._kpseg_smoother.reset()
         return manual
 
     @staticmethod
@@ -457,25 +487,13 @@ class DinoKPSEGVideoProcessor:
         mask = instance.mask_bitmap
         if mask is None and instance.polygon is not None:
             mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-        if mask is None or not bool(np.any(mask)):
+        if mask is None:
             return None
-
-        ys, xs = np.nonzero(mask)
-        if xs.size == 0 or ys.size == 0:
-            return None
-        x1 = int(xs.min())
-        x2 = int(xs.max()) + 1
-        y1 = int(ys.min())
-        y2 = int(ys.max()) + 1
-
-        pad = int(self._bbox_padding_px)
-        x1 = max(0, x1 - pad)
-        y1 = max(0, y1 - pad)
-        x2 = min(int(self.video_width), x2 + pad)
-        y2 = min(int(self.video_height), y2 + pad)
-        if x2 - x1 < 2 or y2 - y1 < 2:
-            return None
-        return (x1, y1, x2, y2)
+        return mask_bbox(
+            mask.astype(bool),
+            pad_px=int(self._bbox_padding_px),
+            image_hw=(int(self.video_height), int(self.video_width)),
+        )
 
     def _crop_mask_for_instance(
         self,
@@ -522,35 +540,49 @@ class DinoKPSEGVideoProcessor:
             self.predictor.reset_state()
 
         corrections: Dict[str, Tuple[float, float]] = {}
+        use_mask_gate = bool(getattr(self.config, "kpseg_use_mask_gate", True))
+        instance_masks: List[Tuple[int, np.ndarray]] = []
+        instance_lookup: Dict[int, object] = {}
+        instance_key_lookup: Dict[int, str] = {}
+
         for instance in registry:
             gid = self._normalize_group_id(instance.label)
             if gid is None:
                 continue
-            instance_key = str(instance.label)
+            mask = instance.mask_bitmap
+            if mask is None and instance.polygon is not None:
+                mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
+            if mask is None:
+                continue
+            instance_lookup[int(gid)] = instance
+            instance_key_lookup[int(gid)] = str(instance.label)
+            instance_masks.append((int(gid), mask))
+
+        crops = build_instance_crops(
+            frame_bgr,
+            instance_masks,
+            pad_px=int(self._bbox_padding_px),
+            use_mask_gate=use_mask_gate,
+        )
+        preds_by_id = {
+            int(idx): pred
+            for idx, pred in predict_on_instance_crops(
+                self.predictor,
+                crops,
+                stabilize_lr=True,
+            )
+        }
+
+        for gid, instance in instance_lookup.items():
+            pred = preds_by_id.get(int(gid))
+            if pred is None:
+                continue
+            instance_key = instance_key_lookup.get(int(gid), str(gid))
             enabled = True if mode == "always" else bool(
                 self._kpseg_enabled_by_instance.get(instance_key, False)
             )
 
-            bbox = self._bbox_from_instance_mask(instance)
-            if bbox is None:
-                continue
-            x1, y1, x2, y2 = bbox
-            crop_bgr = frame_bgr[y1:y2, x1:x2]
-            crop_mask = self._crop_mask_for_instance(instance, x1, y1, x2, y2)
-            if not bool(getattr(self.config, "kpseg_use_mask_gate", True)):
-                crop_mask = None
-
-            pred = self.predictor.predict(
-                crop_bgr,
-                mask=crop_mask,
-                stabilize_lr=True,
-                instance_id=int(gid),
-            )
-            coords = [
-                (float(x) + float(x1), float(y) + float(y1))
-                for x, y in pred.keypoints_xy
-            ]
-
+            coords = [(float(x), float(y)) for x, y in pred.keypoints_xy]
             reliability_ratio = self._kpseg_reliability_ratio(
                 instance=instance,
                 coords=coords,
@@ -596,7 +628,34 @@ class DinoKPSEGVideoProcessor:
                 instance=instance,
                 coords=coords,
                 scores=pred.keypoint_scores,
+                reliability_ratio=reliability_ratio,
             )
+
+            if self._kpseg_smoother is not None:
+                mask = instance.mask_bitmap
+                if mask is None and instance.polygon is not None:
+                    mask = self.adapter.mask_bitmap_from_polygon(
+                        instance.polygon)
+                smoothed: List[Tuple[float, float]] = []
+                for idx, (coord, score) in enumerate(zip(final_coords, final_scores)):
+                    label = (
+                        self.keypoint_names[idx]
+                        if idx < len(self.keypoint_names)
+                        else str(idx)
+                    )
+                    key = f"{instance.label}:{label}"
+                    mask_ok = True
+                    if use_mask_gate and mask is not None:
+                        mask_ok = self._point_in_mask(coord, mask)
+                    smooth_coord = self._kpseg_smoother.smooth(
+                        key,
+                        coord,
+                        score=float(score),
+                        mask_ok=mask_ok,
+                    )
+                    smoothed.append(smooth_coord)
+                final_coords = smoothed
+
             self.predictor.seed_instance_state(
                 int(gid),
                 keypoints_xy=final_coords,
@@ -735,12 +794,24 @@ class DinoKPSEGVideoProcessor:
         instance,
         coords: List[Tuple[float, float]],
         scores: List[float],
+        reliability_ratio: Optional[float] = None,
     ) -> Tuple[List[Tuple[float, float]], List[float]]:
         min_score = float(self.config.kpseg_min_score)
         blend_alpha = float(self.config.kpseg_blend_alpha)
         use_mask_gate = bool(self.config.kpseg_use_mask_gate)
         fallback_to_track = bool(self.config.kpseg_fallback_to_track)
         max_jump = float(self.config.kpseg_max_jump_px)
+        fallback_mode = str(
+            getattr(self.config, "kpseg_fallback_mode",
+                    "per_keypoint") or "per_keypoint"
+        ).strip().lower()
+        fallback_ratio = float(
+            getattr(self.config, "kpseg_fallback_ratio", 0.5))
+        instance_fallback = (
+            fallback_mode == "instance"
+            and reliability_ratio is not None
+            and float(reliability_ratio) < float(fallback_ratio)
+        )
 
         mask = instance.mask_bitmap
         if mask is None and instance.polygon is not None:
@@ -760,7 +831,7 @@ class DinoKPSEGVideoProcessor:
             key = f"{instance.label}:{label}"
             prev = instance.keypoints.get(key)
 
-            reliable = float(score) >= min_score
+            reliable = (not instance_fallback) and float(score) >= min_score
             if reliable and use_mask_gate and mask is not None:
                 reliable = self._point_in_mask(coord, mask)
 

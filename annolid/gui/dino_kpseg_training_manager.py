@@ -236,6 +236,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         epochs: int,
         batch_size: int = 1,
         threshold: float,
+        bce_type: str = "bce",
+        focal_alpha: float = 0.25,
+        focal_gamma: float = 2.0,
+        coord_warmup_epochs: int = 0,
+        radius_schedule: str = "none",
+        radius_start_px: float = 6.0,
+        radius_end_px: float = 6.0,
+        overfit_n: int = 0,
         device: Optional[str],
         cache_features: bool,
         head_type: str = "conv",
@@ -258,6 +266,17 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         saturation: float = 0.0,
         seed: Optional[int] = None,
         tb_add_graph: bool = False,
+        tb_projector: bool = True,
+        tb_projector_split: str = "val",
+        tb_projector_max_images: int = 64,
+        tb_projector_max_patches: int = 4000,
+        tb_projector_per_image_per_keypoint: int = 3,
+        tb_projector_pos_threshold: float = 0.35,
+        tb_projector_crop_px: int = 96,
+        tb_projector_sprite_border_px: int = 3,
+        tb_projector_add_negatives: bool = False,
+        tb_projector_neg_threshold: float = 0.02,
+        tb_projector_negatives_per_image: int = 6,
     ) -> bool:
         if self._training_running:
             QtWidgets.QMessageBox.warning(
@@ -361,6 +380,22 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(int(batch_size)),
                 "--threshold",
                 str(float(threshold)),
+                "--bce-type",
+                str(bce_type or "bce"),
+                "--focal-alpha",
+                str(float(focal_alpha)),
+                "--focal-gamma",
+                str(float(focal_gamma)),
+                "--coord-warmup-epochs",
+                str(int(coord_warmup_epochs)),
+                "--radius-schedule",
+                str(radius_schedule or "none"),
+                "--radius-start-px",
+                str(float(radius_start_px)),
+                "--radius-end-px",
+                str(float(radius_end_px)),
+                "--overfit-n",
+                str(int(overfit_n)),
                 "--head-type",
                 str(head_type or "conv"),
                 "--attn-heads",
@@ -384,6 +419,28 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             ]
             if bool(tb_add_graph):
                 cmd.append("--tb-add-graph")
+            if bool(tb_projector):
+                cmd.append("--tb-projector")
+                cmd += ["--tb-projector-split",
+                        str(tb_projector_split or "val")]
+                cmd += ["--tb-projector-max-images",
+                        str(int(tb_projector_max_images))]
+                cmd += ["--tb-projector-max-patches",
+                        str(int(tb_projector_max_patches))]
+                cmd += ["--tb-projector-per-image-per-keypoint",
+                        str(int(tb_projector_per_image_per_keypoint))]
+                cmd += ["--tb-projector-pos-threshold",
+                        str(float(tb_projector_pos_threshold))]
+                cmd += ["--tb-projector-crop-px",
+                        str(int(tb_projector_crop_px))]
+                cmd += ["--tb-projector-sprite-border-px",
+                        str(int(tb_projector_sprite_border_px))]
+                if bool(tb_projector_add_negatives):
+                    cmd.append("--tb-projector-add-negatives")
+                cmd += ["--tb-projector-neg-threshold",
+                        str(float(tb_projector_neg_threshold))]
+                cmd += ["--tb-projector-negatives-per-image",
+                        str(int(tb_projector_negatives_per_image))]
             if device:
                 cmd += ["--device", str(device).strip()]
             if not bool(cache_features):
@@ -399,8 +456,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 cmd += ["--brightness", str(float(brightness))]
                 cmd += ["--contrast", str(float(contrast))]
                 cmd += ["--saturation", str(float(saturation))]
-                if seed is not None:
-                    cmd += ["--seed", str(int(seed))]
+            if seed is not None:
+                cmd += ["--seed", str(int(seed))]
 
             env = dict(os.environ)
             env.setdefault("PYTHONUNBUFFERED", "1")

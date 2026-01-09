@@ -121,6 +121,30 @@ class DinoKPSEGPredictor:
         self._prev_keypoint_scores = None
         self._prev_by_instance = {}
 
+    def extract_features(self, frame_bgr: np.ndarray) -> torch.Tensor:
+        """Extract frozen DINO features (CHW) for a frame or crop."""
+        feats = self.extractor.extract(
+            frame_bgr, color_space="BGR", return_type="torch")
+        feats = merge_feature_layers(feats)
+        if feats.ndim != 3:
+            raise ValueError("Expected DINO features as CHW")
+        return feats
+
+    def _validate_features(self, feats: torch.Tensor) -> torch.Tensor:
+        if not isinstance(feats, torch.Tensor):
+            raise TypeError("features must be a torch.Tensor")
+        if feats.ndim != 3:
+            raise ValueError("Expected DINO features as CHW")
+        if int(feats.shape[0]) != int(self.head.in_dim):
+            raise RuntimeError(
+                "DinoKPSEG checkpoint/backbone mismatch: "
+                f"checkpoint expects {self.head.in_dim} channels but extractor produced {int(feats.shape[0])}. "
+                "This often happens when training reused stale cached features from a different DINO backbone or layer set. "
+                "Fix by retraining with cache disabled (--no-cache) or clearing "
+                "~/.cache/annolid/dinokpseg/features, and ensure the checkpoint matches the backbone."
+            )
+        return feats
+
     def seed_instance_state(
         self,
         instance_id: int,
@@ -140,10 +164,11 @@ class DinoKPSEGPredictor:
         self._prev_by_instance[instance_id_int] = (coords, scores)
 
     @torch.inference_mode()
-    def predict(
+    def predict_from_features(
         self,
-        frame_bgr: np.ndarray,
+        feats: torch.Tensor,
         *,
+        frame_shape: Tuple[int, int],
         mask: Optional[np.ndarray] = None,
         threshold: Optional[float] = None,
         return_patch_masks: bool = False,
@@ -160,19 +185,7 @@ class DinoKPSEGPredictor:
             else:
                 prev_xy, prev_scores = None, None
 
-        feats = self.extractor.extract(
-            frame_bgr, color_space="BGR", return_type="torch")
-        feats = merge_feature_layers(feats)
-        if feats.ndim != 3:
-            raise ValueError("Expected DINO features as CHW")
-        if int(feats.shape[0]) != int(self.head.in_dim):
-            raise RuntimeError(
-                "DinoKPSEG checkpoint/backbone mismatch: "
-                f"checkpoint expects {self.head.in_dim} channels but extractor produced {int(feats.shape[0])}. "
-                "This often happens when training reused stale cached features from a different DINO backbone or layer set. "
-                "Fix by retraining with cache disabled (--no-cache) or clearing "
-                "~/.cache/annolid/dinokpseg/features, and ensure the checkpoint matches the backbone."
-            )
+        feats = self._validate_features(feats)
         c, h_p, w_p = feats.shape
         patch_size = int(self.extractor.patch_size)
         resized_h, resized_w = int(h_p) * patch_size, int(w_p) * patch_size
@@ -184,9 +197,9 @@ class DinoKPSEGPredictor:
 
         if mask is not None:
             mask_arr = np.asarray(mask)
-            if mask_arr.shape[:2] != frame_bgr.shape[:2]:
+            if mask_arr.shape[:2] != tuple(frame_shape):
                 raise ValueError(
-                    "mask must have the same HxW as frame_bgr (use a cropped mask for cropped inference)"
+                    "mask must have the same HxW as the input frame/crop"
                 )
             if mask_arr.dtype == bool:
                 mask_arr = mask_arr.astype(np.uint8) * 255
@@ -226,7 +239,7 @@ class DinoKPSEGPredictor:
         scores = torch.gather(flat, 1, best_idx[:, None]).squeeze(1).tolist()
 
         keypoints_xy: List[Tuple[float, float]] = []
-        h0, w0 = frame_bgr.shape[0], frame_bgr.shape[1]
+        h0, w0 = int(frame_shape[0]), int(frame_shape[1])
         for x_res, y_res in coords_resized:
             x_orig = float(x_res) * (float(w0) / float(resized_w))
             y_orig = float(y_res) * (float(h0) / float(resized_h))
@@ -257,6 +270,30 @@ class DinoKPSEGPredictor:
             masks_patch=masks,
             resized_hw=(resized_h, resized_w),
             patch_size=patch_size,
+        )
+
+    @torch.inference_mode()
+    def predict(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        mask: Optional[np.ndarray] = None,
+        threshold: Optional[float] = None,
+        return_patch_masks: bool = False,
+        stabilize_lr: bool = False,
+        stabilize_cfg: Optional[LRStabilizeConfig] = None,
+        instance_id: Optional[int] = None,
+    ) -> DinoKPSEGPrediction:
+        feats = self.extract_features(frame_bgr)
+        return self.predict_from_features(
+            feats,
+            frame_shape=(int(frame_bgr.shape[0]), int(frame_bgr.shape[1])),
+            mask=mask,
+            threshold=threshold,
+            return_patch_masks=return_patch_masks,
+            stabilize_lr=stabilize_lr,
+            stabilize_cfg=stabilize_cfg,
+            instance_id=instance_id,
         )
 
     def predict_instances(
@@ -301,8 +338,10 @@ class DinoKPSEGPredictor:
                 continue
 
             crop = frame_bgr[ry1:ry2, rx1:rx2]
-            pred = self.predict(
-                crop,
+            feats = self.extract_features(crop)
+            pred = self.predict_from_features(
+                feats,
+                frame_shape=(int(crop.shape[0]), int(crop.shape[1])),
                 threshold=threshold,
                 return_patch_masks=return_patch_masks,
                 stabilize_lr=stabilize_lr,
