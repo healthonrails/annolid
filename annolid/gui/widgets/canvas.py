@@ -15,6 +15,10 @@ from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
 from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    set_keypoint_visibility_on_shape_object,
+)
 from annolid.detector.grounding_dino import GroundingDINO
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 # TODO(unknown):
@@ -1101,6 +1105,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                         self.current.addPoint(
                             pos, label=0 if is_shift_pressed else 1)
                         if self.createMode == "point":
+                            if is_shift_pressed:
+                                set_keypoint_visibility_on_shape_object(
+                                    self.current, KeypointVisibility.OCCLUDED
+                                )
                             self.finalise()
                         elif (
                             self.createMode in [

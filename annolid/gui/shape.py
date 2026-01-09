@@ -11,6 +11,11 @@ import skimage.measure
 from shapely.geometry import Polygon
 from shapely.validation import explain_validity
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    keypoint_visibility_from_shape_object,
+)
+
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
 
@@ -276,9 +281,18 @@ class Shape(object):
                 # may be desirable.
                 # self.drawVertex(vrtx_path, 0)
 
+                is_keypoint_occluded = (
+                    self.shape_type == "point"
+                    and keypoint_visibility_from_shape_object(self)
+                    == int(KeypointVisibility.OCCLUDED)
+                )
                 for i, p in enumerate(self.points):
                     line_path.lineTo(p)
-                    self.drawVertex(vrtx_path, i)
+                    self.drawVertex(
+                        vrtx_path,
+                        i,
+                        is_occluded=(is_keypoint_occluded and i == 0),
+                    )
                 if self.isClosed():
                     line_path.lineTo(self.points[0])
 
@@ -343,7 +357,7 @@ class Shape(object):
         min_area = image_area * min_area_percentage
         return shape_area > min_area
 
-    def drawVertex(self, path, i, is_negative=False):
+    def drawVertex(self, path, i, is_negative=False, is_occluded=False):
         d = self.point_size / self.scale
         shape = self.point_type
         point = self.points[i]
@@ -377,6 +391,7 @@ class Shape(object):
                 ),
                 "highlighted": i == self._highlightIndex,
                 "negative": is_negative,
+                "occluded": bool(is_occluded),
             }
         )
 
@@ -394,6 +409,70 @@ class Shape(object):
             if vertex["highlighted"]:
                 # brighten the base color a bit for highlighted points
                 fill_color = fill_color.lighter(130)
+
+            if vertex.get("occluded", False):
+                painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                outline_width = max(1, int(round(1.4 / self.scale)))
+                outline_color = QtGui.QColor(fill_color).darker(160)
+                outline_pen = QtGui.QPen(outline_color, outline_width)
+                outline_pen.setCapStyle(QtCore.Qt.RoundCap)
+                outline_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+                outline_pen.setStyle(QtCore.Qt.DotLine)
+
+                painter.setPen(outline_pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+                if vertex["shape"] == self.P_ROUND:
+                    painter.drawEllipse(center, radius, radius)
+                else:
+                    side = radius * 2
+                    rect = QtCore.QRectF(
+                        center.x() - radius,
+                        center.y() - radius,
+                        side,
+                        side,
+                    )
+                    corner_radius = radius * 0.35
+                    painter.drawRoundedRect(
+                        rect, corner_radius, corner_radius
+                    )
+
+                cross_pen = QtGui.QPen(outline_color, outline_width)
+                cross_pen.setCapStyle(QtCore.Qt.RoundCap)
+                painter.setPen(cross_pen)
+                d = radius * 0.85
+                painter.drawLine(
+                    QtCore.QPointF(center.x() - d, center.y() - d),
+                    QtCore.QPointF(center.x() + d, center.y() + d),
+                )
+                painter.drawLine(
+                    QtCore.QPointF(center.x() - d, center.y() + d),
+                    QtCore.QPointF(center.x() + d, center.y() - d),
+                )
+
+                if vertex["highlighted"]:
+                    halo_pen = QtGui.QPen(
+                        QtGui.QColor(255, 255, 255, 180), outline_width
+                    )
+                    halo_pen.setCapStyle(QtCore.Qt.RoundCap)
+                    halo_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+                    halo_pen.setStyle(QtCore.Qt.DotLine)
+                    painter.setPen(halo_pen)
+                    painter.setBrush(QtCore.Qt.NoBrush)
+                    halo_radius = radius * 1.75
+                    if vertex["shape"] == self.P_ROUND:
+                        painter.drawEllipse(center, halo_radius, halo_radius)
+                    else:
+                        side = halo_radius * 2
+                        rect = QtCore.QRectF(
+                            center.x() - halo_radius,
+                            center.y() - halo_radius,
+                            side,
+                            side,
+                        )
+                        painter.drawRoundedRect(
+                            rect, halo_radius * 0.35, halo_radius * 0.35
+                        )
+                continue
 
             glow_radius = radius * 1.75
             glow = QtGui.QRadialGradient(center, glow_radius)

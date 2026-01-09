@@ -140,6 +140,58 @@ def test_labelme2yolo_pose_with_visibility(tmp_path):
     assert converter.kpt_shape == [2, 3]
 
 
+def test_labelme2yolo_pose_visibility_from_flags(tmp_path: Path):
+    image_width = 100
+    image_height = 80
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "rat",
+                "points": [[10, 20], [60, 20], [60, 50], [10, 50]],
+                "shape_type": "polygon",
+                "flags": {"instance_label": "rat"},
+            },
+            {
+                "label": "rat_head",
+                "points": [[20, 30]],
+                "shape_type": "point",
+                "flags": {},
+            },
+            {
+                "label": "rat_tail",
+                "points": [[55, 45]],
+                "shape_type": "point",
+                "flags": {
+                    "display_label": "tail",
+                    "instance_label": "rat",
+                    "kp_visible": False,
+                },
+            },
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(
+        str(tmp_path), yolo_dataset_name="YOLO_pose_vis", include_visibility=True
+    )
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+
+    label_path = tmp_path / "YOLO_pose_vis" / "labels" / "train" / "sample.txt"
+    content = label_path.read_text().strip().split()
+    floats = list(map(float, content[1:]))
+    # Head defaults to visible => v=2, tail uses flags => v=1
+    assert floats[4:7] == pytest.approx([0.2, 0.375, 2.0])
+    assert floats[7:10] == pytest.approx([0.55, 0.5625, 1.0])
+
+
 def test_labelme2yolo_does_not_expand_single_instance_pose_schema(tmp_path: Path):
     image_width = 100
     image_height = 80

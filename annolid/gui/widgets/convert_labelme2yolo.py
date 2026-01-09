@@ -1,6 +1,6 @@
 import os
 from qtpy.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressBar
+    QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressBar, QCheckBox
 )
 from qtpy.QtCore import Qt, QThread, Signal
 from annolid.annotation.labelme2yolo import Labelme2YOLO
@@ -12,19 +12,23 @@ class YOLOConverterWorker(QThread):
     message = Signal(str)
     error = Signal(str)
 
-    def __init__(self, json_dir, val_size, test_size, pose_schema_path=None):
+    def __init__(self, json_dir, val_size, test_size, pose_schema_path=None, include_visibility=False):
         super().__init__()
         self.json_dir = json_dir
         self.val_size = val_size
         self.test_size = test_size
         self.pose_schema_path = pose_schema_path
+        self.include_visibility = bool(include_visibility)
 
     def run(self):
         try:
             self.progress.emit(10)
             self.message.emit("Starting conversion...")
             converter = Labelme2YOLO(
-                self.json_dir, pose_schema_path=self.pose_schema_path)
+                self.json_dir,
+                pose_schema_path=self.pose_schema_path,
+                include_visibility=self.include_visibility,
+            )
             converter.convert(val_size=self.val_size, test_size=self.test_size)
             self.progress.emit(100)
             self.message.emit("Conversion successful!")
@@ -55,12 +59,19 @@ class YOLOConverterWidget(QDialog):
         # Optional pose schema selector (for flip_idx + keypoint order)
         self.pose_schema_label = QLabel("Pose schema (optional):")
         self.pose_schema_input = QLineEdit()
-        self.pose_schema_input.setPlaceholderText("pose_schema.json (or .yaml)")
+        self.pose_schema_input.setPlaceholderText(
+            "pose_schema.json (or .yaml)")
         self.pose_schema_browse = QPushButton("Browse")
         self.pose_schema_browse.clicked.connect(self.select_pose_schema_file)
         self.layout.addWidget(self.pose_schema_label)
         self.layout.addWidget(self.pose_schema_input)
         self.layout.addWidget(self.pose_schema_browse)
+
+        self.include_visibility_checkbox = QCheckBox(
+            "Include keypoint visibility (kpt_shape: Kx3)"
+        )
+        self.include_visibility_checkbox.setChecked(True)
+        self.layout.addWidget(self.include_visibility_checkbox)
 
         # Validation and test size inputs
         self.val_size_label = QLabel("Validation Size (0.0 to 1.0):")
@@ -121,6 +132,8 @@ class YOLOConverterWidget(QDialog):
         val_size = self.val_size_input.text().strip()
         test_size = self.test_size_input.text().strip()
         pose_schema_path = self.pose_schema_input.text().strip() or None
+        include_visibility = bool(
+            self.include_visibility_checkbox.isChecked())
 
         if not os.path.isdir(json_dir):
             QMessageBox.warning(
@@ -147,7 +160,12 @@ class YOLOConverterWidget(QDialog):
             return
 
         self.worker = YOLOConverterWorker(
-            json_dir, val_size, test_size, pose_schema_path=pose_schema_path)
+            json_dir,
+            val_size,
+            test_size,
+            pose_schema_path=pose_schema_path,
+            include_visibility=include_visibility,
+        )
         self.worker.finished.connect(self.on_conversion_finished)
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.message.connect(self.message_label.setText)

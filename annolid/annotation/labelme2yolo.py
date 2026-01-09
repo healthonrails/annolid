@@ -20,6 +20,10 @@ except ImportError:  # pragma: no cover - optional dependency
     train_test_split = None
 from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
 from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    visibility_from_labelme_shape,
+)
 from annolid.behavior.project_schema import (
     DEFAULT_SCHEMA_FILENAME,
     load_schema as load_project_schema,
@@ -617,16 +621,11 @@ class Labelme2YOLO:
 
     @staticmethod
     def _derive_visibility(shape: Dict[str, object]) -> Optional[int]:
-        """Parse visibility from the shape description if available."""
-        description = shape.get("description")
-        if isinstance(description, (int, float)):
-            return int(description)
-        if isinstance(description, str):
-            try:
-                return int(float(description))
-            except ValueError:
-                return None
-        return None
+        """Resolve keypoint visibility from flags/description (YOLO v: 0/1/2)."""
+        try:
+            return visibility_from_labelme_shape(shape)
+        except Exception:
+            return None
 
     @staticmethod
     def _extend_bounds(bounds: Optional[Tuple[float, float, float, float]],
@@ -722,11 +721,13 @@ class Labelme2YOLO:
             if not keypoint_label:
                 keypoint_label = f"kp_{len(entry['keypoints'])}"
             visibility = self._derive_visibility(shape)
+            if visibility is None:
+                visibility = int(KeypointVisibility.VISIBLE)
             entry["keypoints"][keypoint_label] = {
                 "x": float(x),
                 "y": float(y),
-                "visible": bool(shape.get("visible", True)),
-                "visibility": visibility,
+                "visible": bool(int(visibility) == int(KeypointVisibility.VISIBLE)),
+                "visibility": int(visibility),
             }
 
         if not polygon_labels and len(instances) > 1:

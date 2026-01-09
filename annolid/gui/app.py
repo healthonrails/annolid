@@ -112,6 +112,11 @@ import io
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.annotation import labelme2csv
 from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    keypoint_visibility_from_shape_object,
+    set_keypoint_visibility_on_shape_object,
+)
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.data.videos import get_video_files
@@ -1638,6 +1643,12 @@ class AnnolidWindow(MainWindow):
         return r, g, b
 
     def addLabel(self, shape):
+        def marker_for_shape(shape_obj: Shape) -> str:
+            if str(getattr(shape_obj, "shape_type", "") or "").lower() != "point":
+                return "●"
+            visibility = keypoint_visibility_from_shape_object(shape_obj)
+            return "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
+
         if shape.group_id is None:
             text = str(shape.label)
         else:
@@ -1670,8 +1681,8 @@ class AnnolidWindow(MainWindow):
 
         r, g, b = self._update_shape_color(shape)
         label_list_item.setText(
-            '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
-                html.escape(text), r, g, b
+            '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
+                html.escape(text), r, g, b, marker_for_shape(shape)
             )
         )
 
@@ -1746,17 +1757,106 @@ class AnnolidWindow(MainWindow):
 
         r, g, b = self._update_shape_color(shape)
 
-        if shape.group_id is None:
-            item.setText(
-                '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
-                    shape.label, r, g, b))
-        else:
-            item.setText("{} ({})".format(shape.label, shape.group_id))
+        base_text = (
+            str(shape.label)
+            if shape.group_id is None
+            else "{} ({})".format(shape.label, shape.group_id)
+        )
+        marker = "●"
+        if str(getattr(shape, "shape_type", "") or "").lower() == "point":
+            visibility = keypoint_visibility_from_shape_object(shape)
+            marker = "○" if visibility == int(
+                KeypointVisibility.OCCLUDED) else "●"
+        item.setText(
+            '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
+                html.escape(base_text), r, g, b, marker
+            )
+        )
         self.setDirty()
         if not self.uniqLabelList.findItemByLabel(shape.label):
             item = QtWidgets.QListWidgetItem()
             item.setData(Qt.UserRole, shape.label)
             self.uniqLabelList.addItem(item)
+
+    def _selected_shapes_for_keypoint_visibility(self) -> list[Shape]:
+        shapes = list(getattr(self.canvas, "selectedShapes", None) or [])
+        if shapes:
+            return shapes
+        try:
+            item = self.currentItem()
+        except Exception:
+            item = None
+        if isinstance(item, LabelListWidgetItem):
+            shape = item.shape()
+            if shape is not None:
+                return [shape]
+        return []
+
+    def _refresh_label_list_items_for_shapes(self, shapes: list[Shape]) -> None:
+        if not shapes:
+            return
+        target_ids = {id(s) for s in shapes}
+        for item in self.labelList:
+            if not isinstance(item, LabelListWidgetItem):
+                continue
+            shape = item.shape()
+            if shape is None or id(shape) not in target_ids:
+                continue
+            r, g, b = self._update_shape_color(shape)
+            base_text = (
+                str(shape.label)
+                if shape.group_id is None
+                else "{} ({})".format(shape.label, shape.group_id)
+            )
+            marker = "●"
+            if str(getattr(shape, "shape_type", "") or "").lower() == "point":
+                visibility = keypoint_visibility_from_shape_object(shape)
+                marker = "○" if visibility == int(
+                    KeypointVisibility.OCCLUDED) else "●"
+            item.setText(
+                '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
+                    html.escape(base_text), r, g, b, marker
+                )
+            )
+
+    def set_selected_keypoint_visibility(self, visible: bool) -> None:
+        shapes = [
+            s for s in self._selected_shapes_for_keypoint_visibility()
+            if str(getattr(s, "shape_type", "") or "").lower() == "point"
+        ]
+        if not shapes:
+            self.statusBar().showMessage(
+                "Select one or more keypoint (point) shapes first."
+            )
+            return
+        target = KeypointVisibility.VISIBLE if visible else KeypointVisibility.OCCLUDED
+        for shape in shapes:
+            set_keypoint_visibility_on_shape_object(shape, int(target))
+        self._refresh_label_list_items_for_shapes(shapes)
+        self.canvas.update()
+        self.setDirty()
+
+    def toggle_selected_keypoint_visibility(self) -> None:
+        shapes = [
+            s for s in self._selected_shapes_for_keypoint_visibility()
+            if str(getattr(s, "shape_type", "") or "").lower() == "point"
+        ]
+        if not shapes:
+            self.statusBar().showMessage(
+                "Select one or more keypoint (point) shapes first."
+            )
+            return
+        for shape in shapes:
+            current = keypoint_visibility_from_shape_object(shape)
+            target = (
+                KeypointVisibility.VISIBLE
+                if current == int(KeypointVisibility.OCCLUDED)
+                else KeypointVisibility.OCCLUDED
+            )
+            set_keypoint_visibility_on_shape_object(shape, int(target))
+        self._refresh_label_list_items_for_shapes(shapes)
+        self.canvas.update()
+        self.setDirty()
 
     def _saveImageFile(self, filename):
         image_filename = filename.replace('.json', '.png')

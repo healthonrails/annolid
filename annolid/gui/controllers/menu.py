@@ -412,6 +412,58 @@ class MenuController:
             tip=w.tr("Open a 3D viewer for TIFF stacks"),
         )
 
+        # ------------------------------------------------------------------
+        # Pose/keypoint annotation helpers (visible vs occluded)
+        # ------------------------------------------------------------------
+        w.toggle_keypoint_visibility_action = self._action_factory(
+            w.tr("Toggle Keypoint Visibility"),
+            w.toggle_selected_keypoint_visibility,
+            shortcut="Ctrl+Alt+I",
+            tip=w.tr("Toggle selected keypoint(s) between visible and occluded"),
+        )
+        w.mark_keypoint_visible_action = self._action_factory(
+            w.tr("Mark Keypoint Visible"),
+            lambda: w.set_selected_keypoint_visibility(True),
+            shortcut="Ctrl+Alt+V",
+            tip=w.tr("Mark selected keypoint(s) as visible (v=2)"),
+        )
+        w.mark_keypoint_occluded_action = self._action_factory(
+            w.tr("Mark Keypoint Occluded"),
+            lambda: w.set_selected_keypoint_visibility(False),
+            shortcut="Ctrl+Alt+O",
+            tip=w.tr("Mark selected keypoint(s) as occluded (v=1)"),
+        )
+
+        try:
+            w.actions.editMenu = tuple(getattr(w.actions, "editMenu", ())) + (
+                None,
+                w.toggle_keypoint_visibility_action,
+                w.mark_keypoint_visible_action,
+                w.mark_keypoint_occluded_action,
+            )
+        except Exception:
+            pass
+
+        try:
+            w.actions.menu = tuple(getattr(w.actions, "menu", ())) + (
+                None,
+                w.toggle_keypoint_visibility_action,
+                w.mark_keypoint_visible_action,
+                w.mark_keypoint_occluded_action,
+            )
+        except Exception:
+            pass
+
+        try:
+            label_list_menu = getattr(w.menus, "labelList", None)
+            if label_list_menu is not None:
+                label_list_menu.addSeparator()
+                label_list_menu.addAction(w.toggle_keypoint_visibility_action)
+                label_list_menu.addAction(w.mark_keypoint_visible_action)
+                label_list_menu.addAction(w.mark_keypoint_occluded_action)
+        except Exception:
+            pass
+
     def _ensure_settings_menu(self) -> None:
         """Create a Settings menu (positioned before View when available)."""
         w = self._window
