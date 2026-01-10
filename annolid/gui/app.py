@@ -46,7 +46,10 @@ from labelme.utils import newAction
 from labelme.widgets import LabelListWidgetItem
 from labelme import utils
 from annolid.utils.logger import logger
-from annolid.utils.files import count_json_files
+from annolid.utils.files import (
+    count_json_files,
+    should_start_predictions_from_frame0,
+)
 from annolid.utils.annotation_store import AnnotationStore
 from labelme.widgets import ToolBar
 from annolid.gui.label_file import LabelFileError
@@ -2561,11 +2564,15 @@ class AnnolidWindow(MainWindow):
             inference_end_frame = None  # default: run to end for YOLO/DinoKPSEG inference
             if self.video_results_folder:
                 try:
-                    max_existing = self._max_predicted_frame_index(
-                        Path(self.video_results_folder)
-                    )
-                    if max_existing >= int(inference_start_frame):
-                        inference_start_frame = int(max_existing) + 1
+                    results_folder = Path(self.video_results_folder)
+                    if should_start_predictions_from_frame0(results_folder):
+                        inference_start_frame = 0
+                    else:
+                        max_existing = self._max_predicted_frame_index(
+                            results_folder
+                        )
+                        if max_existing >= int(inference_start_frame):
+                            inference_start_frame = int(max_existing) + 1
                 except Exception:
                     pass
             watch_start_frame = int(self.frame_number or 0)

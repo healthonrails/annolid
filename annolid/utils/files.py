@@ -148,6 +148,73 @@ def find_manual_labeled_json_files(folder_path):
     return manually_labeled_files
 
 
+def has_manual_labeled_frame(folder_path, frame_number: int) -> bool:
+    """Return True if `folder_path` contains a manually labeled frame.
+
+    Manual labels are detected via `find_manual_labeled_json_files`, i.e. a frame
+    is considered manual when its `<folder>_<frame>.png` exists alongside the
+    corresponding LabelMe JSON (or via the AnnotationStore fallback).
+    """
+    try:
+        target = int(frame_number)
+    except Exception:
+        return False
+    try:
+        manual_files = find_manual_labeled_json_files(str(folder_path))
+    except Exception:
+        return False
+    for name in manual_files:
+        try:
+            if int(get_frame_number_from_json(name)) == target:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def has_frame_annotation(folder_path, frame_number: int) -> bool:
+    """Return True if `folder_path` already contains any annotation for a frame.
+
+    Checks both the modern "<folder>_000000123.json" naming convention and the
+    legacy "000000123.json" convention, plus `AnnotationStore` records.
+    """
+    folder = Path(folder_path)
+    try:
+        idx = int(frame_number)
+    except Exception:
+        return False
+
+    primary = folder / f"{folder.name}_{idx:09d}.json"
+    legacy = folder / f"{idx:09d}.json"
+    for path in (primary, legacy):
+        try:
+            if path.exists() and path.stat().st_size > 0:
+                return True
+        except Exception:
+            continue
+
+    try:
+        store = AnnotationStore.for_frame_path(primary)
+        if store.store_path.exists() and store.get_frame(idx) is not None:
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def should_start_predictions_from_frame0(results_folder) -> bool:
+    """Return True when prediction should start at frame 0.
+
+    This is intended for video inference/tracking entry points that normally
+    start from the "next" frame after the user's current manual seed. If there
+    is no manual seed at frame 0 and there is no existing output annotation for
+    frame 0, starting from frame 0 ensures early frames are not skipped.
+    """
+    return (not has_manual_labeled_frame(results_folder, 0)) and (
+        not has_frame_annotation(results_folder, 0)
+    )
+
+
 def get_frame_number_from_json(json_file):
     # Assume json file name pattern as
     # xxxx_000000000.json
