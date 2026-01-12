@@ -1,10 +1,12 @@
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
-from ultralytics import SAM, YOLO, YOLOE
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ultralytics import SAM, YOLO, YOLOE  # type: ignore
 
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.polygons import simplify_polygons
@@ -277,6 +279,13 @@ class InferenceProcessor:
         model_name_lower = model_ref.lower()
 
         if self.model_type == "yolo":
+            try:
+                from ultralytics import YOLO, YOLOE  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "YOLO inference requires the optional dependency 'ultralytics'. "
+                    "Install it (e.g. `pip install ultralytics`) to use YOLO models."
+                ) from exc
             if "yoloe" in model_name_lower:
                 model = YOLOE(model_ref)
                 if filtered_classes:
@@ -293,6 +302,13 @@ class InferenceProcessor:
                             model_ref)
             return model
         if self.model_type == "sam":
+            try:
+                from ultralytics import SAM  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "SAM inference via `annolid.segmentation.yolos.InferenceProcessor` requires "
+                    "the optional dependency 'ultralytics'. Install it (e.g. `pip install ultralytics`)."
+                ) from exc
             model = SAM(model_ref)
             model.info()
             return model
@@ -448,6 +464,8 @@ class InferenceProcessor:
                 logger.info(
                     "Detected CoreML export; using predict() instead of track().")
                 results = self.model.predict(source, stream=True)
+            elif "pose" in self.model_name.lower():
+                results = self.model.predict(source, stream=True)
             else:
                 results = self.model.track(source, persist=True, stream=True)
 
@@ -460,7 +478,11 @@ class InferenceProcessor:
                 if result.boxes and len(result.boxes) > 0:
                     frame_shape = (
                         result.orig_shape[0], result.orig_shape[1], 3)
-                    annotations = self.extract_yolo_results(result)
+                    annotations = self.extract_yolo_results(
+                        result,
+                        save_bbox=bool(
+                            getattr(result, "keypoints", None) is not None),
+                    )
                     self.save_yolo_to_labelme(
                         annotations, frame_shape, output_directory)
                 self.frame_count += 1
@@ -679,7 +701,11 @@ class InferenceProcessor:
                                 frame, persist=True, verbose=False
                             )
                     if isinstance(results, (list, tuple)) and results:
-                        annotations = self.extract_yolo_results(results[0])
+                        annotations = self.extract_yolo_results(
+                            results[0],
+                            save_bbox=bool(
+                                getattr(results[0], "keypoints", None) is not None),
+                        )
                 except Exception as exc:
                     logger.error("YOLO inference failed at frame %s: %s",
                                  frame_index, exc, exc_info=True)
@@ -1014,6 +1040,14 @@ class InferenceProcessor:
 
         boxes_obj = getattr(detection_result, "boxes", None)
         boxes_xywh = boxes_obj.xywh.cpu() if boxes_obj is not None else []
+        boxes_conf = getattr(
+            boxes_obj, "conf", None) if boxes_obj is not None else None
+        boxes_conf_list = None
+        if boxes_conf is not None:
+            try:
+                boxes_conf_list = boxes_conf.cpu().tolist()
+            except Exception:
+                boxes_conf_list = None
 
         keypoints = getattr(detection_result, "keypoints", None)
         kpts_xy = getattr(
@@ -1117,6 +1151,9 @@ class InferenceProcessor:
                     float(x2), float(y2)]]
                 bbox_shape.other_data["instance_id"] = int(group_id)
                 bbox_shape.other_data["instance_label"] = instance_label
+                if boxes_conf_list is not None and idx < len(boxes_conf_list):
+                    bbox_shape.other_data["score"] = float(
+                        boxes_conf_list[idx])
                 annotations.append(bbox_shape)
 
             if save_track and idx < len(boxes_xywh):
