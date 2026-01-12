@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import logging
-import serial
 import time
 import struct
+from types import SimpleNamespace
+
+try:
+    import serial  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    class _MissingPySerial:
+        def __init__(self, *_args, **_kwargs):
+            raise ModuleNotFoundError(
+                "Optional dependency 'pyserial' is required for serial communication. "
+                "Install it with `pip install pyserial`."
+            )
+
+    serial = SimpleNamespace(Serial=_MissingPySerial,
+                             SerialException=Exception)
 
 
 class BpodStateMachine:
@@ -579,8 +592,6 @@ class BpodController:
     """Simple controller wrapper for Bpod serial communication."""
 
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1):
-        from types import SimpleNamespace
-
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -597,7 +608,8 @@ class BpodController:
             self.serial_connection = conn
             return conn
         except Exception:
-            self._logger.exception("Failed to connect to Bpod on %s", self.port)
+            self._logger.exception(
+                "Failed to connect to Bpod on %s", self.port)
             raise
 
     def disconnect(self) -> None:
