@@ -170,6 +170,32 @@ class MenuController:
                 "slot": w.show_behavior_time_budget_dialog,
                 "tip": w.tr("Summarise recorded behavior events"),
             },
+            # New streamlined wizard actions
+            {
+                "name": "new_project_wizard",
+                "text": w.tr("&New Project…"),
+                "slot": w.open_new_project_wizard,
+                "shortcut": "Ctrl+Shift+N",
+                "tip": w.tr("Create a new annotation project with guided wizard"),
+            },
+            {
+                "name": "export_dataset_wizard",
+                "text": w.tr("&Export Dataset…"),
+                "slot": w.open_export_dataset_wizard,
+                "tip": w.tr("Export annotations to COCO, YOLO, or JSONL format"),
+            },
+            {
+                "name": "training_wizard",
+                "text": w.tr("Training &Wizard…"),
+                "slot": w.open_training_wizard,
+                "tip": w.tr("Step-by-step training configuration wizard"),
+            },
+            {
+                "name": "inference_wizard",
+                "text": w.tr("&Inference Wizard…"),
+                "slot": w.open_inference_wizard,
+                "tip": w.tr("Run inference on videos with trained models"),
+            },
             {
                 "name": "project_schema",
                 "text": w.tr("Project &Schema"),
@@ -543,15 +569,27 @@ class MenuController:
                 button.setIconSize(QtCore.QSize(32, 32))
                 text = self._format_tool_button_text(action.text())
                 button.setText(text)
+
+        # File menu with new wizards prominently placed at top
         file_sections = [
+            # New streamlined wizards first for better discoverability
             (
+                actions["new_project_wizard"],
                 actions["open_video"],
                 actions["open_youtube_video"],
+            ),
+            (
                 actions["open_audio"],
                 actions["open_caption"],
                 actions["open_florence2"],
                 actions["open_image_editing"],
                 actions["colab"],
+            ),
+            # Export and training wizards
+            (
+                actions["export_dataset_wizard"],
+                actions["training_wizard"],
+                actions["inference_wizard"],
             ),
             (
                 actions["save_labels"],

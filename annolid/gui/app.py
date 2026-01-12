@@ -5435,6 +5435,153 @@ class AnnolidWindow(MainWindow):
                     4000,
                 )
 
+    # ------------------------------------------------------------------
+    # Streamlined Workflow Wizards (Better UX than DeepLabCut)
+    # ------------------------------------------------------------------
+
+    def open_new_project_wizard(self) -> None:
+        """Open the new project wizard for guided project creation."""
+        from annolid.gui.widgets.project_wizard import ProjectWizard
+
+        wizard = ProjectWizard(parent=self)
+        wizard.project_created.connect(self._on_project_created)
+        wizard.exec_()
+
+    def _on_project_created(self, project_path: Path, schema, videos: list) -> None:
+        """Handle project creation from the wizard."""
+        self.project_schema = schema
+        self.project_schema_path = project_path / "project.annolid.json"
+        self.behavior_controller.configure_from_schema(schema)
+        self._populate_behavior_controls_from_schema(schema)
+
+        # Open the first video if requested and available
+        if videos:
+            self.openVideo(from_video_list=True, video_path=videos[0])
+
+        self.statusBar().showMessage(
+            self.tr("Project '%s' created successfully") % project_path.name,
+            5000,
+        )
+
+    def open_export_dataset_wizard(self) -> None:
+        """Open the dataset export wizard."""
+        from annolid.gui.widgets.dataset_wizard import DatasetExportWizard
+
+        # Pre-fill with current annotation directory if available
+        source_dir = None
+        if self.video_file:
+            potential_dir = Path(self.video_file).with_suffix("")
+            if potential_dir.is_dir():
+                source_dir = str(potential_dir)
+
+        wizard = DatasetExportWizard(source_dir=source_dir, parent=self)
+        wizard.export_complete.connect(self._on_dataset_exported)
+        wizard.exec_()
+
+    def _on_dataset_exported(self, output_path: Path, format_type: str) -> None:
+        """Handle dataset export completion."""
+        self.statusBar().showMessage(
+            self.tr("Dataset exported to %s (%s format)") % (
+                output_path.name, format_type.upper()),
+            5000,
+        )
+
+    def open_training_wizard(self) -> None:
+        """Open the training wizard for guided model training."""
+        from annolid.gui.widgets.training_wizard import TrainingWizard
+
+        # Pre-fill with data.yaml if found near current video
+        dataset_path = None
+        if self.video_file:
+            potential_yaml = Path(
+                self.video_file).with_suffix("") / "data.yaml"
+            if potential_yaml.exists():
+                dataset_path = str(potential_yaml)
+
+        wizard = TrainingWizard(dataset_path=dataset_path, parent=self)
+        wizard.training_requested.connect(self._on_training_requested)
+        wizard.exec_()
+
+    def _on_training_requested(self, config: dict) -> None:
+        """Handle training request from the wizard."""
+        backend = config.get("backend", "yolo")
+
+        if backend == "yolo":
+            self._start_yolo_training_from_wizard(config)
+        elif backend == "dino_kpseg":
+            self._start_dino_training_from_wizard(config)
+        else:
+            self._start_maskrcnn_training_from_wizard(config)
+
+        if config.get("open_dashboard"):
+            self._open_training_dashboard()
+
+    def _start_yolo_training_from_wizard(self, config: dict) -> None:
+        """Start YOLO training with wizard configuration."""
+        try:
+            self.yolo_training_manager.start_training(
+                data_yaml=config.get("dataset_path"),
+                model=config.get("model", "yolo11n-seg.pt"),
+                epochs=config.get("epochs", 100),
+                batch=config.get("batch", 8),
+                imgsz=config.get("imgsz", 640),
+                device=config.get("device", ""),
+                project=config.get("output_dir"),
+            )
+            self.statusBar().showMessage(self.tr("YOLO training started"), 3000)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, self.tr("Training Error"),
+                self.tr("Failed to start training: %s") % str(e)
+            )
+
+    def _start_dino_training_from_wizard(self, config: dict) -> None:
+        """Start DINO KPSEG training with wizard configuration."""
+        try:
+            self.dino_kpseg_training_manager.start_training(
+                data_dir=str(Path(config.get("dataset_path", "")).parent),
+                model_name=config.get("model"),
+                epochs=config.get("epochs", 100),
+                batch_size=config.get("batch", 8),
+                short_side=config.get("short_side", 768),
+                lr=config.get("lr", 0.002),
+                radius_px=config.get("radius_px", 6.0),
+            )
+            self.statusBar().showMessage(self.tr("DINO KPSEG training started"), 3000)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, self.tr("Training Error"),
+                self.tr("Failed to start training: %s") % str(e)
+            )
+
+    def _start_maskrcnn_training_from_wizard(self, config: dict) -> None:
+        """Start MaskRCNN training with wizard configuration."""
+        self.statusBar().showMessage(
+            self.tr("MaskRCNN training: use the legacy Train Models dialog"), 5000
+        )
+
+    def _open_training_dashboard(self) -> None:
+        """Open the training dashboard for monitoring."""
+        try:
+            dashboard = TrainingDashboardDialog(parent=self)
+            dashboard.show()
+        except Exception as e:
+            logger.debug(f"Could not open training dashboard: {e}")
+
+    def open_inference_wizard(self) -> None:
+        """Open the inference wizard for running model predictions."""
+        from annolid.gui.widgets.inference_wizard import InferenceWizard
+
+        # Pre-fill with current video if available
+        video_path = self.video_file if self.video_file else None
+
+        wizard = InferenceWizard(video_path=video_path, parent=self)
+        wizard.exec_()
+
+    # ------------------------------------------------------------------
+    # End Workflow Wizards
+    # ------------------------------------------------------------------
+
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
         self._df = pd.read_csv(labels_csv_file)
