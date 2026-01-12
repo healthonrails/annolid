@@ -455,6 +455,7 @@ class InferenceProcessor:
                     visual_prompts=visual_prompts,
                     predictor=YOLOEVPSegPredictor,
                     stream=True,
+                    verbose=False,
                 )
             except Exception as e:
                 logger.error("Error during visual prompt prediction: %s", e)
@@ -463,11 +464,15 @@ class InferenceProcessor:
             if self._is_coreml:
                 logger.info(
                     "Detected CoreML export; using predict() instead of track().")
-                results = self.model.predict(source, stream=True)
+                results = self.model.predict(
+                    source, stream=True, verbose=False)
             elif "pose" in self.model_name.lower():
-                results = self.model.predict(source, stream=True)
+                results = self.model.predict(
+                    source, stream=True, verbose=False)
             else:
-                results = self.model.track(source, persist=True, stream=True)
+                results = self.model.track(
+                    source, persist=True, stream=True, verbose=False
+                )
 
         stopped = False
         try:

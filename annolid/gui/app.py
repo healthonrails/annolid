@@ -312,6 +312,7 @@ class AnnolidWindow(MainWindow):
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self._progress_bar_owner: Optional[str] = None
 
         self._current_video_defined_segments: List[TrackingSegment] = []
         self.menu_controller = MenuController(self)
@@ -3524,7 +3525,7 @@ class AnnolidWindow(MainWindow):
 
     def _start_csv_conversion(self, out_folder: Path, csv_output_path: Path):
         """Kick off a background CSV conversion job for the given folder."""
-        self._initialize_progress_bar()
+        self._initialize_progress_bar(owner="csv_conversion")
         self._last_tracking_csv_path = str(csv_output_path)
         self.statusBar().showMessage(
             f"Generating tracking CSV: {csv_output_path.name}", 3000)
@@ -3576,6 +3577,7 @@ class AnnolidWindow(MainWindow):
                 self.progress_bar.setVisible(False)
         except Exception:
             pass
+        self._progress_bar_owner = None
 
         if result == "Stopped":
             self._cleanup_csv_worker()
@@ -3619,10 +3621,13 @@ class AnnolidWindow(MainWindow):
             self._last_tracking_csv_path = None
         self._cleanup_csv_worker()
 
-    def _initialize_progress_bar(self):
+    def _initialize_progress_bar(self, *, owner: str) -> None:
         """Initialize the progress bar and add it to the status bar."""
+        self._progress_bar_owner = owner
         self.progress_bar.setValue(0)
-        self.statusBar().addWidget(self.progress_bar)
+        if not self.progress_bar.isVisible():
+            self.statusBar().addWidget(self.progress_bar)
+        self.progress_bar.setVisible(True)
 
     def _csv_worker_progress_proxy(self, progress):
         """Route worker progress updates through thread-safe signal emission."""
@@ -3643,7 +3648,11 @@ class AnnolidWindow(MainWindow):
     # method to hide progress bar
     def _finalize_prediction_progress(self, message=""):
         logger.info(f"Prediction finalization: {message}")
-        if hasattr(self, 'progress_bar') and self.progress_bar.isVisible():
+        if (
+            getattr(self, "_progress_bar_owner", None) in (None, "prediction")
+            and hasattr(self, "progress_bar")
+            and self.progress_bar.isVisible()
+        ):
             self.statusBar().removeWidget(self.progress_bar)
         self._stop_prediction_folder_watcher()
         # Clear prediction-related marks from the slider
@@ -3945,8 +3954,9 @@ class AnnolidWindow(MainWindow):
         thread = self.csv_thread
 
         worker.start_signal.connect(worker.run)
-        worker.finished_signal.connect(
-            lambda _result: self.place_preference_analyze_auto())
+        # Post-conversion analysis can be expensive and should be user-triggered
+        # (via the Place Preference Analyzer dialog) rather than blocking the GUI
+        # automatically after every conversion.
 
         worker.finished_signal.connect(self._on_csv_conversion_finished)
         worker.finished_signal.connect(thread.quit)

@@ -104,6 +104,45 @@ def convert_json_to_csv(json_folder,
     if csv_file is None:
         csv_file = json_folder + '_tracking.csv'
 
+    def _normalize_tracking_id(value):
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float):
+            try:
+                if value.is_integer():
+                    return int(value)
+            except Exception:
+                return 0
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.isdigit():
+                return int(raw)
+        return 0
+
+    def _shape_instance_name(shape):
+        name = shape.get("instance_label") or shape.get("instance_name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        label = shape.get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+        return ""
+
+    def _shape_score(shape):
+        for key in ("score", "class_score", "confidence"):
+            value = shape.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 1.0
+
     def _report_progress(progress):
         if progress_callback is None:
             return
@@ -207,17 +246,80 @@ def convert_json_to_csv(json_folder,
                     timestamp_value = convert_frame_number_to_time(
                         frame_number, fps_value)
 
+                has_rectangles = any(
+                    isinstance(s, dict) and (s.get("shape_type")
+                                             or "").lower() == "rectangle"
+                    for s in shapes
+                )
+
                 for shape in shapes:
-                    instance_name = shape.get("label")
+                    if not isinstance(shape, dict):
+                        continue
+                    shape_type = (shape.get('shape_type') or '').lower()
+                    instance_name = _shape_instance_name(shape)
                     points = shape.get("points") or []
-                    if shape.get('shape_type') == 'point':
+                    if shape_type == "rectangle":
+                        if len(points) < 2:
+                            continue
+                        a, b = points[0], points[1]
+                        if (
+                            not isinstance(a, (list, tuple))
+                            or not isinstance(b, (list, tuple))
+                            or len(a) < 2
+                            or len(b) < 2
+                        ):
+                            continue
+                        x1 = min(float(a[0]), float(b[0]))
+                        y1 = min(float(a[1]), float(b[1]))
+                        x2 = max(float(a[0]), float(b[0]))
+                        y2 = max(float(a[1]), float(b[1]))
+                        cx = (x1 + x2) / 2.0
+                        cy = (y1 + y2) / 2.0
+                        class_score = _shape_score(shape)
+                        tracking_id = _normalize_tracking_id(
+                            shape.get("group_id"))
+                        segmentation = ""
+
+                        csv_writer.writerow(
+                            [frame_number, x1, y1, x2, y2, cx, cy,
+                             instance_name, class_score, segmentation, tracking_id]
+                        )
+                        if tracked_writer is not None and instance_name:
+                            motion_index = shape.get("motion_index")
+                            if motion_index is None:
+                                description = shape.get("description") or ""
+                                match = re.search(
+                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description)
+                                if match:
+                                    try:
+                                        motion_index = float(match.group(1))
+                                    except ValueError:
+                                        motion_index = None
+                            try:
+                                motion_index = float(
+                                    motion_index) if motion_index is not None else -1
+                            except (TypeError, ValueError):
+                                motion_index = -1
+                            key = (frame_number, instance_name)
+                            if key not in tracked_seen:
+                                tracked_seen.add(key)
+                                tracked_writer.writerow(
+                                    [frame_number, instance_name, cx, cy, motion_index, timestamp_value])
+                        continue
+
+                    if shape_type == 'point':
+                        # YOLO pose exports can contain many per-animal keypoints; if rectangle detections
+                        # are present, treat rectangles as the tracked instances and skip per-keypoint points.
+                        if has_rectangles and (shape.get("description") or "").lower() == "yolo":
+                            continue
                         points = keypoint_to_polygon_points(points)
-                        shape['shape_type'] = 'polygon'
+                        shape_type = 'polygon'
+
                     if len(points) > 2:
                         mask = convert_shape_to_mask(img_shape, points)
                         bboxs = masks_to_bboxes(mask[None, :, :])
                         segmentation = binary_mask_to_coco_rle(mask)
-                        class_score = 1.0
+                        class_score = _shape_score(shape)
 
                         if len(bboxs) > 0:
                             cx, cy = polygon_center(points)
@@ -232,7 +334,7 @@ def convert_json_to_csv(json_folder,
                                     description = shape.get(
                                         "description") or ""
                                     match = re.search(
-                                        r"motion_index\s*[:=]\s*([\-0-9\.eE]+)", description)
+                                        r"motion_index\s*[:=]\s*([-0-9.eE]+)", description)
                                     if match:
                                         try:
                                             motion_index = float(
@@ -251,8 +353,9 @@ def convert_json_to_csv(json_folder,
                                 except (TypeError, ValueError):
                                     motion_index = -1
                                 key = (frame_number, instance_name)
-                                if key not in tracked_seen:
-                                    tracked_seen.add(key)
+                                if key in tracked_seen:
+                                    continue
+                                tracked_seen.add(key)
                                 tracked_writer.writerow(
                                     [frame_number, instance_name, stored_cx, stored_cy, motion_index, timestamp_value])
                 num_processed_files += 1
