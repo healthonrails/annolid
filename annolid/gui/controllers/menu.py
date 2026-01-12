@@ -24,8 +24,7 @@ class MenuController:
 
     def setup(self) -> None:
         """Create actions, populate menus/toolbars, and configure custom menus."""
-        self._ensure_video_tools_menu()
-        self._ensure_settings_menu()
+        self._ensure_all_menus()
         self._create_core_actions()
         self._populate_tools_and_menus()
         self._reorder_top_menus()
@@ -33,11 +32,14 @@ class MenuController:
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
-    def _ensure_video_tools_menu(self) -> None:
+    def _ensure_all_menus(self) -> None:
+        """Create all custom menus for organized, user-friendly navigation."""
         w = self._window
         action = self._action_factory
+
+        # Video Tools menu
         if not hasattr(w.menus, "video_tools"):
-            w.menus.video_tools = w.menuBar().addMenu(w.tr("&Video Tools"))
+            w.menus.video_tools = QtWidgets.QMenu(w.tr("&Video Tools"), w)
         w.open_segment_editor_action = action(
             w.tr("Define Video Segments..."),
             w._open_segment_editor_dialog,
@@ -45,7 +47,22 @@ class MenuController:
             tip=w.tr("Define tracking segments for the current video"),
         )
         w.open_segment_editor_action.setEnabled(False)
-        utils.addActions(w.menus.video_tools, (w.open_segment_editor_action,))
+
+        # AI & Models menu - central hub for machine learning
+        if not hasattr(w.menus, "ai_models"):
+            w.menus.ai_models = QtWidgets.QMenu(w.tr("&AI && Models"), w)
+
+        # Analysis menu - reports and visualization
+        if not hasattr(w.menus, "analysis"):
+            w.menus.analysis = QtWidgets.QMenu(w.tr("&Analysis"), w)
+
+        # Convert menu - format conversions
+        if not hasattr(w.menus, "convert"):
+            w.menus.convert = QtWidgets.QMenu(w.tr("&Convert"), w)
+
+        # Settings menu
+        if not hasattr(w.menus, "settings"):
+            w.menus.settings = QtWidgets.QMenu(w.tr("&Settings"), w)
 
     def _create_core_actions(self) -> None:
         w = self._window
@@ -302,7 +319,7 @@ class MenuController:
                 "name": "quality_control",
                 "text": w.tr("&Quality Control"),
                 "slot": w.quality_control,
-                "shortcut": "Ctrl+Shift+G",
+                "shortcut": "Ctrl+Shift+Q",
                 "tip": w.tr("Convert to tracking results to labelme format"),
                 "icon_path": here / "icons/quality_control.png",
             },
@@ -333,7 +350,7 @@ class MenuController:
                 "name": "sam3d_reconstruct",
                 "text": w.tr("Reconstruct 3D (SAM 3D)..."),
                 "slot": w.run_sam3d_reconstruction,
-                "tip": w.tr("Generate a 3D Gaussian splat using SAM 3D Objects"),
+                "tip": w.tr("Generate a 3D Gaussian splat from video"),
                 "icon_name": "objects",
             },
             {
@@ -433,9 +450,9 @@ class MenuController:
 
         # 3D Viewer action
         w.open_3d_viewer_action = self._action_factory(
-            w.tr("Open 3D Viewer…"),
+            w.tr("3D Viewer…"),
             w.open_3d_viewer,
-            tip=w.tr("Open a 3D viewer for TIFF stacks"),
+            tip=w.tr("View and explore 3D TIFF image stacks"),
         )
 
         # ------------------------------------------------------------------
@@ -489,19 +506,6 @@ class MenuController:
                 label_list_menu.addAction(w.mark_keypoint_occluded_action)
         except Exception:
             pass
-
-    def _ensure_settings_menu(self) -> None:
-        """Create a Settings menu (positioned before View when available)."""
-        w = self._window
-        if hasattr(w.menus, "settings"):
-            return
-        settings_menu = QtWidgets.QMenu(w.tr("&Settings"), w)
-        view_menu = getattr(w.menus, "view", None)
-        if view_menu is not None:
-            w.menuBar().insertMenu(view_menu.menuAction(), settings_menu)
-        else:
-            w.menuBar().addMenu(settings_menu)
-        w.menus.settings = settings_menu
 
     def _create_action_from_spec(self, spec: dict) -> QtWidgets.QAction:
         action = self._action_factory(
@@ -570,9 +574,10 @@ class MenuController:
                 text = self._format_tool_button_text(action.text())
                 button.setText(text)
 
-        # File menu with new wizards prominently placed at top
+        # ============================================================
+        # FILE MENU - Open, Save, Export operations only
+        # ============================================================
         file_sections = [
-            # New streamlined wizards first for better discoverability
             (
                 actions["new_project_wizard"],
                 actions["open_video"],
@@ -581,71 +586,137 @@ class MenuController:
             (
                 actions["open_audio"],
                 actions["open_caption"],
-                actions["open_florence2"],
-                actions["open_image_editing"],
-                actions["colab"],
-            ),
-            # Export and training wizards
-            (
-                actions["export_dataset_wizard"],
-                actions["training_wizard"],
-                actions["inference_wizard"],
             ),
             (
                 actions["save_labels"],
-                actions["frames"],
-                actions["models"],
-                actions["tracks"],
-                actions["quality_control"],
-                actions["downsample_video"],
-            ),
-            (
-                actions["tracking_reports"],
-                actions["behavior_time_budget"],
-                actions["project_schema"],
-                actions["pose_schema"],
-                actions["place_preference"],
-                actions["add_stamps_action"],
-            ),
-            (
-                actions["convert_csv"],
-                actions["extract_shape_keypoints"],
-                actions["convert_labelme2yolo_format"],
-                actions["convert_deeplabcut"],
-                actions["convert_sleap"],
-                actions["coco"],
+                actions["export_dataset_wizard"],
             ),
         ]
         self._add_menu_sections(w.menus.file, file_sections)
 
-        view_sections = [
+        # ============================================================
+        # VIDEO TOOLS MENU - Video processing and manipulation
+        # ============================================================
+        video_sections = [
             (
-                actions["glitter2"],
-                actions["video_depth_anything"],
+                w.open_segment_editor_action,
+                actions["frames"],
+                actions["downsample_video"],
+            ),
+            (
                 actions["run_optical_flow"],
-                actions["sam3d_reconstruct"],
+                actions["video_depth_anything"],
+                actions["add_stamps_action"],
+            ),
+        ]
+        self._add_menu_sections(w.menus.video_tools, video_sections)
+
+        # ============================================================
+        # AI & MODELS MENU - Machine learning hub
+        # ============================================================
+        ai_sections = [
+            # Streamlined wizards first
+            (
+                actions["training_wizard"],
+                actions["inference_wizard"],
+            ),
+            # Legacy training dialog
+            (
+                actions["models"],
+                actions["colab"],
+            ),
+            # AI-assisted annotation tools
+            (
+                w.createPolygonSAMMode,
+                actions["open_florence2"],
+                actions["open_image_editing"],
+            ),
+            # Tracking and quality
+            (
+                actions["tracks"],
+                actions["quality_control"],
+                w.realtime_control_action,
+            ),
+        ]
+        self._add_menu_sections(w.menus.ai_models, ai_sections)
+
+        # ============================================================
+        # ANALYSIS MENU - Reports and visualization
+        # ============================================================
+        analysis_sections = [
+            (
+                actions["tracking_reports"],
+                actions["behavior_time_budget"],
+                actions["place_preference"],
             ),
             (
                 actions["visualization"],
+            ),
+        ]
+        self._add_menu_sections(w.menus.analysis, analysis_sections)
+
+        # ============================================================
+        # VIEW MENU - Display toggles and 3D visualization
+        # ============================================================
+        view_sections = [
+            (
                 actions["toggle_pose_edges"],
                 w.patch_similarity_action,
                 w.pca_map_action,
-                w.open_3d_viewer_action,
             ),
-            (w.realtime_control_action,),
+            (
+                w.open_3d_viewer_action,
+                actions["sam3d_reconstruct"],
+            ),
+            (
+                actions["glitter2"],
+            ),
         ]
         self._add_menu_sections(w.menus.view, view_sections)
 
-        settings_actions = [
-            actions["advance_params"],
-            actions["optical_flow_settings"],
-            actions["depth_settings"],
-            actions["sam3d_settings"],
-            w.patch_similarity_settings_action,
-            w.pca_map_settings_action,
+        # ============================================================
+        # CONVERT MENU - Format conversion utilities
+        # ============================================================
+        convert_sections = [
+            (
+                actions["convert_labelme2yolo_format"],
+                actions["coco"],
+            ),
+            (
+                actions["convert_deeplabcut"],
+                actions["convert_sleap"],
+            ),
+            (
+                actions["convert_csv"],
+                actions["extract_shape_keypoints"],
+            ),
         ]
-        self._add_menu_sections(w.menus.settings, [settings_actions])
+        self._add_menu_sections(w.menus.convert, convert_sections)
 
+        # ============================================================
+        # SETTINGS MENU - Configuration dialogs
+        # ============================================================
+        settings_sections = [
+            (
+                actions["advance_params"],
+                actions["project_schema"],
+                actions["pose_schema"],
+            ),
+            (
+                actions["optical_flow_settings"],
+                actions["depth_settings"],
+                actions["sam3d_settings"],
+            ),
+            (
+                w.patch_similarity_settings_action,
+                w.pca_map_settings_action,
+            ),
+        ]
+        self._add_menu_sections(w.menus.settings, settings_sections)
+
+        # ============================================================
+        # HELP MENU
+        # ============================================================
         utils.addActions(w.menus.help, (actions["about_annolid"],))
 
     @staticmethod
@@ -663,8 +734,18 @@ class MenuController:
         """Keep top-level menu order consistent and professional."""
         w = self._window
         bar = w.menuBar()
-        desired_names = ["file", "edit", "view",
-                         "video_tools", "settings", "help"]
+        # Professional menu order: File, Edit, View, then domain menus, then Settings/Help
+        desired_names = [
+            "file",
+            "edit",
+            "view",
+            "video_tools",
+            "ai_models",
+            "analysis",
+            "convert",
+            "settings",
+            "help",
+        ]
         menus = []
         for name in desired_names:
             menu = getattr(w.menus, name, None)
