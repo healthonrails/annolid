@@ -18,6 +18,15 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
+    - name: Free disk space
+      run: |
+        df -h
+        sudo rm -rf /usr/share/dotnet || true
+        sudo rm -rf /usr/local/lib/android || true
+        sudo rm -rf /opt/ghc || true
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        df -h
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
       with:
@@ -25,8 +34,31 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pytest
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        python -m pip install --no-cache-dir flake8 pytest
+        if [ -f requirements.txt ]; then
+          # Avoid pulling huge CUDA runtime wheels in CI: install CPU-only PyTorch explicitly,
+          # then install the remaining dependencies from requirements.txt (excluding torch*).
+        python - <<'PY'
+        import re
+        from pathlib import Path
+
+        src = Path('requirements.txt').read_text(encoding='utf-8').splitlines(True)
+        skip = {'torch', 'torchvision', 'torchaudio'}
+        out_lines = []
+        for line in src:
+          stripped = line.strip()
+          if not stripped or stripped.startswith('#'):
+            out_lines.append(line)
+            continue
+          name = re.split(r'[\s;=<>!~]+', stripped, maxsplit=1)[0]
+          if name in skip:
+            continue
+          out_lines.append(line)
+        Path('/tmp/requirements-ci.txt').write_text(''.join(out_lines), encoding='utf-8')
+        PY
+          python -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-cache-dir -r /tmp/requirements-ci.txt
+        fi
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names
