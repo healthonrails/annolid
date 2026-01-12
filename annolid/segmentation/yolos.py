@@ -1,6 +1,6 @@
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
@@ -12,6 +12,7 @@ from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
 
 
 class InferenceProcessor:
@@ -42,10 +43,44 @@ class InferenceProcessor:
         self.model = self._load_model(class_names)
         self.frame_count: int = 0
         self.track_history = defaultdict(list)
+        self.pose_schema: Optional[PoseSchema] = None
+        self._instance_label_to_gid: Dict[str, int] = {}
         self.keypoint_names = self._resolve_keypoint_names(
             keypoint_names=keypoint_names,
             pose_schema_path=pose_schema_path,
         )
+
+    @staticmethod
+    def _clean_instance_label(value: object) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        return text.rstrip("_-:|")
+
+    @staticmethod
+    def _normalize_group_id(value: object) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool):  # bool is also int
+            return int(value)
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float) and np.isfinite(value):
+            return int(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.isdigit():
+                return int(raw)
+        return None
+
+    @staticmethod
+    def _next_group_id(used: set[int]) -> int:
+        candidate = max(used) + 1 if used else 0
+        while candidate in used:
+            candidate += 1
+        return candidate
 
     def _resolve_keypoint_names(
         self,
@@ -62,11 +97,8 @@ class InferenceProcessor:
         if pose_schema_path:
             try:
                 schema = PoseSchema.load(pose_schema_path)
+                self.pose_schema = schema
                 if schema.keypoints:
-                    if getattr(schema, "instances", None):
-                        expanded = schema.expand_keypoints()
-                        if expanded:
-                            return expanded
                     return list(schema.keypoints)
             except Exception:
                 pass
@@ -499,7 +531,7 @@ class InferenceProcessor:
                     break
                 if end_frame is not None and frame_index > int(end_frame):
                     break
-                if bool(skip_existing) and self._frame_has_existing_output(
+                if bool(skip_existing) and self._frame_has_existing_store_record(
                     output_directory, frame_index=int(frame_index)
                 ):
                     ok = cap.grab()
@@ -515,8 +547,15 @@ class InferenceProcessor:
                 bboxes = None
                 if visual_prompts is not None:
                     bboxes = visual_prompts.get("bboxes")
+                prompt_shapes = self._load_prompt_shapes(
+                    output_directory, frame_index=int(frame_index)
+                )
+                instance_masks = self._instance_masks_from_shapes(
+                    prompt_shapes, frame_hw=(int(frame_shape[0]), int(frame_shape[1]))
+                )
                 annotations = self.extract_dino_kpseg_results(
-                    frame, bboxes=bboxes)
+                    frame, bboxes=bboxes, instance_masks=instance_masks
+                )
                 self.save_yolo_to_labelme(
                     annotations,
                     frame_shape,
@@ -695,15 +734,196 @@ class InferenceProcessor:
                 continue
         return False
 
+    def _frame_has_existing_store_record(self, output_dir: Path, *, frame_index: int) -> bool:
+        store = AnnotationStore.for_frame_path(
+            self._labelme_json_path(output_dir, frame_index=int(frame_index))
+        )
+        try:
+            return store.get_frame(int(frame_index)) is not None
+        except Exception:
+            return False
+
+    def _load_prompt_shapes(
+        self,
+        output_directory: Path,
+        *,
+        frame_index: int,
+    ) -> List[Dict[str, object]]:
+        """Load existing shapes to drive per-instance DinoKPSEG inference.
+
+        Preference order:
+        1) Per-frame LabelMe JSON (if present)
+        2) AnnotationStore record for the frame (NDJSON)
+        """
+        frame_index = int(frame_index)
+        candidates = (
+            self._labelme_json_path(output_directory, frame_index=frame_index),
+            self._legacy_labelme_json_path(
+                output_directory, frame_index=frame_index),
+        )
+        for path in candidates:
+            try:
+                if path.exists() and path.stat().st_size > 0:
+                    payload = load_labelme_json(path)
+                    shapes = payload.get("shapes") or []
+                    if isinstance(shapes, list):
+                        return [s for s in shapes if isinstance(s, dict)]
+            except Exception:
+                continue
+
+        store = AnnotationStore.for_frame_path(
+            self._labelme_json_path(output_directory, frame_index=frame_index)
+        )
+        record = store.get_frame(frame_index)
+        shapes = record.get("shapes") if isinstance(record, dict) else None
+        if isinstance(shapes, list):
+            return [s for s in shapes if isinstance(s, dict)]
+        return []
+
+    def _instance_masks_from_shapes(
+        self,
+        shapes: Sequence[Dict[str, object]],
+        *,
+        frame_hw: Tuple[int, int],
+    ) -> List[Tuple[int, np.ndarray]]:
+        """Build (instance_id, mask) pairs from existing polygon-like shapes."""
+        try:
+            import cv2  # type: ignore
+        except Exception:
+            return []
+
+        height, width = int(frame_hw[0]), int(frame_hw[1])
+        if height <= 0 or width <= 0:
+            return []
+
+        schema_instances: Dict[str, int] = {}
+        if self.pose_schema and getattr(self.pose_schema, "instances", None):
+            for idx, name in enumerate(self.pose_schema.instances):
+                clean = self._clean_instance_label(name)
+                if clean and clean.lower() not in schema_instances:
+                    schema_instances[clean.lower()] = int(idx)
+
+        instance_masks: List[Tuple[int, np.ndarray]] = []
+        used_gids: set[int] = set()
+        for shape in shapes:
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
+            if shape_type not in ("polygon", "rectangle", "circle"):
+                continue
+            points = shape.get("points") or []
+            if not isinstance(points, list) or not points:
+                continue
+
+            flags = shape.get("flags") if isinstance(
+                shape.get("flags"), dict) else {}
+            gid = self._normalize_group_id(shape.get("group_id"))
+            if gid is None:
+                gid = self._normalize_group_id(shape.get("instance_id"))
+            if gid is None and flags:
+                gid = self._normalize_group_id(flags.get("instance_id"))
+
+            label = self._clean_instance_label(shape.get("label"))
+            if gid is None and label:
+                by_schema = schema_instances.get(label.lower())
+                if by_schema is not None:
+                    gid = int(by_schema)
+            if gid is None and label:
+                existing = self._instance_label_to_gid.get(label.lower())
+                if existing is not None:
+                    gid = int(existing)
+            if gid is None:
+                gid = self._next_group_id(used_gids)
+            used_gids.add(int(gid))
+            if label:
+                self._instance_label_to_gid.setdefault(label.lower(), int(gid))
+
+            mask = np.zeros((height, width), dtype=np.uint8)
+            if shape_type == "polygon":
+                poly = []
+                for pt in points:
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                        continue
+                    poly.append((float(pt[0]), float(pt[1])))
+                if len(poly) < 3:
+                    continue
+                poly_arr = np.rint(np.array(poly, dtype=np.float32)
+                                   ).astype(np.int32)
+                cv2.fillPoly(mask, [poly_arr], 1)
+            elif shape_type == "rectangle":
+                if len(points) < 2:
+                    continue
+                a, b = points[0], points[1]
+                if (
+                    not isinstance(a, (list, tuple))
+                    or not isinstance(b, (list, tuple))
+                    or len(a) < 2
+                    or len(b) < 2
+                ):
+                    continue
+                x1 = int(round(min(float(a[0]), float(b[0]))))
+                y1 = int(round(min(float(a[1]), float(b[1]))))
+                x2 = int(round(max(float(a[0]), float(b[0]))))
+                y2 = int(round(max(float(a[1]), float(b[1]))))
+                x1 = max(0, min(width - 1, x1))
+                x2 = max(0, min(width, x2))
+                y1 = max(0, min(height - 1, y1))
+                y2 = max(0, min(height, y2))
+                if x2 - x1 < 2 or y2 - y1 < 2:
+                    continue
+                cv2.rectangle(mask, (x1, y1), (x2, y2), 1, thickness=-1)
+            elif shape_type == "circle":
+                if len(points) < 2:
+                    continue
+                c, e = points[0], points[1]
+                if (
+                    not isinstance(c, (list, tuple))
+                    or not isinstance(e, (list, tuple))
+                    or len(c) < 2
+                    or len(e) < 2
+                ):
+                    continue
+                cx, cy = float(c[0]), float(c[1])
+                ex, ey = float(e[0]), float(e[1])
+                r = int(round(((cx - ex) ** 2 + (cy - ey) ** 2) ** 0.5))
+                if r <= 0:
+                    continue
+                cv2.circle(mask, (int(round(cx)), int(round(cy))),
+                           r, 1, thickness=-1)
+
+            if not np.any(mask):
+                continue
+            instance_masks.append((int(gid), mask.astype(bool)))
+
+        instance_masks.sort(key=lambda item: int(item[0]))
+        return instance_masks
+
     def extract_dino_kpseg_results(
         self,
         frame_bgr: np.ndarray,
         *,
         bboxes: Optional[np.ndarray] = None,
+        instance_masks: Optional[Sequence[Tuple[int, np.ndarray]]] = None,
     ) -> list:
         annotations = []
         try:
-            if bboxes is not None and len(bboxes) > 0:
+            if instance_masks:
+                from annolid.segmentation.dino_kpseg.inference_utils import (
+                    build_instance_crops,
+                    predict_on_instance_crops,
+                )
+
+                crops = build_instance_crops(
+                    frame_bgr,
+                    list(instance_masks),
+                    pad_px=8,
+                    use_mask_gate=True,
+                )
+                predictions = predict_on_instance_crops(
+                    self.model,
+                    crops,
+                    return_patch_masks=False,
+                    stabilize_lr=True,
+                )
+            elif bboxes is not None and len(bboxes) > 0:
                 predictions = self.model.predict_instances(
                     frame_bgr,
                     bboxes_xyxy=bboxes,
@@ -711,6 +931,14 @@ class InferenceProcessor:
                     stabilize_lr=True,
                 )
             else:
+                # No prompts (no polygons / boxes). Fall back to multi-peak decoding
+                # so a single frame can contain multiple "nose" points, etc.
+                peaks = self.model.predict_multi_peaks(
+                    frame_bgr,
+                    threshold=None,
+                    topk=5,
+                    nms_radius_px=12.0,
+                )
                 predictions = [(None, self.model.predict(
                     frame_bgr, return_patch_masks=False, stabilize_lr=True))]
         except Exception as exc:
@@ -724,6 +952,27 @@ class InferenceProcessor:
             kp_names = [str(i)
                         for i in range(len(first_pred.keypoints_xy))]
 
+        # Emit multi-peak points only when no instance separation signals were present.
+        if (bboxes is None or len(bboxes) == 0) and not instance_masks:
+            if kp_names:
+                for kpt_id, channel_peaks in enumerate(peaks):
+                    label = kp_names[kpt_id] if kpt_id < len(
+                        kp_names) else str(kpt_id)
+                    for rank, (x, y, score) in enumerate(channel_peaks):
+                        point_shape = Shape(
+                            label,
+                            shape_type="point",
+                            description=self.model_type,
+                            flags={},
+                            group_id=None,
+                        )
+                        point_shape.points = [[float(x), float(y)]]
+                        point_shape.other_data["score"] = float(score)
+                        point_shape.other_data["peak_rank"] = int(rank)
+                        point_shape.other_data["multi_peak"] = True
+                        annotations.append(point_shape)
+                return annotations
+
         for instance_id, prediction in predictions:
             group_id = int(instance_id) if instance_id is not None else None
             for kpt_id, (xy, score) in enumerate(
@@ -733,15 +982,17 @@ class InferenceProcessor:
                     kp_names) else str(kpt_id)
                 x, y = float(xy[0]), float(xy[1])
 
-                flags = {"score": float(score)}
                 point_shape = Shape(
                     label,
                     shape_type="point",
                     description=self.model_type,
-                    flags=flags,
+                    flags={},
                     group_id=group_id,
                 )
                 point_shape.points = [[x, y]]
+                point_shape.other_data["score"] = float(score)
+                if group_id is not None:
+                    point_shape.other_data["instance_id"] = int(group_id)
                 annotations.append(point_shape)
 
         return annotations

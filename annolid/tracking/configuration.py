@@ -141,6 +141,27 @@ class CutieDinoTrackerConfig:
     kpseg_one_euro_d_cutoff: float = 1.0
     kpseg_kalman_process_noise: float = 1e-2
     kpseg_kalman_measurement_noise: float = 1e-1
+    # Multi-animal tracking configuration (Phase 6)
+    tracking_enable: bool = False
+    tracking_matcher_algorithm: str = "greedy"  # greedy|hungarian
+    tracking_instance_match_distance_px: float = 150.0
+    tracking_instance_match_min_similarity: float = 0.3
+    tracking_instance_dropout_timeout_frames: int = 30
+    tracking_enforce_skeletal_constraints: bool = True
+    tracking_constraint_limb_std_multiplier: float = 3.0
+    tracking_constraint_max_velocity_px: float = 200.0
+    tracking_centroid_weight: float = 1.0
+    tracking_pose_weight: float = 0.5
+    tracking_size_weight: float = 0.3
+    # Temporal smoothing configuration (Phase 7)
+    tracking_smoother_enable: bool = False
+    tracking_smoother_mode: str = "one_euro"  # ema|one_euro|kalman
+    tracking_smoother_fps: Optional[float] = None
+    tracking_smoother_ema_alpha: float = 0.7
+    tracking_smoother_one_euro_min_cutoff: float = 1.0
+    tracking_smoother_one_euro_beta: float = 0.0
+    tracking_smoother_kalman_process_noise: float = 1e-2
+    tracking_smoother_kalman_measurement_noise: float = 1e-1
     progress_hook: Optional[ProgressHook] = None
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None
@@ -261,6 +282,60 @@ class CutieDinoTrackerConfig:
         self.candidate_prune_ratio = max(
             0.0, min(1.0, float(self.candidate_prune_ratio)))
         self.candidate_prune_min = max(0, int(self.candidate_prune_min))
+        
+        # Validate multi-animal tracking parameters
+        self.tracking_enable = bool(self.tracking_enable)
+        matcher = str(self.tracking_matcher_algorithm or "greedy").strip().lower()
+        if matcher not in ("greedy", "hungarian"):
+            matcher = "greedy"
+        self.tracking_matcher_algorithm = matcher
+        self.tracking_instance_match_distance_px = max(
+            1.0, float(self.tracking_instance_match_distance_px)
+        )
+        self.tracking_instance_match_min_similarity = float(
+            min(1.0, max(0.0, float(self.tracking_instance_match_min_similarity)))
+        )
+        self.tracking_instance_dropout_timeout_frames = max(
+            1, int(self.tracking_instance_dropout_timeout_frames)
+        )
+        self.tracking_enforce_skeletal_constraints = bool(
+            self.tracking_enforce_skeletal_constraints
+        )
+        self.tracking_constraint_limb_std_multiplier = max(
+            1.0, float(self.tracking_constraint_limb_std_multiplier)
+        )
+        self.tracking_constraint_max_velocity_px = max(
+            1.0, float(self.tracking_constraint_max_velocity_px)
+        )
+        self.tracking_centroid_weight = max(
+            0.0, float(self.tracking_centroid_weight)
+        )
+        self.tracking_pose_weight = max(0.0, float(self.tracking_pose_weight))
+        self.tracking_size_weight = max(0.0, float(self.tracking_size_weight))
+        
+        # Validate temporal smoothing parameters
+        self.tracking_smoother_enable = bool(self.tracking_smoother_enable)
+        smoother_mode = str(self.tracking_smoother_mode or "one_euro").strip().lower()
+        if smoother_mode not in ("ema", "one_euro", "kalman"):
+            smoother_mode = "one_euro"
+        self.tracking_smoother_mode = smoother_mode
+        if self.tracking_smoother_fps is not None:
+            self.tracking_smoother_fps = max(1e-3, float(self.tracking_smoother_fps))
+        self.tracking_smoother_ema_alpha = float(
+            min(1.0, max(0.0, float(self.tracking_smoother_ema_alpha)))
+        )
+        self.tracking_smoother_one_euro_min_cutoff = max(
+            1e-6, float(self.tracking_smoother_one_euro_min_cutoff)
+        )
+        self.tracking_smoother_one_euro_beta = max(
+            0.0, float(self.tracking_smoother_one_euro_beta)
+        )
+        self.tracking_smoother_kalman_process_noise = max(
+            1e-8, float(self.tracking_smoother_kalman_process_noise)
+        )
+        self.tracking_smoother_kalman_measurement_noise = max(
+            1e-8, float(self.tracking_smoother_kalman_measurement_noise)
+        )
 
     def _apply_preset_defaults(self, preset: str) -> None:
         preset_values = TRACKER_PRESETS.get(preset)

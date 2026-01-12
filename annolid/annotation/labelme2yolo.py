@@ -10,9 +10,9 @@ import numpy as np
 import PIL.Image
 import shutil
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 from random import Random
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from labelme.utils.image import img_b64_to_arr
 try:
     from sklearn.model_selection import train_test_split
@@ -148,6 +148,7 @@ class Labelme2YOLO:
         if pose_schema_path:
             try:
                 self.pose_schema = PoseSchema.load(pose_schema_path)
+                self.pose_schema.normalize_prefixed_keypoints()
             except Exception:
                 self.pose_schema = None
 
@@ -160,17 +161,33 @@ class Labelme2YOLO:
                     embedded = getattr(project_schema, "pose_schema", None)
                     if isinstance(embedded, dict) and embedded:
                         self.pose_schema = PoseSchema.from_dict(embedded)
+                        self.pose_schema.normalize_prefixed_keypoints()
             except Exception:
                 self.pose_schema = None
 
+        if self.pose_schema and getattr(self.pose_schema, "instances", None):
+            # When LabelMe point labels are prefixed with instance names
+            # (e.g. "intruder_nose"), keep the canonical YOLO keypoint list as the
+            # base names ("nose") and rely on per-object grouping for instances.
+            normalized_keypoints: List[str] = []
+            seen: Set[str] = set()
+            for kp in keypoints:
+                try:
+                    _, base = self.pose_schema.strip_instance_prefix(kp)
+                except Exception:
+                    base = str(kp or "").strip()
+                base = self._clean_label(base)
+                if base and base not in seen:
+                    seen.add(base)
+                    normalized_keypoints.append(base)
+            keypoints = normalized_keypoints
+
         if self.pose_schema and self.pose_schema.keypoints:
-            instances = list(
-                getattr(self.pose_schema, "instances", None) or [])
-            schema_keypoints = (
-                self.pose_schema.expand_keypoints()
-                if instances and len(instances) > 1
-                else list(self.pose_schema.keypoints)
-            )
+            # YOLO pose datasets use a single canonical keypoint list shared across all classes.
+            # Even when the pose schema represents multiple "instances" (e.g. multi-animal),
+            # keypoints remain the base names (nose/left_ear/...) and instance assignment is
+            # handled per-object via grouping.
+            schema_keypoints = list(self.pose_schema.keypoints)
             merged = list(schema_keypoints)
             for kp in keypoints:
                 if kp not in merged:
@@ -466,11 +483,13 @@ class Labelme2YOLO:
             polygon_labels: Set[str] = set()
             default_label = Labelme2YOLO._default_instance_label(
                 Path(json_path), data)
+            saw_non_point = False
 
             for shape in shapes:
                 shape_type = (shape.get("shape_type") or "polygon").lower()
                 if shape_type == "point":
                     continue
+                saw_non_point = True
                 instance_label = Labelme2YOLO._resolve_instance_label(
                     shape, polygon_labels, default_label=default_label)
                 if instance_label:
@@ -494,7 +513,10 @@ class Labelme2YOLO:
                     shape, candidate_labels, default_label=default_label)
                 if instance_label:
                     candidate_labels.add(instance_label)
-                if instance_label and instance_label not in seen_labels:
+                # Only treat point-derived instance labels as classes when there are no
+                # polygon/box shapes. For multi-animal pose with polygons, points should
+                # not introduce new class labels.
+                if (not saw_non_point) and instance_label and instance_label not in seen_labels:
                     seen_labels.add(instance_label)
                     label_order.append(instance_label)
                 keypoint_label = Labelme2YOLO._resolve_keypoint_label(
@@ -529,8 +551,18 @@ class Labelme2YOLO:
 
     @staticmethod
     def _clean_label(value: Optional[str]) -> str:
-        """Normalize a label value to a trimmed string."""
-        return str(value).strip() if value not in (None, "") else ""
+        """Normalize a label value to a trimmed string.
+
+        LabelMe projects sometimes end up with accidental trailing separators in
+        labels (e.g. `intruder_`). Strip common separators from the end while
+        preserving internal underscores used by keypoint names (e.g. `tail_base`).
+        """
+        if value in (None, ""):
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        return text.rstrip("_-:|")
 
     @staticmethod
     def _default_instance_label(json_path: Path,
@@ -543,6 +575,12 @@ class Labelme2YOLO:
         )
         if flag_label:
             return flag_label
+
+        meta_flags = payload.get("annolid_flags_meta")
+        if isinstance(meta_flags, dict):
+            meta_label = Labelme2YOLO._clean_label(meta_flags.get("instance_label"))
+            if meta_label:
+                return meta_label
 
         payload_label = Labelme2YOLO._clean_label(
             payload.get("instance_label"))
@@ -573,6 +611,9 @@ class Labelme2YOLO:
         )
         if flag_label:
             return flag_label
+        payload_label = Labelme2YOLO._clean_label(shape.get("instance_label"))
+        if payload_label:
+            return payload_label
 
         label = Labelme2YOLO._clean_label(shape.get("label"))
         shape_type = (shape.get("shape_type") or "polygon").lower()
@@ -583,9 +624,21 @@ class Labelme2YOLO:
             for candidate in sorted(candidates, key=len, reverse=True):
                 if lower_label.startswith(candidate.lower()):
                     return candidate
+            # Only treat delimiters as instance/keypoint separators when the instance
+            # prefix is known. Underscores are common inside keypoint names (e.g.
+            # tail_base, left_ear) and should not be split blindly.
             for delimiter in ("_", "-", ":", "|", " "):
-                if delimiter in label:
-                    return label.split(delimiter, 1)[0]
+                if delimiter not in label:
+                    continue
+                prefix = label.split(delimiter, 1)[0]
+                if not prefix:
+                    continue
+                if delimiter != "_":
+                    return prefix
+                if any(prefix.lower() == cand.lower() for cand in candidates):
+                    return prefix
+                if default_label and prefix.lower() == default_label.lower():
+                    return default_label
             if default_label:
                 return default_label
             return label
@@ -601,6 +654,9 @@ class Labelme2YOLO:
                 flags.get("display_label"))
             if display_label:
                 return display_label
+        payload_label = Labelme2YOLO._clean_label(shape.get("display_label"))
+        if payload_label:
+            return payload_label
 
         label = Labelme2YOLO._clean_label(shape.get("label"))
         if instance_label:
@@ -612,11 +668,6 @@ class Labelme2YOLO:
                     suffix = suffix.lstrip("_-:| ")
                     if suffix:
                         return suffix
-        for delimiter in ("_", "-", ":", "|"):
-            if delimiter in label:
-                suffix = label.split(delimiter, 1)[1].strip()
-                if suffix:
-                    return suffix
         return label
 
     @staticmethod
@@ -639,6 +690,148 @@ class Labelme2YOLO:
             min(min_y, float(y)),
             max(max_x, float(x)),
             max(max_y, float(y)),
+        )
+
+    @dataclass(frozen=True)
+    class _PoseRegion:
+        instance_key: str
+        instance_label: str
+        shape_type: str
+        polygon: Tuple[Tuple[float, float], ...]
+        center: Optional[Tuple[float, float]]
+        radius: Optional[float]
+        area: float
+        centroid: Tuple[float, float]
+
+    @staticmethod
+    def _normalize_group_id(value: object) -> Optional[object]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return int(text)
+            except Exception:
+                return text
+        return None
+
+    @staticmethod
+    def _polygon_area_and_centroid(points: Sequence[Sequence[float]]) -> Tuple[float, Tuple[float, float]]:
+        if len(points) < 3:
+            xs = [float(p[0]) for p in points if len(p) >= 2]
+            ys = [float(p[1]) for p in points if len(p) >= 2]
+            if not xs or not ys:
+                return 0.0, (0.0, 0.0)
+            return 0.0, (sum(xs) / len(xs), sum(ys) / len(ys))
+        area = 0.0
+        cx = 0.0
+        cy = 0.0
+        n = len(points)
+        for i in range(n):
+            x0, y0 = float(points[i][0]), float(points[i][1])
+            x1, y1 = float(points[(i + 1) % n][0]), float(points[(i + 1) % n][1])
+            cross = x0 * y1 - x1 * y0
+            area += cross
+            cx += (x0 + x1) * cross
+            cy += (y0 + y1) * cross
+        area *= 0.5
+        if abs(area) < 1e-12:
+            xs = [float(p[0]) for p in points if len(p) >= 2]
+            ys = [float(p[1]) for p in points if len(p) >= 2]
+            if not xs or not ys:
+                return 0.0, (0.0, 0.0)
+            return 0.0, (sum(xs) / len(xs), sum(ys) / len(ys))
+        cx /= (6.0 * area)
+        cy /= (6.0 * area)
+        return abs(area), (cx, cy)
+
+    @staticmethod
+    def _point_in_polygon(x: float, y: float, polygon: Sequence[Sequence[float]]) -> bool:
+        if len(polygon) < 3:
+            return False
+        inside = False
+        j = len(polygon) - 1
+        for i in range(len(polygon)):
+            xi, yi = float(polygon[i][0]), float(polygon[i][1])
+            xj, yj = float(polygon[j][0]), float(polygon[j][1])
+            intersects = ((yi > y) != (yj > y)) and (
+                x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi
+            )
+            if intersects:
+                inside = not inside
+            j = i
+        return inside
+
+    def _region_from_shape(self,
+                           shape: Dict[str, object],
+                           *,
+                           instance_key: str,
+                           instance_label: str) -> Optional["_PoseRegion"]:
+        shape_type = (shape.get("shape_type") or "polygon").lower()
+        raw_points = shape.get("points") or []
+        if not isinstance(raw_points, list) or not raw_points:
+            return None
+
+        polygon: List[Tuple[float, float]] = []
+        center: Optional[Tuple[float, float]] = None
+        radius: Optional[float] = None
+        centroid: Tuple[float, float] = (0.0, 0.0)
+        area = 0.0
+
+        if shape_type == "circle" and len(raw_points) >= 2:
+            cx, cy = raw_points[0][:2]
+            px, py = raw_points[1][:2]
+            center = (float(cx), float(cy))
+            radius = float(math.hypot(float(px) - float(cx), float(py) - float(cy)))
+            area = math.pi * (radius ** 2)
+            centroid = center
+            return self._PoseRegion(
+                instance_key=instance_key,
+                instance_label=instance_label,
+                shape_type=shape_type,
+                polygon=tuple(),
+                center=center,
+                radius=radius,
+                area=area,
+                centroid=centroid,
+            )
+
+        if shape_type == "rectangle" and len(raw_points) >= 2:
+            (x0, y0), (x1, y1) = raw_points[0][:2], raw_points[1][:2]
+            x_min = min(float(x0), float(x1))
+            x_max = max(float(x0), float(x1))
+            y_min = min(float(y0), float(y1))
+            y_max = max(float(y0), float(y1))
+            polygon = [(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)]
+        else:
+            for pt in raw_points:
+                if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                    continue
+                polygon.append((float(pt[0]), float(pt[1])))
+
+        if len(polygon) < 3:
+            return None
+
+        area, centroid = self._polygon_area_and_centroid(polygon)
+        if area <= 0.0:
+            xs = [p[0] for p in polygon]
+            ys = [p[1] for p in polygon]
+            area = max((max(xs) - min(xs)) * (max(ys) - min(ys)), 0.0)
+        return self._PoseRegion(
+            instance_key=instance_key,
+            instance_label=instance_label,
+            shape_type=shape_type,
+            polygon=tuple(polygon),
+            center=None,
+            radius=None,
+            area=area,
+            centroid=centroid,
         )
 
     @staticmethod
@@ -665,6 +858,22 @@ class Labelme2YOLO:
         """Group shapes by instance to prepare pose annotations."""
         instances: Dict[str, Dict[str, object]] = {}
         polygon_labels: Set[str] = set()
+        regions: List[Labelme2YOLO._PoseRegion] = []
+        label_instance_keys: Dict[str, List[str]] = defaultdict(list)
+        group_to_instance_key: Dict[object, str] = {}
+        auto_counter: Dict[str, int] = defaultdict(int)
+        explicit_group_id = False
+        schema_instances: Set[str] = set()
+        if self.pose_schema and getattr(self.pose_schema, "instances", None):
+            for inst in self.pose_schema.instances:
+                clean = self._clean_label(inst)
+                if clean:
+                    schema_instances.add(clean)
+
+        def register_instance_key(label: str, key: str) -> None:
+            keys = label_instance_keys[label]
+            if key not in keys:
+                keys.append(key)
 
         for shape in shapes:
             shape_type = (shape.get("shape_type") or "polygon").lower()
@@ -675,49 +884,155 @@ class Labelme2YOLO:
             if not instance_label:
                 continue
             polygon_labels.add(instance_label)
+
+            group_id = self._normalize_group_id(shape.get("group_id"))
+            if group_id is not None:
+                instance_key = f"{instance_label}#{group_id}"
+            else:
+                idx = auto_counter[instance_label]
+                auto_counter[instance_label] += 1
+                instance_key = f"{instance_label}@{idx}"
+            register_instance_key(instance_label, instance_key)
+            if group_id is not None and group_id not in group_to_instance_key:
+                group_to_instance_key[group_id] = instance_key
+
             entry = instances.setdefault(
-                instance_label,
+                instance_key,
                 {
                     "class_label": self._clean_label(shape.get("label")) or instance_label,
+                    "instance_label": instance_label,
                     "bounds": None,
                     "keypoints": {},
                 },
             )
-            class_label = self._clean_label(
-                shape.get("label")) or entry["class_label"]
+            class_label = self._clean_label(shape.get("label")) or entry["class_label"]
             if class_label:
                 entry["class_label"] = class_label
-            for point in shape.get("points") or []:
-                if len(point) < 2:
-                    continue
-                entry["bounds"] = self._extend_bounds(
-                    entry["bounds"], point[0], point[1]
-                )
+                entry["instance_label"] = instance_label
 
-        candidate_labels = polygon_labels or set(instances.keys())
+            for point in shape.get("points") or []:
+                if not isinstance(point, (list, tuple)) or len(point) < 2:
+                    continue
+                entry["bounds"] = self._extend_bounds(entry["bounds"], point[0], point[1])
+
+            region = self._region_from_shape(
+                shape, instance_key=instance_key, instance_label=instance_label)
+            if region is not None:
+                regions.append(region)
+
+        def best_region_for_point(x: float,
+                                  y: float,
+                                  candidate_keys: Optional[Set[str]] = None) -> Optional[str]:
+            if not regions:
+                return None
+            candidates = [
+                r for r in regions if candidate_keys is None or r.instance_key in candidate_keys
+            ]
+            if not candidates:
+                return None
+
+            inside: List[Labelme2YOLO._PoseRegion] = []
+            for region in candidates:
+                if region.shape_type == "circle" and region.center and region.radius is not None:
+                    dx = x - region.center[0]
+                    dy = y - region.center[1]
+                    if (dx * dx + dy * dy) <= (region.radius * region.radius):
+                        inside.append(region)
+                    continue
+                if region.polygon and self._point_in_polygon(x, y, region.polygon):
+                    inside.append(region)
+            pool = inside or candidates
+            # Prefer smallest containing region; fall back to nearest centroid.
+            pool = sorted(
+                pool,
+                key=lambda r: (
+                    float(r.area if r.area is not None else 0.0),
+                    (x - r.centroid[0]) ** 2 + (y - r.centroid[1]) ** 2,
+                ),
+            )
+            return pool[0].instance_key if pool else None
+
+        candidate_instance_labels = (
+            set(label_instance_keys.keys()) | set(polygon_labels) | schema_instances
+        )
         for shape in shapes:
             shape_type = (shape.get("shape_type") or "polygon").lower()
             if shape_type != "point":
                 continue
-            instance_label = self._resolve_instance_label(
-                shape, candidate_labels, default_label=default_instance_label)
-            if not instance_label:
-                continue
-            entry = instances.setdefault(
-                instance_label,
-                {
-                    "class_label": instance_label,
-                    "bounds": None,
-                    "keypoints": {},
-                },
-            )
             points = shape.get("points") or []
             if not points:
                 continue
             x, y = points[0][:2]
+
+            group_id = self._normalize_group_id(shape.get("group_id"))
+            instance_key: Optional[str] = None
+            if group_id is not None:
+                explicit_group_id = True
+                instance_key = group_to_instance_key.get(group_id)
+
+            flags = shape.get("flags") or {}
+            flagged_instance = self._clean_label(
+                flags.get("instance_label") if isinstance(flags, dict) else None
+            )
+            if not flagged_instance:
+                flagged_instance = self._clean_label(shape.get("instance_label"))
+            if instance_key is None and flagged_instance:
+                keys = label_instance_keys.get(flagged_instance) or []
+                candidate_keys = set(keys) if keys else None
+                instance_key = best_region_for_point(float(x), float(y), candidate_keys)
+                if instance_key is None and keys:
+                    instance_key = keys[0]
+
+            if instance_key is None:
+                label = self._clean_label(shape.get("label"))
+                hinted_instance = ""
+                for inst in sorted(candidate_instance_labels, key=len, reverse=True):
+                    if label.lower().startswith(inst.lower()):
+                        suffix = label[len(inst):]
+                        if suffix and suffix[0] in "_-:| ":
+                            hinted_instance = inst
+                            break
+                candidate_keys = None
+                if hinted_instance and hinted_instance in label_instance_keys:
+                    candidate_keys = set(label_instance_keys[hinted_instance])
+                instance_key = best_region_for_point(float(x), float(y), candidate_keys)
+
+            if instance_key is None and group_id is not None:
+                inferred_label = (
+                    flagged_instance
+                    or hinted_instance
+                    or self._clean_label(default_instance_label)
+                    or "object"
+                )
+                instance_key = f"{inferred_label}#{group_id}"
+                register_instance_key(inferred_label, instance_key)
+                group_to_instance_key[group_id] = instance_key
+
+            if instance_key is None:
+                # No polygons/regions: fall back to heuristics based on labels/defaults.
+                inferred = self._resolve_instance_label(
+                    shape, candidate_instance_labels or None, default_label=default_instance_label)
+                if inferred:
+                    instance_key = inferred
+                    if inferred not in label_instance_keys:
+                        register_instance_key(inferred, instance_key)
+
+            if instance_key is None:
+                continue
+
+            entry = instances.setdefault(
+                instance_key,
+                {
+                    "class_label": instance_key.split("#", 1)[0].split("@", 1)[0],
+                    "instance_label": instance_key.split("#", 1)[0].split("@", 1)[0],
+                    "bounds": None,
+                    "keypoints": {},
+                },
+            )
             entry["bounds"] = self._extend_bounds(entry["bounds"], x, y)
-            keypoint_label = self._resolve_keypoint_label(
-                shape, instance_label)
+
+            instance_label = self._clean_label(entry.get("instance_label")) or ""
+            keypoint_label = self._resolve_keypoint_label(shape, instance_label)
             if not keypoint_label:
                 keypoint_label = f"kp_{len(entry['keypoints'])}"
             visibility = self._derive_visibility(shape)
@@ -730,7 +1045,8 @@ class Labelme2YOLO:
                 "visibility": int(visibility),
             }
 
-        if not polygon_labels and len(instances) > 1:
+        schema_multi = bool(schema_instances) and len(schema_instances) > 1
+        if not polygon_labels and len(instances) > 1 and not explicit_group_id and not schema_multi:
             target_label = self._clean_label(default_instance_label) or next(
                 iter(instances))
             merged = {

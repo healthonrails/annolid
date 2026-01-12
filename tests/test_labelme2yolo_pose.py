@@ -192,6 +192,101 @@ def test_labelme2yolo_pose_visibility_from_flags(tmp_path: Path):
     assert floats[7:10] == pytest.approx([0.55, 0.5625, 1.0])
 
 
+def test_labelme2yolo_pose_reads_metadata_outside_flags(tmp_path: Path) -> None:
+    image_width = 100
+    image_height = 80
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "rat",
+                "points": [[10, 20], [60, 20], [60, 50], [10, 50]],
+                "shape_type": "polygon",
+                "flags": {},
+                "instance_label": "rat",
+            },
+            {
+                "label": "rat_head",
+                "points": [[20, 30]],
+                "shape_type": "point",
+                "flags": {},
+                "display_label": "head",
+                "instance_label": "rat",
+                "kp_visibility": 2,
+            },
+            {
+                "label": "rat_tail",
+                "points": [[55, 45]],
+                "shape_type": "point",
+                "flags": {},
+                "display_label": "tail",
+                "instance_label": "rat",
+                "kp_visibility": 1,
+            },
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(
+        str(tmp_path), yolo_dataset_name="YOLO_pose_vis", include_visibility=True
+    )
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+
+    label_path = tmp_path / "YOLO_pose_vis" / "labels" / "train" / "sample.txt"
+    parts = label_path.read_text().strip().split()
+    floats = list(map(float, parts[1:]))
+    assert floats[4:7] == pytest.approx([0.2, 0.375, 2.0])
+    assert floats[7:10] == pytest.approx([0.55, 0.5625, 1.0])
+
+
+def test_labelme2yolo_pose_visibility_ignores_confidence_description(tmp_path: Path) -> None:
+    """LabelMe `description` may store a confidence float, not YOLO visibility."""
+    image_width = 100
+    image_height = 80
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "rat",
+                "points": [[10, 20], [60, 20], [60, 50], [10, 50]],
+                "shape_type": "polygon",
+            },
+            {
+                "label": "rat_head",
+                "points": [[20, 30]],
+                "shape_type": "point",
+                # A float stored as text should not be treated as visibility=0.
+                "description": "0.5452",
+            },
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(
+        str(tmp_path), yolo_dataset_name="YOLO_pose_vis", include_visibility=True
+    )
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+
+    label_path = tmp_path / "YOLO_pose_vis" / "labels" / "train" / "sample.txt"
+    parts = label_path.read_text().strip().split()
+    floats = list(map(float, parts[1:]))
+    # Head defaults to visible => v=2.
+    assert floats[4:7] == pytest.approx([0.2, 0.375, 2.0])
+
+
 def test_labelme2yolo_does_not_expand_single_instance_pose_schema(tmp_path: Path):
     image_width = 100
     image_height = 80
@@ -304,3 +399,193 @@ def test_labelme2yolo_does_not_split_concatenated_keypoint_labels(tmp_path):
     converter = Labelme2YOLO(str(tmp_path))
     assert "tailbase" in converter.keypoint_labels_order
     assert "base" not in converter.keypoint_labels_order
+
+
+def test_labelme2yolo_pose_assigns_points_to_polygons_without_group_id(tmp_path: Path) -> None:
+    image_width = 100
+    image_height = 60
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "resident",
+                "points": [[5, 5], [45, 5], [45, 45], [5, 45]],
+                "shape_type": "polygon",
+            },
+            {"label": "nose", "points": [[20, 20]], "shape_type": "point"},
+            {"label": "tail_base", "points": [[30, 35]], "shape_type": "point"},
+            {
+                "label": "intruder",
+                "points": [[55, 5], [95, 5], [95, 45], [55, 45]],
+                "shape_type": "polygon",
+            },
+            {"label": "nose", "points": [[70, 20]], "shape_type": "point"},
+            {"label": "tail_base", "points": [[80, 35]], "shape_type": "point"},
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(str(tmp_path))
+    assert converter.label_to_id_dict == {"resident": 0, "intruder": 1}
+    assert converter.keypoint_labels_order == ["nose", "tail_base"]
+
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+
+    label_path = tmp_path / "YOLO_dataset" / "labels" / "train" / "sample.txt"
+    lines = [ln for ln in label_path.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 2
+
+    parsed = {}
+    for line in lines:
+        parts = line.split()
+        class_id = int(parts[0])
+        floats = list(map(float, parts[1:]))
+        parsed[class_id] = floats
+
+    # resident bbox + keypoints
+    resident = parsed[0]
+    assert resident[:4] == pytest.approx([0.25, 25 / 60, 0.4, 40 / 60])
+    assert resident[4:6] == pytest.approx([20 / 100, 20 / 60])
+    assert resident[6:8] == pytest.approx([30 / 100, 35 / 60])
+
+    # intruder bbox + keypoints
+    intruder = parsed[1]
+    assert intruder[:4] == pytest.approx([0.75, 25 / 60, 0.4, 40 / 60])
+    assert intruder[4:6] == pytest.approx([70 / 100, 20 / 60])
+    assert intruder[6:8] == pytest.approx([80 / 100, 35 / 60])
+
+
+def test_labelme2yolo_pose_strips_trailing_instance_separators(tmp_path: Path) -> None:
+    image_width = 100
+    image_height = 60
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "resident_",
+                "points": [[5, 5], [45, 5], [45, 45], [5, 45]],
+                "shape_type": "polygon",
+            },
+            {"label": "resident_nose", "points": [[20, 20]], "shape_type": "point"},
+            {"label": "resident_tail_base", "points": [[30, 35]], "shape_type": "point"},
+            {
+                "label": "intruder_",
+                "points": [[55, 5], [95, 5], [95, 45], [55, 45]],
+                "shape_type": "polygon",
+            },
+            {"label": "intruder_nose", "points": [[70, 20]], "shape_type": "point"},
+            {"label": "intruder_tail_base", "points": [[80, 35]], "shape_type": "point"},
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(str(tmp_path))
+    assert converter.label_to_id_dict == {"resident": 0, "intruder": 1}
+    assert converter.keypoint_labels_order == ["nose", "tail_base"]
+
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+
+    label_path = tmp_path / "YOLO_dataset" / "labels" / "train" / "sample.txt"
+    lines = [ln for ln in label_path.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 2
+
+    parsed = {}
+    for line in lines:
+        parts = line.split()
+        class_id = int(parts[0])
+        floats = list(map(float, parts[1:]))
+        parsed[class_id] = floats
+
+    # resident bbox + keypoints
+    resident = parsed[0]
+    assert resident[:4] == pytest.approx([0.25, 25 / 60, 0.4, 40 / 60])
+    assert resident[4:6] == pytest.approx([20 / 100, 20 / 60])
+    assert resident[6:8] == pytest.approx([30 / 100, 35 / 60])
+
+    # intruder bbox + keypoints
+    intruder = parsed[1]
+    assert intruder[:4] == pytest.approx([0.75, 25 / 60, 0.4, 40 / 60])
+    assert intruder[4:6] == pytest.approx([70 / 100, 20 / 60])
+    assert intruder[6:8] == pytest.approx([80 / 100, 35 / 60])
+
+
+def test_labelme2yolo_normalizes_prefixed_pose_schema_keypoints(tmp_path: Path) -> None:
+    image_width = 100
+    image_height = 80
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height),
+              color=(0, 0, 0)).save(image_path)
+
+    (tmp_path / "pose_schema.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "keypoints": [
+                    "intruder_left",
+                    "intruder_right",
+                    "resident_left",
+                    "resident_right",
+                ],
+                "edges": [],
+                "symmetry_pairs": [],
+                "flip_idx": [1, 0, 3, 2],
+                "instances": [],
+                "instance_separator": "_",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "intruder",
+                "points": [[10, 20], [60, 20], [60, 50], [10, 50]],
+                "shape_type": "polygon",
+            },
+            {
+                "label": "intruder_left",
+                "points": [[20, 30]],
+                "shape_type": "point",
+            },
+            {
+                "label": "intruder_right",
+                "points": [[55, 45]],
+                "shape_type": "point",
+            },
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(str(tmp_path))
+    assert converter.pose_schema is not None
+    assert converter.pose_schema.instances == ["intruder", "resident"]
+    assert converter.pose_schema.keypoints == ["left", "right"]
+    assert converter.keypoint_labels_order == ["left", "right"]
+    assert converter.pose_schema.compute_flip_idx(["left", "right"]) == [1, 0]
+
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+    converter.save_data_yaml()
+
+    yaml_path = tmp_path / "YOLO_dataset" / "data.yaml"
+    yaml_text = yaml_path.read_text()
+    assert "kpt_shape: [2, 2]" in yaml_text
+    assert "flip_idx: [1, 0]" in yaml_text

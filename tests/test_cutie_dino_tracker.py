@@ -103,9 +103,7 @@ def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):
         expected["shapes"], key=lambda shape: shape["label"])
     assert produced_shapes == expected_shapes
 
-    keypoint_flags = produced_shapes[0]["flags"]
-    mask_flags = produced_shapes[1]["flags"]
-    assert keypoint_flags["instance_label"] == mask_flags["instance_label"]
+    assert produced_shapes[0]["instance_label"] == produced_shapes[1]["instance_label"]
 
 
 def test_annotation_adapter_uses_latest_manual_frame(tmp_path):

@@ -45,7 +45,7 @@ from annolid.segmentation.dino_kpseg.keypoints import (
     infer_orientation_anchor_indices,
     symmetric_pairs_from_flip_idx,
 )
-from annolid.utils.runs import new_run_dir, shared_runs_root
+from annolid.utils.runs import allocate_run_dir, shared_runs_root
 from annolid.utils.logger import logger
 
 
@@ -244,6 +244,41 @@ def _grid_images(
         x0 = col * (w + pad)
         grid[:, y0:y0 + h, x0:x0 + w] = images[idx]
     return grid
+
+
+def _stack_chw_images_with_padding(
+    images: Sequence[torch.Tensor],
+    *,
+    pad_value: float = 0.0,
+) -> torch.Tensor:
+    """Stack a list of CHW tensors, padding to the max H/W.
+
+    TensorBoard's `add_images` requires a single (N,C,H,W) tensor; in DinoKPSEG
+    we sometimes log overlays for different samples with different cropped
+    extents (e.g. varying resized_w), so we pad instead of failing.
+    """
+    if not images:
+        raise ValueError("images must be non-empty")
+    max_h = 0
+    max_w = 0
+    for img in images:
+        if not isinstance(img, torch.Tensor) or img.ndim != 3:
+            raise ValueError("Expected CHW torch.Tensor images")
+        _, h, w = img.shape
+        max_h = max(max_h, int(h))
+        max_w = max(max_w, int(w))
+    padded: List[torch.Tensor] = []
+    for img in images:
+        c, h, w = img.shape
+        pad_h = max_h - int(h)
+        pad_w = max_w - int(w)
+        if pad_h < 0 or pad_w < 0:
+            raise ValueError("Negative padding computed unexpectedly")
+        if pad_h or pad_w:
+            # Pad format: (left, right, top, bottom) for last two dims.
+            img = F.pad(img, (0, pad_w, 0, pad_h), value=float(pad_value))
+        padded.append(img)
+    return torch.stack(padded, dim=0)
 
 
 def _overlay_keypoints(
@@ -535,10 +570,19 @@ def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
                 gt_instances_batch.append([])
         if have_hw:
             image_hw = s.get("image_hw")
-            if isinstance(image_hw, tuple) and len(image_hw) == 2:
-                image_hw_batch.append((int(image_hw[0]), int(image_hw[1])))
-            else:
+            parsed = None
+            if isinstance(image_hw, (list, tuple)) and len(image_hw) == 2:
+                parsed = (int(image_hw[0]), int(image_hw[1]))
+            elif isinstance(image_hw, np.ndarray) and int(image_hw.size) == 2:
+                flat = image_hw.reshape(-1).tolist()
+                parsed = (int(flat[0]), int(flat[1]))
+            elif isinstance(image_hw, torch.Tensor) and int(image_hw.numel()) == 2:
+                flat = image_hw.reshape(-1).detach().cpu().tolist()
+                parsed = (int(flat[0]), int(flat[1]))
+            if parsed is None:
                 image_hw_batch.append((0, 0))
+            else:
+                image_hw_batch.append((int(parsed[0]), int(parsed[1])))
 
     coords_bk2 = torch.stack(coords_list, dim=0).to(dtype=torch.float32)
     coord_mask_bk = torch.stack(coord_mask_list, dim=0).to(dtype=torch.float32)
@@ -1912,7 +1956,9 @@ def train(
                         keypoint_names=spec.keypoint_names,
                     )
                     error_samples: List[Tuple[float, torch.Tensor]] = []
+                    pred_overlays: List[torch.Tensor] = []
                     error_max = 4
+                    pred_max = 4
                     with torch.no_grad():
                         for batch in val_loader:
                             feats = batch["feats"].to(
@@ -2069,20 +2115,49 @@ def train(
                             gt_instances_batch = batch.get("gt_instances")
                             image_hw_batch = batch.get("image_hw")
                             image_batch = batch.get("image")
+
+                            def _get_image_hw(
+                                value: object, bi: int
+                            ) -> Optional[Tuple[int, int]]:
+                                if isinstance(value, list):
+                                    if bi >= len(value):
+                                        return None
+                                    item = value[bi]
+                                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                                        return int(item[0]), int(item[1])
+                                    return None
+                                if isinstance(value, tuple) and len(value) == 2 and all(
+                                    isinstance(v, torch.Tensor) for v in value
+                                ):
+                                    h_t, w_t = value
+                                    if bi >= int(h_t.shape[0]) or bi >= int(w_t.shape[0]):
+                                        return None
+                                    return int(h_t[bi].item()), int(w_t[bi].item())
+                                if isinstance(value, torch.Tensor):
+                                    if value.ndim == 2 and int(value.shape[1]) == 2:
+                                        if bi >= int(value.shape[0]):
+                                            return None
+                                        return int(value[bi, 0].item()), int(value[bi, 1].item())
+                                    if value.ndim == 2 and int(value.shape[0]) == 2:
+                                        if bi >= int(value.shape[1]):
+                                            return None
+                                        return int(value[0, bi].item()), int(value[1, bi].item())
+                                return None
+
                             have_gt_meta = (
                                 isinstance(gt_instances_batch, list)
-                                and isinstance(image_hw_batch, list)
+                                and image_hw_batch is not None
                             )
                             pred_xy_cpu = pred_xy.detach().cpu()
                             valid_mask_cpu = valid_mask.detach().cpu()
                             for bi in range(int(bsz)):
                                 if not have_gt_meta:
                                     break
-                                if bi >= len(gt_instances_batch) or bi >= len(image_hw_batch):
+                                if bi >= len(gt_instances_batch):
                                     continue
                                 gt_instances = gt_instances_batch[bi]
-                                image_hw = image_hw_batch[bi]
-                                if not isinstance(gt_instances, list) or not isinstance(image_hw, tuple):
+                                image_hw = _get_image_hw(image_hw_batch, bi)
+                                if not isinstance(gt_instances, list) or image_hw is None:
                                     continue
                                 orig_h, orig_w = int(
                                     image_hw[0]), int(image_hw[1])
@@ -2104,6 +2179,37 @@ def train(
                                 pred_xy_resized = [
                                     (float(x), float(y)) for x, y in pred_xy_cpu[bi].tolist()
                                 ]
+                                if (
+                                    image_batch is not None
+                                    and isinstance(image_batch, torch.Tensor)
+                                    and len(pred_overlays) < int(pred_max)
+                                ):
+                                    img = image_batch[bi, :, :resized_h, :resized_w].detach(
+                                    ).cpu()
+                                    gt_xy_resized: List[Tuple[float, float]] = []
+                                    if gt_instances:
+                                        gt0 = gt_instances[0]
+                                        if isinstance(gt0, np.ndarray) and gt0.ndim == 2:
+                                            for row in gt0:
+                                                if row.shape[0] < 3:
+                                                    continue
+                                                if float(row[2]) <= 0:
+                                                    continue
+                                                gt_xy_resized.append(
+                                                    (
+                                                        float(row[0]) *
+                                                        float(resized_w),
+                                                        float(row[1]) *
+                                                        float(resized_h),
+                                                    )
+                                                )
+                                    pred_overlays.append(
+                                        _overlay_keypoints(
+                                            img,
+                                            pred_xy=pred_xy_resized,
+                                            gt_xy=gt_xy_resized,
+                                        )
+                                    )
                                 pred_xy_orig = [
                                     (
                                         float(x) * (float(orig_w) /
@@ -2140,8 +2246,7 @@ def train(
                                 if image_batch is not None and isinstance(image_batch, torch.Tensor):
                                     img = image_batch[bi, :, :resized_h, :resized_w].detach(
                                     ).cpu()
-                                    gt_xy_resized: List[Tuple[float, float]] = [
-                                    ]
+                                    gt_xy_resized: List[Tuple[float, float]] = []
                                     if gt_instances:
                                         gt0 = gt_instances[0]
                                         if isinstance(gt0, np.ndarray) and gt0.ndim == 2:
@@ -2164,13 +2269,11 @@ def train(
                                         gt_xy=gt_xy_resized,
                                     )
                                     if len(error_samples) < int(error_max):
-                                        error_samples.append(
-                                            (mean_err, overlay))
+                                        error_samples.append((mean_err, overlay))
                                     else:
                                         error_samples.sort(key=lambda x: x[0])
                                         if mean_err > error_samples[0][0]:
-                                            error_samples[0] = (
-                                                mean_err, overlay)
+                                            error_samples[0] = (mean_err, overlay)
                     if losses:
                         val_loss = float(sum(losses) / len(losses))
                     if pck_acc is not None:
@@ -2392,11 +2495,20 @@ def train(
                             )
                     if error_samples:
                         error_samples.sort(key=lambda x: x[0], reverse=True)
-                        overlay_stack = torch.stack(
-                            [sample[1] for sample in error_samples], dim=0
+                        overlay_stack = _stack_chw_images_with_padding(
+                            [sample[1] for sample in error_samples],
+                            pad_value=0.0,
                         ).clamp(0.0, 1.0)
                         tb_writer.add_images(
                             "val/error_overlays", overlay_stack, epoch
+                        )
+                    if pred_overlays:
+                        tb_writer.add_images(
+                            "val/pred_overlays",
+                            _stack_chw_images_with_padding(
+                                pred_overlays, pad_value=0.0
+                            ).clamp(0.0, 1.0),
+                            epoch,
                         )
                     if bool(tb_projector) and val_ds is not None:
                         interval = 5
@@ -2619,8 +2731,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument(
         "--instance-mode",
-        choices=("union", "per_instance"),
-        default="union",
+        choices=("auto", "union", "per_instance"),
+        default="auto",
         help="How to handle multiple pose instances per image.",
     )
     p.add_argument(
@@ -2859,8 +2971,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.runs_root
             else shared_runs_root()
         )
-        out_dir = new_run_dir(task="dino_kpseg", model="train",
-                              runs_root=runs_root, run_name=args.run_name)
+        out_dir = allocate_run_dir(
+            task="dino_kpseg",
+            model="train",
+            runs_root=runs_root,
+            run_name=args.run_name,
+        )
     _ensure_dir(out_dir)
 
     best = train(

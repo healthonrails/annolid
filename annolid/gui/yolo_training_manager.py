@@ -13,7 +13,7 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
-from annolid.utils.runs import new_run_dir, shared_runs_root
+from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 
 @dataclass(frozen=True)
@@ -232,7 +232,7 @@ class YOLOTrainingManager(QtCore.QObject):
 
         runs_root = Path(out_dir).expanduser(
         ).resolve() if out_dir else shared_runs_root()
-        run_dir = new_run_dir(
+        run_dir = allocate_run_dir(
             task="yolo",
             model=Path(yolo_model_file).stem,
             runs_root=runs_root,

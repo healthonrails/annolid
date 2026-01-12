@@ -157,7 +157,7 @@ def audit_yolo_pose_dataset(
     split: str = "both",
     max_images: Optional[int] = None,
     seed: int = 0,
-    instance_mode: str = "union",
+    instance_mode: str = "auto",
     bbox_scale: float = 1.25,
     max_issue_examples: int = 8,
     max_fix_suggestions: int = 200,
@@ -340,7 +340,10 @@ def audit_yolo_pose_dataset(
                                     }
                                 )
 
-                if str(instance_mode or "union").strip().lower() == "per_instance" and width > 0 and height > 0:
+                mode_norm = str(instance_mode or "auto").strip().lower()
+                if mode_norm == "auto":
+                    mode_norm = "per_instance" if valid_instances > 1 else "union"
+                if mode_norm == "per_instance" and width > 0 and height > 0:
                     cx = float(x)
                     cy = float(y)
                     half_w = float(w) * float(bbox_scale) / 2.0
@@ -647,7 +650,7 @@ def precompute_features(
     layers: Sequence[int],
     device: Optional[str] = None,
     split: str = "both",
-    instance_mode: str = "union",
+    instance_mode: str = "auto",
     bbox_scale: float = 1.25,
     cache_dir: Optional[Path] = None,
     cache_dtype: str = "float16",
@@ -724,8 +727,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--split", choices=("train", "val", "both"), default="both")
     audit_p.add_argument("--max-images", type=int, default=None)
     audit_p.add_argument("--seed", type=int, default=0)
-    audit_p.add_argument("--instance-mode", choices=("union", "per_instance"),
-                         default="union")
+    audit_p.add_argument("--instance-mode", choices=("auto", "union", "per_instance"),
+                         default="auto")
     audit_p.add_argument("--bbox-scale", type=float, default=1.25)
     audit_p.add_argument("--out", default=None,
                          help="Optional output JSON path")
@@ -757,8 +760,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     pre_p.add_argument("--device", default=None)
     pre_p.add_argument("--split", choices=("train",
                        "val", "both"), default="both")
-    pre_p.add_argument("--instance-mode", choices=("union", "per_instance"),
-                       default="union")
+    pre_p.add_argument("--instance-mode", choices=("auto", "union", "per_instance"),
+                       default="auto")
     pre_p.add_argument("--bbox-scale", type=float, default=1.25)
     pre_p.add_argument("--cache-dir", default=None)
     pre_p.add_argument("--cache-dtype", choices=("float16",

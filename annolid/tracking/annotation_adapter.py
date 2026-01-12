@@ -66,11 +66,10 @@ class AnnotationAdapter:
         for shape in shapes:
             label = str(shape.get("label", "")).strip()
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
-            flags = shape.get("flags") or {}
 
             if shape_type == "point":
                 instance_label, keypoint_label = self._split_keypoint_label(
-                    label, flags)
+                    label, shape)
                 point = (shape.get("points") or [[None, None]])[0]
                 if point[0] is None or point[1] is None:
                     continue
@@ -88,7 +87,7 @@ class AnnotationAdapter:
                 registry.register_keypoint(keypoint_state)
 
             elif shape_type == "polygon":
-                instance_label = self._parse_mask_label(label, flags)
+                instance_label = self._parse_mask_label(label, shape)
                 if not instance_label:
                     continue
                 polygon_points = [
@@ -151,16 +150,16 @@ class AnnotationAdapter:
         )
         return json_path
 
-    def _split_keypoint_label(self, label: str, flags: Dict[str, object]) -> Tuple[str, str]:
+    def _split_keypoint_label(self, label: str, shape: Dict[str, object]) -> Tuple[str, str]:
         if MASK_SUFFIX and label.endswith(MASK_SUFFIX):
             label = label[: -len(MASK_SUFFIX)]
-        display_label = self._flag_display_label(flags)
+        display_label = self._flag_display_label(shape)
         if KEYPOINT_DELIMITER and KEYPOINT_DELIMITER in label:
             instance_label, keypoint_label = label.split(KEYPOINT_DELIMITER, 1)
-            instance_label = instance_label or self._flag_instance_label(flags)
+            instance_label = instance_label or self._flag_instance_label(shape)
             keypoint_label = keypoint_label or display_label or DEFAULT_KEYPOINT_LABEL
             return instance_label, keypoint_label
-        flag_label = self._flag_instance_label(flags)
+        flag_label = self._flag_instance_label(shape)
         if flag_label:
             keypoint_label = display_label or label or DEFAULT_KEYPOINT_LABEL
             return flag_label, keypoint_label
@@ -168,10 +167,10 @@ class AnnotationAdapter:
         instance_label = label or keypoint_label
         return instance_label, keypoint_label
 
-    def _parse_mask_label(self, label: str, flags: Dict[str, object]) -> Optional[str]:
+    def _parse_mask_label(self, label: str, shape: Dict[str, object]) -> Optional[str]:
         if MASK_SUFFIX and label.endswith(MASK_SUFFIX):
             return label[: -len(MASK_SUFFIX)]
-        flag_label = self._flag_instance_label(flags)
+        flag_label = self._flag_instance_label(shape)
         if flag_label:
             return flag_label
         return label or None
@@ -186,12 +185,21 @@ class AnnotationAdapter:
         clean_keypoint = keypoint_label or DEFAULT_KEYPOINT_LABEL
         return combine_labels(clean_instance, clean_keypoint)
 
-    def _flag_instance_label(self, flags: Dict[str, object]) -> str:
-        value = flags.get("instance_label") if isinstance(
-            flags, dict) else None
-        return str(value).strip() if value else ""
+    def _flag_instance_label(self, shape: Dict[str, object]) -> str:
+        value = shape.get("instance_label")
+        if value:
+            return str(value).strip()
+        flags = shape.get("flags")
+        if isinstance(flags, dict):
+            value = flags.get("instance_label")
+            return str(value).strip() if value else ""
+        return ""
 
-    def _flag_display_label(self, flags: Dict[str, object]) -> str:
+    def _flag_display_label(self, shape: Dict[str, object]) -> str:
+        value = shape.get("display_label")
+        if value:
+            return str(value).strip()
+        flags = shape.get("flags")
         if not isinstance(flags, dict):
             return ""
         value = flags.get("display_label")

@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "keypoints": [
+    "left_ear",
+    "right_ear",
+    "nose",
+    "tailbase",
+    "centroid"
+  ],
+  "edges": [
+    [
+      "nose",
+      "left_ear"
+    ],
+    [
+      "nose",
+      "right_ear"
+    ],
+    [
+      "left_ear",
+      "right_ear"
+    ]
+  ],
+  "flip_idx": null,
+  "symmetry_pairs": [
+    [
+      "left_ear",
+      "right_ear"
+    ]
+  ],
+  "instances": [
+    "instance_1"
+  ]
+}

@@ -658,6 +658,13 @@ def _invert_affine_3x3_to_pil_coeffs(m: np.ndarray) -> tuple[float, float, float
 class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
     """Dataset yielding frozen DINO features + keypoint masks at patch resolution."""
 
+    @dataclass(frozen=True)
+    class _InstanceRecord:
+        image_path: Path
+        bbox: np.ndarray
+        kpts: np.ndarray
+        cache_salt: bytes
+
     def __init__(
         self,
         image_paths: List[Path],
@@ -691,13 +698,15 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         self.heatmap_sigma_px = (
             float(heatmap_sigma_px) if heatmap_sigma_px is not None else None
         )
-        self.instance_mode = str(instance_mode or "union").strip().lower()
-        if self.instance_mode not in {"union", "per_instance"}:
+        self.instance_mode = str(instance_mode or "auto").strip().lower()
+        if self.instance_mode not in {"auto", "union", "per_instance"}:
             raise ValueError(
                 f"Unsupported instance_mode: {self.instance_mode!r}"
             )
+        if self.instance_mode == "auto":
+            self.instance_mode = self._infer_instance_mode()
         self.bbox_scale = float(bbox_scale) if bbox_scale is not None else 1.25
-        self._instance_records: List[Tuple[Path, np.ndarray, np.ndarray]] = []
+        self._instance_records: List[DinoKPSEGPoseDataset._InstanceRecord] = []
 
         # Feature caching is incompatible with random image augmentations.
         self.cache_dir = None if self.augment.enabled else cache_dir
@@ -708,16 +717,18 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
 
         if self.instance_mode == "per_instance":
             self._build_instance_records()
-            # Avoid cache collisions when using per-instance crops.
-            self.cache_dir = None
 
     def __len__(self) -> int:  # pragma: no cover - trivial
         if self.instance_mode == "per_instance":
             return len(self._instance_records)
         return len(self.image_paths)
 
-    def _build_instance_records(self) -> None:
-        records: List[Tuple[Path, np.ndarray, np.ndarray]] = []
+    def _infer_instance_mode(self) -> str:
+        """Pick a default instance mode based on the label files.
+
+        - Use `per_instance` when any label file contains >1 valid pose instances.
+        - Otherwise default to `union`.
+        """
         for image_path in self.image_paths:
             label_path = _image_to_label_path(Path(image_path))
             if not label_path.exists():
@@ -726,8 +737,40 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
                 lines = label_path.read_text(encoding="utf-8").splitlines()
             except Exception:
                 continue
+            count = 0
             for line in lines:
-                tokens = line.strip().split()
+                tokens = str(line).strip().split()
+                if not tokens:
+                    continue
+                parsed = _parse_yolo_pose_instance(
+                    tokens, kpt_count=self.kpt_count, dims=self.kpt_dims
+                )
+                if parsed is None:
+                    continue
+                _, kpts = parsed
+                if kpts.ndim != 2 or kpts.shape[1] < 2:
+                    continue
+                if self.kpt_dims >= 3 and kpts.shape[1] >= 3:
+                    if not bool((kpts[:, 2] > 0).any()):
+                        continue
+                count += 1
+                if count > 1:
+                    return "per_instance"
+        return "union"
+
+    def _build_instance_records(self) -> None:
+        records: List[DinoKPSEGPoseDataset._InstanceRecord] = []
+        for image_path in self.image_paths:
+            image_path = Path(image_path)
+            label_path = _image_to_label_path(Path(image_path))
+            if not label_path.exists():
+                continue
+            try:
+                lines = label_path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for line_idx, line in enumerate(lines):
+                tokens = str(line).strip().split()
                 if not tokens:
                     continue
                 parsed = _parse_yolo_pose_instance(
@@ -736,20 +779,33 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
                 if parsed is None:
                     continue
                 bbox, kpts = parsed
-                if kpts.ndim != 2 or kpts.shape[1] < 3:
+                if kpts.ndim != 2 or kpts.shape[1] < 2:
                     continue
-                if not bool((kpts[:, 2] > 0).any()):
-                    continue
+                if self.kpt_dims >= 3 and kpts.shape[1] >= 3:
+                    if not bool((kpts[:, 2] > 0).any()):
+                        continue
+                bbox_f32 = bbox.astype(np.float32, copy=True)
+                kpts_f32 = kpts.astype(np.float32, copy=True)
+                cache_salt = b"|".join(
+                    [
+                        b"per_instance",
+                        str(label_path).encode("utf-8", errors="ignore"),
+                        str(int(line_idx)).encode("utf-8"),
+                        str(float(self.bbox_scale)).encode("utf-8"),
+                        bbox_f32.tobytes(),
+                    ]
+                )
                 records.append(
-                    (
-                        Path(image_path),
-                        bbox.astype(np.float32, copy=True),
-                        kpts.astype(np.float32, copy=True),
+                    DinoKPSEGPoseDataset._InstanceRecord(
+                        image_path=image_path,
+                        bbox=bbox_f32,
+                        kpts=kpts_f32,
+                        cache_salt=cache_salt,
                     )
                 )
         self._instance_records = records
 
-    def _cache_path(self, image_path: Path) -> Path:
+    def _cache_path(self, image_path: Path, *, cache_salt: Optional[bytes] = None) -> Path:
         assert self.cache_dir is not None
         # Cache key must include extractor config; otherwise switching DINO backbones
         # will reuse incompatible cached features (e.g., 384 vs 1024 channels).
@@ -770,16 +826,24 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         payload = f"{model_id}|{short_side}|{patch_size}|{layers_token}|{image_path}".encode(
             "utf-8", errors="ignore"
         )
+        if cache_salt:
+            payload = payload + b"|" + bytes(cache_salt)
         digest = hashlib.sha1(payload).hexdigest()
         return self.cache_dir / f"{digest}.pt"
 
-    def _load_or_compute_features(self, image_path: Path, pil: Image.Image) -> torch.Tensor:
+    def _load_or_compute_features(
+        self,
+        image_path: Path,
+        pil: Image.Image,
+        *,
+        cache_salt: Optional[bytes] = None,
+    ) -> torch.Tensor:
         if self.cache_dir is None:
             feats = self.extractor.extract(pil, return_type="torch")
             feats = merge_feature_layers(feats)
             return feats.to(dtype=self.cache_dtype)
 
-        cache_path = self._cache_path(image_path)
+        cache_path = self._cache_path(image_path, cache_salt=cache_salt)
         if cache_path.exists():
             try:
                 payload = torch.load(cache_path, map_location="cpu")
@@ -829,10 +893,15 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.instance_mode == "per_instance":
-            image_path, instance_bbox, instance_kpts = self._instance_records[idx]
+            record = self._instance_records[idx]
+            image_path = record.image_path
+            instance_bbox = record.bbox
+            instance_kpts = record.kpts
+            cache_salt = record.cache_salt
         else:
             image_path = self.image_paths[idx]
             instance_kpts = None
+            cache_salt = None
 
         pil = Image.open(image_path)
         pil = ImageOps.exif_transpose(pil.convert("RGB"))
@@ -876,7 +945,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         )
         width, height = pil.size
 
-        feats = self._load_or_compute_features(image_path, pil)
+        feats = self._load_or_compute_features(image_path, pil, cache_salt=cache_salt)
         _, h_p, w_p = feats.shape
         resized_h = int(h_p) * int(self.extractor.patch_size)
         resized_w = int(w_p) * int(self.extractor.patch_size)

@@ -215,6 +215,8 @@ class PoseSchema:
         if not self.keypoints:
             return
 
+        original_keypoints = list(self.keypoints)
+        original_flip = list(self.flip_idx) if isinstance(self.flip_idx, list) else None
         inferred_instances: List[str] = []
         base_keypoints: List[str] = []
         seen_base = set()
@@ -234,12 +236,52 @@ class PoseSchema:
         if not inferred_instances or not base_keypoints:
             return
 
-        # Only normalize when at least one keypoint appears to be prefixed.
-        if not any(sep in kp for kp in self.keypoints):
+        # Only normalize when the keypoint list *looks like* a fully-expanded
+        # instance-prefixed schema (e.g. intruder_nose/resident_nose/...).
+        # This avoids breaking base keypoint names that legitimately contain
+        # underscores (e.g. tail_base, left_ear).
+        if not all(sep in str(kp or "") for kp in original_keypoints):
+            return
+        inst_count = len(inferred_instances)
+        base_count = len(base_keypoints)
+        if inst_count <= 0 or base_count <= 0:
+            return
+        if inst_count * base_count != len(original_keypoints):
             return
 
         self.instances = inferred_instances
         self.keypoints = base_keypoints
+
+        # Preserve a usable flip_idx when the original was provided for an expanded order.
+        if original_flip and len(original_flip) == len(original_keypoints):
+            if inst_count > 0 and base_count > 0 and inst_count * base_count == len(original_keypoints):
+                segments: List[List[int]] = []
+                valid = True
+                for seg_idx in range(inst_count):
+                    start = seg_idx * base_count
+                    end = start + base_count
+                    segment = original_flip[start:end]
+                    if len(segment) != base_count:
+                        valid = False
+                        break
+                    # Only accept when all mappings stay within the segment.
+                    rel: List[int] = []
+                    for v in segment:
+                        if not isinstance(v, int):
+                            valid = False
+                            break
+                        if v < start or v >= end:
+                            valid = False
+                            break
+                        rel.append(v - start)
+                    if not valid:
+                        break
+                    segments.append(rel)
+                if valid and segments and all(seg == segments[0] for seg in segments[1:]):
+                    self.flip_idx = segments[0]
+                else:
+                    # Drop inconsistent flip indices so compute_flip_idx can fall back to symmetry_pairs.
+                    self.flip_idx = None
 
         def strip_pair(pair: Tuple[str, str]) -> Optional[Tuple[str, str]]:
             a_text = str(pair[0] or "").strip()

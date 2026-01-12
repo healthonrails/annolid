@@ -1,0 +1,57 @@
+- key: Right
+  action: increment_seekbar
+  param: 1
+
+- key: Left
+  action: increment_seekbar
+  param: -1
+
+- key: 0
+  action: set_seekbar_value
+  param: 0
+
+- key: Space
+  action: toggle_play
+
+- key: S
+  action: add_highlighted_mark
+  param: event_start
+
+- key: E
+  action: add_highlighted_mark
+  param: event_end
+
+- key: R
+  action: remove_highlighted_mark
+
+- key: Q
+  action: set_seekbar_value
+  param: _val_max
+
+- key: 1
+  action: update_step_size
+  param: 1
+
+- key: I
+  action: update_step_size
+  param: 1
+
+- key: 2
+  action: update_step_size
+  param: 10
+
+- key: F
+  action: update_step_size
+  param: 10
+
+- key: B
+  action: update_step_size
+  param: -10
+
+- key: M
+  action: update_step_size
+  param: -1
+
+- key: P
+  action: update_step_size
+  param: 1

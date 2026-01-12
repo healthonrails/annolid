@@ -197,6 +197,11 @@ class Canvas(QtWidgets.QWidget):
             instance_label = flags.get("instance_label")
             if isinstance(instance_label, str) and instance_label.strip():
                 return instance_label.strip()
+        other = getattr(shape, "other_data", None)
+        if isinstance(other, dict):
+            instance_label = other.get("instance_label")
+            if isinstance(instance_label, str) and instance_label.strip():
+                return instance_label.strip()
 
         group_id = getattr(shape, "group_id", None)
         if group_id not in (None, ""):
@@ -218,6 +223,11 @@ class Canvas(QtWidgets.QWidget):
         flags = getattr(shape, "flags", None)
         if isinstance(flags, dict):
             display_label = flags.get("display_label")
+            if isinstance(display_label, str) and display_label.strip():
+                return display_label.strip()
+        other = getattr(shape, "other_data", None)
+        if isinstance(other, dict):
+            display_label = other.get("display_label")
             if isinstance(display_label, str) and display_label.strip():
                 return display_label.strip()
 

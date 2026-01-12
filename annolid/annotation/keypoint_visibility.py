@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
+import math
 from typing import Any, Mapping, MutableMapping, Optional
 
 
@@ -27,17 +28,31 @@ def normalize_visibility(value: object) -> Optional[int]:
         return None
     if isinstance(value, bool):
         return int(KeypointVisibility.VISIBLE if value else KeypointVisibility.OCCLUDED)
-    if isinstance(value, (int, float)):
-        v = int(value)
-    elif isinstance(value, str):
+
+    def _from_number(num: float) -> Optional[int]:
+        if not math.isfinite(num):
+            return None
+        rounded = round(float(num))
+        # Only accept integer-like inputs (0/1/2). This prevents floating-point
+        # confidences (e.g. 0.54) stored in LabelMe `description` from being
+        # misinterpreted as "missing" (0).
+        if abs(float(num) - float(rounded)) > 1e-6:
+            return None
+        v = int(rounded)
+        return v if v in (0, 1, 2) else None
+
+    if isinstance(value, int):
+        return int(value) if int(value) in (0, 1, 2) else None
+    if isinstance(value, float):
+        return _from_number(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
         try:
-            v = int(float(value.strip()))
+            return _from_number(float(text))
         except ValueError:
             return None
-    else:
-        return None
-    if v in (0, 1, 2):
-        return v
     return None
 
 
@@ -62,6 +77,11 @@ def visibility_from_flags(flags: object) -> Optional[int]:
 def visibility_from_labelme_shape(shape: Mapping[str, Any]) -> Optional[int]:
     flags = shape.get("flags")
     v = visibility_from_flags(flags)
+    if v is not None:
+        return v
+    # Some pipelines move non-boolean metadata out of `flags` to keep LabelMe
+    # compatible. Accept visibility stored directly on the shape as well.
+    v = visibility_from_flags(shape)
     if v is not None:
         return v
     # Legacy: some pipelines stored YOLO visibility in `description`.
@@ -89,6 +109,11 @@ def keypoint_visibility_from_shape_object(shape: object) -> int:
     v = visibility_from_flags(flags)
     if v is not None:
         return int(v)
+    other = getattr(shape, "other_data", None)
+    if isinstance(other, Mapping):
+        v = visibility_from_flags(other)
+        if v is not None:
+            return int(v)
     return int(KeypointVisibility.VISIBLE)
 
 

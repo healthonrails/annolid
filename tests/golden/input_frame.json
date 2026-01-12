@@ -7,10 +7,9 @@
       "label": "animalnose",
       "points": [[10.0, 20.0]],
       "shape_type": "point",
-      "flags": {
-        "instance_label": "animal",
-        "display_label": "nose"
-      },
+      "flags": {},
+      "instance_label": "animal",
+      "display_label": "nose",
       "visible": true,
       "description": "Cutie+DINO"
     },
@@ -24,9 +23,8 @@
         [5.0, 5.0]
       ],
       "shape_type": "polygon",
-      "flags": {
-        "instance_label": "animal"
-      },
+      "flags": {},
+      "instance_label": "animal",
       "description": "Cutie"
     }
   ]

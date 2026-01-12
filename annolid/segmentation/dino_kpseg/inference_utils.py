@@ -137,3 +137,67 @@ def predict_on_instance_crops(
             )
         )
     return results
+
+
+def build_instance_crops_for_tracking(
+    frame_bgr: np.ndarray,
+    instance_masks: Sequence[Tuple[int, np.ndarray]],
+    pad_px: int = 8,
+    min_crop_size: int = 32,
+) -> List[DinoKPSEGInstanceCrop]:
+    """
+    Build crops for each instance mask with padding for tracking.
+
+    Args:
+        frame_bgr: Input frame in BGR format (HxWx3).
+        instance_masks: Sequence of (instance_id, mask) tuples.
+        pad_px: Padding in pixels around bounding box.
+        min_crop_size: Minimum crop size; skip smaller instances.
+
+    Returns:
+        List of DinoKPSEGInstanceCrop objects.
+    """
+    if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3:
+        raise ValueError("Expected BGR frame with shape HxWx3")
+
+    H, W = frame_bgr.shape[:2]
+    crops = []
+
+    for instance_id, mask in instance_masks:
+        # Find bounding box from mask
+        mask_binary = (mask > 0.5).astype(np.uint8) if mask.dtype != np.uint8 else mask
+        rows, cols = np.where(mask_binary)
+
+        if len(rows) < 10:  # Skip tiny masks
+            continue
+
+        y_min, y_max = int(rows.min()), int(rows.max())
+        x_min, x_max = int(cols.min()), int(cols.max())
+
+        # Add padding
+        x1 = max(0, x_min - pad_px)
+        y1 = max(0, y_min - pad_px)
+        x2 = min(W, x_max + pad_px)
+        y2 = min(H, y_max + pad_px)
+
+        # Skip if too small
+        if (x2 - x1) < min_crop_size or (y2 - y1) < min_crop_size:
+            continue
+
+        # Extract crop
+        crop_bgr = frame_bgr[y1:y2, x1:x2].copy()
+
+        # Extract mask crop for reference
+        crop_mask = mask[y1:y2, x1:x2].copy()
+
+        crops.append(
+            DinoKPSEGInstanceCrop(
+                instance_id=int(instance_id),
+                bbox_xyxy=(x1, y1, x2, y2),
+                crop_bgr=crop_bgr,
+                crop_mask=crop_mask,
+                offset_xy=(x1, y1),
+            )
+        )
+
+    return crops

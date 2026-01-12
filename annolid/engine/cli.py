@@ -358,8 +358,8 @@ def _build_root_parser() -> argparse.ArgumentParser:
     tb_p.add_argument("--mask-type", choices=("disk",
                       "gaussian"), default="gaussian")
     tb_p.add_argument("--heatmap-sigma", type=float, default=None)
-    tb_p.add_argument("--instance-mode", choices=("union",
-                      "per_instance"), default="union")
+    tb_p.add_argument("--instance-mode", choices=("auto", "union",
+                      "per_instance"), default="auto")
     tb_p.add_argument("--bbox-scale", type=float, default=1.25)
     tb_p.add_argument("--no-cache", action="store_true")
     tb_p.add_argument("--max-images", type=int, default=64)
@@ -390,8 +390,8 @@ def _build_root_parser() -> argparse.ArgumentParser:
         "--split", choices=("train", "val", "both"), default="both")
     audit_p.add_argument("--max-images", type=int, default=None)
     audit_p.add_argument("--seed", type=int, default=0)
-    audit_p.add_argument("--instance-mode", choices=("union", "per_instance"),
-                         default="union")
+    audit_p.add_argument("--instance-mode", choices=("auto", "union", "per_instance"),
+                         default="auto")
     audit_p.add_argument("--bbox-scale", type=float, default=1.25)
     audit_p.add_argument("--out", default=None,
                          help="Optional output JSON path")
@@ -425,8 +425,8 @@ def _build_root_parser() -> argparse.ArgumentParser:
     pre_p.add_argument("--device", default=None)
     pre_p.add_argument("--split", choices=("train",
                        "val", "both"), default="both")
-    pre_p.add_argument("--instance-mode", choices=("union",
-                       "per_instance"), default="union")
+    pre_p.add_argument("--instance-mode", choices=("auto", "union",
+                       "per_instance"), default="auto")
     pre_p.add_argument("--bbox-scale", type=float, default=1.25)
     pre_p.add_argument("--cache-dir", default=None)
     pre_p.add_argument("--cache-dtype", choices=("float16",

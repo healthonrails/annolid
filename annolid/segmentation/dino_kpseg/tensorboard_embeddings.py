@@ -25,7 +25,7 @@ from annolid.segmentation.dino_kpseg.data import (
     load_yolo_pose_spec,
 )
 from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
-from annolid.utils.runs import new_run_dir, shared_runs_root
+from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 # Type alias for callables that operate on a single torch.Tensor
 TorchTensorCallable = Callable[
@@ -46,7 +46,7 @@ class DinoKPSEGTensorBoardEmbeddingConfig:
     radius_px: float = 6.0
     mask_type: str = "gaussian"
     heatmap_sigma_px: Optional[float] = None
-    instance_mode: str = "union"
+    instance_mode: str = "auto"
     bbox_scale: float = 1.25
     cache_features: bool = True
     max_images: int = 64
@@ -743,8 +743,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--mask-type", choices=("disk",
                    "gaussian"), default="gaussian")
     p.add_argument("--heatmap-sigma", type=float, default=None)
-    p.add_argument("--instance-mode", choices=("union",
-                   "per_instance"), default="union")
+    p.add_argument("--instance-mode", choices=("auto", "union",
+                   "per_instance"), default="auto")
     p.add_argument("--bbox-scale", type=float, default=1.25)
     p.add_argument("--no-cache", action="store_true",
                    help="Disable feature caching")
@@ -777,8 +777,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         runs_root = Path(args.runs_root).expanduser(
         ).resolve() if args.runs_root else shared_runs_root()
-        out_dir = new_run_dir(task="dino_kpseg", model="embeddings",
-                              runs_root=runs_root, run_name=args.run_name)
+        out_dir = allocate_run_dir(
+            task="dino_kpseg",
+            model="embeddings",
+            runs_root=runs_root,
+            run_name=args.run_name,
+        )
     tb_dir = out_dir / "tensorboard"
     tb_dir.mkdir(parents=True, exist_ok=True)
 

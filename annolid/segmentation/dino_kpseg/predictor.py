@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from annolid.features import Dinov3FeatureExtractor
 from annolid.segmentation.dino_kpseg.data import build_extractor, merge_feature_layers
@@ -121,6 +122,169 @@ class DinoKPSEGPredictor:
         self._prev_keypoint_scores = None
         self._prev_by_instance = {}
 
+    @staticmethod
+    def _local_peaks_2d(
+        heatmap: torch.Tensor,
+        *,
+        topk: int,
+        threshold: float,
+        nms_radius: int,
+    ) -> Tuple[List[Tuple[int, int]], List[float]]:
+        """Return top-K local maxima (x_idx, y_idx) and their scores from a 2D heatmap."""
+        if heatmap.ndim != 2:
+            raise ValueError("Expected heatmap in HW format")
+        if topk <= 0:
+            return [], []
+        thr = float(threshold)
+        if not math.isfinite(thr):
+            thr = 0.0
+        r = max(0, int(nms_radius))
+        k = 2 * r + 1
+        if k <= 1:
+            pooled = heatmap
+        else:
+            pooled = F.max_pool2d(
+                heatmap[None, None, ...],
+                kernel_size=int(k),
+                stride=1,
+                padding=int(r),
+            )[0, 0]
+        peaks = (heatmap >= thr) & (heatmap >= pooled)
+        ys, xs = torch.nonzero(peaks, as_tuple=True)
+        if xs.numel() == 0:
+            # Always return at least the global maximum, even if below threshold,
+            # so downstream pipelines can continue deterministically.
+            flat_idx = int(torch.argmax(heatmap).item())
+            h, w = int(heatmap.shape[0]), int(heatmap.shape[1])
+            y = flat_idx // max(1, w)
+            x = flat_idx % max(1, w)
+            return [(int(x), int(y))], [float(heatmap[int(y), int(x)].item())]
+
+        scores = heatmap[ys, xs]
+        k_eff = min(int(topk), int(scores.numel()))
+        top_scores, top_idx = torch.topk(scores, k=k_eff, largest=True)
+        coords = [(int(xs[i].item()), int(ys[i].item())) for i in top_idx]
+        return coords, [float(v.item()) for v in top_scores]
+
+    def _compute_probs(
+        self,
+        feats: torch.Tensor,
+        *,
+        frame_shape: Tuple[int, int],
+        mask: Optional[np.ndarray] = None,
+    ) -> Tuple[torch.Tensor, Tuple[int, int], int]:
+        """Compute keypoint probability maps in patch-grid resolution (K, H_p, W_p)."""
+        feats = self._validate_features(feats)
+        _, h_p, w_p = feats.shape
+        patch_size = int(self.extractor.patch_size)
+        resized_h, resized_w = int(h_p) * patch_size, int(w_p) * patch_size
+
+        x = feats.unsqueeze(0).to(self.device, dtype=torch.float32)
+        logits = self.head(x)[0]  # [K, H_p, W_p]
+        probs_raw = torch.sigmoid(logits).to("cpu")
+        probs = probs_raw
+
+        if mask is not None:
+            mask_arr = np.asarray(mask)
+            if mask_arr.shape[:2] != tuple(frame_shape):
+                raise ValueError(
+                    "mask must have the same HxW as the input frame/crop"
+                )
+            if mask_arr.dtype == bool:
+                mask_arr = mask_arr.astype(np.uint8) * 255
+            elif np.issubdtype(mask_arr.dtype, np.floating):
+                mask_arr = np.clip(mask_arr, 0.0, 1.0)
+                mask_arr = (mask_arr * 255.0).astype(np.uint8)
+            elif mask_arr.dtype != np.uint8:
+                mask_arr = np.clip(mask_arr, 0, 255).astype(np.uint8)
+
+            mask_patch = self.extractor.quantize_mask(mask_arr).to(
+                dtype=probs_raw.dtype, device=probs_raw.device
+            )
+            gated = probs_raw * mask_patch.unsqueeze(0)
+            gated_mass = gated.sum(dim=(1, 2))
+            fallback = gated_mass <= 1e-6
+            if bool(torch.any(fallback)):
+                probs = probs_raw.clone()
+                probs[~fallback] = gated[~fallback]
+            else:
+                probs = gated
+
+        return probs, (int(resized_h), int(resized_w)), int(patch_size)
+
+    def predict_multi_peaks_from_features(
+        self,
+        feats: torch.Tensor,
+        *,
+        frame_shape: Tuple[int, int],
+        mask: Optional[np.ndarray] = None,
+        threshold: Optional[float] = None,
+        topk: int = 5,
+        nms_radius_px: float = 12.0,
+        keypoint_indices: Optional[Iterable[int]] = None,
+    ) -> List[List[Tuple[float, float, float]]]:
+        """Return multiple peaks per keypoint channel as [(x, y, score), ...]."""
+        probs, (resized_h, resized_w), patch_size = self._compute_probs(
+            feats, frame_shape=frame_shape, mask=mask
+        )
+        thr = float(threshold) if threshold is not None else float(self.meta.threshold)
+        if not math.isfinite(thr):
+            thr = 0.0
+        nms_patch = max(
+            0, int(round(float(nms_radius_px) / max(1.0, float(patch_size))))
+        )
+
+        if keypoint_indices is None:
+            indices = list(range(int(probs.shape[0])))
+        else:
+            indices = [int(i) for i in keypoint_indices if i is not None]
+
+        out: List[List[Tuple[float, float, float]]] = [
+            [] for _ in range(int(probs.shape[0]))
+        ]
+        h0, w0 = int(frame_shape[0]), int(frame_shape[1])
+
+        for k in indices:
+            if k < 0 or k >= int(probs.shape[0]):
+                continue
+            coords_patch, scores = self._local_peaks_2d(
+                probs[int(k)].to(dtype=torch.float32),
+                topk=int(topk),
+                threshold=float(thr),
+                nms_radius=int(nms_patch),
+            )
+            peaks: List[Tuple[float, float, float]] = []
+            for (x_idx, y_idx), score in zip(coords_patch, scores):
+                x_res = (float(x_idx) + 0.5) * float(patch_size)
+                y_res = (float(y_idx) + 0.5) * float(patch_size)
+                x_orig = float(x_res) * (float(w0) / float(resized_w))
+                y_orig = float(y_res) * (float(h0) / float(resized_h))
+                peaks.append((float(x_orig), float(y_orig), float(score)))
+            out[int(k)] = peaks
+
+        return out
+
+    def predict_multi_peaks(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        mask: Optional[np.ndarray] = None,
+        threshold: Optional[float] = None,
+        topk: int = 5,
+        nms_radius_px: float = 12.0,
+        keypoint_indices: Optional[Iterable[int]] = None,
+    ) -> List[List[Tuple[float, float, float]]]:
+        feats = self.extract_features(frame_bgr)
+        return self.predict_multi_peaks_from_features(
+            feats,
+            frame_shape=(int(frame_bgr.shape[0]), int(frame_bgr.shape[1])),
+            mask=mask,
+            threshold=threshold,
+            topk=topk,
+            nms_radius_px=nms_radius_px,
+            keypoint_indices=keypoint_indices,
+        )
+
     def extract_features(self, frame_bgr: np.ndarray) -> torch.Tensor:
         """Extract frozen DINO features (CHW) for a frame or crop."""
         feats = self.extractor.extract(
@@ -185,41 +349,9 @@ class DinoKPSEGPredictor:
             else:
                 prev_xy, prev_scores = None, None
 
-        feats = self._validate_features(feats)
-        c, h_p, w_p = feats.shape
-        patch_size = int(self.extractor.patch_size)
-        resized_h, resized_w = int(h_p) * patch_size, int(w_p) * patch_size
-
-        x = feats.unsqueeze(0).to(self.device, dtype=torch.float32)
-        logits = self.head(x)[0]  # [K, H_p, W_p]
-        probs_raw = torch.sigmoid(logits).to("cpu")
-        probs = probs_raw
-
-        if mask is not None:
-            mask_arr = np.asarray(mask)
-            if mask_arr.shape[:2] != tuple(frame_shape):
-                raise ValueError(
-                    "mask must have the same HxW as the input frame/crop"
-                )
-            if mask_arr.dtype == bool:
-                mask_arr = mask_arr.astype(np.uint8) * 255
-            elif np.issubdtype(mask_arr.dtype, np.floating):
-                mask_arr = np.clip(mask_arr, 0.0, 1.0)
-                mask_arr = (mask_arr * 255.0).astype(np.uint8)
-            elif mask_arr.dtype != np.uint8:
-                mask_arr = np.clip(mask_arr, 0, 255).astype(np.uint8)
-
-            mask_patch = self.extractor.quantize_mask(mask_arr).to(
-                dtype=probs_raw.dtype, device=probs_raw.device
-            )
-            gated = probs_raw * mask_patch.unsqueeze(0)
-            gated_mass = gated.sum(dim=(1, 2))
-            fallback = gated_mass <= 1e-6
-            if bool(torch.any(fallback)):
-                probs = probs_raw.clone()
-                probs[~fallback] = gated[~fallback]
-            else:
-                probs = gated
+        probs, (resized_h, resized_w), patch_size = self._compute_probs(
+            feats, frame_shape=frame_shape, mask=mask
+        )
 
         thr = float(threshold) if threshold is not None else float(
             self.meta.threshold)

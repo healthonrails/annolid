@@ -18,6 +18,10 @@ from annolid.utils.annotation_store import (
     load_labelme_json,
 )
 from annolid.utils.logger import logger
+from annolid.utils.labelme_flags import (
+    sanitize_labelme_flags_with_meta,
+    sanitize_labelme_shape_dict,
+)
 
 
 def keypoint_to_polygon_points(center_point,
@@ -55,13 +59,13 @@ def _serialize_point(point):
 
 
 def format_shape(shape):
-    data = shape.other_data.copy()
+    data = dict(getattr(shape, "other_data", {}) or {})
     data.update({
         'label': shape.label,
         'points': [_serialize_point(pt) for pt in shape.points],
         'group_id': shape.group_id,
         'shape_type': shape.shape_type,
-        'flags': shape.flags,
+        'flags': getattr(shape, "flags", {}) or {},
         'visible': shape.visible,
         'description': shape.description,
     })
@@ -76,7 +80,7 @@ def format_shape(shape):
             data['mask'] = labelme_utils.img_arr_to_b64(mask.astype(np.uint8))
     if shape.point_labels:
         data['point_labels'] = list(shape.point_labels)
-    return data
+    return sanitize_labelme_shape_dict(data)
 
 
 def load_existing_json(filename):
@@ -152,7 +156,11 @@ def save_labels(filename, imagePath,
     # Check if a PNG file exists with the same name
     png_filename = os.path.splitext(filename)[0] + ".png"
     json_filename = png_filename.replace('.png', '.json')
-    if os.path.exists(png_filename) and os.path.exists(json_filename):
+    # If the frame has been manually labeled (PNG + JSON exist), avoid modifying
+    # the on-disk JSON payload. Still allow writing to the annotation store
+    # when persist_json=False (e.g. model predictions) so we can export results
+    # without overwriting manual labels.
+    if os.path.exists(png_filename) and os.path.exists(json_filename) and persist_json:
         logger.info(
             """A corresponding PNG file was found. 
             We assume the frame has been manually labeled.
@@ -170,7 +178,15 @@ def save_labels(filename, imagePath,
         existing_shapes = existing_json.get('shapes', [])
         if flags is None:
             flags = existing_json.get('flags', {})
+        safe_flags, flags_meta = sanitize_labelme_flags_with_meta(flags)
+        if flags_meta:
+            if otherData is None:
+                otherData = {}
+            otherData = dict(otherData)
+            otherData.setdefault("annolid_flags_meta", flags_meta)
+        flags = safe_flags
         shapes = merge_shapes(shapes, existing_shapes)
+        shapes = [sanitize_labelme_shape_dict(s) for s in shapes]
 
         if imageData is None and save_image_to_json:
             imageData = LabelFile.load_image_file(imagePath)
@@ -193,19 +209,31 @@ def save_labels(filename, imagePath,
 
     store = AnnotationStore.for_frame_path(frame_path)
     existing_record = store.get_frame(frame_number)
+    existing_json = None
+    if existing_record is None:
+        existing_json = load_existing_json(str(frame_path)) or None
     existing_shapes = (
         [dict(shape) for shape in existing_record.get('shapes', [])]
-        if existing_record else []
+        if existing_record else (
+            [dict(shape) for shape in (existing_json.get('shapes', []) if isinstance(existing_json, dict) else [])]
+        )
     )
     resolved_flags_source = flags if flags is not None else (
-        existing_record.get('flags', {}) if existing_record else {}
+        existing_record.get('flags', {}) if existing_record else (
+            existing_json.get('flags', {}) if isinstance(existing_json, dict) else {}
+        )
     )
     resolved_flags = dict(resolved_flags_source)
+    safe_flags, flags_meta = sanitize_labelme_flags_with_meta(resolved_flags)
+    resolved_flags = safe_flags
     resolved_caption = caption if caption is not None else (
-        existing_record.get('caption') if existing_record else None
+        existing_record.get('caption') if existing_record else (
+            existing_json.get('caption') if isinstance(existing_json, dict) else None
+        )
     )
 
     shapes = merge_shapes(shapes, existing_shapes)
+    shapes = [sanitize_labelme_shape_dict(s) for s in shapes]
 
     # Load existing shapes from the JSON file and merge with new shapes
     if imageData is None and save_image_to_json:
@@ -224,6 +252,14 @@ def save_labels(filename, imagePath,
     )
     if otherData:
         base_other.update(otherData)
+    if flags_meta:
+        existing_meta = base_other.get("annolid_flags_meta")
+        if isinstance(existing_meta, dict):
+            merged_meta = dict(existing_meta)
+            merged_meta.update(flags_meta)
+            base_other["annolid_flags_meta"] = merged_meta
+        else:
+            base_other["annolid_flags_meta"] = dict(flags_meta)
 
     record = {
         "frame": frame_number,

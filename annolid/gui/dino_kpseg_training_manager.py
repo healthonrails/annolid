@@ -18,7 +18,7 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
-from annolid.utils.runs import new_run_dir, shared_runs_root
+from annolid.utils.runs import allocate_run_dir, new_run_dir, shared_runs_root
 
 
 class _TrainingCancelled(RuntimeError):
@@ -229,7 +229,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         radius_px: float,
         mask_type: str = "gaussian",
         heatmap_sigma: Optional[float] = None,
-        instance_mode: str = "union",
+        instance_mode: str = "auto",
         bbox_scale: float = 1.25,
         hidden_dim: int,
         lr: float,
@@ -370,7 +370,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 "--mask-type",
                 str(mask_type or "gaussian"),
                 "--instance-mode",
-                str(instance_mode or "union"),
+                str(instance_mode or "auto"),
                 "--bbox-scale",
                 str(float(bbox_scale)),
                 "--hidden-dim",
@@ -642,19 +642,24 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
     ) -> Path:
         base = Path(out_dir).expanduser().resolve(
         ) if out_dir else shared_runs_root()
-        run_name = self._infer_run_name(data_config_path)
-        run_dir = new_run_dir(
-            task="dino_kpseg",
-            model=str(model_name or "train"),
-            runs_root=base,
-            run_name=run_name,
-        )
+        ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        dataset_name = self._infer_run_name(data_config_path)
+        run_name = f"{dataset_name}_{ts}" if dataset_name else ts
         try:
-            run_dir.mkdir(parents=True, exist_ok=True)
+            return allocate_run_dir(
+                task="dino_kpseg",
+                model="train",
+                runs_root=base,
+                run_name=run_name,
+            )
         except Exception:
             # Defer failures to the training task (which will surface a clearer message).
-            pass
-        return run_dir
+            return new_run_dir(
+                task="dino_kpseg",
+                model="train",
+                runs_root=base,
+                run_name=run_name,
+            )
 
     @staticmethod
     def _infer_run_name(data_config_path: str) -> Optional[str]:

@@ -1,0 +1,19 @@
+data:
+  video_folder: "path/to/your/video/folder"
+  batch_size: 4
+  num_frames: 30
+  clip_len: 1
+  fps: 30
+
+model:
+  d_model: 512
+  nhead: 8
+  num_layers: 6
+  dim_feedforward: 2048
+  dropout: 0.1
+  num_classes: 5
+
+training:
+  num_epochs: 50
+  learning_rate: 0.001
+  checkpoint_dir: "checkpoints"

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from annolid.engine.registry import ModelPluginBase, register_model
-from annolid.utils.runs import new_run_dir, shared_runs_root
+from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 
 from annolid.segmentation.dino_kpseg.cli_utils import parse_layers
@@ -49,8 +49,8 @@ class DinoKPSEGPlugin(ModelPluginBase):
         )
         parser.add_argument(
             "--instance-mode",
-            choices=("union", "per_instance"),
-            default="union",
+            choices=("auto", "union", "per_instance"),
+            default="auto",
             help="How to handle multiple pose instances per image.",
         )
         parser.add_argument(
@@ -211,7 +211,7 @@ class DinoKPSEGPlugin(ModelPluginBase):
                 if args.runs_root
                 else shared_runs_root()
             )
-            out_dir = new_run_dir(
+            out_dir = allocate_run_dir(
                 task="dino_kpseg", model="train", runs_root=runs_root, run_name=args.run_name)
         best = train_kpseg(
             data_yaml=Path(args.data).expanduser().resolve(),

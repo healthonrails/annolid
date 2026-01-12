@@ -5,16 +5,15 @@
       "points": [[15.5, 22.3]],
       "group_id": null,
       "shape_type": "point",
-      "flags": {
-        "instance_label": "animal",
-        "display_label": "nose",
-        "quality": 1.0,
-        "velocity": [
-          0.0,
-          0.0
-        ],
-        "misses": 0
-      },
+      "flags": {},
+      "instance_label": "animal",
+      "display_label": "nose",
+      "quality": 1.0,
+      "velocity": [
+        0.0,
+        0.0
+      ],
+      "misses": 0,
       "visible": true,
       "description": "Cutie+DINO"
     },
@@ -29,9 +28,8 @@
       ],
       "group_id": null,
       "shape_type": "polygon",
-      "flags": {
-        "instance_label": "animal"
-      },
+      "flags": {},
+      "instance_label": "animal",
       "visible": true,
       "description": "Cutie"
     }

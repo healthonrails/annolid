@@ -1,0 +1,36 @@
+zones:
+- name: restricted_area
+  polygon:
+  - - 0.1
+    - 0.1
+  - - 0.1
+    - 0.9
+  - - 0.4
+    - 0.9
+  - - 0.4
+    - 0.1
+- name: exit_door
+  polygon:
+  - - 0.8
+    - 0.4
+  - - 0.8
+    - 0.6
+  - - 1.0
+    - 0.6
+  - - 1.0
+    - 0.4
+events:
+- name: person_entered_restricted_area
+  type: zone_entry
+  trigger_class: person
+  zone_name: restricted_area
+- name: person_left_restricted_area
+  type: zone_exit
+  trigger_class: person
+  zone_name: restricted_area
+- name: laptop_near_person
+  type: proximity
+  class_a: person
+  class_b: laptop
+  threshold: 0.1
+  min_duration_s: 2.0

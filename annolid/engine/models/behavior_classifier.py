@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from annolid.behavior.data_loading.datasets import BehaviorDataset
 from annolid.behavior.pipeline import BACKBONE_CHOICES, DEFAULT_DINOV3_MODEL, build_classifier, build_transform
 from annolid.engine.registry import ModelPluginBase, register_model
-from annolid.utils.runs import new_run_dir, shared_runs_root
+from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class BehaviorClassifierPlugin(ModelPluginBase):
         if tb_dir_raw:
             tb_dir = Path(tb_dir_raw).expanduser().resolve()
         else:
-            tb_dir = new_run_dir(
+            tb_dir = allocate_run_dir(
                 task="behavior_classifier",
                 model=str(args.feature_backbone),
                 runs_root=shared_runs_root(),
