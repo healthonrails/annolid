@@ -551,7 +551,8 @@ class InferenceProcessor:
                     output_directory, frame_index=int(frame_index)
                 )
                 instance_masks = self._instance_masks_from_shapes(
-                    prompt_shapes, frame_hw=(int(frame_shape[0]), int(frame_shape[1]))
+                    prompt_shapes, frame_hw=(
+                        int(frame_shape[0]), int(frame_shape[1]))
                 )
                 annotations = self.extract_dino_kpseg_results(
                     frame, bboxes=bboxes, instance_masks=instance_masks
@@ -1009,75 +1010,162 @@ class InferenceProcessor:
         Returns:
             list: A list of Shape objects representing the detections.
         """
-        annotations = []
+        annotations: List[Shape] = []
 
-        boxes = detection_result.boxes.xywh.cpu() if detection_result.boxes else []
-        track_ids = (detection_result.boxes.id.int().cpu().tolist() if detection_result.boxes
-                     and detection_result.boxes.id is not None else ["" for _ in range(len(boxes))])
-        masks = detection_result.masks if hasattr(
-            detection_result, 'masks') else None
-        names = detection_result.names
-        cls_ids = [int(box.cls)
-                   for box in detection_result.boxes] if detection_result.boxes else []
-        keypoints = detection_result.keypoints if hasattr(
-            detection_result, 'keypoints') else None
+        boxes_obj = getattr(detection_result, "boxes", None)
+        boxes_xywh = boxes_obj.xywh.cpu() if boxes_obj is not None else []
 
-        # Process keypoints if available
-        if keypoints is not None:
-            for idx, kp in enumerate(keypoints.xy):
-                kpt_points = kp.cpu().tolist()
-                for kpt_id, kpt in enumerate(kpt_points):
-                    kpt_label = str(
-                        kpt_id) if self.keypoint_names is None else self.keypoint_names[kpt_id]
+        keypoints = getattr(detection_result, "keypoints", None)
+        kpts_xy = getattr(
+            keypoints, "xy", None) if keypoints is not None else None
+        kpts_conf = getattr(keypoints, "conf",
+                            None) if keypoints is not None else None
+
+        num_instances = 0
+        try:
+            num_instances = int(len(boxes_xywh))
+        except Exception:
+            num_instances = 0
+        if num_instances == 0 and kpts_xy is not None:
+            try:
+                num_instances = int(kpts_xy.shape[0])
+            except Exception:
+                num_instances = 0
+
+        group_ids: List[int] = list(range(num_instances))
+        if boxes_obj is not None:
+            track_tensor = getattr(boxes_obj, "id", None)
+            if track_tensor is not None:
+                try:
+                    track_ids = track_tensor.int().cpu().tolist()
+                    if isinstance(track_ids, list) and len(track_ids) == num_instances:
+                        group_ids = [int(t) for t in track_ids]
+                except Exception:
+                    pass
+
+        masks = getattr(detection_result, "masks", None)
+        names = getattr(detection_result, "names", {}) or {}
+        cls_ids = (
+            [int(box.cls)
+             for box in boxes_obj] if boxes_obj is not None else []
+        )
+        class_names: List[str] = []
+        for idx in range(num_instances):
+            name = ""
+            if idx < len(cls_ids):
+                name = str(names.get(cls_ids[idx], cls_ids[idx]))
+            class_names.append(name)
+        class_name_counts = {k: class_names.count(
+            k) for k in set(class_names) if k}
+
+        # Process each detection instance (bbox/mask/keypoints share the same index).
+        for idx in range(num_instances):
+            group_id = int(group_ids[idx])
+            class_name = class_names[idx] if idx < len(class_names) else ""
+            instance_label = class_name or "object"
+            if class_name and class_name_counts.get(class_name, 0) > 1:
+                instance_label = f"{class_name}_{group_id}"
+
+            if kpts_xy is not None:
+                try:
+                    xy_row = kpts_xy[idx].cpu().tolist()
+                except Exception:
+                    xy_row = []
+                conf_row = None
+                if kpts_conf is not None:
+                    try:
+                        conf_row = kpts_conf[idx].cpu().tolist()
+                    except Exception:
+                        conf_row = None
+
+                for kpt_id, kpt in enumerate(xy_row):
+                    if not isinstance(kpt, (list, tuple)) or len(kpt) < 2:
+                        continue
+                    if self.keypoint_names and kpt_id < len(self.keypoint_names):
+                        kpt_label = str(self.keypoint_names[kpt_id])
+                    else:
+                        kpt_label = str(kpt_id)
                     keypoint_shape = Shape(
-                        kpt_label, shape_type='point', description=self.model_type, flags={})
-                    keypoint_shape.points = [kpt]
+                        kpt_label,
+                        shape_type="point",
+                        description=self.model_type,
+                        flags={},
+                        group_id=group_id,
+                    )
+                    keypoint_shape.points = [[float(kpt[0]), float(kpt[1])]]
+                    if conf_row is not None and kpt_id < len(conf_row):
+                        keypoint_shape.other_data["score"] = float(
+                            conf_row[kpt_id])
+                    keypoint_shape.other_data["instance_id"] = int(group_id)
+                    keypoint_shape.other_data["instance_label"] = instance_label
+                    if class_name:
+                        keypoint_shape.other_data["class_name"] = class_name
                     annotations.append(keypoint_shape)
 
-        # Process each detection box
-        for idx, box in enumerate(boxes):
-            x, y, w, h = box.tolist()
-            class_name = names[cls_ids[idx]]
-            mask = masks[idx] if masks is not None else None
-            track_id = track_ids[idx] if save_track else None
-
-            # Update tracking history if enabled
-            if save_track and track_id is not None:
-                track = self.track_history[track_id]
-                track.append((float(x), float(y)))
-                if len(track) > 30:
-                    track.pop(0)
-
-            # Save bounding box
-            if save_bbox:
+            if save_bbox and idx < len(boxes_xywh):
+                x, y, w, h = boxes_xywh[idx].tolist()
                 x1, y1 = x - w / 2, y - h / 2
                 x2, y2 = x + w / 2, y + h / 2
                 bbox_shape = Shape(
-                    class_name, shape_type='rectangle', description=self.model_type, flags={})
-                bbox_shape.points = [[x1, y1], [x2, y2]]
+                    class_name,
+                    shape_type="rectangle",
+                    description=self.model_type,
+                    flags={},
+                    group_id=group_id,
+                )
+                bbox_shape.points = [[float(x1), float(y1)], [
+                    float(x2), float(y2)]]
+                bbox_shape.other_data["instance_id"] = int(group_id)
+                bbox_shape.other_data["instance_label"] = instance_label
                 annotations.append(bbox_shape)
 
-            # Save track polygon if tracking data exists
-            if save_track and track_id and len(self.track_history[track_id]) > 1:
-                shape_track = Shape(f"track_{track_id}", shape_type="polygon",
-                                    description=self.model_type, flags={}, visible=True)
-                shape_track.points = np.array(
-                    self.track_history[track_id]).tolist()
-                annotations.append(shape_track)
+            if save_track and idx < len(boxes_xywh):
+                x, y, w, h = boxes_xywh[idx].tolist()
+                track_key = str(group_id)
+                track = self.track_history[track_key]
+                track.append((float(x), float(y)))
+                if len(track) > 30:
+                    track.pop(0)
+                if len(track) > 1:
+                    shape_track = Shape(
+                        f"track_{track_key}",
+                        shape_type="polygon",
+                        description=self.model_type,
+                        flags={},
+                        group_id=group_id,
+                        visible=True,
+                    )
+                    shape_track.points = np.array(track).tolist()
+                    shape_track.other_data["instance_id"] = int(group_id)
+                    shape_track.other_data["instance_label"] = instance_label
+                    annotations.append(shape_track)
 
-            # Process mask if available
-            if mask is not None:
+            if masks is not None:
                 try:
-                    polygons = simplify_polygons(mask.xy)
-                    for polygon in polygons:
-                        contour_points = polygon.tolist()
-                        if len(contour_points) > 2:
-                            segmentation_shape = Shape(class_name, shape_type='polygon',
-                                                       description=self.model_type, flags={}, visible=True)
-                            segmentation_shape.points = contour_points
-                            annotations.append(segmentation_shape)
-                except Exception as e:
-                    logger.error("Error processing mask: %s", e)
+                    mask = masks[idx]
+                except Exception:
+                    mask = None
+                if mask is not None:
+                    try:
+                        polygons = simplify_polygons(mask.xy)
+                        for polygon in polygons:
+                            contour_points = polygon.tolist()
+                            if len(contour_points) > 2:
+                                segmentation_shape = Shape(
+                                    class_name,
+                                    shape_type="polygon",
+                                    description=self.model_type,
+                                    flags={},
+                                    group_id=group_id,
+                                    visible=True,
+                                )
+                                segmentation_shape.points = contour_points
+                                segmentation_shape.other_data["instance_id"] = int(
+                                    group_id)
+                                segmentation_shape.other_data["instance_label"] = instance_label
+                                annotations.append(segmentation_shape)
+                    except Exception as exc:
+                        logger.error("Error processing mask: %s", exc)
 
         return annotations
 
