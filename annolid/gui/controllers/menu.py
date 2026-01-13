@@ -2,6 +2,12 @@ import functools
 from typing import Dict, TYPE_CHECKING
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.theme import (
+    apply_modern_theme,
+    apply_light_theme,
+    apply_dark_theme,
+    refresh_app_styles,
+)
 
 from labelme import utils
 from labelme.utils import newAction
@@ -712,6 +718,115 @@ class MenuController:
                 w.pca_map_settings_action,
             ),
         ]
+
+        # Themes submenu: allow switching between UI themes (stored in QSettings)
+        try:
+            # Default to empty (no theme) so users must opt-in to custom themes
+            theme_setting = str(w.settings.value("ui/theme", "") or "")
+            themes_menu = QtWidgets.QMenu(w.tr("&Themes"), w)
+            theme_group = QtWidgets.QActionGroup(w)
+            theme_group.setExclusive(True)
+
+            # If empty, the user has not selected a custom theme (use system)
+            system_checked = theme_setting == ""
+
+            light_checked = theme_setting == "light"
+
+            def _set_light(checked=False, _w=w):
+                _w.settings.setValue("ui/theme", "light")
+                try:
+                    app = QtWidgets.QApplication.instance()
+                    apply_light_theme(app)
+                    refresh_app_styles(app)
+                except Exception:
+                    pass
+
+            dark_checked = theme_setting == "dark"
+
+            def _set_dark(checked=False, _w=w):
+                _w.settings.setValue("ui/theme", "dark")
+                try:
+                    app = QtWidgets.QApplication.instance()
+                    apply_dark_theme(app)
+                    refresh_app_styles(app)
+                except Exception:
+                    pass
+
+            modern_checked = theme_setting == "modern"
+
+            def _set_modern(checked=False, _w=w):
+                _w.settings.setValue("ui/theme", "modern")
+                try:
+                    app = QtWidgets.QApplication.instance()
+                    apply_modern_theme(app)
+                    refresh_app_styles(app)
+                except Exception:
+                    pass
+
+            def _set_system(checked=False, _w=w):
+                # Clear the theme setting so the app uses the system/default style
+                _w.settings.setValue("ui/theme", "")
+                try:
+                    app = QtWidgets.QApplication.instance()
+                    # Remove any custom stylesheet; keep the platform style
+                    app.setStyleSheet("")
+                    refresh_app_styles(app)
+                except Exception:
+                    pass
+
+            light_action = self._action_factory(
+                w.tr("Light"),
+                _set_light,
+                None,
+                None,
+                w.tr("Use a light (OS-like) theme for the application"),
+                checkable=True,
+                checked=light_checked,
+            )
+            dark_action = self._action_factory(
+                w.tr("Dark"),
+                _set_dark,
+                None,
+                None,
+                w.tr("Use a dark (OS-like) theme for the application"),
+                checkable=True,
+                checked=dark_checked,
+            )
+            modern_action = self._action_factory(
+                w.tr("Modern"),
+                _set_modern,
+                None,
+                None,
+                w.tr("Use the modern accent theme for the application"),
+                checkable=True,
+                checked=modern_checked,
+            )
+
+            # System/default (no custom theme) should be first
+            system_action = self._action_factory(
+                w.tr("System"),
+                _set_system,
+                None,
+                None,
+                w.tr("Use the system/default style (no custom theme)"),
+                checkable=True,
+                checked=system_checked,
+            )
+
+            theme_group.addAction(system_action)
+            theme_group.addAction(light_action)
+            theme_group.addAction(dark_action)
+            theme_group.addAction(modern_action)
+
+            themes_menu.addAction(system_action)
+            themes_menu.addAction(light_action)
+            themes_menu.addAction(dark_action)
+            themes_menu.addAction(modern_action)
+
+            # Insert the themes submenu as its own section in Settings
+            settings_sections.insert(0, (themes_menu.menuAction(),))
+        except Exception:
+            pass
         self._add_menu_sections(w.menus.settings, settings_sections)
 
         # ============================================================

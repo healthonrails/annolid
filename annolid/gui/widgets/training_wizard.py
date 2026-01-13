@@ -36,147 +36,6 @@ YOLO_SIZES = ("n", "s", "m", "l", "x")
 # Theme + small UI primitives
 # ---------------------------
 
-def apply_training_wizard_theme(app: QtWidgets.QApplication, wizard: QtWidgets.QWizard) -> None:
-    """Apply a modern dark theme with a consistent accent color."""
-    app.setStyle("Fusion")
-
-    # Slightly nicer default font
-    f = app.font()
-    if f.pointSize() < 11:
-        f.setPointSize(11)
-    app.setFont(f)
-
-    qss = """
-    /* ========= Global ========= */
-    QWidget {
-        color: #E9EEF5;
-        background: #0F141A;
-        font-size: 11pt;
-    }
-
-    QWizard {
-        background: #0F141A;
-    }
-
-    /* Wizard page title/subtitle (we add these labels ourselves) */
-    QLabel[role="title"] {
-        font-size: 20pt;
-        font-weight: 800;
-        color: #FFFFFF;
-        letter-spacing: 0.3px;
-    }
-    QLabel[role="subtitle"] {
-        color: #A7B3C2;
-        font-size: 10.7pt;
-    }
-
-    QLabel[muted="true"] { color: #A7B3C2; }
-    QLabel[good="true"]  { color: #4CD97B; }
-    QLabel[bad="true"]   { color: #FF5C7A; }
-
-    /* ========= Containers ========= */
-    QGroupBox {
-        border: 1px solid #283241;
-        border-radius: 14px;
-        margin-top: 14px;
-        padding: 12px;
-        background: #121922;
-    }
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        subcontrol-position: top left;
-        padding: 0 10px;
-        margin-left: 6px;
-        color: #CFE3FF;
-        font-weight: 700;
-    }
-
-    /* “Card” frames */
-    QFrame[card="true"] {
-        background: #121922;
-        border: 1px solid #283241;
-        border-radius: 16px;
-    }
-    QFrame[card="true"]:hover {
-        border: 1px solid #2B7FFF;
-    }
-    QFrame[cardSelected="true"] {
-        border: 1px solid #2B7FFF;
-        background: #121E2C;
-    }
-
-    /* ========= Inputs ========= */
-    QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextBrowser {
-        background: #0D1218;
-        border: 1px solid #283241;
-        border-radius: 12px;
-        padding: 8px 10px;
-        selection-background-color: #2B7FFF;
-    }
-    QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextBrowser:focus {
-        border: 1px solid #2B7FFF;
-    }
-
-    QTextBrowser {
-        padding: 12px;
-    }
-
-    /* ========= Buttons ========= */
-    QPushButton {
-        background: #182230;
-        border: 1px solid #2A3A50;
-        border-radius: 12px;
-        padding: 8px 12px;
-        font-weight: 700;
-    }
-    QPushButton:hover { border-color: #2B7FFF; }
-    QPushButton:pressed { background: #142033; }
-
-    /* Primary action */
-    QPushButton[primary="true"] {
-        background: #2B7FFF;
-        border: none;
-        color: white;
-        padding: 9px 14px;
-        border-radius: 12px;
-    }
-    QPushButton[primary="true"]:hover {
-        background: #3B8BFF;
-    }
-
-    /* ========= Tabs ========= */
-    QTabWidget::pane {
-        border: 1px solid #283241;
-        border-radius: 14px;
-        top: -1px;
-        background: #121922;
-    }
-    QTabBar::tab {
-        background: #121922;
-        border: 1px solid #283241;
-        padding: 8px 14px;
-        border-top-left-radius: 12px;
-        border-top-right-radius: 12px;
-        margin-right: 6px;
-        color: #A7B3C2;
-        font-weight: 700;
-    }
-    QTabBar::tab:selected {
-        color: #FFFFFF;
-        border-bottom-color: #121922;
-        background: #121E2C;
-    }
-
-    /* ========= Checkbox ========= */
-    QCheckBox { spacing: 10px; }
-    """
-
-    app.setStyleSheet(qss)
-
-    wizard.setWizardStyle(QtWidgets.QWizard.ModernStyle)
-    wizard.setOption(QtWidgets.QWizard.HaveHelpButton, False)
-    wizard.setOption(QtWidgets.QWizard.IndependentPages, False)
-
 
 class ClickableCard(QtWidgets.QFrame):
     clicked = QtCore.Signal()
@@ -1204,9 +1063,8 @@ class TrainingWizard(QtWidgets.QWizard):
     ) -> None:
         super().__init__(parent)
 
-        app = QtWidgets.QApplication.instance()
-        if app:
-            apply_training_wizard_theme(app, self)
+        # Theme application is handled at app startup/settings level.
+        # The wizard should not apply themes directly.
 
         self.setWindowTitle("Training Wizard")
         self.setMinimumSize(860, 640)

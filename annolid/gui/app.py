@@ -152,6 +152,7 @@ from annolid.gui.controllers import (
     TrackingController,
     TrackingDataController,
 )
+from annolid.gui.theme import apply_modern_theme, apply_light_theme, apply_dark_theme
 
 
 __appname__ = 'Annolid'
@@ -7014,6 +7015,20 @@ def main(argv=None, *, config=None):
 
     qt_args = sys.argv if argv is None else [sys.argv[0], *argv]
     app = create_qapp(qt_args)
+
+    # Apply global theme preference only if user explicitly selected one.
+    try:
+        settings = QtCore.QSettings("Annolid", "Annolid")
+        theme_choice = str(settings.value("ui/theme", "") or "")
+        if theme_choice == "modern":
+            apply_modern_theme(app)
+        elif theme_choice == "dark":
+            apply_dark_theme(app)
+        elif theme_choice == "light":
+            apply_light_theme(app)
+        # If theme_choice is empty or unknown, do not apply any custom theme.
+    except Exception:
+        pass
 
     app.setApplicationName(__appname__)
     annolid_icon = QtGui.QIcon(
