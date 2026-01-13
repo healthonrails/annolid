@@ -5407,13 +5407,16 @@ class AnnolidWindow(MainWindow):
         """Start YOLO training with wizard configuration."""
         try:
             self.yolo_training_manager.start_training(
-                data_yaml=config.get("dataset_path"),
-                model=config.get("model", "yolo11n-seg.pt"),
+                yolo_model_file=config.get("model", "yolo11n-seg.pt"),
+                model_path=None,
+                data_config_path=config.get("dataset_path"),
                 epochs=config.get("epochs", 100),
-                batch=config.get("batch", 8),
-                imgsz=config.get("imgsz", 640),
+                image_size=config.get("imgsz", 640),
+                batch_size=config.get("batch", 8),
                 device=config.get("device", ""),
-                project=config.get("output_dir"),
+                plots=True,
+                train_overrides=None,
+                out_dir=config.get("output_dir"),
             )
             self.statusBar().showMessage(self.tr("YOLO training started"), 3000)
         except Exception as e:

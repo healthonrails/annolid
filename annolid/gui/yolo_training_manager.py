@@ -199,6 +199,16 @@ class YOLOTrainingManager(QtCore.QObject):
         out_dir: Optional[str],
     ) -> bool:
         """Launch YOLO training on a background thread."""
+        # Ensure the dataset config is resolved to an absolute, temporary
+        # YAML with paths fixed up for Ultralytics. If preparation fails,
+        # abort early.
+        prepared_cfg = self.prepare_data_config(data_config_path)
+        if not prepared_cfg:
+            return False
+        # From this point forward use the prepared temp config path so
+        # downstream cleanup/removal is safe.
+        data_config_path = prepared_cfg
+
         if self._training_running:
             QtWidgets.QMessageBox.warning(
                 self._window,
