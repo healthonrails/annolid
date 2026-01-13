@@ -352,6 +352,10 @@ class InferenceProcessor:
         end_frame: Optional[int] = None,
         step: int = 1,
         skip_existing: bool = True,
+        output_directory: Optional[Path] = None,
+        progress_callback=None,
+        enable_tracking: bool = True,
+        tracker: Optional[str] = None,
     ) -> str:
         """
         Runs inference on the given video source and saves the results as LabelMe JSON files.
@@ -362,7 +366,8 @@ class InferenceProcessor:
         Returns:
             A string message indicating the completion and frame count.
         """
-        output_directory = Path(source).with_suffix("")
+        output_directory = Path(output_directory) if output_directory else Path(
+            source).with_suffix("")
         output_directory.mkdir(parents=True, exist_ok=True)
         start_frame = max(0, int(start_frame))
         end_frame = None if end_frame is None else int(end_frame)
@@ -418,6 +423,7 @@ class InferenceProcessor:
                 end_frame=end_frame,
                 step=step,
                 skip_existing=skip_existing,
+                progress_callback=progress_callback,
             )
 
         # For GUI-driven video inference we need stable, correct frame indices for:
@@ -443,6 +449,9 @@ class InferenceProcessor:
                 end_frame=end_frame,
                 step=step,
                 skip_existing=skip_existing,
+                progress_callback=progress_callback,
+                enable_tracking=enable_tracking,
+                tracker=tracker,
             )
 
         # Use visual prompts if supported by the model (YOLOE)
@@ -461,18 +470,35 @@ class InferenceProcessor:
                 logger.error("Error during visual prompt prediction: %s", e)
                 return f"Error: {e}"
         else:
-            if self._is_coreml:
+            if self._is_coreml or "pose" in self.model_name.lower():
                 logger.info(
-                    "Detected CoreML export; using predict() instead of track().")
+                    "Detected CoreML/pose export; using predict() instead of track().")
                 results = self.model.predict(
                     source, stream=True, verbose=False)
-            elif "pose" in self.model_name.lower():
+            elif not enable_tracking:
                 results = self.model.predict(
                     source, stream=True, verbose=False)
             else:
-                results = self.model.track(
-                    source, persist=True, stream=True, verbose=False
-                )
+                track_kwargs = {
+                    "persist": True,
+                    "stream": True,
+                    "verbose": False,
+                }
+                if tracker:
+                    track_kwargs["tracker"] = tracker
+                try:
+                    results = self.model.track(source, **track_kwargs)
+                except Exception as exc:
+                    if tracker:
+                        logger.warning(
+                            "Tracker '%s' failed; falling back to default tracker. Error: %s",
+                            tracker,
+                            exc,
+                        )
+                        track_kwargs.pop("tracker", None)
+                        results = self.model.track(source, **track_kwargs)
+                    else:
+                        raise
 
         stopped = False
         try:
@@ -515,6 +541,7 @@ class InferenceProcessor:
         end_frame: Optional[int] = None,
         step: int = 1,
         skip_existing: bool = True,
+        progress_callback=None,
     ) -> str:
         import cv2
 
@@ -543,6 +570,22 @@ class InferenceProcessor:
         if not cap.isOpened():
             return f"Error: unable to open {source}"
 
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        start_frame = max(0, int(start_frame))
+        end_frame = None if end_frame is None else int(end_frame)
+        if total_frames > 0 and end_frame is not None:
+            end_frame = min(end_frame, total_frames - 1)
+        if end_frame is not None:
+            max_frames = max(0, end_frame - start_frame + 1)
+        elif total_frames > 0:
+            max_frames = max(0, total_frames - start_frame)
+        else:
+            max_frames = 0
+        step = max(1, abs(int(step)))
+        total_steps = max(1, (max_frames + step - 1) //
+                          step) if max_frames else 0
+        processed_steps = 0
+
         stopped = False
         try:
             if int(start_frame) > 0:
@@ -551,7 +594,6 @@ class InferenceProcessor:
                 except Exception:
                     pass
             frame_index = int(start_frame)
-            step = max(1, abs(int(step)))
             while True:
                 if should_stop():
                     stopped = True
@@ -566,6 +608,12 @@ class InferenceProcessor:
                         break
                     self.frame_count += 1
                     frame_index += 1
+                    processed_steps += 1
+                    if progress_callback and total_steps:
+                        try:
+                            progress_callback(processed_steps, total_steps)
+                        except Exception:
+                            pass
                     continue
                 ok, frame = cap.read()
                 if not ok:
@@ -591,6 +639,12 @@ class InferenceProcessor:
                     frame_index=frame_index,
                 )
                 self.frame_count += 1
+                processed_steps += 1
+                if progress_callback and total_steps:
+                    try:
+                        progress_callback(processed_steps, total_steps)
+                    except Exception:
+                        pass
 
                 if int(step) > 1:
                     for _ in range(int(step) - 1):
@@ -625,6 +679,9 @@ class InferenceProcessor:
         end_frame: Optional[int] = None,
         step: int = 1,
         skip_existing: bool = True,
+        progress_callback=None,
+        enable_tracking: bool = True,
+        tracker: Optional[str] = None,
     ) -> str:
         import cv2
 
@@ -653,6 +710,22 @@ class InferenceProcessor:
         if not cap.isOpened():
             return f"Error: unable to open {source}"
 
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        start_frame = max(0, int(start_frame))
+        end_frame = None if end_frame is None else int(end_frame)
+        if total_frames > 0 and end_frame is not None:
+            end_frame = min(end_frame, total_frames - 1)
+        if end_frame is not None:
+            max_frames = max(0, end_frame - start_frame + 1)
+        elif total_frames > 0:
+            max_frames = max(0, total_frames - start_frame)
+        else:
+            max_frames = 0
+        step = max(1, abs(int(step)))
+        total_steps = max(1, (max_frames + step - 1) //
+                          step) if max_frames else 0
+        processed_steps = 0
+
         stopped = False
         try:
             if int(start_frame) > 0:
@@ -661,7 +734,6 @@ class InferenceProcessor:
                 except Exception:
                     pass
             frame_index = int(start_frame)
-            step = max(1, abs(int(step)))
             while True:
                 if should_stop():
                     stopped = True
@@ -676,6 +748,12 @@ class InferenceProcessor:
                         break
                     self.frame_count += 1
                     frame_index += 1
+                    processed_steps += 1
+                    if progress_callback and total_steps:
+                        try:
+                            progress_callback(processed_steps, total_steps)
+                        except Exception:
+                            pass
                     continue
                 ok, frame = cap.read()
                 if not ok:
@@ -697,14 +775,29 @@ class InferenceProcessor:
                         except Exception:
                             results = self.model.predict(frame, verbose=False)
                     else:
-                        if self._is_coreml:
+                        if self._is_coreml or "pose" in self.model_name.lower():
                             results = self.model.predict(frame, verbose=False)
-                        elif "pose" in self.model_name.lower():
+                        elif not enable_tracking:
                             results = self.model.predict(frame, verbose=False)
                         else:
-                            results = self.model.track(
-                                frame, persist=True, verbose=False
-                            )
+                            track_kwargs = {"persist": True, "verbose": False}
+                            if tracker:
+                                track_kwargs["tracker"] = tracker
+                            try:
+                                results = self.model.track(
+                                    frame, **track_kwargs)
+                            except Exception as exc:
+                                if tracker:
+                                    logger.warning(
+                                        "Tracker '%s' failed; falling back to default tracker. Error: %s",
+                                        tracker,
+                                        exc,
+                                    )
+                                    track_kwargs.pop("tracker", None)
+                                    results = self.model.track(
+                                        frame, **track_kwargs)
+                                else:
+                                    raise
                     if isinstance(results, (list, tuple)) and results:
                         annotations = self.extract_yolo_results(
                             results[0],
@@ -724,6 +817,12 @@ class InferenceProcessor:
                     frame_index=frame_index,
                 )
                 self.frame_count += 1
+                processed_steps += 1
+                if progress_callback and total_steps:
+                    try:
+                        progress_callback(processed_steps, total_steps)
+                    except Exception:
+                        pass
 
                 if step > 1:
                     for _ in range(step - 1):

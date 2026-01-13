@@ -8,10 +8,14 @@ monitoring.
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 from qtpy.QtCore import Qt, Signal
+
+from annolid.utils.logger import logger
 
 
 class SelectModelPage(QtWidgets.QWizardPage):
@@ -516,6 +520,338 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         }
 
 
+class InferenceWorker(QtCore.QObject):
+    """Run inference jobs in a background thread."""
+
+    progress = Signal(int)
+    frame_progress = Signal(int, int)
+    log = Signal(str)
+    error = Signal(str)
+    video_started = Signal(str, int, int)
+    video_finished = Signal(str, bool)
+    finished = Signal(dict)
+
+    _TRACKER_MAP = {
+        "ByteTrack": "bytetrack.yaml",
+        "BoT-SORT": "botsort.yaml",
+        "OC-SORT": "ocsort.yaml",
+    }
+
+    def __init__(self, config: Dict[str, Any], parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent)
+        self._config = config
+        self._stop_event = threading.Event()
+        self._processed_videos = 0
+        self._processed_frames = 0
+        self._errors: List[str] = []
+        self._output_dirs: List[Path] = []
+        self._processor = None
+        self._segmentor = None
+
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        videos = [v for v in self._config.get("videos", []) if v]
+        total_videos = len(videos)
+        if total_videos == 0:
+            self.error.emit("No videos selected for inference.")
+            self.finished.emit(self._build_summary(total_videos))
+            return
+
+        if not self._config.get("save_labelme", True):
+            self.log.emit(
+                "LabelMe output is required for this workflow; ignoring the toggle."
+            )
+        if self._config.get("save_video"):
+            self.log.emit(
+                "Annotated video export is not available in this workflow."
+            )
+
+        for idx, video in enumerate(videos, start=1):
+            if self._stop_event.is_set():
+                break
+            video_path = Path(video)
+            if not video_path.exists():
+                msg = f"Missing video: {video_path}"
+                self.error.emit(msg)
+                self._errors.append(msg)
+                continue
+
+            self.video_started.emit(str(video_path), idx, total_videos)
+            success = False
+            try:
+                success = self._process_video(
+                    video_path=video_path,
+                    video_index=idx,
+                    total_videos=total_videos,
+                )
+            except Exception as exc:
+                msg = f"{video_path.name}: {exc}"
+                logger.error(msg, exc_info=True)
+                self.error.emit(msg)
+                self._errors.append(msg)
+
+            self.video_finished.emit(str(video_path), success)
+            self.progress.emit(int((idx / max(total_videos, 1)) * 100))
+            if success:
+                self._processed_videos += 1
+
+        self.finished.emit(self._build_summary(total_videos))
+
+    def _build_summary(self, total_videos: int) -> Dict[str, Any]:
+        return {
+            "total_videos": total_videos,
+            "processed_videos": self._processed_videos,
+            "processed_frames": self._processed_frames,
+            "errors": list(self._errors),
+            "output_dirs": [str(p) for p in self._output_dirs],
+            "stopped": self._stop_event.is_set(),
+        }
+
+    def _process_video(
+        self,
+        *,
+        video_path: Path,
+        video_index: int,
+        total_videos: int,
+    ) -> bool:
+        model_type = (self._config.get("model_type") or "").lower()
+        if model_type in ("yolo", "dino_kpseg"):
+            return self._run_yolo_inference(
+                video_path, video_index, total_videos, model_type
+            )
+        if model_type == "detectron2":
+            return self._run_detectron2(video_path)
+        if model_type == "predictions":
+            return self._run_predictions(video_path, video_index, total_videos)
+        raise ValueError(f"Unsupported model type: {model_type}")
+
+    def _resolve_output_dir(self, video_path: Path, *, suffix: Optional[str] = None) -> Path:
+        output_root = self._config.get("output_dir")
+        if output_root:
+            output_root = Path(output_root)
+            output_root.mkdir(parents=True, exist_ok=True)
+            output_dir = output_root / video_path.stem
+        else:
+            output_dir = video_path.with_suffix("")
+        if suffix:
+            output_dir = Path(f"{output_dir}{suffix}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def _resolve_segment(self, total_frames: int) -> tuple[int, Optional[int]]:
+        segment = self._config.get("segment")
+        if not segment:
+            return 0, total_frames - 1 if total_frames > 0 else None
+        start_frame, end_frame = segment
+        try:
+            start_frame = max(0, int(start_frame))
+        except (TypeError, ValueError):
+            start_frame = 0
+        try:
+            end_frame = int(end_frame)
+        except (TypeError, ValueError):
+            end_frame = None
+        if end_frame is not None and end_frame <= 0:
+            end_frame = None
+        if end_frame is None and total_frames > 0:
+            end_frame = total_frames - 1
+        if end_frame is not None and end_frame < start_frame:
+            end_frame = start_frame
+        return start_frame, end_frame
+
+    def _resolve_tracker(self) -> Optional[str]:
+        tracker_name = self._config.get("tracker")
+        return self._TRACKER_MAP.get(tracker_name, None)
+
+    def _make_progress_callback(self, video_index: int, total_videos: int):
+        last_emit = {"time": 0.0}
+
+        def _callback(processed: int, total: int) -> None:
+            if total <= 0:
+                return
+            if self._stop_event.is_set():
+                return
+            now = time.monotonic()
+            if processed < total and now - last_emit["time"] < 0.2:
+                return
+            last_emit["time"] = now
+            overall = ((video_index - 1) + (processed / total)) / \
+                max(total_videos, 1)
+            self.progress.emit(int(overall * 100))
+            self.frame_progress.emit(int(processed), int(total))
+
+        return _callback
+
+    def _get_total_frames(self, video_path: Path) -> int:
+        try:
+            import cv2
+        except Exception:
+            return 0
+        cap = cv2.VideoCapture(str(video_path))
+        try:
+            if not cap.isOpened():
+                return 0
+            return int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        finally:
+            cap.release()
+
+    def _run_yolo_inference(
+        self,
+        video_path: Path,
+        video_index: int,
+        total_videos: int,
+        model_type: str,
+    ) -> bool:
+        from annolid.segmentation.yolos import InferenceProcessor
+        from annolid.annotation import labelme2csv
+
+        model_path = self._config.get("model_path")
+        if not model_path:
+            raise ValueError("Missing model path.")
+
+        if self._processor is None or getattr(self._processor, "model_type", "") != model_type:
+            resolved_type = "dinokpseg" if model_type == "dino_kpseg" else "yolo"
+            self._processor = InferenceProcessor(
+                model_name=model_path,
+                model_type=resolved_type,
+            )
+
+        total_frames = self._get_total_frames(video_path)
+        start_frame, end_frame = self._resolve_segment(total_frames)
+        output_dir = self._resolve_output_dir(video_path)
+        progress_callback = self._make_progress_callback(
+            video_index, total_videos
+        )
+
+        self._output_dirs.append(output_dir)
+        tracker_name = self._config.get("tracker")
+        tracker = self._resolve_tracker()
+        if tracker is None and tracker_name and tracker_name not in self._TRACKER_MAP:
+            self.log.emit(
+                f"Tracker '{tracker_name}' is not supported; using default."
+            )
+        message = self._processor.run_inference(
+            source=str(video_path),
+            start_frame=start_frame,
+            end_frame=end_frame,
+            step=1,
+            skip_existing=True,
+            pred_worker=self,
+            stop_event=self._stop_event,
+            output_directory=output_dir,
+            progress_callback=progress_callback,
+            enable_tracking=bool(self._config.get("enable_tracking", True)),
+            tracker=tracker,
+        )
+
+        frame_count = self._parse_frame_count(message)
+        if frame_count is not None:
+            self._processed_frames += frame_count
+
+        if isinstance(message, str) and message.startswith("Error:"):
+            raise RuntimeError(message)
+        if isinstance(message, str) and message.startswith("Stopped"):
+            self._stop_event.set()
+            return False
+
+        if self._config.get("save_csv"):
+            csv_path = output_dir.parent / f"{output_dir.name}_tracking.csv"
+            tracked_csv = output_dir.parent / f"{output_dir.name}_tracked.csv"
+            self.log.emit(f"Generating CSV: {csv_path.name}")
+            labelme2csv.convert_json_to_csv(
+                json_folder=str(output_dir),
+                csv_file=str(csv_path),
+                tracked_csv_file=str(tracked_csv),
+                stop_event=self._stop_event,
+            )
+
+        return True
+
+    def _run_detectron2(self, video_path: Path) -> bool:
+        from annolid.inference.predict import Segmentor
+
+        model_path = self._config.get("model_path")
+        if not model_path:
+            raise ValueError("Missing Detectron2 model path.")
+        config_path = self._config.get("config_path")
+        dataset_dir = Path(config_path).parent if config_path else Path(
+            model_path).parent
+        output_dir = self._resolve_output_dir(video_path)
+        self._output_dirs.append(output_dir)
+
+        if self._segmentor is None:
+            self._segmentor = Segmentor(
+                dataset_dir=str(dataset_dir),
+                model_pth_path=model_path,
+                score_threshold=self._config.get("score_threshold", 0.25),
+                model_config=config_path,
+            )
+        self._segmentor.on_video(
+            str(video_path),
+            skip_frames=1,
+            tracking=bool(self._config.get("enable_tracking", True)),
+            output_dir=str(output_dir),
+        )
+        return True
+
+    def _run_predictions(
+        self,
+        video_path: Path,
+        video_index: int,
+        total_videos: int,
+    ) -> bool:
+        from annolid.postprocessing.quality_control import TracksResults
+
+        csv_path = self._config.get("model_path")
+        if not csv_path:
+            raise ValueError("Missing predictions CSV.")
+        if not Path(csv_path).exists():
+            raise ValueError(f"Predictions CSV not found: {csv_path}")
+        if total_videos > 1 and video_index == 1:
+            self.log.emit(
+                "Using the same predictions CSV for multiple videos."
+            )
+
+        output_dir = self._resolve_output_dir(
+            video_path, suffix="_tracking_results_labelme"
+        )
+        self._output_dirs.append(output_dir)
+        trs = TracksResults(str(video_path), str(csv_path))
+        generator = trs.to_labelme_json(str(output_dir))
+
+        for progress, message in generator:
+            if self._stop_event.is_set():
+                break
+            overall = ((video_index - 1) + (progress / 100.0)) / \
+                max(total_videos, 1)
+            self.progress.emit(int(overall * 100))
+            self.frame_progress.emit(int(progress), 100)
+            if message:
+                self.log.emit(str(message))
+
+        try:
+            trs.clean_up()
+        except Exception:
+            pass
+        return not self._stop_event.is_set()
+
+    @staticmethod
+    def _parse_frame_count(message: Optional[str]) -> Optional[int]:
+        if not message or "#" not in str(message):
+            return None
+        try:
+            _label, count = str(message).split("#", 1)
+            return int(count)
+        except (ValueError, TypeError):
+            return None
+
+
 class InferenceProgressPage(QtWidgets.QWizardPage):
     """Page 4: Inference progress and results."""
 
@@ -573,51 +909,62 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
 
         self._complete = False
         self._output_path: Optional[Path] = None
+        self._worker: Optional[InferenceWorker] = None
+        self._worker_thread: Optional[QtCore.QThread] = None
+        self._running = False
 
     def initializePage(self) -> None:
         self._complete = False
+        self.log_text.clear()
         self._log("Initializing inference...")
         self.progress_bar.setValue(0)
         self.results_group.setVisible(False)
         self.open_folder_btn.setVisible(False)
+        self.current_video_label.setText("Preparing...")
+        self.frame_label.setText("")
 
         # Start inference after a short delay
-        QtCore.QTimer.singleShot(500, self._start_inference)
+        QtCore.QTimer.singleShot(200, self._start_inference)
 
     def _start_inference(self) -> None:
         wizard = self.wizard()
         if not isinstance(wizard, InferenceWizard):
             return
 
-        model_type = wizard.select_model_page.get_model_type()
-        model_path = wizard.select_model_page.get_model_path()
-        videos = wizard.select_videos_page.get_videos()
-        config = wizard.configure_page.get_config()
+        config = wizard.get_inference_config()
+        model_path = config.get("model_path")
+        videos = config.get("videos", [])
 
         self._output_path = Path(
-            config["output_dir"]) if config["output_dir"] else None
+            config["output_dir"]) if config.get("output_dir") else None
 
-        self._log(f"Model: {Path(model_path).name}")
+        if model_path:
+            self._log(f"Model: {Path(model_path).name}")
         self._log(f"Videos: {len(videos)}")
-        self._log(f"Threshold: {config['score_threshold']}")
+        if config.get("score_threshold") is not None:
+            self._log(f"Threshold: {config['score_threshold']}")
         self._log("")
 
-        # Simulate inference progress (actual implementation would use workers)
-        total_videos = len(videos)
-        for i, video in enumerate(videos):
-            self.current_video_label.setText(f"Processing: {Path(video).name}")
-            self._log(f"Processing {Path(video).name}...")
+        self._cleanup_worker()
+        self._running = True
 
-            # Simulate frame-by-frame progress
-            for pct in range(0, 101, 10):
-                self.progress_bar.setValue(pct)
-                self.frame_label.setText(f"Frame {pct}%")
-                QtWidgets.QApplication.processEvents()
-                QtCore.QThread.msleep(50)  # Simulate processing
+        self._worker_thread = QtCore.QThread(self)
+        self._worker = InferenceWorker(config)
+        self._worker.moveToThread(self._worker_thread)
 
-            self._log(f"✓ Completed {Path(video).name}")
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self.progress_bar.setValue)
+        self._worker.frame_progress.connect(self._on_frame_progress)
+        self._worker.log.connect(self._log)
+        self._worker.error.connect(self._on_error)
+        self._worker.video_started.connect(self._on_video_started)
+        self._worker.video_finished.connect(self._on_video_finished)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker_thread.finished.connect(self._worker_thread.deleteLater)
 
-        self._on_complete(len(videos))
+        self._worker_thread.start()
 
     def _on_complete(self, video_count: int) -> None:
         self._complete = True
@@ -637,8 +984,78 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
 
         self.completeChanged.emit()
 
+    def _on_worker_finished(self, summary: Dict[str, Any]) -> None:
+        self._running = False
+        self._complete = True
+        processed = summary.get("processed_videos", 0)
+        total = summary.get("total_videos", 0)
+        stopped = summary.get("stopped", False)
+
+        if stopped:
+            self.current_video_label.setText("Stopped")
+            self.current_video_label.setStyleSheet(
+                "color: #b36b00; font-weight: bold;")
+        else:
+            self.current_video_label.setText("✓ Inference complete!")
+            self.current_video_label.setStyleSheet(
+                "color: green; font-weight: bold;")
+
+        self.progress_bar.setValue(100)
+        self.frame_label.setText("")
+        self.result_videos.setText(f"{processed}/{total}")
+        self.result_detections.setText("—")
+
+        output_dirs = summary.get("output_dirs") or []
+        if self._output_path:
+            self.result_output.setText(str(self._output_path))
+            self._output_path = Path(self._output_path)
+        elif len(output_dirs) == 1:
+            self._output_path = Path(output_dirs[0])
+            self.result_output.setText(output_dirs[0])
+        elif output_dirs:
+            self.result_output.setText("Multiple folders")
+
+        self.results_group.setVisible(True)
+        self.open_folder_btn.setVisible(bool(self._output_path))
+        self.completeChanged.emit()
+
     def _log(self, message: str) -> None:
         self.log_text.append(message)
+
+    def _on_error(self, message: str) -> None:
+        self._log(f"❌ {message}")
+
+    def _on_video_started(self, video_path: str, idx: int, total: int) -> None:
+        self.current_video_label.setText(
+            f"Processing: {Path(video_path).name} ({idx}/{total})"
+        )
+        self.frame_label.setText("")
+        self._log(f"Processing {Path(video_path).name}...")
+
+    def _on_video_finished(self, video_path: str, success: bool) -> None:
+        status = "✓ Completed" if success else "⚠ Incomplete"
+        self._log(f"{status} {Path(video_path).name}")
+
+    def _on_frame_progress(self, current: int, total: int) -> None:
+        if total <= 0:
+            self.frame_label.setText("")
+            return
+        self.frame_label.setText(f"Frame {current}/{total}")
+
+    def _cleanup_worker(self) -> None:
+        if self._worker_thread and self._worker_thread.isRunning():
+            self._worker_thread.quit()
+            self._worker_thread.wait(2000)
+        self._worker = None
+        self._worker_thread = None
+
+    def request_stop(self) -> None:
+        if self._worker:
+            self._log("Stop requested. Finishing current task...")
+            self._worker.request_stop()
+
+    def is_running(self) -> bool:
+        return self._running
 
     def _open_output_folder(self) -> None:
         import subprocess
@@ -708,3 +1125,17 @@ class InferenceWizard(QtWidgets.QWizard):
         config["full_video"] = self.select_videos_page.is_full_video()
         config["segment"] = self.select_videos_page.get_segment()
         return config
+
+    def reject(self) -> None:
+        if self.progress_page.is_running():
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Stop Inference",
+                "Inference is still running. Stop after the current task?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+            self.progress_page.request_stop()
+            return
+        super().reject()

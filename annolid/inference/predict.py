@@ -360,7 +360,8 @@ class Segmentor():
                  video_path,
                  skip_frames=1,
                  on_keyframes=False,
-                 tracking=False
+                 tracking=False,
+                 output_dir=None,
                  ):
         if not Path(video_path).exists():
             return
@@ -424,8 +425,16 @@ class Segmentor():
                 ['frame_number', 'instance_name'], sort=False).head(self.num_instances_per_class)
             # tracking_results_dir = Path(self.dataset_dir).parent
             # tracking_results_csv = f"{str(Path(self.dataset_dir).stem)}"
-            tracking_results_csv = f"{str(Path(video_path).with_suffix(''))}"
-            tracking_results_csv += "_mask_rcnn_tracking_results_with_segmentation.csv"
+            if output_dir:
+                output_dir = Path(output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                tracking_results_csv = (
+                    output_dir / f"{Path(video_path).stem}"
+                    "_mask_rcnn_tracking_results_with_segmentation.csv"
+                )
+            else:
+                tracking_results_csv = f"{str(Path(video_path).with_suffix(''))}"
+                tracking_results_csv += "_mask_rcnn_tracking_results_with_segmentation.csv"
             df_top.to_csv(tracking_results_csv)
         if on_keyframes:
             print(f"Done. Please check you results in folder: {out_img_dir}")
