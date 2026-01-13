@@ -323,8 +323,6 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
 
         self.source_tabs = QtWidgets.QTabWidget()
         self.source_tabs.setDocumentMode(True)
-        self.source_tabs.currentChanged.connect(
-            lambda _: self._validate_dataset())
 
         # YOLO tab
         yolo_tab = QtWidgets.QWidget()
@@ -371,6 +369,10 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         self.source_tabs.addTab(coco_tab, "COCO")
 
         source_layout.addWidget(self.source_tabs)
+        # Connect after pickers/tabs are created to avoid triggering
+        # validation before attributes exist during construction.
+        self.source_tabs.currentChanged.connect(
+            lambda _: self._validate_dataset())
         outer.addWidget(source_group)
 
         # Preview
