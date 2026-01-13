@@ -5429,13 +5429,19 @@ class AnnolidWindow(MainWindow):
         """Start DINO KPSEG training with wizard configuration."""
         try:
             self.dino_kpseg_training_manager.start_training(
-                data_dir=str(Path(config.get("dataset_path", "")).parent),
+                data_config_path=config.get("dataset_path"),
+                out_dir=config.get("output_dir"),
                 model_name=config.get("model"),
+                short_side=config.get("short_side", 768),
+                layers=config.get("layers", "-1"),
+                radius_px=config.get("radius_px", 6.0),
+                hidden_dim=config.get("hidden_dim", 128),
+                lr=config.get("lr", 0.002),
                 epochs=config.get("epochs", 100),
                 batch_size=config.get("batch", 8),
-                short_side=config.get("short_side", 768),
-                lr=config.get("lr", 0.002),
-                radius_px=config.get("radius_px", 6.0),
+                threshold=config.get("threshold", 0.4),
+                device=config.get("device", ""),
+                cache_features=config.get("cache_features", True),
             )
             self.statusBar().showMessage(self.tr("DINO KPSEG training started"), 3000)
         except Exception as e:
@@ -5453,8 +5459,26 @@ class AnnolidWindow(MainWindow):
     def _open_training_dashboard(self) -> None:
         """Open the training dashboard for monitoring."""
         try:
-            dashboard = TrainingDashboardDialog(parent=self)
-            dashboard.show()
+            dialog = getattr(self, "_training_dashboard_dialog", None)
+            if dialog is None:
+                dialog = TrainingDashboardDialog(
+                    settings=self.settings, parent=self)
+                dialog.dashboard.register_training_manager(
+                    self.yolo_training_manager)
+                dialog.dashboard.register_training_manager(
+                    self.dino_kpseg_training_manager)
+                dialog.finished.connect(
+                    lambda *_: setattr(self, "_training_dashboard_dialog", None))
+                dialog.destroyed.connect(
+                    lambda *_: setattr(self, "_training_dashboard_dialog", None))
+                self._training_dashboard_dialog = dialog
+
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() &
+                                  ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+            QtWidgets.QApplication.processEvents()
         except Exception as e:
             logger.debug(f"Could not open training dashboard: {e}")
 
