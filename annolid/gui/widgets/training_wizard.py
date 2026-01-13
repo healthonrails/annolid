@@ -141,8 +141,12 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             names = data.get('names', [])
             if isinstance(names, dict):
                 names = list(names.values())
+            if not isinstance(names, list):
+                names = [names]
+            name_preview = [str(name) for name in names[:5]]
             self.info_classes.setText(
-                f"{len(names)}: {', '.join(names[:5])}{'...' if len(names) > 5 else ''}")
+                f"{len(names)}: {', '.join(name_preview)}"
+                f"{'...' if len(names) > 5 else ''}")
 
             # Check for image counts
             train_path = data.get('train', '')
@@ -213,8 +217,8 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
     def isComplete(self) -> bool:
         yolo_path = self.yolo_data_edit.text().strip()
         coco_path = self.coco_dir_edit.text().strip()
-        return (yolo_path and Path(yolo_path).exists()) or \
-               (coco_path and Path(coco_path).is_dir())
+        return (bool(yolo_path) and Path(yolo_path).exists()) or \
+               (bool(coco_path) and Path(coco_path).is_dir())
 
     def get_dataset_path(self) -> str:
         return self.yolo_data_edit.text().strip() or self.coco_dir_edit.text().strip()
