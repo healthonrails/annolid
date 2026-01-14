@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
-from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.gui.models_registry import MODEL_REGISTRY, PATCH_SIMILARITY_MODELS
 
 
 YOLO_TASKS = {
@@ -30,6 +30,15 @@ YOLO_TASKS = {
     "Pose Estimation": "-pose",
 }
 YOLO_SIZES = ("n", "s", "m", "l", "x")
+
+YOLO11_TASK_SUFFIXES = {
+    "Detection": "",
+    "Instance Segmentation": "-seg",
+    "Pose Estimation": "-pose",
+    "Oriented Detection": "-obb",
+    "Classification": "-cls",
+}
+YOLO11_MODEL_SIZES = ("n", "s", "m", "l", "x")
 
 
 # ---------------------------
@@ -449,6 +458,46 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
 
 
 # ---------------------------
+# YOLO model selection helpers (from train_model_dialog)
+# ---------------------------
+
+def _yolo_weight_configs() -> List[Any]:
+    """Return YOLO-ish configs from MODEL_REGISTRY."""
+    cfgs: List[Any] = []
+    for cfg in MODEL_REGISTRY:
+        wf = str(getattr(cfg, "weight_file", "") or "").strip()
+        if not wf:
+            continue
+        wf_l = wf.lower()
+        if wf_l.endswith((".pt", ".pth")) and wf_l.startswith("yolo"):
+            cfgs.append(cfg)
+    return cfgs
+
+
+def _default_yolo_weight_from_registry() -> str:
+    cfgs = _yolo_weight_configs()
+    return str(cfgs[0].weight_file) if cfgs else ""
+
+
+def _compute_yolo_weight_name(task_text: str, size_text: str) -> str:
+    suffix = YOLO11_TASK_SUFFIXES.get(task_text, "")
+    return f"yolo11{size_text.lower()}{suffix}.pt"
+
+
+def _try_select_registry_weight(weight_file: str, combo: QtWidgets.QComboBox) -> bool:
+    """Select preset combo item matching weight_file. Returns True if matched."""
+    target = str(weight_file or "").strip().lower()
+    if not target:
+        return False
+    for i in range(combo.count()):
+        wf = str(combo.itemData(i) or "").strip().lower()
+        if wf == target:
+            combo.setCurrentIndex(i)
+            return True
+    return False
+
+
+# ---------------------------
 # Page 2: Backend selection
 # ---------------------------
 
@@ -646,21 +695,41 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         model_layout.setHorizontalSpacing(12)
         model_layout.setVerticalSpacing(10)
 
-        self.yolo_preset = QtWidgets.QComboBox()
-        self.yolo_preset.addItems(
-            ["Balanced (recommended)", "Fast", "Accurate"])
-        self.yolo_preset.currentTextChanged.connect(self._apply_yolo_preset)
-        model_layout.addWidget(QtWidgets.QLabel("Preset:"), 0, 0)
-        model_layout.addWidget(self.yolo_preset, 0, 1, 1, 3)
+        # Preset dropdown from MODEL_REGISTRY
+        self.yolo_weights_combo = QtWidgets.QComboBox()
+        yolo_cfgs = _yolo_weight_configs()
+        for cfg in yolo_cfgs:
+            self.yolo_weights_combo.addItem(
+                cfg.display_name, userData=cfg.weight_file)
 
+        # Optional browse button for custom weight path
+        self.yolo_weights_browse_btn = QtWidgets.QPushButton("Browse…")
+        self.yolo_weights_browse_btn.clicked.connect(self._browse_yolo_weights)
+
+        preset_row = QtWidgets.QWidget()
+        preset_row_layout = QtWidgets.QHBoxLayout(preset_row)
+        preset_row_layout.setContentsMargins(0, 0, 0, 0)
+        preset_row_layout.addWidget(self.yolo_weights_combo, 1)
+        preset_row_layout.addWidget(self.yolo_weights_browse_btn, 0)
+
+        model_layout.addWidget(QtWidgets.QLabel("Preset:"), 0, 0)
+        model_layout.addWidget(preset_row, 0, 1, 1, 3)
+
+        # Convenience task + size selectors (auto-matches presets when possible)
         self.yolo_task_combo = QtWidgets.QComboBox()
-        self.yolo_task_combo.addItems(list(YOLO_TASKS.keys()))
+        self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
         self.yolo_task_combo.setCurrentText("Instance Segmentation")
+        self.yolo_task_combo.currentTextChanged.connect(
+            self._update_yolo_model_from_task_size)
 
         self.yolo_size_combo = QtWidgets.QComboBox()
-        self.yolo_size_combo.addItems([s.upper() for s in YOLO_SIZES])
+        self.yolo_size_combo.addItems([s.upper() for s in YOLO11_MODEL_SIZES])
+        self.yolo_size_combo.currentTextChanged.connect(
+            self._update_yolo_model_from_task_size)
 
-        self.yolo_model_label = QtWidgets.QLabel("yolo11n-seg.pt")
+        self.yolo_model_label = QtWidgets.QLabel()
+        self.yolo_model_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse)
         self.yolo_model_label.setStyleSheet("font-weight: 900;")
 
         model_layout.addWidget(QtWidgets.QLabel("Task:"), 1, 0)
@@ -671,10 +740,9 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         model_layout.addWidget(QtWidgets.QLabel("Model:"), 2, 0)
         model_layout.addWidget(self.yolo_model_label, 2, 1, 1, 3)
 
-        self.yolo_task_combo.currentTextChanged.connect(
-            self._update_yolo_model)
-        self.yolo_size_combo.currentTextChanged.connect(
-            self._update_yolo_model)
+        # Connect preset change handler
+        self.yolo_weights_combo.currentIndexChanged.connect(
+            self._on_yolo_preset_changed)
 
         layout.addWidget(model_group)
 
@@ -727,31 +795,10 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         layout.addWidget(advanced_group)
         layout.addStretch()
 
-        self._update_yolo_model()
-        self._apply_yolo_preset(self.yolo_preset.currentText())
+        # Initialize with default selection
+        self._on_yolo_preset_changed()
 
         return widget
-
-    def _apply_yolo_preset(self, name: str) -> None:
-        # Friendly defaults that “feel smart”
-        if "Fast" in name:
-            self.yolo_epochs_spin.setValue(50)
-            self.yolo_batch_spin.setValue(16)
-            self.yolo_imgsz_spin.setValue(640)
-            self.yolo_lr_spin.setValue(0.01)
-            self.yolo_patience_spin.setValue(50)
-        elif "Accurate" in name:
-            self.yolo_epochs_spin.setValue(200)
-            self.yolo_batch_spin.setValue(4)
-            self.yolo_imgsz_spin.setValue(960)
-            self.yolo_lr_spin.setValue(0.01)
-            self.yolo_patience_spin.setValue(120)
-        else:
-            self.yolo_epochs_spin.setValue(100)
-            self.yolo_batch_spin.setValue(8)
-            self.yolo_imgsz_spin.setValue(640)
-            self.yolo_lr_spin.setValue(0.01)
-            self.yolo_patience_spin.setValue(100)
 
     # ---- DINO KPSEG ----
 
@@ -860,6 +907,79 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         suffix = YOLO_TASKS.get(task, "-seg")
         self.yolo_model_label.setText(f"yolo11{size}{suffix}.pt")
 
+    def _on_yolo_preset_changed(self) -> None:
+        """Handle preset dropdown change - update model file and sync task/size combos."""
+        wf = str(self.yolo_weights_combo.currentData() or "").strip()
+        if wf:
+            # best-effort: sync task/size combos if it's a yolo11 naming
+            task, size = self._parse_task_size_from_weight(wf)
+            if task:
+                self.yolo_task_combo.blockSignals(True)
+                self.yolo_task_combo.setCurrentText(task)
+                self.yolo_task_combo.blockSignals(False)
+            if size:
+                self.yolo_size_combo.blockSignals(True)
+                self.yolo_size_combo.setCurrentText(size)
+                self.yolo_size_combo.blockSignals(False)
+        self._update_yolo_model_label()
+
+    def _update_yolo_model_from_task_size(self) -> None:
+        """Update model selection when task/size combos change."""
+        task = self.yolo_task_combo.currentText()
+        size = self.yolo_size_combo.currentText()
+        expected_name = _compute_yolo_weight_name(task, size)
+
+        # Try to select matching preset from registry
+        if not _try_select_registry_weight(expected_name, self.yolo_weights_combo):
+            # If no match, just update the label
+            pass
+        self._update_yolo_model_label()
+
+    def _update_yolo_model_label(self) -> None:
+        """Update the model label based on current selection."""
+        wf = str(self.yolo_weights_combo.currentData() or "").strip()
+        if not wf:
+            self.yolo_model_label.setText("Selected weights: (none)")
+            return
+        self.yolo_model_label.setText(f"Selected weights: {wf}")
+
+    def _parse_task_size_from_weight(self, weight_file: str) -> tuple[str | None, str | None]:
+        """
+        Best-effort parse for yolo11{size}{suffix}.pt, e.g. yolo11n-seg.pt.
+        Returns (task_name, size_letter) or (None, None).
+        """
+        import re
+        wf = (weight_file or "").strip().lower()
+        m = re.match(r"^yolo11([nslmx])(?:(-seg|-pose|-obb|-cls))?\.pt$", wf)
+        if not m:
+            return (None, None)
+        size = m.group(1).upper()
+        suffix = m.group(2) or ""
+        suffix_to_task = {v: k for k, v in YOLO11_TASK_SUFFIXES.items()}
+        task = suffix_to_task.get(suffix, "Detection")
+        return (task, size)
+
+    def _browse_yolo_weights(self) -> None:
+        """Browse for custom YOLO weights file."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select YOLO Weights", "",
+            "Model Files (*.pt *.pth);;All Files (*)"
+        )
+        if path:
+            # Add custom entry to combo if not already present
+            custom_name = f"Custom: {Path(path).name}"
+            # Check if already exists
+            exists = False
+            for i in range(self.yolo_weights_combo.count()):
+                if str(self.yolo_weights_combo.itemData(i)) == path:
+                    exists = True
+                    self.yolo_weights_combo.setCurrentIndex(i)
+                    break
+            if not exists:
+                self.yolo_weights_combo.addItem(custom_name, userData=path)
+                self.yolo_weights_combo.setCurrentText(custom_name)
+            self._update_yolo_model_label()
+
     def _browse_output(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select Output Directory")
@@ -877,13 +997,8 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         }
 
         if backend == "yolo":
-            task = self.yolo_task_combo.currentText()
-            size = self.yolo_size_combo.currentText().lower()
-            suffix = YOLO_TASKS.get(task, "-seg")
-
             config.update({
-                "model": f"yolo11{size}{suffix}.pt",
-                "preset": self.yolo_preset.currentText(),
+                "model": str(self.yolo_weights_combo.currentData() or ""),
                 "epochs": self.yolo_epochs_spin.value(),
                 "batch": self.yolo_batch_spin.value(),
                 "imgsz": self.yolo_imgsz_spin.value(),
