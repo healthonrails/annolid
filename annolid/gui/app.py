@@ -156,7 +156,7 @@ from annolid.gui.theme import apply_modern_theme, apply_light_theme, apply_dark_
 
 
 __appname__ = 'Annolid'
-__version__ = "1.3.3"
+__version__ = "1.4.0"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 
