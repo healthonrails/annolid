@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from qtpy import QtCore, QtWidgets
 
 from annolid.utils.devices import get_device
-from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS, PATCH_SIMILARITY_DEFAULT_MODEL
+from annolid.gui.models_registry import (
+    MODEL_REGISTRY,
+    PATCH_SIMILARITY_MODELS,
+    PATCH_SIMILARITY_DEFAULT_MODEL,
+)
 
 
 YOLO11_TASK_SUFFIXES = {
@@ -20,6 +25,18 @@ YOLO11_MODEL_SIZES = ("n", "s", "m", "l", "x")
 
 
 class TrainModelDialog(QtWidgets.QDialog):
+    """
+    Training dialog supporting:
+      - Classic trainer (MaskRCNN-style)
+      - YOLO training (Ultralytics)
+      - DINO KPSEG training
+
+    Refactor highlights:
+      - No hardcoded 'yolo11n-seg.pt'
+      - YOLO weights chosen from MODEL_REGISTRY (preset dropdown) + optional browse
+      - Small binding helpers to reduce repetitive lambdas
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setWindowTitle("Train Models")
@@ -27,17 +44,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         # -------------------- Defaults (consumed by annolid/gui/app.py)
         self.batch_size = 8
         self.algo = "MaskRCNN"
-        self.config_file = None
-        self.out_dir = None
+        self.config_file: Optional[str] = None
+        self.out_dir: Optional[str] = None
         self.max_iterations = 2000
-        self.trained_model = None
+        self.trained_model: Optional[str] = None
 
-        # YOLO-only defaults
+        # YOLO defaults
         self.image_size = 640
         self.epochs = 100
-        self.yolo_model_file = "yolo11n-seg.pt"
         self.yolo_device = self._default_yolo_device()
         self.yolo_plots = True
+
+        # IMPORTANT: choose YOLO weights from registry (no hardcode)
+        self.yolo_model_file = self._default_yolo_weight_from_registry()
 
         # DinoKPSEG defaults
         self.dino_model_name = PATCH_SIMILARITY_DEFAULT_MODEL
@@ -99,7 +118,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_close_mosaic = 10
         self.yolo_optimizer = "auto"
         self.yolo_cos_lr = False
-        self.yolo_cache = False  # False | True | "disk"
+        self.yolo_cache: Any = False  # False | True | "disk"
 
         self._build_ui()
         self.update_ui_for_algorithm()
@@ -118,6 +137,9 @@ class TrainModelDialog(QtWidgets.QDialog):
             "optimizer": str(self.yolo_optimizer),
             "cos_lr": bool(self.yolo_cos_lr),
             "cache": self.yolo_cache,
+            "plots": bool(self.yolo_plots),
+            "device": str(self.yolo_device or ""),
+            "model": str(self.yolo_model_file or ""),
         }
 
     # -------------------- UI construction
@@ -161,36 +183,30 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.batch_spin = QtWidgets.QSpinBox(self)
         self.batch_spin.setRange(1, 128)
         self.batch_spin.setValue(int(self.batch_size))
-        self.batch_spin.valueChanged.connect(
-            lambda v: setattr(self, "batch_size", int(v)))
+        self._bind_spin_int(self.batch_spin, "batch_size")
 
         self.imgsz_spin = QtWidgets.QSpinBox(self)
         self.imgsz_spin.setRange(320, 1280)
         self.imgsz_spin.setSingleStep(32)
         self.imgsz_spin.setValue(int(self.image_size))
-        self.imgsz_spin.valueChanged.connect(
-            lambda v: setattr(self, "image_size", int(v)))
+        self._bind_spin_int(self.imgsz_spin, "image_size")
 
         self.epochs_spin = QtWidgets.QSpinBox(self)
         self.epochs_spin.setRange(1, 300)
         self.epochs_spin.setValue(int(self.epochs))
-        self.epochs_spin.valueChanged.connect(
-            lambda v: setattr(self, "epochs", int(v)))
+        self._bind_spin_int(self.epochs_spin, "epochs")
 
         self.max_iter_spin = QtWidgets.QSpinBox(self)
         self.max_iter_spin.setRange(100, 20000)
         self.max_iter_spin.setSingleStep(100)
         self.max_iter_spin.setValue(int(self.max_iterations))
-        self.max_iter_spin.valueChanged.connect(
-            lambda v: setattr(self, "max_iterations", int(v)))
+        self._bind_spin_int(self.max_iter_spin, "max_iterations")
 
         self.yolo_plots_checkbox = QtWidgets.QCheckBox(
-            "Save training plots (curves PNG, confusion matrix, etc.)", self)
-        self.yolo_plots_checkbox.setChecked(bool(self.yolo_plots))
-        self.yolo_plots_checkbox.stateChanged.connect(
-            lambda _=None: setattr(self, "yolo_plots", bool(
-                self.yolo_plots_checkbox.isChecked()))
+            "Save training plots (curves PNG, confusion matrix, etc.)", self
         )
+        self.yolo_plots_checkbox.setChecked(bool(self.yolo_plots))
+        self._bind_checkbox(self.yolo_plots_checkbox, "yolo_plots")
 
         # File inputs (shared)
         self.configFileLineEdit = QtWidgets.QLineEdit(self)
@@ -207,10 +223,98 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.outDirButton = QtWidgets.QPushButton("Select…", self)
         self.outDirButton.clicked.connect(self.on_out_dir_button_clicked)
 
+    # -------------------- YOLO weights selection (registry + convenience)
+    def _yolo_weight_configs(self) -> List[Any]:
+        """Return YOLO-ish configs from MODEL_REGISTRY."""
+        cfgs: List[Any] = []
+        for cfg in MODEL_REGISTRY:
+            wf = str(getattr(cfg, "weight_file", "") or "").strip()
+            if not wf:
+                continue
+            wf_l = wf.lower()
+            if wf_l.endswith((".pt", ".pth")) and wf_l.startswith("yolo"):
+                cfgs.append(cfg)
+        return cfgs
+
+    def _default_yolo_weight_from_registry(self) -> str:
+        cfgs = self._yolo_weight_configs()
+        return str(cfgs[0].weight_file) if cfgs else ""
+
+    def _compute_yolo_weight_name(self, task_text: str, size_text: str) -> str:
+        suffix = YOLO11_TASK_SUFFIXES.get(task_text, "")
+        return f"yolo11{size_text.lower()}{suffix}.pt"
+
+    def _try_select_registry_weight(self, weight_file: str) -> bool:
+        """Select preset combo item matching weight_file. Returns True if matched."""
+        if not hasattr(self, "yolo_weights_combo"):
+            return False
+        target = str(weight_file or "").strip().lower()
+        if not target:
+            return False
+        for i in range(self.yolo_weights_combo.count()):
+            wf = str(self.yolo_weights_combo.itemData(i) or "").strip().lower()
+            if wf == target:
+                self.yolo_weights_combo.setCurrentIndex(i)
+                return True
+        return False
+
+    def _parse_task_size_from_weight(self, weight_file: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Best-effort parse for yolo11{size}{suffix}.pt, e.g. yolo11n-seg.pt.
+        Returns (task_name, size_letter) or (None, None).
+        """
+        wf = (weight_file or "").strip().lower()
+        m = re.match(r"^yolo11([nslmx])(?:(-seg|-pose|-obb|-cls))?\.pt$", wf)
+        if not m:
+            return (None, None)
+        size = m.group(1).upper()
+        suffix = m.group(2) or ""
+        suffix_to_task = {v: k for k, v in YOLO11_TASK_SUFFIXES.items()}
+        task = suffix_to_task.get(suffix, "Detection")
+        return (task, size)
+
+    def _update_yolo_model_label(self) -> None:
+        wf = str(self.yolo_model_file or "").strip()
+        if not wf:
+            self.yolo_model_label.setText("Selected weights: (none)")
+            return
+
+        in_registry = False
+        if hasattr(self, "yolo_weights_combo"):
+            for i in range(self.yolo_weights_combo.count()):
+                item_wf = str(self.yolo_weights_combo.itemData(i)
+                              or "").strip().lower()
+                if item_wf == wf.lower():
+                    in_registry = True
+                    break
+
+        tag = "" if in_registry else " (not in registry)"
+        self.yolo_model_label.setText(f"Selected weights: {wf}{tag}")
+
     def _build_yolo_model_selector(self) -> None:
         self.yolo_model_groupbox = QtWidgets.QGroupBox("YOLO Weights", self)
         grid = QtWidgets.QGridLayout(self.yolo_model_groupbox)
 
+        # Preset dropdown from MODEL_REGISTRY
+        self.yolo_weights_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
+        yolo_cfgs = self._yolo_weight_configs()
+        for cfg in yolo_cfgs:
+            self.yolo_weights_combo.addItem(
+                cfg.display_name, userData=cfg.weight_file)
+
+        # Optional browse button for custom weight path
+        self.yolo_weights_browse_btn = QtWidgets.QPushButton(
+            "Browse…", self.yolo_model_groupbox)
+        self.yolo_weights_browse_btn.clicked.connect(
+            self.on_yolo_weights_browse_clicked)
+
+        preset_row = QtWidgets.QWidget(self.yolo_model_groupbox)
+        preset_row_layout = QtWidgets.QHBoxLayout(preset_row)
+        preset_row_layout.setContentsMargins(0, 0, 0, 0)
+        preset_row_layout.addWidget(self.yolo_weights_combo, 1)
+        preset_row_layout.addWidget(self.yolo_weights_browse_btn, 0)
+
+        # Convenience task + size selectors (auto-matches presets when possible)
         self.yolo_task_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
         self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
         self.yolo_task_combo.currentTextChanged.connect(
@@ -225,16 +329,78 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_model_label.setTextInteractionFlags(
             QtCore.Qt.TextSelectableByMouse)
 
-        grid.addWidget(QtWidgets.QLabel("Task"), 0, 0)
-        grid.addWidget(self.yolo_task_combo, 0, 1)
-        grid.addWidget(QtWidgets.QLabel("Model Size"), 0, 2)
-        grid.addWidget(self.yolo_size_combo, 0, 3)
-        grid.addWidget(self.yolo_model_label, 1, 0, 1, 4)
+        def _on_preset_changed(_=None) -> None:
+            wf = str(self.yolo_weights_combo.currentData() or "").strip()
+            if wf:
+                self.yolo_model_file = wf
+                # best-effort: sync task/size combos if it's a yolo11 naming
+                task, size = self._parse_task_size_from_weight(wf)
+                if task:
+                    self.yolo_task_combo.blockSignals(True)
+                    self.yolo_task_combo.setCurrentText(task)
+                    self.yolo_task_combo.blockSignals(False)
+                if size:
+                    self.yolo_size_combo.blockSignals(True)
+                    self.yolo_size_combo.setCurrentText(size)
+                    self.yolo_size_combo.blockSignals(False)
+            self._update_yolo_model_label()
 
+        self.yolo_weights_combo.currentIndexChanged.connect(_on_preset_changed)
+
+        # Layout
+        grid.addWidget(QtWidgets.QLabel("Weights preset"), 0, 0)
+        grid.addWidget(preset_row, 0, 1, 1, 3)
+        grid.addWidget(QtWidgets.QLabel("Task"), 1, 0)
+        grid.addWidget(self.yolo_task_combo, 1, 1)
+        grid.addWidget(QtWidgets.QLabel("Model Size"), 1, 2)
+        grid.addWidget(self.yolo_size_combo, 1, 3)
+        grid.addWidget(self.yolo_model_label, 2, 0, 1, 4)
+
+        # Defaults: set task/size, then prefer registry match
         self.yolo_task_combo.setCurrentText("Instance Segmentation")
         self.yolo_size_combo.setCurrentText("N")
-        self.update_yolo_model_filename()
 
+        # Choose initial weight:
+        # 1) if yolo_model_file already set (registry default), select it
+        # 2) else try match task/size to registry
+        # 3) else fall back to computed filename
+        if self.yolo_model_file and self._try_select_registry_weight(self.yolo_model_file):
+            pass
+        else:
+            self.update_yolo_model_filename()
+
+        self._update_yolo_model_label()
+
+    def update_yolo_model_filename(self) -> None:
+        task_text = self.yolo_task_combo.currentText()
+        size_text = self.yolo_size_combo.currentText()
+        computed = self._compute_yolo_weight_name(task_text, size_text)
+
+        # Prefer an exact preset match if available
+        if self._try_select_registry_weight(computed):
+            # preset handler sets yolo_model_file + label
+            return
+
+        # Otherwise fall back to computed filename (still usable if user has local file)
+        self.yolo_model_file = computed
+        self._update_yolo_model_label()
+
+    def on_yolo_weights_browse_clicked(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            parent=self,
+            caption="Select YOLO Weights",
+            directory=str(Path()),
+            filter="Weights (*.pt *.pth);;All Files (*.*)",
+        )
+        if not path:
+            return
+        self.yolo_model_file = path
+
+        # If the selected file matches a registry preset, select it; else keep "not in registry"
+        self._try_select_registry_weight(Path(path).name)
+        self._update_yolo_model_label()
+
+    # -------------------- DINO model selector
     def _build_dino_model_selector(self) -> None:
         self.dino_model_groupbox = QtWidgets.QGroupBox("DINO Backbone", self)
         form = QtWidgets.QFormLayout(self.dino_model_groupbox)
@@ -243,32 +409,35 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_model_combo = QtWidgets.QComboBox(self.dino_model_groupbox)
         for cfg in PATCH_SIMILARITY_MODELS:
             self.dino_model_combo.addItem(cfg.display_name, cfg.identifier)
+
         idx = self.dino_model_combo.findData(self.dino_model_name)
         if idx >= 0:
             self.dino_model_combo.setCurrentIndex(idx)
+
         self.dino_model_combo.currentIndexChanged.connect(
-            lambda _=None: setattr(self, "dino_model_name", str(
-                self.dino_model_combo.currentData() or "").strip())
+            lambda _=None: setattr(
+                self,
+                "dino_model_name",
+                str(self.dino_model_combo.currentData() or "").strip(),
+            )
         )
 
         short_side = QtWidgets.QSpinBox(self.dino_model_groupbox)
         short_side.setRange(224, 2048)
         short_side.setSingleStep(32)
         short_side.setValue(int(self.dino_short_side))
-        short_side.valueChanged.connect(
-            lambda v: setattr(self, "dino_short_side", int(v)))
+        self._bind_spin_int(short_side, "dino_short_side")
 
         layers = QtWidgets.QLineEdit(self.dino_model_groupbox)
         layers.setPlaceholderText("-1 or -2,-1")
         layers.setText(str(self.dino_layers))
-        layers.textChanged.connect(
-            lambda text: setattr(self, "dino_layers", str(text).strip())
-        )
+        self._bind_lineedit_str(layers, "dino_layers")
 
         form.addRow("Model", self.dino_model_combo)
         form.addRow("Short side", short_side)
         form.addRow("Layers", layers)
 
+    # -------------------- Device selector
     def _default_yolo_device(self) -> str:
         device = str(get_device() or "cpu").strip().lower()
         if device == "cuda":
@@ -298,10 +467,12 @@ class TrainModelDialog(QtWidgets.QDialog):
             self.yolo_device_combo.addItem(label, userData=value)
             if str(value) == str(self.yolo_device):
                 default_index = idx
+
         self.yolo_device_combo.setCurrentIndex(default_index)
         self.yolo_device_combo.currentIndexChanged.connect(
             self._on_device_changed)
 
+    # -------------------- Tabs
     def _build_basic_tab(self) -> None:
         self.tabs = QtWidgets.QTabWidget(self)
         self.basic_tab = QtWidgets.QWidget(self.tabs)
@@ -348,9 +519,11 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._io_form.addRow(self._io_model_label, self._io_model_row)
         self._io_form.addRow(self._io_out_label, self._io_out_row)
 
+        # Both groupboxes are placed in the same grid cell; visibility toggled by algo.
         grid.addWidget(self.yolo_model_groupbox, 0, 0, 1, 2)
         self._build_dino_model_selector()
         grid.addWidget(self.dino_model_groupbox, 0, 0, 1, 2)
+
         grid.addWidget(self.training_groupbox, 1, 0, 1, 1)
         grid.addWidget(self.io_groupbox, 1, 1, 1, 1)
 
@@ -365,12 +538,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
 
         self.yolo_hyperparams_groupbox = self._build_yolo_hyperparams_groupbox()
-
         self.dino_hyperparams_groupbox = self._build_dino_hyperparams_groupbox()
         self.dino_augment_groupbox = self._build_dino_augment_groupbox()
+
         scroll = QtWidgets.QScrollArea(self.advanced_tab)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+
         container = QtWidgets.QWidget(self.advanced_tab)
         stack = QtWidgets.QVBoxLayout(container)
         stack.setContentsMargins(0, 0, 0, 0)
@@ -378,6 +552,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         stack.addWidget(self.dino_hyperparams_groupbox)
         stack.addWidget(self.dino_augment_groupbox)
         stack.addStretch(1)
+
         scroll.setWidget(container)
         layout.addWidget(scroll)
 
@@ -386,6 +561,21 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn, parent=self)
         self.buttonbox.accepted.connect(self.accept)
         self.buttonbox.rejected.connect(self.reject)
+
+    # -------------------- Binding helpers (small refactor)
+    def _bind_spin_int(self, spin: QtWidgets.QSpinBox, attr: str) -> None:
+        spin.valueChanged.connect(lambda v: setattr(self, attr, int(v)))
+
+    def _bind_spin_float(self, spin: QtWidgets.QDoubleSpinBox, attr: str) -> None:
+        spin.valueChanged.connect(lambda v: setattr(self, attr, float(v)))
+
+    def _bind_checkbox(self, cb: QtWidgets.QCheckBox, attr: str) -> None:
+        cb.stateChanged.connect(lambda _=None: setattr(
+            self, attr, bool(cb.isChecked())))
+
+    def _bind_lineedit_str(self, le: QtWidgets.QLineEdit, attr: str) -> None:
+        le.textChanged.connect(lambda text: setattr(
+            self, attr, str(text).strip()))
 
     # -------------------- Helpers
     def _make_row(self, line_edit: QtWidgets.QLineEdit, button: QtWidgets.QPushButton) -> QtWidgets.QWidget:
@@ -403,19 +593,21 @@ class TrainModelDialog(QtWidgets.QDialog):
         field.setVisible(visible)
 
     # -------------------- Callbacks
-    def on_radio_button_checked(self):
+    def on_radio_button_checked(self) -> None:
         radio_btn = self.sender()
-        if radio_btn.isChecked():
-            self.algo = radio_btn.text()
+        if radio_btn and radio_btn.isChecked():
+            self.algo = str(radio_btn.text())
             self.update_ui_for_algorithm()
 
-    def update_ui_for_algorithm(self):
+    def update_ui_for_algorithm(self) -> None:
         yolo_selected = self.algo == "YOLO"
         dino_selected = self.algo == "DINO KPSEG"
         classic_selected = not (yolo_selected or dino_selected)
 
         self.yolo_model_groupbox.setVisible(yolo_selected)
         self.dino_model_groupbox.setVisible(dino_selected)
+
+        # Advanced tab enabled only for YOLO / DINO
         self.tabs.setTabEnabled(1, bool(yolo_selected or dino_selected))
         self.yolo_hyperparams_groupbox.setVisible(yolo_selected)
         self.dino_hyperparams_groupbox.setVisible(dino_selected)
@@ -433,7 +625,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._set_form_row_visible(
             self._training_form, self.yolo_plots_checkbox, yolo_selected)
 
-        # Batch size: DinoKPSEG supports padded batching (may increase memory usage).
+        # Batch size tooltip
         self.batch_spin.setEnabled(True)
         if dino_selected:
             self.batch_spin.setToolTip(
@@ -444,33 +636,24 @@ class TrainModelDialog(QtWidgets.QDialog):
             self.batch_spin.setToolTip("")
 
         # IO labels
-        self._io_config_label.setText(
-            "Dataset YAML" if (yolo_selected or dino_selected) else "Config file")
+        self._io_config_label.setText("Dataset YAML" if (
+            yolo_selected or dino_selected) else "Config file")
         self._io_model_label.setText(
             "Resume from (.pt)" if yolo_selected else "Model weights (.pt)")
+        self.configFileButton.setText("Browse YAML…" if (
+            yolo_selected or dino_selected) else "Browse…")
 
-        self.configFileButton.setText(
-            "Browse YAML…" if (yolo_selected or dino_selected) else "Browse…")
-
-        # Resume row only for YOLO / classic trainers.
+        # Resume row only for YOLO
         self._set_form_row_visible(
             self._io_form, self._io_model_row, bool(yolo_selected))
 
         self._update_dino_augment_enabled_state()
 
-    def update_yolo_model_filename(self):
-        task_text = self.yolo_task_combo.currentText()
-        size_text = self.yolo_size_combo.currentText().lower()
-        suffix = YOLO11_TASK_SUFFIXES.get(task_text, "")
-        self.yolo_model_file = f"yolo11{size_text}{suffix}.pt"
-        self.yolo_model_label.setText(
-            f"Selected weights: {self.yolo_model_file}")
-
     def _on_device_changed(self) -> None:
         value = self.yolo_device_combo.currentData()
         self.yolo_device = str(value or "").strip().lower()
 
-    def on_config_file_button_clicked(self):
+    def on_config_file_button_clicked(self) -> None:
         file_dialog = QtWidgets.QFileDialog(self)
         file_dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
         if self.algo in {"YOLO", "DINO KPSEG"}:
@@ -484,17 +667,17 @@ class TrainModelDialog(QtWidgets.QDialog):
                 self.config_file = selected_files[0]
                 self.configFileLineEdit.setText(self.config_file)
 
-    def on_trained_model_button_clicked(self):
+    def on_trained_model_button_clicked(self) -> None:
         self.trained_model, _ = QtWidgets.QFileDialog.getOpenFileName(
             parent=self,
-            caption="Select Model Weights",
+            caption="Select Model Weights (Resume)",
             directory=str(Path()),
             filter="YOLO/Model Weights (*.pt *.pth);;All Files (*.*)",
         )
         if self.trained_model:
             self.trainedModelLineEdit.setText(self.trained_model)
 
-    def on_out_dir_button_clicked(self):
+    def on_out_dir_button_clicked(self) -> None:
         self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select Output Directory")
         if self.out_dir:
@@ -511,34 +694,31 @@ class TrainModelDialog(QtWidgets.QDialog):
         lr0.setRange(0.000001, 1.0)
         lr0.setSingleStep(0.001)
         lr0.setValue(float(self.yolo_lr0))
-        lr0.valueChanged.connect(lambda v: setattr(self, "yolo_lr0", float(v)))
+        self._bind_spin_float(lr0, "yolo_lr0")
 
         lrf = QtWidgets.QDoubleSpinBox(box)
         lrf.setDecimals(6)
         lrf.setRange(0.000001, 1.0)
         lrf.setSingleStep(0.001)
         lrf.setValue(float(self.yolo_lrf))
-        lrf.valueChanged.connect(lambda v: setattr(self, "yolo_lrf", float(v)))
+        self._bind_spin_float(lrf, "yolo_lrf")
 
         wd = QtWidgets.QDoubleSpinBox(box)
         wd.setDecimals(6)
         wd.setRange(0.0, 0.1)
         wd.setSingleStep(0.0001)
         wd.setValue(float(self.yolo_weight_decay))
-        wd.valueChanged.connect(lambda v: setattr(
-            self, "yolo_weight_decay", float(v)))
+        self._bind_spin_float(wd, "yolo_weight_decay")
 
         patience = QtWidgets.QSpinBox(box)
         patience.setRange(0, 1000)
         patience.setValue(int(self.yolo_patience))
-        patience.valueChanged.connect(
-            lambda v: setattr(self, "yolo_patience", int(v)))
+        self._bind_spin_int(patience, "yolo_patience")
 
         close_mosaic = QtWidgets.QSpinBox(box)
         close_mosaic.setRange(0, 100)
         close_mosaic.setValue(int(self.yolo_close_mosaic))
-        close_mosaic.valueChanged.connect(
-            lambda v: setattr(self, "yolo_close_mosaic", int(v)))
+        self._bind_spin_int(close_mosaic, "yolo_close_mosaic")
 
         optimizer = QtWidgets.QComboBox(box)
         optimizer_options = [
@@ -558,8 +738,7 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         cos_lr = QtWidgets.QCheckBox("Cosine LR schedule", box)
         cos_lr.setChecked(bool(self.yolo_cos_lr))
-        cos_lr.stateChanged.connect(lambda _=None: setattr(
-            self, "yolo_cos_lr", bool(cos_lr.isChecked())))
+        self._bind_checkbox(cos_lr, "yolo_cos_lr")
 
         cache = QtWidgets.QComboBox(box)
         cache_options = [
@@ -611,15 +790,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         attn_heads = QtWidgets.QSpinBox(box)
         attn_heads.setRange(1, 32)
         attn_heads.setValue(int(getattr(self, "dino_attn_heads", 4)))
-        attn_heads.valueChanged.connect(
-            lambda v: setattr(self, "dino_attn_heads", int(v)))
+        self._bind_spin_int(attn_heads, "dino_attn_heads")
         self._dino_attn_heads_spin = attn_heads
 
         attn_layers = QtWidgets.QSpinBox(box)
         attn_layers.setRange(1, 8)
         attn_layers.setValue(int(getattr(self, "dino_attn_layers", 1)))
-        attn_layers.valueChanged.connect(
-            lambda v: setattr(self, "dino_attn_layers", int(v)))
+        self._bind_spin_int(attn_layers, "dino_attn_layers")
         self._dino_attn_layers_spin = attn_layers
 
         pair_w = QtWidgets.QDoubleSpinBox(box)
@@ -627,8 +804,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         pair_w.setRange(0.0, 10.0)
         pair_w.setSingleStep(0.01)
         pair_w.setValue(float(getattr(self, "dino_lr_pair_loss_weight", 0.0)))
-        pair_w.valueChanged.connect(lambda v: setattr(
-            self, "dino_lr_pair_loss_weight", float(v)))
+        self._bind_spin_float(pair_w, "dino_lr_pair_loss_weight")
         self._dino_pair_loss_weight = pair_w
 
         pair_margin = QtWidgets.QDoubleSpinBox(box)
@@ -637,8 +813,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         pair_margin.setSingleStep(1.0)
         pair_margin.setValue(
             float(getattr(self, "dino_lr_pair_margin_px", 0.0)))
-        pair_margin.valueChanged.connect(lambda v: setattr(
-            self, "dino_lr_pair_margin_px", float(v)))
+        self._bind_spin_float(pair_margin, "dino_lr_pair_margin_px")
         self._dino_pair_margin_px = pair_margin
 
         side_w = QtWidgets.QDoubleSpinBox(box)
@@ -646,8 +821,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         side_w.setRange(0.0, 10.0)
         side_w.setSingleStep(0.01)
         side_w.setValue(float(getattr(self, "dino_lr_side_loss_weight", 0.0)))
-        side_w.valueChanged.connect(lambda v: setattr(
-            self, "dino_lr_side_loss_weight", float(v)))
+        self._bind_spin_float(side_w, "dino_lr_side_loss_weight")
         self._dino_side_loss_weight = side_w
 
         side_margin = QtWidgets.QDoubleSpinBox(box)
@@ -656,8 +830,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         side_margin.setSingleStep(0.05)
         side_margin.setValue(
             float(getattr(self, "dino_lr_side_loss_margin", 0.0)))
-        side_margin.valueChanged.connect(lambda v: setattr(
-            self, "dino_lr_side_loss_margin", float(v)))
+        self._bind_spin_float(side_margin, "dino_lr_side_loss_margin")
         self._dino_side_loss_margin = side_margin
 
         lr = QtWidgets.QDoubleSpinBox(box)
@@ -665,30 +838,27 @@ class TrainModelDialog(QtWidgets.QDialog):
         lr.setRange(1e-6, 1.0)
         lr.setSingleStep(0.0005)
         lr.setValue(float(self.dino_lr))
-        lr.valueChanged.connect(lambda v: setattr(self, "dino_lr", float(v)))
+        self._bind_spin_float(lr, "dino_lr")
 
         radius = QtWidgets.QDoubleSpinBox(box)
         radius.setDecimals(2)
         radius.setRange(1.0, 64.0)
         radius.setSingleStep(0.5)
         radius.setValue(float(self.dino_radius_px))
-        radius.valueChanged.connect(
-            lambda v: setattr(self, "dino_radius_px", float(v)))
+        self._bind_spin_float(radius, "dino_radius_px")
 
         hidden = QtWidgets.QSpinBox(box)
         hidden.setRange(16, 2048)
         hidden.setSingleStep(16)
         hidden.setValue(int(self.dino_hidden_dim))
-        hidden.valueChanged.connect(
-            lambda v: setattr(self, "dino_hidden_dim", int(v)))
+        self._bind_spin_int(hidden, "dino_hidden_dim")
 
         thr = QtWidgets.QDoubleSpinBox(box)
         thr.setDecimals(3)
         thr.setRange(0.01, 0.99)
         thr.setSingleStep(0.01)
         thr.setValue(float(self.dino_threshold))
-        thr.valueChanged.connect(
-            lambda v: setattr(self, "dino_threshold", float(v)))
+        self._bind_spin_float(thr, "dino_threshold")
 
         bce_type = QtWidgets.QComboBox(box)
         bce_type.addItem("Standard BCE", userData="bce")
@@ -710,16 +880,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         focal_alpha.setRange(0.0, 1.0)
         focal_alpha.setSingleStep(0.05)
         focal_alpha.setValue(float(getattr(self, "dino_focal_alpha", 0.25)))
-        focal_alpha.valueChanged.connect(
-            lambda v: setattr(self, "dino_focal_alpha", float(v)))
+        self._bind_spin_float(focal_alpha, "dino_focal_alpha")
 
         focal_gamma = QtWidgets.QDoubleSpinBox(box)
         focal_gamma.setDecimals(3)
         focal_gamma.setRange(0.0, 10.0)
         focal_gamma.setSingleStep(0.1)
         focal_gamma.setValue(float(getattr(self, "dino_focal_gamma", 2.0)))
-        focal_gamma.valueChanged.connect(
-            lambda v: setattr(self, "dino_focal_gamma", float(v)))
+        self._bind_spin_float(focal_gamma, "dino_focal_gamma")
 
         self._dino_focal_controls = [focal_alpha, focal_gamma]
 
@@ -727,8 +895,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         coord_warmup.setRange(0, 1000)
         coord_warmup.setValue(
             int(getattr(self, "dino_coord_warmup_epochs", 0)))
-        coord_warmup.valueChanged.connect(
-            lambda v: setattr(self, "dino_coord_warmup_epochs", int(v)))
+        self._bind_spin_int(coord_warmup, "dino_coord_warmup_epochs")
 
         radius_schedule = QtWidgets.QComboBox(box)
         radius_schedule.addItem("None", userData="none")
@@ -753,8 +920,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         radius_start.setSingleStep(0.5)
         radius_start.setValue(
             float(getattr(self, "dino_radius_start_px", self.dino_radius_px)))
-        radius_start.valueChanged.connect(
-            lambda v: setattr(self, "dino_radius_start_px", float(v)))
+        self._bind_spin_float(radius_start, "dino_radius_start_px")
 
         radius_end = QtWidgets.QDoubleSpinBox(box)
         radius_end.setDecimals(2)
@@ -762,8 +928,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         radius_end.setSingleStep(0.5)
         radius_end.setValue(
             float(getattr(self, "dino_radius_end_px", self.dino_radius_px)))
-        radius_end.valueChanged.connect(
-            lambda v: setattr(self, "dino_radius_end_px", float(v)))
+        self._bind_spin_float(radius_end, "dino_radius_end_px")
 
         self._dino_radius_controls = [radius_start, radius_end]
 
@@ -773,23 +938,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         overfit_n.setValue(int(getattr(self, "dino_overfit_n", 0)))
         overfit_n.setToolTip(
             "Debug mode: use N training images and mirror into validation.")
-        overfit_n.valueChanged.connect(
-            lambda v: setattr(self, "dino_overfit_n", int(v)))
+        self._bind_spin_int(overfit_n, "dino_overfit_n")
 
         cache = QtWidgets.QCheckBox("Cache frozen DINO features to disk", box)
         cache.setChecked(bool(self.dino_cache_features))
-        cache.stateChanged.connect(lambda _=None: setattr(
-            self, "dino_cache_features", bool(cache.isChecked())))
+        self._bind_checkbox(cache, "dino_cache_features")
 
         tb_graph = QtWidgets.QCheckBox(
             "Log model graph to TensorBoard (slow)", box)
         tb_graph.setChecked(bool(self.dino_tb_add_graph))
-        tb_graph.stateChanged.connect(lambda _=None: setattr(
-            self, "dino_tb_add_graph", bool(tb_graph.isChecked())))
+        self._bind_checkbox(tb_graph, "dino_tb_add_graph")
 
         tb_projector = QtWidgets.QCheckBox(
-            "Write TensorBoard Projector embeddings (interactive)", box
-        )
+            "Write TensorBoard Projector embeddings (interactive)", box)
         tb_projector.setChecked(bool(getattr(self, "dino_tb_projector", True)))
 
         def _on_projector_changed(_=None) -> None:
@@ -816,27 +977,21 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_max_images.setRange(1, 10_000)
         tb_max_images.setValue(
             int(getattr(self, "dino_tb_projector_max_images", 64)))
-        tb_max_images.valueChanged.connect(
-            lambda v: setattr(self, "dino_tb_projector_max_images", int(v))
-        )
+        self._bind_spin_int(tb_max_images, "dino_tb_projector_max_images")
 
         tb_max_patches = QtWidgets.QSpinBox(box)
         tb_max_patches.setRange(64, 200_000)
         tb_max_patches.setSingleStep(256)
         tb_max_patches.setValue(
             int(getattr(self, "dino_tb_projector_max_patches", 4000)))
-        tb_max_patches.valueChanged.connect(
-            lambda v: setattr(self, "dino_tb_projector_max_patches", int(v))
-        )
+        self._bind_spin_int(tb_max_patches, "dino_tb_projector_max_patches")
 
         tb_per_image_per_kpt = QtWidgets.QSpinBox(box)
         tb_per_image_per_kpt.setRange(0, 1000)
         tb_per_image_per_kpt.setValue(
             int(getattr(self, "dino_tb_projector_per_image_per_keypoint", 3)))
-        tb_per_image_per_kpt.valueChanged.connect(
-            lambda v: setattr(
-                self, "dino_tb_projector_per_image_per_keypoint", int(v))
-        )
+        self._bind_spin_int(tb_per_image_per_kpt,
+                            "dino_tb_projector_per_image_per_keypoint")
 
         tb_pos_thr = QtWidgets.QDoubleSpinBox(box)
         tb_pos_thr.setDecimals(3)
@@ -844,27 +999,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_pos_thr.setSingleStep(0.05)
         tb_pos_thr.setValue(
             float(getattr(self, "dino_tb_projector_pos_threshold", 0.35)))
-        tb_pos_thr.valueChanged.connect(
-            lambda v: setattr(
-                self, "dino_tb_projector_pos_threshold", float(v))
-        )
+        self._bind_spin_float(tb_pos_thr, "dino_tb_projector_pos_threshold")
 
         tb_crop = QtWidgets.QSpinBox(box)
         tb_crop.setRange(16, 512)
         tb_crop.setSingleStep(16)
         tb_crop.setValue(int(getattr(self, "dino_tb_projector_crop_px", 96)))
-        tb_crop.valueChanged.connect(
-            lambda v: setattr(self, "dino_tb_projector_crop_px", int(v))
-        )
+        self._bind_spin_int(tb_crop, "dino_tb_projector_crop_px")
 
         tb_border = QtWidgets.QSpinBox(box)
         tb_border.setRange(0, 16)
         tb_border.setValue(
             int(getattr(self, "dino_tb_projector_sprite_border_px", 3)))
-        tb_border.valueChanged.connect(
-            lambda v: setattr(
-                self, "dino_tb_projector_sprite_border_px", int(v))
-        )
+        self._bind_spin_int(tb_border, "dino_tb_projector_sprite_border_px")
 
         tb_add_negs = QtWidgets.QCheckBox(
             "Also sample background patches", box)
@@ -881,19 +1028,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_neg_thr.setSingleStep(0.01)
         tb_neg_thr.setValue(
             float(getattr(self, "dino_tb_projector_neg_threshold", 0.02)))
-        tb_neg_thr.valueChanged.connect(
-            lambda v: setattr(
-                self, "dino_tb_projector_neg_threshold", float(v))
-        )
+        self._bind_spin_float(tb_neg_thr, "dino_tb_projector_neg_threshold")
 
         tb_negs_per_img = QtWidgets.QSpinBox(box)
         tb_negs_per_img.setRange(0, 10_000)
         tb_negs_per_img.setValue(
             int(getattr(self, "dino_tb_projector_negatives_per_image", 6)))
-        tb_negs_per_img.valueChanged.connect(
-            lambda v: setattr(
-                self, "dino_tb_projector_negatives_per_image", int(v))
-        )
+        self._bind_spin_int(
+            tb_negs_per_img, "dino_tb_projector_negatives_per_image")
 
         self._dino_projector_controls = [
             tb_projector_split,
@@ -911,39 +1053,31 @@ class TrainModelDialog(QtWidgets.QDialog):
         patience = QtWidgets.QSpinBox(box)
         patience.setRange(0, 1000)
         patience.setValue(int(self.dino_patience))
-        patience.valueChanged.connect(
-            lambda v: setattr(self, "dino_patience", int(v)))
+        self._bind_spin_int(patience, "dino_patience")
 
         min_delta = QtWidgets.QDoubleSpinBox(box)
         min_delta.setDecimals(6)
         min_delta.setRange(0.0, 1.0)
         min_delta.setSingleStep(0.0001)
         min_delta.setValue(float(self.dino_min_delta))
-        min_delta.valueChanged.connect(
-            lambda v: setattr(self, "dino_min_delta", float(v)))
+        self._bind_spin_float(min_delta, "dino_min_delta")
 
         min_epochs = QtWidgets.QSpinBox(box)
         min_epochs.setRange(0, 1000)
         min_epochs.setValue(int(self.dino_min_epochs))
-        min_epochs.valueChanged.connect(
-            lambda v: setattr(self, "dino_min_epochs", int(v)))
+        self._bind_spin_int(min_epochs, "dino_min_epochs")
 
         best_metric = QtWidgets.QComboBox(box)
         best_metric.addItem("PCK@8px (pose)", "pck@8px")
         best_metric.addItem("Weighted PCK (2/4/8/16px)", "pck_weighted")
         best_metric.addItem("Val loss", "val_loss")
         best_metric.addItem("Train loss (no val)", "train_loss")
-        best_metric.setCurrentIndex(
-            max(0, best_metric.findData(
-                getattr(self, "dino_best_metric", "pck@8px")))
-        )
+        best_metric.setCurrentIndex(max(0, best_metric.findData(
+            getattr(self, "dino_best_metric", "pck@8px"))))
         best_metric.currentIndexChanged.connect(
             lambda _=None: (
-                setattr(
-                    self,
-                    "dino_best_metric",
-                    str(best_metric.currentData() or "pck@8px"),
-                ),
+                setattr(self, "dino_best_metric", str(
+                    best_metric.currentData() or "pck@8px")),
                 self._update_dino_model_selection_controls(),
             )
         )
@@ -955,20 +1089,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         early_stop_metric.addItem("Val loss", "val_loss")
         early_stop_metric.addItem("Train loss (no val)", "train_loss")
         early_stop_metric.setCurrentIndex(
-            max(
-                0,
-                early_stop_metric.findData(
-                    getattr(self, "dino_early_stop_metric", "auto")
-                ),
-            )
+            max(0, early_stop_metric.findData(
+                getattr(self, "dino_early_stop_metric", "auto")))
         )
         early_stop_metric.currentIndexChanged.connect(
             lambda _=None: (
-                setattr(
-                    self,
-                    "dino_early_stop_metric",
-                    str(early_stop_metric.currentData() or "auto"),
-                ),
+                setattr(self, "dino_early_stop_metric", str(
+                    early_stop_metric.currentData() or "auto")),
                 self._update_dino_model_selection_controls(),
             )
         )
@@ -977,15 +1104,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         pck_weights.setPlaceholderText("1,1,1,1")
         pck_weights.setText(
             str(getattr(self, "dino_pck_weighted_weights", "1,1,1,1")))
-        pck_weights.textChanged.connect(
-            lambda text: setattr(
-                self, "dino_pck_weighted_weights", str(text).strip())
-        )
+        self._bind_lineedit_str(pck_weights, "dino_pck_weighted_weights")
 
         self._dino_best_metric_combo = best_metric
         self._dino_early_stop_metric_combo = early_stop_metric
         self._dino_pck_weighted_weights_edit = pck_weights
 
+        # Form rows
         form.addRow("Head type", head_type)
         form.addRow("Attn heads", attn_heads)
         form.addRow("Attn layers", attn_layers)
@@ -1024,6 +1149,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("Projector neg threshold", tb_neg_thr)
         form.addRow("Projector negatives / image", tb_negs_per_img)
         form.addRow("", cache)
+
         self._update_dino_head_controls()
         self._update_dino_projector_enabled_state()
         self._update_dino_focal_controls()
@@ -1049,7 +1175,10 @@ class TrainModelDialog(QtWidgets.QDialog):
         head_type = str(getattr(self, "dino_head_type", "conv")
                         or "conv").strip().lower()
         attn_enabled = head_type in {"attn", "hybrid"}
-        for w in (getattr(self, "_dino_attn_heads_spin", None), getattr(self, "_dino_attn_layers_spin", None)):
+        for w in (
+            getattr(self, "_dino_attn_heads_spin", None),
+            getattr(self, "_dino_attn_layers_spin", None),
+        ):
             if w is not None:
                 w.setEnabled(attn_enabled)
 
@@ -1078,8 +1207,8 @@ class TrainModelDialog(QtWidgets.QDialog):
                 pass
 
     def _update_dino_radius_schedule_controls(self) -> None:
-        schedule = str(getattr(self, "dino_radius_schedule", "none")
-                       or "none").strip().lower()
+        schedule = str(getattr(self, "dino_radius_schedule",
+                       "none") or "none").strip().lower()
         enabled = schedule != "none"
         controls = getattr(self, "_dino_radius_controls", None)
         if not controls:
@@ -1098,73 +1227,66 @@ class TrainModelDialog(QtWidgets.QDialog):
         enable = QtWidgets.QCheckBox(
             "Enable YOLO-like pose augmentations", box)
         enable.setChecked(bool(self.dino_augment_enabled))
-        enable.stateChanged.connect(
-            lambda _=None: setattr(
-                self, "dino_augment_enabled", bool(enable.isChecked()))
-        )
-        enable.stateChanged.connect(
-            lambda _=None: self._update_dino_augment_enabled_state())
+
+        def _on_aug_enable(_=None) -> None:
+            setattr(self, "dino_augment_enabled", bool(enable.isChecked()))
+            self._update_dino_augment_enabled_state()
+
+        enable.stateChanged.connect(_on_aug_enable)
 
         hflip = QtWidgets.QDoubleSpinBox(box)
         hflip.setDecimals(3)
         hflip.setRange(0.0, 1.0)
         hflip.setSingleStep(0.05)
         hflip.setValue(float(self.dino_hflip_prob))
-        hflip.valueChanged.connect(lambda v: setattr(
-            self, "dino_hflip_prob", float(v)))
+        self._bind_spin_float(hflip, "dino_hflip_prob")
 
         degrees = QtWidgets.QDoubleSpinBox(box)
         degrees.setDecimals(2)
         degrees.setRange(0.0, 45.0)
         degrees.setSingleStep(1.0)
         degrees.setValue(float(self.dino_degrees))
-        degrees.valueChanged.connect(
-            lambda v: setattr(self, "dino_degrees", float(v)))
+        self._bind_spin_float(degrees, "dino_degrees")
 
         translate = QtWidgets.QDoubleSpinBox(box)
         translate.setDecimals(3)
         translate.setRange(0.0, 0.5)
         translate.setSingleStep(0.01)
         translate.setValue(float(self.dino_translate))
-        translate.valueChanged.connect(
-            lambda v: setattr(self, "dino_translate", float(v)))
+        self._bind_spin_float(translate, "dino_translate")
 
         scale = QtWidgets.QDoubleSpinBox(box)
         scale.setDecimals(3)
         scale.setRange(0.0, 0.9)
         scale.setSingleStep(0.01)
         scale.setValue(float(self.dino_scale))
-        scale.valueChanged.connect(
-            lambda v: setattr(self, "dino_scale", float(v)))
+        self._bind_spin_float(scale, "dino_scale")
 
         brightness = QtWidgets.QDoubleSpinBox(box)
         brightness.setDecimals(3)
         brightness.setRange(0.0, 1.0)
         brightness.setSingleStep(0.01)
         brightness.setValue(float(self.dino_brightness))
-        brightness.valueChanged.connect(
-            lambda v: setattr(self, "dino_brightness", float(v)))
+        self._bind_spin_float(brightness, "dino_brightness")
 
         contrast = QtWidgets.QDoubleSpinBox(box)
         contrast.setDecimals(3)
         contrast.setRange(0.0, 1.0)
         contrast.setSingleStep(0.01)
         contrast.setValue(float(self.dino_contrast))
-        contrast.valueChanged.connect(
-            lambda v: setattr(self, "dino_contrast", float(v)))
+        self._bind_spin_float(contrast, "dino_contrast")
 
         saturation = QtWidgets.QDoubleSpinBox(box)
         saturation.setDecimals(3)
         saturation.setRange(0.0, 1.0)
         saturation.setSingleStep(0.01)
         saturation.setValue(float(self.dino_saturation))
-        saturation.valueChanged.connect(
-            lambda v: setattr(self, "dino_saturation", float(v)))
+        self._bind_spin_float(saturation, "dino_saturation")
 
         seed = QtWidgets.QSpinBox(box)
         seed.setRange(-1, 2_147_483_647)
         seed.setValue(int(self.dino_seed))
-        seed.valueChanged.connect(lambda v: setattr(self, "dino_seed", int(v)))
+        self._bind_spin_int(seed, "dino_seed")
 
         self._dino_augment_controls = [
             hflip,
@@ -1174,6 +1296,7 @@ class TrainModelDialog(QtWidgets.QDialog):
             brightness,
             contrast,
             saturation,
+            seed,
         ]
 
         form.addRow("", enable)
@@ -1185,6 +1308,8 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("Contrast", contrast)
         form.addRow("Saturation", saturation)
         form.addRow("Seed (-1=random)", seed)
+
+        self._update_dino_augment_enabled_state()
         return box
 
     def _update_dino_augment_enabled_state(self) -> None:
@@ -1204,4 +1329,10 @@ class TrainModelDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self, "Error", "Please select a dataset YAML file.")
             return
+
+        if self.algo == "YOLO" and not str(self.yolo_model_file or "").strip():
+            QtWidgets.QMessageBox.warning(
+                self, "Error", "Please select YOLO weights.")
+            return
+
         super().accept()

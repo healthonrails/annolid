@@ -25,6 +25,10 @@ MODEL_REGISTRY = [
     ModelConfig("YOLO11x-pose", "yolo11x-pose", "yolo11x-pose.pt"),
     ModelConfig("yoloe-11s-seg.pt", "yoloe-11s-seg.pt", "yoloe-11s-seg.pt"),
     ModelConfig("yoloe-11l-seg.pt", "yoloe-11l-seg.pt", "yoloe-11l-seg.pt"),
+    ModelConfig("YOLO26n-seg", "yolo26n-seg", "yolo26n-seg.pt"),
+    ModelConfig("YOLO26x-seg", "yolo26x-seg", "yolo26x-seg.pt"),
+    ModelConfig("YOLO26n-pose", "yolo26n-pose", "yolo26n-pose.pt"),
+    ModelConfig("YOLO26x-pose", "yolo26x-pose", "yolo26x-pose.pt"),
     ModelConfig("DINOv3 Keypoint Tracker",
                 "dinov3_keypoint_tracker", "DINO_KEYPOINT_TRACKER"),
     ModelConfig(

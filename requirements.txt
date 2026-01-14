@@ -15,4 +15,4 @@ omegaconf
 hydra-core
 huggingface-hub>=0.22.0
 tensorboard
-ultralytics>=8.3.34
+ultralytics>=8.4.0
