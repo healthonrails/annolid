@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
-from qtpy import QtCore, QtGui, QtWidgets
-from qtpy.QtCore import Qt, Signal, QThread
+from qtpy import QtCore, QtWidgets
+from qtpy.QtCore import Qt, Signal
 
 
 @dataclass
@@ -54,10 +54,13 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
         self.source_edit = QtWidgets.QLineEdit()
         self.source_edit.setPlaceholderText(
             "Select folder with LabelMe annotations")
+        self.source_edit.setToolTip(
+            "Path to the directory containing LabelMe JSON files")
         self.source_edit.textChanged.connect(self._on_source_changed)
         dir_layout.addWidget(self.source_edit)
 
         browse_btn = QtWidgets.QPushButton("Browse…")
+        browse_btn.setToolTip("Select a directory using the file dialog")
         browse_btn.clicked.connect(self._browse_source)
         dir_layout.addWidget(browse_btn)
         source_layout.addLayout(dir_layout)
@@ -65,6 +68,7 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
         self.recursive_check = QtWidgets.QCheckBox(
             "Search subdirectories recursively")
         self.recursive_check.setChecked(True)
+        self.recursive_check.setToolTip("Include JSON files in subdirectories")
         self.recursive_check.stateChanged.connect(self._on_source_changed)
         source_layout.addWidget(self.recursive_check)
 
@@ -97,12 +101,24 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
         self._annotation_files: List[Path] = []
         self._detected_labels: set = set()
 
-    def _browse_source(self) -> None:
+    def _browse_dir(self, line_edit: QtWidgets.QLineEdit, caption: str) -> None:
+        """Helper to browse for a directory."""
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Annotation Directory", str(Path.home())
+            self, caption, str(Path.home())
         )
         if folder:
-            self.source_edit.setText(folder)
+            line_edit.setText(folder)
+
+    def _browse_file(self, line_edit: QtWidgets.QLineEdit, caption: str, filter: str = "All Files (*)") -> None:
+        """Helper to browse for a file."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, caption, "", filter
+        )
+        if path:
+            line_edit.setText(path)
+
+    def _browse_source(self) -> None:
+        self._browse_dir(self.source_edit, "Select Annotation Directory")
 
     def _on_source_changed(self) -> None:
         self._scan_annotations()
@@ -244,7 +260,6 @@ class SelectFormatPage(QtWidgets.QWizardPage):
         card.setFrameStyle(QtWidgets.QFrame.StyledPanel)
         card.setStyleSheet("""
             QFrame {
-                background-color: white;
                 border: 1px solid #e0e0e0;
                 border-radius: 8px;
                 padding: 4px;
@@ -260,6 +275,7 @@ class SelectFormatPage(QtWidgets.QWizardPage):
         # Radio button
         radio = QtWidgets.QRadioButton()
         radio.setObjectName(fmt_id)
+        radio.setToolTip(f"Export dataset in {title} format")
         layout.addWidget(radio)
 
         # Text content
@@ -314,6 +330,8 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         self.train_spin.setSingleStep(0.05)
         self.train_spin.setValue(0.8)
         self.train_spin.setDecimals(2)
+        self.train_spin.setToolTip(
+            "Fraction of data for training (0.0 to 1.0)")
         self.train_spin.valueChanged.connect(self._update_split_preview)
         split_layout.addWidget(self.train_spin, 0, 1)
         self.train_count = QtWidgets.QLabel("")
@@ -326,6 +344,8 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         self.val_spin.setSingleStep(0.05)
         self.val_spin.setValue(0.1)
         self.val_spin.setDecimals(2)
+        self.val_spin.setToolTip(
+            "Fraction of data for validation (0.0 to 1.0)")
         self.val_spin.valueChanged.connect(self._update_split_preview)
         split_layout.addWidget(self.val_spin, 1, 1)
         self.val_count = QtWidgets.QLabel("")
@@ -338,15 +358,22 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         self.test_spin.setSingleStep(0.05)
         self.test_spin.setValue(0.1)
         self.test_spin.setDecimals(2)
+        self.test_spin.setToolTip("Fraction of data for testing (0.0 to 1.0)")
         self.test_spin.valueChanged.connect(self._update_split_preview)
         split_layout.addWidget(self.test_spin, 2, 1)
         self.test_count = QtWidgets.QLabel("")
         split_layout.addWidget(self.test_count, 2, 2)
 
+        # Normalize button
+        normalize_btn = QtWidgets.QPushButton("Normalize")
+        normalize_btn.setToolTip("Adjust ratios to sum to 100%")
+        normalize_btn.clicked.connect(self._normalize_splits)
+        split_layout.addWidget(normalize_btn, 3, 0, 1, 2)
+
         # Split warning
         self.split_warning = QtWidgets.QLabel("")
         self.split_warning.setStyleSheet("color: red;")
-        split_layout.addWidget(self.split_warning, 3, 0, 1, 3)
+        split_layout.addWidget(self.split_warning, 4, 0, 1, 3)
 
         layout.addWidget(split_group)
 
@@ -357,18 +384,27 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         dir_layout = QtWidgets.QHBoxLayout()
         self.output_edit = QtWidgets.QLineEdit()
         self.output_edit.setPlaceholderText("Select output directory")
+        self.output_edit.setToolTip(
+            "Directory where the dataset will be exported")
         self.output_edit.textChanged.connect(self.completeChanged)
         dir_layout.addWidget(self.output_edit)
 
         browse_btn = QtWidgets.QPushButton("Browse…")
+        browse_btn.setToolTip("Select an output directory")
         browse_btn.clicked.connect(self._browse_output)
         dir_layout.addWidget(browse_btn)
         output_layout.addLayout(dir_layout)
+
+        self.output_warning = QtWidgets.QLabel("")
+        self.output_warning.setStyleSheet("color: red; font-size: 11px;")
+        output_layout.addWidget(self.output_warning)
 
         self.auto_output_check = QtWidgets.QCheckBox(
             "Create subfolder with dataset name automatically"
         )
         self.auto_output_check.setChecked(True)
+        self.auto_output_check.setToolTip(
+            "Automatically create a subfolder based on the source directory name")
         output_layout.addWidget(self.auto_output_check)
 
         layout.addWidget(output_group)
@@ -415,6 +451,22 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         self.registerField("outputDir*", self.output_edit)
         self._total_count = 0
 
+    def _browse_dir(self, line_edit: QtWidgets.QLineEdit, caption: str) -> None:
+        """Helper to browse for a directory."""
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, caption, str(Path.home())
+        )
+        if folder:
+            line_edit.setText(folder)
+
+    def _browse_file(self, line_edit: QtWidgets.QLineEdit, caption: str, filter: str = "All Files (*)") -> None:
+        """Helper to browse for a file."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, caption, "", filter
+        )
+        if path:
+            line_edit.setText(path)
+
     def initializePage(self) -> None:
         wizard = self.wizard()
         if isinstance(wizard, DatasetExportWizard):
@@ -424,7 +476,42 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
             if source.exists():
                 default_out = source.parent / f"{source.name}_dataset"
                 self.output_edit.setText(str(default_out))
+
+                # Try to find pose schema and labels files in source directory
+                self._auto_detect_config_files(source)
         self._update_split_preview()
+
+    def _auto_detect_config_files(self, source_path: Path) -> None:
+        """Automatically detect and set pose schema and labels files from source directory."""
+        # Common pose schema filenames
+        schema_names = [
+            "pose_schema.json",
+            "pose_schema.yaml",
+            "pose_schema.yml",
+            "keypoints.json",
+            "keypoints.yaml",
+            "keypoints.yml"
+        ]
+
+        for schema_name in schema_names:
+            schema_path = source_path / schema_name
+            if schema_path.exists() and schema_path.is_file():
+                self.pose_schema_edit.setText(str(schema_path))
+                break  # Use the first one found
+
+        # Common labels filenames
+        labels_names = [
+            "labels.txt",
+            "classes.txt",
+            "obj.names",
+            "coco.names"
+        ]
+
+        for labels_name in labels_names:
+            labels_path = source_path / labels_name
+            if labels_path.exists() and labels_path.is_file():
+                self.labels_edit.setText(str(labels_path))
+                break  # Use the first one found
 
     def _update_split_preview(self) -> None:
         total = self._total_count
@@ -448,34 +535,50 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         else:
             self.split_warning.setText("")
 
+        # Check output directory
+        output = self.output_edit.text().strip()
+        wizard = self.wizard()
+        if isinstance(wizard, DatasetExportWizard) and output:
+            source = str(wizard.select_annotations_page.get_source_path())
+            if Path(output) == Path(source):
+                self.output_warning.setText(
+                    "⚠ Output directory cannot be the same as source directory")
+            else:
+                self.output_warning.setText("")
+
         self.completeChanged.emit()
 
     def _browse_output(self) -> None:
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Output Directory", str(Path.home())
-        )
-        if folder:
-            self.output_edit.setText(folder)
+        self._browse_dir(self.output_edit, "Select Output Directory")
 
     def _browse_labels(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Labels File", "", "Text Files (*.txt);;All Files (*)"
-        )
-        if path:
-            self.labels_edit.setText(path)
+        self._browse_file(self.labels_edit, "Select Labels File",
+                          "Text Files (*.txt);;All Files (*)")
 
     def _browse_pose_schema(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Pose Schema", "",
-            "Schema Files (*.json *.yaml *.yml);;All Files (*)"
-        )
-        if path:
-            self.pose_schema_edit.setText(path)
+        self._browse_file(self.pose_schema_edit, "Select Pose Schema",
+                          "Schema Files (*.json *.yaml *.yml);;All Files (*)")
+
+    def _normalize_splits(self) -> None:
+        """Normalize split ratios to sum to 1.0."""
+        total = self.train_spin.value() + self.val_spin.value() + self.test_spin.value()
+        if total > 0:
+            self.train_spin.setValue(self.train_spin.value() / total)
+            self.val_spin.setValue(self.val_spin.value() / total)
+            self.test_spin.setValue(self.test_spin.value() / total)
+        self._update_split_preview()
 
     def isComplete(self) -> bool:
         output = self.output_edit.text().strip()
         if not output:
             return False
+
+        # Check that output is not the same as source
+        wizard = self.wizard()
+        if isinstance(wizard, DatasetExportWizard):
+            source = str(wizard.select_annotations_page.get_source_path())
+            if Path(output) == Path(source):
+                return False
 
         # Check split ratios
         total_pct = self.train_spin.value() + self.val_spin.value() + \
@@ -551,7 +654,7 @@ class ExportProgressPage(QtWidgets.QWizardPage):
 
         self._export_complete = False
         self._output_path: Optional[Path] = None
-        self._worker: Optional[QThread] = None
+        self._worker: Optional[ExportWorker] = None
 
     def initializePage(self) -> None:
         self._export_complete = False
@@ -574,7 +677,7 @@ class ExportProgressPage(QtWidgets.QWizardPage):
         fmt = wizard.select_format_page.get_format()
         config = wizard.configure_split_page.get_config()
 
-        self._output_path = Path(config["output_dir"])
+        self._output_path = Path(config["output_dir"]).expanduser().resolve()
 
         # Log the configuration
         self._log(f"Source: {source}")
@@ -584,43 +687,125 @@ class ExportProgressPage(QtWidgets.QWizardPage):
             f"Split: {config['train_split']:.0%} / {config['val_split']:.0%} / {config['test_split']:.0%}")
         self._log("")
 
-        # Run export in background
-        QtCore.QTimer.singleShot(100, lambda: self._run_export(
-            source, recursive, fmt, config
-        ))
+        # Start worker thread
+        self._worker = ExportWorker(source, recursive, fmt, config)
+        self._worker.progress.connect(self.progress_bar.setValue)
+        self._worker.log_message.connect(self._log)
+        self._worker.finished.connect(self._on_export_finished)
+        self._worker.start()
 
-    def _run_export(
-        self,
-        source: Path,
-        recursive: bool,
-        fmt: str,
-        config: Dict[str, Any],
-    ) -> None:
-        try:
-            output_dir = Path(config["output_dir"])
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            if fmt == "yolo":
-                self._export_yolo(source, output_dir, config)
-            elif fmt == "coco":
-                self._export_coco(source, output_dir, config)
-            elif fmt == "jsonl":
-                self._export_jsonl(source, output_dir, config, recursive)
-
+    def _on_export_finished(self, success: bool, message: str) -> None:
+        if success:
             self._on_export_complete()
-
-        except Exception as e:
-            self._log(f"\n❌ Error: {e}")
-            self.status_label.setText(f"Export failed: {e}")
+        else:
+            self._log(f"\n❌ {message}")
+            self.status_label.setText(f"Export failed: {message}")
             self.status_label.setStyleSheet("color: red;")
 
+    def _on_export_complete(self) -> None:
+        self._export_complete = True
+        self.status_label.setText("✓ Export completed successfully!")
+        self.status_label.setStyleSheet("color: green; font-weight: bold;")
+
+        wizard = self.wizard()
+        if isinstance(wizard, DatasetExportWizard):
+            fmt = wizard.select_format_page.get_format()
+            config = wizard.configure_split_page.get_config()
+
+            self.result_format.setText(fmt.upper())
+            self.result_train.setText(f"{config['train_split']:.0%}")
+            self.result_val.setText(f"{config['val_split']:.0%}")
+            self.result_test.setText(f"{config['test_split']:.0%}")
+            self.result_output.setText(str(self._output_path))
+
+            # Verify files were created
+            if self._output_path and self._output_path.exists():
+                files = list(self._output_path.rglob("*"))
+                if files:
+                    self._log(
+                        f"✓ Created {len(files)} files/folders in output directory")
+                else:
+                    self._log("⚠ Warning: Output directory is empty")
+            else:
+                self._log("⚠ Warning: Output directory does not exist")
+
+        self.results_group.setVisible(True)
+        self.open_folder_btn.setVisible(True)
+        self.completeChanged.emit()
+
+    def _log(self, message: str) -> None:
+        self.log_text.append(message)
+        self.log_text.verticalScrollBar().setValue(
+            self.log_text.verticalScrollBar().maximum()
+        )
+
+    def _open_output_folder(self) -> None:
+        if self._output_path and self._output_path.exists():
+            import subprocess
+            import sys
+
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(self._output_path)])
+            elif sys.platform == "win32":
+                os.startfile(str(self._output_path))
+            else:
+                subprocess.run(["xdg-open", str(self._output_path)])
+
+    def isComplete(self) -> bool:
+        return self._export_complete
+
+
+class ExportWorker(QtCore.QThread):
+    """Worker thread for running dataset export in background."""
+
+    progress = QtCore.Signal(int)
+    log_message = QtCore.Signal(str)
+    finished = QtCore.Signal(bool, str)  # success, message
+
+    def __init__(self, source: Path, recursive: bool, fmt: str, config: Dict[str, Any]):
+        super().__init__()
+        self.source = source
+        self.recursive = recursive
+        self.fmt = fmt
+        self.config = config
+
+    def run(self) -> None:
+        try:
+            output_dir = Path(self.config["output_dir"]).expanduser().resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self.log_message.emit(f"Created output directory: {output_dir}")
+
+            if self.fmt == "yolo":
+                self._export_yolo(self.source, output_dir, self.config)
+            elif self.fmt == "coco":
+                self._export_coco(self.source, output_dir, self.config)
+            elif self.fmt == "jsonl":
+                self._export_jsonl(self.source, output_dir,
+                                   self.config, self.recursive)
+
+            self.finished.emit(True, "Export completed successfully")
+
+        except Exception as e:
+            import traceback
+            error_msg = f"Export failed: {e}\n{traceback.format_exc()}"
+            self.finished.emit(False, error_msg)
+
     def _export_yolo(self, source: Path, output: Path, config: Dict[str, Any]) -> None:
-        self._log("Converting to YOLO format...")
-        self.progress_bar.setValue(20)
-        QtWidgets.QApplication.processEvents()
+        self.log_message.emit("Converting to YOLO format...")
+        self.progress.emit(20)
 
         try:
             from annolid.annotation.labelme2yolo import Labelme2YOLO
+
+            # Check for JSON files before conversion
+            json_files = list(source.glob("*.json"))
+            if not json_files:
+                self.log_message.emit(f"No JSON files found in {source}")
+                self.progress.emit(100)
+                return
+
+            self.log_message.emit(
+                f"Found {len(json_files)} JSON files to convert")
 
             converter = Labelme2YOLO(
                 str(source),
@@ -628,27 +813,89 @@ class ExportProgressPage(QtWidgets.QWizardPage):
                 include_visibility=config.get("include_visibility", True),
             )
 
-            self.progress_bar.setValue(50)
-            self._log("Converting annotations...")
-            QtWidgets.QApplication.processEvents()
+            self.progress.emit(50)
+            self.log_message.emit("Converting annotations...")
 
+            # Convert in source directory first
             converter.convert(
                 val_size=config["val_split"],
                 test_size=config["test_split"],
             )
 
-            self.progress_bar.setValue(100)
-            self._log("✓ YOLO dataset created successfully")
+            # Check what was created in the source directory
+            source_files = list(source.glob("*"))
+            self.log_message.emit(
+                f"Files created in source: {[f.name for f in source_files]}")
+
+            # Copy generated YOLO dataset to output directory
+            # Labelme2YOLO creates a 'YOLO_dataset' folder in the source directory
+            yolo_source = source / "YOLO_dataset"
+            if yolo_source.exists() and yolo_source.is_dir():
+                import shutil
+                yolo_output = output / "YOLO_dataset"
+                if yolo_output.exists():
+                    shutil.rmtree(yolo_output)
+                shutil.copytree(str(yolo_source), str(yolo_output))
+                self.log_message.emit(f"Copied YOLO dataset to: {yolo_output}")
+
+                # Fix the data.yaml path since we moved the dataset
+                data_yaml_path = yolo_output / "data.yaml"
+                if data_yaml_path.exists():
+                    # Update the path to be relative to the YOLO_dataset folder
+                    with open(data_yaml_path, 'r') as f:
+                        content = f.read()
+                    # Replace the path line
+                    import re
+                    content = re.sub(r'^path:.*$', 'path: .',
+                                     content, flags=re.MULTILINE)
+                    with open(data_yaml_path, 'w') as f:
+                        f.write(content)
+                    self.log_message.emit(
+                        "Updated data.yaml path to current directory")
+
+                # Count files copied
+                files = list(yolo_output.rglob("*"))
+                self.log_message.emit(
+                    f"Copied {len([f for f in files if f.is_file()])} files")
+
+                # Clean up the YOLO_dataset folder from source directory
+                try:
+                    shutil.rmtree(str(yolo_source))
+                    self.log_message.emit(
+                        "Cleaned up temporary files from source directory")
+                except Exception as e:
+                    self.log_message.emit(
+                        f"Warning: Could not clean up source directory: {e}")
+            else:
+                self.log_message.emit(
+                    f"Warning: YOLO_dataset folder not found in source directory {source}")
+                # Try to find any YOLO-related folders
+                yolo_folders = [f for f in source_files if "yolo" in f.name.lower(
+                ) or "dataset" in f.name.lower()]
+                if yolo_folders:
+                    self.log_message.emit(
+                        f"Found potential YOLO folders: {[f.name for f in yolo_folders]}")
+                else:
+                    self.log_message.emit(
+                        "No YOLO dataset folders found. The conversion may have failed due to:")
+                    self.log_message.emit(
+                        "  - No valid LabelMe JSON files with image references")
+                    self.log_message.emit(
+                        "  - JSON files without shape annotations")
+                    self.log_message.emit("  - Missing or invalid image files")
+                    self.progress.emit(100)
+
+            self.progress.emit(100)
+            self.log_message.emit("✓ YOLO dataset created successfully")
 
         except ImportError:
-            self._log("Using fallback YOLO export...")
-            self.progress_bar.setValue(100)
-            self._log("✓ Export complete (fallback mode)")
+            self.log_message.emit("Using fallback YOLO export...")
+            self.progress.emit(100)
+            self.log_message.emit("✓ Export complete (fallback mode)")
 
     def _export_coco(self, source: Path, output: Path, config: Dict[str, Any]) -> None:
-        self._log("Converting to COCO format...")
-        self.progress_bar.setValue(20)
-        QtWidgets.QApplication.processEvents()
+        self.log_message.emit("Converting to COCO format...")
+        self.progress.emit(20)
 
         try:
             from annolid.annotation import labelme2coco
@@ -656,30 +903,37 @@ class ExportProgressPage(QtWidgets.QWizardPage):
             labels_file = config.get("labels_file")
             train_count = int(100 * config["train_split"])  # Simplified
 
-            self.progress_bar.setValue(50)
-            self._log("Creating COCO annotations...")
-            QtWidgets.QApplication.processEvents()
+            self.progress.emit(50)
+            self.log_message.emit("Creating COCO annotations...")
 
             labelme2coco.convert(
                 str(source),
                 str(output),
                 labels_file=labels_file,
-                num_train_frames=train_count,
+                # Convert to train/total ratio
+                train_valid_split=config["train_split"] /
+                (config["train_split"] + config["val_split"]),
             )
 
-            self.progress_bar.setValue(100)
-            self._log("✓ COCO dataset created successfully")
+            # Check if files were created
+            coco_files = list(output.glob("*.json"))
+            if coco_files:
+                self.log_message.emit(
+                    f"Created COCO files: {[f.name for f in coco_files]}")
+            else:
+                self.log_message.emit(
+                    "Warning: No COCO files found in output directory")
+
+            self.progress.emit(100)
+            self.log_message.emit("✓ COCO dataset created successfully")
 
         except Exception as e:
-            self._log(f"COCO export: {e}")
-            self.progress_bar.setValue(100)
+            self.log_message.emit(f"COCO export error: {e}")
+            self.progress.emit(100)
 
-    def _export_jsonl(
-        self, source: Path, output: Path, config: Dict[str, Any], recursive: bool
-    ) -> None:
-        self._log("Creating JSONL dataset index...")
-        self.progress_bar.setValue(20)
-        QtWidgets.QApplication.processEvents()
+    def _export_jsonl(self, source: Path, output: Path, config: Dict[str, Any], recursive: bool) -> None:
+        self.log_message.emit("Creating JSONL dataset index...")
+        self.progress.emit(20)
 
         try:
             from annolid.datasets.labelme_collection import (
@@ -715,58 +969,23 @@ class ExportProgressPage(QtWidgets.QWizardPage):
 
                 if total > 0:
                     pct = int((i + 1) / total * 80) + 20
-                    self.progress_bar.setValue(pct)
+                    self.progress.emit(pct)
                     if i % 50 == 0:
-                        self._log(f"Indexed {i + 1}/{total} files...")
-                        QtWidgets.QApplication.processEvents()
+                        self.log_message.emit(
+                            f"Indexed {i + 1}/{total} files...")
 
-            self.progress_bar.setValue(100)
-            self._log(f"✓ Indexed {indexed} annotations to {index_file.name}")
+            self.progress.emit(100)
+            self.log_message.emit(
+                f"✓ Indexed {indexed} annotations to {index_file.name}")
+            if index_file.exists():
+                self.log_message.emit(
+                    f"Index file size: {index_file.stat().st_size} bytes")
+            else:
+                self.log_message.emit("Warning: Index file was not created")
 
         except Exception as e:
-            self._log(f"JSONL export: {e}")
-            self.progress_bar.setValue(100)
-
-    def _on_export_complete(self) -> None:
-        self._export_complete = True
-        self.status_label.setText("✓ Export completed successfully!")
-        self.status_label.setStyleSheet("color: green; font-weight: bold;")
-
-        wizard = self.wizard()
-        if isinstance(wizard, DatasetExportWizard):
-            fmt = wizard.select_format_page.get_format()
-            config = wizard.configure_split_page.get_config()
-
-            self.result_format.setText(fmt.upper())
-            self.result_train.setText(f"{config['train_split']:.0%}")
-            self.result_val.setText(f"{config['val_split']:.0%}")
-            self.result_test.setText(f"{config['test_split']:.0%}")
-            self.result_output.setText(str(self._output_path))
-
-        self.results_group.setVisible(True)
-        self.open_folder_btn.setVisible(True)
-        self.completeChanged.emit()
-
-    def _log(self, message: str) -> None:
-        self.log_text.append(message)
-        self.log_text.verticalScrollBar().setValue(
-            self.log_text.verticalScrollBar().maximum()
-        )
-
-    def _open_output_folder(self) -> None:
-        if self._output_path and self._output_path.exists():
-            import subprocess
-            import sys
-
-            if sys.platform == "darwin":
-                subprocess.run(["open", str(self._output_path)])
-            elif sys.platform == "win32":
-                os.startfile(str(self._output_path))
-            else:
-                subprocess.run(["xdg-open", str(self._output_path)])
-
-    def isComplete(self) -> bool:
-        return self._export_complete
+            self.log_message.emit(f"JSONL export: {e}")
+            self.progress.emit(100)
 
 
 class DatasetExportWizard(QtWidgets.QWizard):

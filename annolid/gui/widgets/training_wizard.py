@@ -398,13 +398,38 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
     def _open_dataset_wizard(self) -> None:
         from annolid.gui.widgets.dataset_wizard import DatasetExportWizard
         wizard = DatasetExportWizard(parent=self)
-        if wizard.exec_() == QtWidgets.QDialog.Accepted:
-            if getattr(wizard.export_progress_page, "_output_path", None):
-                outp = wizard.export_progress_page._output_path
-                data_yaml = Path(outp) / "data.yaml"
+
+        # Connect to the export complete signal
+        wizard.export_complete.connect(self._on_dataset_export_complete)
+
+        wizard.exec_()
+
+    def _on_dataset_export_complete(self, output_path: Path, format_type: str) -> None:
+        """Handle dataset export completion by updating the training wizard."""
+        self.source_tabs.setCurrentIndex(0)  # Switch to dataset tab
+
+        if format_type == "yolo":
+            # Look for data.yaml in YOLO_dataset folder
+            data_yaml = output_path / "YOLO_dataset" / "data.yaml"
+            if data_yaml.exists():
+                self.yolo_picker.setPath(str(data_yaml))
+            else:
+                # Fallback: look for data.yaml directly in output
+                data_yaml = output_path / "data.yaml"
                 if data_yaml.exists():
-                    self.source_tabs.setCurrentIndex(0)
                     self.yolo_picker.setPath(str(data_yaml))
+
+        elif format_type == "coco":
+            # For COCO, set the path to the output directory
+            self.yolo_picker.setPath(str(output_path))
+
+        elif format_type == "jsonl":
+            # Look for dataset_index.jsonl
+            index_file = output_path / "dataset_index.jsonl"
+            if index_file.exists():
+                self.yolo_picker.setPath(str(index_file))
+            else:
+                self.yolo_picker.setPath(str(output_path))
 
     def isComplete(self) -> bool:
         p = self.get_dataset_path().strip()
