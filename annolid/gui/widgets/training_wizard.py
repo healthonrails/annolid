@@ -139,12 +139,15 @@ class PathPicker(QtWidgets.QWidget):
         if obj is self.edit:
             if event.type() == QtCore.QEvent.DragEnter:
                 if event.mimeData().hasUrls():
-                    event.acceptProposedAction()
+                    event.setDropAction(QtCore.Qt.CopyAction)
+                    event.accept()
                     return True
             if event.type() == QtCore.QEvent.Drop:
                 urls = event.mimeData().urls()
                 if urls:
                     self.setPath(urls[0].toLocalFile())
+                event.setDropAction(QtCore.Qt.CopyAction)
+                event.accept()
                 return True
         return super().eventFilter(obj, event)
 
