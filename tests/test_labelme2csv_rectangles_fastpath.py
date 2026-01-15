@@ -6,7 +6,7 @@ from pathlib import Path
 from annolid.annotation.labelme2csv import convert_json_to_csv
 
 
-def test_convert_json_to_csv_emits_rectangle_instances_and_skips_yolo_keypoints(tmp_path: Path) -> None:
+def test_convert_json_to_csv_emits_rectangle_instances_and_keypoints(tmp_path: Path) -> None:
     folder = tmp_path / "video"
     folder.mkdir()
 
@@ -30,7 +30,7 @@ def test_convert_json_to_csv_emits_rectangle_instances_and_skips_yolo_keypoints(
                 '      "instance_label": "resident",',
                 '      "score": 0.9',
                 "    },",
-                # YOLO keypoint (should be skipped when rectangles exist)
+                # YOLO keypoint (emitted as a point row alongside rectangles)
                 '    {',
                 '      "label": "nose",',
                 '      "shape_type": "point",',
@@ -55,10 +55,13 @@ def test_convert_json_to_csv_emits_rectangle_instances_and_skips_yolo_keypoints(
     with out_csv.open("r", newline="", encoding="utf-8") as fh:
         rows = list(csv.reader(fh))
 
-    # Header + 1 rectangle row; keypoint rows should be skipped.
-    assert len(rows) == 2
-    header, row = rows
+    # Header + 1 rectangle row + 1 keypoint row.
+    assert len(rows) == 3
+    header, rect_row, keypoint_row = rows
     assert header[:3] == ["frame_number", "x1", "y1"]
-    assert row[0] == "0"
-    assert row[7] == "resident"
-    assert float(row[8]) == 0.9
+    assert rect_row[0] == "0"
+    assert rect_row[7] == "resident"
+    assert float(rect_row[8]) == 0.9
+    assert keypoint_row[0] == "0"
+    assert keypoint_row[7] == "resident:nose"
+    assert float(keypoint_row[1]) == 20.0
