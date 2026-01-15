@@ -7,7 +7,6 @@ import argparse
 from labelme.utils import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
-from annolid.annotation.keypoints import keypoint_to_polygon_points
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.utils.annotation_store import (
     AnnotationStore,
@@ -123,14 +122,22 @@ def convert_json_to_csv(json_folder,
                 return int(raw)
         return 0
 
-    def _shape_instance_name(shape):
-        name = shape.get("instance_label") or shape.get("instance_name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
+    def _shape_instance_name(shape, *, shape_type: str):
         label = shape.get("label")
-        if isinstance(label, str) and label.strip():
-            return label.strip()
-        return ""
+        instance_label = shape.get(
+            "instance_label") or shape.get("instance_name")
+        label_text = label.strip() if isinstance(label, str) and label.strip() else ""
+        instance_text = instance_label.strip() if isinstance(
+            instance_label, str) and instance_label.strip() else ""
+        if shape_type == "point":
+            if instance_text and label_text:
+                return f"{instance_text}:{label_text}"
+            if not instance_text and label_text:
+                group_id = shape.get("group_id")
+                if group_id not in (None, ""):
+                    return f"{group_id}:{label_text}"
+            return label_text or instance_text
+        return instance_text or label_text
 
     def _shape_score(shape):
         for key in ("score", "class_score", "confidence"):
@@ -246,17 +253,12 @@ def convert_json_to_csv(json_folder,
                     timestamp_value = convert_frame_number_to_time(
                         frame_number, fps_value)
 
-                has_rectangles = any(
-                    isinstance(s, dict) and (s.get("shape_type")
-                                             or "").lower() == "rectangle"
-                    for s in shapes
-                )
-
                 for shape in shapes:
                     if not isinstance(shape, dict):
                         continue
                     shape_type = (shape.get('shape_type') or '').lower()
-                    instance_name = _shape_instance_name(shape)
+                    instance_name = _shape_instance_name(
+                        shape, shape_type=shape_type)
                     points = shape.get("points") or []
                     if shape_type == "rectangle":
                         if len(points) < 2:
@@ -308,18 +310,56 @@ def convert_json_to_csv(json_folder,
                         continue
 
                     if shape_type == 'point':
-                        # YOLO pose exports can contain many per-animal keypoints; if rectangle detections
-                        # are present, treat rectangles as the tracked instances and skip per-keypoint points.
-                        if has_rectangles and (shape.get("description") or "").lower() == "yolo":
+                        if not points:
                             continue
-                        points = keypoint_to_polygon_points(points)
-                        shape_type = 'polygon'
+                        point = points[0]
+                        if (
+                            not isinstance(point, (list, tuple))
+                            or len(point) < 2
+                        ):
+                            continue
+                        x = float(point[0])
+                        y = float(point[1])
+                        class_score = _shape_score(shape)
+                        tracking_id = _normalize_tracking_id(
+                            shape.get("group_id"))
+                        csv_writer.writerow(
+                            [frame_number, x, y, x, y, x, y,
+                                instance_name, class_score,
+                                "", tracking_id]
+                        )
+                        if tracked_writer is not None and instance_name:
+                            motion_index = shape.get("motion_index")
+                            if motion_index is None:
+                                description = shape.get(
+                                    "description") or ""
+                                match = re.search(
+                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description)
+                                if match:
+                                    try:
+                                        motion_index = float(
+                                            match.group(1))
+                                    except ValueError:
+                                        motion_index = None
+                            try:
+                                motion_index = float(
+                                    motion_index) if motion_index is not None else -1
+                            except (TypeError, ValueError):
+                                motion_index = -1
+                            key = (frame_number, instance_name)
+                            if key not in tracked_seen:
+                                tracked_seen.add(key)
+                                tracked_writer.writerow(
+                                    [frame_number, instance_name, x, y, motion_index, timestamp_value])
+                        continue
 
                     if len(points) > 2:
                         mask = convert_shape_to_mask(img_shape, points)
                         bboxs = masks_to_bboxes(mask[None, :, :])
                         segmentation = binary_mask_to_coco_rle(mask)
                         class_score = _shape_score(shape)
+                        tracking_id = _normalize_tracking_id(
+                            shape.get("group_id"))
 
                         if len(bboxs) > 0:
                             cx, cy = polygon_center(points)
@@ -327,7 +367,7 @@ def convert_json_to_csv(json_folder,
                             csv_writer.writerow(
                                 [frame_number, x1, y1, x2, y2, cx, cy,
                                     instance_name, class_score,
-                                    segmentation, 0])
+                                    segmentation, tracking_id])
                             if tracked_writer is not None and instance_name:
                                 motion_index = shape.get("motion_index")
                                 if motion_index is None:

@@ -248,6 +248,10 @@ class AnnolidWindow(MainWindow):
         self.settings = QtCore.QSettings("Annolid", 'Annolid')
         self._show_pose_edges = self.settings.value(
             "pose/show_edges", True, type=bool)
+        self._show_pose_bboxes = self.settings.value(
+            "pose/show_bbox", True, type=bool)
+        self._save_pose_bbox = self.settings.value(
+            "pose/save_bbox", True, type=bool)
         self._df = None
         self._df_deeplabcut = None
         self._df_deeplabcut_scorer = None
@@ -334,6 +338,10 @@ class AnnolidWindow(MainWindow):
         )
         try:
             self.canvas.setShowPoseEdges(self._show_pose_edges)
+        except Exception:
+            pass
+        try:
+            self.canvas.setShowPoseBBoxes(self._show_pose_bboxes)
         except Exception:
             pass
         self._viewer_stack = QtWidgets.QStackedWidget()
@@ -2624,6 +2632,7 @@ class AnnolidWindow(MainWindow):
                     end_frame=inference_end_frame,
                     step=int(inference_step),
                     skip_existing=True,
+                    save_pose_bbox=self._save_pose_bbox,
                 )
                 watch_start_frame = int(inference_start_frame)
             elif self._is_yolo_model(model_name, model_weight):
@@ -2636,6 +2645,7 @@ class AnnolidWindow(MainWindow):
                     end_frame=inference_end_frame,
                     step=int(inference_step),
                     skip_existing=True,
+                    save_pose_bbox=self._save_pose_bbox,
                 )
                 watch_start_frame = int(inference_start_frame)
             else:
@@ -5137,6 +5147,26 @@ class AnnolidWindow(MainWindow):
             pass
         try:
             self.canvas.setShowPoseEdges(self._show_pose_edges)
+        except Exception:
+            pass
+
+    def toggle_pose_bbox_display(self, checked: bool = False) -> None:
+        """Toggle pose bounding box visibility on the canvas."""
+        self._show_pose_bboxes = bool(checked)
+        try:
+            self.settings.setValue("pose/show_bbox", self._show_pose_bboxes)
+        except Exception:
+            pass
+        try:
+            self.canvas.setShowPoseBBoxes(self._show_pose_bboxes)
+        except Exception:
+            pass
+
+    def toggle_pose_bbox_saving(self, checked: bool = False) -> None:
+        """Toggle saving pose bounding boxes for YOLO pose inference."""
+        self._save_pose_bbox = bool(checked)
+        try:
+            self.settings.setValue("pose/save_bbox", self._save_pose_bbox)
         except Exception:
             pass
 

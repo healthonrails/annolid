@@ -159,6 +159,7 @@ class Canvas(QtWidgets.QWidget):
         # Pose skeleton overlay (optional)
         self._pose_schema: PoseSchema | None = None
         self._show_pose_edges: bool = False
+        self._show_pose_bboxes: bool = True
         self._pose_edge_color = QtGui.QColor(0, 255, 255, 190)
         self._pose_edge_shadow = QtGui.QColor(0, 0, 0, 160)
 
@@ -190,6 +191,24 @@ class Canvas(QtWidgets.QWidget):
 
     def showPoseEdges(self) -> bool:
         return bool(self._show_pose_edges)
+
+    def setShowPoseBBoxes(self, enabled: bool) -> None:
+        self._show_pose_bboxes = bool(enabled)
+        self.update()
+
+    def showPoseBBoxes(self) -> bool:
+        return bool(self._show_pose_bboxes)
+
+    @staticmethod
+    def _is_pose_bbox_shape(shape) -> bool:
+        if str(getattr(shape, "shape_type", "")).lower() != "rectangle":
+            return False
+        other = getattr(shape, "other_data", None)
+        if not isinstance(other, dict):
+            return False
+        if other.get("instance_id") is None:
+            return False
+        return True
 
     def _infer_pose_instance_label(self, shape, candidate_labels, default_label: str = "object") -> str:
         flags = getattr(shape, "flags", None)
@@ -809,6 +828,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         self.restoreCursor()
 
     def isVisible(self, shape):
+        if not self._show_pose_bboxes and self._is_pose_bbox_shape(shape):
+            return False
         return self.visible.get(shape, True)
 
     def drawing(self):

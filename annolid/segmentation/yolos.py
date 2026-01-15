@@ -341,6 +341,16 @@ class InferenceProcessor:
 
         return True
 
+    @staticmethod
+    def _should_save_pose_bbox(
+        has_keypoints: bool, save_pose_bbox: Optional[bool]
+    ) -> bool:
+        if not has_keypoints:
+            return False
+        if save_pose_bbox is None:
+            return True
+        return bool(save_pose_bbox)
+
     def run_inference(
         self,
         source: str,
@@ -356,6 +366,7 @@ class InferenceProcessor:
         progress_callback=None,
         enable_tracking: bool = True,
         tracker: Optional[str] = None,
+        save_pose_bbox: Optional[bool] = None,
     ) -> str:
         """
         Runs inference on the given video source and saves the results as LabelMe JSON files.
@@ -452,6 +463,7 @@ class InferenceProcessor:
                 progress_callback=progress_callback,
                 enable_tracking=enable_tracking,
                 tracker=tracker,
+                save_pose_bbox=save_pose_bbox,
             )
 
         # Use visual prompts if supported by the model (YOLOE)
@@ -509,10 +521,12 @@ class InferenceProcessor:
                 if result.boxes and len(result.boxes) > 0:
                     frame_shape = (
                         result.orig_shape[0], result.orig_shape[1], 3)
+                    has_keypoints = getattr(
+                        result, "keypoints", None) is not None
                     annotations = self.extract_yolo_results(
                         result,
-                        save_bbox=bool(
-                            getattr(result, "keypoints", None) is not None),
+                        save_bbox=self._should_save_pose_bbox(
+                            has_keypoints, save_pose_bbox),
                     )
                     self.save_yolo_to_labelme(
                         annotations, frame_shape, output_directory)
@@ -682,6 +696,7 @@ class InferenceProcessor:
         progress_callback=None,
         enable_tracking: bool = True,
         tracker: Optional[str] = None,
+        save_pose_bbox: Optional[bool] = None,
     ) -> str:
         import cv2
 
@@ -799,10 +814,12 @@ class InferenceProcessor:
                                 else:
                                     raise
                     if isinstance(results, (list, tuple)) and results:
+                        has_keypoints = getattr(
+                            results[0], "keypoints", None) is not None
                         annotations = self.extract_yolo_results(
                             results[0],
-                            save_bbox=bool(
-                                getattr(results[0], "keypoints", None) is not None),
+                            save_bbox=self._should_save_pose_bbox(
+                                has_keypoints, save_pose_bbox),
                         )
                 except Exception as exc:
                     logger.error("YOLO inference failed at frame %s: %s",

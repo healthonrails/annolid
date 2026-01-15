@@ -429,6 +429,8 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
             "Set the inference parameters for running the model on your videos."
         )
 
+        self._settings = QtCore.QSettings("Annolid", "Annolid")
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(16)
 
@@ -498,6 +500,29 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         output_layout.addRow("", self.save_labelme_check)
 
         layout.addWidget(output_group)
+
+        pose_group = QtWidgets.QGroupBox("Pose Settings")
+        pose_layout = QtWidgets.QFormLayout(pose_group)
+
+        self.save_pose_bbox_check = QtWidgets.QCheckBox(
+            "Save pose bounding boxes (YOLO pose)")
+        self.save_pose_bbox_check.setChecked(
+            self._settings.value("pose/save_bbox", True, type=bool)
+        )
+        self.save_pose_bbox_check.toggled.connect(
+            self._persist_pose_bbox_setting)
+        pose_layout.addRow("", self.save_pose_bbox_check)
+
+        self.show_pose_edges_check = QtWidgets.QCheckBox(
+            "Show pose skeleton (edges)")
+        self.show_pose_edges_check.setChecked(
+            self._settings.value("pose/show_edges", True, type=bool)
+        )
+        self.show_pose_edges_check.toggled.connect(
+            self._toggle_pose_edges_setting)
+        pose_layout.addRow("", self.show_pose_edges_check)
+
+        layout.addWidget(pose_group)
         layout.addStretch()
 
     def _browse_output(self) -> None:
@@ -506,6 +531,54 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         )
         if folder:
             self.output_dir_edit.setText(folder)
+
+    def _persist_pose_bbox_setting(self, checked: bool) -> None:
+        try:
+            self._settings.setValue("pose/save_bbox", bool(checked))
+        except Exception:
+            pass
+
+        wizard = self.wizard()
+        parent = wizard.parent() if wizard is not None else None
+        try:
+            menu_controller = getattr(parent, "menu_controller", None)
+            actions = getattr(menu_controller, "_actions", None)
+            if isinstance(actions, dict):
+                action = actions.get("toggle_pose_bbox_save")
+                if isinstance(action, QtWidgets.QAction):
+                    if action.isChecked() != bool(checked):
+                        action.blockSignals(True)
+                        action.setChecked(bool(checked))
+                        action.blockSignals(False)
+        except Exception:
+            pass
+
+    def _toggle_pose_edges_setting(self, checked: bool) -> None:
+        try:
+            self._settings.setValue("pose/show_edges", bool(checked))
+        except Exception:
+            pass
+
+        wizard = self.wizard()
+        parent = wizard.parent() if wizard is not None else None
+        if parent is not None and hasattr(parent, "toggle_pose_edges_display"):
+            try:
+                parent.toggle_pose_edges_display(bool(checked))
+            except Exception:
+                pass
+
+        try:
+            menu_controller = getattr(parent, "menu_controller", None)
+            actions = getattr(menu_controller, "_actions", None)
+            if isinstance(actions, dict):
+                action = actions.get("toggle_pose_edges")
+                if isinstance(action, QtWidgets.QAction):
+                    if action.isChecked() != bool(checked):
+                        action.blockSignals(True)
+                        action.setChecked(bool(checked))
+                        action.blockSignals(False)
+        except Exception:
+            pass
 
     def get_config(self) -> Dict[str, Any]:
         return {
@@ -517,6 +590,7 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
             "save_video": self.save_video_check.isChecked(),
             "save_csv": self.save_csv_check.isChecked(),
             "save_labelme": self.save_labelme_check.isChecked(),
+            "save_pose_bbox": self.save_pose_bbox_check.isChecked(),
         }
 
 
@@ -748,6 +822,7 @@ class InferenceWorker(QtCore.QObject):
             progress_callback=progress_callback,
             enable_tracking=bool(self._config.get("enable_tracking", True)),
             tracker=tracker,
+            save_pose_bbox=self._config.get("save_pose_bbox"),
         )
 
         frame_count = self._parse_frame_count(message)

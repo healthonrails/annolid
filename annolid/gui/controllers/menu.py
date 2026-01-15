@@ -346,6 +346,22 @@ class MenuController:
                 "checked": bool(getattr(w, "_show_pose_edges", False)),
             },
             {
+                "name": "toggle_pose_bbox_display",
+                "text": w.tr("Show Pose &BBoxes"),
+                "slot": w.toggle_pose_bbox_display,
+                "tip": w.tr("Show/hide pose bounding boxes on the canvas"),
+                "checkable": True,
+                "checked": bool(getattr(w, "_show_pose_bboxes", True)),
+            },
+            {
+                "name": "toggle_pose_bbox_save",
+                "text": w.tr("Save Pose &BBoxes"),
+                "slot": w.toggle_pose_bbox_saving,
+                "tip": w.tr("Save pose bounding boxes for YOLO pose inference"),
+                "checkable": True,
+                "checked": bool(getattr(w, "_save_pose_bbox", True)),
+            },
+            {
                 "name": "video_depth_anything",
                 "text": w.tr("Video Depth Anything..."),
                 "slot": w.run_video_depth_anything,
@@ -667,6 +683,7 @@ class MenuController:
         view_sections = [
             (
                 actions["toggle_pose_edges"],
+                actions["toggle_pose_bbox_display"],
                 w.patch_similarity_action,
                 w.pca_map_action,
             ),
@@ -707,6 +724,9 @@ class MenuController:
                 actions["advance_params"],
                 actions["project_schema"],
                 actions["pose_schema"],
+            ),
+            (
+                actions["toggle_pose_bbox_save"],
             ),
             (
                 actions["optical_flow_settings"],
