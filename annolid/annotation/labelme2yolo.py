@@ -14,6 +14,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 from random import Random
 from collections import OrderedDict, defaultdict
 from labelme.utils.image import img_b64_to_arr
+
 try:
     from sklearn.model_selection import train_test_split
 except ImportError:  # pragma: no cover - optional dependency
@@ -116,14 +117,15 @@ class Labelme2YOLO:
 
     """
 
-    def __init__(self,
-                 json_dir,
-                 yolo_dataset_name="YOLO_dataset",
-                 include_visibility=False,
-                 pose_schema_path: Optional[str] = None,
-                 recursive: bool = True,
-                 **_ignored_kwargs,
-                 ):
+    def __init__(
+        self,
+        json_dir,
+        yolo_dataset_name="YOLO_dataset",
+        include_visibility=False,
+        pose_schema_path: Optional[str] = None,
+        recursive: bool = True,
+        **_ignored_kwargs,
+    ):
         self.json_file_dir = json_dir
         self.recursive = bool(recursive)
         labels, keypoints = self._scan_labels_and_keypoints(self.json_file_dir)
@@ -154,8 +156,9 @@ class Labelme2YOLO:
 
         if self.pose_schema is None:
             try:
-                project_path = Path(
-                    self.json_file_dir).expanduser() / DEFAULT_SCHEMA_FILENAME
+                project_path = (
+                    Path(self.json_file_dir).expanduser() / DEFAULT_SCHEMA_FILENAME
+                )
                 if project_path.exists():
                     project_schema = load_project_schema(project_path)
                     embedded = getattr(project_schema, "pose_schema", None)
@@ -201,7 +204,7 @@ class Labelme2YOLO:
 
     def create_yolo_dataset_dirs(self):
         """
-        Create necessary directories for YOLO dataset and delete 
+        Create necessary directories for YOLO dataset and delete
         any existing directories with the same name.
 
         Args:
@@ -213,18 +216,20 @@ class Labelme2YOLO:
 
         # Define label and image directory paths
         self.label_folder = os.path.join(
-            self.json_file_dir, f'{self.yolo_dataset_name}/labels/')
+            self.json_file_dir, f"{self.yolo_dataset_name}/labels/"
+        )
         self.image_folder = os.path.join(
-            self.json_file_dir, f'{self.yolo_dataset_name}/images/')
+            self.json_file_dir, f"{self.yolo_dataset_name}/images/"
+        )
 
         # Define YOLO paths for train, validation, and test directories for both images and labels
         yolo_paths = [
-            os.path.join(self.label_folder, 'train'),
-            os.path.join(self.label_folder, 'val'),
-            os.path.join(self.label_folder, 'test'),
-            os.path.join(self.image_folder, 'train'),
-            os.path.join(self.image_folder, 'val'),
-            os.path.join(self.image_folder, 'test')
+            os.path.join(self.label_folder, "train"),
+            os.path.join(self.label_folder, "val"),
+            os.path.join(self.label_folder, "test"),
+            os.path.join(self.image_folder, "train"),
+            os.path.join(self.image_folder, "val"),
+            os.path.join(self.image_folder, "test"),
         ]
 
         # Delete existing directories and create new ones
@@ -249,22 +254,33 @@ class Labelme2YOLO:
             ValueError: When the folders are specified, but one or more of train, val,
               or test data directories are missing.
         """
-        if len(folders) > 0 and 'train' in folders and 'val' in folders and 'test' in folders:
+        if (
+            len(folders) > 0
+            and "train" in folders
+            and "val" in folders
+            and "test" in folders
+        ):
             # If the directories are specified, get the file names from them.
-            train_folder = os.path.join(self.json_file_dir, 'train/')
-            train_jsons = [train_name + '.json'
-                           for train_name in os.listdir(train_folder)
-                           if os.path.isdir(os.path.join(train_folder, train_name))]
+            train_folder = os.path.join(self.json_file_dir, "train/")
+            train_jsons = [
+                train_name + ".json"
+                for train_name in os.listdir(train_folder)
+                if os.path.isdir(os.path.join(train_folder, train_name))
+            ]
 
-            val_folder = os.path.join(self.json_file_dir, 'val/')
-            val_jsons = [val_name + '.json'
-                         for val_name in os.listdir(val_folder)
-                         if os.path.isdir(os.path.join(val_folder, val_name))]
+            val_folder = os.path.join(self.json_file_dir, "val/")
+            val_jsons = [
+                val_name + ".json"
+                for val_name in os.listdir(val_folder)
+                if os.path.isdir(os.path.join(val_folder, val_name))
+            ]
 
-            test_folder = os.path.join(self.json_file_dir, 'test/')
-            test_jsons = [test_name + '.json'
-                          for test_name in os.listdir(test_folder)
-                          if os.path.isdir(os.path.join(test_folder, test_name))]
+            test_folder = os.path.join(self.json_file_dir, "test/")
+            test_jsons = [
+                test_name + ".json"
+                for test_name in os.listdir(test_folder)
+                if os.path.isdir(os.path.join(test_folder, test_name))
+            ]
 
             return train_jsons, val_jsons, test_jsons
 
@@ -283,7 +299,10 @@ class Labelme2YOLO:
         if train_test_split is not None:
             try:
                 train_idxs, val_idxs = train_test_split(
-                    range(len(json_names)), test_size=val_size, random_state=0, shuffle=True
+                    range(len(json_names)),
+                    test_size=val_size,
+                    random_state=0,
+                    shuffle=True,
                 )
                 tmp_train_len = len(train_idxs)
                 test_idxs = []
@@ -310,13 +329,12 @@ class Labelme2YOLO:
             remaining = total - val_count
             adjusted_test_fraction = 0.0
             if remaining > 0 and (1 - val_size) > 1e-8:
-                adjusted_test_fraction = max(
-                    0.0, min(1.0, test_size / (1 - val_size)))
+                adjusted_test_fraction = max(0.0, min(1.0, test_size / (1 - val_size)))
             test_count = int(round(remaining * adjusted_test_fraction))
             test_count = min(max(test_count, 0), remaining)
             val_idxs = indices[:val_count]
-            test_idxs = indices[val_count: val_count + test_count]
-            train_idxs = indices[val_count + test_count:]
+            test_idxs = indices[val_count : val_count + test_count]
+            train_idxs = indices[val_count + test_count :]
 
         # Ensure we always have at least one training sample when possible.
         if not train_idxs:
@@ -333,12 +351,13 @@ class Labelme2YOLO:
             else:
                 train_idxs = [0]
 
-        train_jsons = [json_names[train_idx]
-                       for train_idx in train_idxs] if train_idxs else []
-        val_jsons = [json_names[val_idx]
-                     for val_idx in val_idxs] if val_idxs else []
-        test_jsons = [json_names[test_idx]
-                      for test_idx in test_idxs] if test_idxs else []
+        train_jsons = (
+            [json_names[train_idx] for train_idx in train_idxs] if train_idxs else []
+        )
+        val_jsons = [json_names[val_idx] for val_idx in val_idxs] if val_idxs else []
+        test_jsons = (
+            [json_names[test_idx] for test_idx in test_idxs] if test_idxs else []
+        )
 
         return train_jsons, val_jsons, test_jsons
 
@@ -364,20 +383,12 @@ class Labelme2YOLO:
         return f"{safe[:180]}_{digest}"
 
     @staticmethod
-    def _resolve_image_path(json_data: Dict[str, object], *, json_path: Path) -> Optional[Path]:
-        image_path = json_data.get("imagePath")
-        if isinstance(image_path, str) and image_path.strip():
-            candidate = Path(image_path).expanduser()
-            if candidate.is_absolute() and candidate.exists():
-                return candidate
-            rel = (json_path.parent / image_path).expanduser()
-            if rel.exists():
-                return rel
-        for suffix in (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"):
-            candidate = json_path.with_suffix(suffix)
-            if candidate.exists():
-                return candidate
-        return None
+    def _resolve_image_path(
+        json_data: Dict[str, object], *, json_path: Path
+    ) -> Optional[Path]:
+        from annolid.datasets.labelme_collection import resolve_image_path
+
+        return resolve_image_path(json_path)
 
     def _iter_labelme_json_paths(self) -> Iterable[Path]:
         root = Path(self.json_file_dir).expanduser()
@@ -481,8 +492,7 @@ class Labelme2YOLO:
                 continue
             shapes = data.get("shapes") or []
             polygon_labels: Set[str] = set()
-            default_label = Labelme2YOLO._default_instance_label(
-                Path(json_path), data)
+            default_label = Labelme2YOLO._default_instance_label(Path(json_path), data)
             saw_non_point = False
 
             for shape in shapes:
@@ -491,11 +501,13 @@ class Labelme2YOLO:
                     continue
                 saw_non_point = True
                 instance_label = Labelme2YOLO._resolve_instance_label(
-                    shape, polygon_labels, default_label=default_label)
+                    shape, polygon_labels, default_label=default_label
+                )
                 if instance_label:
                     polygon_labels.add(instance_label)
-                class_label = Labelme2YOLO._clean_label(
-                    shape.get("label")) or instance_label
+                class_label = (
+                    Labelme2YOLO._clean_label(shape.get("label")) or instance_label
+                )
                 if class_label and class_label not in seen_labels:
                     seen_labels.add(class_label)
                     label_order.append(class_label)
@@ -510,24 +522,34 @@ class Labelme2YOLO:
                 if shape_type != "point":
                     continue
                 instance_label = Labelme2YOLO._resolve_instance_label(
-                    shape, candidate_labels, default_label=default_label)
+                    shape, candidate_labels, default_label=default_label
+                )
                 if instance_label:
                     candidate_labels.add(instance_label)
                 # Only treat point-derived instance labels as classes when there are no
                 # polygon/box shapes. For multi-animal pose with polygons, points should
                 # not introduce new class labels.
-                if (not saw_non_point) and instance_label and instance_label not in seen_labels:
+                if (
+                    (not saw_non_point)
+                    and instance_label
+                    and instance_label not in seen_labels
+                ):
                     seen_labels.add(instance_label)
                     label_order.append(instance_label)
                 keypoint_label = Labelme2YOLO._resolve_keypoint_label(
-                    shape, instance_label or "")
+                    shape, instance_label or ""
+                )
                 if not keypoint_label:
                     keypoint_label = f"kp_{len(keypoint_order)}"
                 if keypoint_label and keypoint_label not in seen_keypoints:
                     seen_keypoints.add(keypoint_label)
                     keypoint_order.append(keypoint_label)
 
-            if not polygon_labels and default_label and default_label not in seen_labels:
+            if (
+                not polygon_labels
+                and default_label
+                and default_label not in seen_labels
+            ):
                 seen_labels.add(default_label)
                 label_order.append(default_label)
 
@@ -565,11 +587,9 @@ class Labelme2YOLO:
         return text.rstrip("_-:|")
 
     @staticmethod
-    def _default_instance_label(json_path: Path,
-                                payload: Dict[str, object]) -> str:
+    def _default_instance_label(json_path: Path, payload: Dict[str, object]) -> str:
         """Determine a fallback instance label based on JSON metadata."""
-        flags = payload.get("flags") if isinstance(
-            payload.get("flags"), dict) else {}
+        flags = payload.get("flags") if isinstance(payload.get("flags"), dict) else {}
         flag_label = Labelme2YOLO._clean_label(
             flags.get("instance_label") if flags else None
         )
@@ -582,8 +602,7 @@ class Labelme2YOLO:
             if meta_label:
                 return meta_label
 
-        payload_label = Labelme2YOLO._clean_label(
-            payload.get("instance_label"))
+        payload_label = Labelme2YOLO._clean_label(payload.get("instance_label"))
         if payload_label:
             return payload_label
 
@@ -601,9 +620,11 @@ class Labelme2YOLO:
         return "object"
 
     @staticmethod
-    def _resolve_instance_label(shape: Dict[str, object],
-                                candidate_labels: Optional[Set[str]] = None,
-                                default_label: Optional[str] = None) -> str:
+    def _resolve_instance_label(
+        shape: Dict[str, object],
+        candidate_labels: Optional[Set[str]] = None,
+        default_label: Optional[str] = None,
+    ) -> str:
         """Infer the instance label for a shape using flags and heuristics."""
         flags = shape.get("flags") or {}
         flag_label = Labelme2YOLO._clean_label(
@@ -645,13 +666,11 @@ class Labelme2YOLO:
         return label or (default_label or "")
 
     @staticmethod
-    def _resolve_keypoint_label(shape: Dict[str, object],
-                                instance_label: str) -> str:
+    def _resolve_keypoint_label(shape: Dict[str, object], instance_label: str) -> str:
         """Determine the keypoint label, removing the instance prefix when possible."""
         flags = shape.get("flags") or {}
         if isinstance(flags, dict):
-            display_label = Labelme2YOLO._clean_label(
-                flags.get("display_label"))
+            display_label = Labelme2YOLO._clean_label(flags.get("display_label"))
             if display_label:
                 return display_label
         payload_label = Labelme2YOLO._clean_label(shape.get("display_label"))
@@ -661,7 +680,9 @@ class Labelme2YOLO:
         label = Labelme2YOLO._clean_label(shape.get("label"))
         if instance_label:
             inst_len = len(instance_label)
-            if label.lower().startswith(instance_label.lower()) and inst_len < len(label):
+            if label.lower().startswith(instance_label.lower()) and inst_len < len(
+                label
+            ):
                 suffix = label[inst_len:]
                 # Only strip when the instance/keypoint boundary is explicit.
                 if suffix and suffix[0] in "_-:| ":
@@ -679,9 +700,9 @@ class Labelme2YOLO:
             return None
 
     @staticmethod
-    def _extend_bounds(bounds: Optional[Tuple[float, float, float, float]],
-                       x: float,
-                       y: float) -> Tuple[float, float, float, float]:
+    def _extend_bounds(
+        bounds: Optional[Tuple[float, float, float, float]], x: float, y: float
+    ) -> Tuple[float, float, float, float]:
         if bounds is None:
             return float(x), float(y), float(x), float(y)
         min_x, min_y, max_x, max_y = bounds
@@ -722,7 +743,9 @@ class Labelme2YOLO:
         return None
 
     @staticmethod
-    def _polygon_area_and_centroid(points: Sequence[Sequence[float]]) -> Tuple[float, Tuple[float, float]]:
+    def _polygon_area_and_centroid(
+        points: Sequence[Sequence[float]],
+    ) -> Tuple[float, Tuple[float, float]]:
         if len(points) < 3:
             xs = [float(p[0]) for p in points if len(p) >= 2]
             ys = [float(p[1]) for p in points if len(p) >= 2]
@@ -747,12 +770,14 @@ class Labelme2YOLO:
             if not xs or not ys:
                 return 0.0, (0.0, 0.0)
             return 0.0, (sum(xs) / len(xs), sum(ys) / len(ys))
-        cx /= (6.0 * area)
-        cy /= (6.0 * area)
+        cx /= 6.0 * area
+        cy /= 6.0 * area
         return abs(area), (cx, cy)
 
     @staticmethod
-    def _point_in_polygon(x: float, y: float, polygon: Sequence[Sequence[float]]) -> bool:
+    def _point_in_polygon(
+        x: float, y: float, polygon: Sequence[Sequence[float]]
+    ) -> bool:
         if len(polygon) < 3:
             return False
         inside = False
@@ -768,11 +793,9 @@ class Labelme2YOLO:
             j = i
         return inside
 
-    def _region_from_shape(self,
-                           shape: Dict[str, object],
-                           *,
-                           instance_key: str,
-                           instance_label: str) -> Optional["_PoseRegion"]:
+    def _region_from_shape(
+        self, shape: Dict[str, object], *, instance_key: str, instance_label: str
+    ) -> Optional["_PoseRegion"]:
         shape_type = (shape.get("shape_type") or "polygon").lower()
         raw_points = shape.get("points") or []
         if not isinstance(raw_points, list) or not raw_points:
@@ -789,7 +812,7 @@ class Labelme2YOLO:
             px, py = raw_points[1][:2]
             center = (float(cx), float(cy))
             radius = float(math.hypot(float(px) - float(cx), float(py) - float(cy)))
-            area = math.pi * (radius ** 2)
+            area = math.pi * (radius**2)
             centroid = center
             return self._PoseRegion(
                 instance_key=instance_key,
@@ -835,9 +858,11 @@ class Labelme2YOLO:
         )
 
     @staticmethod
-    def _bounds_to_cxcywh(bounds: Optional[Tuple[float, float, float, float]],
-                          image_width: int,
-                          image_height: int) -> List[float]:
+    def _bounds_to_cxcywh(
+        bounds: Optional[Tuple[float, float, float, float]],
+        image_width: int,
+        image_height: int,
+    ) -> List[float]:
         if bounds is None or image_width == 0 or image_height == 0:
             return [0.0, 0.0, 0.0, 0.0]
         min_x, min_y, max_x, max_y = bounds
@@ -852,9 +877,11 @@ class Labelme2YOLO:
             height / image_height,
         ]
 
-    def _collect_pose_instances(self,
-                                shapes: List[Dict[str, object]],
-                                default_instance_label: Optional[str] = None) -> Dict[str, Dict[str, object]]:
+    def _collect_pose_instances(
+        self,
+        shapes: List[Dict[str, object]],
+        default_instance_label: Optional[str] = None,
+    ) -> Dict[str, Dict[str, object]]:
         """Group shapes by instance to prepare pose annotations."""
         instances: Dict[str, Dict[str, object]] = {}
         polygon_labels: Set[str] = set()
@@ -880,7 +907,8 @@ class Labelme2YOLO:
             if shape_type == "point":
                 continue
             instance_label = self._resolve_instance_label(
-                shape, polygon_labels, default_label=default_instance_label)
+                shape, polygon_labels, default_label=default_instance_label
+            )
             if not instance_label:
                 continue
             polygon_labels.add(instance_label)
@@ -899,7 +927,8 @@ class Labelme2YOLO:
             entry = instances.setdefault(
                 instance_key,
                 {
-                    "class_label": self._clean_label(shape.get("label")) or instance_label,
+                    "class_label": self._clean_label(shape.get("label"))
+                    or instance_label,
                     "instance_label": instance_label,
                     "bounds": None,
                     "keypoints": {},
@@ -913,27 +942,36 @@ class Labelme2YOLO:
             for point in shape.get("points") or []:
                 if not isinstance(point, (list, tuple)) or len(point) < 2:
                     continue
-                entry["bounds"] = self._extend_bounds(entry["bounds"], point[0], point[1])
+                entry["bounds"] = self._extend_bounds(
+                    entry["bounds"], point[0], point[1]
+                )
 
             region = self._region_from_shape(
-                shape, instance_key=instance_key, instance_label=instance_label)
+                shape, instance_key=instance_key, instance_label=instance_label
+            )
             if region is not None:
                 regions.append(region)
 
-        def best_region_for_point(x: float,
-                                  y: float,
-                                  candidate_keys: Optional[Set[str]] = None) -> Optional[str]:
+        def best_region_for_point(
+            x: float, y: float, candidate_keys: Optional[Set[str]] = None
+        ) -> Optional[str]:
             if not regions:
                 return None
             candidates = [
-                r for r in regions if candidate_keys is None or r.instance_key in candidate_keys
+                r
+                for r in regions
+                if candidate_keys is None or r.instance_key in candidate_keys
             ]
             if not candidates:
                 return None
 
             inside: List[Labelme2YOLO._PoseRegion] = []
             for region in candidates:
-                if region.shape_type == "circle" and region.center and region.radius is not None:
+                if (
+                    region.shape_type == "circle"
+                    and region.center
+                    and region.radius is not None
+                ):
                     dx = x - region.center[0]
                     dy = y - region.center[1]
                     if (dx * dx + dy * dy) <= (region.radius * region.radius):
@@ -988,7 +1026,7 @@ class Labelme2YOLO:
                 hinted_instance = ""
                 for inst in sorted(candidate_instance_labels, key=len, reverse=True):
                     if label.lower().startswith(inst.lower()):
-                        suffix = label[len(inst):]
+                        suffix = label[len(inst) :]
                         if suffix and suffix[0] in "_-:| ":
                             hinted_instance = inst
                             break
@@ -1011,7 +1049,10 @@ class Labelme2YOLO:
             if instance_key is None:
                 # No polygons/regions: fall back to heuristics based on labels/defaults.
                 inferred = self._resolve_instance_label(
-                    shape, candidate_instance_labels or None, default_label=default_instance_label)
+                    shape,
+                    candidate_instance_labels or None,
+                    default_label=default_instance_label,
+                )
                 if inferred:
                     instance_key = inferred
                     if inferred not in label_instance_keys:
@@ -1046,33 +1087,40 @@ class Labelme2YOLO:
             }
 
         schema_multi = bool(schema_instances) and len(schema_instances) > 1
-        if not polygon_labels and len(instances) > 1 and not explicit_group_id and not schema_multi:
+        if (
+            not polygon_labels
+            and len(instances) > 1
+            and not explicit_group_id
+            and not schema_multi
+        ):
             target_label = self._clean_label(default_instance_label) or next(
-                iter(instances))
+                iter(instances)
+            )
             merged = {
                 "class_label": target_label,
                 "bounds": None,
                 "keypoints": {},
             }
             for data in instances.values():
-                merged["class_label"] = self._clean_label(
-                    data.get("class_label")) or merged["class_label"]
+                merged["class_label"] = (
+                    self._clean_label(data.get("class_label")) or merged["class_label"]
+                )
                 bounds = data.get("bounds")
                 if bounds:
                     min_x, min_y, max_x, max_y = bounds
                     merged["bounds"] = self._extend_bounds(
-                        merged["bounds"], min_x, min_y)
+                        merged["bounds"], min_x, min_y
+                    )
                     merged["bounds"] = self._extend_bounds(
-                        merged["bounds"], max_x, max_y)
+                        merged["bounds"], max_x, max_y
+                    )
                 for label, kp in data["keypoints"].items():
                     merged["keypoints"][label] = kp
             if merged["bounds"] is None:
                 merged["bounds"] = (0.0, 0.0, 0.0, 0.0)
             instances = {target_label: merged}
 
-        return {
-            label: data for label, data in instances.items() if data["keypoints"]
-        }
+        return {label: data for label, data in instances.items() if data["keypoints"]}
 
     def _update_keypoint_order(self, labels: Iterable[str]) -> None:
         added = False
@@ -1102,10 +1150,12 @@ class Labelme2YOLO:
         if not items:
             folder = Path(self.json_file_dir)
             store = AnnotationStore.for_frame_path(
-                folder / f"{folder.name}_000000000.json")
+                folder / f"{folder.name}_000000000.json"
+            )
             if store.store_path.exists():
                 json_names = [
-                    f"{folder.name}_{frame:09d}.json" for frame in sorted(store.iter_frames())
+                    f"{folder.name}_{frame:09d}.json"
+                    for frame in sorted(store.iter_frames())
                 ]
                 items = [
                     Labelme2YOLO._LabelmeItem(
@@ -1121,8 +1171,9 @@ class Labelme2YOLO:
             return
 
         # If dataset already has train/val/test directories, respect them.
-        preset = [item for item in items if item.preset_split in (
-            "train", "val", "test")]
+        preset = [
+            item for item in items if item.preset_split in ("train", "val", "test")
+        ]
         if preset:
             train_items = [i for i in items if i.preset_split == "train"]
             val_items = [i for i in items if i.preset_split == "val"]
@@ -1130,10 +1181,12 @@ class Labelme2YOLO:
             # If preset exists but any split is empty, fall back to random split for robustness.
             if not train_items:
                 train_items, val_items, test_items = self.split_jsons(
-                    [], items, val_size, test_size)
+                    [], items, val_size, test_size
+                )
         else:
             train_items, val_items, test_items = self.split_jsons(
-                [], items, val_size, test_size)
+                [], items, val_size, test_size
+            )
 
         # Create the train and validation directories if they don't exist already
         self.create_yolo_dataset_dirs()
@@ -1141,7 +1194,7 @@ class Labelme2YOLO:
         # Convert labelme object to yolo format object, and save them to files
         # Also get image from labelme json file and save them under images folder
         for target_dir, split_items in zip(
-            ('train/', 'val/', 'test/'),
+            ("train/", "val/", "test/"),
             (train_items, val_items, test_items),
         ):
             for item in split_items:
@@ -1152,8 +1205,8 @@ class Labelme2YOLO:
 
     def get_yolo_objects(self, json_path: Union[str, Path], json_data, img_path):
         """Return a list of YOLO formatted objects from a JSON annotation file and image."""
-        image_height = json_data['imageHeight']
-        image_width = json_data['imageWidth']
+        image_height = json_data["imageHeight"]
+        image_width = json_data["imageWidth"]
         shapes = json_data.get("shapes") or []
 
         json_path = Path(json_path)
@@ -1162,7 +1215,8 @@ class Labelme2YOLO:
         default_label = self._default_instance_label(json_path, json_data)
 
         pose_instances = self._collect_pose_instances(
-            shapes, default_instance_label=default_label)
+            shapes, default_instance_label=default_label
+        )
         if pose_instances:
             self.annotation_type = "pose"
             for data in pose_instances.values():
@@ -1172,12 +1226,11 @@ class Labelme2YOLO:
             for instance_label, data in pose_instances.items():
                 class_label = data.get("class_label") or instance_label
                 if class_label and class_label not in self.label_to_id_dict:
-                    self.label_to_id_dict[class_label] = len(
-                        self.label_to_id_dict)
-                label_id = self.label_to_id_dict.get(
-                    class_label or default_label, 0)
+                    self.label_to_id_dict[class_label] = len(self.label_to_id_dict)
+                label_id = self.label_to_id_dict.get(class_label or default_label, 0)
                 bbox = self._bounds_to_cxcywh(
-                    data.get("bounds"), image_width, image_height)
+                    data.get("bounds"), image_width, image_height
+                )
                 keypoint_values: List[float] = []
                 for kp_label in self.keypoint_labels_order:
                     kp = data["keypoints"].get(kp_label)
@@ -1187,11 +1240,8 @@ class Labelme2YOLO:
                         if self.include_visibility:
                             visibility = kp.get("visibility")
                             if visibility is None:
-                                visibility = 2 if kp.get(
-                                    "visible", True) else 1
-                            keypoint_values.extend(
-                                [x, y, int(visibility)]
-                            )
+                                visibility = 2 if kp.get("visible", True) else 1
+                            keypoint_values.extend([x, y, int(visibility)])
                         else:
                             keypoint_values.extend([x, y])
                     else:
@@ -1205,15 +1255,13 @@ class Labelme2YOLO:
         yolo_objects = []
         for shape in shapes:
             shape_type = (shape.get("shape_type") or "polygon").lower()
-            if shape_type == 'circle':
-                yolo_obj = self.circle_shape_to_yolo(
-                    shape, image_height, image_width)
+            if shape_type == "circle":
+                yolo_obj = self.circle_shape_to_yolo(shape, image_height, image_width)
                 yolo_objects.append(yolo_obj)
-            elif shape_type == 'point':
+            elif shape_type == "point":
                 continue
             else:
-                yolo_obj = self.scale_points(
-                    shape, image_height, image_width)
+                yolo_obj = self.scale_points(shape, image_height, image_width)
                 yolo_objects.append(yolo_obj)
         return yolo_objects
 
@@ -1234,13 +1282,13 @@ class Labelme2YOLO:
             json_data = load_labelme_json(json_path)
             output_stem = item.output_stem
             img_src = item.image_path or self._resolve_image_path(
-                json_data, json_path=item.json_path)
+                json_data, json_path=item.json_path
+            )
         else:
             output_stem = Path(str(json_name)).stem
             json_path = os.path.join(self.json_file_dir, str(json_name))
             json_data = load_labelme_json(json_path)
-            img_src = self._resolve_image_path(
-                json_data, json_path=Path(json_path))
+            img_src = self._resolve_image_path(json_data, json_path=Path(json_path))
 
         img_path = self.save_or_copy_image(
             json_data,
@@ -1251,19 +1299,19 @@ class Labelme2YOLO:
             source_image_path=str(img_src) if img_src else None,
         )
 
-        yolo_objects = self.get_yolo_objects(
-            Path(json_path), json_data, img_path)
+        yolo_objects = self.get_yolo_objects(Path(json_path), json_data, img_path)
         self.save_yolo_txt_label_file(
             output_stem, self.label_folder, target_dir, yolo_objects
         )
 
-    def scale_points(self,
-                     labelme_shape: dict,
-                     image_height: int,
-                     image_width: int,
-                     output_fromat: str = 'polygon',
-                     include_visibility: bool = None,
-                     ):
+    def scale_points(
+        self,
+        labelme_shape: dict,
+        image_height: int,
+        image_width: int,
+        output_fromat: str = "polygon",
+        include_visibility: bool = None,
+    ):
         """
         Returns the label_id and scaled points of the given shape object in YOLO format.
         """
@@ -1271,12 +1319,14 @@ class Labelme2YOLO:
         if include_visibility is None:
             include_visibility = self.include_visibility
         cx, cy, w, h = find_bbox_from_shape(labelme_shape)
-        scaled_cxcywh = [cx/image_width,
-                         cy/image_height,
-                         w/image_width,
-                         h/image_height]
+        scaled_cxcywh = [
+            cx / image_width,
+            cy / image_height,
+            w / image_width,
+            h / image_height,
+        ]
         # Extract the points from the shape object
-        point_list = labelme_shape['points']
+        point_list = labelme_shape["points"]
         scaled_points = []
         for point in point_list:
             x = float(point[0]) / image_width
@@ -1298,16 +1348,16 @@ class Labelme2YOLO:
         # points = np.append(points, [points[0], points[1]])
         # Map the label of the shape to a label_id
         try:
-            label_id = self.label_to_id_dict[labelme_shape['label']]
+            label_id = self.label_to_id_dict[labelme_shape["label"]]
         except KeyError:
             label_id = 0
         # Return the label_id and points as a list
-        if output_fromat == 'bbox':
+        if output_fromat == "bbox":
             return label_id, scaled_cxcywh
-        elif output_fromat == 'pose':
+        elif output_fromat == "pose":
             return label_id, scaled_cxcywh + scaled_points
         else:
-            return label_id,  points.tolist()
+            return label_id, points.tolist()
 
     def circle_shape_to_yolo(self, labelme_shape, image_height, image_width):
         """
@@ -1323,11 +1373,13 @@ class Labelme2YOLO:
 
         """
         # Calculate the center of the circle.
-        cx, cy = labelme_shape['points'][0]
+        cx, cy = labelme_shape["points"][0]
 
         # Calculate the radius of the circle.
-        radius = math.sqrt((cx - labelme_shape['points'][1][0]) ** 2 +
-                           (cy - labelme_shape['points'][1][1]) ** 2)
+        radius = math.sqrt(
+            (cx - labelme_shape["points"][1][0]) ** 2
+            + (cy - labelme_shape["points"][1][1]) ** 2
+        )
 
         # Calculate the width and height of the circle.
         w = 2 * radius
@@ -1340,18 +1392,20 @@ class Labelme2YOLO:
         yolo_h = round(float(h / image_height), 6)
 
         # Get the label ID.
-        label_id = self.label_to_id_dict[labelme_shape['label']]
+        label_id = self.label_to_id_dict[labelme_shape["label"]]
 
         # Return the YOLO object as a tuple.
         return label_id, yolo_cx, yolo_cy, yolo_w, yolo_h
 
     @staticmethod
-    def save_or_copy_image(json_data: dict,
-                           output_stem: str,
-                           image_dir_path: str,
-                           target_dir: str,
-                           json_path: Optional[str] = None,
-                           source_image_path: Optional[str] = None) -> str:
+    def save_or_copy_image(
+        json_data: dict,
+        output_stem: str,
+        image_dir_path: str,
+        target_dir: str,
+        json_path: Optional[str] = None,
+        source_image_path: Optional[str] = None,
+    ) -> str:
         """
         Save an image in YOLO format.
 
@@ -1384,12 +1438,12 @@ class Labelme2YOLO:
 
         # if the image is not already saved, then save it
         if not os.path.exists(img_path):
-            image_data = json_data.get('imageData')
+            image_data = json_data.get("imageData")
             if image_data:
                 img = img_b64_to_arr(image_data)
                 PIL.Image.fromarray(img).save(img_path)
             else:
-                src_img_path = json_data.get('imagePath') or ""
+                src_img_path = json_data.get("imagePath") or ""
                 candidates = []
                 if source_image_path:
                     candidates.append(source_image_path)
@@ -1397,8 +1451,7 @@ class Labelme2YOLO:
                     candidates.append(src_img_path)
                     if json_path:
                         candidates.append(
-                            os.path.join(os.path.dirname(
-                                json_path), src_img_path)
+                            os.path.join(os.path.dirname(json_path), src_img_path)
                         )
                 chosen = None
                 for candidate in candidates:
@@ -1413,7 +1466,8 @@ class Labelme2YOLO:
         """Save the dataset information as a YAML file in the new format."""
         # Set the path for the YAML file
         yaml_path = os.path.join(
-            self.json_file_dir, f'{self.yolo_dataset_name}/', 'data.yaml')
+            self.json_file_dir, f"{self.yolo_dataset_name}/", "data.yaml"
+        )
 
         # Construct the names section
         names_section = "names:\n"
@@ -1421,7 +1475,7 @@ class Labelme2YOLO:
             names_section += f"  {label_id}: {label}\n"
 
         # Write the YAML file content
-        with open(yaml_path, 'w+') as yaml_file:
+        with open(yaml_path, "w+") as yaml_file:
             # Relative path to the dataset
             yaml_file.write(f"path: ../{self.yolo_dataset_name}\n")
             yaml_file.write(f"train: images/train\n")
@@ -1451,22 +1505,28 @@ class Labelme2YOLO:
                 flip_idx = None
                 if self.pose_schema:
                     flip_idx = self.pose_schema.compute_flip_idx(
-                        self.keypoint_labels_order)
+                        self.keypoint_labels_order
+                    )
                 if flip_idx:
                     yaml_file.write("\n")
                     yaml_file.write(f"flip_idx: {flip_idx}\n")
                 else:
                     yaml_file.write(
-                        "#(Optional) if the points are symmetric then need flip_idx, like left-right side of human or face. For example if we assume five keypoints of facial landmark: [left eye, right eye, nose, left mouth, right mouth], and the original index is [0, 1, 2, 3, 4], then flip_idx is [1, 0, 2, 4, 3] (just exchange the left-right index, i.e. 0-1 and 3-4, and do not modify others like nose in this example.)\n")
+                        "#(Optional) if the points are symmetric then need flip_idx, like left-right side of human or face. For example if we assume five keypoints of facial landmark: [left eye, right eye, nose, left mouth, right mouth], and the original index is [0, 1, 2, 3, 4], then flip_idx is [1, 0, 2, 4, 3] (just exchange the left-right index, i.e. 0-1 and 3-4, and do not modify others like nose in this example.)\n"
+                    )
                     yaml_file.write(
-                        "#flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]\n")
+                        "#flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]\n"
+                    )
 
             yaml_file.write(names_section)
 
     @staticmethod
-    def save_yolo_txt_label_file(json_name: str, label_folder_path: str,
-                                 target_dir: str,
-                                 yolo_objects: List[Tuple[str, List[float]]]) -> None:
+    def save_yolo_txt_label_file(
+        json_name: str,
+        label_folder_path: str,
+        target_dir: str,
+        yolo_objects: List[Tuple[str, List[float]]],
+    ) -> None:
         """Saves a list of YOLO objects as a text file in the specified directory.
 
         Args:
@@ -1484,7 +1544,7 @@ class Labelme2YOLO:
             base = base[:-5]
         txt_path = os.path.join(label_folder_path, target_dir, f"{base}.txt")
 
-        with open(txt_path, 'w+') as f:
+        with open(txt_path, "w+") as f:
             # Write each YOLO object as a line in the label file
             for label, points in yolo_objects:
                 points = [str(item) for item in points]

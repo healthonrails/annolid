@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # Enable CPU fallback for unsupported MPS ops
 import os  # noqa
+
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # noqa
 
 import csv
@@ -15,20 +16,19 @@ import hashlib
 import json
 import io
 import copy
-from PIL import ImageQt, Image, ImageDraw
+from PIL import ImageQt, Image
 import pandas as pd
 import numpy as np
 import imgviz
-import yaml
 from pathlib import Path
 import functools
 import subprocess
+
 try:
     import torch
 except ImportError:  # PyTorch is optional for lighter desktop bundles
     torch = None
 
-from labelme.ai import MODELS
 from qtpy import QtCore
 from qtpy.QtCore import Qt, Slot, Signal
 from qtpy import QtWidgets
@@ -47,7 +47,6 @@ from labelme.widgets import LabelListWidgetItem
 from labelme import utils
 from annolid.utils.logger import logger
 from annolid.utils.files import (
-    count_json_files,
     should_start_predictions_from_frame0,
 )
 from annolid.utils.annotation_store import AnnotationStore
@@ -138,7 +137,11 @@ from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.tracking.dino_kpseg_tracker import DinoKPSEGVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
-from annolid.gui.tensorboard import ensure_tensorboard, start_tensorboard, VisualizationWindow
+from annolid.gui.tensorboard import (
+    ensure_tensorboard,
+    start_tensorboard,
+    VisualizationWindow,
+)
 from annolid.utils.runs import find_latest_checkpoint, shared_runs_root
 from annolid.realtime.perception import Config as RealtimeConfig
 from annolid.gui.yolo_training_manager import YOLOTrainingManager
@@ -155,7 +158,7 @@ from annolid.gui.controllers import (
 from annolid.gui.theme import apply_modern_theme, apply_light_theme, apply_dark_theme
 
 
-__appname__ = 'Annolid'
+__appname__ = "Annolid"
 __version__ = "1.4.0"
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
@@ -180,16 +183,11 @@ def _hex_to_rgb(color: str) -> Optional[Tuple[int, int, int]]:
 
 
 class AnnolidWindow(MainWindow):
-    """Annolid Main Window based on Labelme.
-    """
+    """Annolid Main Window based on Labelme."""
 
-    live_annolid_frame_updated = Signal(
-        int, str)  # For modeless dialogs if any
+    live_annolid_frame_updated = Signal(int, str)  # For modeless dialogs if any
 
-    def __init__(self,
-                 config=None
-                 ):
-
+    def __init__(self, config=None):
         self.config = config
         tracker_cfg = dict((self.config or {}).get("tracker", {}) or {})
         tracker_fields = set(CutieDinoTrackerConfig.__dataclass_fields__)
@@ -199,8 +197,7 @@ class AnnolidWindow(MainWindow):
                 "Ignoring unsupported tracker config keys: %s",
                 sorted(unsupported_tracker_keys),
             )
-        tracker_kwargs = {k: v for k,
-                          v in tracker_cfg.items() if k in tracker_fields}
+        tracker_kwargs = {k: v for k, v in tracker_cfg.items() if k in tracker_fields}
         self.tracker_runtime_config = CutieDinoTrackerConfig(**tracker_kwargs)
         super(AnnolidWindow, self).__init__(config=self.config)
 
@@ -225,33 +222,35 @@ class AnnolidWindow(MainWindow):
         # Connect the close video signal
         self.video_manager_widget.close_video_requested.connect(self.closeFile)
         self.video_manager_widget.output_folder_ready.connect(
-            self.handle_extracted_frames)
+            self.handle_extracted_frames
+        )
         self.video_manager_widget.json_saved.connect(
-            self.video_manager_widget.update_json_column)
+            self.video_manager_widget.update_json_column
+        )
 
         self.video_manager_widget.track_all_worker_created.connect(
-            self.tracking_controller.register_track_all_worker)
+            self.tracking_controller.register_track_all_worker
+        )
 
         # Create the Dock Widget
         self.video_dock = QtWidgets.QDockWidget("Video List", self)
         # Set a unique objectName
-        self.video_dock.setObjectName('videoListDock')
+        self.video_dock.setObjectName("videoListDock")
         self.video_dock.setWidget(self.video_manager_widget)
-        self.video_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
-                                    QtWidgets.QDockWidget.DockWidgetClosable |
-                                    QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.video_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
 
         # Add the Dock Widget to the Main Window
         self.addDockWidget(Qt.RightDockWidgetArea, self.video_dock)
 
         self.here = Path(__file__).resolve().parent
-        self.settings = QtCore.QSettings("Annolid", 'Annolid')
-        self._show_pose_edges = self.settings.value(
-            "pose/show_edges", True, type=bool)
-        self._show_pose_bboxes = self.settings.value(
-            "pose/show_bbox", True, type=bool)
-        self._save_pose_bbox = self.settings.value(
-            "pose/save_bbox", True, type=bool)
+        self.settings = QtCore.QSettings("Annolid", "Annolid")
+        self._show_pose_edges = self.settings.value("pose/show_edges", True, type=bool)
+        self._show_pose_bboxes = self.settings.value("pose/show_bbox", True, type=bool)
+        self._save_pose_bbox = self.settings.value("pose/save_bbox", True, type=bool)
         self._df = None
         self._df_deeplabcut = None
         self._df_deeplabcut_scorer = None
@@ -263,7 +262,7 @@ class AnnolidWindow(MainWindow):
         self.label_stats = {}
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
-        self._pred_res_folder_suffix = '_tracking_results_labelme'
+        self._pred_res_folder_suffix = "_tracking_results_labelme"
         self.ai_model_manager = AIModelManager(
             parent=self,
             combo=self._selectAiModelComboBox,
@@ -285,7 +284,7 @@ class AnnolidWindow(MainWindow):
         self.video_file = None
         self.isPlaying = False
         self.event_type = None
-        self._time_stamp = ''
+        self._time_stamp = ""
         self.behavior_controller = BehaviorController(self._get_rgb_by_label)
         self.project_schema: Optional[ProjectSchema] = None
         self.project_schema_path: Optional[Path] = None
@@ -334,7 +333,7 @@ class AnnolidWindow(MainWindow):
             double_click=self._config["canvas"]["double_click"],
             num_backups=self._config["canvas"]["num_backups"],
             crosshair=self._config["canvas"]["crosshair"],
-            sam=self._config["sam"]
+            sam=self._config["sam"],
         )
         try:
             self.canvas.setShowPoseEdges(self._show_pose_edges)
@@ -377,7 +376,7 @@ class AnnolidWindow(MainWindow):
         self.flags_controller = FlagsController(
             window=self,
             widget=self.flag_widget,
-            config_path=self.here.parent.resolve() / 'configs' / 'behaviors.yaml',
+            config_path=self.here.parent.resolve() / "configs" / "behaviors.yaml",
         )
         self.flags_controller.initialize()
 
@@ -388,38 +387,37 @@ class AnnolidWindow(MainWindow):
 
         # Behavior event log dock
         self.behavior_log_widget = BehaviorEventLogWidget(self)
-        self.behavior_log_widget.jumpToFrame.connect(
-            self._jump_to_frame_from_log)
-        self.behavior_log_widget.undoRequested.connect(
-            self.undo_last_behavior_event)
+        self.behavior_log_widget.jumpToFrame.connect(self._jump_to_frame_from_log)
+        self.behavior_log_widget.undoRequested.connect(self.undo_last_behavior_event)
         self.behavior_log_widget.clearRequested.connect(
-            self._clear_behavior_events_from_log)
+            self._clear_behavior_events_from_log
+        )
 
         self.behavior_log_dock = QtWidgets.QDockWidget("Behavior Log", self)
-        self.behavior_log_dock.setObjectName('behaviorLogDock')
+        self.behavior_log_dock.setObjectName("behaviorLogDock")
         self.behavior_log_dock.setWidget(self.behavior_log_widget)
-        self.behavior_log_dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
-                                           QtWidgets.QDockWidget.DockWidgetClosable |
-                                           QtWidgets.QDockWidget.DockWidgetFloatable)
+        self.behavior_log_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
         self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_log_dock)
 
         self.behavior_controls_widget = BehaviorControlsWidget(self)
         self.behavior_controls_widget.subjectChanged.connect(
-            self._on_active_subject_changed)
-        self.behavior_controls_widget.modifierToggled.connect(
-            self._on_modifier_toggled)
-        self.behavior_controls_dock = QtWidgets.QDockWidget(
-            "Behavior Controls", self)
-        self.behavior_controls_dock.setObjectName('behaviorControlsDock')
+            self._on_active_subject_changed
+        )
+        self.behavior_controls_widget.modifierToggled.connect(self._on_modifier_toggled)
+        self.behavior_controls_dock = QtWidgets.QDockWidget("Behavior Controls", self)
+        self.behavior_controls_dock.setObjectName("behaviorControlsDock")
         self.behavior_controls_dock.setWidget(self.behavior_controls_widget)
         self.behavior_controls_dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable |
-            QtWidgets.QDockWidget.DockWidgetClosable |
-            QtWidgets.QDockWidget.DockWidgetFloatable)
-        self.addDockWidget(Qt.RightDockWidgetArea,
-                           self.behavior_controls_dock)
-        self.tabifyDockWidget(
-            self.behavior_log_dock, self.behavior_controls_dock)
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_controls_dock)
+        self.tabifyDockWidget(self.behavior_log_dock, self.behavior_controls_dock)
 
         self.setCentralWidget(scrollArea)
 
@@ -446,8 +444,7 @@ class AnnolidWindow(MainWindow):
         self.seg_train_thread = QtCore.QThread()
         self.destroyed.connect(self.clean_up)
         self.stepSizeWidget.valueChanged.connect(self.update_step_size)
-        self.stepSizeWidget.predict_button.pressed.connect(
-            self.predict_from_next_frame)
+        self.stepSizeWidget.predict_button.pressed.connect(self.predict_from_next_frame)
         atexit.register(self.clean_up)
         # Callbacks:
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
@@ -455,7 +452,8 @@ class AnnolidWindow(MainWindow):
         self.ai_model_manager.initialize()
 
         self.canvas_screenshot_widget = CanvasScreenshotWidget(
-            canvas=self.canvas, here=Path(__file__).resolve().parent)
+            canvas=self.canvas, here=Path(__file__).resolve().parent
+        )
         self.pdf_import_widget = PdfImportWidget(self)
         self._setup_canvas_screenshot_action()
         self._setup_open_pdf_action()
@@ -485,23 +483,26 @@ class AnnolidWindow(MainWindow):
     def _open_segment_editor_dialog(self):  # Largely the same
         if not self.video_file or self.fps is None or self.num_frames is None:
             QtWidgets.QMessageBox.information(
-                self, "No Video Loaded", "Please load a video first.")
+                self, "No Video Loaded", "Please load a video first."
+            )
             return
 
-        initial_segment_dicts = [s.to_dict()
-                                 for s in self._current_video_defined_segments]
+        initial_segment_dicts = [
+            s.to_dict() for s in self._current_video_defined_segments
+        ]
 
         dialog = SegmentEditorDialog(
-            active_video_path=Path(self.video_file), active_video_fps=self.fps,
-            active_video_total_frames=self.num_frames, current_annolid_frame=self.frame_number,
+            active_video_path=Path(self.video_file),
+            active_video_fps=self.fps,
+            active_video_total_frames=self.num_frames,
+            current_annolid_frame=self.frame_number,
             initial_segments_data=initial_segment_dicts,
             annolid_config=self.config,  # Pass Annolid's main config to dialog
-            parent=self
+            parent=self,
         )
 
         # NEW: Connect to the dialog's signal that provides the worker instance
-        dialog.tracking_initiated.connect(
-            self.tracking_controller.start_tracking)
+        dialog.tracking_initiated.connect(self.tracking_controller.start_tracking)
 
         # Optional: For modeless live updates (if SegmentEditorDialog becomes modeless)
         # self.live_annolid_frame_updated.connect(dialog.update_live_annolid_frame_info)
@@ -509,7 +510,8 @@ class AnnolidWindow(MainWindow):
         if dialog.exec_() == QtWidgets.QDialog.Accepted:  # User clicked "OK"
             self._current_video_defined_segments = dialog.get_defined_segments()
             logger.info(
-                f"Segment Editor OK. {len(self._current_video_defined_segments)} segments stored.")
+                f"Segment Editor OK. {len(self._current_video_defined_segments)} segments stored."
+            )
             self._save_segments_for_active_video()  # Persist
             if self.caption_widget is not None:
                 self.caption_widget.set_video_segments(
@@ -529,10 +531,10 @@ class AnnolidWindow(MainWindow):
         self.save_canvas_screenshot_action = action(
             self.tr("Save Canvas Image"),
             self._save_canvas_screenshot,
-            'Ctrl+Shift+I',  # Shortcut
+            "Ctrl+Shift+I",  # Shortcut
             "Save Canvas Image",
             self.tr("Save the current canvas as a PNG image."),
-            enabled=True
+            enabled=True,
         )
         self.menus.file.addAction(self.save_canvas_screenshot_action)
 
@@ -569,8 +571,7 @@ class AnnolidWindow(MainWindow):
             self._open_label_collection_dialog,
             None,
             "open",
-            self.tr(
-                "Index labeled PNG/JSON pairs into a central dataset JSONL file."),
+            self.tr("Index labeled PNG/JSON pairs into a central dataset JSONL file."),
             enabled=True,
         )
         file_menu = getattr(self.menus, "file", None)
@@ -609,13 +610,12 @@ class AnnolidWindow(MainWindow):
             self.caption_widget.set_caption(cleaned)
 
     def _save_canvas_screenshot(self):
-        """ Calls CanvasScreenshotWidget and passes in the current filename"""
-        self.canvas_screenshot_widget.save_canvas_screenshot(
-            filename=self.filename)
+        """Calls CanvasScreenshotWidget and passes in the current filename"""
+        self.canvas_screenshot_widget.save_canvas_screenshot(filename=self.filename)
 
     def _grounding_sam(self):
         """
-        Handles the text prompt inputs for grouding DINO SAM. 
+        Handles the text prompt inputs for grouding DINO SAM.
         The function:
         1. Toggles the drawing mode to 'grounding_sam'.
         2. Processes the text prompt to determine if it contains flags or other commands.
@@ -647,16 +647,18 @@ class AnnolidWindow(MainWindow):
             use_countgd = False
 
         # Check if the prompt starts with 'flags:' and contains flags separated by commas
-        if prompt_text.startswith('flags:'):
-            flags = {k.strip(): False for k in prompt_text.replace(
-                'flags:', '').split(',') if len(k.strip()) > 0}
+        if prompt_text.startswith("flags:"):
+            flags = {
+                k.strip(): False
+                for k in prompt_text.replace("flags:", "").split(",")
+                if len(k.strip()) > 0
+            }
             if len(flags.keys()) > 0:
                 self.flags_controller.apply_prompt_flags(flags)
             else:
                 self.flags_controller.clear_flags()
         else:
-            self.canvas.predictAiRectangle(
-                prompt_text, use_countgd=use_countgd)
+            self.canvas.predictAiRectangle(prompt_text, use_countgd=use_countgd)
 
     def _current_text_prompt(self) -> Optional[str]:
         """Return the current AI text prompt (trimmed) if available."""
@@ -699,7 +701,7 @@ class AnnolidWindow(MainWindow):
             self,
             self.tr("Select Video File to Analyze"),
             self.lastOpenDir,  # Start in the last used directory
-            self.tr("Video Files (*.mp4 *.avi *.mov *.mkv)")
+            self.tr("Video Files (*.mp4 *.avi *.mov *.mkv)"),
         )
 
         if not video_path:
@@ -709,25 +711,35 @@ class AnnolidWindow(MainWindow):
         video_file = Path(video_path)
         if not video_file.is_file():
             QtWidgets.QMessageBox.warning(
-                self, "File Not Found", f"The selected video file does not exist:\n{video_path}")
+                self,
+                "File Not Found",
+                f"The selected video file does not exist:\n{video_path}",
+            )
             return
 
-        json_dir = video_file.with_suffix('')
+        json_dir = video_file.with_suffix("")
         if not json_dir.is_dir():
-            QtWidgets.QMessageBox.warning(self, "Results Not Found",
-                                          f"Could not find the associated tracking results directory:\n{json_dir}\n\n"
-                                          "Please ensure tracking has been run for this video.")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Results Not Found",
+                f"Could not find the associated tracking results directory:\n{json_dir}\n\n"
+                "Please ensure tracking has been run for this video.",
+            )
             return
 
         # --- Execute the analysis directly ---
         try:
             # 1. Provide feedback to the user that something is happening
             self.statusBar().showMessage(
-                self.tr(f"Analyzing {video_file.name}, please wait..."))
+                self.tr(f"Analyzing {video_file.name}, please wait...")
+            )
             QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)
 
             # 2. Import and run the core logic
-            from annolid.postprocessing.tracking_reports import find_tracking_gaps, generate_reports
+            from annolid.postprocessing.tracking_reports import (
+                find_tracking_gaps,
+                generate_reports,
+            )
 
             gaps = find_tracking_gaps(video_file)
             # This function now also saves the files
@@ -744,26 +756,23 @@ class AnnolidWindow(MainWindow):
                 "Analysis Complete",
                 f"A tracking gap report has been saved to:\n{report_path}\n\nWould you like to open it now?",
                 QtWidgets.QMessageBox.Open | QtWidgets.QMessageBox.Close,
-                QtWidgets.QMessageBox.Open
+                QtWidgets.QMessageBox.Open,
             )
             if reply == QtWidgets.QMessageBox.Open:
-                QtGui.QDesktopServices.openUrl(
-                    QtCore.QUrl.fromLocalFile(report_path))
+                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(report_path))
 
         except Exception as e:
             # Catch any errors from the analysis and report them gracefully
             QtWidgets.QApplication.restoreOverrideCursor()
-            logger.error(
-                f"An error occurred during gap analysis: {e}", exc_info=True)
-            QtWidgets.QMessageBox.critical(self, "Analysis Error",
-                                           f"An unexpected error occurred:\n\n{e}")
+            logger.error(f"An error occurred during gap analysis: {e}", exc_info=True)
+            QtWidgets.QMessageBox.critical(
+                self, "Analysis Error", f"An unexpected error occurred:\n\n{e}"
+            )
             self.statusBar().showMessage(self.tr("Gap analysis failed."), 5000)
 
     def _add_real_time_stamps(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select folder to annotate"),
-            str(Path.home())
+            self, self.tr("Select folder to annotate"), str(Path.home())
         )
         if not folder:
             return
@@ -772,13 +781,13 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.information(
                 self,
                 self.tr("Done"),
-                f"{self.tr('All CSVs have been updated in:')}\n{folder}"
+                f"{self.tr('All CSVs have been updated in:')}\n{folder}",
             )
         except Exception as e:
             QtWidgets.QMessageBox.critical(
                 self,
                 self.tr("Error"),
-                f"{self.tr('Failed to add real-time stamps:')}\n{e}"
+                f"{self.tr('Failed to add real-time stamps:')}\n{e}",
             )
 
     def convert_sleap_h5_to_labelme(self):
@@ -791,6 +800,7 @@ class AnnolidWindow(MainWindow):
 
     def convert_labelme2yolo_format(self):
         from annolid.gui.widgets import convert_labelme2yolo
+
         convert_labelme2yolo_widget = convert_labelme2yolo.YOLOConverterWidget()
         convert_labelme2yolo_widget.exec_()
 
@@ -834,10 +844,13 @@ class AnnolidWindow(MainWindow):
             default_path = str(Path(start_dir) / "pose_schema.json")
 
         schema = self._pose_schema
-        if schema is None and self.project_schema and getattr(self.project_schema, "pose_schema", None):
+        if (
+            schema is None
+            and self.project_schema
+            and getattr(self.project_schema, "pose_schema", None)
+        ):
             try:
-                schema = PoseSchema.from_dict(
-                    self.project_schema.pose_schema)  # type: ignore[arg-type]
+                schema = PoseSchema.from_dict(self.project_schema.pose_schema)  # type: ignore[arg-type]
             except Exception:
                 schema = None
 
@@ -874,14 +887,17 @@ class AnnolidWindow(MainWindow):
                 self, "Save Failed", f"Failed to save pose schema:\n{exc}"
             )
 
-    def _persist_pose_schema_to_project_schema(self, schema: PoseSchema, schema_path: str) -> None:
+    def _persist_pose_schema_to_project_schema(
+        self, schema: PoseSchema, schema_path: str
+    ) -> None:
         """Store pose schema metadata inside `project.annolid.json` by default."""
         project_schema = self.project_schema or default_schema()
         project_path = self.project_schema_path
         if project_path is None:
             if self.video_file:
-                project_path = Path(self.video_file).with_suffix(
-                    "") / DEFAULT_SCHEMA_FILENAME
+                project_path = (
+                    Path(self.video_file).with_suffix("") / DEFAULT_SCHEMA_FILENAME
+                )
             else:
                 project_path = Path.cwd() / DEFAULT_SCHEMA_FILENAME
 
@@ -891,8 +907,9 @@ class AnnolidWindow(MainWindow):
             stored_path = schema_path
             try:
                 stored_path = str(
-                    Path(schema_path).resolve().relative_to(
-                        project_path.parent.resolve())
+                    Path(schema_path)
+                    .resolve()
+                    .relative_to(project_path.parent.resolve())
                 )
             except Exception:
                 stored_path = schema_path
@@ -904,7 +921,8 @@ class AnnolidWindow(MainWindow):
             self.project_schema_path = project_path
         except Exception:
             logger.debug(
-                "Failed to persist pose schema into project schema.", exc_info=True)
+                "Failed to persist pose schema into project schema.", exc_info=True
+            )
 
     def extract_and_save_shape_keypoints(self):
         extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog()
@@ -918,7 +936,8 @@ class AnnolidWindow(MainWindow):
         if self.video_file is not None:
             analyzer_dialog = TrackingAnalyzerDialog()
             analyzer_dialog.run_analysis_without_gui(
-                self.video_file, self.zone_path, self.fps)
+                self.video_file, self.zone_path, self.fps
+            )
 
     def convert_labelme_json_to_csv(self):
         convert_labelme_json_to_csv_widget = LabelmeJsonToCsvDialog()
@@ -930,6 +949,7 @@ class AnnolidWindow(MainWindow):
 
     def openAudio(self):
         from annolid.gui.widgets.audio import AudioWidget
+
         if not self.video_file:
             start_dir = getattr(self, "lastOpenDir", None) or str(Path.home())
             audio_widget, audio_filename = AudioWidget.create_from_dialog(
@@ -937,8 +957,7 @@ class AnnolidWindow(MainWindow):
                 start_dir=start_dir,
                 caption=self.tr(f"{__appname__} - Choose Audio"),
                 error_title=self.tr("Audio"),
-                error_message=self.tr(
-                    "Unable to load the selected audio file."),
+                error_message=self.tr("Unable to load the selected audio file."),
             )
             if not audio_widget or not audio_filename:
                 return
@@ -1094,22 +1113,19 @@ class AnnolidWindow(MainWindow):
         self.caption_dock.installEventFilter(self.caption_widget)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.caption_dock)
 
-        self.caption_widget.charInserted.connect(
-            self.setDirty)      # Mark as dirty
-        self.caption_widget.charDeleted.connect(
-            self.setDirty)      # Mark as dirty
+        self.caption_widget.charInserted.connect(self.setDirty)  # Mark as dirty
+        self.caption_widget.charDeleted.connect(self.setDirty)  # Mark as dirty
         self.caption_widget.captionChanged.connect(
-            self.canvas.setCaption)  # Update canvas
-        self.caption_widget.imageGenerated.connect(
-            self.display_generated_image)
+            self.canvas.setCaption
+        )  # Update canvas
+        self.caption_widget.imageGenerated.connect(self.display_generated_image)
 
     def openFlorence2(self):
         """Open or show the Florence-2 dock widget."""
         dock = getattr(self, "florence_dock", None)
         if dock is None:
             dock = Florence2DockWidget(self)
-            dock.destroyed.connect(
-                lambda *_: setattr(self, "florence_dock", None))
+            dock.destroyed.connect(lambda *_: setattr(self, "florence_dock", None))
             self.addDockWidget(Qt.RightDockWidgetArea, dock)
             self.florence_dock = dock
 
@@ -1125,9 +1141,7 @@ class AnnolidWindow(MainWindow):
         dock = getattr(self, "image_editing_dock", None)
         if dock is None:
             dock = ImageEditingDockWidget(self)
-            dock.destroyed.connect(
-                lambda *_: setattr(self, "image_editing_dock", None)
-            )
+            dock.destroyed.connect(lambda *_: setattr(self, "image_editing_dock", None))
             self.addDockWidget(Qt.RightDockWidgetArea, dock)
             self.image_editing_dock = dock
 
@@ -1157,9 +1171,7 @@ class AnnolidWindow(MainWindow):
 
         self.imagePath = image_path
         self.filename = os.path.basename(image_path)
-        self.statusBar().showMessage(
-            self.tr("Generated image loaded: %s") % image_path
-        )
+        self.statusBar().showMessage(self.tr("Generated image loaded: %s") % image_path)
 
     def set_advanced_params(self):
         sam3_defaults = self.sam3_manager.dialog_defaults(self._config)
@@ -1183,42 +1195,44 @@ class AnnolidWindow(MainWindow):
             backend_idx = 1
         else:
             backend_idx = 0
-        advanced_params_dialog.optical_flow_backend_combo.setCurrentIndex(
-            backend_idx)
+        advanced_params_dialog.optical_flow_backend_combo.setCurrentIndex(backend_idx)
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 
         self.epsilon_for_polygon = advanced_params_dialog.get_epsilon_value()
-        self.automatic_pause_enabled = advanced_params_dialog.is_automatic_pause_enabled()
+        self.automatic_pause_enabled = (
+            advanced_params_dialog.is_automatic_pause_enabled()
+        )
         self.t_max_value = advanced_params_dialog.get_t_max_value()
         self.use_cpu_only = advanced_params_dialog.is_cpu_only_enabled()
-        self.save_video_with_color_mask = advanced_params_dialog.is_save_video_with_color_mask_enabled()
-        self.auto_recovery_missing_instances = advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
+        self.save_video_with_color_mask = (
+            advanced_params_dialog.is_save_video_with_color_mask_enabled()
+        )
+        self.auto_recovery_missing_instances = (
+            advanced_params_dialog.is_auto_recovery_missing_instances_enabled()
+        )
         if of_manager is not None:
             of_manager.set_compute_optical_flow(
                 advanced_params_dialog.is_compute_optiocal_flow_enabled()
             )
-            of_manager.set_backend(
-                advanced_params_dialog.get_optical_flow_backend()
-            )
+            of_manager.set_backend(advanced_params_dialog.get_optical_flow_backend())
 
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():
             setattr(self.tracker_runtime_config, key, value)
 
-        self.sam3_manager.apply_dialog_results(
-            advanced_params_dialog, self._config
-        )
+        self.sam3_manager.apply_dialog_results(advanced_params_dialog, self._config)
 
         of_manager = getattr(self, "optical_flow_manager", None)
         logger.info(
             "Computing optical flow is %s .",
             getattr(of_manager, "compute_optical_flow", True),
         )
-        logger.info("Set epsilon for polygon to : %s",
-                    self.epsilon_for_polygon)
+        logger.info("Set epsilon for polygon to : %s", self.epsilon_for_polygon)
 
-    def segmentAnything(self,):
+    def segmentAnything(
+        self,
+    ):
         self.toggleDrawMode(False, createMode="polygonSAM")
         self.canvas.loadSamPredictor()
         if not getattr(self.canvas, "sam_predictor", None):
@@ -1288,7 +1302,7 @@ class AnnolidWindow(MainWindow):
             if audio_loader:
                 audio_loader.play(start_frame=self.frame_number)
             if self.fps is not None and self.fps > 0:
-                self.timer.start(int(1000/self.fps))
+                self.timer.start(int(1000 / self.fps))
             else:
                 # 10 to 50 milliseconds are normal real time
                 # playback
@@ -1307,7 +1321,6 @@ class AnnolidWindow(MainWindow):
         self.playVideo(isPlaying=False)
 
     def toggleDrawMode(self, edit=True, createMode="polygon"):
-
         draw_actions = {
             "polygon": self.actions.createMode,
             "rectangle": self.actions.createRectangleMode,
@@ -1378,7 +1391,7 @@ class AnnolidWindow(MainWindow):
         self.label_stats = {}
         self.shape_hash_ids = {}
         self.changed_json_stats = {}
-        self._pred_res_folder_suffix = '_tracking_results_labelme'
+        self._pred_res_folder_suffix = "_tracking_results_labelme"
         self._depth_ndjson_records = {}
         try:
             if self.canvas:
@@ -1393,7 +1406,7 @@ class AnnolidWindow(MainWindow):
         self.behavior_controller.clear()
         self.behavior_log_widget.clear()
         self.isPlaying = False
-        self._time_stamp = ''
+        self._time_stamp = ""
         self.saveButton = None
         self.playButton = None
         self.timer = None
@@ -1417,7 +1430,9 @@ class AnnolidWindow(MainWindow):
         # 3D viewer menu remains enabled; no action needed here
         self._stop_frame_loader()
         self.frame_loader = LoadFrameThread()
-        if self.video_processor is not None and hasattr(self.video_processor, "cutie_processor"):
+        if self.video_processor is not None and hasattr(
+            self.video_processor, "cutie_processor"
+        ):
             self.video_processor.cutie_processor = None
         self.video_processor = None
         self.fps = None
@@ -1429,9 +1444,13 @@ class AnnolidWindow(MainWindow):
             self.seekbar.removeMarksByType("predicted_existing")
 
         if self.tracking_controller.is_tracking_busy():
-            if suppress_tracking_prompt or self.tracking_controller.is_track_all_running():
+            if (
+                suppress_tracking_prompt
+                or self.tracking_controller.is_track_all_running()
+            ):
                 logger.info(
-                    "Skipping tracking stop prompt while batch processing is active.")
+                    "Skipping tracking stop prompt while batch processing is active."
+                )
             else:
                 reply = QtWidgets.QMessageBox.question(
                     self,
@@ -1479,9 +1498,7 @@ class AnnolidWindow(MainWindow):
         self, realtime_config: RealtimeConfig, extras: Dict[str, Any]
     ):
         if getattr(self, "realtime_manager", None) is not None:
-            self.realtime_manager.start_realtime_inference(
-                realtime_config, extras
-            )
+            self.realtime_manager.start_realtime_inference(realtime_config, extras)
 
     def stop_realtime_inference(self):
         if getattr(self, "realtime_manager", None) is not None:
@@ -1491,8 +1508,9 @@ class AnnolidWindow(MainWindow):
         try:
             self.stop_realtime_inference()
         except Exception as exc:  # pragma: no cover - shutdown best effort
-            logger.error("Error stopping realtime inference on exit: %s",
-                         exc, exc_info=True)
+            logger.error(
+                "Error stopping realtime inference on exit: %s", exc, exc_info=True
+            )
         try:
             if getattr(self, "sam3_manager", None):
                 self.sam3_manager.close_session()
@@ -1516,7 +1534,7 @@ class AnnolidWindow(MainWindow):
             for fmt in QtGui.QImageReader.supportedImageFormats()
         ]
 
-        extensions.append('.json')
+        extensions.append(".json")
         self.only_json_files = True
 
         images = []
@@ -1524,7 +1542,7 @@ class AnnolidWindow(MainWindow):
             for file in files:
                 if file.lower().endswith(tuple(extensions)):
                     relativePath = osp.join(root, file)
-                    if self.only_json_files and not file.lower().endswith('.json'):
+                    if self.only_json_files and not file.lower().endswith(".json"):
                         self.only_json_files = False
                     images.append(relativePath)
         images.sort(key=lambda x: x.lower())
@@ -1582,7 +1600,7 @@ class AnnolidWindow(MainWindow):
                 continue
             label_file = self._getLabelFile(filename)
 
-            if not filename.endswith('.json') or self.only_json_files:
+            if not filename.endswith(".json") or self.only_json_files:
                 self._addItem(filename, label_file)
         self.openNextImg(load=load)
 
@@ -1599,7 +1617,11 @@ class AnnolidWindow(MainWindow):
             behavior = schema.behavior_map().get(label)
             if behavior is None:
                 behavior = next(
-                    (beh for beh in schema.behaviors if beh.name.lower() == label.lower()),
+                    (
+                        beh
+                        for beh in schema.behaviors
+                        if beh.name.lower() == label.lower()
+                    ),
                     None,
                 )
             if behavior is not None and behavior.category_id:
@@ -1614,17 +1636,18 @@ class AnnolidWindow(MainWindow):
             # Normalize label (strip whitespace and lowercase)
             normalized_label = label.strip().lower()
             # Compute MD5 hash for reproducibility.
-            hash_digest = hashlib.md5(
-                normalized_label.encode("utf-8")).hexdigest()
+            hash_digest = hashlib.md5(normalized_label.encode("utf-8")).hexdigest()
             hash_int = int(hash_digest, 16)
             # Get a shift offset (default to 0 if not provided).
             shift_offset = config.get("shift_auto_shape_color", 0)
             # Calculate index within LABEL_COLORMAP.
             index = (hash_int + shift_offset) % len(LABEL_COLORMAP)
             # Convert the NumPy array color to a Python tuple.
-            return (int(LABEL_COLORMAP[index][0]),
-                    int(LABEL_COLORMAP[index][1]),
-                    int(LABEL_COLORMAP[index][2]))
+            return (
+                int(LABEL_COLORMAP[index][0]),
+                int(LABEL_COLORMAP[index][1]),
+                int(LABEL_COLORMAP[index][2]),
+            )
         elif (
             config.get("shape_color") == "manual"
             and config.get("label_colors")
@@ -1635,7 +1658,6 @@ class AnnolidWindow(MainWindow):
             return config["default_shape_color"]
 
     def _update_shape_color(self, shape):
-
         if not self.uniqLabelList.findItemByLabel(shape.label):
             item = self.uniqLabelList.createItemFromLabel(shape.label)
             self.uniqLabelList.addItem(item)
@@ -1664,27 +1686,27 @@ class AnnolidWindow(MainWindow):
             text = str(shape.label)
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
-        shape_points_hash = hash(
-            str(sorted(shape.points, key=lambda point: point.x())))
-        self.shape_hash_ids[shape_points_hash] = self.shape_hash_ids.get(
-            shape_points_hash, 0) + 1
+        shape_points_hash = hash(str(sorted(shape.points, key=lambda point: point.x())))
+        self.shape_hash_ids[shape_points_hash] = (
+            self.shape_hash_ids.get(shape_points_hash, 0) + 1
+        )
         if self.shape_hash_ids[shape_points_hash] <= 1:
             self.label_stats[text] = self.label_stats.get(text, 0) + 1
         label_list_item = LabelListWidgetItem(text, shape)
         self.labelList.addItem(label_list_item)
         item = self.uniqLabelList.findItemByLabel(shape.label)
         if item is None:
-            item = self.uniqLabelList.createItemFromLabel(
-                shape.label
-            )
+            item = self.uniqLabelList.createItemFromLabel(shape.label)
             self.uniqLabelList.addItem(item)
             rgb = self._get_rgb_by_label(shape.label)
             self.uniqLabelList.setItemLabel(
-                item, f"{shape.label} [{self.label_stats.get(text,0)} instance]", rgb)
+                item, f"{shape.label} [{self.label_stats.get(text, 0)} instance]", rgb
+            )
         else:
             rgb = self._get_rgb_by_label(shape.label)
             self.uniqLabelList.setItemLabel(
-                item, f"{shape.label} [{self.label_stats.get(text,0)} instances]", rgb)
+                item, f"{shape.label} [{self.label_stats.get(text, 0)} instances]", rgb
+            )
 
         self.labelDialog.addLabelHistory(str(shape.label))
         for action in self.actions.onShapesPresent:
@@ -1703,20 +1725,23 @@ class AnnolidWindow(MainWindow):
         Uses the currently selected shape in the canvas.
         """
         from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
         if not self.canvas.selectedShapes:
             QtWidgets.QMessageBox.information(
-                self, "No Shape Selected", "Please select a shape first.")
+                self, "No Shape Selected", "Please select a shape first."
+            )
             return
 
         # For simplicity, take the first selected shape.
         selected_shape = self.canvas.selectedShapes[0]
 
         current_frame = self.frame_number  # AnnolidWindow's current frame attribute
-        max_frame = self.num_frames - 1      # Total number of frames
+        max_frame = self.num_frames - 1  # Total number of frames
 
         # Create the dialog, explicitly passing self (the main window) and canvas.
         dialog = ShapePropagationDialog(
-            self.canvas, self, current_frame, max_frame, parent=self)
+            self.canvas, self, current_frame, max_frame, parent=self
+        )
 
         # Optionally, preselect the shape in the dialog's list.
         for i in range(dialog.shape_list.count()):
@@ -1747,7 +1772,8 @@ class AnnolidWindow(MainWindow):
         shape_flags = shape.flags or {}
         safe_flags = {k: bool(v) for k, v in shape_flags.items()}
         text, flags, group_id, description = self.labelDialog.popUp(
-            text=str(shape.label), flags=safe_flags,
+            text=str(shape.label),
+            flags=safe_flags,
             group_id=shape.group_id,
             description=shape.description,
         )
@@ -1776,8 +1802,7 @@ class AnnolidWindow(MainWindow):
         marker = "●"
         if str(getattr(shape, "shape_type", "") or "").lower() == "point":
             visibility = keypoint_visibility_from_shape_object(shape)
-            marker = "○" if visibility == int(
-                KeypointVisibility.OCCLUDED) else "●"
+            marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
         item.setText(
             '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
                 html.escape(base_text), r, g, b, marker
@@ -1822,8 +1847,7 @@ class AnnolidWindow(MainWindow):
             marker = "●"
             if str(getattr(shape, "shape_type", "") or "").lower() == "point":
                 visibility = keypoint_visibility_from_shape_object(shape)
-                marker = "○" if visibility == int(
-                    KeypointVisibility.OCCLUDED) else "●"
+                marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
             item.setText(
                 '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
                     html.escape(base_text), r, g, b, marker
@@ -1832,7 +1856,8 @@ class AnnolidWindow(MainWindow):
 
     def set_selected_keypoint_visibility(self, visible: bool) -> None:
         shapes = [
-            s for s in self._selected_shapes_for_keypoint_visibility()
+            s
+            for s in self._selected_shapes_for_keypoint_visibility()
             if str(getattr(s, "shape_type", "") or "").lower() == "point"
         ]
         if not shapes:
@@ -1849,7 +1874,8 @@ class AnnolidWindow(MainWindow):
 
     def toggle_selected_keypoint_visibility(self) -> None:
         shapes = [
-            s for s in self._selected_shapes_for_keypoint_visibility()
+            s
+            for s in self._selected_shapes_for_keypoint_visibility()
             if str(getattr(s, "shape_type", "") or "").lower() == "point"
         ]
         if not shapes:
@@ -1870,15 +1896,14 @@ class AnnolidWindow(MainWindow):
         self.setDirty()
 
     def _saveImageFile(self, filename):
-        image_filename = filename.replace('.json', '.png')
+        image_filename = filename.replace(".json", ".png")
         if self.imageData is None:
             return image_filename
         try:
             if not self.imageData.save(image_filename):
                 logger.warning(f"Failed to save seed image: {image_filename}")
         except Exception as exc:
-            logger.warning(
-                f"Exception while saving seed image {image_filename}: {exc}")
+            logger.warning(f"Exception while saving seed image {image_filename}: {exc}")
         return image_filename
 
     def _save_ai_mask_renders(self, image_filename: str) -> None:
@@ -1900,13 +1925,11 @@ class AnnolidWindow(MainWindow):
             if isinstance(self.imageData, QtGui.QImage):
                 base_image = _qimage_to_np(self.imageData)
             elif isinstance(self.imageData, (bytes, bytearray)):
-                base_image = utils.img_data_to_arr(
-                    self.imageData).copy()
+                base_image = utils.img_data_to_arr(self.imageData).copy()
             elif isinstance(self.imageData, np.ndarray):
                 base_image = np.asarray(self.imageData).copy()
         except Exception as exc:
-            logger.warning(
-                f"Unable to convert image for AI mask export: {exc}")
+            logger.warning(f"Unable to convert image for AI mask export: {exc}")
 
         if base_image is None:
             canvas_pixmap = getattr(self.canvas, "pixmap", None)
@@ -1914,8 +1937,7 @@ class AnnolidWindow(MainWindow):
                 base_image = _qimage_to_np(canvas_pixmap.toImage())
 
         if base_image is None:
-            logger.debug(
-                "Skipping AI mask render save: unsupported image data.")
+            logger.debug("Skipping AI mask render save: unsupported image data.")
             return
 
         mask_shapes = []
@@ -1935,8 +1957,7 @@ class AnnolidWindow(MainWindow):
                     shape_obj = item.shape() if item is not None else None
                     _maybe_add_shape(shape_obj)
         except Exception as exc:
-            logger.warning(
-                f"Failed to collect AI mask shapes from label list: {exc}")
+            logger.warning(f"Failed to collect AI mask shapes from label list: {exc}")
 
         if not mask_shapes and getattr(self.canvas, "shapes", None):
             for shape in self.canvas.shapes:
@@ -1989,8 +2010,7 @@ class AnnolidWindow(MainWindow):
             try:
                 Image.fromarray(masked_image).save(str(out_path))
             except Exception as exc:
-                logger.warning(
-                    f"Failed to save AI mask render {out_path}: {exc}")
+                logger.warning(f"Failed to save AI mask render {out_path}: {exc}")
 
         # Save combined masked frame.
         save_masked_image(combined_mask, "")
@@ -2001,11 +2021,9 @@ class AnnolidWindow(MainWindow):
             paste_mask(shape.mask, shape.points[0], per_mask)
             if not per_mask.any():
                 continue
-            safe_label = re.sub(
-                r"[^0-9A-Za-z_-]", "_", shape.label or ""
-            )
+            safe_label = re.sub(r"[^0-9A-Za-z_-]", "_", shape.label or "")
             if not safe_label:
-                safe_label = f"mask_{idx+1}"
+                safe_label = f"mask_{idx + 1}"
             save_masked_image(per_mask, f"{safe_label}")
 
     def _get_current_model_config(self):
@@ -2044,8 +2062,7 @@ class AnnolidWindow(MainWindow):
                 pass
 
         try:
-            saved = self.settings.value(
-                "ai/dino_kpseg_last_best", "", type=str)
+            saved = self.settings.value("ai/dino_kpseg_last_best", "", type=str)
         except Exception:
             saved = ""
         if saved:
@@ -2075,7 +2092,9 @@ class AnnolidWindow(MainWindow):
     def _is_dino_keypoint_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()
-        return identifier == "dinov3_keypoint_tracker" or weight == "dino_keypoint_tracker"
+        return (
+            identifier == "dinov3_keypoint_tracker" or weight == "dino_keypoint_tracker"
+        )
 
     @staticmethod
     def _is_dino_kpseg_tracker_model(identifier: str, weight: str) -> bool:
@@ -2147,7 +2166,8 @@ class AnnolidWindow(MainWindow):
         try:
             self.stepSizeWidget.predict_button.setText("Stopping...")
             self.stepSizeWidget.predict_button.setStyleSheet(
-                "background-color: orange; color: white;")
+                "background-color: orange; color: white;"
+            )
             self.stepSizeWidget.predict_button.setEnabled(False)
         except Exception:
             pass
@@ -2162,8 +2182,7 @@ class AnnolidWindow(MainWindow):
             else:
                 worker.stop_signal.emit()
         except Exception:
-            logger.debug("Failed to signal prediction worker stop.",
-                         exc_info=True)
+            logger.debug("Failed to signal prediction worker stop.", exc_info=True)
 
         try:
             if thread is not None and hasattr(thread, "requestInterruption"):
@@ -2195,13 +2214,13 @@ class AnnolidWindow(MainWindow):
             return
 
         logger.warning(
-            "Prediction thread did not stop in time; terminating as a last resort.")
+            "Prediction thread did not stop in time; terminating as a last resort."
+        )
         try:
             thread.terminate()
             thread.wait(2000)
         except Exception:
-            logger.debug("Failed to terminate prediction thread.",
-                         exc_info=True)
+            logger.debug("Failed to terminate prediction thread.", exc_info=True)
         try:
             if worker is not None:
                 worker.deleteLater()
@@ -2247,17 +2266,21 @@ class AnnolidWindow(MainWindow):
         bboxes = []
         cls_list = []
         # Build or update the mapping using all rectangle shapes with a valid label.
-        labels = {shape.label for shape in self.canvas.shapes
-                  if shape.shape_type == 'rectangle' and shape.label}
+        labels = {
+            shape.label
+            for shape in self.canvas.shapes
+            if shape.shape_type == "rectangle" and shape.label
+        }
         if labels:
             # Create a sorted mapping so that the order is predictable.
-            self.class_mapping = {label: idx for idx,
-                                  label in enumerate(sorted(labels))}
+            self.class_mapping = {
+                label: idx for idx, label in enumerate(sorted(labels))
+            }
         else:
             self.class_mapping = {}
 
         for shape in self.canvas.shapes:
-            if shape.shape_type != 'rectangle':
+            if shape.shape_type != "rectangle":
                 continue
             if not shape.points or len(shape.points) < 2:
                 continue
@@ -2274,8 +2297,7 @@ class AnnolidWindow(MainWindow):
             cls_list.append(cls_idx)
 
         if not bboxes:
-            logger.info(
-                "No rectangle shapes found on canvas for visual prompts.")
+            logger.info("No rectangle shapes found on canvas for visual prompts.")
             return {}
 
         # Convert arrays to plain Python lists to avoid pop() errors in YOLOE.
@@ -2346,13 +2368,12 @@ class AnnolidWindow(MainWindow):
                 and text_prompt
             )
         ):
-            QtWidgets.QMessageBox.about(self,
-                                        "No Shapes or Labeled Frames",
-                                        "Please label this frame")
+            QtWidgets.QMessageBox.about(
+                self, "No Shapes or Labeled Frames", "Please label this frame"
+            )
             return
 
         if self.video_file:
-
             self._prediction_stop_requested = False
 
             if self._is_dino_kpseg_tracker_model(model_name, model_weight):
@@ -2366,8 +2387,7 @@ class AnnolidWindow(MainWindow):
                         ),
                     )
                     return
-                fresh_tracker_config = copy.deepcopy(
-                    self.tracker_runtime_config)
+                fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
                 self.video_processor = DinoKPSEGVideoProcessor(
                     video_path=self.video_file,
                     result_folder=self.video_results_folder,
@@ -2376,13 +2396,14 @@ class AnnolidWindow(MainWindow):
                     runtime_config=fresh_tracker_config,
                 )
             elif self._is_dino_keypoint_model(model_name, model_weight):
-                dino_model = self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
+                dino_model = (
+                    self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
+                )
                 # Instead of passing a reference to the shared config object,
                 # pass a deep copy. This ensures every tracking run starts with
                 # a pristine configuration, free from any mutations made by
                 # a previous run. This is the key to a true "start from scratch".
-                fresh_tracker_config = copy.deepcopy(
-                    self.tracker_runtime_config)
+                fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
 
                 self.video_processor = DinoKeypointVideoProcessor(
                     video_path=self.video_file,
@@ -2397,8 +2418,9 @@ class AnnolidWindow(MainWindow):
                     process_video_efficienttam,
                 )
 
-                model_key = Path(
-                    model_weight).stem if model_weight else "efficienttam_s"
+                model_key = (
+                    Path(model_weight).stem if model_weight else "efficienttam_s"
+                )
                 logger.info(
                     "Using EfficientTAM model '%s' for video '%s'",
                     model_key,
@@ -2430,10 +2452,12 @@ class AnnolidWindow(MainWindow):
                 self.video_processor = processor
             elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
+
                 weight_lower = (model_weight or "").lower()
-                is_prompt_free_yoloe = (
-                    "yoloe" in weight_lower
-                    and ("-pf." in weight_lower or weight_lower.endswith("-pf") or "-pf_" in weight_lower)
+                is_prompt_free_yoloe = "yoloe" in weight_lower and (
+                    "-pf." in weight_lower
+                    or weight_lower.endswith("-pf")
+                    or "-pf_" in weight_lower
                 )
 
                 visual_prompts = {}
@@ -2445,21 +2469,28 @@ class AnnolidWindow(MainWindow):
                     visual_prompts = self.extract_visual_prompts_from_canvas()
                     if visual_prompts:
                         logger.info(
-                            "Extracted visual prompts for YOLOE: %s", visual_prompts)
+                            "Extracted visual prompts for YOLOE: %s", visual_prompts
+                        )
 
                     if visual_prompts and "yoloe" in weight_lower:
                         # Visual prompting: use rectangle labels as class names (no text encoder needed).
-                        prompt_class_names = list(self.class_mapping.keys()) if hasattr(
-                            self, "class_mapping") else None
+                        prompt_class_names = (
+                            list(self.class_mapping.keys())
+                            if hasattr(self, "class_mapping")
+                            else None
+                        )
                         yoloe_text_prompt = False
                     else:
                         # Text prompting: take classes from the prompt field.
                         text_prompt = self.aiRectangle._aiRectanglePrompt.text()
-                        class_names = [p.strip()
-                                       for p in text_prompt.split(",") if p.strip()]
+                        class_names = [
+                            p.strip() for p in text_prompt.split(",") if p.strip()
+                        ]
                         if class_names:
                             logger.info(
-                                "Extracted class names from text prompt: %s", class_names)
+                                "Extracted class names from text prompt: %s",
+                                class_names,
+                            )
                 else:
                     # Prompt-free YOLOE models ship with an internal vocabulary and should not be
                     # overridden by user prompts / visual exemplars.
@@ -2469,26 +2500,31 @@ class AnnolidWindow(MainWindow):
                     yoloe_text_prompt = True
                 pose_keypoint_names = None
                 pose_schema_path = None
-                if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):
+                if getattr(self, "_pose_schema", None) is not None and getattr(
+                    self._pose_schema, "keypoints", None
+                ):
                     # Keep a single canonical keypoint list; instances are represented
                     # via per-object grouping (track id / group_id), not name prefixes.
                     pose_keypoint_names = list(self._pose_schema.keypoints)
                 if getattr(self, "_pose_schema_path", None):
                     pose_schema_path = self._pose_schema_path
-                self.video_processor = InferenceProcessor(model_name=model_weight,
-                                                          model_type="yolo",
-                                                          class_names=class_names,
-                                                          keypoint_names=pose_keypoint_names,
-                                                          pose_schema_path=pose_schema_path,
-                                                          yoloe_text_prompt=bool(
-                                                              yoloe_text_prompt),
-                                                          prompt_class_names=prompt_class_names)
+                self.video_processor = InferenceProcessor(
+                    model_name=model_weight,
+                    model_type="yolo",
+                    class_names=class_names,
+                    keypoint_names=pose_keypoint_names,
+                    pose_schema_path=pose_schema_path,
+                    yoloe_text_prompt=bool(yoloe_text_prompt),
+                    prompt_class_names=prompt_class_names,
+                )
             elif self._is_dino_kpseg_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
 
                 pose_keypoint_names = None
                 pose_schema_path = None
-                if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):
+                if getattr(self, "_pose_schema", None) is not None and getattr(
+                    self._pose_schema, "keypoints", None
+                ):
                     # Keep a single canonical keypoint list; DinoKPSEG predicts one
                     # set per instance crop and instances are separated by group_id.
                     pose_keypoint_names = list(self._pose_schema.keypoints)
@@ -2510,8 +2546,7 @@ class AnnolidWindow(MainWindow):
 
                 try:
                     resolved_path = str(Path(resolved).expanduser().resolve())
-                    cached = getattr(
-                        self, "_dinokpseg_inference_processor", None)
+                    cached = getattr(self, "_dinokpseg_inference_processor", None)
                     if (
                         cached is not None
                         and getattr(cached, "model_type", "").lower() == "dinokpseg"
@@ -2546,8 +2581,8 @@ class AnnolidWindow(MainWindow):
             else:
                 from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
                 from annolid.motion.optical_flow import optical_flow_settings_from
-                flow_settings = optical_flow_settings_from(
-                    self.optical_flow_manager)
+
+                flow_settings = optical_flow_settings_from(self.optical_flow_manager)
                 self.video_processor = VideoProcessor(
                     self.video_file,
                     model_name=model_name,
@@ -2559,13 +2594,15 @@ class AnnolidWindow(MainWindow):
                     save_video_with_color_mask=self.save_video_with_color_mask,
                     **flow_settings,
                     results_folder=str(self.video_results_folder)
-                    if self.video_results_folder else None,
+                    if self.video_results_folder
+                    else None,
                 )
             if getattr(self, "seg_pred_thread", None) is not None:
                 try:
                     if self.seg_pred_thread.isRunning():
                         logger.warning(
-                            "Prediction thread already running; stop it before starting a new run.")
+                            "Prediction thread already running; stop it before starting a new run."
+                        )
                         self.stop_prediction()
                         return
                 except RuntimeError:
@@ -2588,20 +2625,22 @@ class AnnolidWindow(MainWindow):
                 end_frame = self.frame_number + to_frame * self.step_size
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
-            stop_when_lost_tracking_instance = (self.stepSizeWidget.occclusion_checkbox.isChecked()
-                                                or self.automatic_pause_enabled)
+            stop_when_lost_tracking_instance = (
+                self.stepSizeWidget.occclusion_checkbox.isChecked()
+                or self.automatic_pause_enabled
+            )
             inference_step = 1
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)
-            inference_end_frame = None  # default: run to end for YOLO/DinoKPSEG inference
+            inference_end_frame = (
+                None  # default: run to end for YOLO/DinoKPSEG inference
+            )
             if self.video_results_folder:
                 try:
                     results_folder = Path(self.video_results_folder)
                     if should_start_predictions_from_frame0(results_folder):
                         inference_start_frame = 0
                     else:
-                        max_existing = self._max_predicted_frame_index(
-                            results_folder
-                        )
+                        max_existing = self._max_predicted_frame_index(results_folder)
                         if max_existing >= int(inference_start_frame):
                             inference_start_frame = int(max_existing) + 1
                 except Exception:
@@ -2678,14 +2717,14 @@ class AnnolidWindow(MainWindow):
             else:
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.process_video_frames,
-                    start_frame=self.frame_number+1,
+                    start_frame=self.frame_number + 1,
                     end_frame=end_frame,
                     step=self.step_size,
-                    is_cutie=False if self._is_cotracker_model(
-                        model_name, model_weight) else True,
+                    is_cutie=False
+                    if self._is_cotracker_model(model_name, model_weight)
+                    else True,
                     mem_every=self.step_size,
-                    point_tracking=self._is_cotracker_model(
-                        model_name, model_weight),
+                    point_tracking=self._is_cotracker_model(model_name, model_weight),
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
@@ -2705,27 +2744,34 @@ class AnnolidWindow(MainWindow):
                 self.frame_number = int(watch_start_frame)
             except Exception:
                 pass
-            logger.info("Prediction started from frame: %s",
-                        int(watch_start_frame))
+            logger.info("Prediction started from frame: %s", int(watch_start_frame))
             self.stepSizeWidget.predict_button.setText("Stop")
             self.stepSizeWidget.predict_button.setStyleSheet(
-                "background-color: red; color: white;")
+                "background-color: red; color: white;"
+            )
             self.stop_prediction_flag = True
             self.pred_worker.moveToThread(self.seg_pred_thread)
             self.seg_pred_thread.started.connect(
-                self.pred_worker.run, QtCore.Qt.QueuedConnection)
+                self.pred_worker.run, QtCore.Qt.QueuedConnection
+            )
             self.pred_worker.result_signal.connect(
-                self.lost_tracking_instance, QtCore.Qt.QueuedConnection)
+                self.lost_tracking_instance, QtCore.Qt.QueuedConnection
+            )
             self.pred_worker.finished_signal.connect(
-                self.predict_is_ready, QtCore.Qt.QueuedConnection)
+                self.predict_is_ready, QtCore.Qt.QueuedConnection
+            )
             self.pred_worker.finished_signal.connect(
-                self.seg_pred_thread.quit, QtCore.Qt.QueuedConnection)
+                self.seg_pred_thread.quit, QtCore.Qt.QueuedConnection
+            )
             self.pred_worker.finished_signal.connect(
-                self.pred_worker.deleteLater, QtCore.Qt.QueuedConnection)
+                self.pred_worker.deleteLater, QtCore.Qt.QueuedConnection
+            )
             self.seg_pred_thread.finished.connect(
-                self._cleanup_prediction_worker, QtCore.Qt.QueuedConnection)
+                self._cleanup_prediction_worker, QtCore.Qt.QueuedConnection
+            )
             self.seg_pred_thread.finished.connect(
-                self.seg_pred_thread.deleteLater, QtCore.Qt.QueuedConnection)
+                self.seg_pred_thread.deleteLater, QtCore.Qt.QueuedConnection
+            )
             self.seg_pred_thread.start()
 
     def lost_tracking_instance(self, message):
@@ -2734,22 +2780,19 @@ class AnnolidWindow(MainWindow):
         message, current_frame_index = message.split("#")
         current_frame_index = int(current_frame_index)
         if "missing instance(s)" in message:
-            QtWidgets.QMessageBox.information(
-                self, "Stop early",
-                message
-            )
-        self.stepSizeWidget.predict_button.setText(
-            "Pred")  # Change button text
+            QtWidgets.QMessageBox.information(self, "Stop early", message)
+        self.stepSizeWidget.predict_button.setText("Pred")  # Change button text
         self.stepSizeWidget.predict_button.setStyleSheet(
-            "background-color: green; color: white;")
+            "background-color: green; color: white;"
+        )
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
 
     def predict_is_ready(self, messege):
-        self.stepSizeWidget.predict_button.setText(
-            "Pred")  # Change button text
+        self.stepSizeWidget.predict_button.setText("Pred")  # Change button text
         self.stepSizeWidget.predict_button.setStyleSheet(
-            "background-color: green; color: white;")
+            "background-color: green; color: white;"
+        )
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
         try:
@@ -2771,18 +2814,19 @@ class AnnolidWindow(MainWindow):
             elif messege is not None:
                 message_text = str(messege)
 
-            if message_text.startswith("Stopped") or "missing instance(s)" in message_text:
+            if (
+                message_text.startswith("Stopped")
+                or "missing instance(s)" in message_text
+            ):
                 stop_from_message = True
 
             if message_text and "last frame" in message_text:
                 stop_from_message = True
-                QtWidgets.QMessageBox.information(
-                    self, "Stop early",
-                    message_text
-                )
+                QtWidgets.QMessageBox.information(self, "Stop early", message_text)
             if self._prediction_stop_requested or stop_from_message:
                 logger.info(
-                    "Prediction stopped early; skipping tracking CSV conversion.")
+                    "Prediction stopped early; skipping tracking CSV conversion."
+                )
             else:
                 if self.video_loader is not None:
                     max_predicted = -1
@@ -2811,15 +2855,15 @@ class AnnolidWindow(MainWindow):
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
-        self._finalize_prediction_progress(
-            "Manual prediction worker finished.")
+        self._finalize_prediction_progress("Manual prediction worker finished.")
         self._prediction_stop_requested = False
 
     def reset_predict_button(self):
         """Reset the predict button text and style"""
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
-            "background-color: green; color: white;")
+            "background-color: green; color: white;"
+        )
 
     def loadFlags(self, flags):
         """Delegate flag loading to the flags controller."""
@@ -2842,8 +2886,7 @@ class AnnolidWindow(MainWindow):
 
     def _refresh_behavior_overlay(self) -> None:
         """Synchronize canvas label and flag widget with timeline behaviors."""
-        active_behaviors = self.behavior_controller.active_behaviors(
-            self.frame_number)
+        active_behaviors = self.behavior_controller.active_behaviors(self.frame_number)
 
         # Preserve any user-specified flags that aren't managed by the behavior controller.
         current_flags: Dict[str, bool] = {}
@@ -2851,7 +2894,9 @@ class AnnolidWindow(MainWindow):
         for row in range(table.rowCount()):
             name_widget = table.cellWidget(row, FlagTableWidget.COLUMN_NAME)
             value_widget = table.cellWidget(row, FlagTableWidget.COLUMN_ACTIVE)
-            if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(value_widget, QtWidgets.QCheckBox):
+            if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(
+                value_widget, QtWidgets.QCheckBox
+            ):
                 name = name_widget.text().strip()
                 if name:
                     current_flags[name] = value_widget.isChecked()
@@ -2862,8 +2907,7 @@ class AnnolidWindow(MainWindow):
         if current_flags:
             self.loadFlags(current_flags)
         else:
-            text = ",".join(sorted(active_behaviors)
-                            ) if active_behaviors else None
+            text = ",".join(sorted(active_behaviors)) if active_behaviors else None
             self.canvas.setBehaviorText(text)
 
     def _get_pil_image_from_state(self) -> Image.Image | None:
@@ -2893,10 +2937,18 @@ class AnnolidWindow(MainWindow):
         elif isinstance(self.imageData, Image.Image):
             pil_image = self.imageData
         # 2. Check for the most common case: a QImage from the video loader
-        elif isinstance(self.imageData, tuple(filter(None, (
-            QtGui.QImage,
-            getattr(ImageQt, "ImageQt", None),
-        )))):
+        elif isinstance(
+            self.imageData,
+            tuple(
+                filter(
+                    None,
+                    (
+                        QtGui.QImage,
+                        getattr(ImageQt, "ImageQt", None),
+                    ),
+                )
+            ),
+        ):
             qimage = QtGui.QImage(self.imageData)
             image_bytes = self._qimage_to_bytes(qimage)
             if image_bytes is None:
@@ -2917,8 +2969,8 @@ class AnnolidWindow(MainWindow):
             return None
 
         # 4. Ensure the final image is in a standard format (RGB)
-        if pil_image.mode != 'RGB':
-            return pil_image.convert('RGB')
+        if pil_image.mode != "RGB":
+            return pil_image.convert("RGB")
 
         return pil_image
 
@@ -2928,10 +2980,10 @@ class AnnolidWindow(MainWindow):
 
         def format_shape(s):
             data = s.other_data.copy()
-            if s.description and 'zone' in s.description.lower():
+            if s.description and "zone" in s.description.lower():
                 has_zone_shapes = True
             if len(s.points) <= 1:
-                s.shape_type = 'point'
+                s.shape_type = "point"
             data.update(
                 dict(
                     label=s.label.encode("utf-8") if PY2 else s.label,
@@ -2943,7 +2995,7 @@ class AnnolidWindow(MainWindow):
                     if s.mask is None
                     else utils.img_arr_to_b64(s.mask.astype(np.uint8)),
                     visible=s.visible,
-                    description=s.description
+                    description=s.description,
                 )
             )
             return data
@@ -2952,8 +3004,11 @@ class AnnolidWindow(MainWindow):
         flags = {}
         if self.flag_widget:
             # Retrieve the flags as a dictionary
-            flags = {_flag: True for _flag in self.flag_widget._get_existing_flag_names(
-            ) if self.is_behavior_active(self.frame_number, _flag)}
+            flags = {
+                _flag: True
+                for _flag in self.flag_widget._get_existing_flag_names()
+                if self.is_behavior_active(self.frame_number, _flag)
+            }
 
         if self.canvas.current_behavior_text is not None:
             behaviors = self.canvas.current_behavior_text.split(",")
@@ -2988,9 +3043,7 @@ class AnnolidWindow(MainWindow):
                 self.zone_path = filename
 
             self.labelFile = lf
-            items = self.fileListWidget.findItems(
-                self.imagePath, Qt.MatchExactly
-            )
+            items = self.fileListWidget.findItems(self.imagePath, Qt.MatchExactly)
             if len(items) > 0:
                 if len(items) != 1:
                     raise RuntimeError("There are duplicate files.")
@@ -2999,10 +3052,10 @@ class AnnolidWindow(MainWindow):
             # self.filename = filename
             # Emit VideoManagerWidget's json_saved signal if shapes are present and video_file is set
             if shapes and self.video_file:
-                self.video_manager_widget.json_saved.emit(
-                    self.video_file, filename)
+                self.video_manager_widget.json_saved.emit(self.video_file, filename)
                 logger.debug(
-                    f"Emitted VideoManagerWidget.json_saved for video: {self.video_file}, JSON: {filename}")
+                    f"Emitted VideoManagerWidget.json_saved for video: {self.video_file}, JSON: {filename}"
+                )
             return True
         except LabelFileError as e:
             self.errorMessage(
@@ -3013,22 +3066,23 @@ class AnnolidWindow(MainWindow):
     def _saveFile(self, filename):
         json_saved = self.saveLabels(filename)
         if filename and json_saved:
-            self.changed_json_stats[filename] = self.changed_json_stats.get(
-                filename, 0) + 1
-            if (self.changed_json_stats[filename] >= 1
-                    and self._pred_res_folder_suffix in filename):
-
+            self.changed_json_stats[filename] = (
+                self.changed_json_stats.get(filename, 0) + 1
+            )
+            if (
+                self.changed_json_stats[filename] >= 1
+                and self._pred_res_folder_suffix in filename
+            ):
                 changed_folder = str(Path(filename).parent)
-                if '_edited' not in changed_folder:
-                    changed_folder = Path(changed_folder + '_edited')
+                if "_edited" not in changed_folder:
+                    changed_folder = Path(changed_folder + "_edited")
                 else:
                     changed_folder = Path(changed_folder)
                 if not changed_folder.exists():
                     changed_folder.mkdir(exist_ok=True, parents=True)
                 changed_filename = changed_folder / Path(filename).name
                 _ = self.saveLabels(str(changed_filename))
-                _ = self._saveImageFile(
-                    str(changed_filename).replace('.json', '.png'))
+                _ = self._saveImageFile(str(changed_filename).replace(".json", ".png"))
             image_filename = self._saveImageFile(filename)
             self._auto_collect_labelme_pair(filename, image_filename)
             self._save_ai_mask_renders(image_filename)
@@ -3045,10 +3099,9 @@ class AnnolidWindow(MainWindow):
     def _auto_collect_labelme_pair(self, json_path: str, image_path: str) -> None:
         index_file = os.environ.get("ANNOLID_LABEL_INDEX_FILE", "").strip()
         if not index_file:
-            index_file = (
-                (self.config or {}).get("label_index_file")
-                or self.settings.value("dataset/label_index_file", "", type=str)
-            )
+            index_file = (self.config or {}).get(
+                "label_index_file"
+            ) or self.settings.value("dataset/label_index_file", "", type=str)
         if not index_file:
             dataset_root = (
                 os.environ.get("ANNOLID_LABEL_COLLECTION_DIR")
@@ -3060,13 +3113,15 @@ class AnnolidWindow(MainWindow):
             try:
                 from annolid.datasets.labelme_collection import default_label_index_path
             except Exception:
-                index_file = str(Path(dataset_root) /
-                                 "annolid_logs" / "annolid_dataset.jsonl")
+                index_file = str(
+                    Path(dataset_root) / "annolid_logs" / "annolid_dataset.jsonl"
+                )
             else:
                 index_file = str(default_label_index_path(Path(dataset_root)))
 
-        include_empty_value = os.environ.get(
-            "ANNOLID_LABEL_INDEX_INCLUDE_EMPTY", "0").strip().lower()
+        include_empty_value = (
+            os.environ.get("ANNOLID_LABEL_INDEX_INCLUDE_EMPTY", "0").strip().lower()
+        )
         include_empty = include_empty_value in {"1", "true", "yes", "on"}
 
         try:
@@ -3080,8 +3135,7 @@ class AnnolidWindow(MainWindow):
                 source="annolid_gui",
             )
         except Exception as exc:
-            logger.warning(
-                "Auto label indexing failed for %s: %s", json_path, exc)
+            logger.warning("Auto label indexing failed for %s: %s", json_path, exc)
 
     def getLabelFile(self):
         if str(self.filename).lower().endswith(".json"):
@@ -3105,8 +3159,7 @@ class AnnolidWindow(MainWindow):
                 label_file = osp.splitext(self.filename)[0] + ".json"
                 if self.output_dir:
                     label_file_without_path = osp.basename(label_file)
-                    label_file = osp.join(
-                        self.output_dir, label_file_without_path)
+                    label_file = osp.join(self.output_dir, label_file_without_path)
                 self.saveLabels(label_file)
                 self.saveFile()
                 return
@@ -3125,14 +3178,16 @@ class AnnolidWindow(MainWindow):
             if getattr(self.caption_widget, "behavior_widget", None) is not None:
                 try:
                     self.caption_widget.behavior_widget.set_current_frame(
-                        self.frame_number)
+                        self.frame_number
+                    )
                 except Exception:
                     pass
         _filename = os.path.basename(self.filename)
         if self.video_loader:
             if self.frame_number:
                 self._time_stamp = convert_frame_number_to_time(
-                    self.frame_number, self.fps)
+                    self.frame_number, self.fps
+                )
                 if clean:
                     title = f"{title}-Video Timestamp:{self._time_stamp}|Events:{self.behavior_controller.events_count}"
                     title = f"{title}|Frame_number:{self.frame_number}"
@@ -3202,9 +3257,7 @@ class AnnolidWindow(MainWindow):
                     prediction_path.unlink()
                     deleted_files += 1
                 except OSError as e:
-                    logger.error(
-                        "Failed to delete file %s: %s", prediction_path, e
-                    )
+                    logger.error("Failed to delete file %s: %s", prediction_path, e)
 
         store_removed = 0
         try:
@@ -3242,9 +3295,7 @@ class AnnolidWindow(MainWindow):
                     "Failed to rescan prediction folder after deletion: %s", exc
                 )
         else:
-            logger.info(
-                "No future prediction files or store records required removal."
-            )
+            logger.info("No future prediction files or store records required removal.")
 
     def _collect_seed_frames(self, prediction_folder: Path) -> Set[int]:
         seed_frames: Set[int] = set()
@@ -3330,9 +3381,7 @@ class AnnolidWindow(MainWindow):
                 prediction_path.unlink()
                 deleted_files += 1
             except OSError as e:
-                logger.error(
-                    "Failed to delete file %s: %s", prediction_path, e
-                )
+                logger.error("Failed to delete file %s: %s", prediction_path, e)
 
         store_removed = 0
         try:
@@ -3390,8 +3439,10 @@ class AnnolidWindow(MainWindow):
         msg_box.setIcon(mb.Warning)
         msg_box.setText(msg)
         msg_box.setInformativeText(
-            self.tr("Yes: delete the current label file. "
-                    "Yes to All: delete predicted frames for the current seed range.")
+            self.tr(
+                "Yes: delete the current label file. "
+                "Yes to All: delete predicted frames for the current seed range."
+            )
         )
         msg_box.setStandardButtons(mb.No | mb.Yes | mb.YesToAll)
         msg_box.setDefaultButton(mb.No)
@@ -3418,7 +3469,7 @@ class AnnolidWindow(MainWindow):
             label_file = self.getLabelFile()
             if osp.exists(label_file):
                 os.remove(label_file)
-                img_file = label_file.replace('.json', '.png')
+                img_file = label_file.replace(".json", ".png")
                 if osp.exists(img_file):
                     os.remove(img_file)
                 logger.info("Label file is removed: {}".format(label_file))
@@ -3449,13 +3500,12 @@ class AnnolidWindow(MainWindow):
             self.actions.deleteFile.setEnabled(False)
 
     def save_labels(self):
-        """Save the labels into a selected text file.
-        """
+        """Save the labels into a selected text file."""
         file_name, extension = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Save labels file",
-            str(self.here.parent / 'annotation'),
-            filter='*.txt'
+            str(self.here.parent / "annotation"),
+            filter="*.txt",
         )
 
         # return if user cancels the operation
@@ -3463,20 +3513,18 @@ class AnnolidWindow(MainWindow):
             return
 
         if Path(file_name).is_file() or Path(file_name).parent.is_dir():
-            labels_text_list = ['__ignore__', '_background_']
+            labels_text_list = ["__ignore__", "_background_"]
             for i in range(self.uniqLabelList.count()):
                 # get all the label names from the unique list
-                label_name = self.uniqLabelList.item(
-                    i).data(QtCore.Qt.UserRole)
+                label_name = self.uniqLabelList.item(i).data(QtCore.Qt.UserRole)
                 labels_text_list.append(label_name)
 
-            with open(file_name, 'w') as lt:
+            with open(file_name, "w") as lt:
                 for ltl in labels_text_list:
-                    lt.writelines(str(ltl)+'\n')
+                    lt.writelines(str(ltl) + "\n")
 
     def frames(self):
-        """Extract frames based on the selected algos.
-        """
+        """Extract frames based on the selected algos."""
         dlg = ExtractFrameDialog(self.video_file)
         video_file = None
         out_dir = None
@@ -3488,8 +3536,7 @@ class AnnolidWindow(MainWindow):
             out_dir = dlg.out_dir
             start_seconds = dlg.start_sconds
             end_seconds = dlg.end_seconds
-            sub_clip = isinstance(
-                start_seconds, int) and isinstance(end_seconds, int)
+            sub_clip = isinstance(start_seconds, int) and isinstance(end_seconds, int)
 
         if video_file is None:
             return
@@ -3500,7 +3547,7 @@ class AnnolidWindow(MainWindow):
             out_dir=out_dir,
             sub_clip=sub_clip,
             start_seconds=start_seconds,
-            end_seconds=end_seconds
+            end_seconds=end_seconds,
         )
 
         pw = ProgressingWindow(out_frames_gen)
@@ -3508,8 +3555,7 @@ class AnnolidWindow(MainWindow):
             pw.runner_thread.terminate()
 
         if out_dir is None:
-            out_frames_dir = str(
-                Path(video_file).resolve().with_suffix(''))
+            out_frames_dir = str(Path(video_file).resolve().with_suffix(""))
         else:
             out_frames_dir = str(Path(out_dir) / Path(video_file).name)
 
@@ -3519,12 +3565,13 @@ class AnnolidWindow(MainWindow):
 
         self.annotation_dir = out_frames_dir
 
-        QtWidgets.QMessageBox.about(self,
-                                    "Finished",
-                                    f"Done! Results are in folder: \
-                                         {out_frames_dir}")
-        self.statusBar().showMessage(
-            self.tr(f"Finshed extracting frames."))
+        QtWidgets.QMessageBox.about(
+            self,
+            "Finished",
+            f"Done! Results are in folder: \
+                                         {out_frames_dir}",
+        )
+        self.statusBar().showMessage(self.tr(f"Finshed extracting frames."))
         self.importDirImages(out_frames_dir)
 
     def convert_json_to_tracked_csv(self):
@@ -3533,24 +3580,28 @@ class AnnolidWindow(MainWindow):
         """
         if not self.video_file:
             QtWidgets.QMessageBox.warning(
-                self, "Missing Video File", "No video file selected.")
+                self, "Missing Video File", "No video file selected."
+            )
             return
 
         video_file = self.video_file
-        out_folder = Path(video_file).with_suffix('')
+        out_folder = Path(video_file).with_suffix("")
 
         if not out_folder or not out_folder.exists():
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Predictions Found",
-                "Help Annolid achieve precise predictions by labeling a frame. Your input is valuable!"
+                "Help Annolid achieve precise predictions by labeling a frame. Your input is valuable!",
             )
             return
 
-        csv_output_path = out_folder.parent / \
-            f"{out_folder.name}_tracking.csv"
+        csv_output_path = out_folder.parent / f"{out_folder.name}_tracking.csv"
 
-        if getattr(self, "csv_thread", None) and self.csv_thread and self.csv_thread.isRunning():
+        if (
+            getattr(self, "csv_thread", None)
+            and self.csv_thread
+            and self.csv_thread.isRunning()
+        ):
             job = (out_folder, csv_output_path)
             if job not in self._csv_conversion_queue:
                 self._csv_conversion_queue.append(job)
@@ -3564,18 +3615,18 @@ class AnnolidWindow(MainWindow):
         self._initialize_progress_bar(owner="csv_conversion")
         self._last_tracking_csv_path = str(csv_output_path)
         self.statusBar().showMessage(
-            f"Generating tracking CSV: {csv_output_path.name}", 3000)
+            f"Generating tracking CSV: {csv_output_path.name}", 3000
+        )
 
         try:
-            tracked_csv_path = out_folder.parent / \
-                f"{out_folder.name}_tracked.csv"
+            tracked_csv_path = out_folder.parent / f"{out_folder.name}_tracked.csv"
             self.csv_worker = FlexibleWorker(
                 task_function=labelme2csv.convert_json_to_csv,
                 json_folder=str(out_folder),
                 csv_file=str(csv_output_path),
                 tracked_csv_file=str(tracked_csv_path),
                 fps=self.fps,
-                progress_callback=self._csv_worker_progress_proxy
+                progress_callback=self._csv_worker_progress_proxy,
             )
             self.csv_thread = QtCore.QThread()
 
@@ -3585,12 +3636,12 @@ class AnnolidWindow(MainWindow):
 
             # Safely start the thread and worker signal
             self.csv_thread.start()
-            QtCore.QTimer.singleShot(
-                0, lambda: self.csv_worker.start_signal.emit())
+            QtCore.QTimer.singleShot(0, lambda: self.csv_worker.start_signal.emit())
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(
-                self, "Error", f"An unexpected error occurred: {str(e)}")
+                self, "Error", f"An unexpected error occurred: {str(e)}"
+            )
             try:
                 if hasattr(self, "progress_bar") and self.progress_bar.isVisible():
                     self.statusBar().removeWidget(self.progress_bar)
@@ -3620,11 +3671,7 @@ class AnnolidWindow(MainWindow):
             return
 
         if isinstance(result, str) and result.startswith("No annotation"):
-            QtWidgets.QMessageBox.information(
-                self,
-                "Tracking CSV",
-                result
-            )
+            QtWidgets.QMessageBox.information(self, "Tracking CSV", result)
             self._last_tracking_csv_path = None
             self._cleanup_csv_worker()
             return
@@ -3633,7 +3680,7 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.critical(
                 self,
                 "Tracking CSV Error",
-                f"Failed to generate tracking CSV:\n{result}"
+                f"Failed to generate tracking CSV:\n{result}",
             )
             self._cleanup_csv_worker()
             return
@@ -3643,16 +3690,14 @@ class AnnolidWindow(MainWindow):
             path_obj = Path(csv_path)
             if path_obj.exists():
                 QtWidgets.QMessageBox.information(
-                    self,
-                    "Tracking Complete",
-                    f"Review the file at:\n{csv_path}"
+                    self, "Tracking Complete", f"Review the file at:\n{csv_path}"
                 )
             else:
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Tracking CSV Missing",
                     f"Expected tracking file was not found:\n{csv_path}\n"
-                    "Please try saving again."
+                    "Please try saving again.",
                 )
             self._last_tracking_csv_path = None
         self._cleanup_csv_worker()
@@ -3701,11 +3746,14 @@ class AnnolidWindow(MainWindow):
         # Reset button state (already in predict_is_ready and lost_tracking_instance)
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
-            "background-color: green; color: white;")
+            "background-color: green; color: white;"
+        )
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False  # This flag is specific to AnnolidWindow
 
-    def _setup_prediction_folder_watcher(self, folder_path_to_watch, *, start_frame: int | None = None):
+    def _setup_prediction_folder_watcher(
+        self, folder_path_to_watch, *, start_frame: int | None = None
+    ):
         if self.prediction_progress_watcher is None:
             self.prediction_progress_watcher = QtCore.QTimer(self)
             self.prediction_progress_watcher.timeout.connect(
@@ -3716,14 +3764,15 @@ class AnnolidWindow(MainWindow):
             self.prediction_progress_folder = folder_path_to_watch
             self.prediction_start_timestamp = time.time()
             if start_frame is None:
-                start_frame = int(
-                    self.frame_number) if self.frame_number is not None else 0
+                start_frame = (
+                    int(self.frame_number) if self.frame_number is not None else 0
+                )
             self._prediction_start_frame = max(0, int(start_frame))
             self._prediction_existing_store_frames = set()
             self._prediction_existing_json_frames = set()
             path = Path(folder_path_to_watch)
-            prefixed_pattern = re.compile(r'_(\d{9,})\.json$')
-            bare_pattern = re.compile(r'^(\d{9,})\.json$')
+            prefixed_pattern = re.compile(r"_(\d{9,})\.json$")
+            bare_pattern = re.compile(r"^(\d{9,})\.json$")
             try:
                 for f_name in os.listdir(path):
                     if not f_name.endswith(".json"):
@@ -3736,8 +3785,7 @@ class AnnolidWindow(MainWindow):
                     if match:
                         try:
                             frame_num = int(float(match.group(1)))
-                            self._prediction_existing_json_frames.add(
-                                frame_num)
+                            self._prediction_existing_json_frames.add(frame_num)
                         except (ValueError, IndexError):
                             continue
             except OSError as exc:
@@ -3751,18 +3799,17 @@ class AnnolidWindow(MainWindow):
                     path / f"{path.name}_000000000.json"
                 )
                 if store.store_path.exists():
-                    self._prediction_existing_store_frames = set(
-                        store.iter_frames())
+                    self._prediction_existing_store_frames = set(store.iter_frames())
             except Exception:
                 self._prediction_existing_store_frames = set()
             self.prediction_progress_watcher.start(1000)  # Poll every 1000 ms
             logger.info(
-                f"Prediction progress watcher started for: {folder_path_to_watch}")
+                f"Prediction progress watcher started for: {folder_path_to_watch}"
+            )
             # Initial scan when watcher starts
             self._scan_prediction_folder(folder_path_to_watch)
         else:
-            logger.warning(
-                f"Cannot watch non-existent folder: {folder_path_to_watch}")
+            logger.warning(f"Cannot watch non-existent folder: {folder_path_to_watch}")
 
     def _scan_prediction_folder(self, folder_path):
         """
@@ -3780,8 +3827,8 @@ class AnnolidWindow(MainWindow):
         try:
             path = Path(folder_path)
             # Use a robust regex to extract frame numbers from filenames
-            prefixed_pattern = re.compile(r'_(\d{9,})\.json$')
-            bare_pattern = re.compile(r'^(\d{9,})\.json$')
+            prefixed_pattern = re.compile(r"_(\d{9,})\.json$")
+            bare_pattern = re.compile(r"^(\d{9,})\.json$")
             prediction_active = bool(self.prediction_start_timestamp)
 
             # --- 1. Efficiently Scan and Parse All Relevant Frame Numbers ---
@@ -3814,12 +3861,14 @@ class AnnolidWindow(MainWindow):
             all_frame_nums: list[int] = []
             if not all_frame_nums_set:
                 store = AnnotationStore.for_frame_path(
-                    path / f"{path.name}_000000000.json")
+                    path / f"{path.name}_000000000.json"
+                )
                 if store.store_path.exists():
                     store_frames = sorted(store.iter_frames())
                     if prediction_active and self._prediction_existing_store_frames:
                         store_frames = [
-                            frame for frame in store_frames
+                            frame
+                            for frame in store_frames
                             if frame not in self._prediction_existing_store_frames
                         ]
                     all_frame_nums = store_frames
@@ -3827,11 +3876,9 @@ class AnnolidWindow(MainWindow):
                 all_frame_nums = sorted(all_frame_nums_set)
             existing_frame_set = set()
             if prediction_active:
-                existing_frame_set.update(
-                    self._prediction_existing_json_frames)
+                existing_frame_set.update(self._prediction_existing_json_frames)
                 if self._prediction_existing_store_frames:
-                    existing_frame_set.update(
-                        self._prediction_existing_store_frames)
+                    existing_frame_set.update(self._prediction_existing_store_frames)
                 if all_frame_nums:
                     existing_frame_set.difference_update(all_frame_nums)
             existing_frame_nums = sorted(existing_frame_set)
@@ -3863,8 +3910,7 @@ class AnnolidWindow(MainWindow):
                     if 0 <= start_frame < self.num_frames:
                         self.seekbar.removeMarksByType("prediction_progress")
                         progress_mark = VideoSliderMark(
-                            mark_type="prediction_progress",
-                            val=start_frame
+                            mark_type="prediction_progress", val=start_frame
                         )
                         self.seekbar.addMark(progress_mark)
                         self._prediction_progress_mark = progress_mark
@@ -3877,10 +3923,14 @@ class AnnolidWindow(MainWindow):
             # --- 3. Update the GUI Efficiently ---
             # Get existing markers once to avoid repeated calls inside the loop
             existing_predicted_vals = {
-                mark.val for mark in self.seekbar.getMarks() if mark.mark_type == "predicted"
+                mark.val
+                for mark in self.seekbar.getMarks()
+                if mark.mark_type == "predicted"
             }
             existing_existing_vals = {
-                mark.val for mark in self.seekbar.getMarks() if mark.mark_type == "predicted_existing"
+                mark.val
+                for mark in self.seekbar.getMarks()
+                if mark.mark_type == "predicted_existing"
             }
 
             # Block signals to prevent the UI from trying to update thousands of times
@@ -3889,7 +3939,10 @@ class AnnolidWindow(MainWindow):
             new_marks_added = False
             for frame_num in existing_frames_to_mark:
                 if 0 <= frame_num < self.num_frames:
-                    if frame_num in existing_existing_vals or frame_num in existing_predicted_vals:
+                    if (
+                        frame_num in existing_existing_vals
+                        or frame_num in existing_predicted_vals
+                    ):
                         continue
                     existing_mark = VideoSliderMark(
                         mark_type="predicted_existing", val=frame_num
@@ -3906,8 +3959,7 @@ class AnnolidWindow(MainWindow):
                             if mark.mark_type == "predicted_existing":
                                 self.seekbar.removeMark(mark)
                         existing_existing_vals.discard(frame_num)
-                    pred_mark = VideoSliderMark(
-                        mark_type="predicted", val=frame_num)
+                    pred_mark = VideoSliderMark(mark_type="predicted", val=frame_num)
                     self.seekbar.addMark(pred_mark)
                     existing_predicted_vals.add(frame_num)
                     new_marks_added = True
@@ -3924,11 +3976,13 @@ class AnnolidWindow(MainWindow):
                     self.last_known_predicted_frame = latest_frame
                 else:
                     self.last_known_predicted_frame = max(
-                        self.last_known_predicted_frame, latest_frame)
+                        self.last_known_predicted_frame, latest_frame
+                    )
 
                 if self.num_frames > 0:
                     progress = int(
-                        (self.last_known_predicted_frame / self.num_frames) * 100)
+                        (self.last_known_predicted_frame / self.num_frames) * 100
+                    )
                     self._update_progress_bar(progress)
 
                 # The original code moved the slider on every found frame.
@@ -3936,8 +3990,7 @@ class AnnolidWindow(MainWindow):
                 if 0 <= latest_frame < self.num_frames:
                     self.seekbar.removeMarksByType("prediction_progress")
                     progress_mark = VideoSliderMark(
-                        mark_type="prediction_progress",
-                        val=latest_frame
+                        mark_type="prediction_progress", val=latest_frame
                     )
                     self.seekbar.addMark(progress_mark)
                     self._prediction_progress_mark = progress_mark
@@ -3949,8 +4002,7 @@ class AnnolidWindow(MainWindow):
                 if 0 <= start_frame < self.num_frames:
                     self.seekbar.removeMarksByType("prediction_progress")
                     progress_mark = VideoSliderMark(
-                        mark_type="prediction_progress",
-                        val=start_frame
+                        mark_type="prediction_progress", val=start_frame
                     )
                     self.seekbar.addMark(progress_mark)
                     self._prediction_progress_mark = progress_mark
@@ -3961,7 +4013,8 @@ class AnnolidWindow(MainWindow):
 
         except Exception as e:
             logger.error(
-                f"Error scanning prediction folder for slider marks: {e}", exc_info=True)
+                f"Error scanning prediction folder for slider marks: {e}", exc_info=True
+            )
 
     @QtCore.Slot()
     def _handle_prediction_folder_change(self):
@@ -4007,7 +4060,9 @@ class AnnolidWindow(MainWindow):
     def _cleanup_csv_worker(self):
         """Clear references once the CSV conversion thread has fully finished."""
         try:
-            if getattr(self, "csv_thread", None) and isinstance(self.csv_thread, QtCore.QThread):
+            if getattr(self, "csv_thread", None) and isinstance(
+                self.csv_thread, QtCore.QThread
+            ):
                 if self.csv_thread.isRunning():
                     return
         except Exception:
@@ -4079,8 +4134,11 @@ class AnnolidWindow(MainWindow):
             yolo_model_file = dlg.yolo_model_file
             yolo_device = getattr(dlg, "yolo_device", None)
             yolo_plots = getattr(dlg, "yolo_plots", False)
-            yolo_train_overrides = dlg.get_yolo_train_overrides() if hasattr(
-                dlg, "get_yolo_train_overrides") else {}
+            yolo_train_overrides = (
+                dlg.get_yolo_train_overrides()
+                if hasattr(dlg, "get_yolo_train_overrides")
+                else {}
+            )
             dino_model_name = getattr(dlg, "dino_model_name", None)
             dino_short_side = getattr(dlg, "dino_short_side", 768)
             dino_layers = getattr(dlg, "dino_layers", "-1")
@@ -4089,36 +4147,29 @@ class AnnolidWindow(MainWindow):
             dino_head_type = getattr(dlg, "dino_head_type", "conv")
             dino_attn_heads = getattr(dlg, "dino_attn_heads", 4)
             dino_attn_layers = getattr(dlg, "dino_attn_layers", 1)
-            dino_lr_pair_loss_weight = getattr(
-                dlg, "dino_lr_pair_loss_weight", 0.0)
-            dino_lr_pair_margin_px = getattr(
-                dlg, "dino_lr_pair_margin_px", 0.0)
-            dino_lr_side_loss_weight = getattr(
-                dlg, "dino_lr_side_loss_weight", 0.0)
-            dino_lr_side_loss_margin = getattr(
-                dlg, "dino_lr_side_loss_margin", 0.0)
+            dino_lr_pair_loss_weight = getattr(dlg, "dino_lr_pair_loss_weight", 0.0)
+            dino_lr_pair_margin_px = getattr(dlg, "dino_lr_pair_margin_px", 0.0)
+            dino_lr_side_loss_weight = getattr(dlg, "dino_lr_side_loss_weight", 0.0)
+            dino_lr_side_loss_margin = getattr(dlg, "dino_lr_side_loss_margin", 0.0)
             dino_lr = getattr(dlg, "dino_lr", 0.002)
             dino_threshold = getattr(dlg, "dino_threshold", 0.4)
             dino_bce_type = getattr(dlg, "dino_bce_type", "bce")
             dino_focal_alpha = getattr(dlg, "dino_focal_alpha", 0.25)
             dino_focal_gamma = getattr(dlg, "dino_focal_gamma", 2.0)
-            dino_coord_warmup_epochs = getattr(
-                dlg, "dino_coord_warmup_epochs", 0)
+            dino_coord_warmup_epochs = getattr(dlg, "dino_coord_warmup_epochs", 0)
             dino_radius_schedule = getattr(dlg, "dino_radius_schedule", "none")
-            dino_radius_start_px = getattr(
-                dlg, "dino_radius_start_px", dino_radius_px)
-            dino_radius_end_px = getattr(
-                dlg, "dino_radius_end_px", dino_radius_px)
+            dino_radius_start_px = getattr(dlg, "dino_radius_start_px", dino_radius_px)
+            dino_radius_end_px = getattr(dlg, "dino_radius_end_px", dino_radius_px)
             dino_overfit_n = getattr(dlg, "dino_overfit_n", 0)
             dino_cache_features = getattr(dlg, "dino_cache_features", True)
             dino_patience = getattr(dlg, "dino_patience", 0)
             dino_min_delta = getattr(dlg, "dino_min_delta", 0.0)
             dino_min_epochs = getattr(dlg, "dino_min_epochs", 0)
             dino_best_metric = getattr(dlg, "dino_best_metric", "pck@8px")
-            dino_early_stop_metric = getattr(
-                dlg, "dino_early_stop_metric", "auto")
+            dino_early_stop_metric = getattr(dlg, "dino_early_stop_metric", "auto")
             dino_pck_weighted_weights = getattr(
-                dlg, "dino_pck_weighted_weights", "1,1,1,1")
+                dlg, "dino_pck_weighted_weights", "1,1,1,1"
+            )
             dino_augment_enabled = getattr(dlg, "dino_augment_enabled", False)
             dino_hflip_prob = getattr(dlg, "dino_hflip_prob", 0.5)
             dino_degrees = getattr(dlg, "dino_degrees", 0.0)
@@ -4130,34 +4181,37 @@ class AnnolidWindow(MainWindow):
             dino_seed = getattr(dlg, "dino_seed", -1)
             dino_tb_add_graph = getattr(dlg, "dino_tb_add_graph", False)
             dino_tb_projector = getattr(dlg, "dino_tb_projector", True)
-            dino_tb_projector_split = getattr(
-                dlg, "dino_tb_projector_split", "val")
+            dino_tb_projector_split = getattr(dlg, "dino_tb_projector_split", "val")
             dino_tb_projector_max_images = getattr(
-                dlg, "dino_tb_projector_max_images", 64)
+                dlg, "dino_tb_projector_max_images", 64
+            )
             dino_tb_projector_max_patches = getattr(
-                dlg, "dino_tb_projector_max_patches", 4000)
+                dlg, "dino_tb_projector_max_patches", 4000
+            )
             dino_tb_projector_per_image_per_keypoint = getattr(
                 dlg, "dino_tb_projector_per_image_per_keypoint", 3
             )
             dino_tb_projector_pos_threshold = getattr(
-                dlg, "dino_tb_projector_pos_threshold", 0.35)
-            dino_tb_projector_crop_px = getattr(
-                dlg, "dino_tb_projector_crop_px", 96)
+                dlg, "dino_tb_projector_pos_threshold", 0.35
+            )
+            dino_tb_projector_crop_px = getattr(dlg, "dino_tb_projector_crop_px", 96)
             dino_tb_projector_sprite_border_px = getattr(
-                dlg, "dino_tb_projector_sprite_border_px", 3)
+                dlg, "dino_tb_projector_sprite_border_px", 3
+            )
             dino_tb_projector_add_negatives = getattr(
-                dlg, "dino_tb_projector_add_negatives", False)
+                dlg, "dino_tb_projector_add_negatives", False
+            )
             dino_tb_projector_neg_threshold = getattr(
-                dlg, "dino_tb_projector_neg_threshold", 0.02)
+                dlg, "dino_tb_projector_neg_threshold", 0.02
+            )
             dino_tb_projector_negatives_per_image = getattr(
                 dlg, "dino_tb_projector_negatives_per_image", 6
             )
 
         if config_file is None:
             return
-        if algo == 'YOLO':
-            data_config = self.yolo_training_manager.prepare_data_config(
-                config_file)
+        if algo == "YOLO":
+            data_config = self.yolo_training_manager.prepare_data_config(config_file)
             if data_config is None:
                 return
             self.yolo_training_manager.start_training(
@@ -4175,7 +4229,8 @@ class AnnolidWindow(MainWindow):
 
         elif algo == "DINO KPSEG":
             data_config = self.dino_kpseg_training_manager.prepare_data_config(
-                config_file)
+                config_file
+            )
             if data_config is None:
                 return
             self.dino_kpseg_training_manager.start_training(
@@ -4212,8 +4267,7 @@ class AnnolidWindow(MainWindow):
                 early_stop_min_epochs=int(dino_min_epochs),
                 best_metric=str(dino_best_metric or "pck@8px"),
                 early_stop_metric=str(dino_early_stop_metric or "auto"),
-                pck_weighted_weights=str(
-                    dino_pck_weighted_weights or "1,1,1,1"),
+                pck_weighted_weights=str(dino_pck_weighted_weights or "1,1,1,1"),
                 augment=bool(dino_augment_enabled),
                 hflip=float(dino_hflip_prob),
                 degrees=float(dino_degrees),
@@ -4229,21 +4283,19 @@ class AnnolidWindow(MainWindow):
                 tb_projector_max_images=int(dino_tb_projector_max_images),
                 tb_projector_max_patches=int(dino_tb_projector_max_patches),
                 tb_projector_per_image_per_keypoint=int(
-                    dino_tb_projector_per_image_per_keypoint),
-                tb_projector_pos_threshold=float(
-                    dino_tb_projector_pos_threshold),
+                    dino_tb_projector_per_image_per_keypoint
+                ),
+                tb_projector_pos_threshold=float(dino_tb_projector_pos_threshold),
                 tb_projector_crop_px=int(dino_tb_projector_crop_px),
-                tb_projector_sprite_border_px=int(
-                    dino_tb_projector_sprite_border_px),
-                tb_projector_add_negatives=bool(
-                    dino_tb_projector_add_negatives),
-                tb_projector_neg_threshold=float(
-                    dino_tb_projector_neg_threshold),
+                tb_projector_sprite_border_px=int(dino_tb_projector_sprite_border_px),
+                tb_projector_add_negatives=bool(dino_tb_projector_add_negatives),
+                tb_projector_neg_threshold=float(dino_tb_projector_neg_threshold),
                 tb_projector_negatives_per_image=int(
-                    dino_tb_projector_negatives_per_image),
+                    dino_tb_projector_negatives_per_image
+                ),
             )
 
-        elif algo == 'YOLACT':
+        elif algo == "YOLACT":
             # start training models
             if torch is None or not torch.cuda.is_available():
                 QtWidgets.QMessageBox.about(
@@ -4253,30 +4305,39 @@ class AnnolidWindow(MainWindow):
                 )
                 return
 
-            subprocess.Popen(['annolid-train',
-                              f'--config={config_file}',
-                              f'--batch_size={batch_size}'])
+            subprocess.Popen(
+                [
+                    "annolid-train",
+                    f"--config={config_file}",
+                    f"--batch_size={batch_size}",
+                ]
+            )
 
             if out_dir is None:
                 out_runs_dir = shared_runs_root()
             else:
-                out_runs_dir = Path(out_dir) / Path(config_file).name / 'runs'
+                out_runs_dir = Path(out_dir) / Path(config_file).name / "runs"
 
             out_runs_dir.mkdir(exist_ok=True, parents=True)
             process = start_tensorboard(log_dir=shared_runs_root())
-            QtWidgets.QMessageBox.about(self,
-                                        "Started",
-                                        f"Results are in folder: \
-                                         {str(out_runs_dir)}")
+            QtWidgets.QMessageBox.about(
+                self,
+                "Started",
+                f"Results are in folder: \
+                                         {str(out_runs_dir)}",
+            )
 
-        elif algo == 'MaskRCNN':
+        elif algo == "MaskRCNN":
             from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
+
             dataset_dir = str(Path(config_file).parent)
-            segmentor = Segmentor(dataset_dir, out_dir or str(shared_runs_root()),
-                                  max_iterations=max_iterations,
-                                  batch_size=batch_size,
-                                  model_pth_path=model_path
-                                  )
+            segmentor = Segmentor(
+                dataset_dir,
+                out_dir or str(shared_runs_root()),
+                max_iterations=max_iterations,
+                batch_size=batch_size,
+                model_pth_path=model_path,
+            )
             out_runs_dir = segmentor.out_put_dir
             process = start_tensorboard(log_dir=shared_runs_root())
             try:
@@ -4288,15 +4349,15 @@ class AnnolidWindow(MainWindow):
             except Exception:
                 segmentor.train()
 
-            QtWidgets.QMessageBox.about(self,
-                                        "Started.",
-                                        f"Training in background... \
+            QtWidgets.QMessageBox.about(
+                self,
+                "Started.",
+                f"Training in background... \
                                         Results will be saved to folder: \
                                          {str(out_runs_dir)} \
-                                         Please do not close Annolid GUI."
-                                        )
-            self.statusBar().showMessage(
-                self.tr(f"Training..."))
+                                         Please do not close Annolid GUI.",
+            )
+            self.statusBar().showMessage(self.tr(f"Training..."))
 
     def handle_uniq_label_list_selection_change(self):
         selected_items = self.uniqLabelList.selectedItems()
@@ -4305,8 +4366,7 @@ class AnnolidWindow(MainWindow):
         if selected_items:
             self.add_highlighted_mark()
         else:
-            self.add_highlighted_mark(mark_type='event_end',
-                                      color='red')
+            self.add_highlighted_mark(mark_type="event_end", color="red")
 
     def _estimate_recording_time(self, frame_number: int) -> Optional[float]:
         """Approximate the recording timestamp (seconds) for a frame."""
@@ -4351,7 +4411,8 @@ class AnnolidWindow(MainWindow):
             if behavior_def:
                 if behavior_def.category_id:
                     category = self.project_schema.category_map().get(
-                        behavior_def.category_id)
+                        behavior_def.category_id
+                    )
                     if category:
                         category_label = category.name or category.id
 
@@ -4376,8 +4437,7 @@ class AnnolidWindow(MainWindow):
 
         if auto_subject:
             self.statusBar().showMessage(
-                self.tr(
-                    "Auto-selected subject '%s' from polygon selection") % subject,
+                self.tr("Auto-selected subject '%s' from polygon selection") % subject,
                 2500,
             )
 
@@ -4400,17 +4460,18 @@ class AnnolidWindow(MainWindow):
             return
 
         stored_subject = self._active_subject_name or self.settings.value(
-            "behavior/last_subject", type=str)
+            "behavior/last_subject", type=str
+        )
         subjects = list(schema.subjects)
-        self.behavior_controls_widget.set_subjects(
-            subjects, selected=stored_subject)
+        self.behavior_controls_widget.set_subjects(subjects, selected=stored_subject)
         self._active_subject_name = self.behavior_controls_widget.current_subject()
 
         self.behavior_controls_widget.set_modifiers(list(schema.modifiers))
         for behavior in schema.behaviors:
             if behavior.modifier_ids:
                 self._behavior_modifier_state[behavior.code] = set(
-                    behavior.modifier_ids)
+                    behavior.modifier_ids
+                )
 
         self.behavior_controls_widget.set_category_badge(None, None)
         self.behavior_controls_widget.set_modifier_states(
@@ -4424,9 +4485,7 @@ class AnnolidWindow(MainWindow):
         if not self.project_schema:
             return set()
         return {
-            modifier.id
-            for modifier in self.project_schema.modifiers
-            if modifier.id
+            modifier.id for modifier in self.project_schema.modifiers if modifier.id
         }
 
     def _allowed_modifiers_for_behavior(self, behavior: Optional[str]) -> Set[str]:
@@ -4437,7 +4496,11 @@ class AnnolidWindow(MainWindow):
             return schema_modifiers
         behavior_def = self.project_schema.behavior_map().get(behavior)
         if behavior_def and behavior_def.modifier_ids:
-            return {modifier_id for modifier_id in behavior_def.modifier_ids if modifier_id in schema_modifiers}
+            return {
+                modifier_id
+                for modifier_id in behavior_def.modifier_ids
+                if modifier_id in schema_modifiers
+            }
         return schema_modifiers
 
     def _update_behavior_conflict_warning(self, behavior: Optional[str]) -> None:
@@ -4501,20 +4564,27 @@ class AnnolidWindow(MainWindow):
         if selected_modifiers is None:
             if behavior_def and behavior_def.modifier_ids:
                 selected_modifiers = set(
-                    modifier_id for modifier_id in behavior_def.modifier_ids if modifier_id in allowed_modifiers)
-                self._behavior_modifier_state[behavior] = set(
-                    selected_modifiers)
+                    modifier_id
+                    for modifier_id in behavior_def.modifier_ids
+                    if modifier_id in allowed_modifiers
+                )
+                self._behavior_modifier_state[behavior] = set(selected_modifiers)
             else:
                 selected_modifiers = set()
         else:
             selected_modifiers = {
-                modifier_id for modifier_id in selected_modifiers if modifier_id in allowed_modifiers}
+                modifier_id
+                for modifier_id in selected_modifiers
+                if modifier_id in allowed_modifiers
+            }
             self._behavior_modifier_state[behavior] = set(selected_modifiers)
             if not selected_modifiers and behavior_def and behavior_def.modifier_ids:
                 selected_modifiers = {
-                    modifier_id for modifier_id in behavior_def.modifier_ids if modifier_id in allowed_modifiers}
-                self._behavior_modifier_state[behavior] = set(
-                    selected_modifiers)
+                    modifier_id
+                    for modifier_id in behavior_def.modifier_ids
+                    if modifier_id in allowed_modifiers
+                }
+                self._behavior_modifier_state[behavior] = set(selected_modifiers)
 
         self.behavior_controls_widget.set_category_badge(
             category_label,
@@ -4536,8 +4606,7 @@ class AnnolidWindow(MainWindow):
         behavior = self.event_type
         if not behavior:
             return
-        modifier_set = self._behavior_modifier_state.setdefault(
-            behavior, set())
+        modifier_set = self._behavior_modifier_state.setdefault(behavior, set())
         if state:
             modifier_set.add(modifier_id)
         else:
@@ -4554,10 +4623,10 @@ class AnnolidWindow(MainWindow):
         if not label_name:
             return None
         if self.project_schema:
-            candidates = {
-                subj.name: subj.name for subj in self.project_schema.subjects}
+            candidates = {subj.name: subj.name for subj in self.project_schema.subjects}
             candidates.update(
-                {subj.id: subj.name or subj.id for subj in self.project_schema.subjects})
+                {subj.id: subj.name or subj.id for subj in self.project_schema.subjects}
+            )
             lowered = {key.lower(): value for key, value in candidates.items()}
             match = lowered.get(label_name.lower())
             if match:
@@ -4588,7 +4657,8 @@ class AnnolidWindow(MainWindow):
             allowed = self._allowed_modifiers_for_behavior(behavior)
             if allowed:
                 defaults = [
-                    modifier_id for modifier_id in defaults if modifier_id in allowed]
+                    modifier_id for modifier_id in defaults if modifier_id in allowed
+                ]
         if defaults:
             self._behavior_modifier_state[behavior] = set(defaults)
             return list(defaults)
@@ -4634,10 +4704,9 @@ class AnnolidWindow(MainWindow):
                 self.pinned_flags[behavior] = False
             self.loadFlags(self.pinned_flags)
 
-    def add_highlighted_mark(self, val=None,
-                             mark_type=None,
-                             color=None,
-                             init_load=False):
+    def add_highlighted_mark(
+        self, val=None, mark_type=None, color=None, init_load=False
+    ):
         """Add a non-behavior highlight mark to the slider."""
         if self.seekbar is None:
             return None
@@ -4662,13 +4731,11 @@ class AnnolidWindow(MainWindow):
             removed = self.behavior_controller.remove_highlighted_mark()
             if removed:
                 if removed[0] == "behavior":
-                    removed_behavior_keys.append(
-                        removed[1])  # type: ignore[index]
+                    removed_behavior_keys.append(removed[1])  # type: ignore[index]
                 if self.event_type in self.pinned_flags:
                     self.pinned_flags[self.event_type] = False
         elif self.seekbar.isMarkedVal(self.frame_number):
-            removed = self.behavior_controller.remove_marks_at_value(
-                self.frame_number)
+            removed = self.behavior_controller.remove_marks_at_value(self.frame_number)
             for kind, key in removed:
                 if kind == "behavior":
                     removed_behavior_keys.append(key)  # type: ignore[arg-type]
@@ -4680,8 +4747,7 @@ class AnnolidWindow(MainWindow):
             local_removed_keys: List[Tuple[int, str, str]] = []
             for mark in list(self.seekbar.getMarks()):
                 if mark.val == current_val:
-                    result = self.behavior_controller.remove_mark_instance(
-                        mark)
+                    result = self.behavior_controller.remove_mark_instance(mark)
                     removed_any = removed_any or bool(result)
                     if result and result[0] == "behavior":
                         # type: ignore[arg-type]
@@ -4699,11 +4765,11 @@ class AnnolidWindow(MainWindow):
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self.seekbar is not None:
             if event.key() == Qt.Key_Right:
-                next_pos = self.seekbar.value()+1
+                next_pos = self.seekbar.value() + 1
                 self.seekbar.setValue(next_pos)
                 self.seekbar.valueChanged.emit(next_pos)
             elif event.key() == Qt.Key_Left:
-                prev_pos = self.seekbar.value()-1
+                prev_pos = self.seekbar.value() - 1
                 self.seekbar.setValue(prev_pos)
                 self.seekbar.valueChanged.emit(prev_pos)
             elif event.key() == Qt.Key_0:
@@ -4714,23 +4780,24 @@ class AnnolidWindow(MainWindow):
                 if self.event_type is None:
                     self.add_highlighted_mark(
                         self.frame_number,
-                        mark_type=self._config['events']["start"],
+                        mark_type=self._config["events"]["start"],
                     )
                 else:
                     self.record_behavior_event(
-                        self.event_type, "start", frame_number=self.frame_number)
+                        self.event_type, "start", frame_number=self.frame_number
+                    )
             elif event.key() == Qt.Key_E:
                 if self.event_type is None:
                     self.add_highlighted_mark(
                         self.frame_number,
-                        mark_type=self._config['events']["end"],
-                        color='red',
+                        mark_type=self._config["events"]["end"],
+                        color="red",
                     )
                 else:
                     self.record_behavior_event(
-                        self.event_type, "end", frame_number=self.frame_number)
-                    self.flags_controller.end_flag(
-                        self.event_type, record_event=False)
+                        self.event_type, "end", frame_number=self.frame_number
+                    )
+                    self.flags_controller.end_flag(self.event_type, record_event=False)
             elif event.key() == Qt.Key_R:
                 self.remove_highlighted_mark()
             elif event.key() == Qt.Key_Q:
@@ -4750,28 +4817,30 @@ class AnnolidWindow(MainWindow):
 
     def saveTimestampList(self):
         # Open file dialog to get file path
-        default_timestamp_csv_file = str(
-            os.path.dirname(self.filename)) + '_timestamps.csv'
+        default_timestamp_csv_file = (
+            str(os.path.dirname(self.filename)) + "_timestamps.csv"
+        )
         file_dialog = QtWidgets.QFileDialog()
-        file_dialog.setDefaultSuffix('.csv')
-        file_path, _ = file_dialog.getSaveFileName(self, "Save Timestamps",
-                                                   default_timestamp_csv_file,
-                                                   "CSV files (*.csv)")
+        file_dialog.setDefaultSuffix(".csv")
+        file_path, _ = file_dialog.getSaveFileName(
+            self, "Save Timestamps", default_timestamp_csv_file, "CSV files (*.csv)"
+        )
 
         if file_path:
             rows = self.behavior_controller.export_rows(
-                timestamp_fallback=lambda evt: self._estimate_recording_time(
-                    evt.frame)
+                timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
             )
-            with open(file_path, 'w', newline='') as f:
+            with open(file_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(['Trial time', 'Recording time',
-                                'Subject', 'Behavior', 'Event'])
+                writer.writerow(
+                    ["Trial time", "Recording time", "Subject", "Behavior", "Event"]
+                )
                 for row in rows:
                     writer.writerow(row)
 
             QtWidgets.QMessageBox.information(
-                self, "Timestamps saved", "Timestamps saved successfully!")
+                self, "Timestamps saved", "Timestamps saved successfully!"
+            )
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)
@@ -4779,8 +4848,7 @@ class AnnolidWindow(MainWindow):
     def show_behavior_time_budget_dialog(self) -> None:
         """Summarise recorded behavior events using the time-budget report."""
         rows = self.behavior_controller.export_rows(
-            timestamp_fallback=lambda evt: self._estimate_recording_time(
-                evt.frame)
+            timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
         )
         if not rows:
             QtWidgets.QMessageBox.information(
@@ -4817,8 +4885,7 @@ class AnnolidWindow(MainWindow):
                 "No timestamped events remain after filtering out rows without timing information."
             )
             if local_warnings:
-                message += "\n\n" + \
-                    self.tr("Warnings:\n") + "\n".join(local_warnings)
+                message += "\n\n" + self.tr("Warnings:\n") + "\n".join(local_warnings)
             QtWidgets.QMessageBox.warning(
                 self,
                 self.tr("Behavior Time Budget"),
@@ -4841,8 +4908,7 @@ class AnnolidWindow(MainWindow):
         category_summary: List[Tuple[str, float, int]] = []
         if schema_for_dialog is not None and summary:
             try:
-                category_summary = summarize_by_category(
-                    summary, schema_for_dialog)
+                category_summary = summarize_by_category(summary, schema_for_dialog)
             except Exception as exc:
                 logger.warning("Failed to summarize categories: %s", exc)
                 category_summary = []
@@ -4852,8 +4918,7 @@ class AnnolidWindow(MainWindow):
                 "No completed start/end pairs were found for the current behavior events."
             )
             if warnings:
-                message += "\n\n" + \
-                    self.tr("Warnings:\n") + "\n".join(warnings)
+                message += "\n\n" + self.tr("Warnings:\n") + "\n".join(warnings)
             QtWidgets.QMessageBox.information(
                 self,
                 self.tr("Behavior Time Budget"),
@@ -4861,8 +4926,7 @@ class AnnolidWindow(MainWindow):
             )
             return
 
-        report_text = format_time_budget_table(
-            summary, schema=schema_for_dialog)
+        report_text = format_time_budget_table(summary, schema=schema_for_dialog)
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(self.tr("Behavior Time Budget"))
@@ -4870,8 +4934,7 @@ class AnnolidWindow(MainWindow):
 
         report_view = QtWidgets.QPlainTextEdit()
         report_view.setReadOnly(True)
-        fixed_font = QtGui.QFontDatabase.systemFont(
-            QtGui.QFontDatabase.FixedFont)
+        fixed_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
         report_view.setFont(fixed_font)
         report_view.setPlainText(report_text)
         layout.addWidget(report_view)
@@ -4895,15 +4958,14 @@ class AnnolidWindow(MainWindow):
             layout.addWidget(category_label)
             category_view = QtWidgets.QPlainTextEdit()
             category_view.setReadOnly(True)
-            category_view.setFont(QtGui.QFontDatabase.systemFont(
-                QtGui.QFontDatabase.FixedFont))
-            category_view.setPlainText(
-                format_category_summary(category_summary))
+            category_view.setFont(
+                QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
+            )
+            category_view.setPlainText(format_category_summary(category_summary))
             category_view.setMaximumHeight(160)
             layout.addWidget(category_view)
 
-        button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Close)
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         button_box.rejected.connect(dialog.reject)
         save_button = button_box.addButton(
             self.tr("Save CSV…"), QtWidgets.QDialogButtonBox.ActionRole
@@ -4911,8 +4973,11 @@ class AnnolidWindow(MainWindow):
 
         def _save_csv() -> None:
             default_name = "behavior_time_budget.csv"
-            default_path = str(Path(self.video_file).with_suffix(
-                ".time_budget.csv")) if self.video_file else default_name
+            default_path = (
+                str(Path(self.video_file).with_suffix(".time_budget.csv"))
+                if self.video_file
+                else default_name
+            )
             path_str, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self,
                 self.tr("Save Time-Budget CSV"),
@@ -4923,19 +4988,18 @@ class AnnolidWindow(MainWindow):
                 return
             try:
                 output_path = Path(path_str)
-                write_time_budget_csv(
-                    summary, output_path, schema=schema_for_dialog)
+                write_time_budget_csv(summary, output_path, schema=schema_for_dialog)
                 if schema_for_dialog is not None and category_summary:
                     category_path = output_path.with_name(
                         output_path.stem + "_categories" + output_path.suffix
                     )
-                    with category_path.open("w", newline="", encoding="utf-8") as handle:
+                    with category_path.open(
+                        "w", newline="", encoding="utf-8"
+                    ) as handle:
                         writer = csv.writer(handle)
-                        writer.writerow(
-                            ["Category", "TotalSeconds", "Occurrences"])
+                        writer.writerow(["Category", "TotalSeconds", "Occurrences"])
                         for name, total, occurrences in category_summary:
-                            writer.writerow(
-                                [name, f"{total:.6f}", occurrences])
+                            writer.writerow([name, f"{total:.6f}", occurrences])
             except OSError as exc:
                 QtWidgets.QMessageBox.critical(
                     self,
@@ -4944,8 +5008,7 @@ class AnnolidWindow(MainWindow):
                 )
             else:
                 self.statusBar().showMessage(
-                    self.tr(
-                        "Time-budget exported to %s") % Path(path_str).name, 4000
+                    self.tr("Time-budget exported to %s") % Path(path_str).name, 4000
                 )
 
         save_button.clicked.connect(_save_csv)
@@ -4959,29 +5022,35 @@ class AnnolidWindow(MainWindow):
             self.stopPlaying()
             self.update_step_size(1)
             self.playButton.setIcon(
-                QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
+                QtWidgets.QApplication.style().standardIcon(
+                    QtWidgets.QStyle.SP_MediaPlay
+                )
+            )
             self.playButton.setText("Play")
         else:
             self.startPlaying()
             self.playButton.setIcon(
-                QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaStop))
+                QtWidgets.QApplication.style().standardIcon(
+                    QtWidgets.QStyle.SP_MediaStop
+                )
+            )
             self.playButton.setText("Pause")
 
     def _on_frame_loaded(self, frame_idx: int, qimage: QtGui.QImage) -> None:
         """Render a frame only if it matches the latest requested index."""
         current = getattr(self, "frame_number", None)
         if current is not None and frame_idx != current:
-            logger.debug(
-                "Dropping stale frame %s (current=%s)", frame_idx, current
-            )
+            logger.debug("Dropping stale frame %s (current=%s)", frame_idx, current)
             return
         frame_path = self._frame_image_path(frame_idx)
         self.image_to_canvas(qimage, frame_path, frame_idx)
 
     def _frame_image_path(self, frame_number: int) -> Path:
         if self.video_results_folder:
-            return self.video_results_folder / \
-                f"{str(self.video_results_folder.name)}_{frame_number:09}.png"
+            return (
+                self.video_results_folder
+                / f"{str(self.video_results_folder.name)}_{frame_number:09}.png"
+            )
         if getattr(self, "filename", None):
             try:
                 return Path(self.filename)
@@ -5042,8 +5111,7 @@ class AnnolidWindow(MainWindow):
             return
 
         if is_multi_animal is None:
-            is_multi_animal = getattr(
-                self, "_df_deeplabcut_multi_animal", False)
+            is_multi_animal = getattr(self, "_df_deeplabcut_multi_animal", False)
 
         try:
             row = self._df_deeplabcut.loc[frame_number]
@@ -5068,32 +5136,39 @@ class AnnolidWindow(MainWindow):
         shapes = []
         try:
             if self._df_deeplabcut_scorer is None:
-                self._df_deeplabcut_scorer = self._df_deeplabcut.columns.get_level_values(
-                    0)[0]
+                self._df_deeplabcut_scorer = (
+                    self._df_deeplabcut.columns.get_level_values(0)[0]
+                )
 
             if self._df_deeplabcut_animal_ids is None:
                 if is_multi_animal:
-                    self._df_deeplabcut_animal_ids = self._df_deeplabcut.columns.get_level_values(
-                        'animal').unique()
+                    self._df_deeplabcut_animal_ids = (
+                        self._df_deeplabcut.columns.get_level_values("animal").unique()
+                    )
                 else:
-                    self._df_deeplabcut_animal_ids = [
-                        None]  # Single-animal mode
+                    self._df_deeplabcut_animal_ids = [None]  # Single-animal mode
 
             if self._df_deeplabcut_bodyparts is None:
-                self._df_deeplabcut_bodyparts = self._df_deeplabcut.columns.get_level_values(
-                    'bodyparts').unique()
+                self._df_deeplabcut_bodyparts = (
+                    self._df_deeplabcut.columns.get_level_values("bodyparts").unique()
+                )
 
             for animal_id in self._df_deeplabcut_animal_ids:
                 for bodypart in self._df_deeplabcut_bodyparts:
-                    x_col = (self._df_deeplabcut_scorer, animal_id, bodypart, 'x') if is_multi_animal else (
-                        self._df_deeplabcut_scorer, bodypart, 'x')
-                    y_col = (self._df_deeplabcut_scorer, animal_id, bodypart, 'y') if is_multi_animal else (
-                        self._df_deeplabcut_scorer, bodypart, 'y')
+                    x_col = (
+                        (self._df_deeplabcut_scorer, animal_id, bodypart, "x")
+                        if is_multi_animal
+                        else (self._df_deeplabcut_scorer, bodypart, "x")
+                    )
+                    y_col = (
+                        (self._df_deeplabcut_scorer, animal_id, bodypart, "y")
+                        if is_multi_animal
+                        else (self._df_deeplabcut_scorer, bodypart, "y")
+                    )
 
                     x, y = row.get(x_col, None), row.get(y_col, None)
                     if pd.notna(x) and pd.notna(y):
-                        shape = Shape(label=bodypart,
-                                      shape_type='point', visible=True)
+                        shape = Shape(label=bodypart, shape_type="point", visible=True)
                         shape.addPoint((x, y))
                         shapes.append(shape)
 
@@ -5113,16 +5188,13 @@ class AnnolidWindow(MainWindow):
                 schema = load_project_schema(schema_path)
                 warnings = validate_project_schema(schema)
                 for warning in warnings:
-                    logger.warning("Schema warning (%s): %s",
-                                   schema_path.name, warning)
+                    logger.warning("Schema warning (%s): %s", schema_path.name, warning)
             except Exception as exc:
-                logger.error("Failed to load project schema %s: %s",
-                             schema_path, exc)
+                logger.error("Failed to load project schema %s: %s", schema_path, exc)
         if schema_path:
             self.project_schema_path = schema_path
         else:
-            default_path = Path(video_path).with_suffix(
-                "") / DEFAULT_SCHEMA_FILENAME
+            default_path = Path(video_path).with_suffix("") / DEFAULT_SCHEMA_FILENAME
             self.project_schema_path = default_path
         if schema is None:
             logger.debug(
@@ -5237,8 +5309,11 @@ class AnnolidWindow(MainWindow):
 
             trial_time_value: Optional[float]
             try:
-                trial_time_value = float(raw_trial_time) if raw_trial_time is not None and pd.notna(
-                    raw_trial_time) else None
+                trial_time_value = (
+                    float(raw_trial_time)
+                    if raw_trial_time is not None and pd.notna(raw_trial_time)
+                    else None
+                )
             except (TypeError, ValueError):
                 trial_time_value = None
 
@@ -5246,13 +5321,15 @@ class AnnolidWindow(MainWindow):
             if raw_subject is not None and pd.notna(raw_subject):
                 subject_value = str(raw_subject)
 
-            rows.append((
-                trial_time_value,
-                timestamp_value,
-                subject_value,
-                behavior,
-                event_label,
-            ))
+            rows.append(
+                (
+                    trial_time_value,
+                    timestamp_value,
+                    subject_value,
+                    behavior,
+                    event_label,
+                )
+            )
 
         fps = self.fps if self.fps and self.fps > 0 else 29.97
 
@@ -5270,7 +5347,8 @@ class AnnolidWindow(MainWindow):
             fps=fps_for_log,
         )
         self.pinned_flags.update(
-            {behavior: False for behavior in self.behavior_controller.behavior_names})
+            {behavior: False for behavior in self.behavior_controller.behavior_names}
+        )
 
     def _load_deeplabcut_table(self, behavior_csv_file: str) -> bool:
         """Load DeepLabCut tracking results stored as a multi-index CSV.
@@ -5351,8 +5429,11 @@ class AnnolidWindow(MainWindow):
 
             target_path = self.project_schema_path
             if target_path is None:
-                default_dir = Path(self.video_file).with_suffix(
-                    "") if self.video_file else Path.cwd()
+                default_dir = (
+                    Path(self.video_file).with_suffix("")
+                    if self.video_file
+                    else Path.cwd()
+                )
                 default_dir.mkdir(parents=True, exist_ok=True)
                 default_path = default_dir / DEFAULT_SCHEMA_FILENAME
                 path_str, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -5426,8 +5507,8 @@ class AnnolidWindow(MainWindow):
     def _on_dataset_exported(self, output_path: Path, format_type: str) -> None:
         """Handle dataset export completion."""
         self.statusBar().showMessage(
-            self.tr("Dataset exported to %s (%s format)") % (
-                output_path.name, format_type.upper()),
+            self.tr("Dataset exported to %s (%s format)")
+            % (output_path.name, format_type.upper()),
             5000,
         )
 
@@ -5438,8 +5519,7 @@ class AnnolidWindow(MainWindow):
         # Pre-fill with data.yaml if found near current video
         dataset_path = None
         if self.video_file:
-            potential_yaml = Path(
-                self.video_file).with_suffix("") / "data.yaml"
+            potential_yaml = Path(self.video_file).with_suffix("") / "data.yaml"
             if potential_yaml.exists():
                 dataset_path = str(potential_yaml)
 
@@ -5479,8 +5559,9 @@ class AnnolidWindow(MainWindow):
             self.statusBar().showMessage(self.tr("YOLO training started"), 3000)
         except Exception as e:
             QtWidgets.QMessageBox.critical(
-                self, self.tr("Training Error"),
-                self.tr("Failed to start training: %s") % str(e)
+                self,
+                self.tr("Training Error"),
+                self.tr("Failed to start training: %s") % str(e),
             )
 
     def _start_dino_training_from_wizard(self, config: dict) -> None:
@@ -5504,8 +5585,9 @@ class AnnolidWindow(MainWindow):
             self.statusBar().showMessage(self.tr("DINO KPSEG training started"), 3000)
         except Exception as e:
             QtWidgets.QMessageBox.critical(
-                self, self.tr("Training Error"),
-                self.tr("Failed to start training: %s") % str(e)
+                self,
+                self.tr("Training Error"),
+                self.tr("Failed to start training: %s") % str(e),
             )
 
     def _start_maskrcnn_training_from_wizard(self, config: dict) -> None:
@@ -5519,21 +5601,21 @@ class AnnolidWindow(MainWindow):
         try:
             dialog = getattr(self, "_training_dashboard_dialog", None)
             if dialog is None:
-                dialog = TrainingDashboardDialog(
-                    settings=self.settings, parent=self)
+                dialog = TrainingDashboardDialog(settings=self.settings, parent=self)
+                dialog.dashboard.register_training_manager(self.yolo_training_manager)
                 dialog.dashboard.register_training_manager(
-                    self.yolo_training_manager)
-                dialog.dashboard.register_training_manager(
-                    self.dino_kpseg_training_manager)
+                    self.dino_kpseg_training_manager
+                )
                 dialog.finished.connect(
-                    lambda *_: setattr(self, "_training_dashboard_dialog", None))
+                    lambda *_: setattr(self, "_training_dashboard_dialog", None)
+                )
                 dialog.destroyed.connect(
-                    lambda *_: setattr(self, "_training_dashboard_dialog", None))
+                    lambda *_: setattr(self, "_training_dashboard_dialog", None)
+                )
                 self._training_dashboard_dialog = dialog
 
             dialog.show()
-            dialog.setWindowState(dialog.windowState() &
-                                  ~QtCore.Qt.WindowMinimized)
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
             dialog.raise_()
             dialog.activateWindow()
             QtWidgets.QApplication.processEvents()
@@ -5557,7 +5639,7 @@ class AnnolidWindow(MainWindow):
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
         self._df = pd.read_csv(labels_csv_file)
-        self._df.rename(columns={'Unnamed: 0': 'frame_number'}, inplace=True)
+        self._df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
 
     def _load_video(self, video_path):
         """Open a video for annotation frame by frame."""
@@ -5569,17 +5651,18 @@ class AnnolidWindow(MainWindow):
         """Launch the YouTube download dialog and open the selected video."""
         dialog = YouTubeVideoDialog(self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.downloaded_path:
-            self.openVideo(from_video_list=True,
-                           video_path=str(dialog.downloaded_path))
+            self.openVideo(from_video_list=True, video_path=str(dialog.downloaded_path))
 
     def handle_extracted_frames(self, dirpath):
         self.importDirImages(dirpath)
 
-    def openVideo(self, _value=False,
-                  from_video_list=False,
-                  video_path=None,
-                  programmatic_call=False
-                  ):
+    def openVideo(
+        self,
+        _value=False,
+        from_video_list=False,
+        video_path=None,
+        programmatic_call=False,
+    ):
         """open a video for annotaiton frame by frame
 
         Args:
@@ -5587,13 +5670,15 @@ class AnnolidWindow(MainWindow):
         """
         if not programmatic_call and (self.dirty or self.video_loader is not None):
             message_box = QtWidgets.QMessageBox()
-            message_box.setWindowTitle(
-                "Unsaved Changes or Closing the Existing Video")
-            message_box.setText("The existing video will be closed,\n"
-                                "and any unsaved changes may be lost.\n"
-                                "Do you want to continue and open the new video?")
+            message_box.setWindowTitle("Unsaved Changes or Closing the Existing Video")
+            message_box.setText(
+                "The existing video will be closed,\n"
+                "and any unsaved changes may be lost.\n"
+                "Do you want to continue and open the new video?"
+            )
             message_box.setStandardButtons(
-                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+            )
             choice = message_box.exec()
 
             if choice == QtWidgets.QMessageBox.Ok:
@@ -5623,12 +5708,9 @@ class AnnolidWindow(MainWindow):
             # If an audio-only dock is open, close it before switching to a video.
             self._cleanup_audio_ui()
             cur_video_folder = Path(video_filename).parent
-            self.video_results_folder = Path(video_filename).with_suffix('')
+            self.video_results_folder = Path(video_filename).with_suffix("")
 
-            self.video_results_folder.mkdir(
-                exist_ok=True,
-                parents=True
-            )
+            self.video_results_folder.mkdir(exist_ok=True, parents=True)
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
             if getattr(self, "depth_manager", None) is not None:
@@ -5638,14 +5720,18 @@ class AnnolidWindow(MainWindow):
             try:
                 suffix_lower = Path(video_filename).suffix.lower()
                 # Support TIFF stacks by treating them as videos (one slice per frame)
-                if suffix_lower in {'.tif', '.tiff'} or video_filename.lower().endswith(('.ome.tif', '.ome.tiff')):
+                if suffix_lower in {".tif", ".tiff"} or video_filename.lower().endswith(
+                    (".ome.tif", ".ome.tiff")
+                ):
                     self.video_loader = videos.TiffStackVideo(video_filename)
                 else:
                     self.video_loader = videos.CV2Video(video_filename)
             except Exception:
-                QtWidgets.QMessageBox.about(self,
-                                            "Not a valid media file",
-                                            f"Please check and open a valid video or TIFF stack file.")
+                QtWidgets.QMessageBox.about(
+                    self,
+                    "Not a valid media file",
+                    f"Please check and open a valid video or TIFF stack file.",
+                )
                 self.video_file = None
                 self.video_loader = None
                 return
@@ -5673,22 +5759,24 @@ class AnnolidWindow(MainWindow):
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
             logger.info(f"Working on video:{self.video_file}.")
-            logger.info(
-                f"FPS: {self.fps}, Total number of frames: {self.num_frames}")
+            logger.info(f"FPS: {self.fps}, Total number of frames: {self.num_frames}")
 
-            self.seekbar.valueChanged.connect(lambda f: self.set_frame_number(
-                self.seekbar.value()
-            ))
+            self.seekbar.valueChanged.connect(
+                lambda f: self.set_frame_number(self.seekbar.value())
+            )
 
             self.seekbar.setMinimum(0)
-            self.seekbar.setMaximum(self.num_frames-1)
+            self.seekbar.setMaximum(self.num_frames - 1)
             self.seekbar.setEnabled(True)
             self.seekbar.resizeEvent()
             self.seekbar.setTooltipCallable(self.tooltip_callable)
             # Create a play button
             self.playButton = QtWidgets.QPushButton("Play", self)
             self.playButton.setIcon(
-                QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay))
+                QtWidgets.QApplication.style().standardIcon(
+                    QtWidgets.QStyle.SP_MediaPlay
+                )
+            )
             self.playButton.clicked.connect(self.togglePlay)
             # create save button
             self.saveButton = QtWidgets.QPushButton("Save Timestamps", self)
@@ -5701,12 +5789,9 @@ class AnnolidWindow(MainWindow):
             # Configure frame loader before requesting any frames.
             self.frame_loader.video_loader = self.video_loader
             self.frame_loader.moveToThread(self.frame_worker)
-            self.frame_loader.res_frame.connect(
-                self._on_frame_loaded
-            )
+            self.frame_loader.res_frame.connect(self._on_frame_loaded)
             if not self.frame_worker.isRunning():
-                self.frame_worker.start(
-                    priority=QtCore.QThread.IdlePriority)
+                self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
 
             # load the first frame
             self.set_frame_number(self.frame_number)
@@ -5730,7 +5815,8 @@ class AnnolidWindow(MainWindow):
                 if not programmatic_call:
                     self._emit_live_frame_update()
                 logger.info(
-                    f"Video '{self.filename}' loaded. Segment definition enabled.")
+                    f"Video '{self.filename}' loaded. Segment definition enabled."
+                )
             else:
                 self.open_segment_editor_action.setEnabled(False)
                 self._current_video_defined_segments = []
@@ -5752,23 +5838,32 @@ class AnnolidWindow(MainWindow):
             if 0 <= input_frame_number < self.num_frames:
                 self.set_frame_number(input_frame_number)
             else:
-                logger.info(
-                    f"Frame number {input_frame_number} is out of range.")
+                logger.info(f"Frame number {input_frame_number} is out of range.")
                 # Notify the user about the error, for instance:
-                QtWidgets.QMessageBox.warning(self, "Invalid Frame Number",
-                                              f"{input_frame_number} is out of range.")
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Invalid Frame Number",
+                    f"{input_frame_number} is out of range.",
+                )
         except ValueError:
             logger.info(
-                f"Invalid input: {self.seekbar.input_value.text()} is not a valid frame number.")
-            QtWidgets.QMessageBox.warning(self, "Invalid Input",
-                                          f"'{self.seekbar.input_value.text()}' is not a valid frame number.")
+                f"Invalid input: {self.seekbar.input_value.text()} is not a valid frame number."
+            )
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Input",
+                f"'{self.seekbar.input_value.text()}' is not a valid frame number.",
+            )
         except Exception as e:
             logger.error(f"Error while jumping to frame: {e}")
 
     def tooltip_callable(self, val):
-        if self.behavior_controller.highlighted_mark is not None and self.frame_number == val:
+        if (
+            self.behavior_controller.highlighted_mark is not None
+            and self.frame_number == val
+        ):
             return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
-        return ''
+        return ""
 
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
@@ -5790,19 +5885,18 @@ class AnnolidWindow(MainWindow):
         except Exception:
             frame_rgb = None
         if getattr(self, "depth_manager", None) is not None:
-            self.depth_manager.update_overlay_for_frame(
-                frame_number, frame_rgb)
+            self.depth_manager.update_overlay_for_frame(frame_number, frame_rgb)
         if getattr(self, "optical_flow_manager", None) is not None:
-            self.optical_flow_manager.update_overlay_for_frame(
-                frame_number, frame_rgb)
+            self.optical_flow_manager.update_overlay_for_frame(frame_number, frame_rgb)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
         else:
             self.setClean()
 
-        video_file_key_for_zoom = str(
-            self.video_file) if self.video_file else str(self.filename)
+        video_file_key_for_zoom = (
+            str(self.video_file) if self.video_file else str(self.filename)
+        )
         if not self._config["keep_prev_scale"]:
             # If "Keep Previous Scale" is OFF, always try to fit the new frame.
             self.adjustScale(initial=True)
@@ -5822,7 +5916,9 @@ class AnnolidWindow(MainWindow):
         # it can be restored (if keep_prev_scale is on)
         if video_file_key_for_zoom:  # Ensure we have a valid key
             self.zoom_values[video_file_key_for_zoom] = (
-                self.zoomMode, self.zoomWidget.value())
+                self.zoomMode,
+                self.zoomWidget.value(),
+            )
 
         # set scroll values
         for orientation in self.scroll_values:
@@ -5834,8 +5930,9 @@ class AnnolidWindow(MainWindow):
         try:
             self.loadPredictShapes(frame_number, filename)
         except Exception:
-            logger.debug("Failed to load shapes for frame %s", frame_number,
-                         exc_info=True)
+            logger.debug(
+                "Failed to load shapes for frame %s", frame_number, exc_info=True
+            )
         # Refresh behavior and flag states for the newly loaded frame.
         self._refresh_behavior_overlay()
         # set brightness constrast values
@@ -5968,20 +6065,28 @@ class AnnolidWindow(MainWindow):
         tiff_path = None
         try:
             from annolid.data import videos as _videos_mod
-            if isinstance(self.video_loader, _videos_mod.TiffStackVideo) and self.video_file:
+
+            if (
+                isinstance(self.video_loader, _videos_mod.TiffStackVideo)
+                and self.video_file
+            ):
                 tiff_path = str(self.video_file)
         except Exception:
             pass
 
         if not tiff_path:
             # Prompt user to select a 3D volume source (TIFF/NIfTI/DICOM)
-            start_dir = str(Path(self.filename).parent) if getattr(
-                self, "filename", None) else "."
+            start_dir = (
+                str(Path(self.filename).parent)
+                if getattr(self, "filename", None)
+                else "."
+            )
             filters = self.tr(
                 "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
             )
             dialog = QtWidgets.QFileDialog(
-                self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)"))
+                self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)")
+            )
             dialog.setDirectory(start_dir)
             dialog.setNameFilter(filters)
             dialog.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
@@ -6003,6 +6108,7 @@ class AnnolidWindow(MainWindow):
                 else:
                     return
             if paths:
+
                 def _normalize_volume_selection(raw: str) -> str:
                     try:
                         p = Path(raw)
@@ -6013,7 +6119,11 @@ class AnnolidWindow(MainWindow):
                                 return str(p.parent)
                         cur = p
                         for _ in range(3):
-                            if cur.name.lower().endswith(".zarr") or (cur / ".zarray").exists() or (cur / "zarr.json").exists():
+                            if (
+                                cur.name.lower().endswith(".zarr")
+                                or (cur / ".zarray").exists()
+                                or (cur / "zarr.json").exists()
+                            ):
                                 return str(cur)
                             cur = cur.parent
                     except Exception:
@@ -6027,6 +6137,7 @@ class AnnolidWindow(MainWindow):
         vtk_error = None
         try:
             from annolid.gui.widgets.vtk_volume_viewer import VTKVolumeViewerDialog  # type: ignore
+
             dlg = VTKVolumeViewerDialog(tiff_path, parent=self)
             dlg.setModal(False)
             dlg.show()
@@ -6045,14 +6156,14 @@ class AnnolidWindow(MainWindow):
 
         # Decide on fallback only for raster volumes; point clouds require VTK
         try:
-            suffix = Path(tiff_path).suffix.lower() if tiff_path else ''
-            name_lower = Path(tiff_path).name.lower() if tiff_path else ''
+            suffix = Path(tiff_path).suffix.lower() if tiff_path else ""
+            name_lower = Path(tiff_path).name.lower() if tiff_path else ""
         except Exception:
-            suffix = ''
-            name_lower = ''
+            suffix = ""
+            name_lower = ""
 
-        point_cloud_suffixes = {'.ply', '.csv', '.xyz'}
-        mesh_suffixes = {'.stl', '.obj'}
+        point_cloud_suffixes = {".ply", ".csv", ".xyz"}
+        mesh_suffixes = {".stl", ".obj"}
         requires_vtk = suffix in point_cloud_suffixes or suffix in mesh_suffixes
 
         # Re-check VTK availability independently of the viewer import error
@@ -6063,7 +6174,10 @@ class AnnolidWindow(MainWindow):
                 except Exception:
                     import vtk  # noqa: F401
                 # Also ensure Qt interactor exists
-                from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor  # noqa: F401
+                from vtkmodules.qt.QVTKRenderWindowInteractor import (
+                    QVTKRenderWindowInteractor,
+                )  # noqa: F401
+
                 return True, None
             except Exception as exc:
                 return False, str(exc)
@@ -6088,15 +6202,15 @@ class AnnolidWindow(MainWindow):
                 QtWidgets.QMessageBox.warning(
                     self,
                     self.tr("Mesh/Point Cloud Viewer"),
-                    self.tr("Failed to open the VTK mesh/point cloud viewer.\n%s") % (
-                        str(vtk_error) if vtk_error else ""
-                    ),
+                    self.tr("Failed to open the VTK mesh/point cloud viewer.\n%s")
+                    % (str(vtk_error) if vtk_error else ""),
                 )
             return
 
         # Fallback to slice/MIP raster viewer for TIFF and similar
         try:
             from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
+
             dlg = VolumeViewerDialog(tiff_path, parent=self)
             dlg.setModal(False)
             dlg.show()
@@ -6168,8 +6282,7 @@ class AnnolidWindow(MainWindow):
 
         cluster_spin = QtWidgets.QSpinBox(dialog)
         cluster_spin.setRange(0, 32)
-        cluster_spin.setValue(
-            max(0, int(getattr(self, "pca_map_clusters", 0))))
+        cluster_spin.setValue(max(0, int(getattr(self, "pca_map_clusters", 0))))
 
         layout.addRow(self.tr("Model"), model_combo)
         layout.addRow(self.tr("Overlay opacity"), alpha_spin)
@@ -6249,7 +6362,10 @@ class AnnolidWindow(MainWindow):
         quit_and_wait(self.seg_pred_thread, "Bye!")
         if hasattr(self, "yolo_training_manager") and self.yolo_training_manager:
             self.yolo_training_manager.cleanup()
-        if hasattr(self, "dino_kpseg_training_manager") and self.dino_kpseg_training_manager:
+        if (
+            hasattr(self, "dino_kpseg_training_manager")
+            and self.dino_kpseg_training_manager
+        ):
             self.dino_kpseg_training_manager.cleanup()
         try:
             dialog = getattr(self, "_training_dashboard_dialog", None)
@@ -6289,7 +6405,7 @@ class AnnolidWindow(MainWindow):
                 group_id=group_id,
                 description=description,
                 mask=shape["mask"],
-                visible=visible
+                visible=visible,
             )
             for x, y in points:
                 shape.addPoint(QtCore.QPointF(x, y))
@@ -6313,8 +6429,7 @@ class AnnolidWindow(MainWindow):
         self._noSelectionSlot = True
         for shape in shapes:
             if not isinstance(shape.points[0], QtCore.QPointF):
-                shape.points = [QtCore.QPointF(x, y)
-                                for x, y in shape.points]
+                shape.points = [QtCore.QPointF(x, y) for x, y in shape.points]
             self.addLabel(shape)
         self.labelList.clearSelection()
         self._noSelectionSlot = False
@@ -6326,8 +6441,7 @@ class AnnolidWindow(MainWindow):
         if caption is not None and len(caption) > 0:
             if self.caption_widget is None:
                 self.openCaption()
-            self.caption_widget.set_caption(
-                caption)  # Update caption widget
+            self.caption_widget.set_caption(caption)  # Update caption widget
             self.caption_widget.set_image_path(self.filename)
 
     def update_flags_from_file(self, label_file):
@@ -6336,7 +6450,7 @@ class AnnolidWindow(MainWindow):
         Args:
             label_file: LabelFile object containing flags
         """
-        if not hasattr(label_file, 'flags'):
+        if not hasattr(label_file, "flags"):
             logger.warning("Label file has no flags attribute")
             return
 
@@ -6345,7 +6459,7 @@ class AnnolidWindow(MainWindow):
             if isinstance(label_file.flags, dict):
                 # Deep copy to avoid modifying original
                 new_flags = label_file.flags.copy()
-                flags_in_frame = ','.join(new_flags.keys())
+                flags_in_frame = ",".join(new_flags.keys())
                 self.canvas.setBehaviorText(flags_in_frame)
                 _existing_flags = self.flag_widget._get_existing_flag_names()
                 for _flag in _existing_flags:
@@ -6378,8 +6492,8 @@ class AnnolidWindow(MainWindow):
             return 0
         try:
             store = AnnotationStore.for_frame_path(
-                self.video_results_folder /
-                f"{self.video_results_folder.name}_000000000.json"
+                self.video_results_folder
+                / f"{self.video_results_folder.name}_000000000.json"
             )
             if not store.store_path.exists():
                 return 0
@@ -6387,7 +6501,9 @@ class AnnolidWindow(MainWindow):
         except Exception:
             return 0
 
-    def _iter_frame_label_candidates(self, frame_number: int, frame_path: Optional[Path]) -> list[Path]:
+    def _iter_frame_label_candidates(
+        self, frame_number: int, frame_path: Optional[Path]
+    ) -> list[Path]:
         """Return possible annotation paths for a given frame."""
         candidates: list[Path] = []
 
@@ -6425,8 +6541,7 @@ class AnnolidWindow(MainWindow):
                 stem_name = base_dir.name
 
             if stem_name:
-                _append_candidate(base_dir /
-                                  f"{stem_name}_{frame_tag}.json")
+                _append_candidate(base_dir / f"{stem_name}_{frame_tag}.json")
             _append_candidate(base_dir / f"{frame_tag}.json")
 
         if self.video_results_folder:
@@ -6449,8 +6564,7 @@ class AnnolidWindow(MainWindow):
             self.caption_widget.set_image_path(filename)
 
         frame_path = Path(filename) if filename else None
-        label_candidates = self._iter_frame_label_candidates(
-            frame_number, frame_path)
+        label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
 
         seen_candidates: set[Path] = set()
         label_loaded = False
@@ -6488,9 +6602,13 @@ class AnnolidWindow(MainWindow):
             self.canvas.setBehaviorText(None)
             self.loadLabels(label_file.shapes)
             self.update_flags_from_file(label_file)
-            if len(self.canvas.current_behavior_text) > 1 and 'other' not in self.canvas.current_behavior_text.lower():
+            if (
+                len(self.canvas.current_behavior_text) > 1
+                and "other" not in self.canvas.current_behavior_text.lower()
+            ):
                 self.add_highlighted_mark(
-                    self.frame_number, mark_type=self.canvas.current_behavior_text)
+                    self.frame_number, mark_type=self.canvas.current_behavior_text
+                )
             caption = label_file.get_caption()
             if caption is not None and len(caption) > 0:
                 if self.caption_widget is None:
@@ -6506,24 +6624,25 @@ class AnnolidWindow(MainWindow):
             df_cur = self._df[self._df.frame_number == frame_number]
             frame_label_list = []
             pd.options.mode.chained_assignment = None
-            for row in df_cur.to_dict(orient='records'):
-                if 'x1' not in row:
-                    row['x1'] = 2
-                    row['y1'] = 2
-                    row['x2'] = 4
-                    row['y2'] = 4
-                    row['class_score'] = 1
-                    df_cur.drop('frame_number', axis=1, inplace=True)
+            for row in df_cur.to_dict(orient="records"):
+                if "x1" not in row:
+                    row["x1"] = 2
+                    row["y1"] = 2
+                    row["x2"] = 4
+                    row["y2"] = 4
+                    row["class_score"] = 1
+                    df_cur.drop("frame_number", axis=1, inplace=True)
                     try:
-                        instance_names = df_cur.apply(lambda row:
-                                                      df_cur.columns[[i for i in range(
-                                                          len(row)) if row[i] > 0][0]
-                                                      ],
-                                                      axis=1).tolist()
-                        row['instance_name'] = '_'.join(instance_names)
+                        instance_names = df_cur.apply(
+                            lambda row: df_cur.columns[
+                                [i for i in range(len(row)) if row[i] > 0][0]
+                            ],
+                            axis=1,
+                        ).tolist()
+                        row["instance_name"] = "_".join(instance_names)
                     except IndexError:
-                        row['instance_name'] = 'unknown'
-                    row['segmentation'] = None
+                        row["instance_name"] = "unknown"
+                    row["segmentation"] = None
                 pred_label_list = pred_dict_to_labelme(row)
                 frame_label_list += pred_label_list
 
@@ -6566,7 +6685,8 @@ class AnnolidWindow(MainWindow):
             finally:
                 self._suppress_audio_seek = False
             self.uniqLabelList.itemSelectionChanged.connect(
-                self.handle_uniq_label_list_selection_change)
+                self.handle_uniq_label_list_selection_change
+            )
 
         elif len(self.imageList) <= 0:
             return
@@ -6629,23 +6749,27 @@ class AnnolidWindow(MainWindow):
         self._update_frame_display_and_emit_update()
 
     def _emit_live_frame_update(self):
-        if self.filename and self.frame_number is not None and hasattr(self, '_time_stamp'):
+        if (
+            self.filename
+            and self.frame_number is not None
+            and hasattr(self, "_time_stamp")
+        ):
             self.live_annolid_frame_updated.emit(
-                self.frame_number, self._time_stamp or "")
+                self.frame_number, self._time_stamp or ""
+            )
 
     def _save_segments_for_active_video(self):
-        if not self.video_file or not hasattr(self, '_current_video_defined_segments'):
+        if not self.video_file or not hasattr(self, "_current_video_defined_segments"):
             return
-        segments_as_dicts = [s.to_dict()
-                             for s in self._current_video_defined_segments]
+        segments_as_dicts = [s.to_dict() for s in self._current_video_defined_segments]
         # Use Path(self.video_file) to ensure it's a Path object
         sidecar_path = Path(self.video_file).with_suffix(
-            Path(self.video_file).suffix + ".segments.json")
+            Path(self.video_file).suffix + ".segments.json"
+        )
         try:
-            with open(sidecar_path, 'w') as f:
+            with open(sidecar_path, "w") as f:
                 json.dump(segments_as_dicts, f, indent=2)
-            logger.info(
-                f"Saved {len(segments_as_dicts)} segments to {sidecar_path}")
+            logger.info(f"Saved {len(segments_as_dicts)} segments to {sidecar_path}")
         except Exception as e:
             logger.error(f"Failed to save segments to {sidecar_path}: {e}")
 
@@ -6655,58 +6779,59 @@ class AnnolidWindow(MainWindow):
             return
 
         sidecar_path = Path(self.video_file).with_suffix(
-            Path(self.video_file).suffix + ".segments.json")
+            Path(self.video_file).suffix + ".segments.json"
+        )
         if sidecar_path.exists():
             try:
-                with open(sidecar_path, 'r') as f:
+                with open(sidecar_path, "r") as f:
                     segment_dicts = json.load(f)
                 loaded_segments = []
                 for s_dict in segment_dicts:
                     try:  # Ensure current video context is used, even if stored differently
                         # Force current video path
-                        s_dict['video_path'] = str(self.video_file)
+                        s_dict["video_path"] = str(self.video_file)
                         # Force current FPS
-                        s_dict['fps'] = self.fps
-                        loaded_segments.append(
-                            TrackingSegment.from_dict(s_dict))
+                        s_dict["fps"] = self.fps
+                        loaded_segments.append(TrackingSegment.from_dict(s_dict))
                     except Exception as e:
                         logger.error(
-                            f"Error creating TrackingSegment from dict {s_dict}: {e}")
+                            f"Error creating TrackingSegment from dict {s_dict}: {e}"
+                        )
                 self._current_video_defined_segments = loaded_segments
                 logger.info(
-                    f"Loaded {len(self._current_video_defined_segments)} segments from {sidecar_path}")
+                    f"Loaded {len(self._current_video_defined_segments)} segments from {sidecar_path}"
+                )
             except Exception as e:
-                logger.error(
-                    f"Failed to load segments from {sidecar_path}: {e}")
+                logger.error(f"Failed to load segments from {sidecar_path}: {e}")
         if self.caption_widget is not None:
-            self.caption_widget.set_video_segments(
-                self._current_video_defined_segments
-            )
+            self.caption_widget.set_video_segments(self._current_video_defined_segments)
 
     # --- Handler for Tracking Initiated by SegmentEditorDialog ---
 
     def _get_tracking_device(self):
         # More sophisticated logic could go here (e.g., user settings)
-        if self.config.get('use_cpu_only', False) or torch is None:
+        if self.config.get("use_cpu_only", False) or torch is None:
             return "cpu" if torch is None else torch.device("cpu")
         if torch.cuda.is_available():
             return torch.device("cuda:0")
-        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
 
     def set_tracking_ui_state(self, is_tracking: bool) -> None:
         self.open_segment_editor_action.setEnabled(
-            not is_tracking and bool(self.video_file))
-        if hasattr(self.actions, 'open'):
+            not is_tracking and bool(self.video_file)
+        )
+        if hasattr(self.actions, "open"):
             self.actions.open.setEnabled(not is_tracking)
-        if hasattr(self.actions, 'openDir'):
+        if hasattr(self.actions, "openDir"):
             self.actions.openDir.setEnabled(not is_tracking)
-        if hasattr(self.actions, 'openVideo'):
+        if hasattr(self.actions, "openVideo"):
             self.actions.openVideo.setEnabled(not is_tracking)
-        if hasattr(self, 'video_manager_widget') and hasattr(self.video_manager_widget, 'track_all_button'):
-            self.video_manager_widget.track_all_button.setEnabled(
-                not is_tracking)
+        if hasattr(self, "video_manager_widget") and hasattr(
+            self.video_manager_widget, "track_all_button"
+        ):
+            self.video_manager_widget.track_all_button.setEnabled(not is_tracking)
         logger.info(
             "AnnolidWindow UI state for tracking: %s",
             "ACTIVE" if is_tracking else "IDLE",
@@ -6730,49 +6855,58 @@ class AnnolidWindow(MainWindow):
             return
 
         if input_anno_dir is None:
-            QtWidgets.QMessageBox.about(self,
-                                        "No input file or directory",
-                                        f"Please check and open the  \
-                                        files or directories.")
+            QtWidgets.QMessageBox.about(
+                self,
+                "No input file or directory",
+                f"Please check and open the  \
+                                        files or directories.",
+            )
             return
 
         if output_dir is None:
-            self.output_dir = Path(input_anno_dir).parent / \
-                (Path(input_anno_dir).name + '_coco_dataset')
+            self.output_dir = Path(input_anno_dir).parent / (
+                Path(input_anno_dir).name + "_coco_dataset"
+            )
 
         else:
             self.output_dir = output_dir
 
         if labels_file is None:
-            labels_file = str(self.here.parent / 'annotation' /
-                              'labels_custom.txt')
+            labels_file = str(self.here.parent / "annotation" / "labels_custom.txt")
 
         label_gen = labelme2coco.convert(
             str(input_anno_dir),
             output_annotated_dir=str(self.output_dir),
             labels_file=labels_file,
-            train_valid_split=num_train_frames
+            train_valid_split=num_train_frames,
         )
         pw = ProgressingWindow(label_gen)
         if pw.exec_():
             pw.runner_thread.terminate()
 
         self.statusBar().showMessage(self.tr("%s ...") % "converting")
-        QtWidgets.QMessageBox.about(self,
-                                    "Finished",
-                                    f"Done! Results are in folder: \
-                                            {str(self.output_dir)}")
+        QtWidgets.QMessageBox.about(
+            self,
+            "Finished",
+            f"Done! Results are in folder: \
+                                            {str(self.output_dir)}",
+        )
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
         try:
-            shutil.make_archive(str(self.output_dir),
-                                'zip', self.output_dir.parent, self.output_dir.stem)
+            shutil.make_archive(
+                str(self.output_dir),
+                "zip",
+                self.output_dir.parent,
+                self.output_dir.stem,
+            )
         except:
             print("Failed to create the zip file")
 
     def visualization(self):
         try:
             process, url = ensure_tensorboard(
-                log_dir=shared_runs_root(), preferred_port=6006, host="127.0.0.1")
+                log_dir=shared_runs_root(), preferred_port=6006, host="127.0.0.1"
+            )
             self._tensorboard_process = process
             webbrowser.open(url)
         except Exception:
@@ -6785,12 +6919,9 @@ class AnnolidWindow(MainWindow):
         """Auto-open the training dashboard window when training starts."""
         dialog = getattr(self, "_training_dashboard_dialog", None)
         if dialog is None:
-            dialog = TrainingDashboardDialog(
-                settings=self.settings, parent=None)
-            dialog.dashboard.register_training_manager(
-                self.yolo_training_manager)
-            dialog.dashboard.register_training_manager(
-                self.dino_kpseg_training_manager)
+            dialog = TrainingDashboardDialog(settings=self.settings, parent=None)
+            dialog.dashboard.register_training_manager(self.yolo_training_manager)
+            dialog.dashboard.register_training_manager(self.dino_kpseg_training_manager)
             dialog.finished.connect(
                 lambda *_: setattr(self, "_training_dashboard_dialog", None)
             )
@@ -6801,8 +6932,7 @@ class AnnolidWindow(MainWindow):
 
         try:
             dialog.show()
-            dialog.setWindowState(dialog.windowState() &
-                                  ~QtCore.Qt.WindowMinimized)
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
             dialog.raise_()
             dialog.activateWindow()
             QtWidgets.QApplication.processEvents()
@@ -6832,24 +6962,27 @@ class AnnolidWindow(MainWindow):
             return
 
         if video_file is None or tracking_results is None:
-            QtWidgets.QMessageBox.about(self,
-                                        "No input video or tracking results",
-                                        f"Please check and open the  \
-                                        files.")
+            QtWidgets.QMessageBox.about(
+                self,
+                "No input video or tracking results",
+                f"Please check and open the  \
+                                        files.",
+            )
             return
-        out_dir = f"{str(Path(video_file).with_suffix(''))}{self._pred_res_folder_suffix}"
+        out_dir = (
+            f"{str(Path(video_file).with_suffix(''))}{self._pred_res_folder_suffix}"
+        )
         out_dir = Path(out_dir)
         out_dir.mkdir(exist_ok=True, parents=True)
         trs = TracksResults(video_file, tracking_results)
-        label_json_gen = trs.to_labelme_json(str(out_dir),
-                                             skip_frames=skip_num_frames)
+        label_json_gen = trs.to_labelme_json(str(out_dir), skip_frames=skip_num_frames)
 
         try:
             if label_json_gen is not None:
                 pwj = ProgressingWindow(label_json_gen)
                 if pwj.exec_():
                     trs._is_running = False
-                    pwj.running_submitted.emit('stopped')
+                    pwj.running_submitted.emit("stopped")
                     pwj.runner_thread.terminate()
                     pwj.runner_thread.quit()
         except Exception:
@@ -6861,11 +6994,13 @@ class AnnolidWindow(MainWindow):
         """Pop-up and give focus to the label editor.
         position MUST be in global coordinates.
         """
-        if self.canvas.createMode == 'grounding_sam':
+        if self.canvas.createMode == "grounding_sam":
             self.labelList.clearSelection()
             shapes = [
-                shape for shape in self.canvas.shapes
-                if shape.description == 'grounding_sam']
+                shape
+                for shape in self.canvas.shapes
+                if shape.description == "grounding_sam"
+            ]
             shape = shapes.pop()
             self.addLabel(shape)
             self.actions.editMode.setEnabled(True)
@@ -6882,9 +7017,7 @@ class AnnolidWindow(MainWindow):
             description = ""
             if self._config["display_label_popup"] or not text:
                 previous_text = self.labelDialog.edit.text()
-                text, flags, group_id, description = self.labelDialog.popUp(
-                    text
-                )
+                text, flags, group_id, description = self.labelDialog.popUp(text)
                 if not text:
                     self.labelDialog.edit.setText(previous_text)
             if text and not self.validateLabel(text):
@@ -6942,14 +7075,16 @@ class AnnolidWindow(MainWindow):
             return
 
         if video_file is None or tracking_results is None:
-            QtWidgets.QMessageBox.about(self,
-                                        "No input video or tracking results",
-                                        f"Please check and open the  \
-                                        files.")
+            QtWidgets.QMessageBox.about(
+                self,
+                "No input video or tracking results",
+                f"Please check and open the  \
+                                        files.",
+            )
             return
 
         if out_nix_csv_file is None:
-            out_nix_csv_file = tracking_results.replace('.csv', '_nix.csv')
+            out_nix_csv_file = tracking_results.replace(".csv", "_nix.csv")
 
         tracks2nix(
             video_file,
@@ -6960,7 +7095,7 @@ class AnnolidWindow(MainWindow):
             motion_threshold=motion_threshold,
             pretrained_model=pretrained_model,
             subject_names=subject_names,
-            behavior_names=behavior_names
+            behavior_names=behavior_names,
         )
 
     # ---------------------------------------------------------------
@@ -7007,7 +7142,9 @@ class AnnolidWindow(MainWindow):
         if getattr(self, "depth_manager", None) is not None:
             self.depth_manager.load_depth_ndjson_records()
 
-    def _build_depth_overlay(self, frame_rgb: np.ndarray, depth_map: np.ndarray) -> np.ndarray:
+    def _build_depth_overlay(
+        self, frame_rgb: np.ndarray, depth_map: np.ndarray
+    ) -> np.ndarray:
         if getattr(self, "depth_manager", None) is not None:
             return self.depth_manager._build_depth_overlay(frame_rgb, depth_map)
         return depth_map
@@ -7037,8 +7174,7 @@ class AnnolidWindow(MainWindow):
         self, frame_number: int, frame_rgb: Optional[np.ndarray] = None
     ) -> None:
         if getattr(self, "depth_manager", None) is not None:
-            self.depth_manager.update_overlay_for_frame(
-                frame_number, frame_rgb)
+            self.depth_manager.update_overlay_for_frame(frame_number, frame_rgb)
 
     def _handle_video_depth_finished(
         self,
@@ -7089,7 +7225,8 @@ def main(argv=None, *, config=None):
 
     app.setApplicationName(__appname__)
     annolid_icon = QtGui.QIcon(
-        str(Path(__file__).resolve().parent / "icons/icon_annolid.png"))
+        str(Path(__file__).resolve().parent / "icons/icon_annolid.png")
+    )
     app.setWindowIcon(annolid_icon)
     win = AnnolidWindow(config=config)
     logger.info("Qt config file: %s" % win.settings.fileName())

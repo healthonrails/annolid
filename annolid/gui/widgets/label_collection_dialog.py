@@ -17,6 +17,7 @@ from annolid.datasets.labelme_collection import (
 )
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.builders.label_index_yolo import build_yolo_from_label_index
+from annolid.gui.widgets.file_audit_widget import FileAuditWidget
 
 
 @dataclass(frozen=True)
@@ -31,8 +32,7 @@ class LabelIndexJob:
 def _build_json_list(sources: Sequence[Path], *, recursive: bool) -> List[Path]:
     json_files: List[Path] = []
     for src in sources:
-        json_files.extend(
-            list(iter_labelme_json_files(Path(src), recursive=recursive)))
+        json_files.extend(list(iter_labelme_json_files(Path(src), recursive=recursive)))
     return sorted(set(json_files))
 
 
@@ -176,19 +176,23 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
         buttons = QtWidgets.QDialogButtonBox(self)
         self.close_btn = buttons.addButton(
-            "Close", QtWidgets.QDialogButtonBox.RejectRole)
+            "Close", QtWidgets.QDialogButtonBox.RejectRole
+        )
         self.close_btn.clicked.connect(self.reject)
 
         self.run_btn = buttons.addButton(
-            "Collect Now", QtWidgets.QDialogButtonBox.AcceptRole)
+            "Collect Now", QtWidgets.QDialogButtonBox.AcceptRole
+        )
         self.run_btn.clicked.connect(self._start_backfill_job)
 
         self.export_btn = buttons.addButton(
-            "Convert to YOLO", QtWidgets.QDialogButtonBox.ActionRole)
+            "Convert to YOLO", QtWidgets.QDialogButtonBox.ActionRole
+        )
         self.export_btn.clicked.connect(self._start_yolo_job)
 
         self.cancel_btn = buttons.addButton(
-            "Cancel", QtWidgets.QDialogButtonBox.DestructiveRole)
+            "Cancel", QtWidgets.QDialogButtonBox.DestructiveRole
+        )
         self.cancel_btn.clicked.connect(self._request_stop)
         self.cancel_btn.setEnabled(False)
 
@@ -244,8 +248,7 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         open_row.addStretch(1)
         layout.addLayout(open_row)
 
-        self.dataset_root_edit.editingFinished.connect(
-            self._on_dataset_root_changed)
+        self.dataset_root_edit.editingFinished.connect(self._on_dataset_root_changed)
         self.index_file_edit.editingFinished.connect(self._save_settings)
 
         layout.addStretch(1)
@@ -255,7 +258,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
         self.sources_list = QtWidgets.QListWidget(self)
         self.sources_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.ExtendedSelection)
+            QtWidgets.QAbstractItemView.ExtendedSelection
+        )
         layout.addWidget(self.sources_list, 2)
 
         row = QtWidgets.QHBoxLayout()
@@ -284,6 +288,17 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         opts.addStretch(1)
         layout.addLayout(opts)
 
+        # Audit Widget
+        self.audit_layout = QtWidgets.QVBoxLayout()
+        self.scan_btn = QtWidgets.QPushButton("Scan / Preview Files")
+        self.scan_btn.clicked.connect(self._scan_sources)
+        self.audit_layout.addWidget(self.scan_btn)
+
+        self.audit_widget = FileAuditWidget()
+        self.audit_layout.addWidget(self.audit_widget)
+
+        layout.addLayout(self.audit_layout)
+
         layout.addStretch(1)
 
     def _build_export_tab(self) -> None:
@@ -303,8 +318,7 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         self.yolo_dataset_name_edit = QtWidgets.QLineEdit("YOLO_dataset")
         form.addRow("Dataset name:", self.yolo_dataset_name_edit)
         self.yolo_output_dir_edit.editingFinished.connect(self._save_settings)
-        self.yolo_dataset_name_edit.editingFinished.connect(
-            self._save_settings)
+        self.yolo_dataset_name_edit.editingFinished.connect(self._save_settings)
 
         split_row = QtWidgets.QHBoxLayout()
         self.yolo_val_edit = QtWidgets.QDoubleSpinBox()
@@ -365,7 +379,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         path = Path(text)
         if not path.exists():
             QtWidgets.QMessageBox.information(
-                self, "Index file not found", "Index file does not exist yet.")
+                self, "Index file not found", "Index file does not exist yet."
+            )
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
@@ -377,13 +392,13 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         folder = path.parent if path.suffix else path
         if not folder.exists():
             QtWidgets.QMessageBox.information(
-                self, "Folder not found", "Index folder does not exist yet.")
+                self, "Folder not found", "Index folder does not exist yet."
+            )
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
 
     def _browse_dataset_root(self) -> None:
-        root = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select dataset root")
+        root = QtWidgets.QFileDialog.getExistingDirectory(self, "Select dataset root")
         if not root:
             return
         self.dataset_root_edit.setText(root)
@@ -407,14 +422,12 @@ class LabelCollectionDialog(QtWidgets.QDialog):
     def _on_dataset_root_changed(self) -> None:
         root = self.dataset_root_edit.text().strip()
         if root:
-            self.index_file_edit.setText(
-                str(default_label_index_path(Path(root))))
+            self.index_file_edit.setText(str(default_label_index_path(Path(root))))
         self._save_settings()
         self._refresh_index_preview()
 
     def _add_source_folder(self) -> None:
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Add source folder")
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Add source folder")
         if not folder:
             return
         self.sources_list.addItem(folder)
@@ -435,24 +448,23 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         if index_file.exists():
             self.status_label.setText(f"Index file: {index_file}")
         else:
-            self.status_label.setText(
-                f"Index file (will be created): {index_file}")
+            self.status_label.setText(f"Index file (will be created): {index_file}")
 
     def _load_settings(self) -> None:
         if self._settings is None:
             return
-        index_file = self._settings.value(
-            "dataset/label_index_file", "", type=str)
+        index_file = self._settings.value("dataset/label_index_file", "", type=str)
         dataset_root = self._settings.value(
-            "dataset/label_collection_dir", "", type=str)
-        sources = self._settings.value(
-            "dataset/label_index_sources", [], type=list)
+            "dataset/label_collection_dir", "", type=str
+        )
+        sources = self._settings.value("dataset/label_index_sources", [], type=list)
         yolo_output_dir = self._settings.value(
-            "dataset/label_yolo_output_dir", "", type=str)
+            "dataset/label_yolo_output_dir", "", type=str
+        )
         yolo_dataset_name = self._settings.value(
-            "dataset/label_yolo_dataset_name", "YOLO_dataset", type=str)
-        yolo_task = self._settings.value(
-            "dataset/label_yolo_task", "auto", type=str)
+            "dataset/label_yolo_dataset_name", "YOLO_dataset", type=str
+        )
+        yolo_task = self._settings.value("dataset/label_yolo_task", "auto", type=str)
 
         if index_file:
             self.index_file_edit.setText(index_file)
@@ -464,7 +476,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             self.dataset_root_edit.setText(dataset_root)
             if not index_file:
                 self.index_file_edit.setText(
-                    str(default_label_index_path(Path(dataset_root))))
+                    str(default_label_index_path(Path(dataset_root)))
+                )
 
         self.sources_list.clear()
         for src in sources or []:
@@ -488,12 +501,12 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
         dataset_root = self.dataset_root_edit.text().strip()
         index_file = self.index_file_edit.text().strip()
-        sources = [self.sources_list.item(i).text()
-                   for i in range(self.sources_list.count())]
+        sources = [
+            self.sources_list.item(i).text() for i in range(self.sources_list.count())
+        ]
 
         if dataset_root:
-            self._settings.setValue(
-                "dataset/label_collection_dir", dataset_root)
+            self._settings.setValue("dataset/label_collection_dir", dataset_root)
 
         if self.auto_enable.isChecked() and index_file:
             self._settings.setValue("dataset/label_index_file", index_file)
@@ -510,8 +523,7 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         if yolo_name is not None:
             value = self.yolo_dataset_name_edit.text().strip()
             if value:
-                self._settings.setValue(
-                    "dataset/label_yolo_dataset_name", value)
+                self._settings.setValue("dataset/label_yolo_dataset_name", value)
         yolo_task = getattr(self, "yolo_task_mode", None)
         if yolo_task is not None:
             value = str(self.yolo_task_mode.currentText())
@@ -534,7 +546,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
     def _browse_yolo_output_dir(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select output directory")
+            self, "Select output directory"
+        )
         if not folder:
             return
         self.yolo_output_dir_edit.setText(folder)
@@ -547,14 +560,17 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         index_file_text = self.index_file_edit.text().strip()
         if not index_file_text:
             QtWidgets.QMessageBox.warning(
-                self, "Missing index file", "Please set an index file.")
+                self, "Missing index file", "Please set an index file."
+            )
             return
 
-        sources = [self.sources_list.item(i).text()
-                   for i in range(self.sources_list.count())]
+        sources = [
+            self.sources_list.item(i).text() for i in range(self.sources_list.count())
+        ]
         if not sources:
             QtWidgets.QMessageBox.warning(
-                self, "Missing sources", "Please add at least one source folder.")
+                self, "Missing sources", "Please add at least one source folder."
+            )
             return
 
         job = LabelIndexJob(
@@ -603,18 +619,23 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         index_file_text = self.index_file_edit.text().strip()
         if not index_file_text:
             QtWidgets.QMessageBox.warning(
-                self, "Missing index file", "Please set an index file.")
+                self, "Missing index file", "Please set an index file."
+            )
             return
         index_path = Path(index_file_text)
         if not index_path.exists():
             QtWidgets.QMessageBox.warning(
-                self, "Index file not found", f"Index file does not exist:\n{index_path}")
+                self,
+                "Index file not found",
+                f"Index file does not exist:\n{index_path}",
+            )
             return
 
         output_dir_text = self.yolo_output_dir_edit.text().strip()
         if not output_dir_text:
             QtWidgets.QMessageBox.warning(
-                self, "Missing output dir", "Please choose an output directory.")
+                self, "Missing output dir", "Please choose an output directory."
+            )
             return
 
         dataset_name = self.yolo_dataset_name_edit.text().strip() or "YOLO_dataset"
@@ -661,18 +682,27 @@ class LabelCollectionDialog(QtWidgets.QDialog):
                 self._append_log(f"Error: {result}")
             else:
                 if isinstance(result, dict) and result.get("dataset_dir"):
-                    self._append_log(
-                        f"YOLO dataset: {result.get('dataset_dir')}")
+                    self._append_log(f"YOLO dataset: {result.get('dataset_dir')}")
                     self.progress.setValue(100)
                 else:
-                    appended = getattr(
-                        result, "get", lambda *_: None)("appended") if isinstance(result, dict) else None
-                    skipped = getattr(
-                        result, "get", lambda *_: None)("skipped") if isinstance(result, dict) else None
-                    missing = getattr(
-                        result, "get", lambda *_: None)("missing_image") if isinstance(result, dict) else None
+                    appended = (
+                        getattr(result, "get", lambda *_: None)("appended")
+                        if isinstance(result, dict)
+                        else None
+                    )
+                    skipped = (
+                        getattr(result, "get", lambda *_: None)("skipped")
+                        if isinstance(result, dict)
+                        else None
+                    )
+                    missing = (
+                        getattr(result, "get", lambda *_: None)("missing_image")
+                        if isinstance(result, dict)
+                        else None
+                    )
                     self._append_log(
-                        f"Done. Appended={appended} Skipped={skipped} MissingImage={missing}")
+                        f"Done. Appended={appended} Skipped={skipped} MissingImage={missing}"
+                    )
                 self._refresh_index_preview()
         finally:
             self._set_running(False)
@@ -685,3 +715,57 @@ class LabelCollectionDialog(QtWidgets.QDialog):
                 self._thread.deleteLater()
             self._worker = None
             self._thread = None
+
+    def _scan_sources(self) -> None:
+        """Scan selected sources and populate audit widget."""
+        sources = [
+            self.sources_list.item(i).text() for i in range(self.sources_list.count())
+        ]
+        if not sources:
+            QtWidgets.QMessageBox.warning(
+                self, "No sources", "Please add at least one source folder."
+            )
+            return
+
+        recursive = self.recursive_cb.isChecked()
+
+        # Use existing helper to find files
+        json_files = _build_json_list([Path(s) for s in sources], recursive=recursive)
+
+        audit_items = []
+        import json
+
+        for jf in json_files:
+            status = "valid"
+            shapes_len = 0
+            image_abs_path = None
+
+            try:
+                # Check for corresponding image
+                image_path = resolve_image_path(jf)
+                image_abs_path = image_path
+                if image_path is None:
+                    status = "missing_image"
+
+                with open(jf, "r") as f:
+                    data = json.load(f)
+
+                shapes = data.get("shapes", [])
+                shapes_len = len(shapes)
+                if not shapes:
+                    if status == "valid":
+                        status = "empty"
+
+            except Exception:
+                status = "error"
+
+            audit_items.append(
+                {
+                    "json_path": jf,
+                    "image_path": image_abs_path,
+                    "status": status,
+                    "shape_count": shapes_len,
+                }
+            )
+
+        self.audit_widget.set_items(audit_items)

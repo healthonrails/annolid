@@ -40,10 +40,7 @@ def get_future_frame_from_mask(dir_path, current_frame):
     return None
 
 
-def construct_filename(results_folder,
-                       frame_number,
-                       extension="png",
-                       padding=9):
+def construct_filename(results_folder, frame_number, extension="png", padding=9):
     """
     Constructs a filename for saving video frame results.
 
@@ -64,9 +61,13 @@ def construct_filename(results_folder,
             results_folder = Path(results_folder)
         else:
             raise TypeError(
-                "results_folder must be a Path object or a string representing a path.")
+                "results_folder must be a Path object or a string representing a path."
+            )
 
-    return results_folder / f"{str(results_folder.name)}_{frame_number:0{padding}}.{extension}"
+    return (
+        results_folder
+        / f"{str(results_folder.name)}_{frame_number:0{padding}}.{extension}"
+    )
 
 
 def count_recent_json_files(folder_path, last_minute=1):
@@ -106,44 +107,39 @@ def find_manual_labeled_json_files(folder_path):
       files in the given folder.
 
     Args:
-        folder_path (str): Path to the folder 
+        folder_path (str): Path to the folder
         containing PNG and JSON files.
 
     Returns:
         list: List of manually labeled JSON filenames.
     """
+    from annolid.datasets.labelme_collection import resolve_image_path
+
     manually_labeled_files = []
 
     # Check if the folder exists
     if not os.path.exists(folder_path):
         return manually_labeled_files
 
-    # Get the folder name
-    folder_name = os.path.basename(folder_path)
+    folder_path_obj = Path(folder_path)
 
-    # Iterate over files in the folder
-    for filename in os.listdir(folder_path):
-        # Check if file is a PNG and contains the folder name
-        if filename.endswith('.png') and folder_name in filename:
-            # Construct the corresponding JSON filename
-            json_filename = filename.replace('.png', '.json')
-            # Check if corresponding JSON file exists
-            if os.path.exists(os.path.join(folder_path, json_filename)):
-                manually_labeled_files.append(json_filename)
+    # Use robust discovery from labelme_collection
+    # We scan for all JSONs, but only keep those that have a valid sidecar image
+    for json_file in folder_path_obj.glob("*.json"):
+        if resolve_image_path(json_file) is not None:
+            manually_labeled_files.append(json_file.name)
 
     if manually_labeled_files:
-        return manually_labeled_files
+        return sorted(manually_labeled_files)
 
     # Fallback to annotation store if no discrete JSON files exist.
     directory = Path(folder_path)
     store = AnnotationStore.for_frame_path(
-        directory / f"{directory.name}_000000000.json")
+        directory / f"{directory.name}_000000000.json"
+    )
     if store.store_path.exists():
         store_frames = sorted(store.iter_frames())
-        return [
-            f"{directory.name}_{frame:09d}.json"
-            for frame in store_frames
-        ]
+        return [f"{directory.name}_{frame:09d}.json" for frame in store_frames]
 
     return manually_labeled_files
 
@@ -219,9 +215,9 @@ def get_frame_number_from_json(json_file):
     # Assume json file name pattern as
     # xxxx_000000000.json
     # Split the file name by '_' and '.'
-    parts = json_file.split('_')
+    parts = json_file.split("_")
     # Extract the part between '_' and '.json'
-    frame_number_str = parts[-1].split('.')[0]
+    frame_number_str = parts[-1].split(".")[0]
     # Convert the frame number string to an integer
     frame_number = int(frame_number_str)
     return frame_number
@@ -243,7 +239,7 @@ def count_json_files(folder_path):
     # Iterate through the files in the folder
     for filename in os.listdir(folder_path):
         # Check if the file ends with ".json"
-        if filename.endswith('.json'):
+        if filename.endswith(".json"):
             # Increment the JSON file counter
             json_file_count += 1
 
@@ -253,7 +249,8 @@ def count_json_files(folder_path):
     # Fallback to annotation store records.
     directory = Path(folder_path)
     store = AnnotationStore.for_frame_path(
-        directory / f"{directory.name}_000000000.json")
+        directory / f"{directory.name}_000000000.json"
+    )
     if not store.store_path.exists():
         return 0
     return len(list(store.iter_frames()))
@@ -266,8 +263,11 @@ def find_most_recent_file(folder_path, file_ext=".json"):
     all_files = os.listdir(folder_path)
 
     # Filter out directories and get file paths
-    file_paths = [os.path.join(folder_path, file) for file in all_files if os.path.isfile(
-        os.path.join(folder_path, file)) and file.endswith(file_ext)]
+    file_paths = [
+        os.path.join(folder_path, file)
+        for file in all_files
+        if os.path.isfile(os.path.join(folder_path, file)) and file.endswith(file_ext)
+    ]
 
     if file_paths:
         # Get the most recent file based on modification time
@@ -277,7 +277,8 @@ def find_most_recent_file(folder_path, file_ext=".json"):
     # Fallback to annotation store if no individual files exist.
     directory = Path(folder_path)
     store = AnnotationStore.for_frame_path(
-        directory / f"{directory.name}_000000000{file_ext}")
+        directory / f"{directory.name}_000000000{file_ext}"
+    )
     if not store.store_path.exists():
         return None
     frames = list(store.iter_frames())
@@ -291,13 +292,12 @@ def find_most_recent_file(folder_path, file_ext=".json"):
 
 def is_duplicate(row, ref_row, tol_coord=3, tol_motion=0.1):
     """
-    Return True if `row` is considered a duplicate of `ref_row` 
+    Return True if `row` is considered a duplicate of `ref_row`
     based on the given tolerances for coordinates and motion_index.
     """
-    close_cx = abs(row['cx'] - ref_row['cx']) <= tol_coord
-    close_cy = abs(row['cy'] - ref_row['cy']) <= tol_coord
-    close_motion = abs(row['motion_index'] -
-                       ref_row['motion_index']) < tol_motion
+    close_cx = abs(row["cx"] - ref_row["cx"]) <= tol_coord
+    close_cy = abs(row["cy"] - ref_row["cy"]) <= tol_coord
+    close_motion = abs(row["motion_index"] - ref_row["motion_index"]) < tol_motion
     return close_cx and close_cy and close_motion
 
 
@@ -319,14 +319,16 @@ def remove_custom_duplicates(group, tol_coord=3, tol_motion=0.1):
     return group.loc[kept_indices]
 
 
-def create_tracking_csv_file(frame_numbers,
-                             instance_names,
-                             cx_values,
-                             cy_values,
-                             motion_indices,
-                             output_file,
-                             video_path,
-                             fps=30):
+def create_tracking_csv_file(
+    frame_numbers,
+    instance_names,
+    cx_values,
+    cy_values,
+    motion_indices,
+    output_file,
+    video_path,
+    fps=30,
+):
     """
     Create or update a tracking CSV file with fuzzy duplicate removal.
 
@@ -356,11 +358,11 @@ def create_tracking_csv_file(frame_numbers,
 
     # Create a DataFrame for the new data.
     new_data = {
-        'frame_number': frame_numbers,
-        'instance_name': instance_names,
-        'cx': cx_values,
-        'cy': cy_values,
-        'motion_index': motion_indices,
+        "frame_number": frame_numbers,
+        "instance_name": instance_names,
+        "cx": cx_values,
+        "cy": cy_values,
+        "motion_index": motion_indices,
     }
     new_df = pd.DataFrame(new_data)
 
@@ -372,46 +374,49 @@ def create_tracking_csv_file(frame_numbers,
         # If existing_data is not empty, proceed with filtering and merging
         # 1. Identify the common (frame_number, instance_name) keys
         common_keys = pd.merge(
-            existing_data[['frame_number', 'instance_name']],
-            new_df[['frame_number', 'instance_name']],
-            on=['frame_number', 'instance_name'],
-            how='inner'
+            existing_data[["frame_number", "instance_name"]],
+            new_df[["frame_number", "instance_name"]],
+            on=["frame_number", "instance_name"],
+            how="inner",
         )
 
         # 2. Filter out the old rows that are superseded by new rows
-        is_in_common = existing_data[['frame_number', 'instance_name']].merge(
-            common_keys.assign(is_common=True),
-            on=['frame_number', 'instance_name'],
-            how='left'
-        )['is_common'].fillna(False)
+        is_in_common = (
+            existing_data[["frame_number", "instance_name"]]
+            .merge(
+                common_keys.assign(is_common=True),
+                on=["frame_number", "instance_name"],
+                how="left",
+            )["is_common"]
+            .fillna(False)
+        )
 
         existing_data_filtered = existing_data[~is_in_common]
 
         # 3. Concatenate the filtered existing data with all new data
-        combined_df = pd.concat(
-            [existing_data_filtered, new_df], ignore_index=True)
+        combined_df = pd.concat([existing_data_filtered, new_df], ignore_index=True)
     # --- End of Core Logic for Keeping New Rows on Exact Match ---
 
     # If a timestamps column exists (from a previous run), drop it so that only the core columns are used for duplicate checks.
-    if 'timestamps' in combined_df.columns:
-        combined_df = combined_df.drop(columns=['timestamps'])
+    if "timestamps" in combined_df.columns:
+        combined_df = combined_df.drop(columns=["timestamps"])
 
     # Group the data by 'frame_number' and 'instance_name' as these must match exactly.
-    grouped = combined_df.groupby(
-        ['frame_number', 'instance_name'], group_keys=False)
+    grouped = combined_df.groupby(["frame_number", "instance_name"], group_keys=False)
 
     # Apply our custom duplicate removal within each group.
-    cleaned_df = grouped.apply(lambda group: remove_custom_duplicates(
-        group, tol_coord=3, tol_motion=0.1))
+    cleaned_df = grouped.apply(
+        lambda group: remove_custom_duplicates(group, tol_coord=3, tol_motion=0.1)
+    )
 
     # Generate timestamps based on frame_number and fps.
-    timestamps_seconds = pd.to_datetime(
-        cleaned_df['frame_number'] / fps, unit='s')
-    cleaned_df['timestamps'] = timestamps_seconds.dt.time
+    timestamps_seconds = pd.to_datetime(cleaned_df["frame_number"] / fps, unit="s")
+    cleaned_df["timestamps"] = timestamps_seconds.dt.time
 
     # Write the cleaned DataFrame back to the CSV file without the index.
     cleaned_df.to_csv(output_file, index=False)
     annotate_csv(Path(output_file), Path(video_path))
+
 
 # Function to clone a Git repository
 
@@ -428,14 +433,16 @@ def clone_git_repository(repo_url, destination_path):
     except Exception as e:
         print(f"Failed to clone repository: {e}")
 
+
 # Function to download a file
 
 
 def download_file(url, destination_path):
     import requests
+
     response = requests.get(url)
     if response.status_code == 200:
-        with open(destination_path, 'wb') as file:
+        with open(destination_path, "wb") as file:
             file.write(response.content)
             print("Download complete.")
     else:
@@ -444,20 +451,20 @@ def download_file(url, destination_path):
 
 def open_or_start_file(file_name):
     # macOS
-    if platform.system() == 'Darwin':
-        subprocess.call(('open', file_name))
+    if platform.system() == "Darwin":
+        subprocess.call(("open", file_name))
     # Windows
-    elif platform.system() == 'Windows':
+    elif platform.system() == "Windows":
         os.startfile(file_name)
     # linux
     else:
-        subprocess.call(('xdg-open', file_name))
+        subprocess.call(("xdg-open", file_name))
 
 
 def merge_annotation_folders(
-        anno_dir='/data/project_folder/',
-        img_pattern="*/*/*.png",
-        dest_dir='/data/my_dataset'
+    anno_dir="/data/project_folder/",
+    img_pattern="*/*/*.png",
+    dest_dir="/data/my_dataset",
 ):
     """
     merge labeled png and json files in different folders for videos
@@ -468,18 +475,17 @@ def merge_annotation_folders(
     imgs = glob.glob(os.path.join(anno_dir, img_pattern))
 
     for img in imgs:
-        label_json = img.replace('png', 'json')
+        label_json = img.replace("png", "json")
         # skip json files predicted by models
         if not os.path.exists(label_json):
             continue
-        dest_json = os.path.basename(label_json).replace(' ', '_')
-        dest_img = os.path.basename(img).replace(' ', '_')
+        dest_json = os.path.basename(label_json).replace(" ", "_")
+        dest_img = os.path.basename(img).replace(" ", "_")
         shutil.copy(img, os.path.join(dest_dir, dest_img))
         shutil.copy(label_json, os.path.join(dest_dir, dest_json))
 
 
-def get_freezing_results(results_dir,
-                         video_name):
+def get_freezing_results(results_dir, video_name):
     """check and fliter all the output results files from freezing analyzer.
 
     Args:
@@ -493,19 +499,18 @@ def get_freezing_results(results_dir,
     res_files = os.listdir(results_dir)
     for rf in res_files:
         if video_name in rf:
-            if '_results.mp4' in rf:
+            if "_results.mp4" in rf:
                 filtered_results.append(rf)
-            if '_tracked.mp4' in rf:
+            if "_tracked.mp4" in rf:
                 filtered_results.append(rf)
-            if '_motion.csv' in rf:
+            if "_motion.csv" in rf:
                 filtered_results.append(rf)
-            if 'nix.csv' in rf:
+            if "nix.csv" in rf:
                 filtered_results.append(rf)
     return filtered_results
 
 
-def create_cluster_folders(cluster_labels,
-                           dest_dir='/data/video_embidings'):
+def create_cluster_folders(cluster_labels, dest_dir="/data/video_embidings"):
     """create a subfolder for each cluster
 
     Args:
@@ -515,17 +520,14 @@ def create_cluster_folders(cluster_labels,
     if not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
     for label in cluster_labels:
-        label_folder = os.path.join(dest_dir, f'cluster_{label}')
+        label_folder = os.path.join(dest_dir, f"cluster_{label}")
         if not os.path.exists(label_folder):
             os.makedirs(label_folder)
 
 
-def create_video_from_images(img_folder,
-                             video_name,
-                             suffix='png',
-                             show_height=540,
-                             show_width=960,
-                             show_fps=20):
+def create_video_from_images(
+    img_folder, video_name, suffix="png", show_height=540, show_width=960, show_fps=20
+):
     """Create a video from a folder of images.
 
     Args:
@@ -542,7 +544,8 @@ def create_video_from_images(img_folder,
     size = (show_width, show_height)
 
     videowriter = cv2.VideoWriter(
-        video_name, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), fps, size)
+        video_name, cv2.VideoWriter_fourcc("M", "J", "P", "G"), fps, size
+    )
 
     for saved_img_path in sorted(saved_img_paths):
         img = cv2.imread(saved_img_path)
@@ -550,13 +553,19 @@ def create_video_from_images(img_folder,
         videowriter.write(img)
 
     videowriter.release()
-    print('Video is finished.')
+    print("Video is finished.")
 
 
-def create_gif(img_folder: str, gif_name: str,
-               suffix: str, show_height: int,
-               show_width: int, show_fps: int,
-               start_frame: int = 0, end_frame: int = -1) -> None:
+def create_gif(
+    img_folder: str,
+    gif_name: str,
+    suffix: str,
+    show_height: int,
+    show_width: int,
+    show_fps: int,
+    start_frame: int = 0,
+    end_frame: int = -1,
+) -> None:
     """
     Create a GIF from a sequence of images.
 
@@ -584,6 +593,7 @@ def create_gif(img_folder: str, gif_name: str,
     None
     """
     import imageio
+
     # Get the paths of the images
     saved_img_paths = gb.glob(img_folder + "/*." + suffix)
 
@@ -602,36 +612,55 @@ def create_gif(img_folder: str, gif_name: str,
         frames.append(img)
 
     # Save the GIF with the specified parameters
-    imageio.mimsave(gif_name, frames, 'GIF', duration=1/fps)
-    print('GIF is finished.')
+    imageio.mimsave(gif_name, frames, "GIF", duration=1 / fps)
+    print("GIF is finished.")
 
 
 def main():
     """Parse command-line arguments and call create_gifs or videos."""
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--img_folder', default=None,
-                        type=str, help='Path to folder containing the images.')
-    parser.add_argument('--video_name', default=None,
-                        type=str, help='Name of the output video file.')
-    parser.add_argument('--gif_name', default=None, type=str)
-    parser.add_argument('--suffix', default='png', type=str)
-    parser.add_argument('--show_height', default=270, type=int)
-    parser.add_argument('--show_width', default=480, type=int)
-    parser.add_argument('--show_fps', default=20, type=int)
-    parser.add_argument('--start_frame', default=0, type=int)
-    parser.add_argument('--end_frame', default=-1, type=int)
+    parser.add_argument(
+        "--img_folder",
+        default=None,
+        type=str,
+        help="Path to folder containing the images.",
+    )
+    parser.add_argument(
+        "--video_name", default=None, type=str, help="Name of the output video file."
+    )
+    parser.add_argument("--gif_name", default=None, type=str)
+    parser.add_argument("--suffix", default="png", type=str)
+    parser.add_argument("--show_height", default=270, type=int)
+    parser.add_argument("--show_width", default=480, type=int)
+    parser.add_argument("--show_fps", default=20, type=int)
+    parser.add_argument("--start_frame", default=0, type=int)
+    parser.add_argument("--end_frame", default=-1, type=int)
 
     args = parser.parse_args()
 
     if args.video_name:
-        create_video_from_images(args.img_folder, args.video_name, args.suffix,
-                                 args.show_height, args.show_width, args.show_fps)
+        create_video_from_images(
+            args.img_folder,
+            args.video_name,
+            args.suffix,
+            args.show_height,
+            args.show_width,
+            args.show_fps,
+        )
 
     if args.gif_name:
-        create_gif(args.img_folder, args.gif_name, args.suffix, args.show_height,
-                   args.show_width, args.show_fps, args.start_frame, args.end_frame)
+        create_gif(
+            args.img_folder,
+            args.gif_name,
+            args.suffix,
+            args.show_height,
+            args.show_width,
+            args.show_fps,
+            args.start_frame,
+            args.end_frame,
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
