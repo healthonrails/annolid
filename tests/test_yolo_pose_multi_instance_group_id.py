@@ -118,3 +118,30 @@ def test_extract_yolo_results_uses_track_ids_as_group_id() -> None:
     assert {s.group_id for s in shapes} == {42, 99}
     assert {s.other_data.get("instance_label")
             for s in shapes} == {"mouse_42", "mouse_99"}
+
+
+def test_extract_yolo_results_uses_prompt_class_names_override() -> None:
+    processor = _build_processor(["nose"])
+    processor.prompt_class_names = ["resident", "intruder"]
+    result = _FakeResult(
+        boxes=_FakeBoxes(
+            xywh=[[10, 10, 5, 5], [20, 20, 6, 6]],
+            cls_ids=[0, 1],
+            ids=None,
+        ),
+        keypoints=_FakeKeypoints(
+            xy=[
+                [[1, 2]],
+                [[7, 8]],
+            ],
+            conf=[
+                [0.9],
+                [0.6],
+            ],
+        ),
+        names={0: "object0", 1: "object1"},
+    )
+
+    shapes = processor.extract_yolo_results(result)
+    assert {s.other_data.get("instance_label")
+            for s in shapes} == {"resident", "intruder"}

@@ -176,7 +176,9 @@ class YOLOLabelMePlugin(ModelPluginBase):
         )
 
         visual_prompts = None
-        class_names: List[str] = []
+        text_classes: List[str] = []
+        prompt_class_names: Optional[List[str]] = None
+        yoloe_text_prompt = True
 
         if args.visual_prompts and args.visual_prompts_labelme:
             raise ValueError(
@@ -188,26 +190,31 @@ class YOLOLabelMePlugin(ModelPluginBase):
             visual_prompts, names_from_file = _load_visual_prompts_json(
                 prompts_path)
             if names_from_file:
-                class_names = list(names_from_file)
+                prompt_class_names = list(names_from_file)
+            yoloe_text_prompt = False
 
         if args.visual_prompts_labelme:
             labelme_path = Path(
                 args.visual_prompts_labelme).expanduser().resolve()
-            visual_prompts, class_names = _load_visual_prompts_from_labelme(
+            visual_prompts, label_names = _load_visual_prompts_from_labelme(
                 labelme_path)
+            prompt_class_names = list(label_names)
+            yoloe_text_prompt = False
 
-        if not class_names:
-            class_names = _split_classes(str(args.classes))
+        text_classes = _split_classes(str(args.classes))
 
         if _looks_like_prompt_free_yoloe(weights):
-            class_names = []
             visual_prompts = None
+            prompt_class_names = None
+            yoloe_text_prompt = False
 
         processor = InferenceProcessor(
             model_name=weights,
             model_type="yolo",
-            class_names=class_names or None,
+            class_names=text_classes or None,
             persist_json=True,
+            yoloe_text_prompt=bool(yoloe_text_prompt),
+            prompt_class_names=prompt_class_names,
         )
 
         message = processor.run_inference(

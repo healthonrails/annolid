@@ -27,6 +27,8 @@ class InferenceProcessor:
         keypoint_names: Optional[list] = None,
         pose_schema_path: Optional[str] = None,
         persist_json: bool = False,
+        yoloe_text_prompt: bool = True,
+        prompt_class_names: Optional[list] = None,
     ) -> None:
         """
         Initializes the InferenceProcessor with a specified model.
@@ -43,7 +45,17 @@ class InferenceProcessor:
         self.model_path = resolve_weight_path(model_name)
         self.model_name = str(self.model_path)
         self._is_coreml = self._detect_coreml_export(self.model_name)
+        self._yoloe_text_prompt: bool = bool(yoloe_text_prompt)
+        self.class_names: Optional[list] = (
+            [str(c).strip()
+             for c in (class_names or []) if str(c).strip()] or None
+        )
+        self.prompt_class_names: Optional[list] = (
+            [str(c).strip()
+             for c in (prompt_class_names or []) if str(c).strip()] or None
+        )
         self.model = self._load_model(class_names)
+        self._apply_prompt_names_to_model()
         self.frame_count: int = 0
         self.track_history = defaultdict(list)
         self.pose_schema: Optional[PoseSchema] = None
@@ -53,6 +65,29 @@ class InferenceProcessor:
             pose_schema_path=pose_schema_path,
         )
         self.persist_json: bool = bool(persist_json)
+
+    def _apply_prompt_names_to_model(self) -> None:
+        """Apply prompt class name mapping to Ultralytics models (used by YOLOE visual prompting)."""
+        if not getattr(self, "prompt_class_names", None):
+            return
+        if "yoloe" not in str(getattr(self, "model_name", "")).lower():
+            return
+
+        try:
+            names = list(self.prompt_class_names or [])
+        except Exception:
+            return
+        if not names:
+            return
+
+        mapping = {int(i): str(name) for i, name in enumerate(names)}
+        for target in (getattr(self, "model", None), getattr(getattr(self, "model", None), "model", None)):
+            if target is None:
+                continue
+            try:
+                setattr(target, "names", mapping)
+            except Exception:
+                pass
 
     @staticmethod
     def _clean_instance_label(value: object) -> str:
@@ -290,7 +325,7 @@ class InferenceProcessor:
                 ) from exc
             if "yoloe" in model_name_lower:
                 model = YOLOE(model_ref)
-                if filtered_classes:
+                if filtered_classes and bool(getattr(self, "_yoloe_text_prompt", True)):
                     # YOLOE-26 text prompting requires a TorchScript text encoder asset
                     # (e.g. mobileclip2_b.ts). Ultralytics resolves this via
                     # `attempt_download_asset("mobileclip2_b.ts")`, which otherwise downloads into
@@ -1170,6 +1205,18 @@ class InferenceProcessor:
         """
         annotations: List[Shape] = []
 
+        def _resolve_class_name(cls_id: int, names_obj: object) -> str:
+            prompt_names = getattr(self, "prompt_class_names", None)
+            if isinstance(prompt_names, list) and 0 <= int(cls_id) < len(prompt_names):
+                name = str(prompt_names[int(cls_id)]).strip()
+                if name:
+                    return name
+            if isinstance(names_obj, dict):
+                return str(names_obj.get(int(cls_id), names_obj.get(str(int(cls_id)), cls_id)))
+            if isinstance(names_obj, (list, tuple)) and 0 <= int(cls_id) < len(names_obj):
+                return str(names_obj[int(cls_id)])
+            return str(cls_id)
+
         boxes_obj = getattr(detection_result, "boxes", None)
         boxes_xywh = boxes_obj.xywh.cpu() if boxes_obj is not None else []
         boxes_conf = getattr(
@@ -1219,7 +1266,7 @@ class InferenceProcessor:
         for idx in range(num_instances):
             name = ""
             if idx < len(cls_ids):
-                name = str(names.get(cls_ids[idx], cls_ids[idx]))
+                name = _resolve_class_name(cls_ids[idx], names)
             class_names.append(name)
         class_name_counts = {k: class_names.count(
             k) for k in set(class_names) if k}

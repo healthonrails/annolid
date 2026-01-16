@@ -73,5 +73,5 @@ Annolid’s video inference pipeline uses `annolid/segmentation/yolos.py` under 
 
 - **Selecting YOLOE-26:** pick a YOLOE-26 preset from the model dropdown (for example `YOLOE-26s-seg (Prompted)` or `YOLOE-26s-seg (Prompt-free)`).
 - **Text prompting:** put a comma-separated class list in the **Text Prompt** field (e.g. `person,bus`) before running prediction with a YOLOE-26 model.
-- **Visual prompting:** draw and label **rectangle** shapes on the canvas; Annolid converts them into YOLOE visual prompts automatically.
+- **Visual prompting:** draw and label **rectangle** shapes on the canvas; the rectangle **labels become the class names** for YOLOE and Annolid converts them into YOLOE visual prompts automatically.
 - **Prompt-free YOLOE-26:** select a `*-pf.pt` weight; Annolid will not override the internal vocabulary with prompts.

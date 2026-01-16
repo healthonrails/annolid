@@ -2438,6 +2438,8 @@ class AnnolidWindow(MainWindow):
 
                 visual_prompts = {}
                 class_names = None
+                prompt_class_names = None
+                yoloe_text_prompt = True
                 if not is_prompt_free_yoloe:
                     # For YOLOE visual prompting, use labeled rectangles on the canvas as exemplars.
                     visual_prompts = self.extract_visual_prompts_from_canvas()
@@ -2445,10 +2447,13 @@ class AnnolidWindow(MainWindow):
                         logger.info(
                             "Extracted visual prompts for YOLOE: %s", visual_prompts)
 
-                    # YOLOE text prompting uses class names; prefer canvas labels when present.
-                    class_names = list(self.class_mapping.keys()) if hasattr(
-                        self, "class_mapping") else None
-                    if not class_names:
+                    if visual_prompts and "yoloe" in weight_lower:
+                        # Visual prompting: use rectangle labels as class names (no text encoder needed).
+                        prompt_class_names = list(self.class_mapping.keys()) if hasattr(
+                            self, "class_mapping") else None
+                        yoloe_text_prompt = False
+                    else:
+                        # Text prompting: take classes from the prompt field.
                         text_prompt = self.aiRectangle._aiRectanglePrompt.text()
                         class_names = [p.strip()
                                        for p in text_prompt.split(",") if p.strip()]
@@ -2460,6 +2465,8 @@ class AnnolidWindow(MainWindow):
                     # overridden by user prompts / visual exemplars.
                     visual_prompts = {}
                     class_names = None
+                    prompt_class_names = None
+                    yoloe_text_prompt = True
                 pose_keypoint_names = None
                 pose_schema_path = None
                 if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):
@@ -2472,7 +2479,10 @@ class AnnolidWindow(MainWindow):
                                                           model_type="yolo",
                                                           class_names=class_names,
                                                           keypoint_names=pose_keypoint_names,
-                                                          pose_schema_path=pose_schema_path)
+                                                          pose_schema_path=pose_schema_path,
+                                                          yoloe_text_prompt=bool(
+                                                              yoloe_text_prompt),
+                                                          prompt_class_names=prompt_class_names)
             elif self._is_dino_kpseg_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
 
