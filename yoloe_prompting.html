@@ -1,0 +1,201 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YOLOE-26 Prompting (Text / Visual / Prompt-free) &mdash; annolid 1.4.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=9172181d"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Config keypoint connection rules, events, and instances" href="keypoints_definitions.html" />
+    <link rel="prev" title="DINOv3 Keypoint Segmentation (DinoKPSEG)" href="dino_kpseg.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read_pdf_with_ai_voice.html">Read PDFs Aloud with AI Voice (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
+<li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#cli-recommended-for-reproducible-runs">CLI (recommended for reproducible runs)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#text-prompt-detect-only-the-prompted-classes">Text prompt (detect only the prompted classes)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#visual-prompt-json-file">Visual prompt (JSON file)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#visual-prompt-labelme-rectangles">Visual prompt (LabelMe rectangles)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#prompt-free-yoloe-26">Prompt-free YOLOE-26</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#gui-video-inference">GUI (video inference)</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">YOLOE-26 Prompting (Text / Visual / Prompt-free)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/yoloe_prompting.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="yoloe-26-prompting-text-visual-prompt-free">
+<h1>YOLOE-26 Prompting (Text / Visual / Prompt-free)<a class="headerlink" href="#yoloe-26-prompting-text-visual-prompt-free" title="Link to this heading"></a></h1>
+<p>Annolid supports Ultralytics YOLOE-26 segmentation models with:</p>
+<ul class="simple">
+<li><p><strong>Text prompts</strong> (choose classes by name)</p></li>
+<li><p><strong>Visual prompts</strong> (provide exemplar bounding boxes + class IDs)</p></li>
+<li><p><strong>Prompt-free</strong> YOLOE-26 variants (built-in vocabulary)</p></li>
+</ul>
+<section id="cli-recommended-for-reproducible-runs">
+<h2>CLI (recommended for reproducible runs)<a class="headerlink" href="#cli-recommended-for-reproducible-runs" title="Link to this heading"></a></h2>
+<p>Annolid exports predictions as <strong>LabelMe JSON</strong> via <code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">predict</span> <span class="pre">yolo_labelme</span></code>.</p>
+<section id="text-prompt-detect-only-the-prompted-classes">
+<h3>Text prompt (detect only the prompted classes)<a class="headerlink" href="#text-prompt-detect-only-the-prompted-classes" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>predict<span class="w"> </span>yolo_labelme<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>yoloe-26s-seg.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--source<span class="w"> </span>/path/to/image.jpg<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--classes<span class="w"> </span>person,bus
+</pre></div>
+</div>
+<p>Outputs a folder next to the source (default: <code class="docutils literal notranslate"><span class="pre">/path/to/image/</span></code>) containing LabelMe JSON files.</p>
+</section>
+<section id="visual-prompt-json-file">
+<h3>Visual prompt (JSON file)<a class="headerlink" href="#visual-prompt-json-file" title="Link to this heading"></a></h3>
+<p>Create a JSON file like:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;names&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;person&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;glasses&quot;</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;bboxes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">[</span><span class="mf">221.52</span><span class="p">,</span><span class="w"> </span><span class="mf">405.8</span><span class="p">,</span><span class="w"> </span><span class="mf">344.98</span><span class="p">,</span><span class="w"> </span><span class="mf">857.54</span><span class="p">],</span>
+<span class="w">    </span><span class="p">[</span><span class="mi">120</span><span class="p">,</span><span class="w"> </span><span class="mi">425</span><span class="p">,</span><span class="w"> </span><span class="mi">160</span><span class="p">,</span><span class="w"> </span><span class="mi">445</span><span class="p">]</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;cls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Then run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>predict<span class="w"> </span>yolo_labelme<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>yoloe-26s-seg.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--source<span class="w"> </span>/path/to/image.jpg<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--visual-prompts<span class="w"> </span>/path/to/visual_prompts.json
+</pre></div>
+</div>
+</section>
+<section id="visual-prompt-labelme-rectangles">
+<h3>Visual prompt (LabelMe rectangles)<a class="headerlink" href="#visual-prompt-labelme-rectangles" title="Link to this heading"></a></h3>
+<p>If you already have a LabelMe JSON with <strong>rectangle</strong> shapes labeled with class names,
+you can reuse it as the prompt source:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>predict<span class="w"> </span>yolo_labelme<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>yoloe-26s-seg.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--source<span class="w"> </span>/path/to/image.jpg<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--visual-prompts-labelme<span class="w"> </span>/path/to/prompts.json
+</pre></div>
+</div>
+</section>
+<section id="prompt-free-yoloe-26">
+<h3>Prompt-free YOLOE-26<a class="headerlink" href="#prompt-free-yoloe-26" title="Link to this heading"></a></h3>
+<p>Prompt-free weights do not require <code class="docutils literal notranslate"><span class="pre">--classes</span></code> or visual prompts:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>predict<span class="w"> </span>yolo_labelme<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>yoloe-26s-seg-pf.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--source<span class="w"> </span>/path/to/image.jpg
+</pre></div>
+</div>
+</section>
+</section>
+<section id="gui-video-inference">
+<h2>GUI (video inference)<a class="headerlink" href="#gui-video-inference" title="Link to this heading"></a></h2>
+<p>Annolid’s video inference pipeline uses <code class="docutils literal notranslate"><span class="pre">annolid/segmentation/yolos.py</span></code> under the hood:</p>
+<ul class="simple">
+<li><p><strong>Selecting YOLOE-26:</strong> pick a YOLOE-26 preset from the model dropdown (for example <code class="docutils literal notranslate"><span class="pre">YOLOE-26s-seg</span> <span class="pre">(Prompted)</span></code> or <code class="docutils literal notranslate"><span class="pre">YOLOE-26s-seg</span> <span class="pre">(Prompt-free)</span></code>).</p></li>
+<li><p><strong>Text prompting:</strong> put a comma-separated class list in the <strong>Text Prompt</strong> field (e.g. <code class="docutils literal notranslate"><span class="pre">person,bus</span></code>) before running prediction with a YOLOE-26 model.</p></li>
+<li><p><strong>Visual prompting:</strong> draw and label <strong>rectangle</strong> shapes on the canvas; Annolid converts them into YOLOE visual prompts automatically.</p></li>
+<li><p><strong>Prompt-free YOLOE-26:</strong> select a <code class="docutils literal notranslate"><span class="pre">*-pf.pt</span></code> weight; Annolid will not override the internal vocabulary with prompts.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="dino_kpseg.html" class="btn btn-neutral float-left" title="DINOv3 Keypoint Segmentation (DinoKPSEG)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="keypoints_definitions.html" class="btn btn-neutral float-right" title="Config keypoint connection rules, events, and instances" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
