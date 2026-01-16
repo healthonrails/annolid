@@ -161,7 +161,7 @@ you can reuse it as the prompt source:</p>
 <ul class="simple">
 <li><p><strong>Selecting YOLOE-26:</strong> pick a YOLOE-26 preset from the model dropdown (for example <code class="docutils literal notranslate"><span class="pre">YOLOE-26s-seg</span> <span class="pre">(Prompted)</span></code> or <code class="docutils literal notranslate"><span class="pre">YOLOE-26s-seg</span> <span class="pre">(Prompt-free)</span></code>).</p></li>
 <li><p><strong>Text prompting:</strong> put a comma-separated class list in the <strong>Text Prompt</strong> field (e.g. <code class="docutils literal notranslate"><span class="pre">person,bus</span></code>) before running prediction with a YOLOE-26 model.</p></li>
-<li><p><strong>Visual prompting:</strong> draw and label <strong>rectangle</strong> shapes on the canvas; Annolid converts them into YOLOE visual prompts automatically.</p></li>
+<li><p><strong>Visual prompting:</strong> draw and label <strong>rectangle</strong> shapes on the canvas; the rectangle <strong>labels become the class names</strong> for YOLOE and Annolid converts them into YOLOE visual prompts automatically.</p></li>
 <li><p><strong>Prompt-free YOLOE-26:</strong> select a <code class="docutils literal notranslate"><span class="pre">*-pf.pt</span></code> weight; Annolid will not override the internal vocabulary with prompts.</p></li>
 </ul>
 </section>
