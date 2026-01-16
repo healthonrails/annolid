@@ -53,7 +53,8 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
 
         dir_layout = QtWidgets.QHBoxLayout()
         self.source_edit = QtWidgets.QLineEdit()
-        self.source_edit.setPlaceholderText("Select folder with LabelMe annotations")
+        self.source_edit.setPlaceholderText(
+            "Select folder with LabelMe annotations")
         self.source_edit.setToolTip(
             "Path to the directory containing LabelMe JSON files"
         )
@@ -66,7 +67,8 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
         dir_layout.addWidget(browse_btn)
         source_layout.addLayout(dir_layout)
 
-        self.recursive_check = QtWidgets.QCheckBox("Search subdirectories recursively")
+        self.recursive_check = QtWidgets.QCheckBox(
+            "Search subdirectories recursively")
         self.recursive_check.setChecked(True)
         self.recursive_check.setToolTip("Include JSON files in subdirectories")
         self.recursive_check.stateChanged.connect(self._on_source_changed)
@@ -92,7 +94,8 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
         self.labels_preview = QtWidgets.QTextEdit()
         self.labels_preview.setReadOnly(True)
         self.labels_preview.setMaximumHeight(100)
-        self.labels_preview.setPlaceholderText("Detected labels will appear here...")
+        self.labels_preview.setPlaceholderText(
+            "Detected labels will appear here...")
         results_layout.addWidget(self.labels_preview)
 
         layout.addWidget(results_group)
@@ -118,7 +121,8 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
         filter: str = "All Files (*)",
     ) -> None:
         """Helper to browse for a file."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, caption, "", filter)
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, caption, "", filter)
         if path:
             line_edit.setText(path)
 
@@ -303,7 +307,8 @@ class SelectFormatPage(QtWidgets.QWizardPage):
         ]
 
         for i, (fmt_id, title, description, features) in enumerate(formats):
-            card = self._create_format_card(fmt_id, title, description, features)
+            card = self._create_format_card(
+                fmt_id, title, description, features)
             radio = card.findChild(QtWidgets.QRadioButton)
             self.format_group.addButton(radio, i)
             layout.addWidget(card)
@@ -392,7 +397,8 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         self.train_spin.setSingleStep(0.05)
         self.train_spin.setValue(0.8)
         self.train_spin.setDecimals(2)
-        self.train_spin.setToolTip("Fraction of data for training (0.0 to 1.0)")
+        self.train_spin.setToolTip(
+            "Fraction of data for training (0.0 to 1.0)")
         self.train_spin.valueChanged.connect(self._update_split_preview)
         split_layout.addWidget(self.train_spin, 0, 1)
         self.train_count = QtWidgets.QLabel("")
@@ -405,7 +411,8 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         self.val_spin.setSingleStep(0.05)
         self.val_spin.setValue(0.1)
         self.val_spin.setDecimals(2)
-        self.val_spin.setToolTip("Fraction of data for validation (0.0 to 1.0)")
+        self.val_spin.setToolTip(
+            "Fraction of data for validation (0.0 to 1.0)")
         self.val_spin.valueChanged.connect(self._update_split_preview)
         split_layout.addWidget(self.val_spin, 1, 1)
         self.val_count = QtWidgets.QLabel("")
@@ -444,7 +451,8 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         dir_layout = QtWidgets.QHBoxLayout()
         self.output_edit = QtWidgets.QLineEdit()
         self.output_edit.setPlaceholderText("Select output directory")
-        self.output_edit.setToolTip("Directory where the dataset will be exported")
+        self.output_edit.setToolTip(
+            "Directory where the dataset will be exported")
         self.output_edit.textChanged.connect(self.completeChanged)
         dir_layout.addWidget(self.output_edit)
 
@@ -526,7 +534,8 @@ class ConfigureSplitPage(QtWidgets.QWizardPage):
         filter: str = "All Files (*)",
     ) -> None:
         """Helper to browse for a file."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, caption, "", filter)
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, caption, "", filter)
         if path:
             line_edit.setText(path)
 
@@ -807,6 +816,7 @@ class ExportProgressPage(QtWidgets.QWizardPage):
 
     def _open_output_folder(self) -> None:
         if self._output_path and self._output_path.exists():
+            import os
             import subprocess
             import sys
 
@@ -846,7 +856,8 @@ class ExportWorker(QtCore.QThread):
             elif self.fmt == "coco":
                 self._export_coco(self.source, output_dir, self.config)
             elif self.fmt == "jsonl":
-                self._export_jsonl(self.source, output_dir, self.config, self.recursive)
+                self._export_jsonl(self.source, output_dir,
+                                   self.config, self.recursive)
 
             self.finished.emit(True, "Export completed successfully")
 
@@ -870,7 +881,8 @@ class ExportWorker(QtCore.QThread):
                 self.progress.emit(100)
                 return
 
-            self.log_message.emit(f"Found {len(json_files)} JSON files to convert")
+            self.log_message.emit(
+                f"Found {len(json_files)} JSON files to convert")
 
             converter = Labelme2YOLO(
                 str(source),
@@ -919,7 +931,8 @@ class ExportWorker(QtCore.QThread):
                     )
                     with open(data_yaml_path, "w") as f:
                         f.write(content)
-                    self.log_message.emit("Updated data.yaml path to current directory")
+                    self.log_message.emit(
+                        "Updated data.yaml path to current directory")
 
                 # Count files copied
                 files = list(yolo_output.rglob("*"))
@@ -958,7 +971,8 @@ class ExportWorker(QtCore.QThread):
                     self.log_message.emit(
                         "  - No valid LabelMe JSON files with image references"
                     )
-                    self.log_message.emit("  - JSON files without shape annotations")
+                    self.log_message.emit(
+                        "  - JSON files without shape annotations")
                     self.log_message.emit("  - Missing or invalid image files")
                     self.progress.emit(100)
 
@@ -1052,7 +1066,8 @@ class ExportWorker(QtCore.QThread):
                     pct = int((i + 1) / total * 80) + 20
                     self.progress.emit(pct)
                     if i % 50 == 0:
-                        self.log_message.emit(f"Indexed {i + 1}/{total} files...")
+                        self.log_message.emit(
+                            f"Indexed {i + 1}/{total} files...")
 
             self.progress.emit(100)
             self.log_message.emit(
@@ -1112,5 +1127,6 @@ class DatasetExportWizard(QtWidgets.QWizard):
         # Emit signal with results
         if self.export_progress_page._output_path:
             fmt = self.select_format_page.get_format()
-            self.export_complete.emit(self.export_progress_page._output_path, fmt)
+            self.export_complete.emit(
+                self.export_progress_page._output_path, fmt)
         super().accept()
