@@ -12,6 +12,7 @@ Welcome to annolid's documentation!
    video_depth_anything
    image_editing
    dino_kpseg
+   yoloe_prompting
    keypoints_definitions
    faqs
 

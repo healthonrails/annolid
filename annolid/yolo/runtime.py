@@ -102,6 +102,37 @@ def configure_ultralytics_cache(weights_dir: Optional[Path] = None) -> Path:
     return target
 
 
+def ensure_ultralytics_asset_cached(asset_name: str) -> Path:
+    """
+    Ensure an Ultralytics GitHub asset is present inside Annolid's Ultralytics weights cache.
+
+    Some Ultralytics components (notably YOLOE text encoders) call
+    `attempt_download_asset("file.ext")` with a bare filename which otherwise downloads into the
+    current working directory. Prefetching into `SETTINGS["weights_dir"]` ensures subsequent
+    Ultralytics calls resolve the asset from the configured cache directory.
+    """
+    asset = str(asset_name or "").strip()
+    if not asset:
+        raise ValueError("asset_name must be non-empty")
+
+    weights_dir = configure_ultralytics_cache()
+    target = (weights_dir / asset).expanduser()
+    try:
+        if target.is_file():
+            return target
+    except OSError:
+        return target
+
+    try:
+        from ultralytics.utils.downloads import attempt_download_asset  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "Ultralytics is required to download YOLO assets.") from exc
+
+    downloaded = Path(attempt_download_asset(str(target))).expanduser()
+    return downloaded
+
+
 def _is_supported_model_path(candidate: Path) -> bool:
     """
     Determine whether the candidate path points to a supported YOLO export.

@@ -2430,19 +2430,36 @@ class AnnolidWindow(MainWindow):
                 self.video_processor = processor
             elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
-                # Instead of using a hard-coded prompt, extract visual prompts from canvas.
-                visual_prompts = self.extract_visual_prompts_from_canvas()
-                # Optionally, log the mapping
-                logger.info(f"Extracted visual prompts: {visual_prompts}")
-                # For YOLO models, you might also pass class names if needed.
-                # Here, class_names could be the sorted keys of self.class_mapping.
-                class_names = list(self.class_mapping.keys()) if hasattr(
-                    self, "class_mapping") else None
-                if len(class_names) < 1:
-                    text_prompt = self.aiRectangle._aiRectanglePrompt.text().lower()
-                    class_names = text_prompt.split(",")
-                    logger.info(
-                        f"Extracted class names from text prompt: {class_names}")
+                weight_lower = (model_weight or "").lower()
+                is_prompt_free_yoloe = (
+                    "yoloe" in weight_lower
+                    and ("-pf." in weight_lower or weight_lower.endswith("-pf") or "-pf_" in weight_lower)
+                )
+
+                visual_prompts = {}
+                class_names = None
+                if not is_prompt_free_yoloe:
+                    # For YOLOE visual prompting, use labeled rectangles on the canvas as exemplars.
+                    visual_prompts = self.extract_visual_prompts_from_canvas()
+                    if visual_prompts:
+                        logger.info(
+                            "Extracted visual prompts for YOLOE: %s", visual_prompts)
+
+                    # YOLOE text prompting uses class names; prefer canvas labels when present.
+                    class_names = list(self.class_mapping.keys()) if hasattr(
+                        self, "class_mapping") else None
+                    if not class_names:
+                        text_prompt = self.aiRectangle._aiRectanglePrompt.text()
+                        class_names = [p.strip()
+                                       for p in text_prompt.split(",") if p.strip()]
+                        if class_names:
+                            logger.info(
+                                "Extracted class names from text prompt: %s", class_names)
+                else:
+                    # Prompt-free YOLOE models ship with an internal vocabulary and should not be
+                    # overridden by user prompts / visual exemplars.
+                    visual_prompts = {}
+                    class_names = None
                 pose_keypoint_names = None
                 pose_schema_path = None
                 if getattr(self, "_pose_schema", None) is not None and getattr(self._pose_schema, "keypoints", None):

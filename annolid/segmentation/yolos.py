@@ -26,6 +26,7 @@ class InferenceProcessor:
         *,
         keypoint_names: Optional[list] = None,
         pose_schema_path: Optional[str] = None,
+        persist_json: bool = False,
     ) -> None:
         """
         Initializes the InferenceProcessor with a specified model.
@@ -51,6 +52,7 @@ class InferenceProcessor:
             keypoint_names=keypoint_names,
             pose_schema_path=pose_schema_path,
         )
+        self.persist_json: bool = bool(persist_json)
 
     @staticmethod
     def _clean_instance_label(value: object) -> str:
@@ -289,6 +291,15 @@ class InferenceProcessor:
             if "yoloe" in model_name_lower:
                 model = YOLOE(model_ref)
                 if filtered_classes:
+                    # YOLOE-26 text prompting requires a TorchScript text encoder asset
+                    # (e.g. mobileclip2_b.ts). Ultralytics resolves this via
+                    # `attempt_download_asset("mobileclip2_b.ts")`, which otherwise downloads into
+                    # the current working directory. Prefetch into Annolid's cache to keep runs
+                    # reproducible and avoid polluting the project directory.
+                    if "yoloe-26" in model_name_lower:
+                        from annolid.yolo import ensure_ultralytics_asset_cached
+
+                        ensure_ultralytics_asset_cached("mobileclip2_b.ts")
                     model.set_classes(
                         filtered_classes, model.get_text_pe(filtered_classes))
             else:
@@ -369,7 +380,10 @@ class InferenceProcessor:
         save_pose_bbox: Optional[bool] = None,
     ) -> str:
         """
-        Runs inference on the given video source and saves the results as LabelMe JSON files.
+        Runs inference on the given source and writes results into Annolid's annotation store.
+
+        When `self.persist_json=True`, per-frame LabelMe-compatible JSON files are also written
+        alongside the store entries (without overwriting manually labeled frames).
 
         Args:
             source (str): Path to the video file.
@@ -518,18 +532,15 @@ class InferenceProcessor:
                 if should_stop():
                     stopped = True
                     break
-                if result.boxes and len(result.boxes) > 0:
-                    frame_shape = (
-                        result.orig_shape[0], result.orig_shape[1], 3)
-                    has_keypoints = getattr(
-                        result, "keypoints", None) is not None
-                    annotations = self.extract_yolo_results(
-                        result,
-                        save_bbox=self._should_save_pose_bbox(
-                            has_keypoints, save_pose_bbox),
-                    )
-                    self.save_yolo_to_labelme(
-                        annotations, frame_shape, output_directory)
+                frame_shape = (result.orig_shape[0], result.orig_shape[1], 3)
+                has_keypoints = getattr(result, "keypoints", None) is not None
+                annotations = self.extract_yolo_results(
+                    result,
+                    save_bbox=self._should_save_pose_bbox(
+                        has_keypoints, save_pose_bbox),
+                )
+                self.save_yolo_to_labelme(
+                    annotations, frame_shape, output_directory)
                 self.frame_count += 1
         finally:
             try:
@@ -826,7 +837,7 @@ class InferenceProcessor:
                                  frame_index, exc, exc_info=True)
                     annotations = []
 
-                # Always write a JSON to mark the frame as processed (keeps the GUI progress watcher accurate).
+                # Always write a store record (and optional JSON) to mark the frame as processed.
                 self.save_yolo_to_labelme(
                     annotations,
                     frame_shape,
@@ -1340,7 +1351,7 @@ class InferenceProcessor:
         frame_index: Optional[int] = None,
     ) -> None:
         """
-        Saves YOLO annotations to a LabelMe JSON file.
+        Append YOLO annotations to the per-folder annotation store, and (optionally) write a LabelMe JSON file.
 
         Args:
             annotations (list): List of Shape objects.
@@ -1359,7 +1370,7 @@ class InferenceProcessor:
             height=height,
             width=width,
             save_image_to_json=False,
-            persist_json=False,
+            persist_json=bool(getattr(self, "persist_json", False)),
         )
         # `frame_count` is a processed-frame counter; the JSON file encodes the
         # actual frame index for the progress watcher / resume logic.

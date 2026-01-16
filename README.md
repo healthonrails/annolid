@@ -213,6 +213,7 @@ annolid
   `conda install qtpy` resolves the conflict between OpenCV and PyQt.
 - If the GUI does not launch, confirm the correct environment is active and run `annolid --help` for CLI usage.
 - For model training/inference from the terminal, use `annolid-run list-models`, `annolid-run train <model> --help-model`, and `annolid-run predict <model> --help-model`.
+- YOLOE-26 prompting (text, visual, prompt-free) is available via `annolid-run predict yolo_labelme` and in the GUI video inference workflow (see `docs/source/yoloe_prompting.md`).
 - For an interactive TensorBoard embedding projector view of DinoKPSEG DINOv3 patch features, run `annolid-run dino-kpseg-embeddings --data /path/to/data.yaml [--weights /path/to/best.pt]` and then `tensorboard --logdir <run_dir>/tensorboard` (some DINOv3 checkpoints require a Hugging Face token).
 
 ## Docker
