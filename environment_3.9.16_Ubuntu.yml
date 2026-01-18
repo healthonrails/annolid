@@ -11,7 +11,7 @@ dependencies:
   - pip
   - cython 
   - pytorch::torchvision>=0.19
-  - pytorch::pytorch>=2.4
+  - pytorch::pytorch>=2.5
   - cudatoolkit
   - cudnn
   - ffmpeg

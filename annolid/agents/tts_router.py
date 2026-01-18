@@ -7,6 +7,22 @@ import numpy as np
 from annolid.utils.logger import logger
 
 
+def _adjust_pocket_speed(samples: np.ndarray, speed: float) -> np.ndarray:
+    if speed <= 0 or abs(speed - 1.0) < 1e-3:
+        return samples
+    try:
+        from scipy.signal import resample
+    except Exception:
+        return samples
+    target_len = max(1, int(round(len(samples) / speed)))
+    try:
+        resampled = resample(samples, target_len)
+    except Exception as exc:
+        logger.warning("Pocket TTS speed adjustment failed: %s", exc)
+        return samples
+    return np.asarray(resampled, dtype=np.float32)
+
+
 def _synthesize_kokoro(text: str, settings: Dict[str, object]) -> Optional[Tuple[np.ndarray, int]]:
     from annolid.agents.kokoro_tts import text_to_speech
 
@@ -16,6 +32,40 @@ def _synthesize_kokoro(text: str, settings: Dict[str, object]) -> Optional[Tuple
         speed=float(settings.get("speed", 1.0)),
         lang=str(settings.get("lang", "en-us")),
     )
+
+
+def _synthesize_pocket(
+    text: str, settings: Dict[str, object]
+) -> Optional[Tuple[np.ndarray, int]]:
+    try:
+        from annolid.agents.pocket_tts import (
+            DEFAULT_VOICE as POCKET_DEFAULT_VOICE,
+            POCKET_TTS_INSTALL_HINT,
+            text_to_speech,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Pocket TTS playback dependencies missing; install via '%s' (%s)",
+            POCKET_TTS_INSTALL_HINT,
+            exc,
+        )
+        return None
+
+    voice = str(settings.get("pocket_voice", POCKET_DEFAULT_VOICE)).strip() or POCKET_DEFAULT_VOICE
+    pocket_prompt = str(settings.get("pocket_prompt_path", "")).strip()
+    voice_spec = pocket_prompt if pocket_prompt else voice
+    audio = text_to_speech(text, voice_spec)
+    if not audio:
+        return None
+    samples, sample_rate = audio
+    try:
+        speed = float(settings.get("pocket_speed", 1.0))
+    except Exception:
+        speed = 1.0
+    samples = _adjust_pocket_speed(samples, speed)
+    if samples.size == 0:
+        return None
+    return samples, sample_rate
 
 
 def _synthesize_chatterbox(
@@ -69,7 +119,7 @@ def synthesize_tts(
     """
     Synthesise audio for ``text`` using the configured TTS engine.
 
-    Supported engines: auto, kokoro, chatterbox, gtts.
+    Supported engines: auto, kokoro, pocket, chatterbox, gtts.
     """
     settings: Dict[str, object] = dict(tts_settings or {})
     engine = str(settings.get("engine", "auto") or "auto").strip().lower()
@@ -78,7 +128,7 @@ def synthesize_tts(
         return None
 
     if engine in {"", "auto"}:
-        engines = ("kokoro", "chatterbox", "gtts")
+        engines = ("kokoro", "pocket", "chatterbox", "gtts")
     else:
         engines = (engine,)
 
@@ -86,6 +136,8 @@ def synthesize_tts(
         try:
             if candidate == "kokoro":
                 audio = _synthesize_kokoro(text, settings)
+            elif candidate == "pocket":
+                audio = _synthesize_pocket(text, settings)
             elif candidate == "chatterbox":
                 audio = _synthesize_chatterbox(text, settings)
             elif candidate == "gtts":

@@ -7,7 +7,14 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.utils.llm_settings import default_settings
 from annolid.utils.tts_settings import default_tts_settings, load_tts_settings, save_tts_settings
-from annolid.agents.kokoro_tts import get_available_voices, get_suggested_languages
+from annolid.agents.kokoro_tts import (
+    get_available_voices as get_kokoro_voices,
+    get_suggested_languages,
+)
+from annolid.agents.pocket_tts import (
+    DEFAULT_VOICE as POCKET_DEFAULT_VOICE,
+    get_available_voices as get_pocket_voices,
+)
 
 
 def _list_to_text(items: List[str]) -> str:
@@ -167,8 +174,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
         self.tts_engine_combo = QtWidgets.QComboBox()
         self.tts_engine_combo.addItem(
-            "Auto (Kokoro → Chatterbox → gTTS)", "auto")
+            "Auto (Kokoro → Pocket → Chatterbox → gTTS)", "auto"
+        )
         self.tts_engine_combo.addItem("Kokoro (local voices)", "kokoro")
+        self.tts_engine_combo.addItem("Pocket (Kyutai)", "pocket")
         self.tts_engine_combo.addItem(
             "Chatterbox Turbo (voice cloning)", "chatterbox")
         self.tts_engine_combo.addItem("gTTS (online)", "gtts")
@@ -184,13 +193,58 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.tts_voice_combo = QtWidgets.QComboBox()
         self.tts_voice_combo.setEditable(True)
         self.tts_voice_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
-        voices = get_available_voices()
+        voices = get_kokoro_voices()
         if voices:
             self.tts_voice_combo.addItems(voices)
         self.tts_voice_combo.setCurrentText(
             str(self._tts_settings.get("voice", self._tts_defaults["voice"]))
         )
         layout.addRow("Kokoro voice:", self.tts_voice_combo)
+
+        self.tts_pocket_voice_combo = QtWidgets.QComboBox()
+        self.tts_pocket_voice_combo.setEditable(True)
+        self.tts_pocket_voice_combo.setInsertPolicy(
+            QtWidgets.QComboBox.NoInsert
+        )
+        pocket_voices = get_pocket_voices()
+        if pocket_voices:
+            self.tts_pocket_voice_combo.addItems(pocket_voices)
+        self.tts_pocket_voice_combo.setCurrentText(
+            str(
+                self._tts_settings.get(
+                    "pocket_voice", self._tts_defaults["pocket_voice"]
+                )
+            )
+        )
+        layout.addRow("Pocket voice:", self.tts_pocket_voice_combo)
+
+        self.tts_pocket_speed_spin = QtWidgets.QDoubleSpinBox()
+        self.tts_pocket_speed_spin.setRange(0.5, 2.0)
+        self.tts_pocket_speed_spin.setSingleStep(0.05)
+        self.tts_pocket_speed_spin.setDecimals(2)
+        self.tts_pocket_speed_spin.setValue(
+            float(self._tts_settings.get("pocket_speed", self._tts_defaults["pocket_speed"]))
+        )
+        layout.addRow("Pocket speed:", self.tts_pocket_speed_spin)
+
+        self.tts_pocket_prompt_edit = QtWidgets.QLineEdit()
+        self.tts_pocket_prompt_edit.setPlaceholderText(
+            "Optional voice prompt WAV"
+        )
+        self.tts_pocket_prompt_edit.setText(
+            str(self._tts_settings.get("pocket_prompt_path", ""))
+        )
+        pocket_prompt_browse = QtWidgets.QPushButton("Browse…")
+        pocket_prompt_browse.clicked.connect(self._browse_pocket_prompt)
+        pocket_prompt_clear = QtWidgets.QPushButton("Clear")
+        pocket_prompt_clear.clicked.connect(self._clear_pocket_prompt)
+        prompt_row = QtWidgets.QWidget()
+        prompt_layout = QtWidgets.QHBoxLayout(prompt_row)
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.addWidget(self.tts_pocket_prompt_edit, 1)
+        prompt_layout.addWidget(pocket_prompt_browse)
+        prompt_layout.addWidget(pocket_prompt_clear)
+        layout.addRow("Pocket prompt:", prompt_row)
 
         voice_prompt_row = QtWidgets.QWidget()
         voice_prompt_layout = QtWidgets.QHBoxLayout(voice_prompt_row)
@@ -274,6 +328,19 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         if path:
             self.tts_chatterbox_voice_edit.setText(path)
 
+    def _browse_pocket_prompt(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Pocket TTS Voice Prompt",
+            os.path.expanduser("~"),
+            "Audio Files (*.wav *.flac *.mp3);;All Files (*)",
+        )
+        if path:
+            self.tts_pocket_prompt_edit.setText(path)
+
+    def _clear_pocket_prompt(self) -> None:
+        self.tts_pocket_prompt_edit.setText("")
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
@@ -356,6 +423,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             "engine": self.tts_engine_combo.currentData() or "auto",
             "voice": self.tts_voice_combo.currentText().strip()
             or self._tts_defaults["voice"],
+            "pocket_voice": self.tts_pocket_voice_combo.currentText().strip()
+            or self._tts_defaults["pocket_voice"],
+            "pocket_speed": float(self.tts_pocket_speed_spin.value()),
+            "pocket_prompt_path": self.tts_pocket_prompt_edit.text().strip(),
             "lang": self.tts_lang_combo.currentText().strip()
             or self._tts_defaults["lang"],
             "speed": float(self.tts_speed_spin.value()),

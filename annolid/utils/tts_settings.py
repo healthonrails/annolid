@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
 
+from annolid.agents.pocket_tts import DEFAULT_VOICE as POCKET_DEFAULT_VOICE
+
 _SETTINGS_DIR = Path.home() / ".annolid"
 _SETTINGS_FILE = _SETTINGS_DIR / "tts_settings.json"
 
@@ -13,6 +15,9 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     "voice": "af_sarah",
     "speed": 1.0,
     "lang": "en-us",
+    "pocket_voice": POCKET_DEFAULT_VOICE,
+    "pocket_prompt_path": "",
+    "pocket_speed": 1.0,
     "chatterbox_voice_path": "",
     "chatterbox_dtype": "fp32",
     "chatterbox_max_new_tokens": 1024,

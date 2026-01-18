@@ -2106,6 +2106,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
         merged = {
             "engine": settings.get("engine", defaults.get("engine", "auto")),
             "voice": settings.get("voice", defaults["voice"]),
+            "pocket_voice": settings.get(
+                "pocket_voice", defaults.get("pocket_voice", "alba")
+            ),
+            "pocket_prompt_path": settings.get(
+                "pocket_prompt_path", defaults.get("pocket_prompt_path", "")
+            ),
+            "pocket_speed": settings.get(
+                "pocket_speed", defaults.get("pocket_speed", 1.0)
+            ),
             "lang": settings.get("lang", defaults["lang"]),
             "speed": settings.get("speed", defaults["speed"]),
             "chatterbox_voice_path": settings.get(

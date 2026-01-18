@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from annolid.agents.pocket_tts import DEFAULT_VOICE as POCKET_DEFAULT_VOICE
+
 
 def test_tts_settings_defaults_include_engine(tmp_path: Path, monkeypatch) -> None:
     from annolid.utils import tts_settings as mod
@@ -12,6 +14,9 @@ def test_tts_settings_defaults_include_engine(tmp_path: Path, monkeypatch) -> No
     settings = mod.load_tts_settings()
     assert settings["engine"] == "kokoro"
     assert "chatterbox_voice_path" in settings
+    assert settings["pocket_voice"] == POCKET_DEFAULT_VOICE
+    assert settings["pocket_prompt_path"] == ""
+    assert settings["pocket_speed"] == 1.0
 
 
 def test_save_tts_settings_merges_partial_updates(tmp_path: Path, monkeypatch) -> None:
