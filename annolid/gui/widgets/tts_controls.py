@@ -120,6 +120,7 @@ class _VoicePromptRecorderDialog(QtWidgets.QDialog):
         self._recorded_path: str = ""
         self._thread: Optional[QtCore.QThread] = None
         self._worker: Optional[_VoicePromptRecordWorker] = None
+        self._recording = False
 
         root = QVBoxLayout(self)
 
@@ -168,6 +169,7 @@ class _VoicePromptRecorderDialog(QtWidgets.QDialog):
         self.record_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self.status_label.setText("Recording…")
+        self._recording = True
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path.home() / ".annolid" / "tts_prompts"
@@ -198,6 +200,7 @@ class _VoicePromptRecorderDialog(QtWidgets.QDialog):
     def _on_finished(self, path: str, error: str) -> None:
         self.record_button.setEnabled(True)
         self.cancel_button.setEnabled(True)
+        self._recording = False
 
         if error:
             QtWidgets.QMessageBox.warning(self, "Recording failed", error)
@@ -206,7 +209,16 @@ class _VoicePromptRecorderDialog(QtWidgets.QDialog):
 
         self._recorded_path = path
         self.status_label.setText(f"Recorded: {path}")
+        thread = self._thread
+        if thread is not None:
+            thread.wait(1000)
         self.accept()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self._recording:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class _PromptPathRow(QWidget):
@@ -241,7 +253,6 @@ class _PromptPathRow(QWidget):
         self.line_edit.setPlaceholderText(placeholder)
         self.line_edit.editingFinished.connect(self._on_edit_finished)
         layout.addWidget(self.line_edit)
-
 
         # Row 1: Browse…
         self.btn_browse = QPushButton("Browse…", self)
