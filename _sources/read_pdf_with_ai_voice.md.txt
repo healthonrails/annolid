@@ -18,6 +18,15 @@ pip install pymupdf
 pip install kokoro-onnx onnxruntime gdown
 ```
 
+- Pocket TTS (very lightweight, CPU-only runtime, voices such as `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, and `azelma`)
+```bash
+pip install pocket-tts
+```
+  Set `Engine = Pocket`, choose one of the built-in voices, or type a custom voice ID / prompt path.
+  If you have a short WAV prompt of the desired voice, specify it in the “Pocket prompt” field to clone that tone.
+  Use the `Pocket speed` control to speed up or slow down the generated speech (0.5–2.0×).
+  (Optional) You can also install via `pip install annolid[pocket_tts]` so the dependency is available automatically.
+
 - Voice cloning (offline, uses a short voice prompt): Chatterbox Turbo (ONNX)
 ```bash
 pip install onnxruntime soundfile

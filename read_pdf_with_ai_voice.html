@@ -112,6 +112,16 @@
 </pre></div>
 </div>
 <ul class="simple">
+<li><p>Pocket TTS (very lightweight, CPU-only runtime, voices such as <code class="docutils literal notranslate"><span class="pre">alba</span></code>, <code class="docutils literal notranslate"><span class="pre">marius</span></code>, <code class="docutils literal notranslate"><span class="pre">javert</span></code>, <code class="docutils literal notranslate"><span class="pre">jean</span></code>, <code class="docutils literal notranslate"><span class="pre">fantine</span></code>, <code class="docutils literal notranslate"><span class="pre">cosette</span></code>, <code class="docutils literal notranslate"><span class="pre">eponine</span></code>, and <code class="docutils literal notranslate"><span class="pre">azelma</span></code>)</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>pocket-tts
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">Engine</span> <span class="pre">=</span> <span class="pre">Pocket</span></code>, choose one of the built-in voices, or type a custom voice ID / prompt path.
+If you have a short WAV prompt of the desired voice, specify it in the “Pocket prompt” field to clone that tone.
+Use the <code class="docutils literal notranslate"><span class="pre">Pocket</span> <span class="pre">speed</span></code> control to speed up or slow down the generated speech (0.5–2.0×).
+(Optional) You can also install via <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">annolid[pocket_tts]</span></code> so the dependency is available automatically.</p>
+<ul class="simple">
 <li><p>Voice cloning (offline, uses a short voice prompt): Chatterbox Turbo (ONNX)</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>onnxruntime<span class="w"> </span>soundfile
