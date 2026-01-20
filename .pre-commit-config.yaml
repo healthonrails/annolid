@@ -1,0 +1,45 @@
+repos:
+  # Ruff: fast linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.13
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # Common repo hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=6000"]
+      - id: requirements-txt-fixer
+
+  # Spell checking
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        args: [--skip="*.ipynb"]
+
+  # Optional: prevent committing secrets
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Type-checking: mypy
+  - repo: local
+    hooks:
+      - id: mypy-annolid
+        name: mypy (annolid)
+        entry: mypy --install-types --non-interactive annolid
+        language: system
+        pass_filenames: false
+        types_or: [python]
