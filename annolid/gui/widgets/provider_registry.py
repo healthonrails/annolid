@@ -15,12 +15,9 @@ class ProviderRegistry:
         self,
         settings: Dict[str, Any],
         save_settings: Callable[[Dict[str, Any]], None],
-        *,
-        ollama_module: Optional[Any] = None,
     ) -> None:
         self._settings = settings
         self._save_settings = save_settings
-        self._ollama = ollama_module
         self._ollama_error_reported = False
         self._settings.setdefault("last_models", {})
 
@@ -51,9 +48,7 @@ class ProviderRegistry:
         provider_settings = self._settings.get(provider, {})
         return list(provider_settings.get("preferred_models", []))
 
-    def resolve_initial_model(
-        self, provider: str, available_models: List[str]
-    ) -> str:
+    def resolve_initial_model(self, provider: str, available_models: List[str]) -> str:
         last_models = self._settings.get("last_models", {})
         last_model = last_models.get(provider)
         if last_model and last_model in available_models:
@@ -75,7 +70,9 @@ class ProviderRegistry:
     # ------------------------------------------------------------------ helpers
     def _fetch_ollama_models(self) -> List[str]:
         """Fetch available Ollama models respecting the configured host."""
-        if self._ollama is None:
+        try:
+            import ollama
+        except ImportError:
             return []
 
         host = self._settings.get("ollama", {}).get("host")
@@ -88,7 +85,7 @@ class ProviderRegistry:
             else:
                 os.environ.pop("OLLAMA_HOST", None)
 
-            model_list = self._ollama.list()
+            model_list = ollama.list()
 
             raw_models = None
             if isinstance(model_list, dict):

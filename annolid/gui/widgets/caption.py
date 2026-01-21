@@ -15,6 +15,7 @@ import tempfile
 import mimetypes
 import uuid
 import base64
+import importlib
 from typing import Any, Dict, List, Tuple, Optional, Sequence
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
@@ -31,22 +32,13 @@ from annolid.gui.widgets.behavior_describe_widget import BehaviorDescribeWidget
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.utils.audio_playback import play_audio_buffer
 
-try:
-    import ollama
-except ImportError:
-    print(
-        "The 'ollama' module is not installed. Please install it by running:\n"
-        "    pip install ollama\n"
-        "For more information, visit the GitHub repository:\n"
-        "    https://github.com/ollama/ollama-python"
-    )
-
 
 class CaptionWidget(QtWidgets.QWidget):
     """A widget for editing and displaying image captions, supporting LaTeX."""
+
     captionChanged = Signal(str)  # Signal emitted when caption changes
-    charInserted = Signal(str)    # Signal emitted when a character is inserted
-    charDeleted = Signal(str)     # Signal emitted when a character is deleted
+    charInserted = Signal(str)  # Signal emitted when a character is inserted
+    charDeleted = Signal(str)  # Signal emitted when a character is deleted
     readCaptionFinished = Signal()  # Define a custom signal
     imageNotFound = Signal(str)
     # Signal to emit when voice recording is done
@@ -60,7 +52,6 @@ class CaptionWidget(QtWidgets.QWidget):
         self._providers = ProviderRegistry(
             self.llm_settings,
             save_llm_settings,
-            ollama_module=globals().get("ollama"),
         )
         self.provider_labels: Dict[str, str] = {
             "ollama": "Ollama (local)",
@@ -68,9 +59,7 @@ class CaptionWidget(QtWidgets.QWidget):
             "gemini": "Google Gemini",
         }
         self.selected_provider = self._providers.current_provider()
-        self.available_models = self._providers.available_models(
-            self.selected_provider
-        )
+        self.available_models = self._providers.available_models(self.selected_provider)
         self.selected_model = self._providers.resolve_initial_model(
             self.selected_provider, self.available_models
         )
@@ -83,7 +72,8 @@ class CaptionWidget(QtWidgets.QWidget):
         self.is_recording = False
         self.thread_pool = QThreadPool()  # Thread pool for running background tasks
         self.voiceRecordingFinished.connect(
-            self.on_voice_recording_finished)  # Connect signal
+            self.on_voice_recording_finished
+        )  # Connect signal
         self.is_streaming_chat = False  # Flag to indicate if chat is streaming
         self.current_ai_span_id = None  # Tracks current AI response span
         self.canvas_widget: Optional[QtWidgets.QWidget] = None
@@ -110,8 +100,7 @@ class CaptionWidget(QtWidgets.QWidget):
         """Choose an appropriate Gemini model for image generation."""
         if self.selected_provider == "gemini" and self.selected_model:
             return self.selected_model
-        preferred = self.llm_settings.get("gemini", {}).get(
-            "preferred_models", [])
+        preferred = self.llm_settings.get("gemini", {}).get("preferred_models", [])
         if preferred:
             return preferred[0]
         return "gemini-flash-latest"
@@ -147,10 +136,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def _has_openai_api_key(self) -> bool:
         openai_settings = self.llm_settings.get("openai", {})
-        return bool(
-            openai_settings.get("api_key")
-            or os.environ.get("OPENAI_API_KEY")
-        )
+        return bool(openai_settings.get("api_key") or os.environ.get("OPENAI_API_KEY"))
 
     def _should_generate_image(self, prompt: str) -> bool:
         prompt_lower = (prompt or "").strip().lower()
@@ -181,9 +167,7 @@ class CaptionWidget(QtWidgets.QWidget):
     def _persist_state(self) -> None:
         """Save the current provider and last selected models."""
         self._providers.set_current_provider(self.selected_provider)
-        self._providers.remember_last_model(
-            self.selected_provider, self.selected_model
-        )
+        self._providers.remember_last_model(self.selected_provider, self.selected_model)
 
     def _update_model_selector(self) -> None:
         """Refresh the model selector combo box contents."""
@@ -236,21 +220,18 @@ class CaptionWidget(QtWidgets.QWidget):
         self.provider_selector = QComboBox()
         for key, label in self.provider_labels.items():
             self.provider_selector.addItem(label, userData=key)
-        provider_index = self.provider_selector.findData(
-            self.selected_provider)
+        provider_index = self.provider_selector.findData(self.selected_provider)
         if provider_index != -1:
             self.provider_selector.setCurrentIndex(provider_index)
         layout.addWidget(self.provider_label)
         layout.addWidget(self.provider_selector)
 
         self.configure_models_button = QPushButton("Configure…")
-        self.configure_models_button.clicked.connect(
-            self.open_llm_settings_dialog)
+        self.configure_models_button.clicked.connect(self.open_llm_settings_dialog)
         layout.addWidget(self.configure_models_button)
         layout.addStretch(1)
 
-        self.provider_selector.currentIndexChanged.connect(
-            self.on_provider_changed)
+        self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
         return layout
 
     def _build_model_controls(self) -> QHBoxLayout:
@@ -366,8 +347,7 @@ class CaptionWidget(QtWidgets.QWidget):
     def _build_prompt_controls(self) -> QHBoxLayout:
         layout = QtWidgets.QHBoxLayout()
         self.prompt_text_edit = QtWidgets.QLineEdit(self)
-        self.prompt_text_edit.setPlaceholderText(
-            "Type your chat prompt here...")
+        self.prompt_text_edit.setPlaceholderText("Type your chat prompt here...")
         layout.addWidget(self.prompt_text_edit)
 
         self.chat_button = QtWidgets.QPushButton("Chat", self)
@@ -428,16 +408,13 @@ class CaptionWidget(QtWidgets.QWidget):
         dialog = LLMSettingsDialog(self, settings=dict(self.llm_settings))
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             settings = dialog.get_settings()
-            settings.setdefault("last_models", self.llm_settings.get(
-                "last_models", {}))
+            settings.setdefault("last_models", self.llm_settings.get("last_models", {}))
             self.llm_settings = settings
             self._providers = ProviderRegistry(
                 self.llm_settings,
                 save_llm_settings,
-                ollama_module=globals().get("ollama"),
             )
-            new_provider = self.llm_settings.get(
-                "provider", self.selected_provider)
+            new_provider = self.llm_settings.get("provider", self.selected_provider)
             self._suppress_provider_updates = True
             try:
                 provider_index = self.provider_selector.findData(new_provider)
@@ -469,8 +446,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
         if self._should_generate_image(raw_prompt):
             cleaned_prompt = self._sanitize_image_prompt(raw_prompt)
-            provider_label = self.provider_labels.get(
-                self.selected_provider, "AI")
+            provider_label = self.provider_labels.get(self.selected_provider, "AI")
 
             self.append_to_chat_history(raw_prompt, is_user=True)
             self.append_to_chat_history(
@@ -525,8 +501,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
         # Text chat path
         self.append_to_chat_history(raw_prompt, is_user=True)
-        provider_label = self.provider_labels.get(
-            self.selected_provider, "AI")
+        provider_label = self.provider_labels.get(self.selected_provider, "AI")
         self.current_ai_span_id = f"ai-response-{uuid.uuid4().hex}"
         self.append_to_chat_history(
             "",
@@ -578,9 +553,7 @@ class CaptionWidget(QtWidgets.QWidget):
         self.append_to_chat_history(
             f"Image generation failed: {error_message}",
             is_user=False,
-            header_label=self.provider_labels.get(
-                self.selected_provider, "AI"
-            ),
+            header_label=self.provider_labels.get(self.selected_provider, "AI"),
         )
 
     def _ensure_chat_mode(self) -> None:
@@ -590,8 +563,7 @@ class CaptionWidget(QtWidgets.QWidget):
         self._chat_entries = []
         self._message_buffers.clear()
         self._apply_editor_style()
-        self.text_edit.setHtml(
-            '<div class="chat-log" data-chat-log="true"></div>')
+        self.text_edit.setHtml('<div class="chat-log" data-chat-log="true"></div>')
         self._update_cache_from_editor()
         self._last_emitted_caption = ""
 
@@ -603,17 +575,12 @@ class CaptionWidget(QtWidgets.QWidget):
             classes = ["chat-bubble", "user" if entry["is_user"] else "model"]
             label = self._renderer.escape_html(entry["header"])
             body_html = entry["body_html"] or "&nbsp;"
-            data_attr = (
-                f' data-stream-id="{entry["id"]}"'
-                if entry.get("id")
-                else ""
-            )
+            data_attr = f' data-stream-id="{entry["id"]}"' if entry.get("id") else ""
             fragments.append(
-                "<div class=\"%s\">"
-                "<div class=\"chat-label\">%s</div>"
-                "<div class=\"chat-body\"%s>%s</div>"
-                "</div>"
-                % (" ".join(classes), label, data_attr, body_html)
+                '<div class="%s">'
+                '<div class="chat-label">%s</div>'
+                '<div class="chat-body"%s>%s</div>'
+                "</div>" % (" ".join(classes), label, data_attr, body_html)
             )
         html = (
             '<div class="chat-log" data-chat-log="true">'
@@ -718,7 +685,7 @@ class CaptionWidget(QtWidgets.QWidget):
             inserted_char = current_text[-1]
             self.charInserted.emit(inserted_char)
         elif len(current_text) < len(self.previous_text):
-            deleted_chars = self.previous_text[len(current_text):]
+            deleted_chars = self.previous_text[len(current_text) :]
             self.charDeleted.emit(deleted_chars)
 
         self.previous_text = current_text
@@ -879,9 +846,7 @@ class CaptionWidget(QtWidgets.QWidget):
         if self.behavior_widget:
             self.behavior_widget.set_video_context(video_path, fps, num_frames)
 
-    def set_video_segments(
-        self, segments: Optional[Sequence[TrackingSegment]]
-    ) -> None:
+    def set_video_segments(self, segments: Optional[Sequence[TrackingSegment]]) -> None:
         if self.behavior_widget:
             self.behavior_widget.set_video_segments(segments)
 
@@ -927,8 +892,7 @@ class CaptionWidget(QtWidgets.QWidget):
             return None
 
         try:
-            fd, tmp_path = tempfile.mkstemp(
-                prefix="annolid_canvas_", suffix=".png")
+            fd, tmp_path = tempfile.mkstemp(prefix="annolid_canvas_", suffix=".png")
             os.close(fd)
             if not pixmap.save(tmp_path, "PNG"):
                 os.remove(tmp_path)
@@ -964,15 +928,16 @@ class CaptionWidget(QtWidgets.QWidget):
         fallback = self.text_edit.toPlainText().strip()
         return fallback, False
 
-    def _update_read_label_for_selection(self, has_selection: Optional[bool] = None) -> None:
+    def _update_read_label_for_selection(
+        self, has_selection: Optional[bool] = None
+    ) -> None:
         """Keep the read button label in sync with selection state."""
         if not hasattr(self, "read_label"):
             return
         if has_selection is None:
             cursor = self.text_edit.textCursor()
             has_selection = bool(cursor and cursor.hasSelection())
-        self.read_label.setText(
-            "Read selection" if has_selection else "Read caption")
+        self.read_label.setText("Read selection" if has_selection else "Read caption")
 
     def _reset_read_label(self) -> None:
         """Reset read label based on current selection."""
@@ -992,8 +957,9 @@ class CaptionWidget(QtWidgets.QWidget):
         )
         self.read_button.setEnabled(False)  # Disable button
         self.thread_pool.start(
-            ReadCaptionTask(self, text=text_to_read,
-                            tts_settings=self._tts_settings_snapshot)
+            ReadCaptionTask(
+                self, text=text_to_read, tts_settings=self._tts_settings_snapshot
+            )
         )
 
     @QtCore.Slot()
@@ -1002,7 +968,9 @@ class CaptionWidget(QtWidgets.QWidget):
         self.read_button.setEnabled(True)  # Re-enable button
         self._reset_read_label()
 
-    def read_caption(self, text_to_read: str, tts_settings: Optional[Dict[str, object]] = None):
+    def read_caption(
+        self, text_to_read: str, tts_settings: Optional[Dict[str, object]] = None
+    ):
         """Reads provided text using kokoro or gTTS and plays it."""
         tts_settings = tts_settings or self._load_tts_settings_snapshot()
         text_to_read = (text_to_read or "").strip()
@@ -1045,8 +1013,7 @@ class CaptionWidget(QtWidgets.QWidget):
             "lang": settings.get("lang", defaults["lang"]),
             "speed": settings.get("speed", defaults["speed"]),
             "chatterbox_voice_path": settings.get(
-                "chatterbox_voice_path", defaults.get(
-                    "chatterbox_voice_path", "")
+                "chatterbox_voice_path", defaults.get("chatterbox_voice_path", "")
             ),
             "chatterbox_dtype": settings.get(
                 "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
@@ -1170,7 +1137,9 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def get_caption(self):
         """Returns the current caption text (plain text, not HTML)."""
-        return self.text_edit.toPlainText()  # get plain text caption for other operations
+        return (
+            self.text_edit.toPlainText()
+        )  # get plain text caption for other operations
 
     def toggle_recording(self):
         """Toggles the recording state and updates the UI."""
@@ -1204,11 +1173,11 @@ class CaptionWidget(QtWidgets.QWidget):
             # import pyaudio  # PyAudio is needed for microphone access
         except ImportError as e:
             missing_package = e.name
-            print(
-                f"Error: The required package '{missing_package}' is not installed.")
+            print(f"Error: The required package '{missing_package}' is not installed.")
             if missing_package == "speech_recognition":
                 print(
-                    "Please install SpeechRecognition using the command: pip install SpeechRecognition")
+                    "Please install SpeechRecognition using the command: pip install SpeechRecognition"
+                )
             elif missing_package == "pyaudio":
                 print("Please install PyAudio using the command: pip install pyaudio")
             else:
@@ -1226,26 +1195,30 @@ class CaptionWidget(QtWidgets.QWidget):
             try:
                 while self.is_recording:
                     audio_chunk = recognizer.listen(
-                        source, timeout=None, phrase_time_limit=None)
+                        source, timeout=None, phrase_time_limit=None
+                    )
                     audio_data.append(audio_chunk)
 
                 # Combine audio chunks into one AudioData instance
                 complete_audio = sr.AudioData(
                     b"".join([chunk.get_raw_data() for chunk in audio_data]),
                     source.SAMPLE_RATE,
-                    source.SAMPLE_WIDTH
+                    source.SAMPLE_WIDTH,
                 )
                 try:
                     from annolid.agents.speech_recognition import transcribe_audio
+
                     text = transcribe_audio(complete_audio.get_wav_data())[0]
-                except Exception as e:
+                except Exception:
                     # Transcribe the combined audio
                     text = recognizer.recognize_google(complete_audio)
                 current_plain_text = self.get_caption()  # Get current plain text
                 # Emit the signal with the transcribed text to be handled in the main thread
                 QMetaObject.invokeMethod(
-                    self, "on_voice_recording_finished", Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, current_plain_text + text)
+                    self,
+                    "on_voice_recording_finished",
+                    Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, current_plain_text + text),
                 )
 
             except sr.UnknownValueError:
@@ -1309,7 +1282,8 @@ class CaptionWidget(QtWidgets.QWidget):
             self.thread_pool.start(task)
         else:
             self.update_improve_status(
-                "No image selected for caption improvement.", True)
+                "No image selected for caption improvement.", True
+            )
 
     @QtCore.Slot(str, bool)
     def update_improve_status(self, message, is_error):
@@ -1320,8 +1294,7 @@ class CaptionWidget(QtWidgets.QWidget):
             # Append improved version
             current_plain_text = self.get_caption()
             # append to plain text and re-render
-            self.set_caption(current_plain_text +
-                             "\n\nImproved Version:\n" + message)
+            self.set_caption(current_plain_text + "\n\nImproved Version:\n" + message)
             self.improve_label.setText("Improve Caption")
 
         self.improve_button.setEnabled(True)
@@ -1403,17 +1376,21 @@ class GeminiImageGenerationTask(QRunnable):
             )
             client = genai.Client(api_key=api_key)
 
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=self.prompt)],
-                )
-            ] if hasattr(types, "Content") else [
-                {
-                    "role": "user",
-                    "parts": [{"text": self.prompt}],
-                }
-            ]
+            contents = (
+                [
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=self.prompt)],
+                    )
+                ]
+                if hasattr(types, "Content")
+                else [
+                    {
+                        "role": "user",
+                        "parts": [{"text": self.prompt}],
+                    }
+                ]
+            )
 
             image_config_cls = getattr(types, "ImageConfig", None)
             if image_config_cls is not None:
@@ -1474,21 +1451,18 @@ class GeminiImageGenerationTask(QRunnable):
                     data_bytes: bytes
                     if isinstance(data_buffer, bytes):
                         try:
-                            data_bytes = base64.b64decode(
-                                data_buffer, validate=True)
+                            data_bytes = base64.b64decode(data_buffer, validate=True)
                         except Exception:
                             data_bytes = data_buffer
                     elif isinstance(data_buffer, str):
                         try:
-                            data_bytes = base64.b64decode(
-                                data_buffer, validate=True)
+                            data_bytes = base64.b64decode(data_buffer, validate=True)
                         except Exception:
                             data_bytes = data_buffer.encode("utf-8")
                     else:
                         data_bytes = bytes(data_buffer)
 
-                    mime_type = getattr(
-                        inline, "mime_type", None) or "image/png"
+                    mime_type = getattr(inline, "mime_type", None) or "image/png"
                     suffix = mimetypes.guess_extension(mime_type) or ".png"
                     with tempfile.NamedTemporaryFile(
                         prefix="annolid_gemini_",
@@ -1509,8 +1483,7 @@ class GeminiImageGenerationTask(QRunnable):
                 )
                 return
 
-            raise RuntimeError(
-                summary or "Gemini did not return image data.")
+            raise RuntimeError(summary or "Gemini did not return image data.")
 
         except Exception as exc:
             QtCore.QMetaObject.invokeMethod(
@@ -1524,7 +1497,9 @@ class GeminiImageGenerationTask(QRunnable):
 class OpenAIImageGenerationTask(QRunnable):
     """Generate an image using OpenAI GPT-5 responses API."""
 
-    def __init__(self, prompt: str, widget: "CaptionWidget", model: str, settings: Dict[str, Any]):
+    def __init__(
+        self, prompt: str, widget: "CaptionWidget", model: str, settings: Dict[str, Any]
+    ):
         super().__init__()
         self.prompt = prompt
         self.widget = widget
@@ -1598,8 +1573,7 @@ class OpenAIImageGenerationTask(QRunnable):
                         if isinstance(result, str):
                             image_b64 = result
 
-                summary = getattr(response, "output_text",
-                                  "") or "\n".join(text_chunks)
+                summary = getattr(response, "output_text", "") or "\n".join(text_chunks)
 
             else:
                 image_b64 = None
@@ -1636,8 +1610,7 @@ class OpenAIImageGenerationTask(QRunnable):
                     )
                     data = legacy_response.get("data", [])
                     if data:
-                        image_b64 = data[0].get(
-                            "b64_json") or data[0].get("b64")
+                        image_b64 = data[0].get("b64_json") or data[0].get("b64")
 
             if not image_b64:
                 raise RuntimeError("OpenAI did not return image data.")
@@ -1670,8 +1643,15 @@ class OpenAIImageGenerationTask(QRunnable):
 
 
 class ImproveCaptionTask(QRunnable):
-    def __init__(self, image_path, current_caption, widget, model="llama3.2-vision:latest",
-                 provider="ollama", settings=None):
+    def __init__(
+        self,
+        image_path,
+        current_caption,
+        widget,
+        model="llama3.2-vision:latest",
+        provider="ollama",
+        settings=None,
+    ):
         super().__init__()
         self.image_path = image_path
         self.current_caption = current_caption
@@ -1684,12 +1664,18 @@ class ImproveCaptionTask(QRunnable):
         try:
             if self.provider != "ollama":
                 raise ValueError(
-                    "Caption improvement is currently available only for Ollama providers.")
+                    "Caption improvement is currently available only for Ollama providers."
+                )
 
             ollama_module = globals().get("ollama")
             if ollama_module is None:
-                raise ImportError(
-                    "The python 'ollama' package is not installed.")
+                try:
+                    ollama_module = importlib.import_module("ollama")
+                except ImportError as exc:
+                    raise ImportError(
+                        "The python 'ollama' package is not installed."
+                    ) from exc
+                globals()["ollama"] = ollama_module
 
             host = self.settings.get("ollama", {}).get("host")
             if host:
@@ -1697,28 +1683,27 @@ class ImproveCaptionTask(QRunnable):
 
             prompt = f"Improve or rewrite the following caption, considering the image:\n\n{self.current_caption}"
             if self.image_path and os.path.exists(self.image_path):
-                messages = [{
-                    'role': 'user',
-                    'content': prompt,
-                    'images': [self.image_path]
-                }]
+                messages = [
+                    {"role": "user", "content": prompt, "images": [self.image_path]}
+                ]
             else:
-                messages = [{
-                    'role': 'user',
-                    'content': prompt,
-                }]
+                messages = [
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ]
 
-            response = ollama_module.chat(
-                model=self.model,
-                messages=messages
-            )
+            response = ollama_module.chat(model=self.model, messages=messages)
 
             if "message" in response and "content" in response["message"]:
                 improved_caption = response["message"]["content"]
                 QMetaObject.invokeMethod(
-                    self.widget, "update_improve_status", Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, improved_caption), QtCore.Q_ARG(
-                        bool, False)
+                    self.widget,
+                    "update_improve_status",
+                    Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, improved_caption),
+                    QtCore.Q_ARG(bool, False),
                 )
 
             else:
@@ -1727,21 +1712,26 @@ class ImproveCaptionTask(QRunnable):
         except Exception as e:
             error_message = f"Error improving caption: {e}"
             QMetaObject.invokeMethod(
-                self.widget, "update_improve_status", Qt.QueuedConnection,
-                QtCore.Q_ARG(str, error_message), QtCore.Q_ARG(bool, True)
+                self.widget,
+                "update_improve_status",
+                Qt.QueuedConnection,
+                QtCore.Q_ARG(str, error_message),
+                QtCore.Q_ARG(bool, True),
             )
 
 
 class DescribeImageTask(QRunnable):
     """A task to describe an image in the background."""
 
-    def __init__(self, image_path,
-                 widget,
-                 prompt='Describe this image in detail.',
-                 model="llama3.2-vision:latest",
-                 provider="ollama",
-                 settings=None,
-                 ):
+    def __init__(
+        self,
+        image_path,
+        widget,
+        prompt="Describe this image in detail.",
+        model="llama3.2-vision:latest",
+        provider="ollama",
+        settings=None,
+    ):
         super().__init__()
         self.image_path = image_path
         self.widget = widget
@@ -1755,12 +1745,18 @@ class DescribeImageTask(QRunnable):
         try:
             if self.provider != "ollama":
                 raise ValueError(
-                    "Image description is currently available only for Ollama providers.")
+                    "Image description is currently available only for Ollama providers."
+                )
 
             ollama_module = globals().get("ollama")
             if ollama_module is None:
-                raise ImportError(
-                    "The python 'ollama' package is not installed.")
+                try:
+                    ollama_module = importlib.import_module("ollama")
+                except ImportError as exc:
+                    raise ImportError(
+                        "The python 'ollama' package is not installed."
+                    ) from exc
+                globals()["ollama"] = ollama_module
 
             prev_host_present = "OLLAMA_HOST" in os.environ
             prev_host_value = os.environ.get("OLLAMA_HOST")
@@ -1772,11 +1768,13 @@ class DescribeImageTask(QRunnable):
 
             chat_request = {
                 "model": self.model,
-                "messages": [{
-                    'role': 'user',
-                    'content': self.prompt,
-                    'images': [self.image_path]
-                }],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": self.prompt,
+                        "images": [self.image_path],
+                    }
+                ],
                 "stream": True,
             }
 
@@ -1789,19 +1787,20 @@ class DescribeImageTask(QRunnable):
                 description = message.get("content", "")
                 if not description:
                     raise ValueError(
-                        "Unexpected response format: 'message' or 'content' key missing.")
+                        "Unexpected response format: 'message' or 'content' key missing."
+                    )
                 QtCore.QMetaObject.invokeMethod(
                     self.widget,
                     "update_description_status",
                     QtCore.Qt.QueuedConnection,
                     QtCore.Q_ARG(str, description),
-                    QtCore.Q_ARG(bool, False)
+                    QtCore.Q_ARG(bool, False),
                 )
                 return
 
             for part in response_stream:
-                if 'message' in part and 'content' in part['message']:
-                    chunk = part['message']['content']
+                if "message" in part and "content" in part["message"]:
+                    chunk = part["message"]["content"]
                     if chunk:
                         description_chunks.append(chunk)
                         QtCore.QMetaObject.invokeMethod(
@@ -1810,8 +1809,8 @@ class DescribeImageTask(QRunnable):
                             QtCore.Qt.QueuedConnection,
                             QtCore.Q_ARG(str, chunk),
                         )
-                elif 'error' in part:
-                    raise RuntimeError(part['error'])
+                elif "error" in part:
+                    raise RuntimeError(part["error"])
 
             description = "".join(description_chunks).strip()
             if not description:
@@ -1822,7 +1821,7 @@ class DescribeImageTask(QRunnable):
                 "update_description_status",
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, description),
-                QtCore.Q_ARG(bool, False)
+                QtCore.Q_ARG(bool, False),
             )
 
         except Exception as e:
@@ -1831,9 +1830,11 @@ class DescribeImageTask(QRunnable):
                 "Make sure an image is visible or saved, then try again."
             )
             QtCore.QMetaObject.invokeMethod(
-                self.widget, "update_description_status", QtCore.Qt.QueuedConnection,
+                self.widget,
+                "update_description_status",
+                QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, error_message),
-                QtCore.Q_ARG(bool, True)
+                QtCore.Q_ARG(bool, True),
             )
         finally:
             if prev_host_present:
@@ -1905,26 +1906,28 @@ class StreamingChatTask(QRunnable):
     def _run_ollama(self) -> None:
         ollama_module = globals().get("ollama")
         if ollama_module is None:
-            raise ImportError("The python 'ollama' package is not installed.")
+            try:
+                ollama_module = importlib.import_module("ollama")
+            except ImportError as exc:
+                raise ImportError(
+                    "The python 'ollama' package is not installed."
+                ) from exc
+            globals()["ollama"] = ollama_module
 
         host = self.settings.get("ollama", {}).get("host")
         if host:
             os.environ["OLLAMA_HOST"] = host
 
-        messages = [{'role': 'user', 'content': self.prompt}]
+        messages = [{"role": "user", "content": self.prompt}]
         if self.image_path and os.path.exists(self.image_path):
-            messages[0]['images'] = [self.image_path]
+            messages[0]["images"] = [self.image_path]
 
-        stream = ollama_module.chat(
-            model=self.model,
-            messages=messages,
-            stream=True
-        )
+        stream = ollama_module.chat(model=self.model, messages=messages, stream=True)
         full_response = ""
 
         for part in stream:
-            if 'message' in part and 'content' in part['message']:
-                chunk = part['message']['content']
+            if "message" in part and "content" in part["message"]:
+                chunk = part["message"]["content"]
                 full_response += chunk
                 QMetaObject.invokeMethod(
                     self.widget,
@@ -1932,7 +1935,7 @@ class StreamingChatTask(QRunnable):
                     QtCore.Qt.QueuedConnection,
                     QtCore.Q_ARG(str, chunk),
                 )
-            elif 'error' in part:
+            elif "error" in part:
                 error_message = f"Stream error: {part['error']}"
                 QtCore.QMetaObject.invokeMethod(
                     self.widget,
@@ -1973,8 +1976,7 @@ class StreamingChatTask(QRunnable):
         api_key = config.get("api_key")
         base_url = config.get("base_url")
         if not api_key:
-            raise ValueError(
-                "OpenAI API key is missing. Configure it in settings.")
+            raise ValueError("OpenAI API key is missing. Configure it in settings.")
 
         client_kwargs = {"api_key": api_key}
         if base_url:
@@ -2020,8 +2022,7 @@ class StreamingChatTask(QRunnable):
         config = self.settings.get("gemini", {})
         api_key = config.get("api_key")
         if not api_key:
-            raise ValueError(
-                "Gemini API key is missing. Configure it in settings.")
+            raise ValueError("Gemini API key is missing. Configure it in settings.")
 
         genai.configure(api_key=api_key)
         model_name = self.model or "gemini-1.5-flash"
