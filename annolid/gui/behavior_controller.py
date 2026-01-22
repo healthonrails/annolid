@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from qtpy import QtGui
 
 from annolid.behavior.project_schema import ProjectSchema
 from annolid.behavior.event_utils import normalize_event_label
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
+from annolid.utils.annotation_store import AnnotationStore
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,25 @@ class BehaviorEvent:
     @property
     def slider_mark_type(self) -> str:
         return "event_start" if self.event == "start" else "event_end"
+
+    def to_store_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "behavior": self.behavior,
+            "event": self.event,
+        }
+        if self.subject is not None:
+            payload["subject"] = self.subject
+        if self.raw_event is not None:
+            payload["raw_event"] = self.raw_event
+        if self.timestamp is not None:
+            payload["timestamp"] = float(self.timestamp)
+        if self.trial_time is not None:
+            payload["trial_time"] = float(self.trial_time)
+        if self.modifiers:
+            payload["modifiers"] = list(self.modifiers)
+        if self.category is not None:
+            payload["category"] = self.category
+        return payload
 
 
 class BehaviorTimeline:
@@ -74,8 +95,11 @@ class BehaviorTimeline:
         modifiers: Optional[Iterable[str]] = None,
         category: Optional[str] = None,
     ) -> Optional[BehaviorEvent]:
-        canonical = event_label if event_label in {
-            "start", "end"} else normalize_event_label(event_label)
+        canonical = (
+            event_label
+            if event_label in {"start", "end"}
+            else normalize_event_label(event_label)
+        )
         if canonical is None:
             return None
 
@@ -108,8 +132,7 @@ class BehaviorTimeline:
             return None
 
         behavior = event.behavior
-        remaining = [evt for evt in self._events.values()
-                     if evt.behavior == behavior]
+        remaining = [evt for evt in self._events.values() if evt.behavior == behavior]
         if remaining:
             self._rebuild_behavior(behavior)
         else:
@@ -126,14 +149,12 @@ class BehaviorTimeline:
         self._pending_rebuild.clear()
 
     def _rebuild_behavior(self, behavior: str) -> None:
-        events = [evt for evt in self._events.values()
-                  if evt.behavior == behavior]
+        events = [evt for evt in self._events.values() if evt.behavior == behavior]
         if not events:
             self._ranges.pop(behavior, None)
             return
 
-        events.sort(key=lambda evt: (
-            evt.frame, 0 if evt.event == "start" else 1))
+        events.sort(key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1))
         ranges: List[Tuple[int, Optional[int]]] = []
         open_starts: List[int] = []
 
@@ -160,10 +181,26 @@ class BehaviorTimeline:
         return False
 
     def active_behaviors(self, frame: int) -> Set[str]:
-        return {behavior for behavior in self._ranges.keys() if self.is_behavior_active(frame, behavior)}
+        return {
+            behavior
+            for behavior in self._ranges.keys()
+            if self.is_behavior_active(frame, behavior)
+        }
 
     def iter_events(self) -> Iterable[BehaviorEvent]:
-        return iter(sorted(self._events.values(), key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1, evt.behavior)))
+        return iter(
+            sorted(
+                self._events.values(),
+                key=lambda evt: (
+                    evt.frame,
+                    0 if evt.event == "start" else 1,
+                    evt.behavior,
+                ),
+            )
+        )
+
+    def events_at_frame(self, frame: int) -> List[BehaviorEvent]:
+        return [evt for evt in self._events.values() if evt.frame == frame]
 
     def iter_ranges(self) -> Iterable[Tuple[str, int, Optional[int]]]:
         for behavior, ranges in self._ranges.items():
@@ -175,8 +212,7 @@ class BehaviorTimeline:
 
     def to_export_rows(
         self,
-        timestamp_fallback: Optional[Callable[[
-            BehaviorEvent], Optional[float]]] = None,
+        timestamp_fallback: Optional[Callable[[BehaviorEvent], Optional[float]]] = None,
     ) -> List[Tuple[float, float, str, str, str]]:
         rows: List[Tuple[float, float, str, str, str]] = []
         for event in self.iter_events():
@@ -185,15 +221,22 @@ class BehaviorTimeline:
                 fallback_value = timestamp_fallback(event)
                 if fallback_value is not None:
                     recording_time = fallback_value
-            trial_time = event.trial_time if event.trial_time is not None else recording_time
+            trial_time = (
+                event.trial_time if event.trial_time is not None else recording_time
+            )
             subject = event.subject or "Subject 1"
             label = event.raw_event or (
-                "state start" if event.event == "start" else "state stop")
-            rows.append((trial_time if trial_time is not None else 0.0,
-                         recording_time if recording_time is not None else 0.0,
-                         subject,
-                         event.behavior,
-                         label))
+                "state start" if event.event == "start" else "state stop"
+            )
+            rows.append(
+                (
+                    trial_time if trial_time is not None else 0.0,
+                    recording_time if recording_time is not None else 0.0,
+                    subject,
+                    event.behavior,
+                    label,
+                )
+            )
         return rows
 
 
@@ -208,8 +251,7 @@ class BehaviorMarkManager:
         self._slider: Optional[VideoSlider] = None
         self._behavior_marks: Dict[Tuple[int, str, str], VideoSliderMark] = {}
         self._interval_marks: Dict[Tuple[str, int, int], VideoSliderMark] = {}
-        self._generic_marks: Dict[Tuple[int,
-                                        Optional[str]], VideoSliderMark] = {}
+        self._generic_marks: Dict[Tuple[int, Optional[str]], VideoSliderMark] = {}
         self._highlighted_mark: Optional[VideoSliderMark] = None
         self._highlighted_behavior_key: Optional[Tuple[int, str, str]] = None
 
@@ -229,7 +271,11 @@ class BehaviorMarkManager:
     def _detach_marks(self) -> None:
         if self._slider is None:
             return
-        for mark in list(self._behavior_marks.values()) + list(self._interval_marks.values()) + list(self._generic_marks.values()):
+        for mark in (
+            list(self._behavior_marks.values())
+            + list(self._interval_marks.values())
+            + list(self._generic_marks.values())
+        ):
             try:
                 self._slider.removeMark(mark)
             except Exception:
@@ -260,7 +306,9 @@ class BehaviorMarkManager:
 
     def clear_behavior_marks(self) -> None:
         if self._slider is not None:
-            for mark in list(self._behavior_marks.values()) + list(self._interval_marks.values()):
+            for mark in list(self._behavior_marks.values()) + list(
+                self._interval_marks.values()
+            ):
                 self._slider.removeMark(mark)
             self._slider._update_visual_positions()
         self._behavior_marks.clear()
@@ -293,8 +341,7 @@ class BehaviorMarkManager:
 
         self.clear_behavior_marks()
         for event in events:
-            self._create_behavior_mark(
-                event, highlight=highlight_key == event.mark_key)
+            self._create_behavior_mark(event, highlight=highlight_key == event.mark_key)
         for behavior, start, end in ranges:
             if end is None:
                 continue
@@ -315,9 +362,9 @@ class BehaviorMarkManager:
             return self._generic_marks[key]
 
         qcolor = self._normalize_color(
-            color if color is not None else (
-                self._color_getter(str(mark_type)) if mark_type else "green"
-            )
+            color
+            if color is not None
+            else (self._color_getter(str(mark_type)) if mark_type else "green")
         )
         mark_color = self._color_tuple(qcolor)
         style = mark_type or "simple"
@@ -343,25 +390,31 @@ class BehaviorMarkManager:
                 removed = True
         return removed
 
-    def remove_mark_instance(self, mark: VideoSliderMark) -> Optional[Tuple[str, Tuple]]:
+    def remove_mark_instance(
+        self, mark: VideoSliderMark
+    ) -> Optional[Tuple[str, Tuple]]:
         key = self._find_generic_key(mark)
         if key is not None:
             self._remove_generic_mark(key)
             return ("generic", key)
         return None
 
-    def find_behavior_key(self, mark: VideoSliderMark) -> Optional[Tuple[int, str, str]]:
+    def find_behavior_key(
+        self, mark: VideoSliderMark
+    ) -> Optional[Tuple[int, str, str]]:
         for key, stored in self._behavior_marks.items():
             if stored is mark:
                 return key
         return None
 
-    def _create_behavior_mark(self, event: BehaviorEvent, highlight: bool = False) -> None:
+    def _create_behavior_mark(
+        self, event: BehaviorEvent, highlight: bool = False
+    ) -> None:
         qcolor = self._normalize_color(self._color_getter(event.behavior))
         color = self._color_tuple(qcolor)
-        mark = VideoSliderMark(mark_type=event.slider_mark_type,
-                               val=event.frame,
-                               _color=color)
+        mark = VideoSliderMark(
+            mark_type=event.slider_mark_type, val=event.frame, _color=color
+        )
         self._behavior_marks[event.mark_key] = mark
         if self._slider is not None:
             self._slider.addMark(mark, update=False)
@@ -373,10 +426,9 @@ class BehaviorMarkManager:
         qcolor = self._normalize_color(self._color_getter(behavior))
         qcolor.setAlpha(80)
         color = self._color_tuple(qcolor)
-        mark = VideoSliderMark(mark_type="behavior_interval",
-                               val=start,
-                               end_val=end,
-                               _color=color)
+        mark = VideoSliderMark(
+            mark_type="behavior_interval", val=start, end_val=end, _color=color
+        )
         self._interval_marks[(behavior, start, end)] = mark
         if self._slider is not None:
             self._slider.addMark(mark, update=False)
@@ -396,7 +448,9 @@ class BehaviorMarkManager:
         if self._highlighted_mark is mark:
             self.clear_highlight()
 
-    def _find_generic_key(self, mark: VideoSliderMark) -> Optional[Tuple[int, Optional[str]]]:
+    def _find_generic_key(
+        self, mark: VideoSliderMark
+    ) -> Optional[Tuple[int, Optional[str]]]:
         for key, stored in self._generic_marks.items():
             if stored is mark:
                 return key
@@ -419,12 +473,20 @@ class BehaviorMarkManager:
 class BehaviorController:
     """High-level orchestrator for behavior events and slider marks."""
 
+    BEHAVIOR_STORE_KEY = "annolid_behavior"
+    BEHAVIOR_STORE_VERSION = 1
+
     def __init__(self, color_getter: Callable[[str], ColorType]) -> None:
         self.timeline = BehaviorTimeline()
         self.marks = BehaviorMarkManager(color_getter)
         self._schema: Optional[ProjectSchema] = None
         self._behavior_categories: Dict[str, str] = {}
         self._subjects: Set[str] = set()
+        self._annotation_store: Optional[AnnotationStore] = None
+        self._frame_record_provider: Optional[
+            Callable[[int], Optional[Dict[str, Any]]]
+        ] = None
+        self._change_listeners: List[Callable[[], None]] = []
 
     def configure_from_schema(self, schema: Optional[ProjectSchema]) -> None:
         """Record known metadata from the project schema."""
@@ -451,6 +513,42 @@ class BehaviorController:
         if slider is not None:
             self.sync_marks()
 
+    def attach_annotation_store(
+        self,
+        store: Optional[AnnotationStore],
+        *,
+        frame_record_provider: Optional[
+            Callable[[int], Optional[Dict[str, Any]]]
+        ] = None,
+    ) -> None:
+        self._annotation_store = store
+        self._frame_record_provider = frame_record_provider
+
+    def add_change_listener(self, callback: Callable[[], None]) -> None:
+        if callback not in self._change_listeners:
+            self._change_listeners.append(callback)
+
+    def remove_change_listener(self, callback: Callable[[], None]) -> None:
+        if callback in self._change_listeners:
+            self._change_listeners.remove(callback)
+
+    def attach_annotation_store_for_video(
+        self,
+        results_dir: Optional[Path],
+        *,
+        store_name: Optional[str] = None,
+        frame_record_provider: Optional[
+            Callable[[int], Optional[Dict[str, Any]]]
+        ] = None,
+    ) -> None:
+        if results_dir is None:
+            self.attach_annotation_store(None)
+            return
+        results_dir = Path(results_dir)
+        frame_stub = results_dir / f"{results_dir.name}_000000000.json"
+        store = AnnotationStore.for_frame_path(frame_stub, store_name)
+        self.attach_annotation_store(store, frame_record_provider=frame_record_provider)
+
     def sync_marks(self, highlight_key: Optional[Tuple[int, str, str]] = None) -> None:
         if self.marks.slider is None:
             return
@@ -462,10 +560,14 @@ class BehaviorController:
     def clear(self) -> None:
         self.timeline.clear()
         self.marks.clear_all()
+        self._notify_listeners()
 
     def clear_behavior_data(self) -> None:
+        frames = {event.frame for event in self.timeline.events.values()}
         self.timeline.clear()
+        self._persist_frames(frames)
         self.sync_marks()
+        self._notify_listeners()
 
     def record_event(
         self,
@@ -481,6 +583,8 @@ class BehaviorController:
         highlight: bool = True,
         modifiers: Optional[Iterable[str]] = None,
         category: Optional[str] = None,
+        persist: bool = True,
+        notify: bool = True,
     ) -> Optional[BehaviorEvent]:
         event = self.timeline.record_event(
             behavior,
@@ -497,13 +601,20 @@ class BehaviorController:
         if event is None:
             return None
         self.sync_marks(highlight_key=event.mark_key if highlight else None)
+        if persist:
+            self._persist_frame(event.frame)
+        if notify:
+            self._notify_listeners()
         return event
 
     def remove_highlighted_mark(self) -> Optional[Tuple[str, Tuple]]:
         key = self.marks.highlighted_behavior_key
         if key is not None:
-            self.timeline.remove_event(key)
+            removed_event = self.timeline.remove_event(key)
             self.sync_marks()
+            if removed_event is not None:
+                self._persist_frame(removed_event.frame)
+                self._notify_listeners()
             return ("behavior", key)
         if self.marks.remove_generic_highlighted_mark():
             return ("generic", ())
@@ -517,6 +628,8 @@ class BehaviorController:
                 removed.append(("behavior", key))
         if removed:
             self.sync_marks()
+            self._persist_frame(value)
+            self._notify_listeners()
             return removed
         if self.marks.remove_generic_marks_at_value(value):
             return [("generic", ())]
@@ -529,13 +642,20 @@ class BehaviorController:
         color: Optional[ColorType] = None,
         init_load: bool = False,
     ) -> Optional[VideoSliderMark]:
-        return self.marks.add_generic_mark(frame, mark_type=mark_type, color=color, init_load=init_load)
+        return self.marks.add_generic_mark(
+            frame, mark_type=mark_type, color=color, init_load=init_load
+        )
 
-    def remove_mark_instance(self, mark: VideoSliderMark) -> Optional[Tuple[str, Tuple]]:
+    def remove_mark_instance(
+        self, mark: VideoSliderMark
+    ) -> Optional[Tuple[str, Tuple]]:
         key = self.marks.find_behavior_key(mark)
         if key is not None:
-            self.timeline.remove_event(key)
+            removed_event = self.timeline.remove_event(key)
             self.sync_marks()
+            if removed_event is not None:
+                self._persist_frame(removed_event.frame)
+                self._notify_listeners()
             return ("behavior", key)
         return self.marks.remove_mark_instance(mark)
 
@@ -567,6 +687,8 @@ class BehaviorController:
         event = self.timeline.remove_event(key)
         if event is not None:
             self.sync_marks()
+            self._persist_frame(event.frame)
+            self._notify_listeners()
         return event
 
     def pop_last_event(self) -> Optional[BehaviorEvent]:
@@ -576,12 +698,13 @@ class BehaviorController:
         event = events[-1]
         self.timeline.remove_event(event.mark_key)
         self.sync_marks()
+        self._persist_frame(event.frame)
+        self._notify_listeners()
         return event
 
     def export_rows(
         self,
-        timestamp_fallback: Optional[Callable[[
-            BehaviorEvent], Optional[float]]] = None,
+        timestamp_fallback: Optional[Callable[[BehaviorEvent], Optional[float]]] = None,
     ) -> List[Tuple[float, float, str, str, str]]:
         self.timeline.flush_pending()
         return self.timeline.to_export_rows(timestamp_fallback=timestamp_fallback)
@@ -592,8 +715,10 @@ class BehaviorController:
         *,
         time_to_frame: Callable[[float], int],
         rebuild: bool = True,
+        persist: bool = True,
     ) -> None:
         self.timeline.clear()
+        frames_to_persist: Set[int] = set()
         for trial_time, recording_time, subject, behavior, event_label in rows:
             try:
                 time_value = float(recording_time)
@@ -602,8 +727,7 @@ class BehaviorController:
             frame = time_to_frame(time_value)
             trial_value: Optional[float]
             try:
-                trial_value = float(
-                    trial_time) if trial_time is not None else None
+                trial_value = float(trial_time) if trial_time is not None else None
             except (TypeError, ValueError):
                 trial_value = None
             self.record_event(
@@ -617,8 +741,234 @@ class BehaviorController:
                 highlight=False,
                 modifiers=None,
                 category=None,
+                persist=False,
+                notify=False,
             )
+            frames_to_persist.add(frame)
 
         if rebuild:
             self.timeline.flush_pending()
         self.sync_marks()
+        if persist:
+            self._persist_frames(frames_to_persist)
+        self._notify_listeners()
+
+    def load_events_from_store(
+        self,
+        store: Optional[AnnotationStore] = None,
+    ) -> None:
+        target_store = store or self._annotation_store
+        if target_store is None:
+            return
+
+        self.timeline.clear()
+        frames = sorted(target_store.iter_frames())
+        for frame in frames:
+            try:
+                frame_index = int(frame)
+            except (TypeError, ValueError):
+                continue
+            record = target_store.get_frame(frame)
+            if not record:
+                continue
+            other = record.get("otherData") or {}
+            behavior_block = other.get(self.BEHAVIOR_STORE_KEY)
+            if not isinstance(behavior_block, dict):
+                continue
+            events = behavior_block.get("events") or []
+            if not isinstance(events, list):
+                continue
+            for payload in events:
+                if not isinstance(payload, dict):
+                    continue
+                behavior = payload.get("behavior")
+                event_label = payload.get("event")
+                if not behavior or not event_label:
+                    continue
+                timestamp = _safe_float(payload.get("timestamp"))
+                trial_time = _safe_float(payload.get("trial_time"))
+                subject = payload.get("subject")
+                raw_event = payload.get("raw_event")
+                modifiers = payload.get("modifiers") or ()
+                category = payload.get("category")
+                self.record_event(
+                    str(behavior),
+                    str(event_label),
+                    frame_index,
+                    timestamp=timestamp,
+                    trial_time=trial_time,
+                    subject=str(subject) if subject is not None else None,
+                    raw_event=str(raw_event) if raw_event is not None else None,
+                    rebuild=False,
+                    highlight=False,
+                    modifiers=list(modifiers) if modifiers else None,
+                    category=str(category) if category is not None else None,
+                    persist=False,
+                    notify=False,
+                )
+
+        self.timeline.flush_pending()
+        self.sync_marks()
+        self._notify_listeners()
+
+    def _persist_frames(self, frames: Iterable[int]) -> None:
+        if self._annotation_store is None:
+            return
+        for frame in sorted({int(value) for value in frames if value is not None}):
+            self._persist_frame(frame)
+
+    def _persist_frame(self, frame: int) -> None:
+        if self._annotation_store is None:
+            return
+        record = self._load_store_record(frame)
+        other = dict(record.get("otherData") or {})
+        events = [
+            event.to_store_dict() for event in self.timeline.events_at_frame(frame)
+        ]
+        if events:
+            other[self.BEHAVIOR_STORE_KEY] = {
+                "version": self.BEHAVIOR_STORE_VERSION,
+                "events": events,
+            }
+        else:
+            other.pop(self.BEHAVIOR_STORE_KEY, None)
+
+        record["frame"] = frame
+        record["otherData"] = other
+        record.setdefault("version", "annolid")
+        record.setdefault("flags", {})
+        record.setdefault("shapes", [])
+        record.setdefault("imagePath", "")
+        record.setdefault("imageHeight", None)
+        record.setdefault("imageWidth", None)
+        self._annotation_store.append_frame(record)
+
+    def _load_store_record(self, frame: int) -> Dict[str, Any]:
+        record: Optional[Dict[str, Any]] = None
+        if self._annotation_store is not None:
+            record = self._annotation_store.get_frame(frame)
+        if record is None and self._frame_record_provider is not None:
+            try:
+                record = self._frame_record_provider(frame)
+            except Exception:
+                record = None
+        if record:
+            return dict(record)
+        return {"frame": frame}
+
+    def _notify_listeners(self) -> None:
+        if not self._change_listeners:
+            return
+        for callback in list(self._change_listeners):
+            try:
+                callback()
+            except Exception:
+                continue
+
+    def create_interval(
+        self,
+        *,
+        behavior: str,
+        start_frame: int,
+        end_frame: int,
+        subject: Optional[str] = None,
+        timestamp_provider: Optional[Callable[[int], Optional[float]]] = None,
+    ) -> None:
+        start_frame = int(start_frame)
+        end_frame = int(end_frame)
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        start_time = timestamp_provider(start_frame) if timestamp_provider else None
+        end_time = timestamp_provider(end_frame) if timestamp_provider else None
+        self.timeline.record_event(
+            behavior,
+            "start",
+            start_frame,
+            timestamp=start_time,
+            trial_time=start_time,
+            subject=subject,
+            rebuild=False,
+        )
+        self.timeline.record_event(
+            behavior,
+            "end",
+            end_frame,
+            timestamp=end_time,
+            trial_time=end_time,
+            subject=subject,
+            rebuild=False,
+        )
+        self.timeline.flush_pending()
+        self.sync_marks()
+        self._persist_frames({start_frame, end_frame})
+        self._notify_listeners()
+
+    def update_interval(
+        self,
+        *,
+        behavior: str,
+        old_start: int,
+        old_end: Optional[int],
+        new_start: int,
+        new_end: int,
+        subject: Optional[str] = None,
+        timestamp_provider: Optional[Callable[[int], Optional[float]]] = None,
+    ) -> None:
+        new_start = int(new_start)
+        new_end = int(new_end)
+        if new_end < new_start:
+            new_start, new_end = new_end, new_start
+        self.timeline.remove_event((int(old_start), behavior, "start"))
+        if old_end is not None:
+            self.timeline.remove_event((int(old_end), behavior, "end"))
+        start_time = timestamp_provider(new_start) if timestamp_provider else None
+        end_time = timestamp_provider(new_end) if timestamp_provider else None
+        self.timeline.record_event(
+            behavior,
+            "start",
+            new_start,
+            timestamp=start_time,
+            trial_time=start_time,
+            subject=subject,
+            rebuild=False,
+        )
+        self.timeline.record_event(
+            behavior,
+            "end",
+            new_end,
+            timestamp=end_time,
+            trial_time=end_time,
+            subject=subject,
+            rebuild=False,
+        )
+        self.timeline.flush_pending()
+        self.sync_marks()
+        self._persist_frames({old_start, old_end, new_start, new_end})
+        self._notify_listeners()
+
+    def delete_interval(
+        self,
+        *,
+        behavior: str,
+        start_frame: int,
+        end_frame: int,
+    ) -> None:
+        start_frame = int(start_frame)
+        end_frame = int(end_frame)
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        self.timeline.remove_event((start_frame, behavior, "start"))
+        self.timeline.remove_event((end_frame, behavior, "end"))
+        self.timeline.flush_pending()
+        self.sync_marks()
+        self._persist_frames({start_frame, end_frame})
+        self._notify_listeners()
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

@@ -22,7 +22,9 @@ class TrackingDataController:
     def tracking_dataframe(self) -> pd.DataFrame | None:
         return self._tracking_df
 
-    def load_tracking_results(self, cur_video_folder: Path, video_filename: str) -> None:
+    def load_tracking_results(
+        self, cur_video_folder: Path, video_filename: str
+    ) -> None:
         w = self._window
 
         w.behavior_controller.clear()
@@ -38,13 +40,11 @@ class TrackingDataController:
 
         if main_tracking_file.is_file():
             try:
-                logger.info("Loading main tracking data from: %s",
-                            main_tracking_file)
+                logger.info("Loading main tracking data from: %s", main_tracking_file)
                 df = pd.read_csv(main_tracking_file)
-                if 'frame_number' not in df.columns and 'Unnamed: 0' in df.columns:
-                    df.rename(
-                        columns={'Unnamed: 0': 'frame_number'}, inplace=True)
-                if 'frame_number' in df.columns:
+                if "frame_number" not in df.columns and "Unnamed: 0" in df.columns:
+                    df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
+                if "frame_number" in df.columns:
                     self._tracking_df = df
                     w._df = df
                 else:
@@ -54,7 +54,8 @@ class TrackingDataController:
                     )
             except Exception as exc:
                 logger.error(
-                    "Error loading main tracking file %s: %s", main_tracking_file, exc)
+                    "Error loading main tracking file %s: %s", main_tracking_file, exc
+                )
 
         def _discover_behavior_files(search_root: Path) -> list[Path]:
             candidates: list[Path] = []
@@ -74,7 +75,11 @@ class TrackingDataController:
         else:
             behavior_candidates.extend(_discover_behavior_files(cur_video_folder))
             results_dir = getattr(w, "video_results_folder", None)
-            if isinstance(results_dir, Path) and results_dir.exists() and results_dir != cur_video_folder:
+            if (
+                isinstance(results_dir, Path)
+                and results_dir.exists()
+                and results_dir != cur_video_folder
+            ):
                 behavior_candidates.extend(_discover_behavior_files(results_dir))
 
         seen_paths: set[Path] = set()
@@ -106,6 +111,28 @@ class TrackingDataController:
                 video_name,
                 f"{video_name}_timestamps.csv",
             )
+        if not loaded_behavior:
+            try:
+                w.behavior_controller.load_events_from_store()
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load behavior events from annotation store: %s", exc
+                )
+            else:
+                if w.behavior_controller.events_count:
+                    w.behavior_controller.attach_slider(w.seekbar)
+                    fps_for_log = w.fps if w.fps and w.fps > 0 else 29.97
+                    w.behavior_log_widget.set_events(
+                        list(w.behavior_controller.iter_events()),
+                        fps=fps_for_log,
+                    )
+                    w.pinned_flags.update(
+                        {
+                            behavior: False
+                            for behavior in w.behavior_controller.behavior_names
+                        }
+                    )
+                    loaded_behavior = True
 
         if labels_file_path.is_file():
             logger.info("Loading labels data from: %s", labels_file_path)

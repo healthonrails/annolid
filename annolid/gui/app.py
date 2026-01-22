@@ -108,7 +108,6 @@ from annolid.gui.widgets.realtime_manager import RealtimeManager
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
-import io
 
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.annotation import labelme2csv
@@ -137,9 +136,9 @@ from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.tracking.dino_kpseg_tracker import DinoKPSEGVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
+from annolid.gui.widgets.timeline_panel import TimelinePanel
 from annolid.gui.tensorboard import (
     ensure_tensorboard,
-    start_tensorboard,
     VisualizationWindow,
 )
 from annolid.utils.runs import find_latest_checkpoint, shared_runs_root
@@ -419,6 +418,44 @@ class AnnolidWindow(MainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_controls_dock)
         self.tabifyDockWidget(self.behavior_log_dock, self.behavior_controls_dock)
 
+        self.timeline_panel = TimelinePanel(self)
+        self.timeline_panel.frameSelected.connect(self._jump_to_frame_from_log)
+        self.timeline_panel.set_behavior_controller(
+            self.behavior_controller, color_getter=self._get_rgb_by_label
+        )
+        self.timeline_panel.set_timestamp_provider(self._estimate_recording_time)
+        self.timeline_panel.set_behavior_catalog(
+            provider=self._timeline_behavior_catalog,
+            adder=self._timeline_add_behavior,
+        )
+        try:
+            self.flag_widget.flagsSaved.connect(
+                self.timeline_panel.refresh_behavior_catalog
+            )
+            self.flag_widget.rowSelected.connect(
+                self.timeline_panel.set_active_behavior
+            )
+            self.flag_widget.rowSelected.connect(
+                lambda _name: self.timeline_panel.refresh_behavior_catalog()
+            )
+            self.flag_widget.flagToggled.connect(
+                lambda _name, _state: self.timeline_panel.refresh_behavior_catalog()
+            )
+        except Exception:
+            pass
+        self.timeline_dock = QtWidgets.QDockWidget("Timeline", self)
+        self.timeline_dock.setObjectName("timelineDock")
+        self.timeline_dock.setWidget(self.timeline_panel)
+        self.timeline_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.timeline_dock)
+        self._setup_timeline_view_toggle()
+        # Only show the timeline when a video is opened and the user enables it.
+        self._apply_timeline_dock_visibility(video_open=False)
+
         self.setCentralWidget(scrollArea)
 
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
@@ -427,7 +464,6 @@ class AnnolidWindow(MainWindow):
         # Restore application settings.
         self.recentFiles = self.settings.value("recentFiles", []) or []
         position = self.settings.value("window/position", QtCore.QPoint(0, 0))
-        state = self.settings.value("window/state", QtCore.QByteArray())
         self.move(position)
 
         self.video_results_folder = None
@@ -478,6 +514,103 @@ class AnnolidWindow(MainWindow):
         else:
             self.canvas.adjustSize()
         self.canvas.update()
+
+    def _timeline_user_enabled(self) -> bool:
+        """Return True if the user wants the timeline dock visible when a video is open."""
+        try:
+            return bool(self.settings.value("timeline/show_dock", False, type=bool))
+        except Exception:
+            return False
+
+    def _setup_timeline_view_toggle(self) -> None:
+        """Add a checkable View menu action for the timeline dock (off by default)."""
+        if getattr(self, "timeline_dock", None) is None:
+            return
+
+        self._toggle_timeline_action = QtWidgets.QAction("Timeline", self)
+        self._toggle_timeline_action.setCheckable(True)
+        self._toggle_timeline_action.setChecked(self._timeline_user_enabled())
+        self._toggle_timeline_action.setEnabled(False)
+        self._toggle_timeline_action.toggled.connect(self._on_toggle_timeline_requested)
+
+        view_menu = None
+        try:
+            view_menu = getattr(getattr(self, "menus", None), "view", None)
+        except Exception:
+            view_menu = None
+        if view_menu is None:
+            # Fallback: ensure a View menu exists.
+            view_menu = self.menuBar().addMenu(self.tr("&View"))
+
+        view_menu.addAction(self._toggle_timeline_action)
+
+        try:
+            self.timeline_dock.visibilityChanged.connect(
+                self._on_timeline_dock_visibility_changed
+            )
+        except Exception:
+            pass
+
+    def _apply_timeline_dock_visibility(self, *, video_open: bool) -> None:
+        """Apply timeline dock visibility based on video state and user preference."""
+        if getattr(self, "timeline_dock", None) is None:
+            return
+        action = getattr(self, "_toggle_timeline_action", None)
+        user_enabled = self._timeline_user_enabled()
+        should_show = bool(video_open and user_enabled)
+
+        if action is not None:
+            action.blockSignals(True)
+            try:
+                action.setChecked(user_enabled)
+                action.setEnabled(bool(video_open))
+            finally:
+                action.blockSignals(False)
+
+        blocker = QtCore.QSignalBlocker(self.timeline_dock)
+        try:
+            if should_show:
+                self.timeline_panel.setEnabled(True)
+                self.timeline_dock.show()
+                self.timeline_dock.raise_()
+            else:
+                self.timeline_panel.setEnabled(False)
+                self.timeline_dock.hide()
+        finally:
+            del blocker
+
+    def _on_toggle_timeline_requested(self, checked: bool) -> None:
+        try:
+            self.settings.setValue("timeline/show_dock", bool(checked))
+        except Exception:
+            pass
+        video_open = bool(
+            getattr(self, "video_loader", None) is not None
+            and getattr(self, "video_file", None)
+        )
+        self._apply_timeline_dock_visibility(video_open=video_open)
+        if checked and video_open and getattr(self, "timeline_panel", None) is not None:
+            try:
+                self.timeline_panel.refresh_behavior_catalog()
+            except Exception:
+                pass
+
+    def _on_timeline_dock_visibility_changed(self, visible: bool) -> None:
+        """Keep the View menu action in sync when the user closes/floats the dock."""
+        action = getattr(self, "_toggle_timeline_action", None)
+        if action is None or not action.isEnabled():
+            return
+        if action.isChecked() == bool(visible):
+            return
+        action.blockSignals(True)
+        try:
+            action.setChecked(bool(visible))
+        finally:
+            action.blockSignals(False)
+        try:
+            self.settings.setValue("timeline/show_dock", bool(visible))
+        except Exception:
+            pass
 
     @Slot()
     def _open_segment_editor_dialog(self):  # Largely the same
@@ -1382,6 +1515,7 @@ class AnnolidWindow(MainWindow):
                 self.statusBar().removeWidget(self.playButton)
             self.behavior_controller.attach_slider(None)
             self.seekbar = None
+        self.behavior_controller.attach_annotation_store(None)
         self._df = None
         self._df_deeplabcut = None
         self._df_deeplabcut_scorer = None
@@ -1401,6 +1535,11 @@ class AnnolidWindow(MainWindow):
         if getattr(self, "optical_flow_manager", None) is not None:
             self.optical_flow_manager.clear()
         self.frame_number = 0
+        if getattr(self, "timeline_panel", None) is not None:
+            self.timeline_panel.clear()
+            self.timeline_panel.set_time_range(0, 0)
+            self.timeline_panel.set_current_frame(0)
+        self._apply_timeline_dock_visibility(video_open=False)
         self.step_size = 5
         self.video_results_folder = None
         self.behavior_controller.clear()
@@ -1656,6 +1795,41 @@ class AnnolidWindow(MainWindow):
             return config["label_colors"][label]
         elif config.get("default_shape_color"):
             return config["default_shape_color"]
+
+    def _timeline_behavior_catalog(self) -> List[str]:
+        behaviors: set[str] = set()
+        schema = getattr(self, "project_schema", None)
+        if schema is not None:
+            try:
+                behaviors.update(schema.behavior_map().keys())
+            except Exception:
+                pass
+        try:
+            behaviors.update(getattr(self, "pinned_flags", {}).keys())
+        except Exception:
+            pass
+        try:
+            if getattr(self, "flag_widget", None) is not None:
+                behaviors.update(self.flag_widget._get_existing_flag_names().keys())
+        except Exception:
+            pass
+        try:
+            behaviors.update(
+                getattr(self, "behavior_controller", None).behavior_names or set()
+            )
+        except Exception:
+            pass
+        return sorted({b for b in behaviors if b})
+
+    def _timeline_add_behavior(self, name: str) -> None:
+        name = str(name).strip()
+        if not name:
+            return
+        try:
+            if getattr(self, "flag_widget", None) is not None:
+                self.flag_widget.add_row(name, False)
+        except Exception:
+            pass
 
     def _update_shape_color(self, shape):
         if not self.uniqLabelList.findItemByLabel(shape.label):
@@ -2788,7 +2962,7 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
 
-    def predict_is_ready(self, messege):
+    def predict_is_ready(self, message):
         self.stepSizeWidget.predict_button.setText("Pred")  # Change button text
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;"
@@ -2796,23 +2970,23 @@ class AnnolidWindow(MainWindow):
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
         try:
-            if isinstance(messege, Exception):
-                logger.exception("Prediction worker failed", exc_info=messege)
+            if isinstance(message, Exception):
+                logger.exception("Prediction worker failed", exc_info=message)
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Prediction failed",
-                    f"Prediction failed with error:\n{messege}",
+                    f"Prediction failed with error:\n{message}",
                 )
                 return
             message_text = ""
             stop_from_message = False
-            if isinstance(messege, tuple):
-                if messege:
-                    message_text = str(messege[0])
-                if len(messege) > 1 and isinstance(messege[1], bool):
-                    stop_from_message = messege[1]
-            elif messege is not None:
-                message_text = str(messege)
+            if isinstance(message, tuple):
+                if message:
+                    message_text = str(message[0])
+                if len(message) > 1 and isinstance(message[1], bool):
+                    stop_from_message = message[1]
+            elif message is not None:
+                message_text = str(message)
 
             if (
                 message_text.startswith("Stopped")
@@ -2981,7 +3155,7 @@ class AnnolidWindow(MainWindow):
         def format_shape(s):
             data = s.other_data.copy()
             if s.description and "zone" in s.description.lower():
-                has_zone_shapes = True
+                pass
             if len(s.points) <= 1:
                 s.shape_type = "point"
             data.update(
@@ -3571,7 +3745,7 @@ class AnnolidWindow(MainWindow):
             f"Done! Results are in folder: \
                                          {out_frames_dir}",
         )
-        self.statusBar().showMessage(self.tr(f"Finshed extracting frames."))
+        self.statusBar().showMessage(self.tr("Finished extracting frames."))
         self.importDirImages(out_frames_dir)
 
     def convert_json_to_tracked_csv(self):
@@ -3882,8 +4056,6 @@ class AnnolidWindow(MainWindow):
                 if all_frame_nums:
                     existing_frame_set.difference_update(all_frame_nums)
             existing_frame_nums = sorted(existing_frame_set)
-
-            num_total_frames = len(all_frame_nums)
 
             # --- 2. Dynamic Marker Decimation Logic ---
             # Define the threshold at which we start thinning the markers
@@ -4319,7 +4491,6 @@ class AnnolidWindow(MainWindow):
                 out_runs_dir = Path(out_dir) / Path(config_file).name / "runs"
 
             out_runs_dir.mkdir(exist_ok=True, parents=True)
-            process = start_tensorboard(log_dir=shared_runs_root())
             QtWidgets.QMessageBox.about(
                 self,
                 "Started",
@@ -4339,7 +4510,6 @@ class AnnolidWindow(MainWindow):
                 model_pth_path=model_path,
             )
             out_runs_dir = segmentor.out_put_dir
-            process = start_tensorboard(log_dir=shared_runs_root())
             try:
                 self.seg_train_thread.start()
                 train_worker = FlexibleWorker(task_function=segmentor.train)
@@ -4357,7 +4527,7 @@ class AnnolidWindow(MainWindow):
                                          {str(out_runs_dir)} \
                                          Please do not close Annolid GUI.",
             )
-            self.statusBar().showMessage(self.tr(f"Training..."))
+            self.statusBar().showMessage(self.tr("Training..."))
 
     def handle_uniq_label_list_selection_change(self):
         selected_items = self.uniqLabelList.selectedItems()
@@ -4370,8 +4540,9 @@ class AnnolidWindow(MainWindow):
 
     def _estimate_recording_time(self, frame_number: int) -> Optional[float]:
         """Approximate the recording timestamp (seconds) for a frame."""
-        if self.fps and self.fps > 0:
-            return frame_number / float(self.fps)
+        fps = getattr(self, "fps", None)
+        if fps and fps > 0:
+            return frame_number / float(fps)
         # Fallback to NTSC-like default if FPS is not known
         return frame_number / 29.97 if frame_number is not None else None
 
@@ -5062,6 +5233,8 @@ class AnnolidWindow(MainWindow):
         if frame_number >= self.num_frames or frame_number < 0:
             return
         self.frame_number = frame_number
+        if getattr(self, "timeline_panel", None) is not None:
+            self.timeline_panel.set_current_frame(frame_number)
         self._update_audio_playhead(frame_number)
         if self.isPlaying and not self._suppress_audio_seek:
             audio_loader = self._active_audio_loader()
@@ -5713,6 +5886,9 @@ class AnnolidWindow(MainWindow):
             self.video_results_folder.mkdir(exist_ok=True, parents=True)
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
+            self.behavior_controller.attach_annotation_store_for_video(
+                self.video_results_folder
+            )
             if getattr(self, "depth_manager", None) is not None:
                 self.depth_manager.load_depth_ndjson_records()
             if getattr(self, "optical_flow_manager", None) is not None:
@@ -5730,7 +5906,7 @@ class AnnolidWindow(MainWindow):
                 QtWidgets.QMessageBox.about(
                     self,
                     "Not a valid media file",
-                    f"Please check and open a valid video or TIFF stack file.",
+                    "Please check and open a valid video or TIFF stack file.",
                 )
                 self.video_file = None
                 self.video_loader = None
@@ -5740,6 +5916,10 @@ class AnnolidWindow(MainWindow):
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
             self.behavior_log_widget.set_fps(self.fps)
+            if self.timeline_panel is not None:
+                self.timeline_panel.set_time_range(0, self.num_frames - 1)
+                self.timeline_panel.refresh_behavior_catalog()
+            self._apply_timeline_dock_visibility(video_open=True)
             if self.caption_widget is not None:
                 self.caption_widget.set_video_context(
                     video_filename,
@@ -5935,7 +6115,7 @@ class AnnolidWindow(MainWindow):
             )
         # Refresh behavior and flag states for the newly loaded frame.
         self._refresh_behavior_overlay()
-        # set brightness constrast values
+        # set brightness contrast values
         # dialog = BrightnessContrastDialog(
         #     imageData,
         #     self.onNewBrightnessContrast,
@@ -6157,10 +6337,8 @@ class AnnolidWindow(MainWindow):
         # Decide on fallback only for raster volumes; point clouds require VTK
         try:
             suffix = Path(tiff_path).suffix.lower() if tiff_path else ""
-            name_lower = Path(tiff_path).name.lower() if tiff_path else ""
         except Exception:
             suffix = ""
-            name_lower = ""
 
         point_cloud_suffixes = {".ply", ".csv", ".xyz"}
         mesh_suffixes = {".stl", ".obj"}
@@ -6174,9 +6352,6 @@ class AnnolidWindow(MainWindow):
                 except Exception:
                     import vtk  # noqa: F401
                 # Also ensure Qt interactor exists
-                from vtkmodules.qt.QVTKRenderWindowInteractor import (
-                    QVTKRenderWindowInteractor,
-                )  # noqa: F401
 
                 return True, None
             except Exception as exc:
@@ -6858,7 +7033,7 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.about(
                 self,
                 "No input file or directory",
-                f"Please check and open the  \
+                "Please check and open the  \
                                         files or directories.",
             )
             return
@@ -6899,7 +7074,7 @@ class AnnolidWindow(MainWindow):
                 self.output_dir.parent,
                 self.output_dir.stem,
             )
-        except:
+        except Exception:
             print("Failed to create the zip file")
 
     def visualization(self):
@@ -6965,7 +7140,7 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.about(
                 self,
                 "No input video or tracking results",
-                f"Please check and open the  \
+                "Please check and open the  \
                                         files.",
             )
             return
@@ -7058,7 +7233,6 @@ class AnnolidWindow(MainWindow):
         motion_threshold = None
         pretrained_model = None
         subject_names = None
-        behaviors = None
 
         g_dialog = Glitter2Dialog()
         if g_dialog.exec_():
@@ -7078,7 +7252,7 @@ class AnnolidWindow(MainWindow):
             QtWidgets.QMessageBox.about(
                 self,
                 "No input video or tracking results",
-                f"Please check and open the  \
+                "Please check and open the  \
                                         files.",
             )
             return
