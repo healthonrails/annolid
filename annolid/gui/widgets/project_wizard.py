@@ -9,19 +9,20 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
 from annolid.behavior.project_schema import (
     BehaviorDefinition,
-    CategoryDefinition,
-    ModifierDefinition,
     ProjectSchema,
     SubjectDefinition,
-    default_schema,
-    save_schema as save_project_schema,
+)
+from annolid.core.behavior.spec import (
+    default_behavior_spec,
+    load_behavior_spec,
+    save_behavior_spec,
 )
 from annolid.annotation.pose_schema import PoseSchema
 
@@ -117,9 +118,7 @@ class VideoImportPage(QtWidgets.QWizardPage):
 
         # Video list
         self.video_list = QtWidgets.QListWidget()
-        self.video_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.ExtendedSelection
-        )
+        self.video_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.video_list.setMinimumHeight(200)
         layout.addWidget(self.video_list)
 
@@ -176,10 +175,7 @@ class VideoImportPage(QtWidgets.QWizardPage):
         return False
 
     def get_videos(self) -> List[str]:
-        return [
-            self.video_list.item(i).text()
-            for i in range(self.video_list.count())
-        ]
+        return [self.video_list.item(i).text() for i in range(self.video_list.count())]
 
 
 class SubjectBehaviorPage(QtWidgets.QWizardPage):
@@ -193,7 +189,7 @@ class SubjectBehaviorPage(QtWidgets.QWizardPage):
             "behaviors you want to annotate. You can add more details later."
         )
 
-        self._schema = default_schema()
+        self._schema = default_behavior_spec()
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -208,8 +204,7 @@ class SubjectBehaviorPage(QtWidgets.QWizardPage):
         subjects_layout.addWidget(subjects_label)
 
         self.subjects_list = QtWidgets.QListWidget()
-        self.subjects_list.setDragDropMode(
-            QtWidgets.QAbstractItemView.InternalMove)
+        self.subjects_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         subjects_layout.addWidget(self.subjects_list, 1)
 
         subjects_btn_layout = QtWidgets.QHBoxLayout()
@@ -237,8 +232,7 @@ class SubjectBehaviorPage(QtWidgets.QWizardPage):
         behaviors_layout.addWidget(behaviors_label)
 
         self.behaviors_list = QtWidgets.QListWidget()
-        self.behaviors_list.setDragDropMode(
-            QtWidgets.QAbstractItemView.InternalMove)
+        self.behaviors_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         behaviors_layout.addWidget(self.behaviors_list, 1)
 
         behaviors_btn_layout = QtWidgets.QHBoxLayout()
@@ -316,8 +310,6 @@ class SubjectBehaviorPage(QtWidgets.QWizardPage):
             self.behaviors_list.takeItem(self.behaviors_list.row(item))
 
     def _import_schema(self) -> None:
-        from annolid.behavior.project_schema import load_schema as load_project_schema
-
         path_str, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Import Project Schema",
@@ -327,7 +319,7 @@ class SubjectBehaviorPage(QtWidgets.QWizardPage):
         if not path_str:
             return
         try:
-            schema = load_project_schema(Path(path_str))
+            schema, _ = load_behavior_spec(path=Path(path_str))
             self._schema = schema
             self._populate_from_schema()
         except Exception as exc:
@@ -346,7 +338,7 @@ class SubjectBehaviorPage(QtWidgets.QWizardPage):
             return
         schema = self.get_schema()
         try:
-            save_project_schema(schema, Path(path_str))
+            save_behavior_spec(schema, Path(path_str))
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self, "Export Failed", f"Unable to export schema:\n{exc}"
@@ -420,14 +412,16 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         preset_layout = QtWidgets.QHBoxLayout()
         preset_layout.addWidget(QtWidgets.QLabel("Preset:"))
         self.preset_combo = QtWidgets.QComboBox()
-        self.preset_combo.addItems([
-            "Custom",
-            "Mouse (9 keypoints)",
-            "Mouse (11 keypoints)",
-            "Fly (5 keypoints)",
-            "Fish (5 keypoints)",
-            "Human COCO (17 keypoints)",
-        ])
+        self.preset_combo.addItems(
+            [
+                "Custom",
+                "Mouse (9 keypoints)",
+                "Mouse (11 keypoints)",
+                "Fly (5 keypoints)",
+                "Fish (5 keypoints)",
+                "Human COCO (17 keypoints)",
+            ]
+        )
         self.preset_combo.currentTextChanged.connect(self._apply_preset)
         preset_layout.addWidget(self.preset_combo)
         preset_layout.addStretch()
@@ -440,8 +434,7 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         kp_widget = QtWidgets.QWidget()
         kp_layout = QtWidgets.QVBoxLayout(kp_widget)
         kp_layout.setContentsMargins(0, 0, 0, 0)
-        kp_layout.addWidget(QtWidgets.QLabel(
-            "<b>Keypoints</b> (order matters)"))
+        kp_layout.addWidget(QtWidgets.QLabel("<b>Keypoints</b> (order matters)"))
 
         self.kp_list = QtWidgets.QListWidget()
         self.kp_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
@@ -524,25 +517,61 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
     def _apply_preset(self, preset: str) -> None:
         presets = {
             "Mouse (9 keypoints)": [
-                "nose", "left_ear", "right_ear", "left_forepaw", "right_forepaw",
-                "left_hindpaw", "right_hindpaw", "tail_base", "tail_tip"
+                "nose",
+                "left_ear",
+                "right_ear",
+                "left_forepaw",
+                "right_forepaw",
+                "left_hindpaw",
+                "right_hindpaw",
+                "tail_base",
+                "tail_tip",
             ],
             "Mouse (11 keypoints)": [
-                "nose", "left_ear", "right_ear", "neck", "left_forepaw",
-                "right_forepaw", "spine", "left_hindpaw", "right_hindpaw",
-                "tail_base", "tail_tip"
+                "nose",
+                "left_ear",
+                "right_ear",
+                "neck",
+                "left_forepaw",
+                "right_forepaw",
+                "spine",
+                "left_hindpaw",
+                "right_hindpaw",
+                "tail_base",
+                "tail_tip",
             ],
             "Fly (5 keypoints)": [
-                "head", "thorax", "abdomen", "left_wing", "right_wing"
+                "head",
+                "thorax",
+                "abdomen",
+                "left_wing",
+                "right_wing",
             ],
             "Fish (5 keypoints)": [
-                "head", "dorsal_fin", "tail", "left_pectoral", "right_pectoral"
+                "head",
+                "dorsal_fin",
+                "tail",
+                "left_pectoral",
+                "right_pectoral",
             ],
             "Human COCO (17 keypoints)": [
-                "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-                "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-                "left_wrist", "right_wrist", "left_hip", "right_hip",
-                "left_knee", "right_knee", "left_ankle", "right_ankle"
+                "nose",
+                "left_eye",
+                "right_eye",
+                "left_ear",
+                "right_ear",
+                "left_shoulder",
+                "right_shoulder",
+                "left_elbow",
+                "right_elbow",
+                "left_wrist",
+                "right_wrist",
+                "left_hip",
+                "right_hip",
+                "left_knee",
+                "right_knee",
+                "left_ankle",
+                "right_ankle",
             ],
         }
 
@@ -560,8 +589,9 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         name = self.kp_add_edit.text().strip()
         if not name:
             return
-        existing = {self.kp_list.item(i).text().lower()
-                    for i in range(self.kp_list.count())}
+        existing = {
+            self.kp_list.item(i).text().lower() for i in range(self.kp_list.count())
+        }
         if name.lower() in existing:
             self.kp_add_edit.clear()
             return
@@ -715,7 +745,7 @@ class SummaryPage(QtWidgets.QWizardPage):
 
         # Project info
         project_path = wizard.project_info_page.project_path()
-        html_parts.append(f"<h3>📁 Project</h3>")
+        html_parts.append("<h3>📁 Project</h3>")
         html_parts.append(f"<p><b>Name:</b> {project_path.name}</p>")
         html_parts.append(f"<p><b>Location:</b> {project_path.parent}</p>")
 
@@ -727,12 +757,10 @@ class SummaryPage(QtWidgets.QWizardPage):
             for v in videos[:5]:
                 html_parts.append(f"<li>{Path(v).name}</li>")
             if len(videos) > 5:
-                html_parts.append(
-                    f"<li><i>...and {len(videos) - 5} more</i></li>")
+                html_parts.append(f"<li><i>...and {len(videos) - 5} more</i></li>")
             html_parts.append("</ul>")
         else:
-            html_parts.append(
-                "<p><i>No videos imported (can add later)</i></p>")
+            html_parts.append("<p><i>No videos imported (can add later)</i></p>")
 
         # Schema
         schema = wizard.subject_behavior_page.get_schema()
@@ -754,7 +782,8 @@ class SummaryPage(QtWidgets.QWizardPage):
         if wizard.pose_schema_page.is_pose_enabled():
             pose = wizard.pose_schema_page.get_pose_schema()
             html_parts.append(
-                f"<h3>📍 Pose Schema ({len(pose.keypoints)} keypoints)</h3>")
+                f"<h3>📍 Pose Schema ({len(pose.keypoints)} keypoints)</h3>"
+            )
             if pose.keypoints:
                 kps = ", ".join(pose.keypoints[:8])
                 if len(pose.keypoints) > 8:
@@ -774,8 +803,7 @@ class ProjectWizard(QtWidgets.QWizard):
     """Main project setup wizard combining all pages."""
 
     # Signal emitted when project is created successfully
-    project_created = QtCore.Signal(
-        Path, ProjectSchema, list)  # path, schema, videos
+    project_created = QtCore.Signal(Path, ProjectSchema, list)  # path, schema, videos
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -804,7 +832,6 @@ class ProjectWizard(QtWidgets.QWizard):
 
         # Set window icon if available
         try:
-            from annolid.gui.app import AnnolidWindow
             icon_path = Path(__file__).parent.parent / "icons" / "icon.png"
             if icon_path.exists():
                 self.setWindowIcon(QtGui.QIcon(str(icon_path)))
@@ -829,7 +856,7 @@ class ProjectWizard(QtWidgets.QWizard):
 
             # Save project schema
             schema_path = project_path / "project.annolid.json"
-            save_project_schema(schema, schema_path)
+            save_behavior_spec(schema, schema_path)
 
             # Copy/link videos (optional - just track paths for now)
             videos = self.video_import_page.get_videos()

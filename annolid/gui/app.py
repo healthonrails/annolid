@@ -56,14 +56,13 @@ from annolid.gui.label_file import LabelFile
 from annolid.gui.widgets.canvas import Canvas
 from annolid.annotation import labelme2coco
 from annolid.data import videos
-from annolid.behavior.project_schema import (
+from annolid.core.behavior.spec import (
     DEFAULT_SCHEMA_FILENAME,
     ProjectSchema,
-    default_schema,
-    find_schema_near_video,
-    save_schema as save_project_schema,
-    load_schema as load_project_schema,
-    validate_schema as validate_project_schema,
+    default_behavior_spec,
+    load_behavior_spec,
+    save_behavior_spec,
+    validate_behavior_spec,
 )
 from annolid.behavior.time_budget import (
     compute_time_budget,
@@ -1024,7 +1023,7 @@ class AnnolidWindow(MainWindow):
         self, schema: PoseSchema, schema_path: str
     ) -> None:
         """Store pose schema metadata inside `project.annolid.json` by default."""
-        project_schema = self.project_schema or default_schema()
+        project_schema = self.project_schema or default_behavior_spec()
         project_path = self.project_schema_path
         if project_path is None:
             if self.video_file:
@@ -1049,7 +1048,7 @@ class AnnolidWindow(MainWindow):
 
             project_schema.pose_schema_path = stored_path
             project_schema.pose_schema = schema.to_dict()
-            save_project_schema(project_schema, project_path)
+            save_behavior_spec(project_schema, project_path)
             self.project_schema = project_schema
             self.project_schema_path = project_path
         except Exception:
@@ -5354,27 +5353,20 @@ class AnnolidWindow(MainWindow):
 
     def _configure_project_schema_for_video(self, video_path: str) -> None:
         """Load optional project schema metadata located near the video."""
-        schema_path = find_schema_near_video(Path(video_path))
-        schema: Optional[ProjectSchema] = None
-        if schema_path:
-            try:
-                schema = load_project_schema(schema_path)
-                warnings = validate_project_schema(schema)
-                for warning in warnings:
-                    logger.warning("Schema warning (%s): %s", schema_path.name, warning)
-            except Exception as exc:
-                logger.error("Failed to load project schema %s: %s", schema_path, exc)
-        if schema_path:
+        schema, schema_path = load_behavior_spec(video_path=Path(video_path))
+        if schema_path is not None:
+            for warning in validate_behavior_spec(schema):
+                logger.warning("Schema warning (%s): %s", schema_path.name, warning)
             self.project_schema_path = schema_path
         else:
-            default_path = Path(video_path).with_suffix("") / DEFAULT_SCHEMA_FILENAME
-            self.project_schema_path = default_path
-        if schema is None:
+            self.project_schema_path = (
+                Path(video_path).with_suffix("") / DEFAULT_SCHEMA_FILENAME
+            )
             logger.debug(
                 "No project schema found near %s; using default configuration.",
                 video_path,
             )
-            schema = default_schema()
+            schema = default_behavior_spec()
         self.project_schema = schema
         self.behavior_controller.configure_from_schema(schema)
         self._populate_behavior_controls_from_schema(schema)
@@ -5591,7 +5583,7 @@ class AnnolidWindow(MainWindow):
 
     def open_project_schema_dialog(self) -> None:
         """Open the schema editor dialog and persist changes."""
-        schema = self.project_schema or default_schema()
+        schema = self.project_schema or default_behavior_spec()
         dialog = ProjectDialog(schema, parent=self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             new_schema = dialog.get_schema()
@@ -5620,7 +5612,7 @@ class AnnolidWindow(MainWindow):
                 target_path = Path(path_str)
             try:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                save_project_schema(new_schema, target_path)
+                save_behavior_spec(new_schema, target_path)
                 self.project_schema_path = target_path
             except OSError as exc:
                 QtWidgets.QMessageBox.critical(

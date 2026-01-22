@@ -18,7 +18,7 @@ import math
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from annolid.behavior.event_utils import normalize_event_label
-from annolid.behavior.project_schema import ProjectSchema, load_schema as load_project_schema
+from annolid.core.behavior.spec import ProjectSchema, load_behavior_spec
 
 __all__ = [
     "BehaviorInterval",
@@ -101,13 +101,17 @@ def _read_event_rows(path: Path) -> List[Dict[str, str]]:
         reader = csv.DictReader(handle)
         rows: List[Dict[str, str]] = []
         for row in reader:
-            cleaned = {key.strip().lower(): (val.strip() if isinstance(
-                val, str) else val) for key, val in row.items()}
+            cleaned = {
+                key.strip().lower(): (val.strip() if isinstance(val, str) else val)
+                for key, val in row.items()
+            }
             rows.append(cleaned)
     return rows
 
 
-def extract_behavior_intervals(rows: Iterable[Dict[str, object]]) -> Tuple[List[BehaviorInterval], List[str]]:
+def extract_behavior_intervals(
+    rows: Iterable[Dict[str, object]],
+) -> Tuple[List[BehaviorInterval], List[str]]:
     """Convert exported rows into balanced behavior intervals."""
 
     intervals: List[BehaviorInterval] = []
@@ -117,8 +121,10 @@ def extract_behavior_intervals(rows: Iterable[Dict[str, object]]) -> Tuple[List[
 
     sorted_rows = sorted(
         rows,
-        key=lambda r: (_safe_float(r.get("recording time"))
-                       or 0.0, str(r.get("event") or "")),
+        key=lambda r: (
+            _safe_float(r.get("recording time")) or 0.0,
+            str(r.get("event") or ""),
+        ),
     )
 
     for row in sorted_rows:
@@ -194,8 +200,9 @@ def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudge
         if not durations:
             continue
         total_duration = sum(durations)
-        percent = (total_duration / session_duration *
-                   100.0) if session_duration > 0 else 0.0
+        percent = (
+            (total_duration / session_duration * 100.0) if session_duration > 0 else 0.0
+        )
         summary.append(
             TimeBudgetRow(
                 subject=subject,
@@ -213,14 +220,18 @@ def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudge
     return summary
 
 
-def compute_time_budget(rows: Iterable[Dict[str, object]]) -> Tuple[List[TimeBudgetRow], List[str]]:
+def compute_time_budget(
+    rows: Iterable[Dict[str, object]],
+) -> Tuple[List[TimeBudgetRow], List[str]]:
     """Compute aggregated time-budget metrics from raw event rows."""
     intervals, warnings = extract_behavior_intervals(rows)
     summary = summarize_intervals(intervals)
     return summary, warnings
 
 
-def summarize_by_category(rows: Iterable[TimeBudgetRow], schema: ProjectSchema) -> List[Tuple[str, float, int]]:
+def summarize_by_category(
+    rows: Iterable[TimeBudgetRow], schema: ProjectSchema
+) -> List[Tuple[str, float, int]]:
     """Aggregate time-budget rows by category using the provided schema."""
     category_map = schema.category_map()
     behavior_map = schema.behavior_map()
@@ -232,7 +243,10 @@ def summarize_by_category(rows: Iterable[TimeBudgetRow], schema: ProjectSchema) 
         if category_id is None:
             category_id = "uncategorized"
         total_duration, occurrences = totals.get(category_id, (0.0, 0))
-        totals[category_id] = (total_duration + row.total_duration, occurrences + row.occurrences)
+        totals[category_id] = (
+            total_duration + row.total_duration,
+            occurrences + row.occurrences,
+        )
 
     summary: List[Tuple[str, float, int]] = []
     for category_id, (total_duration, occurrences) in totals.items():
@@ -246,7 +260,9 @@ def summarize_by_category(rows: Iterable[TimeBudgetRow], schema: ProjectSchema) 
     return summary
 
 
-def compute_binned_time_budget(intervals: Iterable[BehaviorInterval], bin_size: float) -> List[BinnedTimeBudgetRow]:
+def compute_binned_time_budget(
+    intervals: Iterable[BehaviorInterval], bin_size: float
+) -> List[BinnedTimeBudgetRow]:
     """Compute per-bin durations for each subject/behavior."""
 
     if bin_size <= 0:
@@ -265,8 +281,7 @@ def compute_binned_time_budget(intervals: Iterable[BehaviorInterval], bin_size: 
     bin_totals: Dict[Tuple[str, str, float, float], float] = defaultdict(float)
 
     for interval in interval_list:
-        start_idx = max(
-            0, int(math.floor((interval.start - session_start) / bin_size)))
+        start_idx = max(0, int(math.floor((interval.start - session_start) / bin_size)))
         end_idx = max(
             0,
             int(math.floor((interval.end - session_start - epsilon) / bin_size)),
@@ -296,7 +311,9 @@ def compute_binned_time_budget(intervals: Iterable[BehaviorInterval], bin_size: 
     return rows
 
 
-def format_time_budget_table(rows: Sequence[TimeBudgetRow], schema: Optional[ProjectSchema] = None) -> str:
+def format_time_budget_table(
+    rows: Sequence[TimeBudgetRow], schema: Optional[ProjectSchema] = None
+) -> str:
     if not rows:
         return "No completed behavior intervals were found."
 
@@ -348,7 +365,9 @@ def format_time_budget_table(rows: Sequence[TimeBudgetRow], schema: Optional[Pro
             col_widths[idx] = max(col_widths[idx], len(value))
 
     def fmt_row(values: Sequence[str]) -> str:
-        return "  ".join(value.ljust(col_widths[idx]) for idx, value in enumerate(values))
+        return "  ".join(
+            value.ljust(col_widths[idx]) for idx, value in enumerate(values)
+        )
 
     lines = [fmt_row(headers), fmt_row(["-" * len(h) for h in headers])]
     lines.extend(fmt_row(r) for r in str_rows)
@@ -382,7 +401,9 @@ def format_binned_time_budget_table(rows: Sequence[BinnedTimeBudgetRow]) -> str:
             col_widths[idx] = max(col_widths[idx], len(value))
 
     def fmt_row(values: Sequence[str]) -> str:
-        return "  ".join(value.ljust(col_widths[idx]) for idx, value in enumerate(values))
+        return "  ".join(
+            value.ljust(col_widths[idx]) for idx, value in enumerate(values)
+        )
 
     lines = [fmt_row(headers), fmt_row(["-" * len(h) for h in headers])]
     lines.extend(fmt_row(r) for r in str_rows)
@@ -394,8 +415,7 @@ def format_category_summary(rows: Sequence[Tuple[str, float, int]]) -> str:
         return "No category assignments were found."
     headers = ["Category", "Total (s)", "Occurrences"]
     str_rows = [
-        [name, f"{total:.2f}", str(occurrences)]
-        for name, total, occurrences in rows
+        [name, f"{total:.2f}", str(occurrences)] for name, total, occurrences in rows
     ]
     col_widths = [len(header) for header in headers]
     for r in str_rows:
@@ -403,14 +423,18 @@ def format_category_summary(rows: Sequence[Tuple[str, float, int]]) -> str:
             col_widths[idx] = max(col_widths[idx], len(value))
 
     def fmt_row(values: Sequence[str]) -> str:
-        return "  ".join(value.ljust(col_widths[idx]) for idx, value in enumerate(values))
+        return "  ".join(
+            value.ljust(col_widths[idx]) for idx, value in enumerate(values)
+        )
 
     lines = [fmt_row(headers), fmt_row(["-" * len(h) for h in headers])]
     lines.extend(fmt_row(r) for r in str_rows)
     return "\n".join(lines)
 
 
-def write_time_budget_csv(rows: Sequence[TimeBudgetRow], path: Path, schema: Optional[ProjectSchema] = None) -> None:
+def write_time_budget_csv(
+    rows: Sequence[TimeBudgetRow], path: Path, schema: Optional[ProjectSchema] = None
+) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         headers = [
@@ -496,8 +520,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rows = _read_event_rows(args.events_csv)
         intervals, warnings = extract_behavior_intervals(rows)
     except OSError as exc:
-        raise TimeBudgetComputationError(
-            f"Failed to read events file: {exc}") from exc
+        raise TimeBudgetComputationError(f"Failed to read events file: {exc}") from exc
 
     schema: Optional[ProjectSchema] = None
     if args.schema is not None:
@@ -505,7 +528,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error(f"Schema file not found: {args.schema}")
             return 2
         try:
-            schema = load_project_schema(args.schema)
+            schema, _ = load_behavior_spec(path=args.schema)
         except Exception as exc:
             parser.error(f"Failed to load schema {args.schema}: {exc}")
             return 2

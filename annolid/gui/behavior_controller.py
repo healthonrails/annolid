@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Un
 
 from qtpy import QtGui
 
-from annolid.behavior.project_schema import ProjectSchema
+from annolid.core.behavior.spec import ProjectSchema
 from annolid.behavior.event_utils import normalize_event_label
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.utils.annotation_store import AnnotationStore

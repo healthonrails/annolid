@@ -14,10 +14,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
 from annolid.annotation.labelme2yolo import Labelme2YOLO
-from annolid.behavior.project_schema import (
-    ProjectSchema,
-    load_schema as load_project_schema,
-)
+from annolid.core.behavior.spec import ProjectSchema, load_behavior_spec
 from annolid.utils.logger import logger
 
 
@@ -38,8 +35,7 @@ def build_pose_behavior_dataset(
     """Create a YOLO dataset from LabelMe annotations with schema integration."""
     source_dir = Path(source_dir).resolve()
     if not source_dir.exists():
-        raise FileNotFoundError(
-            f"Annotation directory not found: {source_dir}")
+        raise FileNotFoundError(f"Annotation directory not found: {source_dir}")
 
     resolved_schema, schema_location = _resolve_schema(schema_path, source_dir)
     converter = Labelme2YOLO(
@@ -87,13 +83,13 @@ def _resolve_schema(
         schema_path = Path(schema_path)
         if not schema_path.exists():
             raise FileNotFoundError(f"Schema file not found: {schema_path}")
-        return load_project_schema(schema_path), schema_path
+        schema, _ = load_behavior_spec(path=schema_path)
+        return schema, schema_path
 
-    candidate = Labelme2YOLO._discover_schema_path(
-        source_dir)  # type: ignore[attr-defined]
+    candidate = Labelme2YOLO._discover_schema_path(source_dir)  # type: ignore[attr-defined]
     if candidate:
         try:
-            schema = load_project_schema(candidate)
+            schema, _ = load_behavior_spec(path=candidate)
         except Exception as exc:
             logger.warning("Failed to load schema at %s: %s", candidate, exc)
             return None, None
@@ -105,7 +101,9 @@ def _load_class_map(class_map_path: Path):
     return Labelme2YOLO.load_class_map_file(str(class_map_path))
 
 
-def _summarize_dataset(dataset_root: Path, schema: Optional[ProjectSchema]) -> Dict[str, object]:
+def _summarize_dataset(
+    dataset_root: Path, schema: Optional[ProjectSchema]
+) -> Dict[str, object]:
     summary: Dict[str, object] = {
         "dataset_root": str(dataset_root),
         "splits": {},
@@ -135,8 +133,7 @@ def _summarize_dataset(dataset_root: Path, schema: Optional[ProjectSchema]) -> D
                 try:
                     data = json.loads(subj_file.read_text(encoding="utf-8"))
                 except json.JSONDecodeError:
-                    logger.warning(
-                        "Failed to parse subject metadata: %s", subj_file)
+                    logger.warning("Failed to parse subject metadata: %s", subj_file)
                 else:
                     subject_counts.update(
                         entry["subject_id"]
@@ -150,8 +147,7 @@ def _summarize_dataset(dataset_root: Path, schema: Optional[ProjectSchema]) -> D
         for class_id, count in sorted(class_counts.items())
     }
     if schema:
-        subject_name_map = {
-            subj.id: subj.name or subj.id for subj in schema.subjects}
+        subject_name_map = {subj.id: subj.name or subj.id for subj in schema.subjects}
     else:
         subject_name_map = defaultdict(lambda: None)  # type: ignore
     summary["subject_counts"] = {

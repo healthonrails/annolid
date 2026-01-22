@@ -4,7 +4,7 @@ import copy
 from pathlib import Path
 from typing import List, Optional
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtWidgets
 
 from annolid.behavior.project_schema import (
     BehaviorDefinition,
@@ -12,9 +12,8 @@ from annolid.behavior.project_schema import (
     ModifierDefinition,
     ProjectSchema,
     SubjectDefinition,
-    load_schema as load_project_schema,
-    save_schema as save_project_schema,
 )
+from annolid.core.behavior.spec import load_behavior_spec, save_behavior_spec
 
 
 class ProjectDialog(QtWidgets.QDialog):
@@ -87,9 +86,7 @@ class ProjectDialog(QtWidgets.QDialog):
         )
         buttons.addWidget(add_btn)
         remove_btn = QtWidgets.QPushButton("Remove Selected")
-        remove_btn.clicked.connect(
-            lambda: self._remove_selected(self.categories_table)
-        )
+        remove_btn.clicked.connect(lambda: self._remove_selected(self.categories_table))
         buttons.addWidget(remove_btn)
         buttons.addStretch(1)
 
@@ -100,8 +97,7 @@ class ProjectDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(tab)
 
         self.modifiers_table = QtWidgets.QTableWidget(0, 3)
-        self.modifiers_table.setHorizontalHeaderLabels(
-            ["ID", "Name", "Description"])
+        self.modifiers_table.setHorizontalHeaderLabels(["ID", "Name", "Description"])
         self.modifiers_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.modifiers_table)
 
@@ -113,9 +109,7 @@ class ProjectDialog(QtWidgets.QDialog):
         )
         buttons.addWidget(add_btn)
         remove_btn = QtWidgets.QPushButton("Remove Selected")
-        remove_btn.clicked.connect(
-            lambda: self._remove_selected(self.modifiers_table)
-        )
+        remove_btn.clicked.connect(lambda: self._remove_selected(self.modifiers_table))
         buttons.addWidget(remove_btn)
         buttons.addStretch(1)
 
@@ -126,8 +120,7 @@ class ProjectDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(tab)
 
         self.subjects_table = QtWidgets.QTableWidget(0, 3)
-        self.subjects_table.setHorizontalHeaderLabels(
-            ["ID", "Name", "Description"])
+        self.subjects_table.setHorizontalHeaderLabels(["ID", "Name", "Description"])
         self.subjects_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.subjects_table)
 
@@ -139,9 +132,7 @@ class ProjectDialog(QtWidgets.QDialog):
         )
         buttons.addWidget(add_btn)
         remove_btn = QtWidgets.QPushButton("Remove Selected")
-        remove_btn.clicked.connect(
-            lambda: self._remove_selected(self.subjects_table)
-        )
+        remove_btn.clicked.connect(lambda: self._remove_selected(self.subjects_table))
         buttons.addWidget(remove_btn)
         buttons.addStretch(1)
 
@@ -179,9 +170,7 @@ class ProjectDialog(QtWidgets.QDialog):
         )
         buttons.addWidget(add_btn)
         remove_btn = QtWidgets.QPushButton("Remove Selected")
-        remove_btn.clicked.connect(
-            lambda: self._remove_selected(self.behaviors_table)
-        )
+        remove_btn.clicked.connect(lambda: self._remove_selected(self.behaviors_table))
         buttons.addWidget(remove_btn)
         buttons.addStretch(1)
 
@@ -197,8 +186,7 @@ class ProjectDialog(QtWidgets.QDialog):
             table.setItem(row, col, QtWidgets.QTableWidgetItem(value))
 
     def _remove_selected(self, table: QtWidgets.QTableWidget) -> None:
-        rows = sorted({index.row()
-                      for index in table.selectedIndexes()}, reverse=True)
+        rows = sorted({index.row() for index in table.selectedIndexes()}, reverse=True)
         for row in rows:
             table.removeRow(row)
 
@@ -264,8 +252,7 @@ class ProjectDialog(QtWidgets.QDialog):
     def _collect_schema(self) -> ProjectSchema:
         def values(table: QtWidgets.QTableWidget, row: int) -> List[str]:
             return [
-                (table.item(row, col).text().strip()
-                 if table.item(row, col) else "")
+                (table.item(row, col).text().strip() if table.item(row, col) else "")
                 for col in range(table.columnCount())
             ]
 
@@ -320,9 +307,7 @@ class ProjectDialog(QtWidgets.QDialog):
             if not code:
                 continue
             modifiers_list = [
-                item.strip()
-                for item in modifier_ids.split(",")
-                if item.strip()
+                item.strip() for item in modifier_ids.split(",") if item.strip()
             ]
             behaviors.append(
                 BehaviorDefinition(
@@ -362,7 +347,7 @@ class ProjectDialog(QtWidgets.QDialog):
         if not path_str:
             return
         try:
-            schema = load_project_schema(Path(path_str))
+            schema, _ = load_behavior_spec(path=Path(path_str))
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self,
@@ -384,7 +369,7 @@ class ProjectDialog(QtWidgets.QDialog):
             return
         schema = self._collect_schema()
         try:
-            save_project_schema(schema, Path(path_str))
+            save_behavior_spec(schema, Path(path_str))
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self,

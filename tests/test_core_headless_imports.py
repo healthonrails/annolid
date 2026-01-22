@@ -19,6 +19,7 @@ def test_core_imports_do_not_require_qt():
     try:
         import annolid.core.media.video  # noqa: F401
         import annolid.core.media.audio  # noqa: F401
+        import annolid.core.behavior.spec  # noqa: F401
         import annolid.core.types  # noqa: F401
         import annolid.core.output.validate  # noqa: F401
     finally:

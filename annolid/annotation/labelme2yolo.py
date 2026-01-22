@@ -25,10 +25,7 @@ from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
     visibility_from_labelme_shape,
 )
-from annolid.behavior.project_schema import (
-    DEFAULT_SCHEMA_FILENAME,
-    load_schema as load_project_schema,
-)
+from annolid.core.behavior.spec import DEFAULT_SCHEMA_FILENAME, load_behavior_spec
 
 
 def point_list_to_numpy_array(point_list: List[str]) -> np.ndarray:
@@ -160,7 +157,7 @@ class Labelme2YOLO:
                     Path(self.json_file_dir).expanduser() / DEFAULT_SCHEMA_FILENAME
                 )
                 if project_path.exists():
-                    project_schema = load_project_schema(project_path)
+                    project_schema, _ = load_behavior_spec(path=project_path)
                     embedded = getattr(project_schema, "pose_schema", None)
                     if isinstance(embedded, dict) and embedded:
                         self.pose_schema = PoseSchema.from_dict(embedded)
@@ -1478,10 +1475,10 @@ class Labelme2YOLO:
         with open(yaml_path, "w+") as yaml_file:
             # Relative path to the dataset
             yaml_file.write(f"path: ../{self.yolo_dataset_name}\n")
-            yaml_file.write(f"train: images/train\n")
-            yaml_file.write(f"val: images/val\n")
+            yaml_file.write("train: images/train\n")
+            yaml_file.write("val: images/val\n")
             # Include test set in the YAML
-            yaml_file.write(f"test: images/test\n")
+            yaml_file.write("test: images/test\n")
             yaml_file.write("\n")  # Add an empty line for better readability
             if self.annotation_type == "pose" and self.kpt_shape:
                 # Keypoints
