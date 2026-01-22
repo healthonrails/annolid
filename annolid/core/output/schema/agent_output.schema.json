@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://annolid.org/schemas/agent_output.schema.json",
+  "title": "Annolid Agent Output (NDJSON)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "type"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "annolid.agent_output.1"
+    },
+    "type": {
+      "enum": [
+        "frame_meta",
+        "detection",
+        "track_update",
+        "behavior_event",
+        "behavior_span"
+      ]
+    },
+    "video_name": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "frame_ref": {
+      "type": "object",
+      "required": [
+        "frame_index"
+      ],
+      "properties": {
+        "frame_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamp_sec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "video_name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "geometry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "xyxy"
+          ],
+          "properties": {
+            "type": {
+              "const": "bbox"
+            },
+            "xyxy": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "points"
+          ],
+          "properties": {
+            "type": {
+              "const": "polygon"
+            },
+            "points": {
+              "type": "array",
+              "minItems": 3,
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "size",
+            "counts"
+          ],
+          "properties": {
+            "type": {
+              "const": "rle"
+            },
+            "size": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "counts": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "object": {
+      "type": "object",
+      "required": [
+        "geometry"
+      ],
+      "properties": {
+        "track_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "geometry": {
+          "$ref": "#/definitions/geometry"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "const": "frame_meta"
+        },
+        "frame": {
+          "$ref": "#/definitions/frame_ref"
+        }
+      },
+      "required": [
+        "type",
+        "frame"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "detection"
+        },
+        "frame": {
+          "$ref": "#/definitions/frame_ref"
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/object"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "objects"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "track_update"
+        },
+        "tracks": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "tracks"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "behavior_event"
+        },
+        "frame": {
+          "$ref": "#/definitions/frame_ref"
+        },
+        "behavior": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event": {
+          "enum": [
+            "start",
+            "end"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "behavior",
+        "event"
+      ]
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "behavior_span"
+        },
+        "start": {
+          "$ref": "#/definitions/frame_ref"
+        },
+        "end": {
+          "$ref": "#/definitions/frame_ref"
+        },
+        "behavior": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "start",
+        "end",
+        "behavior"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

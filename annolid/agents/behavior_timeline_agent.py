@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from annolid.data.videos import CV2Video
+from annolid.core.media.video import CV2Video
 from annolid.agents.frame_search import cv2_to_pil, search_frames
 
 from annolid.utils.logger import logger
@@ -22,7 +22,9 @@ class TimelineConfig:
     min_confidence: float = 0.15  # prune very weak behaviors
 
 
-def aggregate_behaviors(neighbor_results: List[dict], max_behaviors: int) -> List[Tuple[str, float]]:
+def aggregate_behaviors(
+    neighbor_results: List[dict], max_behaviors: int
+) -> List[Tuple[str, float]]:
     """
     Aggregate flags from nearest neighbors into behavior scores.
 
@@ -31,7 +33,7 @@ def aggregate_behaviors(neighbor_results: List[dict], max_behaviors: int) -> Lis
     vote: Dict[str, int] = {}
     total = 0
     for res in neighbor_results:
-        flags = res.get('flags') or []
+        flags = res.get("flags") or []
         if not flags:
             continue
         # Each neighbor contributes one vote per flag
@@ -47,7 +49,9 @@ def aggregate_behaviors(neighbor_results: List[dict], max_behaviors: int) -> Lis
     return scores[:max_behaviors]
 
 
-def smooth_timeline(raw: List[List[Tuple[str, float]]], window: int, min_conf: float) -> List[List[Tuple[str, float]]]:
+def smooth_timeline(
+    raw: List[List[Tuple[str, float]]], window: int, min_conf: float
+) -> List[List[Tuple[str, float]]]:
     """
     Simple temporal smoothing: within a sliding window, average confidences of same behavior.
     Returns a new list of per-second behavior/confidence lists.
@@ -73,7 +77,9 @@ def smooth_timeline(raw: List[List[Tuple[str, float]]], window: int, min_conf: f
     return smoothed
 
 
-def build_timeline(video_path: str, config: Optional[TimelineConfig] = None) -> List[Dict]:
+def build_timeline(
+    video_path: str, config: Optional[TimelineConfig] = None
+) -> List[Dict]:
     """Produce a per-second behavior timeline using LanceDB retrieval and smoothing."""
     cfg = config or TimelineConfig()
     video = CV2Video(video_path)
@@ -83,7 +89,8 @@ def build_timeline(video_path: str, config: Optional[TimelineConfig] = None) -> 
 
     step = max(1, int(round(fps / cfg.hz)))
     logger.info(
-        f"Video fps={fps}, frames={total}, seconds≈{duration_sec}, sampling every {step} frames (~{cfg.hz} Hz)")
+        f"Video fps={fps}, frames={total}, seconds≈{duration_sec}, sampling every {step} frames (~{cfg.hz} Hz)"
+    )
 
     raw_per_second: List[List[Tuple[str, float]]] = []
     neighbor_cache: List[List[dict]] = []
@@ -93,8 +100,7 @@ def build_timeline(video_path: str, config: Optional[TimelineConfig] = None) -> 
         frame_idx = min(sec * fps, max(0, total - 1))
         frame = video.load_frame(frame_idx)
         if frame is None:
-            logger.warning(
-                f"Failed to load frame at second={sec} (index={frame_idx})")
+            logger.warning(f"Failed to load frame at second={sec} (index={frame_idx})")
             raw_per_second.append([])
             neighbor_cache.append([])
             continue
@@ -105,8 +111,7 @@ def build_timeline(video_path: str, config: Optional[TimelineConfig] = None) -> 
         agg = aggregate_behaviors(results, cfg.max_behaviors_per_second)
         raw_per_second.append(agg)
 
-    smoothed = smooth_timeline(
-        raw_per_second, cfg.smooth_window, cfg.min_confidence)
+    smoothed = smooth_timeline(raw_per_second, cfg.smooth_window, cfg.min_confidence)
 
     # Build final timeline entries
     timeline: List[Dict] = []
@@ -114,7 +119,9 @@ def build_timeline(video_path: str, config: Optional[TimelineConfig] = None) -> 
         timeline.append(
             {
                 "second": sec,
-                "behaviors": [{"label": b, "confidence": round(c, 3)} for b, c in behaviors],
+                "behaviors": [
+                    {"label": b, "confidence": round(c, 3)} for b, c in behaviors
+                ],
                 "neighbors": neighbors,  # includes image_uri/flags/caption
             }
         )
@@ -122,20 +129,21 @@ def build_timeline(video_path: str, config: Optional[TimelineConfig] = None) -> 
 
 
 def save_timeline_json(timeline: List[Dict], out_path: str) -> None:
-    with open(out_path, 'w') as f:
+    with open(out_path, "w") as f:
         json.dump(timeline, f, indent=2)
     logger.info(f"Saved timeline to {out_path}")
 
 
 def print_human_summary(timeline: List[Dict], top_n: int = 1) -> None:
     for entry in timeline:
-        sec = entry['second']
-        behaviors = entry.get('behaviors', [])[:top_n]
+        sec = entry["second"]
+        behaviors = entry.get("behaviors", [])[:top_n]
         if not behaviors:
             print(f"{sec:5d}s: (no confident behavior)")
         else:
             desc = ", ".join(
-                [f"{b['label']} ({b['confidence']:.2f})" for b in behaviors])
+                [f"{b['label']} ({b['confidence']:.2f})" for b in behaviors]
+            )
             print(f"{sec:5d}s: {desc}")
 
 
@@ -143,22 +151,31 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Build a per-second behavior timeline using LanceDB retrieval + smoothing.")
+        description="Build a per-second behavior timeline using LanceDB retrieval + smoothing."
+    )
     parser.add_argument("video", help="Path to the video file")
-    parser.add_argument("--out", default="timeline.json",
-                        help="Output JSON path")
-    parser.add_argument("--hz", type=int, default=1,
-                        help="Sampling rate (frames per second)")
-    parser.add_argument("--neighbors", type=int, default=5,
-                        help="Top-K nearest frames to aggregate")
-    parser.add_argument("--window", type=int, default=3,
-                        help="Smoothing window (seconds, odd number)")
-    parser.add_argument("--max-per-sec", type=int, default=3,
-                        help="Max behaviors per second")
-    parser.add_argument("--min-conf", type=float, default=0.15,
-                        help="Minimum confidence to keep behavior")
-    parser.add_argument("--no-print", action="store_true",
-                        help="Do not print human summary to stdout")
+    parser.add_argument("--out", default="timeline.json", help="Output JSON path")
+    parser.add_argument(
+        "--hz", type=int, default=1, help="Sampling rate (frames per second)"
+    )
+    parser.add_argument(
+        "--neighbors", type=int, default=5, help="Top-K nearest frames to aggregate"
+    )
+    parser.add_argument(
+        "--window", type=int, default=3, help="Smoothing window (seconds, odd number)"
+    )
+    parser.add_argument(
+        "--max-per-sec", type=int, default=3, help="Max behaviors per second"
+    )
+    parser.add_argument(
+        "--min-conf",
+        type=float,
+        default=0.15,
+        help="Minimum confidence to keep behavior",
+    )
+    parser.add_argument(
+        "--no-print", action="store_true", help="Do not print human summary to stdout"
+    )
 
     args = parser.parse_args()
 

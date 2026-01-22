@@ -1,18 +1,18 @@
-pyyaml>=5.3
+--find-links https://download.pytorch.org/whl/torch_stable.html
 easydict>=1.9
---find-links https://download.pytorch.org/whl/torch_stable.html
-torch>=2.5.0
---find-links https://download.pytorch.org/whl/torch_stable.html
-torchvision>=0.20.0
-opencv-contrib-python>=4.1.2.30
-pycocotools>=2.0.2
-pandas>=1.1.3
-shapely>=2.0.2
-scipy
-tokenizers
+huggingface-hub>=0.22.0
+hydra-core
+jsonschema>=4.20.0
 labelme==5.5.0
 omegaconf
-hydra-core
-huggingface-hub>=0.22.0
+opencv-contrib-python>=4.1.2.30
+pandas>=1.1.3
+pycocotools>=2.0.2
+pyyaml>=5.3
+scipy
+shapely>=2.0.2
 tensorboard
+tokenizers
+torch>=2.5.0
+torchvision>=0.20.0
 ultralytics>=8.4.0

@@ -1,140 +1,66 @@
-import warnings
+from __future__ import annotations
+
 from typing import Optional
-try:
-    import librosa
-except ImportError:
-    print("The 'librosa' module is required for audio loading.")
-    print("Please install it by running: pip install librosa")
-from annolid.utils.audio_playback import (
-    play_audio_buffer,
-    stop_audio_playback,
-)
-# Suppress the Warnings
+import warnings
+
+from annolid.core.media.audio import AudioBuffer
+from annolid.utils.audio_playback import play_audio_buffer, stop_audio_playback
+from annolid.utils.logger import logger
+
 warnings.filterwarnings("ignore")
 
 
 class AudioLoader:
-    """
-    A class for loading audio data and extracting audio samples for specific video frames.
+    """Backward-compatible audio loader used by the GUI.
 
-    Parameters:
-    - file_path (str): Path to the video or audio file.
-
-    Usage:
-    - Create an instance of the AudioLoader class by providing the file path.
-    - Use the load_audio_for_frame() method to load audio samples for a specific video frame.
+    The underlying buffer logic lives in `annolid.core.media.audio.AudioBuffer`
+    so headless/CLI code can reuse frame alignment without importing playback
+    dependencies.
     """
 
-    def __init__(self, file_path, fps=29.97):
-        """
-        Initialize the AudioLoader object.
+    def __init__(self, file_path: str, fps: float = 29.97):
+        self._buffer = AudioBuffer.from_file(file_path, fps=float(fps))
 
-        Parameters:
-        - file_path (str): Path to the video or audio file.
-        """
-        # Load audio data and sample rate using librosa
-        audio_data, sample_rate = librosa.load(file_path, sr=None)
-        self.audio_data = audio_data
-        self.sample_rate = sample_rate
-        self.fps = fps
-        self._playhead_sample = 0
+    @property
+    def audio_data(self):
+        return self._buffer.audio_data
 
-    def _frame_to_sample_index(self, frame_number: int) -> int:
-        """
-        Convert a video frame index to the closest audio sample index.
+    @property
+    def sample_rate(self) -> int:
+        return int(self._buffer.sample_rate)
 
-        Args:
-            frame_number (int): Frame number to convert; negative values clamp to zero.
+    @property
+    def fps(self) -> float:
+        return float(self._buffer.fps)
 
-        Returns:
-            int: Sample index within the audio buffer.
-        """
-        if frame_number is None:
-            return 0
-        frame_number = max(int(frame_number), 0)
-        sample_index = int(round(frame_number / self.fps * self.sample_rate))
-        return max(0, min(sample_index, len(self.audio_data)))
-
-    def load_audio_for_frame(self, frame_number):
-        """
-        Load audio samples for a specific video frame.
-
-        Parameters:
-        - frame_number (int): Frame number for which to load the audio samples.
-        - fps (float): Frames per second of the video.
-
-        Returns:
-        - audio_frame (ndarray): Numpy array containing the audio samples for the given frame.
-        """
-        # Calculate the corresponding audio sample index
-        audio_sample_index = self._frame_to_sample_index(frame_number)
-
-        # Calculate the audio duration corresponding to a single video frame
-        audio_frame_duration = 1 / self.fps
-
-        # Calculate the number of audio samples for a single video frame
-        audio_frame_samples = int(audio_frame_duration * self.sample_rate)
-
-        # Extract the audio samples for the given video frame
-        end_index = audio_sample_index + audio_frame_samples
-        audio_frame = self.audio_data[audio_sample_index:end_index]
-
-        return audio_frame
+    def load_audio_for_frame(self, frame_number: int):
+        return self._buffer.samples_for_frame(frame_number)
 
     def set_playhead_frame(self, frame_number: int) -> None:
-        """
-        Set the internal playhead to align playback with a specific video frame.
+        self._buffer.set_playhead_frame(frame_number)
 
-        Args:
-            frame_number (int): Frame number that should align with the playhead.
-        """
-        self._playhead_sample = self._frame_to_sample_index(frame_number)
+    def slice_seconds(self, start_sec: float, end_sec: float):
+        return self._buffer.slice_seconds(float(start_sec), float(end_sec))
 
-    def play(self, start_frame: Optional[int] = None):
-        """
-        Play the audio from the current or specified frame position.
-
-        Args:
-            start_frame (int | None): Optional frame index from which to start playback.
-        """
+    def play(self, start_frame: Optional[int] = None) -> None:
         if start_frame is not None:
             self.set_playhead_frame(start_frame)
 
-        if self._playhead_sample >= len(self.audio_data):
-            # Nothing to play from beyond the buffer length.
-            return
-
-        audio_to_play = self.audio_data[self._playhead_sample:]
-        if audio_to_play.size == 0:
+        audio_to_play = self._buffer.slice_from_playhead()
+        if audio_to_play is None or getattr(audio_to_play, "size", 0) == 0:
             return
 
         play_audio_buffer(audio_to_play, self.sample_rate, blocking=False)
 
-    def play_selected_part(self, x_start, x_end):
-        """
-        Play the selected part of the audio between the given x-axis values.
-
-        Args:
-            x_start (float): Start position on the x-axis.
-            x_end (float): End position on the x-axis.
-        """
-        # Calculate the start and end indices based on x-axis values
-        start_index = int(x_start * self.sample_rate)
-        end_index = int(x_end * self.sample_rate)
-
-        # Extract the selected part of the audio
-        selected_audio = self.audio_data[start_index:end_index]
-
-        if selected_audio.size == 0:
-            print("Warning: Selected audio part is empty.")
+    def play_selected_part(self, x_start: float, x_end: float) -> None:
+        if x_end <= x_start:
             return
-
-        # Play the selected audio using sounddevice
+        selected_audio = self.slice_seconds(float(x_start), float(x_end))
+        if selected_audio is None or getattr(selected_audio, "size", 0) == 0:
+            logger.debug("Selected audio part is empty; skipping playback.")
+            return
         play_audio_buffer(selected_audio, self.sample_rate, blocking=True)
-        self._playhead_sample = start_index
+        self._buffer.playhead_sample = int(round(float(x_start) * self.sample_rate))
 
-    def stop(self):
-        """
-        Stop the currently playing audio.
-        """
+    def stop(self) -> None:
         stop_audio_playback()

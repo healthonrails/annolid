@@ -166,9 +166,9 @@ class AudioWidget(QtWidgets.QWidget):
         times = np.arange(0, len(y)) / sample_rate
         self._duration_sec = float(times[-1]) if len(times) else 0.0
         ax_waveform.plot(times, y)
-        ax_waveform.set_xlabel('Time (s)')
-        ax_waveform.set_ylabel('Amplitude')
-        ax_waveform.set_title('Audio Waveform')
+        ax_waveform.set_xlabel("Time (s)")
+        ax_waveform.set_ylabel("Amplitude")
+        ax_waveform.set_title("Audio Waveform")
         self._sync_selection_limits()
         self._attach_span_selector(ax_waveform)
 
@@ -176,13 +176,14 @@ class AudioWidget(QtWidgets.QWidget):
         self.figure_spectrum.clear()
         ax_spectrum = self.figure_spectrum.add_subplot(111)
         spectrum, frequencies, times, _ = ax_spectrum.specgram(
-            y, Fs=self.audio_loader.sample_rate)
-        ax_spectrum.set_xlabel('Time (s)')
-        ax_spectrum.set_ylabel('Frequency (Hz)')
-        ax_spectrum.set_title('Audio Spectrum')
+            y, Fs=self.audio_loader.sample_rate
+        )
+        ax_spectrum.set_xlabel("Time (s)")
+        ax_spectrum.set_ylabel("Frequency (Hz)")
+        ax_spectrum.set_title("Audio Spectrum")
         ax_spectrum.set_xlim(0, times[-1])  # Set xlim based on waveform times
         colorbar = self.figure_spectrum.colorbar(_)
-        colorbar.set_label('Intensity')
+        colorbar.set_label("Intensity")
 
         self.canvas_waveform.draw()
         self.canvas_spectrum.draw()
@@ -199,8 +200,7 @@ class AudioWidget(QtWidgets.QWidget):
             useblit=True,
             props={"facecolor": "tab:orange", "alpha": 0.2},
             interactive=True,
-            handle_props={"color": "tab:orange",
-                          "alpha": 0.8, "linewidth": 2.0},
+            handle_props={"color": "tab:orange", "alpha": 0.8, "linewidth": 2.0},
             grab_range=12,
             drag_from_anywhere=False,
             onmove_callback=self._on_span_moved,
@@ -246,8 +246,7 @@ class AudioWidget(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(container)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        self.play_selection_button = QtWidgets.QPushButton(
-            "Play Selection", container)
+        self.play_selection_button = QtWidgets.QPushButton("Play Selection", container)
         self.play_all_button = QtWidgets.QPushButton("Play All", container)
         self.stop_button = QtWidgets.QPushButton("Stop", container)
 
@@ -261,8 +260,7 @@ class AudioWidget(QtWidgets.QWidget):
         self.selection_end_spin.setSingleStep(0.1)
         self.selection_end_spin.setPrefix("End: ")
 
-        self.add_segment_button = QtWidgets.QPushButton(
-            "Add Segment", container)
+        self.add_segment_button = QtWidgets.QPushButton("Add Segment", container)
         self.save_segment_button = QtWidgets.QPushButton("Save…", container)
 
         self.status_label = QtWidgets.QLabel("", container)
@@ -284,48 +282,42 @@ class AudioWidget(QtWidgets.QWidget):
         self.play_selection_button.clicked.connect(self.play_selection)
         self.play_all_button.clicked.connect(self.play_all)
         self.stop_button.clicked.connect(self.stop_playback)
-        self.add_segment_button.clicked.connect(
-            self.add_segment_from_selection)
-        self.save_segment_button.clicked.connect(
-            self.save_selected_or_current_segment)
-        self.selection_start_spin.valueChanged.connect(
-            self._on_selection_spin_changed)
-        self.selection_end_spin.valueChanged.connect(
-            self._on_selection_spin_changed)
+        self.add_segment_button.clicked.connect(self.add_segment_from_selection)
+        self.save_segment_button.clicked.connect(self.save_selected_or_current_segment)
+        self.selection_start_spin.valueChanged.connect(self._on_selection_spin_changed)
+        self.selection_end_spin.valueChanged.connect(self._on_selection_spin_changed)
 
     def _build_segments_panel(self) -> None:
         self.segments_panel = QtWidgets.QWidget(self)
         panel_layout = QtWidgets.QVBoxLayout(self.segments_panel)
         panel_layout.setContentsMargins(6, 6, 6, 6)
 
-        panel_layout.addWidget(QtWidgets.QLabel(
-            "Segments", self.segments_panel))
+        panel_layout.addWidget(QtWidgets.QLabel("Segments", self.segments_panel))
         self.segments_list = QtWidgets.QListWidget(self.segments_panel)
-        self.segments_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SingleSelection
-        )
+        self.segments_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         panel_layout.addWidget(self.segments_list, 1)
 
         buttons_row = QtWidgets.QHBoxLayout()
         self.remove_segment_button = QtWidgets.QPushButton(
-            "Remove", self.segments_panel)
-        self.clear_segments_button = QtWidgets.QPushButton(
-            "Clear", self.segments_panel)
+            "Remove", self.segments_panel
+        )
+        self.clear_segments_button = QtWidgets.QPushButton("Clear", self.segments_panel)
         buttons_row.addWidget(self.remove_segment_button)
         buttons_row.addWidget(self.clear_segments_button)
         panel_layout.addLayout(buttons_row)
 
-        self.segments_list.itemSelectionChanged.connect(
-            self._on_segment_selected)
-        self.remove_segment_button.clicked.connect(
-            self.remove_selected_segment)
+        self.segments_list.itemSelectionChanged.connect(self._on_segment_selected)
+        self.remove_segment_button.clicked.connect(self.remove_selected_segment)
         self.clear_segments_button.clicked.connect(self.clear_segments)
 
     def _update_controls_state(self) -> None:
-        has_audio = bool(self.audio_loader and getattr(
-            self.audio_loader, "audio_data", None) is not None)
+        has_audio = bool(
+            self.audio_loader
+            and getattr(self.audio_loader, "audio_data", None) is not None
+        )
         has_selection = bool(
-            self._selection and self._selection[1] > self._selection[0])
+            self._selection and self._selection[1] > self._selection[0]
+        )
         has_segment_selected = bool(self.segments_list.selectedItems())
 
         self.play_selection_button.setEnabled(has_audio and has_selection)
@@ -333,7 +325,8 @@ class AudioWidget(QtWidgets.QWidget):
         self.stop_button.setEnabled(has_audio)
         self.add_segment_button.setEnabled(has_audio and has_selection)
         self.save_segment_button.setEnabled(
-            has_audio and (has_selection or has_segment_selected))
+            has_audio and (has_selection or has_segment_selected)
+        )
         self.remove_segment_button.setEnabled(has_segment_selected)
         self.clear_segments_button.setEnabled(self.segments_list.count() > 0)
 
@@ -430,6 +423,9 @@ class AudioWidget(QtWidgets.QWidget):
     def _current_audio_slice(self, start_sec: float, end_sec: float) -> np.ndarray:
         if not self.audio_loader:
             return np.asarray([])
+        slicer = getattr(self.audio_loader, "slice_seconds", None)
+        if callable(slicer):
+            return np.asarray(slicer(float(start_sec), float(end_sec)))
         sr = float(self.audio_loader.sample_rate)
         start = int(round(max(0.0, start_sec) * sr))
         end = int(round(max(0.0, end_sec) * sr))
@@ -511,7 +507,9 @@ class AudioWidget(QtWidgets.QWidget):
             return
 
         default_base = Path(self.audio_path).with_suffix("")
-        default_name = f"{default_base.name}_segment_{int(start * 1000)}_{int(end * 1000)}.wav"
+        default_name = (
+            f"{default_base.name}_segment_{int(start * 1000)}_{int(end * 1000)}.wav"
+        )
         default_path = str(default_base.with_name(default_name))
         save_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -582,9 +580,9 @@ class AudioWidget(QtWidgets.QWidget):
         self.play_selection()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Example usage
     app = QtWidgets.QApplication(sys.argv)
-    widget = AudioWidget('/path/to/ants.mp4')
+    widget = AudioWidget("/path/to/ants.mp4")
     widget.show()
     sys.exit(app.exec_())

@@ -61,7 +61,8 @@ dependencies = [
     'transformers>=4.45.1',
     'ultralytics>=8.4.0',
     'huggingface-hub>=0.22.0',
-    'tensorboard',   
+    'tensorboard',
+    'jsonschema>=4.20.0',
     # Optional dependency: install SAM / SAM-HQ separately (see README.md).
 ]
 
@@ -108,4 +109,5 @@ annolid = [
     "**/*.ico",
     "**/*.icns",
     "**/*.qrc",
+    "core/output/schema/*.json",
 ]
