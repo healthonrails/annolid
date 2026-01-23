@@ -1,0 +1,196 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Tools Developer Guide &mdash; annolid 1.4.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=9172181d"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="YOLOE-26 Prompting (Text / Visual / Prompt-free)" href="yoloe_prompting.html" />
+    <link rel="prev" title="DINOv3 Keypoint Segmentation (DinoKPSEG)" href="dino_kpseg.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read_pdf_with_ai_voice.html">Read PDFs Aloud with AI Voice (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
+<li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Agent Tools Developer Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#how-to-add-a-tool">How to add a tool</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#artifact-layout">Artifact layout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#caching-semantics">Caching semantics</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Agent Tools Developer Guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/agent_tools.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="agent-tools-developer-guide">
+<h1>Agent Tools Developer Guide<a class="headerlink" href="#agent-tools-developer-guide" title="Link to this heading"></a></h1>
+<p>This guide covers how to add a new agent tool, how artifacts are laid out on disk,
+and how caching works for agent runs.</p>
+<section id="how-to-add-a-tool">
+<h2>How to add a tool<a class="headerlink" href="#how-to-add-a-tool" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Define the tool</strong> by extending the base class in <code class="docutils literal notranslate"><span class="pre">annolid/core/agent/tools/base.py</span></code>:</p>
+<ul class="simple">
+<li><p>Implement <code class="docutils literal notranslate"><span class="pre">run(self,</span> <span class="pre">ctx,</span> <span class="pre">payload)</span></code> with your core logic.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">ctx.results_dir</span></code> and <code class="docutils literal notranslate"><span class="pre">ctx.run_id</span></code> to derive stable outputs.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">ctx.artifact_store</span></code> if you want to persist artifacts and participate in caching.</p></li>
+</ul>
+</li>
+<li><p><strong>Register the tool</strong> in the registry:</p>
+<ul class="simple">
+<li><p>Add a new tool wrapper in <code class="docutils literal notranslate"><span class="pre">annolid/core/agent/tools/</span></code>.</p></li>
+<li><p>Export it from <code class="docutils literal notranslate"><span class="pre">annolid/core/agent/tools/__init__.py</span></code>.</p></li>
+<li><p>Register it with <code class="docutils literal notranslate"><span class="pre">ToolRegistry</span></code> (see <code class="docutils literal notranslate"><span class="pre">annolid/core/agent/tools/registry.py</span></code>).</p></li>
+</ul>
+</li>
+<li><p><strong>Integrate with the runner</strong> (Phase 4+):</p>
+<ul class="simple">
+<li><p>Compose tools using the registry and a pipeline definition.</p></li>
+<li><p>Ensure inputs/outputs follow the unified data models in <code class="docutils literal notranslate"><span class="pre">base.py</span></code>.</p></li>
+</ul>
+</li>
+<li><p><strong>Write a minimal test</strong>:</p>
+<ul class="simple">
+<li><p>Use tiny inputs and validate outputs.</p></li>
+<li><p>Prefer tests under <code class="docutils literal notranslate"><span class="pre">tests/</span></code> that don’t require large external models.</p></li>
+</ul>
+</li>
+</ol>
+</section>
+<section id="artifact-layout">
+<h2>Artifact layout<a class="headerlink" href="#artifact-layout" title="Link to this heading"></a></h2>
+<p>Artifacts are stored per video results directory and organized as:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;results_dir&gt;/</span></code></p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">agent.ndjson</span></code> (default agent output)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&lt;video_name&gt;_000000000.json</span></code> + per-frame LabelMe JSON</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.agent_runs/&lt;run_id&gt;/</span></code> (run-scoped artifacts)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.cache/agent_cache.json</span></code> (cache metadata for re-run reuse)</p></li>
+</ul>
+</li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">FileArtifactStore</span></code> resolves paths relative to:</p>
+<ul class="simple">
+<li><p><strong>Run artifacts</strong>: <code class="docutils literal notranslate"><span class="pre">.agent_runs/&lt;run_id&gt;/...</span></code></p></li>
+<li><p><strong>Cache artifacts</strong>: <code class="docutils literal notranslate"><span class="pre">.cache/...</span></code></p></li>
+</ul>
+<p>See <code class="docutils literal notranslate"><span class="pre">annolid/core/agent/tools/artifacts.py</span></code> for helpers.</p>
+</section>
+<section id="caching-semantics">
+<h2>Caching semantics<a class="headerlink" href="#caching-semantics" title="Link to this heading"></a></h2>
+<p>Agent runs compute a <strong>content hash</strong> from:</p>
+<ul class="simple">
+<li><p>video path + filesystem stats (size/mtime),</p></li>
+<li><p>behavior spec (full schema),</p></li>
+<li><p>run config (stride, max frames, etc.),</p></li>
+<li><p>model identifiers,</p></li>
+<li><p>output NDJSON name.</p></li>
+</ul>
+<p>If the cache hash matches and both the NDJSON and annotation store exist,
+the service returns cached results without re-running the agent.</p>
+<p>To disable reuse from the CLI, run:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">annolid</span><span class="o">-</span><span class="n">run</span> <span class="n">agent</span> <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">cache</span> <span class="o">...</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="dino_kpseg.html" class="btn btn-neutral float-left" title="DINOv3 Keypoint Segmentation (DinoKPSEG)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="yoloe_prompting.html" class="btn btn-neutral float-right" title="YOLOE-26 Prompting (Text / Visual / Prompt-free)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
