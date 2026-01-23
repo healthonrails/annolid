@@ -270,6 +270,87 @@ def _cmd_dino_kpseg_precompute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_agent(args: argparse.Namespace) -> int:
+    import time
+
+    from annolid.core.agent.runner import AgentRunConfig
+    from annolid.core.agent.service import run_agent_to_results
+
+    vision_model = None
+    if str(args.vision_adapter or "").strip().lower() == "maskrcnn":
+        from annolid.core.models.adapters.maskrcnn_torchvision import (
+            TorchvisionMaskRCNNAdapter,
+        )
+
+        vision_model = TorchvisionMaskRCNNAdapter(
+            pretrained=bool(args.vision_pretrained),
+            score_threshold=float(args.vision_score_threshold),
+            device=str(args.vision_device) if args.vision_device else None,
+        )
+
+    llm_model = None
+    if str(args.llm_adapter or "").strip().lower() == "llm_chat":
+        from annolid.core.models.adapters.llm_chat import LLMChatAdapter
+
+        llm_model = LLMChatAdapter(
+            profile=str(args.llm_profile) if args.llm_profile else None,
+            provider=str(args.llm_provider) if args.llm_provider else None,
+            model=str(args.llm_model) if args.llm_model else None,
+            persist=bool(args.llm_persist),
+        )
+
+    config = AgentRunConfig(
+        max_frames=args.max_frames,
+        stride=int(args.stride),
+        include_llm_summary=bool(args.include_llm_summary),
+        llm_summary_prompt=str(args.llm_summary_prompt),
+    )
+
+    last_print = 0.0
+
+    def _progress(frame_idx: int, written: int, total: int | None) -> None:
+        nonlocal last_print
+        if args.no_progress:
+            return
+        now = time.monotonic()
+        if now - last_print < float(args.progress_interval):
+            return
+        last_print = now
+        if total and total > 0:
+            pct = int(round((written / max(total, 1)) * 100))
+            print(
+                f"[annolid-run] agent progress: frame={frame_idx} records={written} ({pct}%)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[annolid-run] agent progress: frame={frame_idx} records={written}",
+                file=sys.stderr,
+            )
+
+    result = run_agent_to_results(
+        video_path=args.video,
+        behavior_spec_path=args.schema,
+        results_dir=args.results_dir,
+        out_ndjson_name=str(args.ndjson_name),
+        vision_model=vision_model,
+        llm_model=llm_model,
+        config=config,
+        progress_callback=_progress,
+    )
+
+    summary = {
+        "results_dir": str(result.results_dir),
+        "ndjson_path": str(result.ndjson_path),
+        "store_path": str(result.store_path),
+        "records_written": result.records_written,
+        "total_frames": result.total_frames,
+        "stopped": result.stopped,
+    }
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
 def _build_root_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="annolid-run",
@@ -525,6 +606,74 @@ def _build_root_parser() -> argparse.ArgumentParser:
         "--cache-dtype", choices=("float16", "float32"), default="float16"
     )
     pre_p.set_defaults(_handler=_cmd_dino_kpseg_precompute)
+
+    agent_p = sub.add_parser(
+        "agent",
+        help="Run the unified agent pipeline and write per-video results.",
+    )
+    agent_p.add_argument("--video", required=True, help="Input video path.")
+    agent_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional behavior spec path (project.annolid.json/yaml).",
+    )
+    agent_p.add_argument(
+        "--results-dir",
+        default=None,
+        help="Output directory for results (default: <video_stem>/).",
+    )
+    agent_p.add_argument(
+        "--ndjson-name",
+        default="agent.ndjson",
+        help="NDJSON file name under the results dir (default: agent.ndjson).",
+    )
+    agent_p.add_argument("--max-frames", type=int, default=None)
+    agent_p.add_argument("--stride", type=int, default=1)
+    agent_p.add_argument("--include-llm-summary", action="store_true")
+    agent_p.add_argument(
+        "--llm-summary-prompt",
+        default="Summarize the behaviors defined in this behavior spec.",
+    )
+    agent_p.add_argument(
+        "--vision-adapter",
+        choices=("none", "maskrcnn"),
+        default="none",
+        help="Optional vision adapter (default: none).",
+    )
+    agent_p.add_argument(
+        "--vision-pretrained",
+        action="store_true",
+        help="Use pretrained weights for the vision adapter.",
+    )
+    agent_p.add_argument(
+        "--vision-score-threshold",
+        type=float,
+        default=0.5,
+        help="Score threshold for vision detections.",
+    )
+    agent_p.add_argument(
+        "--vision-device",
+        default=None,
+        help="Override device for vision adapter (e.g., cpu, cuda).",
+    )
+    agent_p.add_argument(
+        "--llm-adapter",
+        choices=("none", "llm_chat"),
+        default="none",
+        help="Optional LLM adapter (default: none).",
+    )
+    agent_p.add_argument("--llm-profile", default=None)
+    agent_p.add_argument("--llm-provider", default=None)
+    agent_p.add_argument("--llm-model", default=None)
+    agent_p.add_argument("--llm-persist", action="store_true")
+    agent_p.add_argument(
+        "--progress-interval",
+        type=float,
+        default=2.0,
+        help="Progress print interval in seconds.",
+    )
+    agent_p.add_argument("--no-progress", action="store_true")
+    agent_p.set_defaults(_handler=_cmd_agent)
 
     train_p = sub.add_parser("train", help="Train a model.")
     train_p.add_argument("model", help="Model plugin name (see list-models).")
