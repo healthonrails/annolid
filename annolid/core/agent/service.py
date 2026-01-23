@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -9,6 +9,7 @@ from annolid.core.agent.runner import AgentRunConfig, AgentRunner
 from annolid.core.behavior.spec import BehaviorSpec, load_behavior_spec
 from annolid.core.models.base import RuntimeModel
 from annolid.core.output.validate import validate_agent_record
+from annolid.core.agent.tools.artifacts import FileArtifactStore, content_hash
 from annolid.utils.annotation_store import AnnotationStore
 
 
@@ -20,6 +21,7 @@ class AgentServiceResult:
     records_written: int
     total_frames: Optional[int]
     stopped: bool
+    cached: bool = False
 
 
 ProgressCallback = Callable[[int, int, Optional[int]], None]
@@ -61,6 +63,46 @@ def _store_record_from_agent(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_cache_payload(
+    *,
+    video_path: Path,
+    schema: BehaviorSpec,
+    schema_path: Optional[Path],
+    config: AgentRunConfig,
+    out_ndjson_name: str,
+    vision_model: Optional[RuntimeModel],
+    llm_model: Optional[RuntimeModel],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "video_path": str(video_path),
+        "behavior_spec_path": str(schema_path) if schema_path is not None else None,
+        "behavior_spec": asdict(schema),
+        "config": asdict(config),
+        "ndjson_name": out_ndjson_name,
+        "vision_model_id": getattr(vision_model, "model_id", None),
+        "llm_model_id": getattr(llm_model, "model_id", None),
+    }
+    try:
+        stat = video_path.stat()
+        payload["video_size"] = stat.st_size
+        payload["video_mtime"] = stat.st_mtime
+    except Exception:
+        payload["video_size"] = None
+        payload["video_mtime"] = None
+    return payload
+
+
+def _count_ndjson_records(path: Path) -> int:
+    if not path.exists():
+        return 0
+    count = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                count += 1
+    return count
+
+
 def run_agent_to_results(
     *,
     video_path: str | Path,
@@ -72,6 +114,7 @@ def run_agent_to_results(
     config: Optional[AgentRunConfig] = None,
     progress_callback: Optional[ProgressCallback] = None,
     stop_event: Optional[Any] = None,
+    reuse_cache: bool = True,
 ) -> AgentServiceResult:
     resolved_video = Path(video_path).expanduser().resolve()
     results_dir_path = resolve_results_dir(resolved_video, results_dir)
@@ -80,6 +123,8 @@ def run_agent_to_results(
     ndjson_path = results_dir_path / out_ndjson_name
     store_stub = results_dir_path / f"{results_dir_path.name}_000000000.json"
     store = AnnotationStore.for_frame_path(store_stub)
+    cache_store = FileArtifactStore(base_dir=results_dir_path, run_id="agent")
+    cache_meta_path = cache_store.resolve("agent_cache.json", kind="cache")
 
     runner = AgentRunner(
         vision_model=vision_model,
@@ -90,6 +135,34 @@ def run_agent_to_results(
         path=behavior_spec_path,
         video_path=resolved_video,
     )
+    cache_payload = _build_cache_payload(
+        video_path=resolved_video,
+        schema=schema,
+        schema_path=schema_path,
+        config=runner._config,
+        out_ndjson_name=out_ndjson_name,
+        vision_model=vision_model,
+        llm_model=llm_model,
+    )
+    cache_hash = content_hash(cache_payload)
+    if reuse_cache and cache_store.should_reuse_cache(cache_meta_path, cache_hash):
+        if ndjson_path.exists() and store.store_path.exists():
+            cached_records = _count_ndjson_records(ndjson_path)
+            cached_total = None
+            try:
+                cached_meta = json.loads(cache_meta_path.read_text(encoding="utf-8"))
+                cached_total = cached_meta.get("total_frames")
+            except Exception:
+                cached_total = None
+            return AgentServiceResult(
+                results_dir=results_dir_path,
+                ndjson_path=ndjson_path,
+                store_path=store.store_path,
+                records_written=cached_records,
+                total_frames=cached_total,
+                stopped=False,
+                cached=True,
+            )
     agent_meta = _build_agent_meta(runner, schema, schema_path, resolved_video)
 
     total_frames: Optional[int] = None
@@ -134,6 +207,23 @@ def run_agent_to_results(
         except Exception:
             pass
 
+    if not stopped:
+        cache_store.write_meta(
+            cache_meta_path,
+            {
+                "content_hash": cache_hash,
+                "video_path": str(resolved_video),
+                "behavior_spec_path": str(schema_path)
+                if schema_path is not None
+                else None,
+                "results_dir": str(results_dir_path),
+                "ndjson_path": str(ndjson_path),
+                "store_path": str(store.store_path),
+                "records_written": records_written,
+                "total_frames": total_frames,
+            },
+        )
+
     return AgentServiceResult(
         results_dir=results_dir_path,
         ndjson_path=ndjson_path,
@@ -141,4 +231,5 @@ def run_agent_to_results(
         records_written=records_written,
         total_frames=total_frames,
         stopped=stopped,
+        cached=False,
     )

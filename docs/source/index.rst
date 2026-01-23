@@ -3,7 +3,7 @@ Welcome to annolid's documentation!
 
 .. toctree::
    :maxdepth: 2
-   
+
    guide
    install
    read_pdf_with_ai_voice
@@ -12,6 +12,7 @@ Welcome to annolid's documentation!
    video_depth_anything
    image_editing
    dino_kpseg
+   agent_tools
    yoloe_prompting
    keypoints_definitions
    faqs

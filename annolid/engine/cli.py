@@ -79,6 +79,83 @@ def _cmd_validate_agent_output(args: argparse.Namespace) -> int:
     return 0 if errors == 0 else 1
 
 
+def _cmd_agent_validate_tools(_: argparse.Namespace) -> int:
+    import tempfile
+
+    summary: dict[str, object] = {"status": "ok", "checks": []}
+
+    def _record(name: str, *, ok: bool, detail: str) -> None:
+        summary["checks"].append({"name": name, "ok": ok, "detail": detail})
+        if not ok:
+            summary["status"] = "error"
+
+    try:
+        from annolid.core.agent.tools.artifacts import FileArtifactStore, content_hash
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = FileArtifactStore(base_dir=Path(tmpdir), run_id="validate")
+            meta_path = store.resolve("agent_cache.json", kind="cache")
+            payload = {"hello": "world"}
+            store.write_meta(meta_path, {"content_hash": content_hash(payload)})
+            ok = store.should_reuse_cache(meta_path, content_hash(payload))
+            _record("artifacts", ok=bool(ok), detail="cache metadata round-trip")
+    except Exception as exc:
+        _record("artifacts", ok=False, detail=str(exc))
+
+    try:
+        from annolid.core.agent.tools.sampling import (
+            FPSampler,
+            RandomSampler,
+            UniformSampler,
+        )
+
+        uniform = UniformSampler(step=2).sample_indices(10)
+        fps = FPSampler(target_fps=5).sample_indices(30, fps=30)
+        random = RandomSampler(count=2, seed=1).sample_indices(5)
+        ok = bool(uniform) and bool(fps) and bool(random)
+        _record("sampling", ok=ok, detail="uniform/fps/random sampling")
+    except Exception as exc:
+        _record("sampling", ok=False, detail=str(exc))
+
+    try:
+        from annolid.core.agent.tools.registry import ToolRegistry
+        from annolid.core.agent.tools.base import Tool, ToolContext
+
+        class _DummyTool(Tool[int, int]):
+            name = "dummy"
+
+            def run(self, ctx: ToolContext, payload: int) -> int:
+                _ = ctx
+                return payload + 1
+
+        registry = ToolRegistry()
+        registry.register("dummy", _DummyTool)
+        instance = registry.create("dummy")
+        ok = isinstance(instance, _DummyTool)
+        _record("registry", ok=ok, detail="register/create tool")
+    except Exception as exc:
+        _record("registry", ok=False, detail=str(exc))
+
+    try:
+        from annolid.core.agent.tools.vector_index import NumpyEmbeddingIndex
+        from annolid.core.types import FrameRef
+
+        index = NumpyEmbeddingIndex(
+            embeddings=[[0.1, 0.0], [0.0, 1.0]],
+            frames=[FrameRef(frame_index=0), FrameRef(frame_index=1)],
+        )
+        results = index.search([0.2, 0.1], top_k=1)
+        ok = bool(results)
+        _record("vector_index", ok=ok, detail="numpy cosine search")
+    except ImportError as exc:
+        _record("vector_index", ok=True, detail=f"skipped: {exc}")
+    except Exception as exc:
+        _record("vector_index", ok=False, detail=str(exc))
+
+    print(json.dumps(summary, indent=2))
+    return 0 if summary.get("status") == "ok" else 1
+
+
 def _cmd_collect_labels(args: argparse.Namespace) -> int:
     from annolid.datasets.labelme_collection import (
         DEFAULT_LABEL_INDEX_NAME,
@@ -337,6 +414,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         llm_model=llm_model,
         config=config,
         progress_callback=_progress,
+        reuse_cache=not bool(args.no_cache),
     )
 
     summary = {
@@ -346,6 +424,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         "records_written": result.records_written,
         "total_frames": result.total_frames,
         "stopped": result.stopped,
+        "cached": result.cached,
     }
     print(json.dumps(summary, indent=2))
     return 0
@@ -373,6 +452,12 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Stop after this many errors (default: 1).",
     )
     val_p.set_defaults(_handler=_cmd_validate_agent_output)
+
+    validate_tools_p = sub.add_parser(
+        "validate-agent-tools",
+        help="Run lightweight validation checks for agent tool modules.",
+    )
+    validate_tools_p.set_defaults(_handler=_cmd_agent_validate_tools)
 
     collect_p = sub.add_parser(
         "collect-labels",
@@ -630,6 +715,11 @@ def _build_root_parser() -> argparse.ArgumentParser:
     agent_p.add_argument("--max-frames", type=int, default=None)
     agent_p.add_argument("--stride", type=int, default=1)
     agent_p.add_argument("--include-llm-summary", action="store_true")
+    agent_p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable artifact cache reuse for agent runs.",
+    )
     agent_p.add_argument(
         "--llm-summary-prompt",
         default="Summarize the behaviors defined in this behavior spec.",

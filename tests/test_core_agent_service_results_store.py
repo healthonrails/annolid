@@ -55,3 +55,16 @@ def test_agent_service_writes_annotation_store(tmp_path: Path) -> None:
 
     first = json.loads(result.ndjson_path.read_text(encoding="utf-8").splitlines()[0])
     assert first["video_name"] == "tiny.avi"
+
+
+def test_agent_service_reuses_cache(tmp_path: Path) -> None:
+    video_path = tmp_path / "tiny_cache.avi"
+    _write_tiny_video(video_path, frames=2)
+
+    first = run_agent_to_results(video_path=video_path)
+    assert first.records_written > 0
+    assert not first.cached
+
+    second = run_agent_to_results(video_path=video_path)
+    assert second.cached
+    assert second.records_written == first.records_written

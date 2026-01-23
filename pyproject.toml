@@ -82,6 +82,11 @@ pocket_tts = [
     "pocket-tts>=1.0.0",
 ]
 
+qwen3_embedding = [
+    "transformers>=4.57.0",
+    "qwen-vl-utils>=0.0.14",
+]
+
 [project.urls]
 Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"
