@@ -353,6 +353,14 @@ class MenuController:
                 "checked": bool(getattr(w, "_show_pose_edges", False)),
             },
             {
+                "name": "toggle_agent_mode",
+                "text": w.tr("&Agent Mode"),
+                "slot": w.toggle_agent_mode,
+                "tip": w.tr("Show or hide agent-powered workflow tools"),
+                "checkable": True,
+                "checked": bool(getattr(w, "_agent_mode_enabled", True)),
+            },
+            {
                 "name": "toggle_pose_bbox_display",
                 "text": w.tr("Show Pose &BBoxes"),
                 "slot": w.toggle_pose_bbox_display,
@@ -685,6 +693,7 @@ class MenuController:
             (
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
+                actions["toggle_agent_mode"],
                 w.patch_similarity_action,
                 w.pca_map_action,
             ),

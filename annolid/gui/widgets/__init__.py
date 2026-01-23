@@ -18,6 +18,7 @@ from annolid.gui.widgets.training_dashboard import (
     TrainingDashboardWidget,
 )
 from annolid.gui.widgets.agent_run_dialog import AgentRunDialog
+from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 
 # New streamlined wizards
 from annolid.gui.widgets.project_wizard import ProjectWizard
@@ -45,6 +46,7 @@ __all__ = [
     "TrainingDashboardDialog",
     "TrainingDashboardWidget",
     "AgentRunDialog",
+    "EmbeddingSearchWidget",
     "ProjectWizard",
     "DashboardWidget",
     "DatasetExportWizard",

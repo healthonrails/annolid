@@ -25,6 +25,7 @@ class BehaviorEvent:
     raw_event: Optional[str] = None
     modifiers: Tuple[str, ...] = ()
     category: Optional[str] = None
+    confirmed: bool = True
 
     @property
     def mark_key(self) -> Tuple[int, str, str]:
@@ -38,6 +39,7 @@ class BehaviorEvent:
         payload: Dict[str, Any] = {
             "behavior": self.behavior,
             "event": self.event,
+            "confirmed": bool(self.confirmed),
         }
         if self.subject is not None:
             payload["subject"] = self.subject
@@ -94,6 +96,7 @@ class BehaviorTimeline:
         rebuild: bool = True,
         modifiers: Optional[Iterable[str]] = None,
         category: Optional[str] = None,
+        confirmed: bool = True,
     ) -> Optional[BehaviorEvent]:
         canonical = (
             event_label
@@ -113,6 +116,7 @@ class BehaviorTimeline:
             raw_event=raw_event or event_label,
             modifiers=tuple(modifiers or ()),
             category=category,
+            confirmed=bool(confirmed),
         )
 
         if event.mark_key in self._events:
@@ -139,6 +143,31 @@ class BehaviorTimeline:
             self._behaviors.discard(behavior)
             self._ranges.pop(behavior, None)
         return event
+
+    def update_event_confirmation(
+        self,
+        key: Tuple[int, str, str],
+        *,
+        confirmed: bool,
+    ) -> Optional[BehaviorEvent]:
+        event = self._events.get(key)
+        if event is None:
+            return None
+        updated = BehaviorEvent(
+            frame=event.frame,
+            behavior=event.behavior,
+            event=event.event,
+            timestamp=event.timestamp,
+            trial_time=event.trial_time,
+            subject=event.subject,
+            raw_event=event.raw_event,
+            modifiers=event.modifiers,
+            category=event.category,
+            confirmed=bool(confirmed),
+        )
+        self._events[key] = updated
+        self._rebuild_behavior(updated.behavior)
+        return updated
 
     def flush_pending(self) -> None:
         if not self._pending_rebuild:
@@ -213,9 +242,13 @@ class BehaviorTimeline:
     def to_export_rows(
         self,
         timestamp_fallback: Optional[Callable[[BehaviorEvent], Optional[float]]] = None,
+        *,
+        confirmed_only: bool = True,
     ) -> List[Tuple[float, float, str, str, str]]:
         rows: List[Tuple[float, float, str, str, str]] = []
         for event in self.iter_events():
+            if confirmed_only and not event.confirmed:
+                continue
             recording_time = event.timestamp
             if recording_time is None and timestamp_fallback is not None:
                 fallback_value = timestamp_fallback(event)
@@ -691,6 +724,41 @@ class BehaviorController:
             self._notify_listeners()
         return event
 
+    def set_event_confirmation(
+        self,
+        key: Tuple[int, str, str],
+        *,
+        confirmed: bool,
+    ) -> Optional[BehaviorEvent]:
+        event = self.timeline.update_event_confirmation(key, confirmed=confirmed)
+        if event is not None:
+            self.sync_marks()
+            self._persist_frame(event.frame)
+            self._notify_listeners()
+        return event
+
+    def set_interval_confirmation(
+        self,
+        *,
+        behavior: str,
+        start_frame: int,
+        end_frame: int,
+        confirmed: bool,
+    ) -> None:
+        start_frame = int(start_frame)
+        end_frame = int(end_frame)
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        self.timeline.update_event_confirmation(
+            (start_frame, behavior, "start"), confirmed=confirmed
+        )
+        self.timeline.update_event_confirmation(
+            (end_frame, behavior, "end"), confirmed=confirmed
+        )
+        self.sync_marks()
+        self._persist_frames({start_frame, end_frame})
+        self._notify_listeners()
+
     def pop_last_event(self) -> Optional[BehaviorEvent]:
         events = list(self.iter_events())
         if not events:
@@ -705,9 +773,14 @@ class BehaviorController:
     def export_rows(
         self,
         timestamp_fallback: Optional[Callable[[BehaviorEvent], Optional[float]]] = None,
+        *,
+        confirmed_only: bool = True,
     ) -> List[Tuple[float, float, str, str, str]]:
         self.timeline.flush_pending()
-        return self.timeline.to_export_rows(timestamp_fallback=timestamp_fallback)
+        return self.timeline.to_export_rows(
+            timestamp_fallback=timestamp_fallback,
+            confirmed_only=confirmed_only,
+        )
 
     def load_events_from_rows(
         self,
@@ -762,6 +835,8 @@ class BehaviorController:
             return
 
         self.timeline.clear()
+        loaded_behavior_events = False
+        pending_agent: Dict[tuple, int] = {}
         frames = sorted(target_store.iter_frames())
         for frame in frames:
             try:
@@ -774,10 +849,23 @@ class BehaviorController:
             other = record.get("otherData") or {}
             behavior_block = other.get(self.BEHAVIOR_STORE_KEY)
             if not isinstance(behavior_block, dict):
+                if not loaded_behavior_events:
+                    self._load_agent_events_from_record(
+                        other,
+                        frame_index,
+                        pending_agent,
+                    )
                 continue
             events = behavior_block.get("events") or []
             if not isinstance(events, list):
+                if not loaded_behavior_events:
+                    self._load_agent_events_from_record(
+                        other,
+                        frame_index,
+                        pending_agent,
+                    )
                 continue
+            loaded_behavior_events = True
             for payload in events:
                 if not isinstance(payload, dict):
                     continue
@@ -791,6 +879,7 @@ class BehaviorController:
                 raw_event = payload.get("raw_event")
                 modifiers = payload.get("modifiers") or ()
                 category = payload.get("category")
+                confirmed = payload.get("confirmed", True)
                 self.record_event(
                     str(behavior),
                     str(event_label),
@@ -803,6 +892,7 @@ class BehaviorController:
                     highlight=False,
                     modifiers=list(modifiers) if modifiers else None,
                     category=str(category) if category is not None else None,
+                    confirmed=bool(confirmed),
                     persist=False,
                     notify=False,
                 )
@@ -810,6 +900,96 @@ class BehaviorController:
         self.timeline.flush_pending()
         self.sync_marks()
         self._notify_listeners()
+
+    def _load_agent_events_from_record(
+        self,
+        other: Dict[str, Any],
+        frame_index: int,
+        pending: Dict[tuple, int],
+    ) -> None:
+        active = other.get("behavior_active") or []
+        completed = other.get("behavior_completed") or []
+        if not isinstance(active, list):
+            active = []
+        if not isinstance(completed, list):
+            completed = []
+
+        for entry in active:
+            if not isinstance(entry, dict):
+                continue
+            behavior = entry.get("code") or entry.get("behavior")
+            if not behavior:
+                continue
+            subject = self._subject_from_track_ids(entry.get("track_ids"))
+            start_frame = entry.get("start_frame")
+            if start_frame is None:
+                start_frame = frame_index
+            key = (str(behavior), subject)
+            pending.setdefault(key, int(start_frame))
+            self.record_event(
+                str(behavior),
+                "start",
+                int(start_frame),
+                subject=subject,
+                raw_event="agent_active",
+                confirmed=False,
+                rebuild=False,
+                highlight=False,
+                persist=False,
+                notify=False,
+            )
+
+        for entry in completed:
+            if not isinstance(entry, dict):
+                continue
+            behavior = entry.get("code") or entry.get("behavior")
+            if not behavior:
+                continue
+            subject = self._subject_from_track_ids(entry.get("track_ids"))
+            start_frame = entry.get("start_frame")
+            if start_frame is None:
+                key = (str(behavior), subject)
+                start_frame = pending.pop(key, frame_index)
+            end_frame = entry.get("end_frame")
+            if end_frame is None:
+                end_frame = frame_index
+            self.record_event(
+                str(behavior),
+                "start",
+                int(start_frame),
+                subject=subject,
+                raw_event="agent_completed",
+                confirmed=False,
+                rebuild=False,
+                highlight=False,
+                persist=False,
+                notify=False,
+            )
+            self.record_event(
+                str(behavior),
+                "end",
+                int(end_frame),
+                subject=subject,
+                raw_event="agent_completed",
+                confirmed=False,
+                rebuild=False,
+                highlight=False,
+                persist=False,
+                notify=False,
+            )
+
+    @staticmethod
+    def _subject_from_track_ids(track_ids: Any) -> Optional[str]:
+        if not track_ids:
+            return None
+        if isinstance(track_ids, (list, tuple)):
+            ids = [str(item) for item in track_ids if item is not None]
+            if not ids:
+                return None
+            if len(ids) == 1:
+                return ids[0]
+            return "+".join(ids)
+        return str(track_ids)
 
     def _persist_frames(self, frames: Iterable[int]) -> None:
         if self._annotation_store is None:

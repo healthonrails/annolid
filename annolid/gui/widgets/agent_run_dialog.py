@@ -115,6 +115,12 @@ class AgentRunDialog(QtWidgets.QDialog):
         self.streaming_chk.setChecked(bool(cfg.get("streaming", False)))
         layout.addRow(self.tr("Streaming"), self.streaming_chk)
 
+        self.anchor_rerun_chk = QtWidgets.QCheckBox(
+            self.tr("Rerun from corrected anchors (clear later frames)")
+        )
+        self.anchor_rerun_chk.setChecked(bool(cfg.get("anchor_rerun", False)))
+        layout.addRow(self.tr("Rerun from anchors"), self.anchor_rerun_chk)
+
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
             parent=self,
@@ -196,4 +202,5 @@ class AgentRunDialog(QtWidgets.QDialog):
             "stride": int(self.stride_spin.value()),
             "max_frames": None if max_frames < 0 else int(max_frames),
             "streaming": self.streaming_chk.isChecked(),
+            "anchor_rerun": self.anchor_rerun_chk.isChecked(),
         }

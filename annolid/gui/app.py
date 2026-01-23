@@ -136,6 +136,7 @@ from annolid.tracking.dino_keypoint_tracker import DinoKeypointVideoProcessor
 from annolid.tracking.dino_kpseg_tracker import DinoKPSEGVideoProcessor
 from annolid.gui.behavior_controller import BehaviorController, BehaviorEvent
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
+from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 from annolid.gui.widgets.timeline_panel import TimelinePanel
 from annolid.gui.tensorboard import (
     ensure_tensorboard,
@@ -247,6 +248,9 @@ class AnnolidWindow(MainWindow):
 
         self.here = Path(__file__).resolve().parent
         self.settings = QtCore.QSettings("Annolid", "Annolid")
+        self._agent_mode_enabled = bool(
+            self.settings.value("ui/agent_mode", True, type=bool)
+        )
         self._show_pose_edges = self.settings.value("pose/show_edges", True, type=bool)
         self._show_pose_bboxes = self.settings.value("pose/show_bbox", True, type=bool)
         self._save_pose_bbox = self.settings.value("pose/save_bbox", True, type=bool)
@@ -389,11 +393,28 @@ class AnnolidWindow(MainWindow):
         self.tracking_data_controller = TrackingDataController(self)
 
         # Behavior event log dock
-        self.behavior_log_widget = BehaviorEventLogWidget(self)
+        self.behavior_log_widget = BehaviorEventLogWidget(
+            self, color_getter=self._get_rgb_by_label
+        )
         self.behavior_log_widget.jumpToFrame.connect(self._jump_to_frame_from_log)
         self.behavior_log_widget.undoRequested.connect(self.undo_last_behavior_event)
         self.behavior_log_widget.clearRequested.connect(
             self._clear_behavior_events_from_log
+        )
+        self.behavior_log_widget.behaviorSelected.connect(
+            self._show_behavior_event_details
+        )
+        self.behavior_log_widget.editRequested.connect(
+            self._edit_behavior_event_from_log
+        )
+        self.behavior_log_widget.deleteRequested.connect(
+            self._delete_behavior_event_from_log
+        )
+        self.behavior_log_widget.confirmRequested.connect(
+            self._confirm_behavior_event_from_log
+        )
+        self.behavior_log_widget.rejectRequested.connect(
+            self._reject_behavior_event_from_log
         )
 
         self.behavior_log_dock = QtWidgets.QDockWidget("Behavior Log", self)
@@ -405,6 +426,27 @@ class AnnolidWindow(MainWindow):
             | QtWidgets.QDockWidget.DockWidgetFloatable
         )
         self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_log_dock)
+
+        self._behavior_event_detail_dialog = None
+
+        self.embedding_search_widget = EmbeddingSearchWidget(self)
+        self.embedding_search_widget.jumpToFrame.connect(self._jump_to_frame_from_log)
+        self.embedding_search_widget.statusMessage.connect(
+            lambda msg: self.statusBar().showMessage(msg, 4000)
+        )
+        self.embedding_search_widget.labelFramesRequested.connect(
+            self._label_frames_from_search
+        )
+        self.embedding_search_dock = QtWidgets.QDockWidget("Embedding Search", self)
+        self.embedding_search_dock.setObjectName("embeddingSearchDock")
+        self.embedding_search_dock.setWidget(self.embedding_search_widget)
+        self.embedding_search_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.embedding_search_dock)
+        self._apply_agent_mode(self._agent_mode_enabled)
 
         self.behavior_controls_widget = BehaviorControlsWidget(self)
         self.behavior_controls_widget.subjectChanged.connect(
@@ -4656,6 +4698,17 @@ class AnnolidWindow(MainWindow):
         self.behavior_controls_widget.show_warning(None)
         self._update_modifier_controls_for_behavior(self.event_type)
 
+    def _sync_behavior_flags_from_schema(self, schema: Optional[ProjectSchema]) -> None:
+        if schema is None or not hasattr(self, "flag_widget"):
+            return
+        current = dict(self.pinned_flags or {})
+        flags: Dict[str, bool] = {}
+        for behavior in schema.behaviors:
+            if not behavior.code:
+                continue
+            flags[str(behavior.code)] = bool(current.get(behavior.code, False))
+        self.loadFlags(flags)
+
     def _modifier_ids_from_schema(self) -> Set[str]:
         if not self.project_schema:
             return set()
@@ -4855,6 +4908,93 @@ class AnnolidWindow(MainWindow):
             self.seekbar.setValue(target)
         else:
             self.set_frame_number(target)
+        self._update_embedding_query_frame()
+
+    def _update_embedding_query_frame(self) -> None:
+        if not hasattr(self, "embedding_search_widget"):
+            return
+        try:
+            path = self._frame_image_path(int(self.frame_number))
+        except Exception:
+            path = None
+        if path is None or not Path(path).exists():
+            path = Path(self.filename) if getattr(self, "filename", None) else None
+        self.embedding_search_widget.set_query_image(path if path else None)
+
+    def _label_frames_from_search(self, frames: list[int]) -> None:
+        if not frames:
+            return
+        behavior = self.event_type or ""
+        if not behavior:
+            behavior, ok = QtWidgets.QInputDialog.getText(
+                self,
+                self.tr("Label Frames"),
+                self.tr("Behavior label for selected frames:"),
+            )
+            if not ok or not behavior.strip():
+                return
+            behavior = behavior.strip()
+        if len(frames) > 50:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                self.tr("Label Frames"),
+                self.tr("Label %s frames with '%s'?") % (len(frames), behavior),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+
+        def _timestamp_provider(frame: int) -> Optional[float]:
+            fps = self.fps if self.fps and self.fps > 0 else None
+            if fps is None:
+                return None
+            return float(frame) / float(fps)
+
+        subject = self._current_subject_name()
+        for frame in sorted(set(int(f) for f in frames)):
+            self.behavior_controller.create_interval(
+                behavior=str(behavior),
+                start_frame=frame,
+                end_frame=frame,
+                subject=subject,
+                timestamp_provider=_timestamp_provider,
+            )
+        self._refresh_behavior_log()
+
+    def _prepare_anchor_rerun(self) -> None:
+        if not self.video_results_folder:
+            return
+        store = AnnotationStore.for_frame_path(
+            Path(self.video_results_folder)
+            / f"{self.video_results_folder.name}_000000000.json"
+        )
+        anchors = self._collect_anchor_frames(store)
+        if not anchors:
+            return
+        anchor_frame = max(anchors)
+        store.remove_frames_after(anchor_frame, protected_frames=anchors)
+        self.statusBar().showMessage(
+            self.tr("Anchor rerun: cleared frames after %s") % anchor_frame, 4000
+        )
+
+    def _collect_anchor_frames(self, store: AnnotationStore) -> list[int]:
+        anchors: list[int] = []
+        for frame in store.iter_frames():
+            record = store.get_frame(frame) or {}
+            shapes = record.get("shapes") or []
+            other = record.get("otherData") or {}
+            behavior_block = other.get("annolid_behavior") or {}
+            events = behavior_block.get("events") or []
+            confirmed_events = [
+                e for e in events if isinstance(e, dict) and e.get("confirmed", True)
+            ]
+            if shapes or confirmed_events:
+                try:
+                    anchors.append(int(frame))
+                except Exception:
+                    continue
+        return sorted(set(anchors))
 
     def undo_last_behavior_event(self) -> None:
         event = self.behavior_controller.pop_last_event()
@@ -5222,6 +5362,7 @@ class AnnolidWindow(MainWindow):
             "stride": settings.value("agent_run/stride", 1, type=int),
             "max_frames": settings.value("agent_run/max_frames", -1, type=int),
             "streaming": settings.value("agent_run/streaming", False, type=bool),
+            "anchor_rerun": settings.value("agent_run/anchor_rerun", False, type=bool),
         }
 
     def _save_agent_run_settings(self, values: Dict[str, Any]) -> None:
@@ -5261,6 +5402,9 @@ class AnnolidWindow(MainWindow):
             "agent_run/max_frames", -1 if max_frames is None else int(max_frames)
         )
         settings.setValue("agent_run/streaming", bool(values.get("streaming", False)))
+        settings.setValue(
+            "agent_run/anchor_rerun", bool(values.get("anchor_rerun", False))
+        )
 
     def open_agent_run_dialog(self) -> None:
         if not self.video_file:
@@ -5334,6 +5478,12 @@ class AnnolidWindow(MainWindow):
         ):
             from annolid.core.agent.runner import AgentRunConfig
             from annolid.core.agent.service import run_agent_to_results
+
+            if bool(config.get("anchor_rerun")):
+                try:
+                    self._prepare_anchor_rerun()
+                except Exception as exc:
+                    logger.warning("Failed to apply anchor rerun: %s", exc)
 
             vision_model = None
             if str(config.get("vision_adapter") or "").strip().lower() == "maskrcnn":
@@ -5515,6 +5665,35 @@ class AnnolidWindow(MainWindow):
             self.seekbar.setTickMarks()
         if self.frame_number is not None:
             self.loadPredictShapes(self.frame_number, self.filename)
+
+    def toggle_agent_mode(self, checked: bool = False) -> None:
+        enabled = bool(checked)
+        self._agent_mode_enabled = enabled
+        self.settings.setValue("ui/agent_mode", enabled)
+        self._apply_agent_mode(enabled)
+        self.statusBar().showMessage(
+            self.tr("Agent mode enabled")
+            if enabled
+            else self.tr("Agent mode disabled"),
+            3000,
+        )
+
+    def _apply_agent_mode(self, enabled: bool) -> None:
+        for dock_name in (
+            "behavior_log_dock",
+            "behavior_controls_dock",
+            "embedding_search_dock",
+        ):
+            dock = getattr(self, dock_name, None)
+            if dock is not None:
+                dock.setVisible(bool(enabled))
+
+        try:
+            action = self.menu_controller._actions.get("run_agent")
+            if action is not None:
+                action.setEnabled(bool(enabled))
+        except Exception:
+            pass
 
     def _load_agent_event_intervals(self, result) -> List[Dict[str, Any]]:
         results_dir = None
@@ -5722,6 +5901,151 @@ class AnnolidWindow(MainWindow):
             except Exception:
                 continue
 
+    def _show_behavior_event_details(self, event) -> None:
+        try:
+            behavior = str(event.behavior)
+        except Exception:
+            behavior = "Unknown"
+        subject = getattr(event, "subject", None)
+        category = getattr(event, "category", None)
+        modifiers = getattr(event, "modifiers", None)
+        timestamp = getattr(event, "timestamp", None)
+
+        details = [f"Behavior: {behavior}"]
+        if subject:
+            details.append(f"Subject: {subject}")
+        if category:
+            details.append(f"Category: {category}")
+        if modifiers:
+            details.append(f"Modifiers: {', '.join(modifiers)}")
+        if timestamp is not None:
+            details.append(f"Time: {float(timestamp):.2f}s")
+        details.append(f"Frame: {int(getattr(event, 'frame', 0))}")
+
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tr("Behavior Event"),
+            "\n".join(details),
+        )
+
+    def _edit_behavior_event_from_log(self, event) -> None:
+        interval = self._interval_for_behavior_event(event)
+        if interval is None:
+            return
+        start_frame, end_frame = interval
+        if end_frame is None:
+            end_frame = start_frame
+
+        new_start, ok = QtWidgets.QInputDialog.getInt(
+            self,
+            self.tr("Edit Interval"),
+            self.tr("Start frame:"),
+            value=int(start_frame),
+            min=0,
+            max=max(int(self.num_frames or 0) - 1, 0),
+        )
+        if not ok:
+            return
+        new_end, ok = QtWidgets.QInputDialog.getInt(
+            self,
+            self.tr("Edit Interval"),
+            self.tr("End frame:"),
+            value=int(end_frame),
+            min=0,
+            max=max(int(self.num_frames or 0) - 1, 0),
+        )
+        if not ok:
+            return
+
+        def _timestamp_provider(frame: int) -> Optional[float]:
+            fps = self.fps if self.fps and self.fps > 0 else None
+            if fps is None:
+                return None
+            return float(frame) / float(fps)
+
+        self.behavior_controller.update_interval(
+            behavior=str(event.behavior),
+            old_start=int(start_frame),
+            old_end=int(end_frame) if end_frame is not None else None,
+            new_start=int(new_start),
+            new_end=int(new_end),
+            subject=getattr(event, "subject", None),
+            timestamp_provider=_timestamp_provider,
+        )
+        self._refresh_behavior_log()
+
+    def _delete_behavior_event_from_log(self, event) -> None:
+        interval = self._interval_for_behavior_event(event)
+        if interval is not None:
+            start_frame, end_frame = interval
+            if end_frame is None:
+                end_frame = start_frame
+            self.behavior_controller.delete_interval(
+                behavior=str(event.behavior),
+                start_frame=int(start_frame),
+                end_frame=int(end_frame),
+            )
+        else:
+            key = (int(event.frame), str(event.behavior), str(event.event))
+            self.behavior_controller.delete_event(key)
+        self._refresh_behavior_log()
+
+    def _confirm_behavior_event_from_log(self, event) -> None:
+        interval = self._interval_for_behavior_event(event)
+        if interval is not None:
+            start_frame, end_frame = interval
+            if end_frame is None:
+                end_frame = start_frame
+            self.behavior_controller.set_interval_confirmation(
+                behavior=str(event.behavior),
+                start_frame=int(start_frame),
+                end_frame=int(end_frame),
+                confirmed=True,
+            )
+        else:
+            key = (int(event.frame), str(event.behavior), str(event.event))
+            self.behavior_controller.set_event_confirmation(key, confirmed=True)
+        self._refresh_behavior_log()
+
+    def _reject_behavior_event_from_log(self, event) -> None:
+        interval = self._interval_for_behavior_event(event)
+        if interval is not None:
+            start_frame, end_frame = interval
+            if end_frame is None:
+                end_frame = start_frame
+            self.behavior_controller.set_interval_confirmation(
+                behavior=str(event.behavior),
+                start_frame=int(start_frame),
+                end_frame=int(end_frame),
+                confirmed=False,
+            )
+        else:
+            key = (int(event.frame), str(event.behavior), str(event.event))
+            self.behavior_controller.set_event_confirmation(key, confirmed=False)
+        self._refresh_behavior_log()
+
+    def _interval_for_behavior_event(self, event):
+        try:
+            ranges = self.behavior_controller.timeline.get_behavior_ranges(
+                str(event.behavior)
+            )
+        except Exception:
+            return None
+        for start, end in ranges:
+            end_bound = end if end is not None else start
+            if int(start) <= int(event.frame) <= int(end_bound):
+                return (start, end)
+        return None
+
+    def _refresh_behavior_log(self) -> None:
+        if getattr(self, "behavior_log_widget", None) is None:
+            return
+        fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
+        self.behavior_log_widget.set_events(
+            list(self.behavior_controller.iter_events()),
+            fps=fps_for_log,
+        )
+
     def togglePlay(self):
         if self.isPlaying:
             self.stopPlaying()
@@ -5780,6 +6104,7 @@ class AnnolidWindow(MainWindow):
             self.frame_loader.request(frame_number)
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(self.filename)
+        self._update_embedding_query_frame()
 
     def load_tracking_results(self, cur_video_folder, video_filename):
         self.tracking_data_controller.load_tracking_results(
@@ -5905,6 +6230,7 @@ class AnnolidWindow(MainWindow):
         self.project_schema = schema
         self.behavior_controller.configure_from_schema(schema)
         self._populate_behavior_controls_from_schema(schema)
+        self._sync_behavior_flags_from_schema(schema)
         self._update_modifier_controls_for_behavior(self.event_type)
         self._configure_pose_schema_from_project()
 
@@ -6125,6 +6451,7 @@ class AnnolidWindow(MainWindow):
             self.project_schema = new_schema
             self.behavior_controller.configure_from_schema(new_schema)
             self._populate_behavior_controls_from_schema(new_schema)
+            self._sync_behavior_flags_from_schema(new_schema)
             self._update_modifier_controls_for_behavior(self.event_type)
 
             target_path = self.project_schema_path
@@ -6179,6 +6506,7 @@ class AnnolidWindow(MainWindow):
         self.project_schema_path = project_path / "project.annolid.json"
         self.behavior_controller.configure_from_schema(schema)
         self._populate_behavior_controls_from_schema(schema)
+        self._sync_behavior_flags_from_schema(schema)
 
         # Open the first video if requested and available
         if videos:
