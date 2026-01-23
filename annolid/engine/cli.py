@@ -364,6 +364,16 @@ def _cmd_agent(args: argparse.Namespace) -> int:
             score_threshold=float(args.vision_score_threshold),
             device=str(args.vision_device) if args.vision_device else None,
         )
+    elif str(args.vision_adapter or "").strip().lower() == "dino_kpseg":
+        from annolid.core.models.adapters.dino_kpseg_adapter import DinoKPSEGAdapter
+
+        if not args.vision_weights:
+            raise ValueError("DinoKPSEG adapter requires --vision-weights.")
+        vision_model = DinoKPSEGAdapter(
+            weight_path=str(args.vision_weights),
+            device=str(args.vision_device) if args.vision_device else None,
+            score_threshold=float(args.vision_score_threshold),
+        )
 
     llm_model = None
     if str(args.llm_adapter or "").strip().lower() == "llm_chat":
@@ -726,9 +736,14 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     agent_p.add_argument(
         "--vision-adapter",
-        choices=("none", "maskrcnn"),
+        choices=("none", "maskrcnn", "dino_kpseg"),
         default="none",
         help="Optional vision adapter (default: none).",
+    )
+    agent_p.add_argument(
+        "--vision-weights",
+        default=None,
+        help="Weights path for dino_kpseg vision adapter.",
     )
     agent_p.add_argument(
         "--vision-pretrained",

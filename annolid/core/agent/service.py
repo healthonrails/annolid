@@ -11,6 +11,7 @@ from annolid.core.models.base import RuntimeModel
 from annolid.core.output.validate import validate_agent_record
 from annolid.core.agent.tools.artifacts import FileArtifactStore, content_hash
 from annolid.utils.annotation_store import AnnotationStore
+from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,7 @@ def run_agent_to_results(
         video_path=resolved_video,
         schema=schema,
         agent_meta=agent_meta,
+        seed_record_provider=_build_seed_record_provider(results_dir_path),
     )
     with ndjson_path.open("w", encoding="utf-8") as fh:
         for record in iterator:
@@ -233,3 +235,52 @@ def run_agent_to_results(
         stopped=stopped,
         cached=False,
     )
+
+
+def _build_seed_record_provider(results_dir: Path):
+    def _provider(frame_index: int) -> Optional[dict[str, Any]]:
+        frame_tag = f"{int(frame_index):09}"
+        candidates = [
+            results_dir / f"{results_dir.name}_{frame_tag}.json",
+            results_dir / f"{frame_tag}.json",
+        ]
+        data = None
+        for candidate in candidates:
+            try:
+                data = load_labelme_json(candidate)
+                break
+            except (AnnotationStoreError, FileNotFoundError):
+                continue
+            except Exception:
+                continue
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            return None
+        shapes = data.get("shapes")
+        if not isinstance(shapes, list) or not shapes:
+            return None
+        has_keypoint = False
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
+            if shape_type in {"point", "circle"}:
+                has_keypoint = True
+                break
+        if not has_keypoint:
+            return None
+        cleaned: list[dict[str, Any]] = []
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            if "mask" in shape and not isinstance(shape.get("mask"), str):
+                shape = dict(shape)
+                shape.pop("mask", None)
+            if "description" in shape and shape.get("description") is None:
+                shape = dict(shape)
+                shape.pop("description", None)
+            cleaned.append(shape)
+        return {"shapes": cleaned, "flags": data.get("flags") or {}}
+
+    return _provider

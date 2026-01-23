@@ -41,11 +41,24 @@ class AgentRunDialog(QtWidgets.QDialog):
         )
 
         self.vision_adapter_combo = QtWidgets.QComboBox()
-        self.vision_adapter_combo.addItems(["none", "maskrcnn"])
+        self.vision_adapter_combo.addItems(["none", "maskrcnn", "dino_kpseg"])
         self.vision_adapter_combo.setCurrentText(
             str(cfg.get("vision_adapter") or "none")
         )
         layout.addRow(self.tr("Vision adapter"), self.vision_adapter_combo)
+
+        self.vision_weights_edit = QtWidgets.QLineEdit(
+            str(cfg.get("vision_weights") or "")
+        )
+        self.vision_weights_edit.setPlaceholderText(
+            self.tr("Path to DinoKPSEG weights")
+        )
+        self.vision_weights_btn = QtWidgets.QPushButton(self.tr("Browse…"))
+        self.vision_weights_btn.clicked.connect(self._browse_vision_weights)
+        layout.addRow(
+            self.tr("Vision weights"),
+            self._wrap(self.vision_weights_edit, self.vision_weights_btn),
+        )
 
         self.vision_pretrained_chk = QtWidgets.QCheckBox(
             self.tr("Use pretrained weights")
@@ -159,14 +172,25 @@ class AgentRunDialog(QtWidgets.QDialog):
         if path:
             self.schema_edit.setText(path)
 
+    def _browse_vision_weights(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select DinoKPSEG weights"),
+            "",
+            self.tr("Checkpoint files (*.pt *.pth);;All Files (*)"),
+        )
+        if path:
+            self.vision_weights_edit.setText(path)
+
     def _update_vision_controls(self, adapter: str) -> None:
-        enabled = str(adapter).strip().lower() != "none"
-        for widget in (
-            self.vision_pretrained_chk,
-            self.vision_score_spin,
-            self.vision_device_edit,
-        ):
-            widget.setEnabled(enabled)
+        adapter_norm = str(adapter).strip().lower()
+        enabled = adapter_norm != "none"
+        is_dino = adapter_norm == "dino_kpseg"
+        self.vision_pretrained_chk.setEnabled(enabled and not is_dino)
+        self.vision_score_spin.setEnabled(enabled)
+        self.vision_device_edit.setEnabled(enabled)
+        self.vision_weights_edit.setEnabled(is_dino)
+        self.vision_weights_btn.setEnabled(is_dino)
 
     def _update_llm_controls(self, adapter: str) -> None:
         enabled = str(adapter).strip().lower() != "none"
@@ -188,6 +212,7 @@ class AgentRunDialog(QtWidgets.QDialog):
         return {
             "schema_path": schema_path or None,
             "vision_adapter": self.vision_adapter_combo.currentText(),
+            "vision_weights": self.vision_weights_edit.text().strip() or None,
             "vision_pretrained": self.vision_pretrained_chk.isChecked(),
             "vision_score_threshold": self.vision_score_spin.value(),
             "vision_device": self.vision_device_edit.text().strip() or None,

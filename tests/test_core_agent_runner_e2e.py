@@ -8,6 +8,12 @@ import pytest
 
 from annolid.core.agent.runner import AgentRunner
 from annolid.core.behavior.spec import default_behavior_spec, save_behavior_spec
+from annolid.core.models.base import (
+    ModelCapabilities,
+    ModelRequest,
+    ModelResponse,
+    RuntimeModel,
+)
 from annolid.core.models.adapters.maskrcnn_torchvision import TorchvisionMaskRCNNAdapter
 from annolid.core.output.validate import validate_agent_record
 
@@ -86,3 +92,88 @@ def test_agent_runner_can_call_vision_adapter(tmp_path: Path) -> None:
     validate_agent_record(record)
     assert record["shapes"]
     assert record["shapes"][0]["shape_type"] == "rectangle"
+
+
+def test_agent_runner_merges_seed_keypoints(tmp_path: Path) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_tiny_video(video_path, frames=1)
+
+    schema = default_behavior_spec()
+    agent_meta = AgentRunner()._build_agent_meta(schema, None, video_path)  # type: ignore[attr-defined]
+
+    class FakeKeypointModel(RuntimeModel):
+        @property
+        def model_id(self) -> str:
+            return "fake:keypoints"
+
+        @property
+        def capabilities(self) -> ModelCapabilities:
+            return ModelCapabilities(
+                tasks=("detect",),
+                input_modalities=("image",),
+                output_modalities=("detections", "keypoints"),
+            )
+
+        def load(self) -> None:
+            return
+
+        def predict(self, request: ModelRequest) -> ModelResponse:
+            _ = request
+            return ModelResponse(
+                task="detect",
+                output={
+                    "detections": [
+                        {
+                            "bbox_xyxy": [0.0, 0.0, 10.0, 10.0],
+                            "label_id": 0,
+                            "score": 0.9,
+                            "keypoints_xy": [[2.0, 2.0], [4.0, 4.0]],
+                            "keypoint_scores": [0.9, 0.8],
+                            "keypoint_visible": [True, True],
+                            "keypoint_names": ["nose", "tail"],
+                        }
+                    ]
+                },
+            )
+
+        def close(self) -> None:
+            return
+
+    def seed_provider(_: int):
+        return {
+            "shapes": [
+                {
+                    "label": "manual_poly",
+                    "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "shape_type": "polygon",
+                    "flags": {},
+                    "mask": None,
+                },
+                {
+                    "label": "nose",
+                    "points": [[10.0, 11.0]],
+                    "shape_type": "point",
+                    "flags": {},
+                    "visible": True,
+                },
+            ]
+        }
+
+    runner = AgentRunner(vision_model=FakeKeypointModel())
+    record = next(
+        runner.iter_records(
+            video_path=video_path,
+            schema=schema,
+            agent_meta=agent_meta,
+            seed_record_provider=seed_provider,
+        )
+    )
+
+    validate_agent_record(record)
+    points = {
+        shape["label"]: shape["points"][0]
+        for shape in record["shapes"]
+        if shape.get("shape_type") == "point"
+    }
+    assert points["nose"] == [10.0, 11.0]
+    assert points["tail"] == [4.0, 4.0]

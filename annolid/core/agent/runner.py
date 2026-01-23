@@ -5,7 +5,7 @@ import json
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from annolid.core.behavior.spec import BehaviorSpec, load_behavior_spec
 from annolid.core.media.video import CV2Video
@@ -75,6 +75,9 @@ class AgentRunner:
         video_path: Path,
         schema: BehaviorSpec,
         agent_meta: Dict[str, Any],
+        seed_record_provider: Optional[
+            Callable[[int], Optional[Dict[str, Any]]]
+        ] = None,
     ) -> Iterator[Dict[str, Any]]:
         _ = schema  # reserved for future behavior-driven flagging logic
         video = CV2Video(video_path)
@@ -85,51 +88,81 @@ class AgentRunner:
                 if self._llm_model is not None:
                     stack.enter_context(self._llm_model)
 
-            total = video.total_frames()
-            stride = max(1, int(self._config.stride))
-            max_frames = self._config.max_frames
-            emitted = 0
+                total = video.total_frames()
+                stride = max(1, int(self._config.stride))
+                max_frames = self._config.max_frames
+                emitted = 0
 
-            frame_indices = range(0, total, stride)
-            for frame_index in frame_indices:
-                if max_frames is not None and emitted >= int(max_frames):
-                    break
+                frame_indices = range(0, total, stride)
+                for frame_index in frame_indices:
+                    if max_frames is not None and emitted >= int(max_frames):
+                        break
 
-                frame = video.load_frame(frame_index)
-                height, width = int(frame.shape[0]), int(frame.shape[1])
-                timestamp_sec = video.last_timestamp_sec()
+                    frame = video.load_frame(frame_index)
+                    height, width = int(frame.shape[0]), int(frame.shape[1])
+                    timestamp_sec = video.last_timestamp_sec()
 
-                shapes: List[Dict[str, Any]] = []
-                if self._vision_model is not None:
-                    shapes = self._shapes_from_vision_model(frame)
+                    seed_shapes: List[Dict[str, Any]] = []
+                    seed_keypoints = None
+                    if seed_record_provider is not None:
+                        try:
+                            seed_record = seed_record_provider(int(frame_index))
+                        except Exception:
+                            seed_record = None
+                        if isinstance(seed_record, dict):
+                            seed_shapes = list(seed_record.get("shapes") or [])
+                            seed_keypoints = self._seed_keypoints_from_shapes(
+                                seed_shapes
+                            )
 
-                record: Dict[str, Any] = {
-                    "version": "AnnolidAgentRunner.1",
-                    "video_name": video_path.name,
-                    "frame_index": int(frame_index),
-                    "imagePath": "",
-                    "imageHeight": int(height),
-                    "imageWidth": int(width),
-                    "flags": {},
-                    "shapes": shapes,
-                    "otherData": {"agent": dict(agent_meta)},
-                }
-                if timestamp_sec is not None:
-                    record["timestamp_sec"] = float(timestamp_sec)
+                    shapes: List[Dict[str, Any]] = []
+                    if self._vision_model is not None:
+                        shapes = self._shapes_from_vision_model(
+                            frame,
+                            frame_index=int(frame_index),
+                            seed_keypoints=seed_keypoints,
+                        )
+                    if seed_shapes:
+                        shapes = self._merge_seed_shapes(seed_shapes, shapes)
 
-                emitted += 1
-                yield record
+                    record: Dict[str, Any] = {
+                        "version": "AnnolidAgentRunner.1",
+                        "video_name": video_path.name,
+                        "frame_index": int(frame_index),
+                        "imagePath": "",
+                        "imageHeight": int(height),
+                        "imageWidth": int(width),
+                        "flags": {},
+                        "shapes": shapes,
+                        "otherData": {"agent": dict(agent_meta)},
+                    }
+                    if timestamp_sec is not None:
+                        record["timestamp_sec"] = float(timestamp_sec)
+
+                    emitted += 1
+                    yield record
         finally:
             video.release()
 
-    def _shapes_from_vision_model(self, frame_rgb) -> List[Dict[str, Any]]:
+    def _shapes_from_vision_model(
+        self,
+        frame_rgb,
+        *,
+        frame_index: int,
+        seed_keypoints: Optional[Dict[str, Dict[str, object]]],
+    ) -> List[Dict[str, Any]]:
         model = self._vision_model
         if model is None:
             return []
 
         caps = model.capabilities
         task = "detect" if "detect" in caps.tasks else "caption"
-        response = model.predict(ModelRequest(task=task, image=frame_rgb))
+        params: Dict[str, Any] = {"frame_index": int(frame_index)}
+        if seed_keypoints:
+            params["seed_keypoints"] = seed_keypoints
+        response = model.predict(
+            ModelRequest(task=task, image=frame_rgb, params=params)
+        )
 
         if task != "detect":
             text = response.text or (response.output or {}).get("text")
@@ -165,6 +198,205 @@ class AgentRunner:
                     "shape_type": "rectangle",
                     "flags": {},
                     "score": float(score) if score is not None else None,
+                }
+            )
+            shapes.extend(self._keypoint_shapes_from_detection(det))
+        return shapes
+
+    @staticmethod
+    def _seed_keypoints_from_shapes(
+        shapes: Sequence[Dict[str, Any]],
+    ) -> Optional[Dict[str, Dict[str, object]]]:
+        seeds: Dict[str, Dict[str, object]] = {}
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
+            if shape_type not in {"point", "circle"}:
+                continue
+            label = str(shape.get("label") or "").strip()
+            if not label:
+                continue
+            points = shape.get("points")
+            if not isinstance(points, list) or not points:
+                continue
+            first = points[0]
+            if not isinstance(first, list) or len(first) < 2:
+                continue
+            x, y = float(first[0]), float(first[1])
+            visible = shape.get("visible")
+            if visible is None:
+                visible = True
+            seeds[label] = {"xy": [x, y], "visible": bool(visible)}
+        return seeds or None
+
+    @staticmethod
+    def _sanitize_shape(shape: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(shape, dict):
+            return None
+
+        label_raw = shape.get("label")
+        label = str(label_raw).strip() if label_raw is not None else ""
+        if not label:
+            label = "unknown"
+        shape["label"] = label
+
+        st_raw = shape.get("shape_type")
+        shape_type = str(st_raw).strip() if st_raw is not None else ""
+        if not shape_type:
+            return None
+        shape["shape_type"] = shape_type
+        shape_type_norm = shape_type.lower()
+
+        points = shape.get("points")
+        if not isinstance(points, list):
+            points = []
+        clean_points: list[list[float]] = []
+        for pt in points:
+            if not isinstance(pt, list) or len(pt) < 2:
+                continue
+            try:
+                x = float(pt[0])
+                y = float(pt[1])
+            except Exception:
+                continue
+            clean_points.append([x, y])
+        shape["points"] = clean_points
+
+        if "group_id" in shape:
+            gid = shape.get("group_id")
+            if gid is None or isinstance(gid, int):
+                pass
+            elif isinstance(gid, str) and gid.strip().isdigit():
+                shape["group_id"] = int(gid.strip())
+            else:
+                shape["group_id"] = None
+
+        if "flags" in shape:
+            flags = shape.get("flags")
+            if isinstance(flags, dict):
+                pass
+            elif flags is None:
+                shape.pop("flags", None)
+            else:
+                shape["flags"] = {}
+
+        if "visible" in shape:
+            vis = shape.get("visible")
+            if isinstance(vis, bool):
+                pass
+            elif isinstance(vis, int) and vis in {0, 1}:
+                shape["visible"] = bool(vis)
+            elif isinstance(vis, str):
+                val = vis.strip().lower()
+                if val in {"true", "1", "yes"}:
+                    shape["visible"] = True
+                elif val in {"false", "0", "no"}:
+                    shape["visible"] = False
+                else:
+                    shape.pop("visible", None)
+            else:
+                shape.pop("visible", None)
+
+        if "description" in shape:
+            desc = shape.get("description")
+            if desc is None:
+                shape.pop("description", None)
+            elif isinstance(desc, str):
+                pass
+            else:
+                shape["description"] = str(desc)
+
+        if "mask" in shape:
+            mask_val = shape.get("mask")
+            if isinstance(mask_val, str) and mask_val:
+                pass
+            else:
+                shape.pop("mask", None)
+                if shape_type_norm == "mask":
+                    return None
+
+        return shape
+
+    @staticmethod
+    def _merge_seed_shapes(
+        seed_shapes: Sequence[Dict[str, Any]],
+        predicted_shapes: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        for shape in seed_shapes:
+            if not isinstance(shape, dict):
+                continue
+            sanitized = AgentRunner._sanitize_shape(dict(shape))
+            if sanitized is not None:
+                merged.append(sanitized)
+        seed_point_labels: set[str] = set()
+        for shape in merged:
+            if not isinstance(shape, dict):
+                continue
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
+            if shape_type not in {"point", "circle"}:
+                continue
+            label = str(shape.get("label") or "").strip()
+            if label:
+                seed_point_labels.add(label)
+
+        for shape in predicted_shapes:
+            if not isinstance(shape, dict):
+                continue
+            sanitized = AgentRunner._sanitize_shape(dict(shape))
+            if sanitized is None:
+                continue
+            shape_type = str(sanitized.get("shape_type") or "").strip().lower()
+            if shape_type in {"point", "circle"}:
+                label = str(sanitized.get("label") or "").strip()
+                if label and label in seed_point_labels:
+                    continue
+            merged.append(sanitized)
+        return merged
+
+    @staticmethod
+    def _keypoint_shapes_from_detection(det: Dict[str, Any]) -> List[Dict[str, Any]]:
+        keypoints = det.get("keypoints_xy")
+        if not isinstance(keypoints, list) or not keypoints:
+            return []
+        names = det.get("keypoint_names")
+        if not isinstance(names, list):
+            names = None
+        scores = det.get("keypoint_scores")
+        if not isinstance(scores, list):
+            scores = None
+        visible = det.get("keypoint_visible")
+        if not isinstance(visible, list):
+            visible = None
+
+        shapes: List[Dict[str, Any]] = []
+        for idx, kp in enumerate(keypoints):
+            if not isinstance(kp, list) or len(kp) < 2:
+                continue
+            x, y = float(kp[0]), float(kp[1])
+            label = None
+            if names is not None and idx < len(names):
+                label = str(names[idx]).strip() or None
+            if label is None:
+                label = f"kp_{idx}"
+            kp_visible = True
+            if visible is not None and idx < len(visible):
+                kp_visible = bool(visible[idx])
+            kp_score = None
+            if scores is not None and idx < len(scores):
+                try:
+                    kp_score = float(scores[idx])
+                except Exception:
+                    kp_score = None
+            shapes.append(
+                {
+                    "label": label,
+                    "points": [[x, y]],
+                    "shape_type": "point",
+                    "flags": {},
+                    "visible": kp_visible,
+                    "score": kp_score,
                 }
             )
         return shapes

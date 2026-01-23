@@ -5339,6 +5339,7 @@ class AnnolidWindow(MainWindow):
             "vision_adapter": settings.value(
                 "agent_run/vision_adapter", "none", type=str
             ),
+            "vision_weights": settings.value("agent_run/vision_weights", "", type=str),
             "vision_pretrained": settings.value(
                 "agent_run/vision_pretrained", False, type=bool
             ),
@@ -5370,6 +5371,9 @@ class AnnolidWindow(MainWindow):
         settings.setValue("agent_run/schema_path", values.get("schema_path") or "")
         settings.setValue(
             "agent_run/vision_adapter", values.get("vision_adapter", "none")
+        )
+        settings.setValue(
+            "agent_run/vision_weights", values.get("vision_weights") or ""
         )
         settings.setValue(
             "agent_run/vision_pretrained",
@@ -5497,6 +5501,28 @@ class AnnolidWindow(MainWindow):
                     device=str(config.get("vision_device"))
                     if config.get("vision_device")
                     else None,
+                )
+            elif (
+                str(config.get("vision_adapter") or "").strip().lower() == "dino_kpseg"
+            ):
+                from annolid.core.models.adapters.dino_kpseg_adapter import (
+                    DinoKPSEGAdapter,
+                )
+
+                weight_path = self._resolve_dino_kpseg_weight(
+                    config.get("vision_weights") or ""
+                )
+                if not weight_path:
+                    raise ValueError(
+                        "DinoKPSEG weights could not be resolved. "
+                        "Select a checkpoint or train a DinoKPSEG model."
+                    )
+                vision_model = DinoKPSEGAdapter(
+                    weight_path=weight_path,
+                    device=str(config.get("vision_device"))
+                    if config.get("vision_device")
+                    else None,
+                    score_threshold=float(config.get("vision_score_threshold", 0.5)),
                 )
 
             llm_model = None
