@@ -251,6 +251,9 @@ class AnnolidWindow(MainWindow):
         self._agent_mode_enabled = bool(
             self.settings.value("ui/agent_mode", True, type=bool)
         )
+        self._show_embedding_search = bool(
+            self.settings.value("ui/show_embedding_search", False, type=bool)
+        )
         self._show_pose_edges = self.settings.value("pose/show_edges", True, type=bool)
         self._show_pose_bboxes = self.settings.value("pose/show_bbox", True, type=bool)
         self._save_pose_bbox = self.settings.value("pose/save_bbox", True, type=bool)
@@ -446,6 +449,12 @@ class AnnolidWindow(MainWindow):
             | QtWidgets.QDockWidget.DockWidgetFloatable
         )
         self.addDockWidget(Qt.RightDockWidgetArea, self.embedding_search_dock)
+        try:
+            self.tabifyDockWidget(self.video_dock, self.embedding_search_dock)
+            self.video_dock.show()
+            self.video_dock.raise_()
+        except Exception:
+            pass
         self._apply_agent_mode(self._agent_mode_enabled)
 
         self.behavior_controls_widget = BehaviorControlsWidget(self)
@@ -4920,6 +4929,25 @@ class AnnolidWindow(MainWindow):
         if path is None or not Path(path).exists():
             path = Path(self.filename) if getattr(self, "filename", None) else None
         self.embedding_search_widget.set_query_image(path if path else None)
+        self._refresh_embedding_file_list()
+
+    def _refresh_embedding_file_list(self) -> None:
+        if not hasattr(self, "embedding_search_widget"):
+            return
+        files: list[Path] = []
+        base = getattr(self, "video_results_folder", None)
+        if base:
+            try:
+                base_path = Path(base)
+                patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp")
+                for pat in patterns:
+                    files.extend(sorted(base_path.glob(pat)))
+            except Exception:
+                files = []
+        if files:
+            self.embedding_search_widget.set_files(files)
+        else:
+            self.embedding_search_widget.clear_files()
 
     def _label_frames_from_search(self, frames: list[int]) -> None:
         if not frames:
@@ -5635,6 +5663,7 @@ class AnnolidWindow(MainWindow):
             self.video_results_folder = results_dir
             self.annotation_dir = results_dir
             self.behavior_controller.attach_annotation_store_for_video(results_dir)
+            self._refresh_embedding_file_list()
 
         event_intervals = self._load_agent_event_intervals(result)
         if event_intervals:
@@ -5704,15 +5733,34 @@ class AnnolidWindow(MainWindow):
             3000,
         )
 
+    def toggle_embedding_search(self, checked: bool = False) -> None:
+        enabled = bool(checked)
+        self._show_embedding_search = enabled
+        self.settings.setValue("ui/show_embedding_search", enabled)
+        dock = getattr(self, "embedding_search_dock", None)
+        if dock is None:
+            return
+        dock.setVisible(bool(self._agent_mode_enabled) and bool(enabled))
+        if enabled:
+            try:
+                dock.raise_()
+            except Exception:
+                pass
+
     def _apply_agent_mode(self, enabled: bool) -> None:
-        for dock_name in (
-            "behavior_log_dock",
-            "behavior_controls_dock",
-            "embedding_search_dock",
-        ):
-            dock = getattr(self, dock_name, None)
-            if dock is not None:
-                dock.setVisible(bool(enabled))
+        behavior_log = getattr(self, "behavior_log_dock", None)
+        if behavior_log is not None:
+            behavior_log.setVisible(bool(enabled))
+
+        behavior_controls = getattr(self, "behavior_controls_dock", None)
+        if behavior_controls is not None:
+            behavior_controls.setVisible(bool(enabled))
+
+        embedding_search = getattr(self, "embedding_search_dock", None)
+        if embedding_search is not None:
+            embedding_search.setVisible(
+                bool(enabled) and bool(getattr(self, "_show_embedding_search", False))
+            )
 
         try:
             action = self.menu_controller._actions.get("run_agent")
@@ -6770,6 +6818,7 @@ class AnnolidWindow(MainWindow):
             self.behavior_controller.attach_annotation_store_for_video(
                 self.video_results_folder
             )
+            self._refresh_embedding_file_list()
             if getattr(self, "depth_manager", None) is not None:
                 self.depth_manager.load_depth_ndjson_records()
             if getattr(self, "optical_flow_manager", None) is not None:

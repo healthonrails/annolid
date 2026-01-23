@@ -361,6 +361,14 @@ class MenuController:
                 "checked": bool(getattr(w, "_agent_mode_enabled", True)),
             },
             {
+                "name": "toggle_embedding_search",
+                "text": w.tr("Frame Search (&Embedding)"),
+                "slot": w.toggle_embedding_search,
+                "tip": w.tr("Show/hide frame search (embedding) dock"),
+                "checkable": True,
+                "checked": bool(getattr(w, "_show_embedding_search", False)),
+            },
+            {
                 "name": "toggle_pose_bbox_display",
                 "text": w.tr("Show Pose &BBoxes"),
                 "slot": w.toggle_pose_bbox_display,
@@ -694,6 +702,7 @@ class MenuController:
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
                 actions["toggle_agent_mode"],
+                actions["toggle_embedding_search"],
                 w.patch_similarity_action,
                 w.pca_map_action,
             ),
