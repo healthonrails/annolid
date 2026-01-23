@@ -6,14 +6,15 @@ from typing import List, Optional
 
 from qtpy import QtWidgets
 
-from annolid.behavior.project_schema import (
+from annolid.core.behavior.spec import (
     BehaviorDefinition,
     CategoryDefinition,
     ModifierDefinition,
     ProjectSchema,
     SubjectDefinition,
+    load_behavior_spec,
+    save_behavior_spec,
 )
-from annolid.core.behavior.spec import load_behavior_spec, save_behavior_spec
 
 
 class ProjectDialog(QtWidgets.QDialog):

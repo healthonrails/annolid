@@ -3,14 +3,13 @@ from annolid.agents.frame_embedder import LanceDBFrame, Config
 import logging
 from typing import List, Union
 from PIL import Image
-from annolid.data.videos import CV2Video
+from annolid.core.media.video import CV2Video
 import cv2
 import numpy as np
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -18,12 +17,13 @@ logger = logging.getLogger(__name__)
 indexer = None
 
 
-def cv2_to_pil(frame: np.ndarray) -> Image.Image:
+def cv2_to_pil(frame: np.ndarray, *, input_color: str = "rgb") -> Image.Image:
     """
     Converts an OpenCV frame (NumPy array) to a PIL Image.
 
     Args:
-        frame (np.ndarray): The OpenCV frame in BGR format.
+        frame (np.ndarray): The image array.
+        input_color (str): "rgb" (default) or "bgr".
 
     Returns:
         Image.Image: The converted PIL Image in RGB format.
@@ -31,15 +31,19 @@ def cv2_to_pil(frame: np.ndarray) -> Image.Image:
     if frame is None:
         raise ValueError("The input frame is None.")
 
-    # Convert BGR to RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    input_color = str(input_color or "").strip().lower()
+    rgb_frame = frame
+    if input_color == "bgr":
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     # Create and return a PIL Image
     return Image.fromarray(rgb_frame)
 
 
 class LanceDBFrameIndexer:
-    def __init__(self, db_path: str = Config.DB_PATH, table_name: str = Config.TABLE_NAME):
+    def __init__(
+        self, db_path: str = Config.DB_PATH, table_name: str = Config.TABLE_NAME
+    ):
         self.db = lancedb.connect(db_path)
         self.table_name = table_name
         self.table = None
@@ -51,8 +55,7 @@ class LanceDBFrameIndexer:
             self.table = self.db[self.table_name]
             logger.info(f"Connected to table '{self.table_name}' in LanceDB.")
         else:
-            logger.error(
-                f"Table '{self.table_name}' does not exist in LanceDB.")
+            logger.error(f"Table '{self.table_name}' does not exist in LanceDB.")
 
     def search_similar_images(self, query_image, limit: int = 3) -> List[LanceDBFrame]:
         """
@@ -70,8 +73,9 @@ class LanceDBFrameIndexer:
             return []
 
         try:
-            results = self.table.search(query_image).limit(
-                limit).to_pydantic(LanceDBFrame)
+            results = (
+                self.table.search(query_image).limit(limit).to_pydantic(LanceDBFrame)
+            )
             return results
         except Exception as e:
             logger.error(f"Error searching images: {e}")
@@ -106,8 +110,11 @@ def search_frames(
 
     # Format the results
     formatted_results = [
-        {"image_uri": result.image_uri,
-            "flags": result.flags, "caption": result.caption}
+        {
+            "image_uri": result.image_uri,
+            "flags": result.flags,
+            "caption": result.caption,
+        }
         for result in results
     ]
 
@@ -126,10 +133,10 @@ def search_video(video_path, frame_skip=1, search_limit=1):
     try:
         video_loader = CV2Video(video_path)
         num_frames = video_loader.total_frames()
-        
+
         print(f"Processing video: {video_path}")
         print(f"Total frames: {num_frames}, Skipping every {frame_skip} frames.")
-        
+
         for i in range(0, num_frames, frame_skip):  # Skip frames if needed
             frame = video_loader.load_frame(i)
             if frame is None:  # Handle missing frames
@@ -155,7 +162,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Search for similar images in a LanceDB database.")
+        description="Search for similar images in a LanceDB database."
+    )
     # parser.add_argument("query_frame", help="Path to the query image.")
     parser.add_argument("video_path", help="Video path")
     args = parser.parse_args()

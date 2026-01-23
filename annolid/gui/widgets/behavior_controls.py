@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Optional, Sequence, Set
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
-from annolid.behavior.project_schema import ModifierDefinition, SubjectDefinition
+from annolid.core.behavior.spec import ModifierDefinition, SubjectDefinition
 
 
 class BehaviorControlsWidget(QtWidgets.QWidget):
@@ -25,10 +25,10 @@ class BehaviorControlsWidget(QtWidgets.QWidget):
         subject_layout = QtWidgets.QHBoxLayout()
         subject_label = QtWidgets.QLabel("Subject:")
         subject_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred
+        )
         self._subject_combo = QtWidgets.QComboBox()
-        self._subject_combo.currentTextChanged.connect(
-            self._emit_subject_changed)
+        self._subject_combo.currentTextChanged.connect(self._emit_subject_changed)
         subject_layout.addWidget(subject_label)
         subject_layout.addWidget(self._subject_combo, 1)
         layout.addLayout(subject_layout)
@@ -79,7 +79,8 @@ class BehaviorControlsWidget(QtWidgets.QWidget):
                 self._subject_combo.addItem(label, subject.id or subject.name)
             if selected:
                 index = self._subject_combo.findText(
-                    selected, QtCore.Qt.MatchFixedString)
+                    selected, QtCore.Qt.MatchFixedString
+                )
                 if index >= 0:
                     self._subject_combo.setCurrentIndex(index)
             if self._subject_combo.count() == 0:
@@ -152,8 +153,7 @@ class BehaviorControlsWidget(QtWidgets.QWidget):
             if modifier_id in allowed:
                 button.setToolTip(base_tooltip)
             else:
-                button.setToolTip(
-                    f"{base_tooltip} (not applicable for this behavior)")
+                button.setToolTip(f"{base_tooltip} (not applicable for this behavior)")
 
     def checked_modifiers(self) -> Set[str]:
         return {
@@ -178,8 +178,7 @@ class BehaviorControlsWidget(QtWidgets.QWidget):
     ) -> None:
         text = label or "No behavior selected"
         background = color or "#eceff1"
-        foreground = "#ffffff" if self._should_use_light_text(
-            background) else "#263238"
+        foreground = "#ffffff" if self._should_use_light_text(background) else "#263238"
         self._category_badge.setText(text)
         stylesheet = (
             "QLabel {{ padding: 6px; border-radius: 6px; "

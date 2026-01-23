@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Generator, List, Optional
 
 import cv2
+import numpy as np
 
 from annolid.utils.logger import logger
 
@@ -136,7 +137,8 @@ def get_keyframe_timestamps(
 class CV2Video:
     """Lightweight OpenCV video reader that returns RGB frames."""
 
-    def __init__(self, video_file: str | Path):
+    def __init__(self, video_file: str | Path, use_decord: bool = False):
+        _ = use_decord  # kept for backward compatibility with older signature
         self.video_file = Path(video_file).expanduser().resolve()
         if not self.video_file.exists():
             raise FileNotFoundError(f"Video file not found: {self.video_file}")
@@ -145,9 +147,14 @@ class CV2Video:
             raise RuntimeError(f"Unable to open video: {self.video_file}")
 
         self._frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        self.frame_count = int(self._frame_count)
         self._fps: Optional[float] = None
         self.current_frame_timestamp_msec: Optional[float] = None
+        self.current_frame_timestamp: Optional[float] = None
         self._last_frame_index: Optional[int] = None
+        self._first_frame = None
+        self._width: Optional[int] = None
+        self._height: Optional[int] = None
 
     def total_frames(self) -> int:
         return int(self._frame_count)
@@ -179,6 +186,7 @@ class CV2Video:
         self._last_frame_index = int(frame_number)
         ts = self.cap.get(cv2.CAP_PROP_POS_MSEC)
         self.current_frame_timestamp_msec = float(ts) if ts is not None else None
+        self.current_frame_timestamp = self.current_frame_timestamp_msec
 
         return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
@@ -194,6 +202,53 @@ class CV2Video:
                 self.cap.release()
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Backwards-compatible helpers
+    # ------------------------------------------------------------------
+
+    def get_first_frame(self):
+        if self._first_frame is None:
+            self._first_frame = self.load_frame(0)
+        return self._first_frame
+
+    def get_width(self) -> int:
+        if self._width is None:
+            frame = self.get_first_frame()
+            self._width = int(frame.shape[1])
+        return int(self._width)
+
+    def get_height(self) -> int:
+        if self._height is None:
+            frame = self.get_first_frame()
+            self._height = int(frame.shape[0])
+        return int(self._height)
+
+    def get_time_stamp(self) -> Optional[float]:
+        return self.current_frame_timestamp_msec
+
+    def get_frames_in_batches(
+        self, start_frame: int, end_frame: int, batch_size: int
+    ) -> Generator[np.ndarray, None, None]:
+        if start_frame >= end_frame:
+            raise ValueError("Start frame must be less than end frame.")
+        total_frames = self.total_frames()
+        end_frame = min(int(end_frame), int(total_frames))
+        batch_size = max(1, int(batch_size))
+        for batch_start in range(int(start_frame), int(end_frame), int(batch_size)):
+            batch_end = min(batch_start + batch_size, int(end_frame))
+            for frame_number in range(batch_start, batch_end):
+                yield self.load_frame(frame_number)
+
+    def get_frames_between(self, start_frame: int, end_frame: int) -> np.ndarray:
+        if start_frame >= end_frame:
+            raise ValueError("Start frame must be less than end frame.")
+        total_frames = self.total_frames()
+        end_frame = min(int(end_frame), int(total_frames))
+        frames: List[np.ndarray] = []
+        for frame_number in range(int(start_frame), int(end_frame)):
+            frames.append(self.load_frame(frame_number))
+        return np.stack(frames) if frames else np.zeros((0, 0, 0, 0), dtype=np.uint8)
 
     def __del__(self) -> None:
         self.release()

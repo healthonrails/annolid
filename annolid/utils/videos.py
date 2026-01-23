@@ -3,7 +3,7 @@ import os
 import subprocess
 import csv
 import argparse
-from annolid.data.videos import get_video_fps
+from annolid.core.media.video import get_video_fps
 from annolid.utils.logger import logger
 
 
@@ -16,7 +16,7 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
 
     Args:
         video_path (str): Path to the input video file.
-        output_dir (str, optional): Directory where the extracted frames will be saved. 
+        output_dir (str, optional): Directory where the extracted frames will be saved.
                                     Defaults to the video path without its file extension.
         start_number (int): Starting number for naming the output JPEG files.
         quality (int): JPEG quality factor (0 to 100, where 100 is the best quality).
@@ -39,9 +39,6 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
     # Create the output directory if it does not exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # Extract the base name of the video file without extension
-    video_name = os.path.basename(output_dir)
-
     # Open the video file
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -51,13 +48,13 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Count existing JPEG files in the output directory
-    existing_frames = len(
-        [f for f in os.listdir(output_dir) if f.endswith(".jpg")])
+    existing_frames = len([f for f in os.listdir(output_dir) if f.endswith(".jpg")])
 
     # Check if the output directory already has the required number of frames
     if existing_frames >= total_frames:
         logger.info(
-            f"Output directory already contains {existing_frames} frames, skipping extraction.")
+            f"Output directory already contains {existing_frames} frames, skipping extraction."
+        )
         cap.release()
         return output_dir
 
@@ -72,8 +69,7 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
         output_filename = os.path.join(output_dir, f"{frame_number:09d}.jpg")
 
         # Save the frame as a JPEG image with specified quality
-        cv2.imwrite(output_filename, frame, [
-                    cv2.IMWRITE_JPEG_QUALITY, quality])
+        cv2.imwrite(output_filename, frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
 
         frame_number += 1
 
@@ -108,8 +104,9 @@ def collect_video_metadata(input_folder):
         logger.info("Input folder does not exist.")
         return metadata
 
-    video_files = [f for f in os.listdir(
-        input_folder) if f.endswith(('.mp4', '.avi', '.mkv'))]
+    video_files = [
+        f for f in os.listdir(input_folder) if f.endswith((".mp4", ".avi", ".mkv"))
+    ]
 
     if not video_files:
         logger.info("No video files found in the input folder.")
@@ -131,12 +128,12 @@ def collect_video_metadata(input_folder):
         codec = cap.get(cv2.CAP_PROP_FOURCC)
 
         metadata_entry = {
-            'video_name': video_file,
-            'width': width,
-            'height': height,
-            'fps': fps,
-            'frame_count': frame_count,
-            'codec': codec
+            "video_name": video_file,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "frame_count": frame_count,
+            "codec": codec,
         }
 
         metadata.append(metadata_entry)
@@ -160,17 +157,24 @@ def save_metadata_to_csv(metadata, output_csv):
         logger.info("No metadata to save.")
         return
 
-    fieldnames = ['video_name', 'width',
-                  'height', 'fps', 'frame_count', 'codec']
-    with open(output_csv, 'w', newline='') as csvfile:
+    fieldnames = ["video_name", "width", "height", "fps", "frame_count", "codec"]
+    with open(output_csv, "w", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(metadata)
 
 
-def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=None,
-                               apply_denoise=False, crop_x=None, crop_y=None,
-                               crop_width=None, crop_height=None):
+def compress_and_rescale_video(
+    input_folder,
+    output_folder,
+    scale_factor,
+    fps=None,
+    apply_denoise=False,
+    crop_x=None,
+    crop_y=None,
+    crop_width=None,
+    crop_height=None,
+):
     """
     Compresses and rescales video files in the input folder using ffmpeg.
     Optionally applies spacetempo smoothing (denoising), adjusts FPS, and
@@ -196,10 +200,21 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=No
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    video_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv',
-                        '.mpeg', '.mpg', '.m4v', '.mts')
-    video_files = [f for f in os.listdir(
-        input_folder) if f.lower().endswith(video_extensions)]
+    video_extensions = (
+        ".mp4",
+        ".avi",
+        ".mkv",
+        ".mov",
+        ".wmv",
+        ".flv",
+        ".mpeg",
+        ".mpg",
+        ".m4v",
+        ".mts",
+    )
+    video_files = [
+        f for f in os.listdir(input_folder) if f.lower().endswith(video_extensions)
+    ]
 
     if not video_files:
         logger.info("No video files found in the input folder.")
@@ -212,8 +227,7 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=No
 
         video_fps = fps if fps is not None else get_video_fps(input_path)
         if video_fps is None:
-            logger.info(
-                f"Warning: Failed to detect FPS for {video_file}. Skipping.")
+            logger.info(f"Warning: Failed to detect FPS for {video_file}. Skipping.")
             continue
 
         root, _ = os.path.splitext(video_file)
@@ -223,7 +237,12 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=No
         # Build filter chain.
         filter_chain = ""
         # Optionally add crop filter if all crop parameters are provided.
-        if crop_x is not None and crop_y is not None and crop_width is not None and crop_height is not None:
+        if (
+            crop_x is not None
+            and crop_y is not None
+            and crop_width is not None
+            and crop_height is not None
+        ):
             filter_chain += f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
         # Append the FPS and scaling filters.
         filter_chain += f"fps={video_fps},scale=iw*{scale_factor}:ih*{scale_factor}"
@@ -231,19 +250,17 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=No
         if apply_denoise:
             filter_chain += ",hqdn3d=4.0:3.0:6.0:4.5"
 
-        cmd = ['ffmpeg', '-i', input_path, '-vf',
-               filter_chain, '-c:v', 'libx264']
+        cmd = ["ffmpeg", "-i", input_path, "-vf", filter_chain, "-c:v", "libx264"]
         if apply_denoise:
-            cmd.extend(['-preset', 'medium', '-crf', '23', '-c:a', 'copy'])
+            cmd.extend(["-preset", "medium", "-crf", "23", "-c:a", "copy"])
         else:
-            cmd.extend(['-crf', '23', '-c:a', 'aac', '-b:a', '128k'])
+            cmd.extend(["-crf", "23", "-c:a", "aac", "-b:a", "128k"])
         cmd.append(output_path)
 
         command_str = " ".join(cmd)
         try:
             subprocess.run(cmd, check=True)
-            logger.info(
-                f"Compressed and rescaled {video_file} to {output_path}")
+            logger.info(f"Compressed and rescaled {video_file} to {output_path}")
             command_log[output_filename] = command_str
         except subprocess.CalledProcessError as e:
             logger.info(f"Error compressing and rescaling {video_file}: {e}")
@@ -253,24 +270,24 @@ def compress_and_rescale_video(input_folder, output_folder, scale_factor, fps=No
 
 def main(args):
     """
-    Examples 
-    Suppose you have some .mkv files in a folder named input_videos, 
+    Examples
+    Suppose you have some .mkv files in a folder named input_videos,
     and you want to convert them to .mp4 format with a scale factor of 0.5 for resizing.
-      Additionally, you want to save the metadata to a CSV file named video_metadata.csv. 
+      Additionally, you want to save the metadata to a CSV file named video_metadata.csv.
       Here's how you would run the script:
-    ```python script.py input_videos --output_folder output_videos - 
+    ```python script.py input_videos --output_folder output_videos -
         -output_csv video_metadata.csv --scale_factor 0.5```
     In this command:
     input_videos is the input folder containing the .mkv files.
-    --output_folder output_videos specifies the output folder 
+    --output_folder output_videos specifies the output folder
     where the converted .mp4 files will be saved.
     --output_csv video_metadata.csv specifies the output CSV file path for storing the metadata.
     --scale_factor 0.5 specifies the scale factor for resizing the videos during conversion.
 
-    If you only want to collect metadata without performing the conversion, 
+    If you only want to collect metadata without performing the conversion,
     you can add the --collect_only flag:
     ```python script.py input_videos --output_csv video_metadata.csv --collect_only```
-    This command will collect metadata for the .mkv files in the input_videos folder and 
+    This command will collect metadata for the .mkv files in the input_videos folder and
     save it to video_metadata.csv. No conversion will be performed in this case.
 
     """
@@ -280,7 +297,8 @@ def main(args):
             save_metadata_to_csv(metadata, args.output_csv)
     else:
         compress_and_rescale_video(
-            args.input_folder, args.output_folder, args.scale_factor)
+            args.input_folder, args.output_folder, args.scale_factor
+        )
         if not args.collect_only and args.output_csv:
             metadata = collect_video_metadata(args.output_folder)
             save_metadata_to_csv(metadata, args.output_csv)
@@ -288,17 +306,30 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Compress and rescale video files and collect metadata.')
-    parser.add_argument('input_folder', type=str,
-                        help='Input folder path containing video files.')
-    parser.add_argument('--output_folder', type=str,
-                        help='Output folder path for compressed and rescaled video files.')
-    parser.add_argument('--output_csv', type=str,
-                        help='Output CSV file path for metadata.')
-    parser.add_argument('--scale_factor', type=float,
-                        default=0.5, help='Scale factor for resizing videos.')
-    parser.add_argument('--collect_only', action='store_true',
-                        help='Collect metadata only, do not compress and rescale.')
+        description="Compress and rescale video files and collect metadata."
+    )
+    parser.add_argument(
+        "input_folder", type=str, help="Input folder path containing video files."
+    )
+    parser.add_argument(
+        "--output_folder",
+        type=str,
+        help="Output folder path for compressed and rescaled video files.",
+    )
+    parser.add_argument(
+        "--output_csv", type=str, help="Output CSV file path for metadata."
+    )
+    parser.add_argument(
+        "--scale_factor",
+        type=float,
+        default=0.5,
+        help="Scale factor for resizing videos.",
+    )
+    parser.add_argument(
+        "--collect_only",
+        action="store_true",
+        help="Collect metadata only, do not compress and rescale.",
+    )
 
     args = parser.parse_args()
     main(args)

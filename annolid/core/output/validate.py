@@ -16,6 +16,7 @@ class AgentOutputSchema:
 
 
 _SCHEMA_CACHE: Optional[AgentOutputSchema] = None
+_VALIDATOR_CACHE: Any = None
 
 
 def load_agent_output_schema() -> AgentOutputSchema:
@@ -30,6 +31,19 @@ def load_agent_output_schema() -> AgentOutputSchema:
     return _SCHEMA_CACHE
 
 
+def _format_validation_error(exc: Any) -> str:
+    message = getattr(exc, "message", None) or str(exc)
+    path = getattr(exc, "absolute_path", None)
+    if path:
+        pointer = "/" + "/".join(str(part) for part in path)
+    else:
+        pointer = "$"
+    validator = getattr(exc, "validator", None)
+    if validator:
+        return f"{message} (at {pointer}; validator={validator})"
+    return f"{message} (at {pointer})"
+
+
 def validate_agent_record(record: Dict[str, Any]) -> None:
     """Validate a single NDJSON record against the agent output schema."""
     try:
@@ -39,6 +53,14 @@ def validate_agent_record(record: Dict[str, Any]) -> None:
             "jsonschema is required to validate agent outputs. Install it with: pip install jsonschema"
         ) from exc
     try:
-        jsonschema.validate(instance=record, schema=load_agent_output_schema().schema)
+        global _VALIDATOR_CACHE
+        if _VALIDATOR_CACHE is None:
+            schema = load_agent_output_schema().schema
+            _VALIDATOR_CACHE = jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            )
+        first_error = next(_VALIDATOR_CACHE.iter_errors(record), None)
+        if first_error is not None:
+            raise AgentOutputValidationError(_format_validation_error(first_error))
     except jsonschema.ValidationError as exc:
-        raise AgentOutputValidationError(str(exc)) from exc
+        raise AgentOutputValidationError(_format_validation_error(exc)) from exc

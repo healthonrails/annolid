@@ -4,8 +4,12 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 from annolid.behavior.project_schema import (
+    BehaviorDefinition,
+    CategoryDefinition,
     DEFAULT_SCHEMA_FILENAME,
+    ModifierDefinition,
     ProjectSchema,
+    SubjectDefinition,
     default_schema,
     find_schema_near_video,
     load_schema,
@@ -62,8 +66,12 @@ def save_behavior_spec(schema: BehaviorSpec, path: Union[str, Path]) -> None:
 
 __all__ = [
     "DEFAULT_SCHEMA_FILENAME",
+    "BehaviorDefinition",
     "BehaviorSpec",
+    "CategoryDefinition",
+    "ModifierDefinition",
     "ProjectSchema",
+    "SubjectDefinition",
     "default_behavior_spec",
     "load_behavior_spec",
     "save_behavior_spec",

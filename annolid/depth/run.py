@@ -15,8 +15,16 @@ import numpy as np
 import torch
 from matplotlib import cm
 
+from annolid.core.media.video import CV2Video
 from annolid.utils.logger import logger
 from annolid.utils.annotation_store import AnnotationStore
+
+from .download_weights import ensure_checkpoints
+from .utils import save_video
+from .video_depth_anything import VideoDepthAnything as BatchVideoDepthAnything
+from .video_depth_anything.video_depth_stream import (
+    VideoDepthAnything as StreamingVideoDepthAnything,
+)
 
 _INFERNO_PALETTE = (
     cm.get_cmap("inferno", 256)(np.linspace(0.0, 1.0, 256))[:, :3] * 255.0
@@ -48,18 +56,11 @@ def _colorize_depth_map(
     if grayscale:
         vis = (normalized * 255.0).astype(np.uint8)
         return np.repeat(vis[..., None], 3, axis=2), d_min, d_max
-    indices = np.clip(
-        (normalized * 255.0).round().astype(np.int16), 0, 255
-    ).astype(np.uint8)
+    indices = np.clip((normalized * 255.0).round().astype(np.int16), 0, 255).astype(
+        np.uint8
+    )
     colored = _INFERNO_PALETTE[indices]
     return colored, d_min, d_max
-
-from annolid.data.videos import CV2Video
-
-from .download_weights import ensure_checkpoints
-from .video_depth_anything import VideoDepthAnything as BatchVideoDepthAnything
-from .video_depth_anything.video_depth_stream import VideoDepthAnything as StreamingVideoDepthAnything
-from .utils import save_video
 
 
 def _quantize_depth(depth: np.ndarray) -> Tuple[np.ndarray, float, float]:
@@ -69,9 +70,7 @@ def _quantize_depth(depth: np.ndarray) -> Tuple[np.ndarray, float, float]:
     if abs(d_max - d_min) < 1e-6:
         d_max = d_min + 1e-6
     normalized = (depth - d_min) / (d_max - d_min)
-    quantized = np.clip(
-        np.round(normalized * 65535.0), 0, 65535
-    ).astype(np.uint16)
+    quantized = np.clip(np.round(normalized * 65535.0), 0, 65535).astype(np.uint16)
     return quantized, d_min, d_max
 
 
@@ -82,9 +81,8 @@ def _append_depth_ndjson(output_dir: Path, record: Dict[str, object]) -> Path:
         fh.write("\n")
     return ndjson_path
 
-def _frame_positions(
-    total_frames: int, stride: int, max_len: int
-) -> List[int]:
+
+def _frame_positions(total_frames: int, stride: int, max_len: int) -> List[int]:
     positions = list(range(0, total_frames, stride))
     if max_len > 0 and len(positions) > max_len:
         return positions[:max_len]
@@ -142,7 +140,9 @@ def _iterate_frames(
     return frame_generator(), fps, positions
 
 
-def _save_depth_frames(depths: np.ndarray, output_dir: Path, grayscale: bool) -> List[str]:
+def _save_depth_frames(
+    depths: np.ndarray, output_dir: Path, grayscale: bool
+) -> List[str]:
     depth_frames_dir = output_dir / "depth_frames"
     depth_frames_dir.mkdir(parents=True, exist_ok=True)
     flattened = depths.reshape(-1)
@@ -153,15 +153,11 @@ def _save_depth_frames(depths: np.ndarray, output_dir: Path, grayscale: bool) ->
         normalized = (depth - d_min) / (d_max - d_min + 1e-9)
         if grayscale:
             vis = (normalized * 255).astype(np.uint8)
-            imageio.imwrite(
-                str(depth_frames_dir / f"depth_{idx:05d}.png"), vis
-            )
+            imageio.imwrite(str(depth_frames_dir / f"depth_{idx:05d}.png"), vis)
         else:
             palette = cm.get_cmap("inferno")
             colored = (palette(normalized)[:, :, :3] * 255).astype(np.uint8)
-            imageio.imwrite(
-                str(depth_frames_dir / f"depth_{idx:05d}.png"), colored
-            )
+            imageio.imwrite(str(depth_frames_dir / f"depth_{idx:05d}.png"), colored)
         result_paths.append(str(depth_frames_dir / f"depth_{idx:05d}.png"))
     return result_paths
 
@@ -295,9 +291,7 @@ def _frame_region_labels(
     if not shapes:
         cache[frame_key] = None
         return None
-    labels = _rasterize_shape_labels(
-        shapes, height, width, src_width, src_height
-    )
+    labels = _rasterize_shape_labels(shapes, height, width, src_width, src_height)
     cache[frame_key] = labels
     return labels
 
@@ -349,7 +343,7 @@ def _write_point_cloud_csv(
                 region_text = ""
                 if raw_label not in (None, ""):
                     escaped = str(raw_label).replace('"', '""')
-                    region_text = f"\"{escaped}\""
+                    region_text = f'"{escaped}"'
                 row_items.append(region_text)
             if color_arr is not None:
                 r, g, b = color_arr[idx]
@@ -417,13 +411,25 @@ def _load_model(
 ) -> Union[BatchVideoDepthAnything, StreamingVideoDepthAnything]:
     model_configs = {
         "vits": {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]},
-        "vitb": {"encoder": "vitb", "features": 128, "out_channels": [96, 192, 384, 768]},
-        "vitl": {"encoder": "vitl", "features": 256, "out_channels": [256, 512, 1024, 1024]},
+        "vitb": {
+            "encoder": "vitb",
+            "features": 128,
+            "out_channels": [96, 192, 384, 768],
+        },
+        "vitl": {
+            "encoder": "vitl",
+            "features": 256,
+            "out_channels": [256, 512, 1024, 1024],
+        },
     }
     if encoder not in model_configs:
-        raise ValueError(f"Unknown encoder {encoder!r}; expected one of {list(model_configs)}.")
+        raise ValueError(
+            f"Unknown encoder {encoder!r}; expected one of {list(model_configs)}."
+        )
 
-    checkpoint_suffix = "metric_video_depth_anything" if metric else "video_depth_anything"
+    checkpoint_suffix = (
+        "metric_video_depth_anything" if metric else "video_depth_anything"
+    )
     expected_checkpoint = checkpoint_path / f"{checkpoint_suffix}_{encoder}.pth"
     if not expected_checkpoint.exists():
         raise FileNotFoundError(
@@ -469,7 +475,6 @@ def run_video_depth_anything(
     input_path = Path(input_video).expanduser()
     if not input_path.is_file():
         raise FileNotFoundError(f"Video '{input_path}' does not exist.")
-    video_stem = input_path.stem
 
     output_dir_path = Path(output_dir).expanduser().resolve()
     output_dir_path.mkdir(parents=True, exist_ok=True)
@@ -538,9 +543,7 @@ def run_video_depth_anything(
                 progress_callback(min(int(idx / total_positions * 100), 100))
             record = _build_depth_record(
                 input_path.name,
-                frame_positions[idx - 1]
-                if idx - 1 < len(frame_positions)
-                else idx - 1,
+                frame_positions[idx - 1] if idx - 1 < len(frame_positions) else idx - 1,
                 depth,
                 frame.shape[0],
                 frame.shape[1],
@@ -619,14 +622,16 @@ def run_video_depth_anything(
         for idx, depth in enumerate(depths):
             if header is None:
                 header = OpenEXR.Header(depth.shape[1], depth.shape[0])
-                header["channels"] = {"Z": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))}
+                header["channels"] = {
+                    "Z": Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+                }
             output_exr = depth_exr_dir / f"frame_{idx:05d}.exr"
             exr_file = OpenEXR.OutputFile(str(output_exr), header)
             exr_file.writePixels({"Z": depth.astype(np.float32).tobytes()})
             exr_file.close()
         result["exr"] = [str(depth_exr_dir)]
 
-# always write point cloud csv files alongside depth results
+    # always write point cloud csv files alongside depth results
     if depths is not None and len(depths):
         width, height = depths[0].shape[-1], depths[0].shape[-2]
         x, y = np.meshgrid(np.arange(width), np.arange(height))
@@ -650,7 +655,9 @@ def run_video_depth_anything(
                 ).reshape(-1, 3)
                 colors = np.array(color_image).reshape(-1, 3)
                 csv_path = ply_dir / f"point_{idx:04d}.csv"
-                frame_index = int(frame_indices[idx]) if idx < len(frame_indices) else idx
+                frame_index = (
+                    int(frame_indices[idx]) if idx < len(frame_indices) else idx
+                )
                 region_labels = None
                 if include_region_labels and tracking_results_dir_path is not None:
                     region_labels = _frame_region_labels(

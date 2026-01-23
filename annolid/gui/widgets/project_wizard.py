@@ -14,12 +14,10 @@ from typing import List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
-from annolid.behavior.project_schema import (
+from annolid.core.behavior.spec import (
     BehaviorDefinition,
     ProjectSchema,
     SubjectDefinition,
-)
-from annolid.core.behavior.spec import (
     default_behavior_spec,
     load_behavior_spec,
     save_behavior_spec,
