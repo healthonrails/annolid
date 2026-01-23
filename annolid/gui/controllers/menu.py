@@ -113,9 +113,7 @@ class MenuController:
         step_size = QtWidgets.QWidgetAction(w)
         step_size.setIcon(QtGui.QIcon(str(here / "icons/fast_forward.png")))
         step_size.setDefaultWidget(w.stepSizeWidget)
-        w.stepSizeWidget.setWhatsThis(
-            w.tr("Step for the next or prev image. e.g. 30")
-        )
+        w.stepSizeWidget.setWhatsThis(w.tr("Step for the next or prev image. e.g. 30"))
         w.stepSizeWidget.setEnabled(False)
         registry["step_size"] = step_size
 
@@ -179,7 +177,9 @@ class MenuController:
                 "name": "run_optical_flow",
                 "text": w.tr("Run &Optical Flow..."),
                 "slot": w.run_optical_flow_tool,
-                "tip": w.tr("Run optical flow with saved settings, preview on canvas, and optionally export stats"),
+                "tip": w.tr(
+                    "Run optical flow with saved settings, preview on canvas, and optionally export stats"
+                ),
             },
             {
                 "name": "tracking_reports",
@@ -192,6 +192,13 @@ class MenuController:
                 "text": w.tr("&Behavior Time Budget"),
                 "slot": w.show_behavior_time_budget_dialog,
                 "tip": w.tr("Summarise recorded behavior events"),
+            },
+            {
+                "name": "run_agent",
+                "text": w.tr("Run &Agent Analysis…"),
+                "slot": w.open_agent_run_dialog,
+                "tip": w.tr("Configure and launch the unified agent pipeline"),
+                "icon_name": "visualization",
             },
             # New streamlined wizard actions
             {
@@ -294,7 +301,7 @@ class MenuController:
                 "text": w.tr("&Extract frames"),
                 "slot": w.frames,
                 "shortcut": "Ctrl+Shift+E",
-                "tip": w.tr("Extract frames frome a video"),
+                "tip": w.tr("Extract frames from a video"),
                 "icon_path": here / "icons/extract_frames.png",
             },
             {
@@ -416,17 +423,14 @@ class MenuController:
         w.shortcuts = w._config["shortcuts"]
 
         w.aiRectangle = AiRectangleWidget()
-        w.aiRectangle._aiRectanglePrompt.returnPressed.connect(
-            w._grounding_sam)
+        w.aiRectangle._aiRectanglePrompt.returnPressed.connect(w._grounding_sam)
         w.recording_widget = RecordingWidget(lambda: w.canvas)
 
         w.patch_similarity_action = self._action_factory(
             w.tr("Patch Similarity"),
             w._toggle_patch_similarity_tool,
             icon="visualization",
-            tip=w.tr(
-                "Click on the frame to generate a DINO patch similarity heatmap"
-            ),
+            tip=w.tr("Click on the frame to generate a DINO patch similarity heatmap"),
         )
         w.patch_similarity_action.setCheckable(True)
         w.patch_similarity_action.setIcon(
@@ -448,9 +452,7 @@ class MenuController:
             ),
         )
         w.pca_map_action.setCheckable(True)
-        w.pca_map_action.setIcon(
-            QtGui.QIcon(str(here / "icons/visualization.png"))
-        )
+        w.pca_map_action.setIcon(QtGui.QIcon(str(here / "icons/visualization.png")))
 
         w.pca_map_settings_action = self._action_factory(
             w.tr("PCA Feature Map Settings…"),
@@ -553,7 +555,7 @@ class MenuController:
             return base
         parts = base.split()
         if len(parts) >= 2:
-            first, rest = parts[0], ' '.join(parts[1:])
+            first, rest = parts[0], " ".join(parts[1:])
             return f"{first}\n{rest}"
         return base
 
@@ -669,11 +671,10 @@ class MenuController:
             (
                 actions["tracking_reports"],
                 actions["behavior_time_budget"],
+                actions["run_agent"],
                 actions["place_preference"],
             ),
-            (
-                actions["visualization"],
-            ),
+            (actions["visualization"],),
         ]
         self._add_menu_sections(w.menus.analysis, analysis_sections)
 
@@ -691,9 +692,7 @@ class MenuController:
                 w.open_3d_viewer_action,
                 actions["sam3d_reconstruct"],
             ),
-            (
-                actions["glitter2"],
-            ),
+            (actions["glitter2"],),
         ]
         self._add_menu_sections(w.menus.view, view_sections)
 
@@ -725,9 +724,7 @@ class MenuController:
                 actions["project_schema"],
                 actions["pose_schema"],
             ),
-            (
-                actions["toggle_pose_bbox_save"],
-            ),
+            (actions["toggle_pose_bbox_save"],),
             (
                 actions["optical_flow_settings"],
                 actions["depth_settings"],
