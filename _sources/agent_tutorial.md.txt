@@ -1,0 +1,55 @@
+# Annolid Agent Tutorial
+
+## 1. What the Agent does
+
+- Performs detection, tracking, and behavior event proposals per frame.
+- Streams NDJSON records (`agent.ndjson`) and LabelMe JSONs with enriched `otherData`.
+- Saves everything in a video-specific results folder with caches and artifacts.
+
+## 2. Running the Agent (GUI)
+
+1. Open a video and choose **Analysis → Run Agent**.
+2. Configure the behavior spec, vision/LLM adapters, sampling (stride/max frames), and optionally enable **Rerun from anchors** (clears future frames after your manual corrections).
+3. Click **OK** to launch; progress appears in a modal dialog, and the GUI tails the NDJSON while it writes.
+
+## 3. Agent Output in the GUI
+
+- Agent-suggested events appear in the **Behavior Log**, complete with status (Confirmed/Auto).
+- Timeline marks show start/end points; colors derive from schema categories.
+- Unconfirmed events are excluded from exports/summaries until you confirm them.
+
+## 4. Reviewing & Editing Events
+
+- Double-click a log entry to view details; the context menu lets you *Edit Interval*, *Delete*, or *Confirm/Reject*.
+- Editing adjusts the timeline + updates the underlying annotation store via `BehaviorController`.
+- Confirmed events are marked `confirmed=true` and used in CSV exports/time budgets.
+
+## 5. Embedding Search
+
+- The **Embedding Search** dock (right side) lets you:
+  - Search for frames similar to the current frame via Qwen3 embeddings.
+  - Double-click results to jump to frames.
+  - Label selected search hits as a behavior to propagate agent insights quickly.
+
+## 6. Human-in-the-Loop Refinement
+
+- Manual corrections become **anchors**.
+- When rerunning with “Rerun from anchors,” frames after the last anchor are cleared, and the agent recomputes from that point.
+
+## 7. Agent Mode vs Classic Mode
+
+- Agent Mode (default) shows the behavior dock, embedding search, and agent run toolbar.
+- Toggle it via **View → Agent Mode** to hide agent-specific panels for a classic labeling workflow.
+
+## 8. Exporting Results
+
+- Behavior exports and summaries automatically exclude auto (unconfirmed) events.
+- Use **Save CSV** or **Behavior Time Budget** to generate reports from confirmed data.
+
+## 9. Quick Checklist
+
+1. Run the agent or use previously cached results.
+2. Review events in the Behavior Log → confirm/reject/edit.
+3. Use embedding search to find & label similar frames.
+4. Rerun with anchors if you’ve corrected key frames.
+5. Switch to Classic Mode when you only want manual labeling.
