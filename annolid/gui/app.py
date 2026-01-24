@@ -440,6 +440,12 @@ class AnnolidWindow(MainWindow):
         self.embedding_search_widget.labelFramesRequested.connect(
             self._label_frames_from_search
         )
+        self.embedding_search_widget.markFramesRequested.connect(
+            self._mark_similar_frames_from_search
+        )
+        self.embedding_search_widget.clearMarkedFramesRequested.connect(
+            self._clear_similar_frame_marks
+        )
         self.embedding_search_dock = QtWidgets.QDockWidget("Embedding Search", self)
         self.embedding_search_dock.setObjectName("embeddingSearchDock")
         self.embedding_search_dock.setWidget(self.embedding_search_widget)
@@ -1550,6 +1556,12 @@ class AnnolidWindow(MainWindow):
         self.video_loader = None
         self.num_frames = None
         self.video_file = None
+        try:
+            if hasattr(self, "embedding_search_widget"):
+                self.embedding_search_widget.set_video_path(None)
+                self.embedding_search_widget.set_query_frame_index(None)
+        except Exception:
+            pass
         if self.caption_widget is not None:
             self.caption_widget.set_video_context(None, None, None)
             self.caption_widget.set_video_segments([])
@@ -4923,13 +4935,53 @@ class AnnolidWindow(MainWindow):
         if not hasattr(self, "embedding_search_widget"):
             return
         try:
-            path = self._frame_image_path(int(self.frame_number))
+            self.embedding_search_widget.set_video_path(
+                Path(self.video_file) if getattr(self, "video_file", None) else None
+            )
         except Exception:
-            path = None
-        if path is None or not Path(path).exists():
-            path = Path(self.filename) if getattr(self, "filename", None) else None
-        self.embedding_search_widget.set_query_image(path if path else None)
-        self._refresh_embedding_file_list()
+            pass
+        try:
+            self.embedding_search_widget.set_annotation_dir(
+                Path(self.annotation_dir)
+                if getattr(self, "annotation_dir", None)
+                else None
+            )
+        except Exception:
+            pass
+        try:
+            self.embedding_search_widget.set_query_frame_index(int(self.frame_number))
+        except Exception:
+            pass
+        # Avoid hitting the filesystem on every frame change. The frame search widget
+        # performs in-memory video scanning; refresh the file list only when the
+        # results folder changes (e.g. on video open or when an agent run completes).
+
+    def _mark_similar_frames_from_search(self, frames: list[int]) -> None:
+        if not frames:
+            return
+        for frame in sorted(set(int(f) for f in frames)):
+            try:
+                self.behavior_controller.add_generic_mark(
+                    frame, mark_type="frame_search", color="magenta"
+                )
+            except Exception:
+                continue
+        try:
+            if self.seekbar is not None:
+                self.seekbar._update_visual_positions()
+        except Exception:
+            pass
+
+    def _clear_similar_frame_marks(self) -> None:
+        try:
+            self.behavior_controller.clear_generic_marks(mark_type="frame_search")
+        except Exception:
+            return
+        try:
+            if self.seekbar is not None:
+                self.seekbar._update_visual_positions()
+        except Exception:
+            pass
 
     def _refresh_embedding_file_list(self) -> None:
         if not hasattr(self, "embedding_search_widget"):
@@ -5664,6 +5716,11 @@ class AnnolidWindow(MainWindow):
             self.annotation_dir = results_dir
             self.behavior_controller.attach_annotation_store_for_video(results_dir)
             self._refresh_embedding_file_list()
+            try:
+                if hasattr(self, "embedding_search_widget"):
+                    self.embedding_search_widget.set_annotation_dir(results_dir)
+            except Exception:
+                pass
 
         event_intervals = self._load_agent_event_intervals(result)
         if event_intervals:
@@ -6815,6 +6872,14 @@ class AnnolidWindow(MainWindow):
             self.video_results_folder.mkdir(exist_ok=True, parents=True)
             self.annotation_dir = self.video_results_folder
             self.video_file = video_filename
+            try:
+                if hasattr(self, "embedding_search_widget"):
+                    self.embedding_search_widget.set_video_path(Path(video_filename))
+                    self.embedding_search_widget.set_annotation_dir(
+                        self.video_results_folder
+                    )
+            except Exception:
+                pass
             self.behavior_controller.attach_annotation_store_for_video(
                 self.video_results_folder
             )

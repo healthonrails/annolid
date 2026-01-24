@@ -348,12 +348,26 @@ class BehaviorMarkManager:
         self._interval_marks.clear()
         self.clear_highlight()
 
-    def clear_generic_marks(self) -> None:
+    def clear_generic_marks(self, *, mark_type: Optional[str] = None) -> None:
+        if mark_type is None:
+            if self._slider is not None:
+                for mark in self._generic_marks.values():
+                    self._slider.removeMark(mark)
+                self._slider._update_visual_positions()
+            self._generic_marks.clear()
+            return
+
+        to_remove = [key for key in self._generic_marks.keys() if key[1] == mark_type]
+        if not to_remove:
+            return
         if self._slider is not None:
-            for mark in self._generic_marks.values():
-                self._slider.removeMark(mark)
+            for key in to_remove:
+                mark = self._generic_marks.get(key)
+                if mark is not None:
+                    self._slider.removeMark(mark)
             self._slider._update_visual_positions()
-        self._generic_marks.clear()
+        for key in to_remove:
+            self._generic_marks.pop(key, None)
 
     def clear_all(self) -> None:
         self.clear_behavior_marks()
@@ -581,6 +595,9 @@ class BehaviorController:
         frame_stub = results_dir / f"{results_dir.name}_000000000.json"
         store = AnnotationStore.for_frame_path(frame_stub, store_name)
         self.attach_annotation_store(store, frame_record_provider=frame_record_provider)
+
+    def clear_generic_marks(self, *, mark_type: Optional[str] = None) -> None:
+        self.marks.clear_generic_marks(mark_type=mark_type)
 
     def sync_marks(self, highlight_key: Optional[Tuple[int, str, str]] = None) -> None:
         if self.marks.slider is None:
