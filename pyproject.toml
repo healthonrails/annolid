@@ -60,6 +60,7 @@ dependencies = [
     'chardet>=5.2.0',
     'transformers>=4.45.1',
     'ultralytics>=8.4.0',
+    'lap',
     'huggingface-hub>=0.22.0',
     'tensorboard',
     'jsonschema>=4.20.0',

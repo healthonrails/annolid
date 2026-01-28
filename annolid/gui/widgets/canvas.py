@@ -35,7 +35,6 @@ MOVE_SPEED = 5.0
 
 
 class Canvas(QtWidgets.QWidget):
-
     zoomRequest = QtCore.Signal(int, QtCore.QPoint)
     scrollRequest = QtCore.Signal(int, int)
     newShape = QtCore.Signal()
@@ -56,9 +55,7 @@ class Canvas(QtWidgets.QWidget):
         self.double_click = kwargs.pop("double_click", "close")
         if self.double_click not in [None, "close"]:
             raise ValueError(
-                "Unexpected value for double_click event: {}".format(
-                    self.double_click
-                )
+                "Unexpected value for double_click event: {}".format(self.double_click)
             )
         self.caption_label = QtWidgets.QTextEdit()
         self.num_backups = kwargs.pop("num_backups", 10)
@@ -83,8 +80,8 @@ class Canvas(QtWidgets.QWidget):
                 "maxside": 2048,
                 "approxpoly_epsilon": 0.5,
                 "weights": "vit_h",
-                "device": "cuda"
-            }
+                "device": "cuda",
+            },
         )
         super(Canvas, self).__init__(*args, **kwargs)
         # Initialise local state.
@@ -210,7 +207,9 @@ class Canvas(QtWidgets.QWidget):
             return False
         return True
 
-    def _infer_pose_instance_label(self, shape, candidate_labels, default_label: str = "object") -> str:
+    def _infer_pose_instance_label(
+        self, shape, candidate_labels, default_label: str = "object"
+    ) -> str:
         flags = getattr(shape, "flags", None)
         if isinstance(flags, dict):
             instance_label = flags.get("instance_label")
@@ -253,7 +252,9 @@ class Canvas(QtWidgets.QWidget):
         label = str(getattr(shape, "label", "") or "").strip()
         if instance_label:
             inst_len = len(instance_label)
-            if label.lower().startswith(instance_label.lower()) and inst_len < len(label):
+            if label.lower().startswith(instance_label.lower()) and inst_len < len(
+                label
+            ):
                 suffix = label[inst_len:].lstrip("_-:| ")
                 if suffix:
                     return suffix
@@ -265,7 +266,11 @@ class Canvas(QtWidgets.QWidget):
         return label
 
     def _draw_pose_edges(self, painter: QtGui.QPainter) -> None:
-        if not self._show_pose_edges or not self._pose_schema or not self._pose_schema.edges:
+        if (
+            not self._show_pose_edges
+            or not self._pose_schema
+            or not self._pose_schema.edges
+        ):
             return
 
         candidate_labels = {
@@ -289,8 +294,10 @@ class Canvas(QtWidgets.QWidget):
             kp_label = None
 
             try:
-                inst_from_schema, base_from_schema = self._pose_schema.strip_instance_prefix(
-                    str(getattr(shape, "label", "") or "")
+                inst_from_schema, base_from_schema = (
+                    self._pose_schema.strip_instance_prefix(
+                        str(getattr(shape, "label", "") or "")
+                    )
                 )
                 if inst_from_schema and base_from_schema:
                     instance_label = inst_from_schema
@@ -301,10 +308,10 @@ class Canvas(QtWidgets.QWidget):
 
             if not instance_label:
                 instance_label = self._infer_pose_instance_label(
-                    shape, candidate_labels, default_label="object")
+                    shape, candidate_labels, default_label="object"
+                )
             if not kp_label:
-                kp_label = self._infer_pose_keypoint_label(
-                    shape, instance_label)
+                kp_label = self._infer_pose_keypoint_label(shape, instance_label)
             if not kp_label:
                 continue
             instances.setdefault(instance_label, {})[kp_label] = point
@@ -313,8 +320,7 @@ class Canvas(QtWidgets.QWidget):
             return
 
         edge_width = max(1, int(round(3.0 / max(self.scale, 1e-6))))
-        shadow_width = edge_width + \
-            max(1, int(round(2.0 / max(self.scale, 1e-6))))
+        shadow_width = edge_width + max(1, int(round(2.0 / max(self.scale, 1e-6))))
 
         shadow_pen = QtGui.QPen(self._pose_edge_shadow)
         shadow_pen.setWidth(shadow_width)
@@ -344,8 +350,7 @@ class Canvas(QtWidgets.QWidget):
                 inst_a, kp_a = self._pose_schema.strip_instance_prefix(a)
                 inst_b, kp_b = self._pose_schema.strip_instance_prefix(b)
                 if not self._pose_schema.instances:
-                    sep = getattr(self._pose_schema,
-                                  "instance_separator", "_") or "_"
+                    sep = getattr(self._pose_schema, "instance_separator", "_") or "_"
                     if inst_a is None and isinstance(a, str) and sep in a:
                         candidate_inst, candidate_kp = a.split(sep, 1)
                         if candidate_inst in instances:
@@ -417,8 +422,7 @@ class Canvas(QtWidgets.QWidget):
                 overlay_rgba.strides[0],
                 QtGui.QImage.Format_RGBA8888,
             )
-            self._patch_similarity_pixmap = QtGui.QPixmap.fromImage(
-                image.copy())
+            self._patch_similarity_pixmap = QtGui.QPixmap.fromImage(image.copy())
         self.update()
 
     def setPCAMapOverlay(self, overlay_rgba):
@@ -466,8 +470,7 @@ class Canvas(QtWidgets.QWidget):
                 overlay_rgba.strides[0],
                 QtGui.QImage.Format_RGBA8888,
             )
-            self._flow_preview_pixmap = QtGui.QPixmap.fromImage(
-                image.copy())
+            self._flow_preview_pixmap = QtGui.QPixmap.fromImage(image.copy())
         self.update()
 
     @property
@@ -494,18 +497,30 @@ class Canvas(QtWidgets.QWidget):
         self.current = None
 
     def initializeAiModel(self, name, _custom_ai_models=None):
-        if (name not in [model.name for model in labelme.ai.MODELS]
-                and _custom_ai_models and name not in _custom_ai_models):
-            logger.warning("Unsupported ai model: %s" % name)
-            model = labelme.ai.MODELS[3]
-        else:
-            model = labelme.ai.MODELS[3]
+        # Find the model class based on name
+        model_class = None
+        for m in labelme.ai.MODELS:
+            if m.name == name:
+                model_class = m
+                break
 
-        if self._ai_model is not None and self._ai_model.name == model.name:
-            logger.debug("AI model is already initialized: %r" % model.name)
+        if model_class is None:
+            if _custom_ai_models and name in _custom_ai_models:
+                # Custom models are likely YOLO, not SAM, so skip SAM initialization
+                logger.debug(
+                    "Custom model selected: %s, skipping SAM initialization" % name
+                )
+                return
+            else:
+                logger.warning("Unsupported ai model: %s" % name)
+                # Default to EfficientSam (speed)
+                model_class = labelme.ai.MODELS[3]
+
+        if self._ai_model is not None and self._ai_model.name == model_class.name:
+            logger.debug("AI model is already initialized: %r" % model_class.name)
         else:
-            logger.debug("Initializing AI model: %r" % model.name)
-            self._ai_model = model()
+            logger.debug("Initializing AI model: %r" % model_class.name)
+            self._ai_model = model_class()
 
         # Check if self.pixmap is None before calling isNull()
         if self.pixmap is None or self.pixmap.isNull():
@@ -527,11 +542,9 @@ class Canvas(QtWidgets.QWidget):
             self.initializeAiModel(default_model)
         return self._ai_model is not None
 
-    def auto_mask_generator(self,
-                            image_data,
-                            label,
-                            points_per_side=32,
-                            is_polygon_output=True):
+    def auto_mask_generator(
+        self, image_data, label, points_per_side=32, is_polygon_output=True
+    ):
         """
         Generate masks or polygons from segmentation annotations.
 
@@ -551,48 +564,48 @@ class Canvas(QtWidgets.QWidget):
 
         """
         # Segment everything in the image using the SamAutomaticMaskGenerator
-        anns = self.sam_hq_model.segment_everything(image_data,
-                                                    points_per_side=points_per_side)
+        anns = self.sam_hq_model.segment_everything(
+            image_data, points_per_side=points_per_side
+        )
 
         # Iterate over each segmentation annotation
         for i, ann in enumerate(anns):
             # Check if the output format is polygons
             if is_polygon_output:
                 # Convert segmentation to polygons
-                self.current = MaskShape(label=f"{label}_{i}",
-                                         flags={},
-                                         description='grounding_sam')
-                self.current.mask = ann['segmentation']
+                self.current = MaskShape(
+                    label=f"{label}_{i}", flags={}, description="grounding_sam"
+                )
+                self.current.mask = ann["segmentation"]
                 self.current = self.current.toPolygons()[0]
             else:
                 # Extract bounding box coordinates
-                x1, y1, x2, y2 = ann['bbox']
+                x1, y1, x2, y2 = ann["bbox"]
                 # Create shape object with refined shape
-                self.current = Shape(label=f"{label}_{i}",
-                                     flags={},
-                                     description='grounding_sam')
+                self.current = Shape(
+                    label=f"{label}_{i}", flags={}, description="grounding_sam"
+                )
                 self.current.setShapeRefined(
                     shape_type="mask",
                     points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
                     point_labels=[1, 1],
-                    mask=ann['segmentation'][int(y1):int(y2), int(x1):int(x2)],
+                    mask=ann["segmentation"][int(y1) : int(y2), int(x1) : int(x2)],
                 )
             # Add stability score as other data
-            self.current.other_data['score'] = str(ann['stability_score'])
+            self.current.other_data["score"] = str(ann["stability_score"])
 
             # Finalize the process
             self.finalise()
 
-    def predictAiRectangle(self, prompt,
-                           rectangle_shapes=None,
-                           is_polygon_output=True,
-                           use_countgd=False):
+    def predictAiRectangle(
+        self, prompt, rectangle_shapes=None, is_polygon_output=True, use_countgd=False
+    ):
         """
         Predict bounding boxes and then polygons based on the given prompt.
 
         Args:
             prompt (str): The prompt for prediction.
-            is_polygon_output (bool, optional): 
+            is_polygon_output (bool, optional):
             Whether to output polygons (True).
                 Defaults to True.
 
@@ -622,30 +635,35 @@ class Canvas(QtWidgets.QWidget):
                 return
 
         # If the prompt contains 'every', segment everything
-        if prompt and 'every' in prompt.lower():
+        if prompt and "every" in prompt.lower():
             points_per_side, prompt = extract_number_and_remove_digits(prompt)
             if points_per_side < 1 or points_per_side > 100:
                 points_per_side = 32
 
-            label = prompt.replace('every', '').strip()
+            label = prompt.replace("every", "").strip()
             logger.info(
-                f"{points_per_side} points to be sampled along one side of the image")
-            self.auto_mask_generator(image_data,
-                                     label,
-                                     points_per_side=points_per_side,
-                                     is_polygon_output=is_polygon_output)
+                f"{points_per_side} points to be sampled along one side of the image"
+            )
+            self.auto_mask_generator(
+                image_data,
+                label,
+                points_per_side=points_per_side,
+                is_polygon_output=is_polygon_output,
+            )
             return
 
         label = prompt
         if rectangle_shapes is not None:
             _bboxes = self._predict_similar_rectangles(
-                rectangle_shapes=rectangle_shapes, prompt=prompt)
+                rectangle_shapes=rectangle_shapes, prompt=prompt
+            )
         else:
             rectangle_shapes = []
             _bboxes = []
             if use_countgd:
                 _bboxes = self._predict_similar_rectangles(
-                    rectangle_shapes=rectangle_shapes, prompt=prompt)
+                    rectangle_shapes=rectangle_shapes, prompt=prompt
+                )
             # Initialize AI model if not already initialized
             if self._ai_model_rect is None:
                 self._ai_model_rect = GroundingDINO()
@@ -656,45 +674,46 @@ class Canvas(QtWidgets.QWidget):
             _bboxes.extend(gd_bboxes)
 
         # Segment objects using SAM HQ model with predicted bounding boxes
-        masks, scores, _bboxes = self.sam_hq_model.segment_objects(
-            image_data, _bboxes)
+        masks, scores, _bboxes = self.sam_hq_model.segment_objects(image_data, _bboxes)
 
         # Iterate over each predicted bounding box
         for i, box in enumerate(_bboxes):
             # Check if the output format is polygons
             if is_polygon_output:
                 # Convert segmentation mask to polygons
-                self.current = MaskShape(label=f"{label}_{i}",
-                                         flags={},
-                                         description='grounding_sam')
+                self.current = MaskShape(
+                    label=f"{label}_{i}", flags={}, description="grounding_sam"
+                )
                 self.current.mask = masks[i]
                 self.current = self.current.toPolygons()[0]
             else:
                 # Extract bounding box coordinates
                 x1, y1, x2, y2 = box
                 # Create shape object with refined shape
-                self.current = Shape(label=f"{label}_{i}",
-                                     flags={},
-                                     description='grounding_sam')
+                self.current = Shape(
+                    label=f"{label}_{i}", flags={}, description="grounding_sam"
+                )
                 self.current.setShapeRefined(
                     shape_type="mask",
                     points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
                     point_labels=[1, 1],
-                    mask=masks[i][int(y1):int(y2), int(x1):int(x2)],
+                    mask=masks[i][int(y1) : int(y2), int(x1) : int(x2)],
                 )
             # Add stability score as other data
-            self.current.other_data['score'] = str(scores[i])
+            self.current.other_data["score"] = str(scores[i])
 
             # Finalize the process
             self.finalise()
 
-    def loadSamPredictor(self,):
+    def loadSamPredictor(
+        self,
+    ):
         """
-        The code requires Python version 3.8 or higher, along with PyTorch version 1.7 or higher,
-        as well as TorchVision version 0.8 or higher. To install these dependencies, 
-        kindly refer to the instructions provided here. It's strongly recommended to install both PyTorch and TorchVision with CUDA support.
-To install Segment Anything, run the following command in your terminal:
-pip install git+https://github.com/facebookresearch/segment-anything.git
+                The code requires Python version 3.8 or higher, along with PyTorch version 1.7 or higher,
+                as well as TorchVision version 0.8 or higher. To install these dependencies,
+                kindly refer to the instructions provided here. It's strongly recommended to install both PyTorch and TorchVision with CUDA support.
+        To install Segment Anything, run the following command in your terminal:
+        pip install git+https://github.com/facebookresearch/segment-anything.git
 
         """
         self._sam_last_load_error = None
@@ -712,46 +731,60 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self._sam_last_load_error = "missing_dependency"
                 return
             if not has_gpu() and not torch.cuda.is_available():
-                QtWidgets.QMessageBox.about(self,
-                                            "GPU not available",
-                                            """For optimal performance, it is recommended to \
+                QtWidgets.QMessageBox.about(
+                    self,
+                    "GPU not available",
+                    """For optimal performance, it is recommended to \
                                                 use a GPU for running the Segment Anything model. \
                                                     Running the model on a CPU will result \
-                                                        in significantly longer processing times.""")
-            here = Path(os.path.abspath(__file__)
-                        ).parent.parent.parent / 'segmentation' / 'SAM'
+                                                        in significantly longer processing times.""",
+                )
+            here = (
+                Path(os.path.abspath(__file__)).parent.parent.parent
+                / "segmentation"
+                / "SAM"
+            )
             cachedir = str(here)
             os.makedirs(cachedir, exist_ok=True)
-            weight_file = os.path.join(
-                cachedir, self.sam_config["weights"] + ".pth")
+            weight_file = os.path.join(cachedir, self.sam_config["weights"] + ".pth")
             weight_urls = {
                 "vit_h": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
                 "vit_l": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
-                "vit_b": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+                "vit_b": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
             }
             if not os.path.isfile(weight_file):
                 torch.hub.download_url_to_file(
-                    weight_urls[self.sam_config["weights"]], weight_file)
-            sam = sam_model_registry[self.sam_config["weights"]](
-                checkpoint=weight_file)
+                    weight_urls[self.sam_config["weights"]], weight_file
+                )
+            sam = sam_model_registry[self.sam_config["weights"]](checkpoint=weight_file)
             if self.sam_config["device"] == "cuda" and torch.cuda.is_available():
                 sam.to(device="cuda")
             self.sam_predictor = SamPredictor(sam)
             self._sam_predictor_missing_logged = False
         self.samEmbedding()
 
-    def samEmbedding(self,):
+    def samEmbedding(
+        self,
+    ):
         image = self.pixmap.toImage().copy()
         img_size = image.size()
-        s = image.bits().asstring(img_size.height() * img_size.width() * image.depth()//8)
+        s = image.bits().asstring(
+            img_size.height() * img_size.width() * image.depth() // 8
+        )
         image = np.frombuffer(s, dtype=np.uint8).reshape(
-            [img_size.height(), img_size.width(), image.depth()//8])
+            [img_size.height(), img_size.width(), image.depth() // 8]
+        )
         image = image[:, :, :3].copy()
         h, w, _ = image.shape
         self.sam_image_scale = self.sam_config["maxside"] / max(h, w)
         self.sam_image_scale = min(1, self.sam_image_scale)
-        image = cv2.resize(image, None, fx=self.sam_image_scale,
-                           fy=self.sam_image_scale, interpolation=cv2.INTER_LINEAR)
+        image = cv2.resize(
+            image,
+            None,
+            fx=self.sam_image_scale,
+            fy=self.sam_image_scale,
+            interpolation=cv2.INTER_LINEAR,
+        )
         self.sam_predictor.set_image(image)
         self.update()
 
@@ -773,11 +806,12 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 logger.exception("Failed to set SAM image embedding.")
                 return
         masks, scores, logits = self.sam_predictor.predict(
-            point_coords=points*self.sam_image_scale,
+            point_coords=points * self.sam_image_scale,
             point_labels=labels,
-            mask_input=self.sam_mask.logits[None, :,
-                                            :] if self.sam_mask.logits is not None else None,
-            multimask_output=False
+            mask_input=self.sam_mask.logits[None, :, :]
+            if self.sam_mask.logits is not None
+            else None,
+            multimask_output=False,
         )
         self.sam_mask.logits = logits[np.argmax(scores), :, :]
         mask = masks[np.argmax(scores), :, :]
@@ -788,7 +822,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         for shape in self.shapes:
             shapesBackup.append(shape.copy())
         if len(self.shapesBackups) > self.num_backups:
-            self.shapesBackups = self.shapesBackups[-self.num_backups - 1:]
+            self.shapesBackups = self.shapesBackups[-self.num_backups - 1 :]
         self.shapesBackups.append(shapesBackup)
 
     @property
@@ -874,7 +908,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             return
 
         x, y = ev.x(), ev.y()
-        self.mouse_xy_text = f'x:{pos.x():.1f},y:{pos.y():.1f}'
+        self.mouse_xy_text = f"x:{pos.x():.1f},y:{pos.y():.1f}"
         self.label.setText(self.mouse_xy_text)
         self.label.adjustSize()
         label_width = self.label.width()
@@ -888,7 +922,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             if self.createMode in ["ai_polygon", "ai_mask", "grounding_sam"]:
                 self.line.shape_type = "points"
             else:
-                self.line.shape_type = self.createMode if "polygonSAM" != self.createMode else "polygon"
+                self.line.shape_type = (
+                    self.createMode if "polygonSAM" != self.createMode else "polygon"
+                )
 
             self.overrideCursor(CURSOR_DRAW)
             if not self.current:
@@ -948,9 +984,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self.boundedMoveShapes(self.selectedShapesCopy, pos)
                 self.repaint()
             elif self.selectedShapes:
-                self.selectedShapesCopy = [
-                    s.copy() for s in self.selectedShapes
-                ]
+                self.selectedShapesCopy = [s.copy() for s in self.selectedShapes]
                 self.repaint()
             return
 
@@ -986,7 +1020,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 self.hEdge = None
                 shape.highlightVertex(index, shape.MOVE_VERTEX)
                 self.overrideCursor(CURSOR_POINT)
-                self.setToolTip(self.tr(f"Click & drag to move point"))
+                self.setToolTip(self.tr("Click & drag to move point"))
                 self.label.setText(shape.label + "," + self.mouse_xy_text)
                 self.label.adjustSize()
                 self.setStatusTip(self.toolTip())
@@ -1057,7 +1091,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             menu = QtWidgets.QMenu(self)
             propagate_action = menu.addAction("Propagate Selected Shape")
             propagate_action.triggered.connect(
-                lambda: self.propagateSelectedShapeFromCanvas())
+                lambda: self.propagateSelectedShapeFromCanvas()
+            )
             # Optional SAM 3D action if the main window exposes it
             main_window = self.window()
             if hasattr(main_window, "run_sam3d_reconstruction"):
@@ -1115,15 +1150,14 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                             label=self.line.point_labels[1],
                         )
                         self.line.points[0] = self.current.points[-1]
-                        self.line.point_labels[0] = self.current.point_labels[
-                            -1
-                        ]
+                        self.line.point_labels[0] = self.current.point_labels[-1]
                         if ev.modifiers() & QtCore.Qt.ControlModifier:
                             self.finalise()
                     elif self.createMode == "polygonSAM":
                         self.current.addPoint(self.line[1], True)
-                        points = [[point.x(), point.y()]
-                                  for point in self.current.points]
+                        points = [
+                            [point.x(), point.y()] for point in self.current.points
+                        ]
                         labels = [int(label) for label in self.current.labels]
                         self.samPrompt(np.array(points), np.array(labels))
                         if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
@@ -1131,10 +1165,13 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 elif not self.outOfPixmap(pos):
                     # Create new shape.
                     if self.createMode != "polygonSAM":
-                        self.current = Shape(shape_type="points" if self.createMode in [
-                                             "ai_polygon", "ai_mask", "grounding_sam"] else self.createMode)
-                        self.current.addPoint(
-                            pos, label=0 if is_shift_pressed else 1)
+                        self.current = Shape(
+                            shape_type="points"
+                            if self.createMode
+                            in ["ai_polygon", "ai_mask", "grounding_sam"]
+                            else self.createMode
+                        )
+                        self.current.addPoint(pos, label=0 if is_shift_pressed else 1)
                         if self.createMode == "point":
                             if is_shift_pressed:
                                 set_keypoint_visibility_on_shape_object(
@@ -1142,8 +1179,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                                 )
                             self.finalise()
                         elif (
-                            self.createMode in [
-                                "ai_polygon", "ai_mask", "grounding_sam"]
+                            self.createMode
+                            in ["ai_polygon", "ai_mask", "grounding_sam"]
                             and ev.modifiers() & QtCore.Qt.ControlModifier
                         ):
                             self.finalise()
@@ -1152,8 +1189,8 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                                 self.current.shape_type = "circle"
                             self.line.points = [pos, pos]
                             if (
-                                self.createMode in [
-                                    "ai_polygon", "ai_mask", "grounding_sam"]
+                                self.createMode
+                                in ["ai_polygon", "ai_mask", "grounding_sam"]
                                 and is_shift_pressed
                             ):
                                 self.line.point_labels = [0, 0]
@@ -1183,8 +1220,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             if self.drawing() and self.createMode == "polygonSAM":
                 if self.current:
                     self.current.addPoint(self.line[1], False)
-                    points = [[point.x(), point.y()]
-                              for point in self.current.points]
+                    points = [[point.x(), point.y()] for point in self.current.points]
                     labels = [int(label) for label in self.current.labels]
                     self.samPrompt(np.array(points), np.array(labels))
                     if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
@@ -1199,17 +1235,15 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             elif self.editing():
                 group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
                 if not self.selectedShapes or (
-                    self.hShape is not None
-                    and self.hShape not in self.selectedShapes
+                    self.hShape is not None and self.hShape not in self.selectedShapes
                 ):
-                    self.selectShapePoint(
-                        pos, multiple_selection_mode=group_mode)
+                    self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                     self.repaint()
                 self.prevPoint = pos
 
     def mouseReleaseEvent(self, ev):
         if ev.button() == QtCore.Qt.RightButton:
-            if self.createMode != 'polygonSAM':
+            if self.createMode != "polygonSAM":
                 menu = self.menus[len(self.selectedShapesCopy) > 0]
                 self.restoreCursor()
                 if (
@@ -1232,10 +1266,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
         if self.movingShape and self.hShape:
             index = self.shapes.index(self.hShape)
-            if (
-                self.shapesBackups[-1][index].points
-                != self.shapes[index].points
-            ):
+            if self.shapesBackups[-1][index].points != self.shapes[index].points:
                 self.storeShapes()
                 self.shapeMoved.emit()
 
@@ -1306,9 +1337,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     self.setHiding()
                     if shape not in self.selectedShapes:
                         if multiple_selection_mode:
-                            self.selectionChanged.emit(
-                                self.selectedShapes + [shape]
-                            )
+                            self.selectionChanged.emit(self.selectedShapes + [shape])
                         else:
                             self.selectionChanged.emit([shape])
                         self.hShapeIsSelected = False
@@ -1324,7 +1353,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         top = self.pixmap.height() - 1
         bottom = 0
         for s in self.selectedShapes:
-            if s.shape_type == 'mask':
+            if s.shape_type == "mask":
                 continue
             rect = s.boundingRect()
             if rect.left() < left:
@@ -1516,11 +1545,10 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             p.restore()
 
         # draw crosshair
-        if ((not self.createMode == 'grounding_sam')
-            and (self._crosshair[self._createMode]
-                 and self.drawing())):
-            p.setPen(QtGui.QPen(QtGui.QColor(
-                255, 255, 255), 1, QtCore.Qt.DotLine))
+        if (not self.createMode == "grounding_sam") and (
+            self._crosshair[self._createMode] and self.drawing()
+        ):
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1, QtCore.Qt.DotLine))
             p.drawLine(
                 0,
                 int(self.prevMovePoint.y()),
@@ -1585,8 +1613,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     else:
                         points = self._ai_model.predict_polygon_from_points(
                             points=[
-                                [point.x(), point.y()]
-                                for point in drawing_shape.points
+                                [point.x(), point.y()] for point in drawing_shape.points
                             ],
                             point_labels=drawing_shape.point_labels,
                         )
@@ -1602,8 +1629,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                             drawing_shape.fill = self.fillDrawing()
                             drawing_shape.paint(p)
                 except Exception as e:
-                    logger.error(
-                        f"An error occurred during AI polygon prediction: {e}")
+                    logger.error(f"An error occurred during AI polygon prediction: {e}")
 
             elif self.createMode == "ai_mask" and self.current is not None:
                 drawing_shape = self.current.copy()
@@ -1619,25 +1645,23 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     else:
                         mask = self._ai_model.predict_mask_from_points(
                             points=[
-                                [point.x(), point.y()]
-                                for point in drawing_shape.points
+                                [point.x(), point.y()] for point in drawing_shape.points
                             ],
                             point_labels=drawing_shape.point_labels,
                         )
-                        y1, x1, y2, x2 = imgviz.instances.mask_to_bbox(
-                            [mask])[0].astype(int)
+                        y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[
+                            0
+                        ].astype(int)
                         drawing_shape.setShapeRefined(
                             shape_type="mask",
-                            points=[QtCore.QPointF(
-                                x1, y1), QtCore.QPointF(x2, y2)],
+                            points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
                             point_labels=[1, 1],
                             mask=mask[y1:y2, x1:x2],
                         )
                         drawing_shape.selected = True
                         drawing_shape.paint(p)
                 except Exception as e:
-                    logger.error(
-                        f"An error occurred during AI mask prediction: {e}")
+                    logger.error(f"An error occurred during AI mask prediction: {e}")
 
             elif (
                 # Check if the current mode is either 'linestrip' or 'line' to handle line segment drawing.
@@ -1713,8 +1737,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
     def finalise(self):
         if self.current is None:
-            logger.warning(
-                "finalise called without an active shape; ignoring.")
+            logger.warning("finalise called without an active shape; ignoring.")
             return
         if self.createMode == "rectangle":
             self.current.close()
@@ -1743,8 +1766,9 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             try:
                 main_window = self.window()
                 checkbox = getattr(
-                    getattr(main_window, "aiRectangle",
-                            None), "_useCountGDCheckbox", None
+                    getattr(main_window, "aiRectangle", None),
+                    "_useCountGDCheckbox",
+                    None,
                 )
                 checkbox_flagged = bool(checkbox and checkbox.isChecked())
             except Exception:
@@ -1775,15 +1799,11 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                 )
                 return
             points = self._ai_model.predict_polygon_from_points(
-                points=[
-                    [point.x(), point.y()] for point in self.current.points
-                ],
+                points=[[point.x(), point.y()] for point in self.current.points],
                 point_labels=self.current.point_labels,
             )
             self.current.setShapeRefined(
-                points=[
-                    QtCore.QPointF(point[0], point[1]) for point in points
-                ],
+                points=[QtCore.QPointF(point[0], point[1]) for point in points],
                 point_labels=[1] * len(points),
                 shape_type="polygon",
             )
@@ -1791,28 +1811,22 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             # convert points to mask by an AI model
             assert self.current.shape_type == "points"
             if not self._ensure_ai_model_initialized():
-                logger.error(
-                    "AI mask model is not initialized; skipping finalisation."
-                )
+                logger.error("AI mask model is not initialized; skipping finalisation.")
                 return
             mask = self._ai_model.predict_mask_from_points(
-                points=[
-                    [point.x(), point.y()] for point in self.current.points
-                ],
+                points=[[point.x(), point.y()] for point in self.current.points],
                 point_labels=self.current.point_labels,
             )
-            y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[0].astype(
-                int
-            )
+            y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[0].astype(int)
             self.current.setShapeRefined(
                 shape_type="mask",
                 points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
                 point_labels=[1, 1],
                 mask=mask[y1:y2, x1:x2],
             )
-        if self.createMode != 'grounding_sam':
+        if self.createMode != "grounding_sam":
             self.current.close()
-        if self.createMode == 'polygonSAM':
+        if self.createMode == "polygonSAM":
             self.shapes.append(self.sam_mask)
         else:
             self.shapes.append(self.current)
@@ -1926,9 +1940,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
     def moveByKeyboard(self, offset):
         if self.selectedShapes:
-            self.boundedMoveShapes(
-                self.selectedShapes, self.prevPoint + offset
-            )
+            self.boundedMoveShapes(self.selectedShapes, self.prevPoint + offset)
             self.repaint()
             self.movingShape = True
 
@@ -1965,10 +1977,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
                     index = self.shapes.index(self.selectedShapes[0])
                 except ValueError:
                     return
-                if (
-                    self.shapesBackups[-1][index].points
-                    != self.shapes[index].points
-                ):
+                if self.shapesBackups[-1][index].points != self.shapes[index].points:
                     self.storeShapes()
                     self.shapeMoved.emit()
 
@@ -1981,8 +1990,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
         polygons = None
         if isinstance(self.shapes[-1], MaskShape):
             mask_shape = self.shapes.pop()
-            polygons = mask_shape.toPolygons(
-                self.sam_config["approxpoly_epsilon"])
+            polygons = mask_shape.toPolygons(self.sam_config["approxpoly_epsilon"])
             self.shapes.extend(polygons)
         self.shapesBackups.pop()
         self.storeShapes()
@@ -2027,27 +2035,41 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
             self.samEmbedding()
         self.update()
 
-    def _predict_similar_rectangles(self, rectangle_shapes=None, prompt=None, confidence_threshold=0.23):
+    def _predict_similar_rectangles(
+        self, rectangle_shapes=None, prompt=None, confidence_threshold=0.23
+    ):
         """Predict more rectangle shapes without modifying self.shapes directly here."""
         detected_boxes = []
         if self.pixmap and not self.pixmap.isNull():
             try:
                 from annolid.detector.countgd.predict import ObjectCounter
+
                 qt_image = self.pixmap.toImage()
                 image_data = convert_qt_image_to_rgb_cv_image(qt_image)
                 pil_img = Image.fromarray(image_data)
                 object_counter = ObjectCounter()
                 exemplar_boxes = []
                 for rectangle_shape in rectangle_shapes:
-
                     x1 = int(
-                        min(rectangle_shape.points[0].x(), rectangle_shape.points[1].x()))
+                        min(
+                            rectangle_shape.points[0].x(), rectangle_shape.points[1].x()
+                        )
+                    )
                     y1 = int(
-                        min(rectangle_shape.points[0].y(), rectangle_shape.points[1].y()))
+                        min(
+                            rectangle_shape.points[0].y(), rectangle_shape.points[1].y()
+                        )
+                    )
                     x2 = int(
-                        max(rectangle_shape.points[0].x(), rectangle_shape.points[1].x()))
+                        max(
+                            rectangle_shape.points[0].x(), rectangle_shape.points[1].x()
+                        )
+                    )
                     y2 = int(
-                        max(rectangle_shape.points[0].y(), rectangle_shape.points[1].y()))
+                        max(
+                            rectangle_shape.points[0].y(), rectangle_shape.points[1].y()
+                        )
+                    )
                     exemplar_boxes.append([x1, y1, x2, y2])
 
                 detected_boxes = object_counter.count_objects(
