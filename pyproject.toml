@@ -78,8 +78,10 @@ image_editing = [
     "safetensors>=0.4.0",
 ]
 
-pocket_tts = [
+text_to_speech = [
     "pocket-tts>=1.0.0",
+    "pyqtwebengine",
+    "pymupdf",
 ]
 
 qwen3_embedding = [
