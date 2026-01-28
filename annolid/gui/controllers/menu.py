@@ -246,9 +246,9 @@ class MenuController:
             },
             {
                 "name": "convert_sleap",
-                "text": w.tr("&Convert SLEAP h5 to labelme"),
+                "text": w.tr("&Convert SLEAP to labelme"),
                 "slot": w.convert_sleap_h5_to_labelme,
-                "tip": w.tr("Convert SLEAP h5 to labelme"),
+                "tip": w.tr("Convert SLEAP to labelme"),
             },
             {
                 "name": "convert_deeplabcut",
