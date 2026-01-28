@@ -31,8 +31,7 @@ class AIModelManager(QtCore.QObject):
 
         self._browse_custom_label = parent.tr("Browse Custom YOLO…")
         self._missing_custom_weights_logged: Set[str] = set()
-        self._custom_model_configs: List[ModelConfig] = self._load_custom_models(
-        )
+        self._custom_model_configs: List[ModelConfig] = self._load_custom_models()
         self._last_selection: Optional[str] = None
         self._refresh_in_progress = False
 
@@ -54,7 +53,8 @@ class AIModelManager(QtCore.QObject):
             if not self._is_model_available(selected):
                 self._warn_missing_custom_weight(selected)
                 fallback = self._restore_previous_selection(
-                    exclude=selected.display_name)
+                    exclude=selected.display_name
+                )
                 return fallback
         return selected
 
@@ -64,8 +64,7 @@ class AIModelManager(QtCore.QObject):
             return "Segment-Anything (Edge)"
         if self._is_custom_model(model) and not self._is_model_available(model):
             self._warn_missing_custom_weight(model)
-            fallback = self._restore_previous_selection(
-                exclude=model.display_name)
+            fallback = self._restore_previous_selection(exclude=model.display_name)
             if fallback:
                 return fallback.weight_file
             return "Segment-Anything (Edge)"
@@ -85,14 +84,12 @@ class AIModelManager(QtCore.QObject):
 
     def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:  # noqa: N802
         """Keep the model list in sync with on-disk weight files."""
-        if obj is self._combo and event.type() in (
-            QtCore.QEvent.FocusIn,
-            QtCore.QEvent.MouseButtonPress,
-        ):
+        if obj is self._combo and event.type() == QtCore.QEvent.MouseButtonPress:
             # If the user deleted/moved weights while the app is open, ensure
             # the next dropdown open reflects current disk state.
             current = self._combo.currentText()
-            self._refresh_combo(current)
+            QtCore.QTimer.singleShot(0, lambda: self._refresh_combo(current))
+            return False
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------ #
@@ -163,8 +160,7 @@ class AIModelManager(QtCore.QObject):
         if selected_model and self._is_custom_model(selected_model):
             if not self._is_model_available(selected_model):
                 self._warn_missing_custom_weight(selected_model)
-                self._restore_previous_selection(
-                    exclude=selected_model.display_name)
+                self._restore_previous_selection(exclude=selected_model.display_name)
                 return
 
         self._last_selection = current_text
@@ -185,8 +181,7 @@ class AIModelManager(QtCore.QObject):
         dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
         dialog.setNameFilters(
             [
-                self.tr(
-                    "YOLO Models (*.pt *.pth *.onnx *.engine *.mlpackage)"),
+                self.tr("YOLO Models (*.pt *.pth *.onnx *.engine *.mlpackage)"),
                 self.tr("All Files (*)"),
             ]
         )
@@ -207,23 +202,25 @@ class AIModelManager(QtCore.QObject):
             QtWidgets.QMessageBox.warning(
                 parent_widget,
                 self.tr("Invalid model selection"),
-                self.tr(
-                    "Selected path is not a compatible YOLO model export."),
+                self.tr("Selected path is not a compatible YOLO model export."),
             )
             return
 
         existing = next(
-            (cfg for cfg in self._custom_model_configs
-             if Path(cfg.weight_file) == weight_path),
+            (
+                cfg
+                for cfg in self._custom_model_configs
+                if Path(cfg.weight_file) == weight_path
+            ),
             None,
         )
         if existing:
             target_display = existing.display_name
         else:
             display_base = weight_path.stem
-            existing_names = {
-                cfg.display_name for cfg in MODEL_REGISTRY
-            } | {cfg.display_name for cfg in self._custom_model_configs}
+            existing_names = {cfg.display_name for cfg in MODEL_REGISTRY} | {
+                cfg.display_name for cfg in self._custom_model_configs
+            }
             candidate = display_base
             counter = 2
             while candidate in existing_names:
@@ -251,11 +248,7 @@ class AIModelManager(QtCore.QObject):
 
     def _find_model_config(self, display_name: str) -> Optional[ModelConfig]:
         return next(
-            (
-                cfg
-                for cfg in self.all_model_configs
-                if cfg.display_name == display_name
-            ),
+            (cfg for cfg in self.all_model_configs if cfg.display_name == display_name),
             None,
         )
 
@@ -313,7 +306,7 @@ class AIModelManager(QtCore.QObject):
                 parent_widget,
                 self.tr("Custom model weights not found"),
                 self.tr(
-                    "The custom YOLO weights for \"{name}\" were not found at:\n"
+                    'The custom YOLO weights for "{name}" were not found at:\n'
                     "{path}\n"
                     "Please reconnect the storage location or choose a different model."
                 ).format(name=model.display_name, path=resolved_str),
@@ -329,7 +322,8 @@ class AIModelManager(QtCore.QObject):
         if default_text and default_text not in candidates:
             candidates.append(default_text)
         candidates.extend(
-            cfg.display_name for cfg in self.all_model_configs
+            cfg.display_name
+            for cfg in self.all_model_configs
             if cfg.display_name not in candidates
         )
 
