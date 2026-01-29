@@ -6,7 +6,7 @@ import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -27,13 +27,16 @@ try:
     from annolid.annotation.pose_schema import PoseSchema  # type: ignore
 except Exception as e:
     raise SystemExit(
-        "Missing dependency: annolid (for PoseSchema). "
-        "Install with: pip install annolid"
+        "Missing dependency: annolid (for PoseSchema). Install with: pip install annolid"
     ) from e
 
 
 HDF5_MAGIC = b"\x89HDF\r\n\x1a\n"
 ZIP_MAGIC = b"PK\x03\x04"
+
+# Matches sleap-io InstanceType
+INSTANCE_TYPE_USER = 0
+INSTANCE_TYPE_PREDICTED = 1
 
 
 def _read_magic(p: Path, n: int = 8) -> bytes:
@@ -77,15 +80,18 @@ def safe_json_loads(raw: object) -> Optional[object]:
 class SkeletonSpec:
     names: List[str]
     edges: List[Tuple[str, str]]
+    symmetry_pairs: List[Tuple[str, str]] = None  # type: ignore[assignment]
+    name: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class InstanceRecord:
     frame_idx: int
     track_id: int
+    skeleton_id: int
     points_xy: np.ndarray
     visible: Optional[np.ndarray] = None
-    node_ids: Optional[np.ndarray] = None
+    is_predicted: bool = False
 
 
 class SleapH5Reader:
@@ -125,202 +131,181 @@ class SleapH5Reader:
         return obj if isinstance(obj, h5py.Group) else None
 
     # --------------------------
-    # Skeleton extraction helpers
+    # Metadata / skeleton parsing
     # --------------------------
-    @staticmethod
-    def _extract_skeleton_from_obj(obj: object) -> Optional[SkeletonSpec]:
-        """
-        Try to find skeleton nodes+edges from any decoded JSON-like object.
-        Handles patterns such as:
-          {"skeletons":[{"nodes":[{"name":"head"}, ...], "edges":[[0,1], ...]}]}
-          {"skeletons":[{"node_names":[...], "edges":[["head","thorax"], ...]}]}
-          {"skeleton":{"nodes":[...], "edges":[...]}}, etc.
-        """
-        if not isinstance(obj, (dict, list)):
-            return None
-
-        def walk(x: object) -> Iterable[dict]:
-            if isinstance(x, dict):
-                yield x
-                for v in x.values():
-                    yield from walk(v)
-            elif isinstance(x, list):
-                for v in x:
-                    yield from walk(v)
-
-        def normalize_names(d: dict) -> Optional[List[str]]:
-            # node_names: [str, ...]
-            if (
-                "node_names" in d
-                and isinstance(d["node_names"], list)
-                and d["node_names"]
-            ):
-                if all(isinstance(n, str) for n in d["node_names"]):
-                    return [str(n).strip() for n in d["node_names"] if str(n).strip()]
-            # nodes: [{name:...}]
-            if "nodes" in d and isinstance(d["nodes"], list) and d["nodes"]:
-                if all(isinstance(n, dict) and "name" in n for n in d["nodes"]):
-                    names = [str(n.get("name", "")).strip() for n in d["nodes"]]
-                    names = [n for n in names if n]
-                    return names or None
-            return None
-
-        def normalize_edges(d: dict, names: List[str]) -> List[Tuple[str, str]]:
-            out: List[Tuple[str, str]] = []
-            edges = d.get("edges")
-            if not edges or not isinstance(edges, list):
-                return out
-
-            def add_pair(a: Any, b: Any) -> None:
-                a_s = str(a).strip() if a is not None else ""
-                b_s = str(b).strip() if b is not None else ""
-                if not a_s or not b_s or a_s == b_s:
-                    return
-                out.append((a_s, b_s))
-
-            for e in edges:
-                # edges could be [[0,1], ...] or [["head","thorax"], ...]
-                if isinstance(e, (list, tuple)) and len(e) == 2:
-                    a, b = e
-                    # indices
-                    if isinstance(a, (int, np.integer)) and isinstance(
-                        b, (int, np.integer)
-                    ):
-                        ai = int(a)
-                        bi = int(b)
-                        if 0 <= ai < len(names) and 0 <= bi < len(names):
-                            add_pair(names[ai], names[bi])
-                    else:
-                        add_pair(a, b)
-                # sometimes edges as dicts: {"source":0,"target":1} or {"src":..., "dst":...}
-                elif isinstance(e, dict):
-                    a = e.get("source", e.get("src", e.get("a")))
-                    b = e.get("target", e.get("dst", e.get("b")))
-                    if isinstance(a, (int, np.integer)) and isinstance(
-                        b, (int, np.integer)
-                    ):
-                        ai = int(a)
-                        bi = int(b)
-                        if 0 <= ai < len(names) and 0 <= bi < len(names):
-                            add_pair(names[ai], names[bi])
-                    else:
-                        add_pair(a, b)
-
-            # de-dup while preserving order
-            seen = set()
-            dedup: List[Tuple[str, str]] = []
-            for a, b in out:
-                key = (a, b)
-                if key in seen:
-                    continue
-                seen.add(key)
-                dedup.append((a, b))
-            return dedup
-
-        for d in walk(obj):
-            names = normalize_names(d)
-            if not names:
-                continue
-            edges = normalize_edges(d, names)
-            return SkeletonSpec(names=names, edges=edges)
-
-        return None
-
-    def _scan_attrs_for_skeleton(
-        self, h5obj: Union[h5py.File, h5py.Group, h5py.Dataset]
-    ) -> Optional[SkeletonSpec]:
-        try:
-            for _, v in h5obj.attrs.items():
-                obj = safe_json_loads(v)
-                if obj is None:
-                    continue
-                sk = self._extract_skeleton_from_obj(obj)
-                if sk:
-                    return sk
-        except Exception:
-            return None
-        return None
-
-    def infer_skeleton(self) -> SkeletonSpec:
-        # 1) /metadata dataset
+    def _read_metadata_obj(self) -> Optional[object]:
+        # /metadata dataset often stores JSON
         meta_ds = self._maybe_ds("metadata")
         if meta_ds is not None:
             try:
                 obj = safe_json_loads(meta_ds[()])
                 if obj is not None:
-                    sk = self._extract_skeleton_from_obj(obj)
-                    if sk:
-                        return sk
+                    return obj
             except Exception:
                 pass
 
-        # 1b) /metadata group attrs
+        # /metadata group may store attrs
         meta_grp = self._maybe_grp("metadata")
         if meta_grp is not None:
-            sk = self._scan_attrs_for_skeleton(meta_grp)
-            if sk:
-                return sk
-
-        # 2) any *_json dataset
-        for k in self.root_keys():
-            if not k.endswith("_json"):
-                continue
-            ds = self._maybe_ds(k)
-            if ds is None:
-                continue
             try:
-                obj = safe_json_loads(ds[()])
-            except Exception:
-                continue
-            if obj is None:
-                continue
-            sk = self._extract_skeleton_from_obj(obj)
-            if sk:
-                return sk
-
-        # 3) scan attrs broadly
-        sk = self._scan_attrs_for_skeleton(self._h5)
-        if sk:
-            return sk
-
-        found: Optional[SkeletonSpec] = None
-
-        def visitor(_: str, obj: object) -> None:
-            nonlocal found
-            if found:
-                return
-            if isinstance(obj, (h5py.Group, h5py.Dataset)):
-                got = self._scan_attrs_for_skeleton(obj)
-                if got:
-                    found = got
-
-        try:
-            self._h5.visititems(visitor)
-        except Exception:
-            pass
-        if found:
-            return found
-
-        # 4) infer node count from /points node_id
-        pts = self._maybe_ds("points")
-        if pts is not None and pts.dtype.fields and "node_id" in pts.dtype.fields:
-            try:
-                node_ids = np.asarray(pts["node_id"][:], dtype=np.int64)
-                node_ids = node_ids[np.isfinite(node_ids)]
-                if node_ids.size:
-                    n_nodes = int(np.max(node_ids)) + 1
-                    if n_nodes > 0:
-                        return SkeletonSpec(
-                            names=[f"node_{i}" for i in range(n_nodes)],
-                            edges=[],
-                        )
+                for _, v in meta_grp.attrs.items():
+                    obj = safe_json_loads(v)
+                    if obj is not None:
+                        return obj
             except Exception:
                 pass
 
-        # 5) fallback: first instance slice length
+        # Sometimes other *_json datasets exist
+        for k in self.root_keys():
+            if k.endswith("_json"):
+                ds = self._maybe_ds(k)
+                if ds is None:
+                    continue
+                try:
+                    obj = safe_json_loads(ds[()])
+                    if obj is not None:
+                        return obj
+                except Exception:
+                    continue
+
+        return None
+
+    @staticmethod
+    def _get_id(x: Any) -> Optional[int]:
+        # Handles {"py/id": 3}, {"id": 3}, or direct ints
+        if x is None:
+            return None
+        if isinstance(x, (int, np.integer)):
+            return int(x)
+        if isinstance(x, dict):
+            for k in ("id", "py/id"):
+                if k in x and isinstance(x[k], (int, np.integer)):
+                    return int(x[k])
+        return None
+
+    @staticmethod
+    def _parse_sleap_metadata_skeletons(meta: object) -> Optional[List[SkeletonSpec]]:
+        """
+        Parse skeletons as stored by SLEAP in /metadata:
+          meta["nodes"] = [{"name": ...}, ...]
+          meta["skeletons"] = [
+             {
+               "nodes": [{"id": <global_node_idx>}, ...],
+               "links": [{"source": {"id":...}, "target": {"id":...}, "type": 1|2}, ...],
+               "graph": {"name": "..."} (optional)
+             },
+             ...
+          ]
+        link.type==1 => edges
+        link.type==2 => symmetry_pairs
+        """
+        if not isinstance(meta, dict):
+            return None
+
+        nodes = meta.get("nodes")
+        skels = meta.get("skeletons")
+        if not (isinstance(nodes, list) and isinstance(skels, list) and skels):
+            return None
+
+        global_names: List[str] = []
+        for n in nodes:
+            if isinstance(n, dict) and "name" in n:
+                nm = str(n.get("name", "")).strip()
+                global_names.append(nm if nm else f"node_{len(global_names)}")
+            else:
+                global_names.append(f"node_{len(global_names)}")
+
+        out: List[SkeletonSpec] = []
+        for sidx, sk in enumerate(skels):
+            if not isinstance(sk, dict):
+                continue
+
+            sk_name = None
+            graph = sk.get("graph")
+            if isinstance(graph, dict) and graph.get("name"):
+                sk_name = str(graph.get("name")).strip() or None
+
+            sk_nodes = sk.get("nodes", [])
+            if not isinstance(sk_nodes, list) or not sk_nodes:
+                continue
+
+            node_ids: List[int] = []
+            for node in sk_nodes:
+                nid = SleapH5Reader._get_id(node)
+                if nid is None:
+                    continue
+                node_ids.append(nid)
+
+            if not node_ids:
+                continue
+
+            local_names: List[str] = []
+            for gid in node_ids:
+                if 0 <= gid < len(global_names):
+                    local_names.append(global_names[gid])
+                else:
+                    local_names.append(f"node_{gid}")
+
+            idx_map = {gid: li for li, gid in enumerate(node_ids)}
+
+            edges: List[Tuple[str, str]] = []
+            sym: List[Tuple[str, str]] = []
+
+            links = sk.get("links", [])
+            if isinstance(links, list):
+                for lk in links:
+                    if not isinstance(lk, dict):
+                        continue
+                    src = SleapH5Reader._get_id(lk.get("source"))
+                    dst = SleapH5Reader._get_id(lk.get("target"))
+                    if src is None or dst is None:
+                        continue
+                    if src not in idx_map or dst not in idx_map:
+                        continue
+                    a = local_names[idx_map[src]]
+                    b = local_names[idx_map[dst]]
+                    if not a or not b or a == b:
+                        continue
+                    t = lk.get("type")
+                    if t == 2:
+                        sym.append((a, b))
+                    else:
+                        # default to edges for type==1 (and any unknowns)
+                        edges.append((a, b))
+
+            # de-dup preserve order
+            def dedup(pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+                seen = set()
+                out2: List[Tuple[str, str]] = []
+                for a, b in pairs:
+                    key = (a, b)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out2.append((a, b))
+                return out2
+
+            out.append(
+                SkeletonSpec(
+                    names=local_names,
+                    edges=dedup(edges),
+                    symmetry_pairs=dedup(sym),
+                    name=sk_name or f"skeleton_{sidx}",
+                )
+            )
+
+        return out or None
+
+    def read_skeletons(self) -> List[SkeletonSpec]:
+        meta = self._read_metadata_obj()
+        skels = self._parse_sleap_metadata_skeletons(meta) if meta is not None else None
+        if skels:
+            return skels
+
+        # Fallback: try to infer a single skeleton by points-per-instance
         inst = self._require_ds("instances")
         if inst.shape[0] == 0:
-            raise ValueError("No instances found in file; cannot infer node count.")
+            raise ValueError("No instances found in file; cannot infer skeleton.")
         row0 = inst[0]
         ps = int(row0["point_id_start"])
         pe = int(row0["point_id_end"])
@@ -329,18 +314,23 @@ class SleapH5Reader:
             raise ValueError(
                 "Could not infer node count from instances[0].point_id_start/end."
             )
-        return SkeletonSpec(
-            names=[f"node_{i}" for i in range(n_nodes)],
-            edges=[],
-        )
+        return [
+            SkeletonSpec(
+                names=[f"node_{i}" for i in range(n_nodes)],
+                edges=[],
+                symmetry_pairs=[],
+                name="skeleton_0",
+            )
+        ]
 
     # --------------------------
     # Instances / points reading
     # --------------------------
-    def iter_instances(self, skeleton: SkeletonSpec) -> Iterable[InstanceRecord]:
+    def iter_instances(self, skeletons: List[SkeletonSpec]) -> Iterable[InstanceRecord]:
         frames = self._require_ds("frames")
         inst = self._require_ds("instances")
         pts = self._require_ds("points")
+        pred_pts = self._maybe_ds("pred_points")
 
         pt_fields = set(pts.dtype.fields.keys()) if pts.dtype.fields else set()
         if not {"x", "y"}.issubset(pt_fields):
@@ -348,8 +338,9 @@ class SleapH5Reader:
                 f"/points missing x/y columns. Found fields: {sorted(pt_fields)}"
             )
 
-        has_visible = "visible" in pt_fields
-        has_node_id = "node_id" in pt_fields
+        inst_fields = set(inst.dtype.fields.keys()) if inst.dtype.fields else set()
+        has_instance_type = "instance_type" in inst_fields
+        has_skeleton_id = "skeleton" in inst_fields
 
         for fr in frames:
             frame_idx = int(fr["frame_idx"])
@@ -359,41 +350,63 @@ class SleapH5Reader:
                 continue
 
             for inst_row in inst[i0:i1]:
-                track_id = int(inst_row["track"])
+                track_id = int(inst_row["track"]) if "track" in inst_fields else -1
+                sk_id = int(inst_row["skeleton"]) if has_skeleton_id else 0
+                sk_id = sk_id if 0 <= sk_id < len(skeletons) else 0
+                sk = skeletons[sk_id]
+
                 ps = int(inst_row["point_id_start"])
                 pe = int(inst_row["point_id_end"])
                 n = pe - ps
                 if n <= 0:
                     continue
 
-                xs = pts["x"][ps:pe].astype(np.float32, copy=False)
-                ys = pts["y"][ps:pe].astype(np.float32, copy=False)
+                is_pred = False
+                point_ds: h5py.Dataset = pts
+                if has_instance_type:
+                    it = int(inst_row["instance_type"])
+                    if it == INSTANCE_TYPE_PREDICTED:
+                        is_pred = True
+                        if pred_pts is None:
+                            raise KeyError(
+                                "Found predicted instances but /pred_points dataset is missing."
+                            )
+                        point_ds = pred_pts
+
+                pfields = (
+                    set(point_ds.dtype.fields.keys())
+                    if point_ds.dtype.fields
+                    else set()
+                )
+                if not {"x", "y"}.issubset(pfields):
+                    raise KeyError(
+                        f"Point dataset missing x/y columns. Found fields: {sorted(pfields)}"
+                    )
+
+                xs = point_ds["x"][ps:pe].astype(np.float32, copy=False)
+                ys = point_ds["y"][ps:pe].astype(np.float32, copy=False)
                 xy = np.stack([xs, ys], axis=1)
 
                 vis = None
-                if has_visible:
-                    vis = pts["visible"][ps:pe].astype(bool, copy=False)
+                if "visible" in pfields:
+                    vis = point_ds["visible"][ps:pe].astype(bool, copy=False)
 
-                node_ids = None
-                if has_node_id:
-                    node_ids = pts["node_id"][ps:pe].astype(np.int64, copy=False)
-
-                # ✅ Prevent silent mislabeling:
-                # Without node_id, we can only safely map by index if the slice is dense.
-                if node_ids is None and n != len(skeleton.names):
+                # ✅ This is the key sleap-io invariant:
+                # points slice is ordered to match skeleton.node_names.
+                if n != len(sk.names):
                     raise ValueError(
-                        "Ambiguous point-to-node mapping: this SLEAP file stores a compact/variable "
-                        f"point slice (n={n}) but provides no /points['node_id'] to identify nodes. "
-                        "Re-export labels with node ids, or ensure each instance stores a full dense "
-                        f"node vector of length {len(skeleton.names)}."
+                        "Point slice length does not match skeleton node count. "
+                        f"slice n={n}, skeleton[{sk_id}] nodes={len(sk.names)}. "
+                        "This is unexpected for standard .slp written by SLEAP/sleap-io."
                     )
 
                 yield InstanceRecord(
                     frame_idx=frame_idx,
                     track_id=track_id,
+                    skeleton_id=sk_id,
                     points_xy=xy,
                     visible=vis,
-                    node_ids=node_ids,
+                    is_predicted=is_pred,
                 )
 
     # --------------------------
@@ -494,20 +507,6 @@ class SleapH5Reader:
                     return Image.fromarray(arr[:, :, 0], mode="L").convert("RGB")
                 return Image.fromarray(arr, mode="RGB")
 
-            if (
-                arr.ndim == 1
-                and arr.dtype.kind in ("i", "u")
-                and arr.itemsize in (2, 4, 8)
-            ):
-                b = (
-                    (arr.astype(np.uint64, copy=False) & 0xFF)
-                    .astype(np.uint8)
-                    .tobytes()
-                )
-                im = try_decode_bytes(b)
-                if im is not None:
-                    return im
-
             raise ValueError(
                 f"Unsupported embedded frame ndarray shape={arr.shape}, dtype={arr.dtype}"
             )
@@ -536,58 +535,11 @@ def make_labelme_json(
 
 
 def _infer_symmetry_pairs_extended(keypoints: Sequence[str]) -> List[Tuple[str, str]]:
-    """
-    Extended L/R inference:
-    - uses Annolid PoseSchema.infer_symmetry_pairs when available
-    - plus suffix patterns like wingL/wingR, eyeL/eyeR, forelegL4/forelegR4, etc.
-    """
     pairs: List[Tuple[str, str]] = []
     try:
         pairs.extend(PoseSchema.infer_symmetry_pairs(keypoints))  # type: ignore[attr-defined]
     except Exception:
         pass
-
-    names = [str(k).strip() for k in keypoints if str(k).strip()]
-    lower_to_original = {n.lower(): n for n in names}
-    used = {tuple(sorted((a.lower(), b.lower()))) for a, b in pairs}
-
-    def add(a: str, b: str) -> None:
-        key = tuple(sorted((a.lower(), b.lower())))
-        if key in used:
-            return
-        used.add(key)
-        pairs.append((a, b))
-
-    for name in names:
-        low = name.lower()
-
-        # Suffix L/R: "...l" <-> "...r" (but avoid matching words like "all")
-        if len(low) >= 2 and low[-1] in ("l", "r"):
-            other = low[:-1] + ("r" if low[-1] == "l" else "l")
-            if other in lower_to_original:
-                add(name, lower_to_original[other])
-
-        # Embedded token L/R: e.g. forelegL4 <-> forelegR4, eyeL <-> eyeR
-        # Heuristic: replace 'l' with 'r' when adjacent to digit or end.
-        for repl in (
-            (("l",), ("r",)),
-            (("left",), ("right",)),
-            (("right",), ("left",)),
-        ):
-            # keep for future; suffix rule above covers the common SLEAP fly schema well.
-            pass
-
-        # Mid-string 'L'/'R' right before digits or end (case-insensitive)
-        # Example: "forelegl4" -> "forelegr4"
-        for idx in range(1, len(low) - 1):
-            if low[idx] not in ("l", "r"):
-                continue
-            if not (low[idx + 1].isdigit() or idx == len(low) - 1):
-                continue
-            other = low[:idx] + ("r" if low[idx] == "l" else "l") + low[idx + 1 :]
-            if other in lower_to_original:
-                add(name, lower_to_original[other])
-
     return pairs
 
 
@@ -601,7 +553,6 @@ def build_label_mapper(
             mapper[n] = n
         return mapper
 
-    # Normalize schema if it has the helper
     try:
         schema.normalize_prefixed_keypoints()  # type: ignore[attr-defined]
     except Exception:
@@ -614,23 +565,24 @@ def build_label_mapper(
     return mapper
 
 
-def write_default_pose_schema(out_dir: Path, skeleton: SkeletonSpec) -> Path:
+def write_pose_schema(out_dir: Path, skeleton: SkeletonSpec, *, filename: str) -> Path:
     """
-    ✅ By default, write a pose schema JSON to output folder.
+    Write pose schema JSON to output folder.
     - keypoints: skeleton.names
-    - edges: skeleton.edges (if available)
-    - symmetry_pairs: inferred (extended)
+    - edges: skeleton.edges
+    - symmetry_pairs: skeleton.symmetry_pairs if present else inferred
     """
+    sym = skeleton.symmetry_pairs or _infer_symmetry_pairs_extended(skeleton.names)
     schema = PoseSchema(
         version="1.0",
         keypoints=list(skeleton.names),
         edges=list(skeleton.edges) if skeleton.edges else [],
-        symmetry_pairs=_infer_symmetry_pairs_extended(skeleton.names),
+        symmetry_pairs=sym,
         flip_idx=None,
         instances=[],
         instance_separator="_",
     )
-    out_path = out_dir / "pose_schema.json"
+    out_path = out_dir / filename
     schema.save(out_path)
     return out_path
 
@@ -651,36 +603,49 @@ def convert_sleap_h5_to_labelme(
     kind = detect_sleap_container(sleap_path)
     if kind != "h5":
         raise SystemExit(
-            f"Currently this converter expects HDF5 .slp/.pkg.slp. "
-            f"Your file looks like: {kind}. If you truly have a zip-based pkg, "
-            f"export an HDF5 .slp or share the archive structure."
+            "Currently this converter expects HDF5 .slp/.pkg.slp. "
+            f"Your file looks like: {kind}."
         )
 
     reader = SleapH5Reader(Path(sleap_path))
     try:
-        skeleton = reader.infer_skeleton()
+        skeletons = reader.read_skeletons()
+        if not skeletons:
+            raise ValueError("No skeletons found.")
 
-        # Load user-provided schema if available; otherwise create default
+        # Load user-provided schema if available
         pose_schema: Optional[PoseSchema]
         if pose_schema_path:
             pose_schema = PoseSchema.load(pose_schema_path)
         else:
             pose_schema = None
 
-        # ✅ Always write a pose schema JSON to out_dir (default or normalized copy)
-        if pose_schema is None:
-            schema_path = write_default_pose_schema(out_dir, skeleton)
+        # ✅ Always write pose schema(s) with real edges from SLEAP skeletons
+        schema_paths: List[Path] = []
+        if len(skeletons) == 1:
+            # single skeleton => write pose_schema.json
+            schema_paths.append(
+                write_pose_schema(out_dir, skeletons[0], filename="pose_schema.json")
+            )
         else:
-            # Save a normalized copy into out_dir for convenience
+            # multiple skeletons => write per-skeleton + a default pose_schema.json for skeleton_0
+            schema_paths.append(
+                write_pose_schema(out_dir, skeletons[0], filename="pose_schema.json")
+            )
+            for i, sk in enumerate(skeletons):
+                schema_paths.append(
+                    write_pose_schema(out_dir, sk, filename=f"pose_schema_{i}.json")
+                )
+
+        # If user provided pose schema, also save normalized copy as pose_schema_user.json
+        if pose_schema is not None:
             try:
                 # type: ignore[attr-defined]
                 pose_schema.normalize_prefixed_keypoints()
             except Exception:
                 pass
-            schema_path = out_dir / "pose_schema.json"
-            pose_schema.save(schema_path)
-
-        label_map = build_label_mapper(skeleton.names, pose_schema)
+            user_copy = out_dir / "pose_schema_user.json"
+            pose_schema.save(user_copy)
 
         frame_to_image: Dict[int, str] = {}
         frame_to_wh: Dict[int, Tuple[int, int]] = {}
@@ -696,8 +661,12 @@ def convert_sleap_h5_to_labelme(
 
         per_frame_shapes: Dict[int, List[dict]] = {}
 
-        for k, rec in enumerate(reader.iter_instances(skeleton)):
+        for k, rec in enumerate(reader.iter_instances(skeletons)):
             per_frame_shapes.setdefault(rec.frame_idx, [])
+            sk = skeletons[rec.skeleton_id]
+
+            # Label mapping (per skeleton)
+            label_map = build_label_mapper(sk.names, pose_schema)
 
             for j, (x, y) in enumerate(rec.points_xy):
                 # Skip non-visible points if visibility exists
@@ -707,17 +676,11 @@ def convert_sleap_h5_to_labelme(
                 if np.isnan(x) or np.isnan(y):
                     continue
 
-                # ✅ Correct node mapping:
-                if rec.node_ids is not None:
-                    nid = int(rec.node_ids[j])
-                else:
-                    # Safe only because iter_instances ensures dense slice (n == n_nodes).
-                    nid = j
-
-                if nid < 0 or nid >= len(skeleton.names):
+                # ✅ Correct node mapping: index j corresponds to sk.names[j]
+                if j >= len(sk.names):
                     continue
 
-                skel_name = skeleton.names[nid]
+                skel_name = sk.names[j]
                 label = label_map.get(skel_name, skel_name)
 
                 gid = int(rec.track_id)
@@ -728,7 +691,7 @@ def convert_sleap_h5_to_labelme(
                     "points": [[float(x), float(y)]],
                     "group_id": group_id,
                     "shape_type": "point",
-                    "flags": {},
+                    "flags": {"predicted": bool(rec.is_predicted)},
                 }
                 per_frame_shapes[rec.frame_idx].append(shape)
 
@@ -749,7 +712,9 @@ def convert_sleap_h5_to_labelme(
             print(
                 f"[sleap2labelme] saved {len(frame_to_image)} embedded frames to: {out_dir}"
             )
-        print(f"[sleap2labelme] wrote pose schema to: {schema_path}")
+        print("[sleap2labelme] wrote pose schema(s):")
+        for p in schema_paths:
+            print(f"  - {p.name}")
         return out_dir
 
     finally:
@@ -776,7 +741,7 @@ def main() -> int:
         "--pose-schema",
         default=None,
         help="Optional: pose schema JSON/YAML to map skeleton names. "
-        "Regardless, pose_schema.json will be written to the output folder.",
+        "A normalized copy is written as pose_schema_user.json.",
     )
     args = ap.parse_args()
 
