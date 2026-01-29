@@ -86,6 +86,7 @@ class SkeletonSpec:
 
 @dataclass(frozen=True)
 class InstanceRecord:
+    video_index: int
     frame_idx: int
     track_id: int
     skeleton_id: int
@@ -342,7 +343,11 @@ class SleapH5Reader:
         has_instance_type = "instance_type" in inst_fields
         has_skeleton_id = "skeleton" in inst_fields
 
+        frame_fields = set(frames.dtype.fields.keys()) if frames.dtype.fields else set()
+        has_video_idx = "video" in frame_fields
+
         for fr in frames:
+            video_index = int(fr["video"]) if has_video_idx else 0
             frame_idx = int(fr["frame_idx"])
             i0 = int(fr["instance_id_start"])
             i1 = int(fr["instance_id_end"])
@@ -401,6 +406,7 @@ class SleapH5Reader:
                     )
 
                 yield InstanceRecord(
+                    video_index=video_index,
                     frame_idx=frame_idx,
                     track_id=track_id,
                     skeleton_id=sk_id,
@@ -408,6 +414,86 @@ class SleapH5Reader:
                     visible=vis,
                     is_predicted=is_pred,
                 )
+
+    def used_video_indices(self) -> List[int]:
+        """Return sorted unique video indices referenced by /frames."""
+        frames = self._require_ds("frames")
+        frame_fields = set(frames.dtype.fields.keys()) if frames.dtype.fields else set()
+        if "video" not in frame_fields:
+            return [0]
+        vids = np.array(frames["video"][:], dtype=np.int64)
+        return sorted({int(v) for v in np.unique(vids)})
+
+    def video_name(self, video_index: int) -> str:
+        """
+        Best-effort stable name for a video index.
+
+        Prefers /videos_json backend.filename (stem) when present; otherwise falls back to
+        the video group name (e.g. video0, video1, ...).
+        """
+        fallback = f"video{int(video_index)}"
+
+        ds = self._maybe_ds("videos_json")
+        if ds is None:
+            return fallback
+
+        def _decode(x: object) -> Optional[str]:
+            if isinstance(x, (bytes, bytearray, np.void)):
+                try:
+                    return bytes(x).decode("utf-8", errors="ignore")
+                except Exception:
+                    return None
+            return None
+
+        def _sanitize(name: str) -> str:
+            name = name.strip()
+            if not name:
+                return fallback
+            out = []
+            for ch in name:
+                if ch.isalnum() or ch in ("-", "_", "."):
+                    out.append(ch)
+                elif ch.isspace():
+                    out.append("_")
+            cleaned = "".join(out).strip("._-")
+            return cleaned or fallback
+
+        try:
+            n = int(ds.shape[0])
+        except Exception:
+            return fallback
+
+        for i in range(n):
+            s = _decode(ds[i])
+            if not s:
+                continue
+            obj = safe_json_loads(s)
+            if not isinstance(obj, dict):
+                continue
+            backend = obj.get("backend")
+            if not isinstance(backend, dict):
+                continue
+            dataset = backend.get("dataset")
+            if not isinstance(dataset, str):
+                continue
+            dataset = dataset.strip()
+            if not dataset:
+                continue
+
+            # Typical value: "video15/video"
+            grp = dataset.split("/", 1)[0]
+            if grp != fallback:
+                continue
+
+            filename = backend.get("filename")
+            if isinstance(filename, str):
+                filename = filename.strip()
+                if filename and filename != ".":
+                    return _sanitize(Path(filename).stem)
+
+            return _sanitize(grp)
+
+        return fallback
 
     # --------------------------
     # Embedded frames extraction
@@ -592,7 +678,7 @@ def convert_sleap_h5_to_labelme(
     out_dir: str | Path,
     *,
     save_frames: bool = True,
-    video_index: int = 0,
+    video_index: Optional[int] = None,
     print_every: int = 200,
     pose_schema_path: Optional[str | Path] = None,
 ) -> Path:
@@ -612,6 +698,29 @@ def convert_sleap_h5_to_labelme(
         skeletons = reader.read_skeletons()
         if not skeletons:
             raise ValueError("No skeletons found.")
+
+        used_videos = reader.used_video_indices()
+        prefix_video = len(used_videos) > 1
+        if video_index is None:
+            selected_videos = used_videos
+        else:
+            if video_index not in set(used_videos):
+                raise ValueError(
+                    f"--video-index {video_index} is not present in /frames. "
+                    f"Available video indices: {used_videos}"
+                )
+            selected_videos = [video_index]
+        selected_videos_set = set(selected_videos)
+        video_names = {vid: reader.video_name(vid) for vid in selected_videos}
+        if prefix_video:
+            seen: Dict[str, int] = {}
+            for vid in selected_videos:
+                nm = video_names[vid]
+                seen[nm] = seen.get(nm, 0) + 1
+            for vid in selected_videos:
+                nm = video_names[vid]
+                if seen.get(nm, 0) > 1:
+                    video_names[vid] = f"{nm}_{vid}"
 
         # Load user-provided schema if available
         pose_schema: Optional[PoseSchema]
@@ -647,22 +756,31 @@ def convert_sleap_h5_to_labelme(
             user_copy = out_dir / "pose_schema_user.json"
             pose_schema.save(user_copy)
 
-        frame_to_image: Dict[int, str] = {}
-        frame_to_wh: Dict[int, Tuple[int, int]] = {}
+        # Keyed by (video_index, frame_idx)
+        frame_to_image: Dict[Tuple[int, int], str] = {}
+        frame_to_wh: Dict[Tuple[int, int], Tuple[int, int]] = {}
 
         if save_frames:
-            frame_to_image = reader.save_embedded_frames(
-                out_dir, video_index=video_index
-            )
-            for fidx, rel in frame_to_image.items():
-                p = out_dir / rel
-                with Image.open(p) as im:
-                    frame_to_wh[fidx] = (im.width, im.height)
+            for vid in selected_videos:
+                mapping = reader.save_embedded_frames(
+                    out_dir,
+                    video_index=vid,
+                    name_prefix=video_names[vid] if prefix_video else "",
+                )
+                for fidx, rel in mapping.items():
+                    frame_to_image[(vid, fidx)] = rel
+                    p = out_dir / rel
+                    with Image.open(p) as im:
+                        frame_to_wh[(vid, fidx)] = (im.width, im.height)
 
-        per_frame_shapes: Dict[int, List[dict]] = {}
+        per_frame_shapes: Dict[Tuple[int, int], List[dict]] = {}
 
         for k, rec in enumerate(reader.iter_instances(skeletons)):
-            per_frame_shapes.setdefault(rec.frame_idx, [])
+            if rec.video_index not in selected_videos_set:
+                continue
+
+            key = (rec.video_index, rec.frame_idx)
+            per_frame_shapes.setdefault(key, [])
             sk = skeletons[rec.skeleton_id]
 
             # Label mapping (per skeleton)
@@ -693,16 +811,19 @@ def convert_sleap_h5_to_labelme(
                     "shape_type": "point",
                     "flags": {"predicted": bool(rec.is_predicted)},
                 }
-                per_frame_shapes[rec.frame_idx].append(shape)
+                per_frame_shapes[key].append(shape)
 
             if print_every and (k + 1) % print_every == 0:
                 print(f"[sleap2labelme] processed {k + 1} instances...")
 
-        for frame_idx, shapes in per_frame_shapes.items():
-            image_rel = frame_to_image.get(frame_idx, "")
-            wh = frame_to_wh.get(frame_idx, (0, 0))
+        for (vid, frame_idx), shapes in per_frame_shapes.items():
+            image_rel = frame_to_image.get((vid, frame_idx), "")
+            wh = frame_to_wh.get((vid, frame_idx), (0, 0))
             data = make_labelme_json(image_rel, wh, shapes)
-            out_json = out_dir / f"{frame_idx:09d}.json"
+            if prefix_video:
+                out_json = out_dir / f"{video_names[vid]}_{frame_idx:09d}.json"
+            else:
+                out_json = out_dir / f"{frame_idx:09d}.json"
             out_json.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
         print(
@@ -733,8 +854,10 @@ def main() -> int:
     ap.add_argument(
         "--video-index",
         type=int,
-        default=0,
-        help="video index to read (video0, video1, ...)",
+        default=None,
+        help="Optional: process a single video index (video0, video1, ...). "
+        "If omitted, processes all videos referenced by /frames; when multiple videos are present, "
+        "outputs are written into the output folder with a video-name prefix (e.g. video0_000000005.json).",
     )
     ap.add_argument("--print-every", type=int, default=200)
     ap.add_argument(

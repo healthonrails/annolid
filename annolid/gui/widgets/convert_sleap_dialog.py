@@ -39,7 +39,7 @@ class ConvertJob:
     sleap_path: Path
     out_dir: Path
     save_frames: bool = True
-    video_index: int = 0
+    video_index: Optional[int] = None
     print_every: int = 200
 
 
@@ -136,8 +136,9 @@ class ConvertSleapDialog(QDialog):
         self.chk_save_frames.setChecked(True)
 
         self.spin_video_index = QSpinBox()
-        self.spin_video_index.setRange(0, 9999)
-        self.spin_video_index.setValue(0)
+        self.spin_video_index.setRange(-1, 9999)
+        self.spin_video_index.setSpecialValueText("All videos")
+        self.spin_video_index.setValue(-1)
 
         self.spin_print_every = QSpinBox()
         self.spin_print_every.setRange(1, 1_000_000)
@@ -148,6 +149,13 @@ class ConvertSleapDialog(QDialog):
         opts_layout.addWidget(self.spin_video_index, 1, 1)
         opts_layout.addWidget(QLabel("Print every:"), 2, 0)
         opts_layout.addWidget(self.spin_print_every, 2, 1)
+
+        note = QLabel(
+            "Note: If the SLEAP file contains multiple videos, output files are written into the output "
+            "folder with a per-video prefix (e.g. video0_000000005.json/.png)."
+        )
+        note.setWordWrap(True)
+        opts_layout.addWidget(note, 3, 0, 1, 2)
 
         root.addWidget(grp_opts)
 
@@ -275,11 +283,13 @@ class ConvertSleapDialog(QDialog):
     def _make_job(self) -> ConvertJob:
         assert self._sleap_path is not None
         assert self._out_dir is not None
+        vid_value = int(self.spin_video_index.value())
+        video_index = None if vid_value < 0 else vid_value
         return ConvertJob(
             sleap_path=Path(self._sleap_path).expanduser(),
             out_dir=Path(self._out_dir).expanduser(),
             save_frames=self.chk_save_frames.isChecked(),
-            video_index=int(self.spin_video_index.value()),
+            video_index=video_index,
             print_every=int(self.spin_print_every.value()),
         )
 
