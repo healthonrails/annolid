@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -9,11 +10,16 @@ from qtpy import QtCore, QtGui, QtWidgets
 from annolid.datasets.labelme_collection import (
     DEFAULT_LABEL_INDEX_DIRNAME,
     DEFAULT_LABEL_INDEX_NAME,
+    build_labelme_spec,
     default_label_index_path,
+    infer_labelme_keypoint_names,
     index_labelme_pair,
+    iter_labelme_pairs,
     iter_labelme_json_files,
     load_indexed_image_paths,
     resolve_image_path,
+    split_labelme_pairs,
+    write_labelme_index,
 )
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.builders.label_index_yolo import build_yolo_from_label_index
@@ -24,9 +30,24 @@ from annolid.gui.widgets.file_audit_widget import FileAuditWidget
 class LabelIndexJob:
     sources: List[Path]
     index_file: Path
+    dataset_root: Path
     recursive: bool
     include_empty: bool
     allow_duplicates: bool
+    write_spec: bool
+    spec_path: Optional[Path]
+    val_size: float
+    test_size: float
+    seed: int
+    group_by: str
+    group_regex: Optional[str]
+    split_dir: str
+    split_sources: Optional[dict]
+    keypoint_names: Optional[List[str]]
+    kpt_dims: int
+    infer_flip_idx: bool
+    max_keypoint_files: int
+    min_keypoint_count: int
 
 
 def _build_json_list(sources: Sequence[Path], *, recursive: bool) -> List[Path]:
@@ -39,6 +60,7 @@ def _build_json_list(sources: Sequence[Path], *, recursive: bool) -> List[Path]:
 def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> dict:
     index_file = Path(job.index_file).expanduser().resolve()
     sources = [Path(p).expanduser().resolve() for p in job.sources]
+    dataset_root = Path(job.dataset_root).expanduser().resolve()
 
     json_files = _build_json_list(sources, recursive=job.recursive)
     total = len(json_files)
@@ -91,9 +113,10 @@ def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> 
                 }
             )
 
-    return {
+    result: dict = {
         "index_file": str(index_file),
         "sources": [str(p) for p in sources],
+        "dataset_root": str(dataset_root),
         "recursive": bool(job.recursive),
         "include_empty": bool(job.include_empty),
         "allow_duplicates": bool(job.allow_duplicates),
@@ -103,6 +126,99 @@ def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> 
         "missing_image": missing_image,
     }
 
+    if job.write_spec:
+        if job.split_sources:
+            splits = {
+                "train": iter_labelme_pairs(
+                    [Path(p) for p in job.split_sources.get("train", [])],
+                    recursive=bool(job.recursive),
+                    include_empty=bool(job.include_empty),
+                ),
+                "val": iter_labelme_pairs(
+                    [Path(p) for p in job.split_sources.get("val", [])],
+                    recursive=bool(job.recursive),
+                    include_empty=bool(job.include_empty),
+                ),
+                "test": iter_labelme_pairs(
+                    [Path(p) for p in job.split_sources.get("test", [])],
+                    recursive=bool(job.recursive),
+                    include_empty=bool(job.include_empty),
+                ),
+            }
+            pairs = splits["train"] + splits["val"] + splits["test"]
+        else:
+            pairs = iter_labelme_pairs(
+                sources,
+                recursive=bool(job.recursive),
+                include_empty=bool(job.include_empty),
+            )
+            splits = split_labelme_pairs(
+                pairs,
+                val_size=float(job.val_size),
+                test_size=float(job.test_size),
+                seed=int(job.seed),
+                group_by=str(job.group_by),
+                group_regex=(str(job.group_regex) if job.group_regex else None),
+            )
+        split_dir = dataset_root / str(job.split_dir or DEFAULT_LABEL_INDEX_DIRNAME)
+        split_dir.mkdir(parents=True, exist_ok=True)
+        train_index = split_dir / "labelme_train.jsonl"
+        val_index = split_dir / "labelme_val.jsonl"
+        test_index = split_dir / "labelme_test.jsonl"
+
+        write_labelme_index(splits.get("train", []), index_file=train_index)
+        if splits.get("val"):
+            write_labelme_index(splits.get("val", []), index_file=val_index)
+        else:
+            val_index = None
+        if splits.get("test"):
+            write_labelme_index(splits.get("test", []), index_file=test_index)
+        else:
+            test_index = None
+
+        keypoint_names = list(job.keypoint_names or [])
+        if not keypoint_names:
+            keypoint_names = infer_labelme_keypoint_names(
+                pairs,
+                max_files=int(job.max_keypoint_files),
+                min_count=int(job.min_keypoint_count),
+            )
+        if not keypoint_names:
+            raise ValueError(
+                "Could not infer keypoint names from LabelMe JSONs. "
+                "Provide keypoint names in the dialog."
+            )
+
+        flip_idx = None
+        if bool(job.infer_flip_idx):
+            from annolid.segmentation.dino_kpseg.keypoints import (
+                infer_flip_idx_from_names,
+            )
+
+            flip_idx = infer_flip_idx_from_names(
+                keypoint_names, kpt_count=len(keypoint_names)
+            )
+
+        spec_out = job.spec_path or (dataset_root / "labelme_spec.yaml")
+        spec_path = build_labelme_spec(
+            dataset_root=dataset_root,
+            train_index=train_index if splits.get("train") else None,
+            val_index=val_index,
+            test_index=test_index,
+            keypoint_names=keypoint_names,
+            kpt_dims=int(job.kpt_dims),
+            flip_idx=flip_idx,
+            output_yaml=Path(spec_out),
+        )
+        result["spec_path"] = str(spec_path)
+        result["split_counts"] = {
+            "train": len(splits.get("train", [])),
+            "val": len(splits.get("val", [])),
+            "test": len(splits.get("test", [])),
+        }
+
+    return result
+
 
 class LabelCollectionDialog(QtWidgets.QDialog):
     """GUI for indexing LabelMe PNG/JSON pairs into a JSONL dataset index."""
@@ -111,6 +227,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Collect Labels (Dataset Index)")
         self.setMinimumWidth(700)
+        self.setMinimumHeight(520)
+        self.resize(820, 720)
 
         self._settings = settings
         self._thread: Optional[QtCore.QThread] = None
@@ -138,15 +256,23 @@ class LabelCollectionDialog(QtWidgets.QDialog):
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
 
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        layout.addWidget(scroll, 1)
+
+        container = QtWidgets.QWidget(scroll)
+        content = QtWidgets.QVBoxLayout(container)
+
         header = QtWidgets.QLabel(
             "Build a central dataset index without copying files.\n"
             f"Default index location: {DEFAULT_LABEL_INDEX_DIRNAME}/{DEFAULT_LABEL_INDEX_NAME}"
         )
         header.setWordWrap(True)
-        layout.addWidget(header)
+        content.addWidget(header)
 
         self.tabs = QtWidgets.QTabWidget(self)
-        layout.addWidget(self.tabs)
+        content.addWidget(self.tabs)
 
         self._auto_tab = QtWidgets.QWidget(self)
         self._backfill_tab = QtWidgets.QWidget(self)
@@ -161,18 +287,21 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        content.addWidget(self.status_label)
 
         self.progress = QtWidgets.QProgressBar(self)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        content.addWidget(self.progress)
 
         self.log = QtWidgets.QPlainTextEdit(self)
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(120)
-        layout.addWidget(self.log)
+        content.addWidget(self.log)
+
+        content.addStretch(1)
+        scroll.setWidget(container)
 
         buttons = QtWidgets.QDialogButtonBox(self)
         self.close_btn = buttons.addButton(
@@ -299,6 +428,87 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
         layout.addLayout(self.audit_layout)
 
+        spec_group = QtWidgets.QGroupBox("LabelMe spec.yaml (optional)")
+        spec_form = QtWidgets.QFormLayout(spec_group)
+
+        self.spec_enable_cb = QtWidgets.QCheckBox(
+            "Generate spec.yaml + train/val/test splits"
+        )
+        self.spec_enable_cb.setChecked(False)
+        self.spec_enable_cb.stateChanged.connect(self._sync_spec_controls)
+        spec_form.addRow(self.spec_enable_cb)
+
+        self.spec_path_edit = QtWidgets.QLineEdit()
+        self.spec_path_btn = QtWidgets.QPushButton("Browse…")
+        self.spec_path_btn.clicked.connect(self._browse_spec_path)
+        spec_row = QtWidgets.QHBoxLayout()
+        spec_row.addWidget(self.spec_path_edit, 1)
+        spec_row.addWidget(self.spec_path_btn)
+        spec_form.addRow("Spec path:", spec_row)
+
+        self.spec_split_dir_edit = QtWidgets.QLineEdit(DEFAULT_LABEL_INDEX_DIRNAME)
+        spec_form.addRow("Split JSONL dir:", self.spec_split_dir_edit)
+
+        split_row = QtWidgets.QHBoxLayout()
+        self.spec_val_edit = QtWidgets.QDoubleSpinBox()
+        self.spec_val_edit.setRange(0.0, 0.9)
+        self.spec_val_edit.setSingleStep(0.05)
+        self.spec_val_edit.setValue(0.1)
+        self.spec_test_edit = QtWidgets.QDoubleSpinBox()
+        self.spec_test_edit.setRange(0.0, 0.9)
+        self.spec_test_edit.setSingleStep(0.05)
+        self.spec_test_edit.setValue(0.0)
+        split_row.addWidget(QtWidgets.QLabel("val"))
+        split_row.addWidget(self.spec_val_edit)
+        split_row.addSpacing(12)
+        split_row.addWidget(QtWidgets.QLabel("test"))
+        split_row.addWidget(self.spec_test_edit)
+        split_row.addStretch(1)
+        spec_form.addRow("Splits:", split_row)
+
+        self.spec_seed_spin = QtWidgets.QSpinBox()
+        self.spec_seed_spin.setRange(0, 1000000)
+        self.spec_seed_spin.setValue(0)
+        spec_form.addRow("Seed:", self.spec_seed_spin)
+
+        self.spec_group_by_combo = QtWidgets.QComboBox()
+        self.spec_group_by_combo.addItems(
+            ["parent", "grandparent", "stem_prefix", "regex", "none"]
+        )
+        spec_form.addRow("Group by:", self.spec_group_by_combo)
+        self.spec_group_regex_edit = QtWidgets.QLineEdit()
+        self.spec_group_regex_edit.setPlaceholderText(
+            "Optional regex (for group_by=regex)"
+        )
+        spec_form.addRow("Group regex:", self.spec_group_regex_edit)
+
+        self.spec_keypoint_names_edit = QtWidgets.QLineEdit()
+        self.spec_keypoint_names_edit.setPlaceholderText(
+            "nose, leftear, rightear, tailbase"
+        )
+        spec_form.addRow("Keypoint names:", self.spec_keypoint_names_edit)
+
+        self.spec_kpt_dims_combo = QtWidgets.QComboBox()
+        self.spec_kpt_dims_combo.addItems(["3", "2"])
+        spec_form.addRow("Keypoint dims:", self.spec_kpt_dims_combo)
+
+        self.spec_infer_flip_cb = QtWidgets.QCheckBox("Infer flip_idx from names")
+        self.spec_infer_flip_cb.setChecked(True)
+        spec_form.addRow("Flip index:", self.spec_infer_flip_cb)
+
+        self.spec_max_files_spin = QtWidgets.QSpinBox()
+        self.spec_max_files_spin.setRange(1, 100000)
+        self.spec_max_files_spin.setValue(500)
+        spec_form.addRow("Max JSONs to scan:", self.spec_max_files_spin)
+
+        self.spec_min_count_spin = QtWidgets.QSpinBox()
+        self.spec_min_count_spin.setRange(1, 1000)
+        self.spec_min_count_spin.setValue(1)
+        spec_form.addRow("Min keypoint count:", self.spec_min_count_spin)
+
+        layout.addWidget(spec_group)
+        self._sync_spec_controls()
+
         layout.addStretch(1)
 
     def _build_export_tab(self) -> None:
@@ -368,6 +578,39 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         tab = self.tabs.currentWidget()
         self.run_btn.setVisible(tab is self._backfill_tab)
         self.export_btn.setVisible(tab is self._export_tab)
+
+    def _sync_spec_controls(self) -> None:
+        enabled = bool(self.spec_enable_cb.isChecked())
+        for widget in (
+            self.spec_path_edit,
+            self.spec_path_btn,
+            self.spec_split_dir_edit,
+            self.spec_val_edit,
+            self.spec_test_edit,
+            self.spec_seed_spin,
+            self.spec_group_by_combo,
+            self.spec_group_regex_edit,
+            self.spec_keypoint_names_edit,
+            self.spec_kpt_dims_combo,
+            self.spec_infer_flip_cb,
+            self.spec_max_files_spin,
+            self.spec_min_count_spin,
+        ):
+            widget.setEnabled(enabled)
+
+    def _browse_spec_path(self) -> None:
+        dataset_root = self.dataset_root_edit.text().strip()
+        start_dir = dataset_root or str(Path.home())
+        path, _filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Select spec.yaml",
+            str(Path(start_dir) / "labelme_spec.yaml"),
+            "YAML (*.yaml *.yml);;All files (*)",
+        )
+        if not path:
+            return
+        self.spec_path_edit.setText(path)
+        self._save_settings()
 
     def _append_log(self, text: str) -> None:
         self.log.appendPlainText(text)
@@ -465,6 +708,37 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             "dataset/label_yolo_dataset_name", "YOLO_dataset", type=str
         )
         yolo_task = self._settings.value("dataset/label_yolo_task", "auto", type=str)
+        spec_enabled = self._settings.value(
+            "dataset/label_spec_enabled", False, type=bool
+        )
+        spec_path = self._settings.value("dataset/label_spec_path", "", type=str)
+        spec_split_dir = self._settings.value(
+            "dataset/label_spec_split_dir", DEFAULT_LABEL_INDEX_DIRNAME, type=str
+        )
+        spec_val = self._settings.value("dataset/label_spec_val", 0.1, type=float)
+        spec_test = self._settings.value("dataset/label_spec_test", 0.0, type=float)
+        spec_seed = self._settings.value("dataset/label_spec_seed", 0, type=int)
+        spec_group_by = self._settings.value(
+            "dataset/label_spec_group_by", "parent", type=str
+        )
+        spec_group_regex = self._settings.value(
+            "dataset/label_spec_group_regex", "", type=str
+        )
+        spec_keypoint_names = self._settings.value(
+            "dataset/label_spec_keypoint_names", "", type=str
+        )
+        spec_kpt_dims = self._settings.value(
+            "dataset/label_spec_kpt_dims", "3", type=str
+        )
+        spec_infer_flip = self._settings.value(
+            "dataset/label_spec_infer_flip", True, type=bool
+        )
+        spec_max_files = self._settings.value(
+            "dataset/label_spec_max_files", 500, type=int
+        )
+        spec_min_count = self._settings.value(
+            "dataset/label_spec_min_count", 1, type=int
+        )
 
         if index_file:
             self.index_file_edit.setText(index_file)
@@ -494,6 +768,30 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             idx = self.yolo_task_mode.findText(yolo_task)
             if idx >= 0:
                 self.yolo_task_mode.setCurrentIndex(idx)
+
+        self.spec_enable_cb.setChecked(bool(spec_enabled))
+        if spec_path:
+            self.spec_path_edit.setText(spec_path)
+        if spec_split_dir:
+            self.spec_split_dir_edit.setText(spec_split_dir)
+        self.spec_val_edit.setValue(float(spec_val))
+        self.spec_test_edit.setValue(float(spec_test))
+        self.spec_seed_spin.setValue(int(spec_seed))
+        idx = self.spec_group_by_combo.findText(str(spec_group_by))
+        if idx >= 0:
+            self.spec_group_by_combo.setCurrentIndex(idx)
+        if spec_group_regex:
+            self.spec_group_regex_edit.setText(spec_group_regex)
+        if spec_keypoint_names:
+            self.spec_keypoint_names_edit.setText(spec_keypoint_names)
+        if spec_kpt_dims:
+            idx = self.spec_kpt_dims_combo.findText(str(spec_kpt_dims))
+            if idx >= 0:
+                self.spec_kpt_dims_combo.setCurrentIndex(idx)
+        self.spec_infer_flip_cb.setChecked(bool(spec_infer_flip))
+        self.spec_max_files_spin.setValue(int(spec_max_files))
+        self.spec_min_count_spin.setValue(int(spec_min_count))
+        self._sync_spec_controls()
 
     def _save_settings(self) -> None:
         if self._settings is None:
@@ -530,6 +828,47 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             if value:
                 self._settings.setValue("dataset/label_yolo_task", value)
 
+        self._settings.setValue(
+            "dataset/label_spec_enabled", bool(self.spec_enable_cb.isChecked())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_path", self.spec_path_edit.text().strip()
+        )
+        self._settings.setValue(
+            "dataset/label_spec_split_dir", self.spec_split_dir_edit.text().strip()
+        )
+        self._settings.setValue(
+            "dataset/label_spec_val", float(self.spec_val_edit.value())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_test", float(self.spec_test_edit.value())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_seed", int(self.spec_seed_spin.value())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_group_by", str(self.spec_group_by_combo.currentText())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_group_regex", self.spec_group_regex_edit.text().strip()
+        )
+        self._settings.setValue(
+            "dataset/label_spec_keypoint_names",
+            self.spec_keypoint_names_edit.text().strip(),
+        )
+        self._settings.setValue(
+            "dataset/label_spec_kpt_dims", str(self.spec_kpt_dims_combo.currentText())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_infer_flip", bool(self.spec_infer_flip_cb.isChecked())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_max_files", int(self.spec_max_files_spin.value())
+        )
+        self._settings.setValue(
+            "dataset/label_spec_min_count", int(self.spec_min_count_spin.value())
+        )
+
     def _set_running(self, running: bool) -> None:
         self.progress.setVisible(running)
         self.cancel_btn.setEnabled(running)
@@ -558,11 +897,6 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             return
 
         index_file_text = self.index_file_edit.text().strip()
-        if not index_file_text:
-            QtWidgets.QMessageBox.warning(
-                self, "Missing index file", "Please set an index file."
-            )
-            return
 
         sources = [
             self.sources_list.item(i).text() for i in range(self.sources_list.count())
@@ -573,17 +907,86 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             )
             return
 
+        source_paths = [Path(s) for s in sources]
+        dataset_root_text = self.dataset_root_edit.text().strip()
+        dataset_root = (
+            Path(dataset_root_text).expanduser()
+            if dataset_root_text
+            else self._infer_dataset_root(source_paths)
+        )
+        if dataset_root is not None and not dataset_root_text:
+            self.dataset_root_edit.setText(str(dataset_root))
+
+        if not index_file_text:
+            if dataset_root is None:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Missing dataset root",
+                    "Please set a dataset root or index file.",
+                )
+                return
+            index_path = default_label_index_path(dataset_root)
+            self.index_file_edit.setText(str(index_path))
+            index_file_text = str(index_path)
+            self.auto_enable.setChecked(True)
+            self._save_settings()
+            self._refresh_index_preview()
+
+        split_sources = None
+        if self.spec_enable_cb.isChecked():
+            split_sources = self._infer_split_sources(source_paths)
+
         job = LabelIndexJob(
-            sources=[Path(s) for s in sources],
+            sources=source_paths,
             index_file=Path(index_file_text),
+            dataset_root=Path(
+                self.dataset_root_edit.text().strip() or Path(index_file_text).parent
+            ),
             recursive=bool(self.recursive_cb.isChecked()),
             include_empty=bool(self.include_empty_cb.isChecked()),
             allow_duplicates=bool(self.allow_dupes_cb.isChecked()),
+            write_spec=bool(self.spec_enable_cb.isChecked()),
+            spec_path=(
+                Path(self.spec_path_edit.text().strip()).expanduser()
+                if self.spec_path_edit.text().strip()
+                else None
+            ),
+            val_size=float(self.spec_val_edit.value()),
+            test_size=float(self.spec_test_edit.value()),
+            seed=int(self.spec_seed_spin.value()),
+            group_by=str(self.spec_group_by_combo.currentText()),
+            group_regex=self.spec_group_regex_edit.text().strip() or None,
+            split_dir=str(
+                self.spec_split_dir_edit.text().strip() or DEFAULT_LABEL_INDEX_DIRNAME
+            ),
+            split_sources=split_sources,
+            keypoint_names=[
+                n.strip()
+                for n in self.spec_keypoint_names_edit.text().split(",")
+                if n.strip()
+            ]
+            or None,
+            kpt_dims=int(self.spec_kpt_dims_combo.currentText()),
+            infer_flip_idx=bool(self.spec_infer_flip_cb.isChecked()),
+            max_keypoint_files=int(self.spec_max_files_spin.value()),
+            min_keypoint_count=int(self.spec_min_count_spin.value()),
         )
 
         self._append_log(f"Index file: {job.index_file}")
         for src in job.sources:
             self._append_log(f"Source: {src}")
+        if job.write_spec:
+            self._append_log(
+                f"Spec output: {job.spec_path or (job.dataset_root / 'labelme_spec.yaml')}"
+            )
+            if split_sources:
+                split_summary = ", ".join(
+                    f"{key}={len(value)}"
+                    for key, value in split_sources.items()
+                    if value
+                )
+                if split_summary:
+                    self._append_log(f"Using split folders: {split_summary}")
 
         self.progress.setValue(0)
         self._set_running(True)
@@ -675,6 +1078,36 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         self._thread.started.connect(self._worker.run)
         self._thread.start()
 
+    def _infer_dataset_root(self, sources: Sequence[Path]) -> Optional[Path]:
+        if not sources:
+            return None
+        try:
+            common = os.path.commonpath([str(Path(s).resolve()) for s in sources])
+        except (ValueError, OSError):
+            return Path(sources[0]).resolve()
+        return Path(common)
+
+    def _infer_split_sources(self, sources: Sequence[Path]) -> Optional[dict]:
+        if not sources:
+            return None
+        buckets = {"train": [], "val": [], "test": []}
+        unmatched: List[Path] = []
+        for src in sources:
+            name = Path(src).name.lower()
+            if "train" in name:
+                buckets["train"].append(Path(src))
+            elif "val" in name or "valid" in name:
+                buckets["val"].append(Path(src))
+            elif "test" in name:
+                buckets["test"].append(Path(src))
+            else:
+                unmatched.append(Path(src))
+        if any(buckets.values()):
+            if unmatched:
+                buckets["train"].extend(unmatched)
+            return buckets
+        return None
+
     @QtCore.Slot(object)
     def _on_finished(self, result: object) -> None:
         try:
@@ -703,6 +1136,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
                     self._append_log(
                         f"Done. Appended={appended} Skipped={skipped} MissingImage={missing}"
                     )
+                    if isinstance(result, dict) and result.get("spec_path"):
+                        self._append_log(f"LabelMe spec: {result.get('spec_path')}")
                 self._refresh_index_preview()
         finally:
             self._set_running(False)

@@ -13,8 +13,9 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Set
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
+import yaml
 from annolid.utils.annotation_store import load_labelme_json
 from annolid.utils.logger import logger
 
@@ -68,7 +69,7 @@ def resolve_image_path(json_path: Path) -> Optional[Path]:
         return candidate
 
     # As a final fallback, look for common extensions with the same stem.
-    base = (json_path.parent / Path(image_path).stem)
+    base = json_path.parent / Path(image_path).stem
     for ext in IMAGE_EXTENSIONS:
         alt = base.with_suffix(ext)
         if alt.exists():
@@ -110,7 +111,11 @@ def build_label_index_record(
             if isinstance(shapes, list):
                 record["shapes_count"] = len(shapes)
                 record["labels"] = sorted(
-                    {str(s.get("label")) for s in shapes if isinstance(s, dict) and s.get("label")}
+                    {
+                        str(s.get("label"))
+                        for s in shapes
+                        if isinstance(s, dict) and s.get("label")
+                    }
                 )
             for key in ("imageHeight", "imageWidth", "imagePath"):
                 if key in payload:
@@ -337,6 +342,203 @@ def iter_labelme_json_files(source: Path, *, recursive: bool = True) -> Iterator
         if name.endswith(".subjects.json"):
             continue
         yield path
+
+
+def iter_labelme_pairs(
+    sources: Sequence[Path],
+    *,
+    recursive: bool = True,
+    include_empty: bool = False,
+) -> List[Tuple[Path, Path]]:
+    pairs: List[Tuple[Path, Path]] = []
+    for src in sources:
+        for json_path in iter_labelme_json_files(Path(src), recursive=recursive):
+            if not include_empty and not is_labeled_labelme_json(json_path):
+                continue
+            image_path = resolve_image_path(json_path)
+            if image_path is None or not Path(image_path).exists():
+                continue
+            pairs.append((Path(json_path), Path(image_path)))
+    return pairs
+
+
+def _group_key_from_path(path: Path, *, group_by: str, regex: Optional[str]) -> str:
+    group_by = str(group_by or "parent").strip().lower()
+    if group_by == "none":
+        return ""
+    if group_by == "parent":
+        return path.parent.name or path.name
+    if group_by == "grandparent":
+        return path.parent.parent.name or path.parent.name or path.name
+    if group_by == "stem_prefix":
+        stem = path.stem
+        for sep in ("_", "-", "."):
+            if sep in stem:
+                return stem.split(sep)[0]
+        return stem
+    if group_by == "regex" and regex:
+        import re
+
+        match = re.search(regex, path.as_posix())
+        if match:
+            if match.groups():
+                return match.group(1)
+            return match.group(0)
+    return path.parent.name or path.name
+
+
+def split_labelme_pairs(
+    pairs: Sequence[Tuple[Path, Path]],
+    *,
+    val_size: float = 0.1,
+    test_size: float = 0.0,
+    seed: int = 0,
+    group_by: str = "parent",
+    group_regex: Optional[str] = None,
+) -> Dict[str, List[Tuple[Path, Path]]]:
+    import random
+
+    total = len(pairs)
+    if total == 0:
+        return {"train": [], "val": [], "test": []}
+
+    val_size = max(0.0, float(val_size))
+    test_size = max(0.0, float(test_size))
+    if val_size + test_size >= 1.0:
+        raise ValueError("val_size + test_size must be < 1.0")
+
+    rng = random.Random(int(seed))
+    group_by_norm = str(group_by or "parent").strip().lower()
+
+    if group_by_norm == "none":
+        indices = list(range(total))
+        rng.shuffle(indices)
+        val_n = int(round(val_size * total))
+        test_n = int(round(test_size * total))
+        val_idx = set(indices[:val_n])
+        test_idx = set(indices[val_n : val_n + test_n])
+        train = []
+        val = []
+        test = []
+        for i, pair in enumerate(pairs):
+            if i in val_idx:
+                val.append(pair)
+            elif i in test_idx:
+                test.append(pair)
+            else:
+                train.append(pair)
+        return {"train": train, "val": val, "test": test}
+
+    groups: Dict[str, List[Tuple[Path, Path]]] = {}
+    for json_path, image_path in pairs:
+        key = _group_key_from_path(
+            Path(image_path), group_by=group_by_norm, regex=group_regex
+        )
+        groups.setdefault(key, []).append((json_path, image_path))
+
+    keys = list(groups.keys())
+    rng.shuffle(keys)
+    target_val = max(0, int(round(val_size * total)))
+    target_test = max(0, int(round(test_size * total)))
+
+    train: List[Tuple[Path, Path]] = []
+    val: List[Tuple[Path, Path]] = []
+    test: List[Tuple[Path, Path]] = []
+    for key in keys:
+        bucket = groups[key]
+        if len(val) < target_val:
+            val.extend(bucket)
+        elif len(test) < target_test:
+            test.extend(bucket)
+        else:
+            train.extend(bucket)
+
+    return {"train": train, "val": val, "test": test}
+
+
+def infer_labelme_keypoint_names(
+    pairs: Sequence[Tuple[Path, Path]],
+    *,
+    max_files: int = 500,
+    min_count: int = 1,
+) -> List[str]:
+    counts: Dict[str, int] = {}
+    inspected = 0
+    for json_path, _ in pairs:
+        if inspected >= int(max_files):
+            break
+        inspected += 1
+        try:
+            payload = load_labelme_json(json_path)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        shapes = payload.get("shapes")
+        if not isinstance(shapes, list):
+            continue
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            if shape.get("shape_type") != "point":
+                continue
+            label = str(shape.get("label") or "").strip()
+            if not label:
+                continue
+            counts[label] = counts.get(label, 0) + 1
+
+    items = [(name, cnt) for name, cnt in counts.items() if cnt >= int(min_count)]
+    items.sort(key=lambda x: (-x[1], x[0]))
+    return [name for name, _ in items]
+
+
+def write_labelme_index(
+    pairs: Sequence[Tuple[Path, Path]],
+    *,
+    index_file: Path,
+    source: str = "annolid_cli",
+) -> None:
+    index_file = Path(index_file).expanduser().resolve()
+    _ensure_dir(index_file.parent)
+    for json_path, image_path in pairs:
+        record = build_label_index_record(
+            image_path=Path(image_path),
+            json_path=Path(json_path),
+            source=source,
+        )
+        append_label_index_record(index_file, record)
+
+
+def build_labelme_spec(
+    *,
+    dataset_root: Path,
+    train_index: Optional[Path],
+    val_index: Optional[Path],
+    test_index: Optional[Path],
+    keypoint_names: List[str],
+    kpt_dims: int = 3,
+    flip_idx: Optional[List[int]] = None,
+    output_yaml: Path,
+) -> Path:
+    payload: Dict[str, object] = {
+        "format": "labelme",
+        "path": str(Path(dataset_root).expanduser().resolve()),
+        "kpt_shape": [int(len(keypoint_names)), int(kpt_dims)],
+        "keypoint_names": list(keypoint_names),
+    }
+    if train_index:
+        payload["train"] = str(Path(train_index).name)
+    if val_index:
+        payload["val"] = str(Path(val_index).name)
+    if test_index:
+        payload["test"] = str(Path(test_index).name)
+    if flip_idx:
+        payload["flip_idx"] = list(flip_idx)
+
+    output_yaml = Path(output_yaml).expanduser().resolve()
+    _ensure_dir(output_yaml.parent)
+    output_yaml.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return output_yaml
 
 
 def collect_labelme_dataset(

@@ -30,6 +30,20 @@ def _resolve_yaml_path(value: str, *, yaml_path: Path) -> Path:
     return (yaml_path.parent / path).resolve()
 
 
+def _resolve_dataset_path(
+    value: str,
+    *,
+    yaml_path: Path,
+    root_path: Optional[Path],
+) -> Path:
+    path = Path(str(value)).expanduser()
+    if path.is_absolute():
+        return path
+    if root_path is not None:
+        return (root_path / path).resolve()
+    return (yaml_path.parent / path).resolve()
+
+
 def _yolo_list_images(images_root: Path) -> List[Path]:
     if not images_root.exists():
         return []
@@ -591,9 +605,11 @@ def load_yolo_pose_spec(data_yaml: Path) -> YoloPoseDatasetSpec:
         if not split_value:
             train_val[split] = []
             continue
-        split_path = _resolve_yaml_path(str(split_value), yaml_path=data_yaml)
-        if not split_path.is_absolute():
-            split_path = (root_path / split_path).resolve()
+        split_path = _resolve_dataset_path(
+            str(split_value),
+            yaml_path=data_yaml,
+            root_path=root_path,
+        )
         train_val[split] = _yolo_list_images(split_path)
 
     kpt_shape = payload.get("kpt_shape") or []
@@ -833,9 +849,17 @@ def load_labelme_pose_spec(data_yaml: Path) -> LabelMePoseDatasetSpec:
     def _load_split(value: object) -> Tuple[List[Path], List[Optional[Path]]]:
         if not value:
             return [], []
-        split_path = _resolve_yaml_path(str(value), yaml_path=data_yaml)
-        if not split_path.is_absolute():
-            split_path = (root_path / split_path).resolve()
+        split_path = _resolve_dataset_path(
+            str(value),
+            yaml_path=data_yaml,
+            root_path=root_path,
+        )
+        if not split_path.exists():
+            from annolid.datasets.labelme_collection import DEFAULT_LABEL_INDEX_DIRNAME
+
+            fallback = root_path / DEFAULT_LABEL_INDEX_DIRNAME / Path(value).name
+            if fallback.exists():
+                split_path = fallback
         if split_path.is_dir():
             return _labelme_iter_pairs_from_dir(split_path)
         if split_path.is_file():

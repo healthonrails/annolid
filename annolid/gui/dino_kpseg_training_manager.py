@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from qtpy import QtCore, QtWidgets
 
+from annolid.datasets.labelme_collection import DEFAULT_LABEL_INDEX_DIRNAME
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
 from annolid.utils.runs import allocate_run_dir, new_run_dir, shared_runs_root
@@ -100,6 +101,21 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         def has_glob(s: str) -> bool:
             return any(ch in s for ch in ("*", "?", "["))
 
+        root_dir = base_dir
+        if data_cfg.get("path"):
+            root_candidate = Path(str(data_cfg["path"])).expanduser()
+            if not root_candidate.is_absolute():
+                root_candidate = (base_dir / root_candidate).resolve()
+            root_dir = root_candidate
+            data_cfg["path"] = str(root_dir)
+        else:
+            data_cfg["path"] = str(base_dir)
+
+        data_format_norm = self._normalize_data_format(
+            data_cfg, data_format=data_format
+        )
+        allow_annolid_logs = data_format_norm == "labelme"
+
         def resolve_entry(entry: Any) -> Any:
             if isinstance(entry, str):
                 if not entry.strip():
@@ -107,10 +123,17 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 if is_remote(entry):
                     return entry
                 entry_path = Path(entry).expanduser()
-                resolved = (
-                    entry_path if entry_path.is_absolute() else base_dir / entry_path
-                )
-                return str(resolved.resolve())
+                if entry_path.is_absolute():
+                    resolved = entry_path
+                else:
+                    resolved = (root_dir / entry_path).resolve()
+                    if allow_annolid_logs and not resolved.exists():
+                        candidate = (
+                            root_dir / DEFAULT_LABEL_INDEX_DIRNAME / entry_path.name
+                        )
+                        if candidate.exists():
+                            resolved = candidate.resolve()
+                return str(resolved)
             if isinstance(entry, (list, tuple)):
                 return [resolve_entry(item) for item in entry]
             return entry
@@ -118,16 +141,6 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         for split in ("train", "val", "test"):
             if split in data_cfg and data_cfg[split]:
                 data_cfg[split] = resolve_entry(data_cfg[split])
-
-        if "path" in data_cfg:
-            if data_cfg["path"]:
-                data_cfg["path"] = resolve_entry(data_cfg["path"])
-        else:
-            data_cfg["path"] = str(base_dir)
-
-        data_format_norm = self._normalize_data_format(
-            data_cfg, data_format=data_format
-        )
 
         if not data_cfg.get("kpt_shape"):
             QtWidgets.QMessageBox.warning(
