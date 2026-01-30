@@ -54,6 +54,7 @@
 <li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">DINOv3 Keypoint Segmentation (DinoKPSEG)</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#training">Training</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#native-labelme-training">Native LabelMe training</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#relational-attention-head">Relational (Attention) Head</a></li>
 </ul>
 </li>
@@ -102,12 +103,40 @@
 </ul>
 <section id="training">
 <h2>Training<a class="headerlink" href="#training" title="Link to this heading"></a></h2>
-<p>This trainer consumes a standard YOLO pose dataset (<code class="docutils literal notranslate"><span class="pre">data.yaml</span></code> with <code class="docutils literal notranslate"><span class="pre">kpt_shape</span></code> and labels in <code class="docutils literal notranslate"><span class="pre">labels/*.txt</span></code>).</p>
+<p>This trainer consumes either:</p>
+<ul class="simple">
+<li><p>A standard YOLO pose dataset (<code class="docutils literal notranslate"><span class="pre">data.yaml</span></code> with <code class="docutils literal notranslate"><span class="pre">kpt_shape</span></code> and labels in <code class="docutils literal notranslate"><span class="pre">labels/*.txt</span></code>), or</p></li>
+<li><p>A native LabelMe dataset (per-image <code class="docutils literal notranslate"><span class="pre">*.json</span></code> next to images, with point/polygon shapes).</p></li>
+</ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
 </pre></div>
 </div>
+<section id="native-labelme-training">
+<h3>Native LabelMe training<a class="headerlink" href="#native-labelme-training" title="Link to this heading"></a></h3>
+<p>Create a small spec YAML that points to a directory (or JSONL index) of LabelMe JSON files:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">labelme</span>
+<span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/path/to/dataset_root</span>
+<span class="nt">train</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">annotations/train</span><span class="w">   </span><span class="c1"># dir of LabelMe JSONs (images resolved via imagePath/sidecars)</span>
+<span class="nt">val</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">annotations/val</span>
+<span class="nt">kpt_shape</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">3</span><span class="p p-Indicator">]</span><span class="w">          </span><span class="c1"># K keypoints, dims (2 or 3)</span>
+<span class="nt">keypoint_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">nose</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">leftear</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">rightear</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">tailbase</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<p>Then train with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/labelme_spec.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-format<span class="w"> </span>labelme<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
+</pre></div>
+</div>
+<p>LabelMe conventions:</p>
+<ul class="simple">
+<li><p>Keypoints are <code class="docutils literal notranslate"><span class="pre">shape_type:</span> <span class="pre">point</span></code> with <code class="docutils literal notranslate"><span class="pre">label</span></code> matching an entry in <code class="docutils literal notranslate"><span class="pre">keypoint_names</span></code>.</p></li>
+<li><p>Instances are grouped via <code class="docutils literal notranslate"><span class="pre">group_id</span></code> (all shapes with the same <code class="docutils literal notranslate"><span class="pre">group_id</span></code> belong together).</p></li>
+<li><p>Polygons (<code class="docutils literal notranslate"><span class="pre">shape_type:</span> <span class="pre">polygon</span></code>) are optional; when present they are used to compute per-instance crops in <code class="docutils literal notranslate"><span class="pre">--instance-mode</span> <span class="pre">per_instance</span></code>.</p></li>
+</ul>
 <p>Defaults include Gaussian heatmaps, Dice loss, and a coordinate regression loss. Override as needed:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
@@ -131,6 +160,7 @@
 <span class="w">  </span>--layers<span class="w"> </span>-2,-1
 </pre></div>
 </div>
+</section>
 <section id="relational-attention-head">
 <h3>Relational (Attention) Head<a class="headerlink" href="#relational-attention-head" title="Link to this heading"></a></h3>
 <p>For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
@@ -186,6 +216,14 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 <span class="w">  </span>--weights<span class="w"> </span>/path/to/dino_kpseg/weights/best.pt<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--split<span class="w"> </span>val<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--thresholds<span class="w"> </span><span class="m">4</span>,8,16
+</pre></div>
+</div>
+<p>For LabelMe datasets, pass the spec YAML and set <code class="docutils literal notranslate"><span class="pre">--data-format</span> <span class="pre">labelme</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.eval<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/labelme_spec.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-format<span class="w"> </span>labelme<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>/path/to/dino_kpseg/weights/best.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--split<span class="w"> </span>val
 </pre></div>
 </div>
 </section>
