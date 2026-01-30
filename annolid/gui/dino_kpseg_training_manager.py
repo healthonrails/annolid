@@ -64,8 +64,13 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self._close_start_notification()
         self._cleanup_temp_configs()
 
-    def prepare_data_config(self, config_file: str) -> Optional[str]:
-        """Resolve relative paths in a YOLO pose data.yaml and persist to a temp file."""
+    def prepare_data_config(
+        self,
+        config_file: str,
+        *,
+        data_format: str = "auto",
+    ) -> Optional[str]:
+        """Resolve relative paths in a pose dataset YAML and persist to a temp file."""
         config_path = Path(config_file).expanduser().resolve()
         if not config_path.exists():
             QtWidgets.QMessageBox.warning(
@@ -102,7 +107,9 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 if is_remote(entry):
                     return entry
                 entry_path = Path(entry).expanduser()
-                resolved = entry_path if entry_path.is_absolute() else base_dir / entry_path
+                resolved = (
+                    entry_path if entry_path.is_absolute() else base_dir / entry_path
+                )
                 return str(resolved.resolve())
             if isinstance(entry, (list, tuple)):
                 return [resolve_entry(item) for item in entry]
@@ -118,13 +125,28 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         else:
             data_cfg["path"] = str(base_dir)
 
+        data_format_norm = self._normalize_data_format(
+            data_cfg, data_format=data_format
+        )
+
         if not data_cfg.get("kpt_shape"):
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Pose Dataset Required",
-                "DinoKPSEG training requires a YOLO pose dataset with 'kpt_shape' in data.yaml.",
+                "DinoKPSEG training requires a pose dataset YAML with 'kpt_shape'.",
             )
             return None
+
+        if data_format_norm == "labelme":
+            if not data_cfg.get("keypoint_names") and not data_cfg.get("kpt_names"):
+                QtWidgets.QMessageBox.warning(
+                    self._window,
+                    "Keypoint Names Required",
+                    "LabelMe DinoKPSEG training requires 'keypoint_names' (or 'kpt_names') in the YAML spec.",
+                )
+                return None
+            if not data_cfg.get("format") and not data_cfg.get("type"):
+                data_cfg["format"] = "labelme"
 
         missing_paths: List[str] = []
         for split in ("train", "val", "test"):
@@ -222,6 +244,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self,
         *,
         data_config_path: str,
+        data_format: str = "auto",
         out_dir: Optional[str],
         model_name: str,
         short_side: int,
@@ -292,6 +315,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
 
         if not self._preflight_ok(
             data_config_path=data_config_path,
+            data_format=data_format,
             augment=augment,
             device=device,
             epochs=epochs,
@@ -340,7 +364,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             except Exception:
                 return ""
             lines = text.splitlines()
-            tail = lines[-max(1, int(max_lines)):]
+            tail = lines[-max(1, int(max_lines)) :]
             return "\n".join(tail)
 
         def train_task(*, stop_event=None):
@@ -358,6 +382,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 "annolid.segmentation.dino_kpseg.train",
                 "--data",
                 str(data_path),
+                "--data-format",
+                str(data_format or "auto"),
                 "--output",
                 str(output_dir),
                 "--model-name",
@@ -430,26 +456,35 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 cmd.append("--tb-add-graph")
             if bool(tb_projector):
                 cmd.append("--tb-projector")
-                cmd += ["--tb-projector-split",
-                        str(tb_projector_split or "val")]
-                cmd += ["--tb-projector-max-images",
-                        str(int(tb_projector_max_images))]
-                cmd += ["--tb-projector-max-patches",
-                        str(int(tb_projector_max_patches))]
-                cmd += ["--tb-projector-per-image-per-keypoint",
-                        str(int(tb_projector_per_image_per_keypoint))]
-                cmd += ["--tb-projector-pos-threshold",
-                        str(float(tb_projector_pos_threshold))]
-                cmd += ["--tb-projector-crop-px",
-                        str(int(tb_projector_crop_px))]
-                cmd += ["--tb-projector-sprite-border-px",
-                        str(int(tb_projector_sprite_border_px))]
+                cmd += ["--tb-projector-split", str(tb_projector_split or "val")]
+                cmd += ["--tb-projector-max-images", str(int(tb_projector_max_images))]
+                cmd += [
+                    "--tb-projector-max-patches",
+                    str(int(tb_projector_max_patches)),
+                ]
+                cmd += [
+                    "--tb-projector-per-image-per-keypoint",
+                    str(int(tb_projector_per_image_per_keypoint)),
+                ]
+                cmd += [
+                    "--tb-projector-pos-threshold",
+                    str(float(tb_projector_pos_threshold)),
+                ]
+                cmd += ["--tb-projector-crop-px", str(int(tb_projector_crop_px))]
+                cmd += [
+                    "--tb-projector-sprite-border-px",
+                    str(int(tb_projector_sprite_border_px)),
+                ]
                 if bool(tb_projector_add_negatives):
                     cmd.append("--tb-projector-add-negatives")
-                cmd += ["--tb-projector-neg-threshold",
-                        str(float(tb_projector_neg_threshold))]
-                cmd += ["--tb-projector-negatives-per-image",
-                        str(int(tb_projector_negatives_per_image))]
+                cmd += [
+                    "--tb-projector-neg-threshold",
+                    str(float(tb_projector_neg_threshold)),
+                ]
+                cmd += [
+                    "--tb-projector-negatives-per-image",
+                    str(int(tb_projector_negatives_per_image)),
+                ]
             if device:
                 cmd += ["--device", str(device).strip()]
             if not bool(cache_features):
@@ -488,8 +523,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 creationflags = 0
                 kwargs: Dict[str, Any] = {}
                 if platform.system().lower() == "windows":
-                    creationflags = getattr(
-                        subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 else:
                     kwargs["start_new_session"] = True
 
@@ -525,10 +559,15 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 reader_thread.start()
                 try:
                     while True:
-                        if stop_event is not None and getattr(stop_event, "is_set", None) and stop_event.is_set():
+                        if (
+                            stop_event is not None
+                            and getattr(stop_event, "is_set", None)
+                            and stop_event.is_set()
+                        ):
                             self._terminate_process(proc)
                             raise _TrainingCancelled(
-                                "DinoKPSEG training was cancelled.")
+                                "DinoKPSEG training was cancelled."
+                            )
                         drained = 0
                         while drained < 200:
                             try:
@@ -542,8 +581,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                             if line:
                                 fh.write(line)
                                 fh.flush()
-                                logger.info("[dino_kpseg] %s",
-                                            line.rstrip("\n"))
+                                logger.info("[dino_kpseg] %s", line.rstrip("\n"))
 
                         if proc.poll() is not None:
                             # Drain remaining lines (up to a cap) after process exit.
@@ -640,8 +678,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         model_name: str,
         data_config_path: str,
     ) -> Path:
-        base = Path(out_dir).expanduser().resolve(
-        ) if out_dir else shared_runs_root()
+        base = Path(out_dir).expanduser().resolve() if out_dir else shared_runs_root()
         ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
         dataset_name = self._infer_run_name(data_config_path)
         run_name = f"{dataset_name}_{ts}" if dataset_name else ts
@@ -691,14 +728,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self,
         *,
         data_config_path: str,
+        data_format: str = "auto",
         augment: bool,
         device: Optional[str],
         epochs: int,
     ) -> bool:
         cfg_path = Path(data_config_path).expanduser()
         try:
-            data_cfg = yaml.safe_load(
-                cfg_path.read_text(encoding="utf-8")) or {}
+            data_cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
         except Exception:
             data_cfg = {}
 
@@ -710,17 +747,32 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             )
             return False
 
+        data_format_norm = self._normalize_data_format(
+            data_cfg, data_format=data_format
+        )
+
         if not data_cfg.get("kpt_shape"):
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Pose Dataset Required",
-                "DinoKPSEG training requires a YOLO pose dataset with 'kpt_shape' in data.yaml.",
+                "DinoKPSEG training requires a pose dataset YAML with 'kpt_shape'.",
             )
             return False
 
+        if data_format_norm == "labelme":
+            if not data_cfg.get("keypoint_names") and not data_cfg.get("kpt_names"):
+                QtWidgets.QMessageBox.warning(
+                    self._window,
+                    "Keypoint Names Required",
+                    "LabelMe DinoKPSEG training requires 'keypoint_names' (or 'kpt_names') in the YAML spec.",
+                )
+                return False
+
         warnings: List[str] = []
-        train_count = self._count_images(data_cfg.get("train"))
-        val_count = self._count_images(data_cfg.get("val"))
+        train_count = self._count_items(
+            data_cfg.get("train"), data_format=data_format_norm
+        )
+        val_count = self._count_items(data_cfg.get("val"), data_format=data_format_norm)
 
         if train_count and train_count < 50:
             warnings.append(
@@ -733,7 +785,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
 
         if bool(augment) and data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
             warnings.append(
-                "Augmentations are enabled but the pose dataset has no 'flip_idx' in data.yaml; horizontal flip may be incorrect."
+                "Augmentations are enabled but the pose dataset has no 'flip_idx' in the YAML; horizontal flip may be incorrect."
             )
 
         if int(epochs) >= 200 and train_count and train_count < 200:
@@ -768,12 +820,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         )
         return reply == QtWidgets.QMessageBox.Yes
 
-    def _count_images(self, entry: Any) -> int:
+    def _count_items(self, entry: Any, *, data_format: str) -> int:
         if not entry:
             return 0
 
         if isinstance(entry, (list, tuple)):
-            return sum(self._count_images(item) for item in entry)
+            return sum(
+                self._count_items(item, data_format=data_format) for item in entry
+            )
 
         path_str = str(entry).strip()
         if not path_str or path_str.startswith(("http://", "https://")):
@@ -784,24 +838,49 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         p = Path(path_str).expanduser()
         try:
             if p.is_dir():
-                exts = {".jpg", ".jpeg", ".png",
-                        ".bmp", ".tif", ".tiff", ".webp"}
+                if str(data_format).lower() == "labelme":
+                    return sum(1 for f in p.rglob("*") if f.suffix.lower() == ".json")
+                exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
                 return sum(1 for f in p.rglob("*") if f.suffix.lower() in exts)
-            if p.is_file() and p.suffix.lower() == ".txt":
-                count = 0
-                for line in p.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    candidate = Path(line)
-                    if not candidate.is_absolute():
-                        candidate = p.parent / candidate
-                    if candidate.exists():
-                        count += 1
-                return count
+            if p.is_file():
+                if p.suffix.lower() in {".txt", ".list"}:
+                    count = 0
+                    for line in p.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        candidate = Path(line)
+                        if not candidate.is_absolute():
+                            candidate = p.parent / candidate
+                        if candidate.exists():
+                            count += 1
+                    return count
+                if (
+                    p.suffix.lower() == ".jsonl"
+                    and str(data_format).lower() == "labelme"
+                ):
+                    return sum(
+                        1
+                        for line in p.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    )
         except OSError:
             return 0
         return 0
+
+    @staticmethod
+    def _normalize_data_format(data_cfg: Dict[str, Any], *, data_format: str) -> str:
+        fmt = str(data_format or "auto").strip().lower()
+        if fmt not in {"auto", "yolo", "labelme"}:
+            return "auto"
+        if fmt == "auto":
+            token = (
+                str(data_cfg.get("format") or data_cfg.get("type") or "")
+                .strip()
+                .lower()
+            )
+            fmt = "labelme" if "labelme" in token else "yolo"
+        return fmt
 
     def _set_active_process(self, proc: subprocess.Popen) -> None:
         with self._process_lock:
@@ -881,8 +960,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                     pass
                 thread.quit()
                 if not thread.wait(2000):
-                    logger.warning(
-                        "%s did not stop in time; terminating.", label)
+                    logger.warning("%s did not stop in time; terminating.", label)
                     thread.terminate()
                     thread.wait(2000)
         except RuntimeError:
@@ -896,8 +974,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         temp_config: str,
     ) -> None:
         self._training_running = False
-        self._active_jobs = [
-            job for job in self._active_jobs if job[0] is not thread]
+        self._active_jobs = [job for job in self._active_jobs if job[0] is not thread]
 
         try:
             self._stop_thread(thread, "DinoKPSEG training thread")
@@ -927,16 +1004,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                     self._window.tr("DinoKPSEG training cancelled.")
                 )
                 return
-            logger.error("DinoKPSEG training failed: %s",
-                         outcome, exc_info=True)
+            logger.error("DinoKPSEG training failed: %s", outcome, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 self._window,
                 "Training Error",
                 f"An error occurred during DinoKPSEG training:\n{outcome}",
             )
             self._window.statusBar().showMessage(
-                self._window.tr(
-                    "DinoKPSEG training failed. Check logs for details.")
+                self._window.tr("DinoKPSEG training failed. Check logs for details.")
             )
             return
 
@@ -1045,5 +1120,4 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             except FileNotFoundError:
                 continue
             except Exception:
-                logger.debug(
-                    "Could not remove temporary config: %s", temp_path)
+                logger.debug("Could not remove temporary config: %s", temp_path)

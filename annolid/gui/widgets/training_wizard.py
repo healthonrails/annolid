@@ -127,8 +127,7 @@ class PathPicker(QtWidgets.QWidget):
                 self, "Select File", "", "All Files (*)"
             )
         else:
-            p = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Select Folder")
+            p = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Folder")
         if p:
             self.setPath(p)
 
@@ -154,9 +153,9 @@ class PathPicker(QtWidgets.QWidget):
 
 def _header(title: str, subtitle: str) -> QtWidgets.QWidget:
     w = QtWidgets.QWidget()
-    l = QtWidgets.QVBoxLayout(w)
-    l.setContentsMargins(0, 0, 0, 0)
-    l.setSpacing(6)
+    layout = QtWidgets.QVBoxLayout(w)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
 
     t = QtWidgets.QLabel(title)
     t.setProperty("role", "title")
@@ -164,14 +163,15 @@ def _header(title: str, subtitle: str) -> QtWidgets.QWidget:
     s.setProperty("role", "subtitle")
     s.setWordWrap(True)
 
-    l.addWidget(t)
-    l.addWidget(s)
+    layout.addWidget(t)
+    layout.addWidget(s)
     return w
 
 
 # ---------------------------
 # Page 1: Dataset selection
 # ---------------------------
+
 
 class SelectDatasetPage(QtWidgets.QWizardPage):
     """Select YOLO data.yaml or COCO folder, with preview + validation."""
@@ -184,10 +184,12 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setSpacing(14)
 
-        outer.addWidget(_header(
-            "Dataset",
-            "Pick a YOLO data.yaml file or a COCO folder. You can drag & drop a file/folder into the field."
-        ))
+        outer.addWidget(
+            _header(
+                "Dataset",
+                "Pick a YOLO data.yaml file or a COCO folder. You can drag & drop a file/folder into the field.",
+            )
+        )
 
         source_group = QtWidgets.QGroupBox("Dataset Source")
         source_layout = QtWidgets.QVBoxLayout(source_group)
@@ -209,7 +211,8 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         yolo_l.addWidget(self.yolo_picker)
 
         hint = QtWidgets.QLabel(
-            "Tip: Use the Dataset Export wizard if you need to generate a YOLO dataset.")
+            "Tip: Use the Dataset Export wizard if you need to generate a YOLO dataset."
+        )
         hint.setProperty("muted", True)
         hint.setWordWrap(True)
         yolo_l.addWidget(hint)
@@ -230,8 +233,7 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         self.coco_picker.changed.connect(self._on_coco_changed)
         coco_l.addWidget(self.coco_picker)
 
-        hint2 = QtWidgets.QLabel(
-            "Expected files: train.json and (optional) val.json")
+        hint2 = QtWidgets.QLabel("Expected files: train.json and (optional) val.json")
         hint2.setProperty("muted", True)
         hint2.setWordWrap(True)
         coco_l.addWidget(hint2)
@@ -239,11 +241,33 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         coco_l.addStretch()
         self.source_tabs.addTab(coco_tab, "COCO")
 
+        # LabelMe tab (DinoKPSEG)
+        labelme_tab = QtWidgets.QWidget()
+        labelme_l = QtWidgets.QVBoxLayout(labelme_tab)
+        labelme_l.setSpacing(10)
+
+        self.labelme_picker = PathPicker(
+            "LabelMe spec.yaml",
+            "Select spec.yaml (LabelMe)",
+            mode="file",
+        )
+        self.labelme_picker.changed.connect(self._on_labelme_changed)
+        labelme_l.addWidget(self.labelme_picker)
+
+        hint3 = QtWidgets.QLabel(
+            "Spec must include kpt_shape and keypoint_names. Train/val can be dirs or JSONL."
+        )
+        hint3.setProperty("muted", True)
+        hint3.setWordWrap(True)
+        labelme_l.addWidget(hint3)
+
+        labelme_l.addStretch()
+        self.source_tabs.addTab(labelme_tab, "LabelMe")
+
         source_layout.addWidget(self.source_tabs)
         # Connect after pickers/tabs are created to avoid triggering
         # validation before attributes exist during construction.
-        self.source_tabs.currentChanged.connect(
-            lambda _: self._validate_dataset())
+        self.source_tabs.currentChanged.connect(lambda _: self._validate_dataset())
         outer.addWidget(source_group)
 
         # Preview
@@ -287,6 +311,9 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
     def _on_coco_changed(self, _: str) -> None:
         self._validate_dataset()
 
+    def _on_labelme_changed(self, _: str) -> None:
+        self._validate_dataset()
+
     def _reset_preview(self) -> None:
         # Some signals may fire during construction before these widgets
         # are created; guard against AttributeError by checking presence.
@@ -311,11 +338,13 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             else:
                 self.yolo_picker.setStatus("Not found", False)
 
-            # Keep COCO status muted when not active
+            # Keep other status muted when not active
             if self.coco_picker.path():
                 self.coco_picker.setStatus("—", None)
+            if self.labelme_picker.path():
+                self.labelme_picker.setStatus("—", None)
 
-        else:
+        elif self.get_dataset_type() == "coco":
             d = Path(self.coco_picker.path())
             if not self.coco_picker.path():
                 self.coco_picker.setStatus("—", None)
@@ -331,15 +360,33 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             else:
                 self.coco_picker.setStatus("Not found", False)
 
-            # Keep YOLO status muted when not active
+            # Keep other status muted when not active
             if self.yolo_picker.path():
                 self.yolo_picker.setStatus("—", None)
+            if self.labelme_picker.path():
+                self.labelme_picker.setStatus("—", None)
+
+        else:
+            p = Path(self.labelme_picker.path())
+            if not self.labelme_picker.path():
+                self.labelme_picker.setStatus("—", None)
+            elif p.exists() and p.is_file():
+                self.labelme_picker.setStatus("Found ✓", True)
+                self._parse_labelme_yaml(p)
+            else:
+                self.labelme_picker.setStatus("Not found", False)
+
+            if self.yolo_picker.path():
+                self.yolo_picker.setStatus("—", None)
+            if self.coco_picker.path():
+                self.coco_picker.setStatus("—", None)
 
         self.completeChanged.emit()
 
     def _parse_yolo_yaml(self, path: Path) -> None:
         try:
             import yaml
+
             with open(path, "r") as f:
                 data = yaml.safe_load(f)
 
@@ -357,8 +404,7 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             val_path = data.get("val", "")
             base = path.parent
 
-            train_count = self._count_images(
-                base / train_path) if train_path else 0
+            train_count = self._count_images(base / train_path) if train_path else 0
             val_count = self._count_images(base / val_path) if val_path else 0
 
             self.info_train.setText(str(train_count) if train_count else "—")
@@ -374,6 +420,36 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         except Exception as e:
             self.info_classes.setText(f"Error: {e}")
 
+    def _parse_labelme_yaml(self, path: Path) -> None:
+        try:
+            import yaml
+
+            with open(path, "r") as f:
+                data = yaml.safe_load(f) or {}
+
+            keypoint_names = data.get("keypoint_names") or data.get("kpt_names") or []
+            if isinstance(keypoint_names, dict):
+                keypoint_names = list(keypoint_names.values())
+            if not isinstance(keypoint_names, list):
+                keypoint_names = [keypoint_names]
+            preview = [str(n) for n in keypoint_names[:6]]
+            self.info_classes.setText(
+                f"{len(keypoint_names)}: {', '.join(preview)}{'…' if len(keypoint_names) > 6 else ''}"
+            )
+
+            base = path.parent
+            train_value = data.get("train")
+            val_value = data.get("val")
+            train_count = self._count_labelme_items(train_value, base)
+            val_count = self._count_labelme_items(val_value, base)
+
+            self.info_train.setText(str(train_count) if train_count else "—")
+            self.info_val.setText(str(val_count) if val_count else "—")
+            self.info_type.setText("Pose Estimation (LabelMe)")
+
+        except Exception as e:
+            self.info_classes.setText(f"Error: {e}")
+
     def _parse_coco_dir(self, path: Path) -> None:
         try:
             train_json = path / "train.json"
@@ -381,16 +457,17 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
 
             if train_json.exists():
                 import json
+
                 with open(train_json, "r") as f:
                     data = json.load(f)
                 cats = data.get("categories", [])
                 self.info_classes.setText(f"{len(cats)} categories")
-                self.info_train.setText(
-                    f"{len(data.get('images', []))} images")
+                self.info_train.setText(f"{len(data.get('images', []))} images")
                 self.info_type.setText("COCO Detection/Segmentation")
 
             if val_json.exists():
                 import json
+
                 with open(val_json, "r") as f:
                     data = json.load(f)
                 self.info_val.setText(f"{len(data.get('images', []))} images")
@@ -407,8 +484,38 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             return sum(1 for line in path.read_text().splitlines() if line.strip())
         return sum(1 for f in path.iterdir() if f.suffix.lower() in extensions)
 
+    def _count_labelme_items(self, entry: object, base: Path) -> int:
+        if not entry:
+            return 0
+        if isinstance(entry, (list, tuple)):
+            return sum(self._count_labelme_items(item, base) for item in entry)
+        try:
+            raw = str(entry).strip()
+        except Exception:
+            return 0
+        if not raw:
+            return 0
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = base / p
+        if not p.exists():
+            return 0
+        if p.is_dir():
+            return sum(1 for f in p.rglob("*.json"))
+        if p.is_file():
+            if p.suffix.lower() in {".txt", ".list", ".jsonl"}:
+                return sum(
+                    1
+                    for line in p.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                )
+            if p.suffix.lower() == ".json":
+                return 1
+        return 0
+
     def _open_dataset_wizard(self) -> None:
         from annolid.gui.widgets.dataset_wizard import DatasetExportWizard
+
         wizard = DatasetExportWizard(parent=self)
 
         # Connect to the export complete signal
@@ -449,20 +556,32 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             return False
         if self.get_dataset_type() == "yolo":
             return Path(p).exists() and Path(p).is_file()
-        # coco
+        if self.get_dataset_type() == "labelme":
+            return Path(p).exists() and Path(p).is_file()
         d = Path(p)
         return d.exists() and d.is_dir() and (d / "train.json").exists()
 
     def get_dataset_path(self) -> str:
-        return self.yolo_picker.path() if self.get_dataset_type() == "yolo" else self.coco_picker.path()
+        dtype = self.get_dataset_type()
+        if dtype == "yolo":
+            return self.yolo_picker.path()
+        if dtype == "labelme":
+            return self.labelme_picker.path()
+        return self.coco_picker.path()
 
     def get_dataset_type(self) -> str:
-        return "yolo" if self.source_tabs.currentIndex() == 0 else "coco"
+        idx = self.source_tabs.currentIndex()
+        if idx == 0:
+            return "yolo"
+        if idx == 1:
+            return "coco"
+        return "labelme"
 
 
 # ---------------------------
 # YOLO model selection helpers (from train_model_dialog)
 # ---------------------------
+
 
 def _yolo_weight_configs() -> List[Any]:
     """Return YOLO-ish configs from MODEL_REGISTRY."""
@@ -504,6 +623,7 @@ def _try_select_registry_weight(weight_file: str, combo: QtWidgets.QComboBox) ->
 # Page 2: Backend selection
 # ---------------------------
 
+
 class SelectBackendPage(QtWidgets.QWizardPage):
     """Choose training backend."""
 
@@ -515,10 +635,12 @@ class SelectBackendPage(QtWidgets.QWizardPage):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(14)
 
-        layout.addWidget(_header(
-            "Training Backend",
-            "Pick a training engine. YOLO is the default for most workflows."
-        ))
+        layout.addWidget(
+            _header(
+                "Training Backend",
+                "Pick a training engine. YOLO is the default for most workflows.",
+            )
+        )
 
         self.backend_group = QtWidgets.QButtonGroup(self)
         self.backend_cards: List[ClickableCard] = []
@@ -528,8 +650,13 @@ class SelectBackendPage(QtWidgets.QWizardPage):
                 "yolo",
                 "YOLO (Ultralytics)",
                 "Fast, strong default for detection / segmentation / pose. Great for production + real-time.",
-                ["Detection", "Segmentation", "Pose",
-                    "Fast training", "Real-time inference"],
+                [
+                    "Detection",
+                    "Segmentation",
+                    "Pose",
+                    "Fast training",
+                    "Real-time inference",
+                ],
                 True,
             ),
             (
@@ -550,7 +677,8 @@ class SelectBackendPage(QtWidgets.QWizardPage):
 
         for i, (backend_id, title, desc, feats, recommended) in enumerate(backends):
             card, radio = self._make_backend_card(
-                backend_id, title, desc, feats, recommended)
+                backend_id, title, desc, feats, recommended
+            )
             self.backend_group.addButton(radio, i)
             self.backend_cards.append(card)
             layout.addWidget(card)
@@ -570,7 +698,6 @@ class SelectBackendPage(QtWidgets.QWizardPage):
         features: List[str],
         recommended: bool,
     ) -> tuple[ClickableCard, QtWidgets.QRadioButton]:
-
         card = ClickableCard()
         root = QtWidgets.QVBoxLayout(card)
         root.setContentsMargins(18, 14, 18, 14)
@@ -630,6 +757,7 @@ class SelectBackendPage(QtWidgets.QWizardPage):
 # Page 3: Configure training
 # ---------------------------
 
+
 class ConfigureParametersPage(QtWidgets.QWizardPage):
     """Backend-specific parameter configuration + shared output options."""
 
@@ -641,10 +769,12 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(14)
 
-        layout.addWidget(_header(
-            "Training Settings",
-            "Defaults are good. Use presets for quick tuning, or expand advanced options."
-        ))
+        layout.addWidget(
+            _header(
+                "Training Settings",
+                "Defaults are good. Use presets for quick tuning, or expand advanced options.",
+            )
+        )
 
         self.stack = QtWidgets.QStackedWidget()
         self.yolo_widget = self._create_yolo_options()
@@ -664,7 +794,8 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         dir_layout = QtWidgets.QHBoxLayout()
         self.output_dir_edit = QtWidgets.QLineEdit()
         self.output_dir_edit.setPlaceholderText(
-            "Optional: choose where to store outputs (runs, checkpoints, logs)")
+            "Optional: choose where to store outputs (runs, checkpoints, logs)"
+        )
         dir_layout.addWidget(self.output_dir_edit, 1)
         browse_btn = QtWidgets.QPushButton("Browse…")
         browse_btn.clicked.connect(self._browse_output)
@@ -702,8 +833,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.yolo_weights_combo = QtWidgets.QComboBox()
         yolo_cfgs = _yolo_weight_configs()
         for cfg in yolo_cfgs:
-            self.yolo_weights_combo.addItem(
-                cfg.display_name, userData=cfg.weight_file)
+            self.yolo_weights_combo.addItem(cfg.display_name, userData=cfg.weight_file)
 
         # Optional browse button for custom weight path
         self.yolo_weights_browse_btn = QtWidgets.QPushButton("Browse…")
@@ -723,16 +853,17 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
         self.yolo_task_combo.setCurrentText("Instance Segmentation")
         self.yolo_task_combo.currentTextChanged.connect(
-            self._update_yolo_model_from_task_size)
+            self._update_yolo_model_from_task_size
+        )
 
         self.yolo_size_combo = QtWidgets.QComboBox()
         self.yolo_size_combo.addItems([s.upper() for s in YOLO11_MODEL_SIZES])
         self.yolo_size_combo.currentTextChanged.connect(
-            self._update_yolo_model_from_task_size)
+            self._update_yolo_model_from_task_size
+        )
 
         self.yolo_model_label = QtWidgets.QLabel()
-        self.yolo_model_label.setTextInteractionFlags(
-            QtCore.Qt.TextSelectableByMouse)
+        self.yolo_model_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.yolo_model_label.setStyleSheet("font-weight: 900;")
 
         model_layout.addWidget(QtWidgets.QLabel("Task:"), 1, 0)
@@ -745,7 +876,8 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 
         # Connect preset change handler
         self.yolo_weights_combo.currentIndexChanged.connect(
-            self._on_yolo_preset_changed)
+            self._on_yolo_preset_changed
+        )
 
         layout.addWidget(model_group)
 
@@ -887,6 +1019,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         options = [("Auto (recommended)", "")]
         try:
             import torch
+
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 options.append(("Apple MPS", "mps"))
             if torch.cuda.is_available():
@@ -946,12 +1079,15 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
             return
         self.yolo_model_label.setText(f"Selected weights: {wf}")
 
-    def _parse_task_size_from_weight(self, weight_file: str) -> tuple[str | None, str | None]:
+    def _parse_task_size_from_weight(
+        self, weight_file: str
+    ) -> tuple[str | None, str | None]:
         """
         Best-effort parse for yolo11{size}{suffix}.pt, e.g. yolo11n-seg.pt.
         Returns (task_name, size_letter) or (None, None).
         """
         import re
+
         wf = (weight_file or "").strip().lower()
         m = re.match(r"^yolo11([nslmx])(?:(-seg|-pose|-obb|-cls))?\.pt$", wf)
         if not m:
@@ -965,8 +1101,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
     def _browse_yolo_weights(self) -> None:
         """Browse for custom YOLO weights file."""
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select YOLO Weights", "",
-            "Model Files (*.pt *.pth);;All Files (*)"
+            self, "Select YOLO Weights", "", "Model Files (*.pt *.pth);;All Files (*)"
         )
         if path:
             # Add custom entry to combo if not already present
@@ -985,14 +1120,18 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 
     def _browse_output(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Output Directory")
+            self, "Select Output Directory"
+        )
         if folder:
             self.output_dir_edit.setText(folder)
 
     def get_config(self) -> Dict[str, Any]:
         wizard = self.wizard()
-        backend = wizard.select_backend_page.get_backend(
-        ) if isinstance(wizard, TrainingWizard) else "yolo"
+        backend = (
+            wizard.select_backend_page.get_backend()
+            if isinstance(wizard, TrainingWizard)
+            else "yolo"
+        )
 
         config: Dict[str, Any] = {
             "backend": backend,
@@ -1000,32 +1139,41 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         }
 
         if backend == "yolo":
-            config.update({
-                "model": str(self.yolo_weights_combo.currentData() or ""),
-                "epochs": self.yolo_epochs_spin.value(),
-                "batch": self.yolo_batch_spin.value(),
-                "imgsz": self.yolo_imgsz_spin.value(),
-                "device": self.yolo_device_combo.currentData() or "",
-                "lr0": self.yolo_lr_spin.value(),
-                "patience": self.yolo_patience_spin.value(),
-                "cache": self.yolo_cache_check.isChecked(),
-            })
+            config.update(
+                {
+                    "model": str(self.yolo_weights_combo.currentData() or ""),
+                    "epochs": self.yolo_epochs_spin.value(),
+                    "batch": self.yolo_batch_spin.value(),
+                    "imgsz": self.yolo_imgsz_spin.value(),
+                    "device": self.yolo_device_combo.currentData() or "",
+                    "lr0": self.yolo_lr_spin.value(),
+                    "patience": self.yolo_patience_spin.value(),
+                    "cache": self.yolo_cache_check.isChecked(),
+                }
+            )
 
         elif backend == "dino_kpseg":
-            config.update({
-                "model": self.dino_model_combo.currentData(),
-                "epochs": self.dino_epochs_spin.value(),
-                "batch": self.dino_batch_spin.value(),
-                "short_side": self.dino_short_side_spin.value(),
-                "lr": self.dino_lr_spin.value(),
-                "radius_px": self.dino_radius_spin.value(),
-            })
+            dataset_type = wizard.select_dataset_page.get_dataset_type()
+            data_format = "labelme" if dataset_type == "labelme" else "yolo"
+            config.update(
+                {
+                    "model": self.dino_model_combo.currentData(),
+                    "epochs": self.dino_epochs_spin.value(),
+                    "batch": self.dino_batch_spin.value(),
+                    "short_side": self.dino_short_side_spin.value(),
+                    "lr": self.dino_lr_spin.value(),
+                    "radius_px": self.dino_radius_spin.value(),
+                    "data_format": data_format,
+                }
+            )
 
         else:  # maskrcnn
-            config.update({
-                "max_iterations": self.maskrcnn_iter_spin.value(),
-                "batch": self.maskrcnn_batch_spin.value(),
-            })
+            config.update(
+                {
+                    "max_iterations": self.maskrcnn_iter_spin.value(),
+                    "batch": self.maskrcnn_batch_spin.value(),
+                }
+            )
 
         return config
 
@@ -1033,6 +1181,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 # ---------------------------
 # Page 4: Review + launch
 # ---------------------------
+
 
 class TrainingSummaryPage(QtWidgets.QWizardPage):
     """Review configuration, choose monitoring options, then start training."""
@@ -1045,10 +1194,9 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(14)
 
-        layout.addWidget(_header(
-            "Review & Launch",
-            "Double-check settings, then start training."
-        ))
+        layout.addWidget(
+            _header("Review & Launch", "Double-check settings, then start training.")
+        )
 
         self.summary_text = QtWidgets.QTextBrowser()
         self.summary_text.setOpenExternalLinks(False)
@@ -1068,18 +1216,21 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
         options_layout = QtWidgets.QVBoxLayout(options_group)
 
         self.open_dashboard_check = QtWidgets.QCheckBox(
-            "Open training dashboard to monitor progress")
+            "Open training dashboard to monitor progress"
+        )
         self.open_dashboard_check.setChecked(True)
         options_layout.addWidget(self.open_dashboard_check)
 
         self.open_tensorboard_check = QtWidgets.QCheckBox(
-            "Launch TensorBoard for visualization")
+            "Launch TensorBoard for visualization"
+        )
         options_layout.addWidget(self.open_tensorboard_check)
 
         layout.addWidget(options_group)
 
         self.time_estimate = QtWidgets.QLabel(
-            "Estimated time: varies with dataset size and hardware.")
+            "Estimated time: varies with dataset size and hardware."
+        )
         self.time_estimate.setProperty("muted", True)
         layout.addWidget(self.time_estimate)
 
@@ -1114,7 +1265,12 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
             """
 
         ds_name = Path(dataset_path).name if dataset_path else "—"
-        ds_kind = "YOLO" if dataset_type == "yolo" else "COCO"
+        if dataset_type == "yolo":
+            ds_kind = "YOLO"
+        elif dataset_type == "labelme":
+            ds_kind = "LabelMe"
+        else:
+            ds_kind = "COCO"
         bk = backend_names.get(backend, backend)
 
         params_rows = []
@@ -1135,6 +1291,7 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
                 row("Short side", str(config.get("short_side", 768))),
                 row("LR", str(config.get("lr", 0.002))),
                 row("Radius (px)", str(config.get("radius_px", 6.0))),
+                row("Dataset format", str(config.get("data_format", "auto"))),
             ]
         else:
             params_rows += [
@@ -1168,7 +1325,7 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
           <div style="background:#0D1218; border:1px solid #283241; border-radius:14px; padding:12px; margin-bottom:12px;">
             <div style="color:#CFE3FF; font-weight:900; margin-bottom:8px;">Parameters</div>
             <table style="width:100%; border-collapse:collapse;">
-              {''.join(params_rows)}
+              {"".join(params_rows)}
             </table>
           </div>
 
@@ -1193,6 +1350,7 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
 # ---------------------------
 # Main wizard
 # ---------------------------
+
 
 class TrainingWizard(QtWidgets.QWizard):
     """Main training wizard combining all pages."""

@@ -4467,13 +4467,15 @@ class AnnolidWindow(MainWindow):
             )
 
         elif algo == "DINO KPSEG":
+            dino_data_format = getattr(dlg, "dino_data_format", "auto")
             data_config = self.dino_kpseg_training_manager.prepare_data_config(
-                config_file
+                config_file, data_format=str(dino_data_format or "auto")
             )
             if data_config is None:
                 return
             self.dino_kpseg_training_manager.start_training(
                 data_config_path=data_config,
+                data_format=str(dino_data_format or "auto"),
                 out_dir=out_dir,
                 model_name=str(dino_model_name or ""),
                 short_side=int(dino_short_side),
@@ -6728,6 +6730,7 @@ class AnnolidWindow(MainWindow):
         try:
             self.dino_kpseg_training_manager.start_training(
                 data_config_path=config.get("dataset_path"),
+                data_format=str(config.get("data_format", "auto") or "auto"),
                 out_dir=config.get("output_dir"),
                 model_name=config.get("model"),
                 short_side=config.get("short_side", 768),

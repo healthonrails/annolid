@@ -60,6 +60,7 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         # DinoKPSEG defaults
         self.dino_model_name = PATCH_SIMILARITY_DEFAULT_MODEL
+        self.dino_data_format = "auto"
         self.dino_short_side = 768
         self.dino_layers = "-1"
         self.dino_radius_px = 6.0
@@ -161,8 +162,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.groupBoxAlgo = QtWidgets.QGroupBox("Training Backend", self)
         row = QtWidgets.QHBoxLayout(self.groupBoxAlgo)
 
-        self.radio_btn_maskrcnn = QtWidgets.QRadioButton(
-            "MaskRCNN", self.groupBoxAlgo)
+        self.radio_btn_maskrcnn = QtWidgets.QRadioButton("MaskRCNN", self.groupBoxAlgo)
         self.radio_btn_maskrcnn.setChecked(True)
         self.radio_btn_maskrcnn.toggled.connect(self.on_radio_button_checked)
         row.addWidget(self.radio_btn_maskrcnn)
@@ -172,7 +172,8 @@ class TrainModelDialog(QtWidgets.QDialog):
         row.addWidget(self.radio_btn_yolo)
 
         self.radio_btn_dino_kpseg = QtWidgets.QRadioButton(
-            "DINO KPSEG", self.groupBoxAlgo)
+            "DINO KPSEG", self.groupBoxAlgo
+        )
         self.radio_btn_dino_kpseg.toggled.connect(self.on_radio_button_checked)
         row.addWidget(self.radio_btn_dino_kpseg)
 
@@ -211,13 +212,11 @@ class TrainModelDialog(QtWidgets.QDialog):
         # File inputs (shared)
         self.configFileLineEdit = QtWidgets.QLineEdit(self)
         self.configFileButton = QtWidgets.QPushButton("Browse…", self)
-        self.configFileButton.clicked.connect(
-            self.on_config_file_button_clicked)
+        self.configFileButton.clicked.connect(self.on_config_file_button_clicked)
 
         self.trainedModelLineEdit = QtWidgets.QLineEdit(self)
         self.trainedModelButton = QtWidgets.QPushButton("Browse…", self)
-        self.trainedModelButton.clicked.connect(
-            self.on_trained_model_button_clicked)
+        self.trainedModelButton.clicked.connect(self.on_trained_model_button_clicked)
 
         self.outDirLineEdit = QtWidgets.QLineEdit(self)
         self.outDirButton = QtWidgets.QPushButton("Select…", self)
@@ -258,7 +257,9 @@ class TrainModelDialog(QtWidgets.QDialog):
                 return True
         return False
 
-    def _parse_task_size_from_weight(self, weight_file: str) -> Tuple[Optional[str], Optional[str]]:
+    def _parse_task_size_from_weight(
+        self, weight_file: str
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
         Best-effort parse for yolo11{size}{suffix}.pt, e.g. yolo11n-seg.pt.
         Returns (task_name, size_letter) or (None, None).
@@ -282,8 +283,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         in_registry = False
         if hasattr(self, "yolo_weights_combo"):
             for i in range(self.yolo_weights_combo.count()):
-                item_wf = str(self.yolo_weights_combo.itemData(i)
-                              or "").strip().lower()
+                item_wf = str(self.yolo_weights_combo.itemData(i) or "").strip().lower()
                 if item_wf == wf.lower():
                     in_registry = True
                     break
@@ -299,14 +299,15 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_weights_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
         yolo_cfgs = self._yolo_weight_configs()
         for cfg in yolo_cfgs:
-            self.yolo_weights_combo.addItem(
-                cfg.display_name, userData=cfg.weight_file)
+            self.yolo_weights_combo.addItem(cfg.display_name, userData=cfg.weight_file)
 
         # Optional browse button for custom weight path
         self.yolo_weights_browse_btn = QtWidgets.QPushButton(
-            "Browse…", self.yolo_model_groupbox)
+            "Browse…", self.yolo_model_groupbox
+        )
         self.yolo_weights_browse_btn.clicked.connect(
-            self.on_yolo_weights_browse_clicked)
+            self.on_yolo_weights_browse_clicked
+        )
 
         preset_row = QtWidgets.QWidget(self.yolo_model_groupbox)
         preset_row_layout = QtWidgets.QHBoxLayout(preset_row)
@@ -317,17 +318,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         # Convenience task + size selectors (auto-matches presets when possible)
         self.yolo_task_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
         self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
-        self.yolo_task_combo.currentTextChanged.connect(
-            self.update_yolo_model_filename)
+        self.yolo_task_combo.currentTextChanged.connect(self.update_yolo_model_filename)
 
         self.yolo_size_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
         self.yolo_size_combo.addItems([s.upper() for s in YOLO11_MODEL_SIZES])
-        self.yolo_size_combo.currentTextChanged.connect(
-            self.update_yolo_model_filename)
+        self.yolo_size_combo.currentTextChanged.connect(self.update_yolo_model_filename)
 
         self.yolo_model_label = QtWidgets.QLabel(self.yolo_model_groupbox)
-        self.yolo_model_label.setTextInteractionFlags(
-            QtCore.Qt.TextSelectableByMouse)
+        self.yolo_model_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
 
         def _on_preset_changed(_=None) -> None:
             wf = str(self.yolo_weights_combo.currentData() or "").strip()
@@ -364,7 +362,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         # 1) if yolo_model_file already set (registry default), select it
         # 2) else try match task/size to registry
         # 3) else fall back to computed filename
-        if self.yolo_model_file and self._try_select_registry_weight(self.yolo_model_file):
+        if self.yolo_model_file and self._try_select_registry_weight(
+            self.yolo_model_file
+        ):
             pass
         else:
             self.update_yolo_model_filename()
@@ -469,8 +469,7 @@ class TrainModelDialog(QtWidgets.QDialog):
                 default_index = idx
 
         self.yolo_device_combo.setCurrentIndex(default_index)
-        self.yolo_device_combo.currentIndexChanged.connect(
-            self._on_device_changed)
+        self.yolo_device_combo.currentIndexChanged.connect(self._on_device_changed)
 
     # -------------------- Tabs
     def _build_basic_tab(self) -> None:
@@ -483,8 +482,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
 
-        self.training_groupbox = QtWidgets.QGroupBox(
-            "Training", self.basic_tab)
+        self.training_groupbox = QtWidgets.QGroupBox("Training", self.basic_tab)
         self._training_form = QtWidgets.QFormLayout(self.training_groupbox)
         self._training_form.setLabelAlignment(QtCore.Qt.AlignRight)
         self._training_form.setFormAlignment(QtCore.Qt.AlignTop)
@@ -502,22 +500,41 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._io_form.setFormAlignment(QtCore.Qt.AlignTop)
 
         self._io_config_row = self._make_row(
-            self.configFileLineEdit, self.configFileButton)
+            self.configFileLineEdit, self.configFileButton
+        )
         self._io_model_row = self._make_row(
-            self.trainedModelLineEdit, self.trainedModelButton)
-        self._io_out_row = self._make_row(
-            self.outDirLineEdit, self.outDirButton)
+            self.trainedModelLineEdit, self.trainedModelButton
+        )
+        self._io_out_row = self._make_row(self.outDirLineEdit, self.outDirButton)
 
-        self._io_config_label = QtWidgets.QLabel(
-            "Dataset YAML", self.io_groupbox)
-        self._io_model_label = QtWidgets.QLabel(
-            "Resume from (.pt)", self.io_groupbox)
-        self._io_out_label = QtWidgets.QLabel(
-            "Output directory", self.io_groupbox)
+        self._io_config_label = QtWidgets.QLabel("Dataset YAML", self.io_groupbox)
+        self._io_model_label = QtWidgets.QLabel("Resume from (.pt)", self.io_groupbox)
+        self._io_out_label = QtWidgets.QLabel("Output directory", self.io_groupbox)
 
         self._io_form.addRow(self._io_config_label, self._io_config_row)
         self._io_form.addRow(self._io_model_label, self._io_model_row)
         self._io_form.addRow(self._io_out_label, self._io_out_row)
+
+        self.dino_data_format_combo = QtWidgets.QComboBox(self.io_groupbox)
+        dino_formats = [
+            ("Auto-detect (recommended)", "auto"),
+            ("YOLO pose dataset", "yolo"),
+            ("LabelMe JSON + spec", "labelme"),
+        ]
+        dino_format_default = 0
+        for idx, (label, value) in enumerate(dino_formats):
+            self.dino_data_format_combo.addItem(label, userData=value)
+            if str(value) == str(self.dino_data_format):
+                dino_format_default = idx
+        self.dino_data_format_combo.setCurrentIndex(dino_format_default)
+        self.dino_data_format_combo.currentIndexChanged.connect(
+            lambda _=None: setattr(
+                self,
+                "dino_data_format",
+                str(self.dino_data_format_combo.currentData() or "auto"),
+            )
+        )
+        self._io_form.addRow("Dataset format", self.dino_data_format_combo)
 
         # Both groupboxes are placed in the same grid cell; visibility toggled by algo.
         grid.addWidget(self.yolo_model_groupbox, 0, 0, 1, 2)
@@ -570,15 +587,17 @@ class TrainModelDialog(QtWidgets.QDialog):
         spin.valueChanged.connect(lambda v: setattr(self, attr, float(v)))
 
     def _bind_checkbox(self, cb: QtWidgets.QCheckBox, attr: str) -> None:
-        cb.stateChanged.connect(lambda _=None: setattr(
-            self, attr, bool(cb.isChecked())))
+        cb.stateChanged.connect(
+            lambda _=None: setattr(self, attr, bool(cb.isChecked()))
+        )
 
     def _bind_lineedit_str(self, le: QtWidgets.QLineEdit, attr: str) -> None:
-        le.textChanged.connect(lambda text: setattr(
-            self, attr, str(text).strip()))
+        le.textChanged.connect(lambda text: setattr(self, attr, str(text).strip()))
 
     # -------------------- Helpers
-    def _make_row(self, line_edit: QtWidgets.QLineEdit, button: QtWidgets.QPushButton) -> QtWidgets.QWidget:
+    def _make_row(
+        self, line_edit: QtWidgets.QLineEdit, button: QtWidgets.QPushButton
+    ) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget(self)
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -586,7 +605,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         layout.addWidget(button, 0)
         return row
 
-    def _set_form_row_visible(self, form: QtWidgets.QFormLayout, field: QtWidgets.QWidget, visible: bool) -> None:
+    def _set_form_row_visible(
+        self, form: QtWidgets.QFormLayout, field: QtWidgets.QWidget, visible: bool
+    ) -> None:
         label = form.labelForField(field)
         if label is not None:
             label.setVisible(visible)
@@ -615,15 +636,18 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         # Training form rows
         self._set_form_row_visible(
-            self._training_form, self.yolo_device_combo, yolo_selected or dino_selected)
+            self._training_form, self.yolo_device_combo, yolo_selected or dino_selected
+        )
+        self._set_form_row_visible(self._training_form, self.imgsz_spin, yolo_selected)
         self._set_form_row_visible(
-            self._training_form, self.imgsz_spin, yolo_selected)
+            self._training_form, self.epochs_spin, yolo_selected or dino_selected
+        )
         self._set_form_row_visible(
-            self._training_form, self.epochs_spin, yolo_selected or dino_selected)
+            self._training_form, self.max_iter_spin, classic_selected
+        )
         self._set_form_row_visible(
-            self._training_form, self.max_iter_spin, classic_selected)
-        self._set_form_row_visible(
-            self._training_form, self.yolo_plots_checkbox, yolo_selected)
+            self._training_form, self.yolo_plots_checkbox, yolo_selected
+        )
 
         # Batch size tooltip
         self.batch_spin.setEnabled(True)
@@ -636,16 +660,26 @@ class TrainModelDialog(QtWidgets.QDialog):
             self.batch_spin.setToolTip("")
 
         # IO labels
-        self._io_config_label.setText("Dataset YAML" if (
-            yolo_selected or dino_selected) else "Config file")
+        self._io_config_label.setText(
+            "Dataset YAML" if (yolo_selected or dino_selected) else "Config file"
+        )
         self._io_model_label.setText(
-            "Resume from (.pt)" if yolo_selected else "Model weights (.pt)")
-        self.configFileButton.setText("Browse YAML…" if (
-            yolo_selected or dino_selected) else "Browse…")
+            "Resume from (.pt)" if yolo_selected else "Model weights (.pt)"
+        )
+        self.configFileButton.setText(
+            "Browse YAML…" if (yolo_selected or dino_selected) else "Browse…"
+        )
 
         # Resume row only for YOLO
         self._set_form_row_visible(
-            self._io_form, self._io_model_row, bool(yolo_selected))
+            self._io_form, self._io_model_row, bool(yolo_selected)
+        )
+        self._set_form_row_visible(
+            self._io_form, self.dino_data_format_combo, bool(dino_selected)
+        )
+
+        if dino_selected:
+            self._io_config_label.setText("Dataset YAML / Spec")
 
         self._update_dino_augment_enabled_state()
 
@@ -679,7 +713,8 @@ class TrainModelDialog(QtWidgets.QDialog):
 
     def on_out_dir_button_clicked(self) -> None:
         self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Output Directory")
+            self, "Select Output Directory"
+        )
         if self.out_dir:
             self.outDirLineEdit.setText(self.out_dir)
 
@@ -733,8 +768,9 @@ class TrainModelDialog(QtWidgets.QDialog):
             if str(value).lower() == str(self.yolo_optimizer).lower():
                 default_idx = idx
         optimizer.setCurrentIndex(default_idx)
-        optimizer.currentIndexChanged.connect(lambda _=None: setattr(
-            self, "yolo_optimizer", str(optimizer.currentData())))
+        optimizer.currentIndexChanged.connect(
+            lambda _=None: setattr(self, "yolo_optimizer", str(optimizer.currentData()))
+        )
 
         cos_lr = QtWidgets.QCheckBox("Cosine LR schedule", box)
         cos_lr.setChecked(bool(self.yolo_cos_lr))
@@ -752,8 +788,9 @@ class TrainModelDialog(QtWidgets.QDialog):
             if value == self.yolo_cache:
                 cache_default_idx = idx
         cache.setCurrentIndex(cache_default_idx)
-        cache.currentIndexChanged.connect(lambda _=None: setattr(
-            self, "yolo_cache", cache.currentData()))
+        cache.currentIndexChanged.connect(
+            lambda _=None: setattr(self, "yolo_cache", cache.currentData())
+        )
 
         form.addRow("Learning rate (lr0)", lr0)
         form.addRow("Final LR fraction (lrf)", lrf)
@@ -775,13 +812,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         head_type.addItem("Attention head (relational)", userData="attn")
         head_type.addItem("Hybrid head (conv + attn)", userData="hybrid")
         head_default_idx = head_type.findData(
-            str(getattr(self, "dino_head_type", "conv")))
+            str(getattr(self, "dino_head_type", "conv"))
+        )
         if head_default_idx >= 0:
             head_type.setCurrentIndex(head_default_idx)
 
         def _on_head_changed(_=None) -> None:
-            setattr(self, "dino_head_type", str(
-                head_type.currentData() or "conv"))
+            setattr(self, "dino_head_type", str(head_type.currentData() or "conv"))
             self._update_dino_head_controls()
 
         head_type.currentIndexChanged.connect(_on_head_changed)
@@ -811,8 +848,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         pair_margin.setDecimals(2)
         pair_margin.setRange(0.0, 256.0)
         pair_margin.setSingleStep(1.0)
-        pair_margin.setValue(
-            float(getattr(self, "dino_lr_pair_margin_px", 0.0)))
+        pair_margin.setValue(float(getattr(self, "dino_lr_pair_margin_px", 0.0)))
         self._bind_spin_float(pair_margin, "dino_lr_pair_margin_px")
         self._dino_pair_margin_px = pair_margin
 
@@ -828,8 +864,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         side_margin.setDecimals(3)
         side_margin.setRange(0.0, 1.0)
         side_margin.setSingleStep(0.05)
-        side_margin.setValue(
-            float(getattr(self, "dino_lr_side_loss_margin", 0.0)))
+        side_margin.setValue(float(getattr(self, "dino_lr_side_loss_margin", 0.0)))
         self._bind_spin_float(side_margin, "dino_lr_side_loss_margin")
         self._dino_side_loss_margin = side_margin
 
@@ -869,8 +904,7 @@ class TrainModelDialog(QtWidgets.QDialog):
             bce_type.setCurrentIndex(bce_idx)
 
         def _on_bce_changed(_=None) -> None:
-            setattr(self, "dino_bce_type", str(
-                bce_type.currentData() or "bce"))
+            setattr(self, "dino_bce_type", str(bce_type.currentData() or "bce"))
             self._update_dino_focal_controls()
 
         bce_type.currentIndexChanged.connect(_on_bce_changed)
@@ -893,33 +927,34 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         coord_warmup = QtWidgets.QSpinBox(box)
         coord_warmup.setRange(0, 1000)
-        coord_warmup.setValue(
-            int(getattr(self, "dino_coord_warmup_epochs", 0)))
+        coord_warmup.setValue(int(getattr(self, "dino_coord_warmup_epochs", 0)))
         self._bind_spin_int(coord_warmup, "dino_coord_warmup_epochs")
 
         radius_schedule = QtWidgets.QComboBox(box)
         radius_schedule.addItem("None", userData="none")
         radius_schedule.addItem("Linear", userData="linear")
-        radius_default = str(
-            getattr(self, "dino_radius_schedule", "none") or "none")
+        radius_default = str(getattr(self, "dino_radius_schedule", "none") or "none")
         radius_idx = radius_schedule.findData(radius_default)
         if radius_idx >= 0:
             radius_schedule.setCurrentIndex(radius_idx)
 
         def _on_radius_schedule_changed(_=None) -> None:
-            setattr(self, "dino_radius_schedule", str(
-                radius_schedule.currentData() or "none"))
+            setattr(
+                self,
+                "dino_radius_schedule",
+                str(radius_schedule.currentData() or "none"),
+            )
             self._update_dino_radius_schedule_controls()
 
-        radius_schedule.currentIndexChanged.connect(
-            _on_radius_schedule_changed)
+        radius_schedule.currentIndexChanged.connect(_on_radius_schedule_changed)
 
         radius_start = QtWidgets.QDoubleSpinBox(box)
         radius_start.setDecimals(2)
         radius_start.setRange(1.0, 128.0)
         radius_start.setSingleStep(0.5)
         radius_start.setValue(
-            float(getattr(self, "dino_radius_start_px", self.dino_radius_px)))
+            float(getattr(self, "dino_radius_start_px", self.dino_radius_px))
+        )
         self._bind_spin_float(radius_start, "dino_radius_start_px")
 
         radius_end = QtWidgets.QDoubleSpinBox(box)
@@ -927,7 +962,8 @@ class TrainModelDialog(QtWidgets.QDialog):
         radius_end.setRange(1.0, 128.0)
         radius_end.setSingleStep(0.5)
         radius_end.setValue(
-            float(getattr(self, "dino_radius_end_px", self.dino_radius_px)))
+            float(getattr(self, "dino_radius_end_px", self.dino_radius_px))
+        )
         self._bind_spin_float(radius_end, "dino_radius_end_px")
 
         self._dino_radius_controls = [radius_start, radius_end]
@@ -937,20 +973,21 @@ class TrainModelDialog(QtWidgets.QDialog):
         overfit_n.setSingleStep(10)
         overfit_n.setValue(int(getattr(self, "dino_overfit_n", 0)))
         overfit_n.setToolTip(
-            "Debug mode: use N training images and mirror into validation.")
+            "Debug mode: use N training images and mirror into validation."
+        )
         self._bind_spin_int(overfit_n, "dino_overfit_n")
 
         cache = QtWidgets.QCheckBox("Cache frozen DINO features to disk", box)
         cache.setChecked(bool(self.dino_cache_features))
         self._bind_checkbox(cache, "dino_cache_features")
 
-        tb_graph = QtWidgets.QCheckBox(
-            "Log model graph to TensorBoard (slow)", box)
+        tb_graph = QtWidgets.QCheckBox("Log model graph to TensorBoard (slow)", box)
         tb_graph.setChecked(bool(self.dino_tb_add_graph))
         self._bind_checkbox(tb_graph, "dino_tb_add_graph")
 
         tb_projector = QtWidgets.QCheckBox(
-            "Write TensorBoard Projector embeddings (interactive)", box)
+            "Write TensorBoard Projector embeddings (interactive)", box
+        )
         tb_projector.setChecked(bool(getattr(self, "dino_tb_projector", True)))
 
         def _on_projector_changed(_=None) -> None:
@@ -963,42 +1000,47 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_projector_split.addItem("Validation (recommended)", userData="val")
         tb_projector_split.addItem("Train", userData="train")
         tb_projector_split.addItem("Both", userData="both")
-        split_default = str(
-            getattr(self, "dino_tb_projector_split", "val") or "val")
+        split_default = str(getattr(self, "dino_tb_projector_split", "val") or "val")
         idx = tb_projector_split.findData(split_default)
         if idx >= 0:
             tb_projector_split.setCurrentIndex(idx)
         tb_projector_split.currentIndexChanged.connect(
-            lambda _=None: setattr(self, "dino_tb_projector_split", str(
-                tb_projector_split.currentData() or "val"))
+            lambda _=None: setattr(
+                self,
+                "dino_tb_projector_split",
+                str(tb_projector_split.currentData() or "val"),
+            )
         )
 
         tb_max_images = QtWidgets.QSpinBox(box)
         tb_max_images.setRange(1, 10_000)
-        tb_max_images.setValue(
-            int(getattr(self, "dino_tb_projector_max_images", 64)))
+        tb_max_images.setValue(int(getattr(self, "dino_tb_projector_max_images", 64)))
         self._bind_spin_int(tb_max_images, "dino_tb_projector_max_images")
 
         tb_max_patches = QtWidgets.QSpinBox(box)
         tb_max_patches.setRange(64, 200_000)
         tb_max_patches.setSingleStep(256)
         tb_max_patches.setValue(
-            int(getattr(self, "dino_tb_projector_max_patches", 4000)))
+            int(getattr(self, "dino_tb_projector_max_patches", 4000))
+        )
         self._bind_spin_int(tb_max_patches, "dino_tb_projector_max_patches")
 
         tb_per_image_per_kpt = QtWidgets.QSpinBox(box)
         tb_per_image_per_kpt.setRange(0, 1000)
         tb_per_image_per_kpt.setValue(
-            int(getattr(self, "dino_tb_projector_per_image_per_keypoint", 3)))
-        self._bind_spin_int(tb_per_image_per_kpt,
-                            "dino_tb_projector_per_image_per_keypoint")
+            int(getattr(self, "dino_tb_projector_per_image_per_keypoint", 3))
+        )
+        self._bind_spin_int(
+            tb_per_image_per_kpt, "dino_tb_projector_per_image_per_keypoint"
+        )
 
         tb_pos_thr = QtWidgets.QDoubleSpinBox(box)
         tb_pos_thr.setDecimals(3)
         tb_pos_thr.setRange(0.0, 1.0)
         tb_pos_thr.setSingleStep(0.05)
         tb_pos_thr.setValue(
-            float(getattr(self, "dino_tb_projector_pos_threshold", 0.35)))
+            float(getattr(self, "dino_tb_projector_pos_threshold", 0.35))
+        )
         self._bind_spin_float(tb_pos_thr, "dino_tb_projector_pos_threshold")
 
         tb_crop = QtWidgets.QSpinBox(box)
@@ -1009,17 +1051,17 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         tb_border = QtWidgets.QSpinBox(box)
         tb_border.setRange(0, 16)
-        tb_border.setValue(
-            int(getattr(self, "dino_tb_projector_sprite_border_px", 3)))
+        tb_border.setValue(int(getattr(self, "dino_tb_projector_sprite_border_px", 3)))
         self._bind_spin_int(tb_border, "dino_tb_projector_sprite_border_px")
 
-        tb_add_negs = QtWidgets.QCheckBox(
-            "Also sample background patches", box)
+        tb_add_negs = QtWidgets.QCheckBox("Also sample background patches", box)
         tb_add_negs.setChecked(
-            bool(getattr(self, "dino_tb_projector_add_negatives", False)))
+            bool(getattr(self, "dino_tb_projector_add_negatives", False))
+        )
         tb_add_negs.stateChanged.connect(
             lambda _=None: setattr(
-                self, "dino_tb_projector_add_negatives", bool(tb_add_negs.isChecked()))
+                self, "dino_tb_projector_add_negatives", bool(tb_add_negs.isChecked())
+            )
         )
 
         tb_neg_thr = QtWidgets.QDoubleSpinBox(box)
@@ -1027,15 +1069,16 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_neg_thr.setRange(0.0, 1.0)
         tb_neg_thr.setSingleStep(0.01)
         tb_neg_thr.setValue(
-            float(getattr(self, "dino_tb_projector_neg_threshold", 0.02)))
+            float(getattr(self, "dino_tb_projector_neg_threshold", 0.02))
+        )
         self._bind_spin_float(tb_neg_thr, "dino_tb_projector_neg_threshold")
 
         tb_negs_per_img = QtWidgets.QSpinBox(box)
         tb_negs_per_img.setRange(0, 10_000)
         tb_negs_per_img.setValue(
-            int(getattr(self, "dino_tb_projector_negatives_per_image", 6)))
-        self._bind_spin_int(
-            tb_negs_per_img, "dino_tb_projector_negatives_per_image")
+            int(getattr(self, "dino_tb_projector_negatives_per_image", 6))
+        )
+        self._bind_spin_int(tb_negs_per_img, "dino_tb_projector_negatives_per_image")
 
         self._dino_projector_controls = [
             tb_projector_split,
@@ -1072,12 +1115,16 @@ class TrainModelDialog(QtWidgets.QDialog):
         best_metric.addItem("Weighted PCK (2/4/8/16px)", "pck_weighted")
         best_metric.addItem("Val loss", "val_loss")
         best_metric.addItem("Train loss (no val)", "train_loss")
-        best_metric.setCurrentIndex(max(0, best_metric.findData(
-            getattr(self, "dino_best_metric", "pck@8px"))))
+        best_metric.setCurrentIndex(
+            max(0, best_metric.findData(getattr(self, "dino_best_metric", "pck@8px")))
+        )
         best_metric.currentIndexChanged.connect(
             lambda _=None: (
-                setattr(self, "dino_best_metric", str(
-                    best_metric.currentData() or "pck@8px")),
+                setattr(
+                    self,
+                    "dino_best_metric",
+                    str(best_metric.currentData() or "pck@8px"),
+                ),
                 self._update_dino_model_selection_controls(),
             )
         )
@@ -1089,21 +1136,27 @@ class TrainModelDialog(QtWidgets.QDialog):
         early_stop_metric.addItem("Val loss", "val_loss")
         early_stop_metric.addItem("Train loss (no val)", "train_loss")
         early_stop_metric.setCurrentIndex(
-            max(0, early_stop_metric.findData(
-                getattr(self, "dino_early_stop_metric", "auto")))
+            max(
+                0,
+                early_stop_metric.findData(
+                    getattr(self, "dino_early_stop_metric", "auto")
+                ),
+            )
         )
         early_stop_metric.currentIndexChanged.connect(
             lambda _=None: (
-                setattr(self, "dino_early_stop_metric", str(
-                    early_stop_metric.currentData() or "auto")),
+                setattr(
+                    self,
+                    "dino_early_stop_metric",
+                    str(early_stop_metric.currentData() or "auto"),
+                ),
                 self._update_dino_model_selection_controls(),
             )
         )
 
         pck_weights = QtWidgets.QLineEdit(box)
         pck_weights.setPlaceholderText("1,1,1,1")
-        pck_weights.setText(
-            str(getattr(self, "dino_pck_weighted_weights", "1,1,1,1")))
+        pck_weights.setText(str(getattr(self, "dino_pck_weighted_weights", "1,1,1,1")))
         self._bind_lineedit_str(pck_weights, "dino_pck_weighted_weights")
 
         self._dino_best_metric_combo = best_metric
@@ -1172,8 +1225,9 @@ class TrainModelDialog(QtWidgets.QDialog):
             pass
 
     def _update_dino_head_controls(self) -> None:
-        head_type = str(getattr(self, "dino_head_type", "conv")
-                        or "conv").strip().lower()
+        head_type = (
+            str(getattr(self, "dino_head_type", "conv") or "conv").strip().lower()
+        )
         attn_enabled = head_type in {"attn", "hybrid"}
         for w in (
             getattr(self, "_dino_attn_heads_spin", None),
@@ -1194,8 +1248,7 @@ class TrainModelDialog(QtWidgets.QDialog):
                 pass
 
     def _update_dino_focal_controls(self) -> None:
-        bce_type = str(getattr(self, "dino_bce_type", "bce")
-                       or "bce").strip().lower()
+        bce_type = str(getattr(self, "dino_bce_type", "bce") or "bce").strip().lower()
         enabled = bce_type == "focal"
         controls = getattr(self, "_dino_focal_controls", None)
         if not controls:
@@ -1207,8 +1260,9 @@ class TrainModelDialog(QtWidgets.QDialog):
                 pass
 
     def _update_dino_radius_schedule_controls(self) -> None:
-        schedule = str(getattr(self, "dino_radius_schedule",
-                       "none") or "none").strip().lower()
+        schedule = (
+            str(getattr(self, "dino_radius_schedule", "none") or "none").strip().lower()
+        )
         enabled = schedule != "none"
         controls = getattr(self, "_dino_radius_controls", None)
         if not controls:
@@ -1224,8 +1278,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(box)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
-        enable = QtWidgets.QCheckBox(
-            "Enable YOLO-like pose augmentations", box)
+        enable = QtWidgets.QCheckBox("Enable YOLO-like pose augmentations", box)
         enable.setChecked(bool(self.dino_augment_enabled))
 
         def _on_aug_enable(_=None) -> None:
@@ -1327,12 +1380,12 @@ class TrainModelDialog(QtWidgets.QDialog):
     def accept(self) -> None:
         if self.algo in {"YOLO", "DINO KPSEG"} and not self.config_file:
             QtWidgets.QMessageBox.warning(
-                self, "Error", "Please select a dataset YAML file.")
+                self, "Error", "Please select a dataset YAML file."
+            )
             return
 
         if self.algo == "YOLO" and not str(self.yolo_model_file or "").strip():
-            QtWidgets.QMessageBox.warning(
-                self, "Error", "Please select YOLO weights.")
+            QtWidgets.QMessageBox.warning(self, "Error", "Please select YOLO weights.")
             return
 
         super().accept()
