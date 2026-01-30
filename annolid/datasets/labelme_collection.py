@@ -30,6 +30,28 @@ def default_label_index_path(dataset_root: Path) -> Path:
     return dataset_root / DEFAULT_LABEL_INDEX_DIRNAME / DEFAULT_LABEL_INDEX_NAME
 
 
+def normalize_labelme_sources(
+    sources: Sequence[Path],
+) -> Tuple[List[Path], List[Path]]:
+    existing: List[Path] = []
+    missing: List[Path] = []
+    seen: Set[Path] = set()
+    for src in sources:
+        candidate = Path(src).expanduser()
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists():
+            existing.append(resolved)
+        else:
+            missing.append(candidate)
+    return existing, missing
+
+
 @dataclass(frozen=True)
 class CollectedPair:
     source_json: Path
@@ -507,6 +529,127 @@ def write_labelme_index(
             source=source,
         )
         append_label_index_record(index_file, record)
+
+
+def generate_labelme_spec_and_splits(
+    *,
+    sources: Sequence[Path],
+    dataset_root: Path,
+    recursive: bool = True,
+    include_empty: bool = False,
+    split_dir: Optional[str] = None,
+    val_size: float = 0.1,
+    test_size: float = 0.0,
+    seed: int = 0,
+    group_by: str = "parent",
+    group_regex: Optional[str] = None,
+    keypoint_names: Optional[Sequence[str]] = None,
+    kpt_dims: int = 3,
+    infer_flip_idx: bool = True,
+    max_keypoint_files: int = 500,
+    min_keypoint_count: int = 1,
+    spec_path: Optional[Path] = None,
+    split_sources: Optional[Dict[str, Sequence[Path]]] = None,
+    source: str = "annolid_cli",
+) -> Dict[str, object]:
+    dataset_root = Path(dataset_root).expanduser().resolve()
+    split_dir_name = str(split_dir or DEFAULT_LABEL_INDEX_DIRNAME)
+    split_dir_path = dataset_root / split_dir_name
+    split_dir_path.mkdir(parents=True, exist_ok=True)
+
+    if split_sources:
+        splits = {
+            "train": iter_labelme_pairs(
+                split_sources.get("train", []),
+                recursive=recursive,
+                include_empty=include_empty,
+            ),
+            "val": iter_labelme_pairs(
+                split_sources.get("val", []),
+                recursive=recursive,
+                include_empty=include_empty,
+            ),
+            "test": iter_labelme_pairs(
+                split_sources.get("test", []),
+                recursive=recursive,
+                include_empty=include_empty,
+            ),
+        }
+        pairs = splits["train"] + splits["val"] + splits["test"]
+    else:
+        pairs = iter_labelme_pairs(
+            sources,
+            recursive=recursive,
+            include_empty=include_empty,
+        )
+        splits = split_labelme_pairs(
+            pairs,
+            val_size=float(val_size),
+            test_size=float(test_size),
+            seed=int(seed),
+            group_by=str(group_by),
+            group_regex=(str(group_regex) if group_regex else None),
+        )
+
+    train_index = split_dir_path / "labelme_train.jsonl"
+    val_index = split_dir_path / "labelme_val.jsonl"
+    test_index = split_dir_path / "labelme_test.jsonl"
+
+    write_labelme_index(splits.get("train", []), index_file=train_index, source=source)
+    if splits.get("val"):
+        write_labelme_index(splits.get("val", []), index_file=val_index, source=source)
+    else:
+        val_index = None
+    if splits.get("test"):
+        write_labelme_index(
+            splits.get("test", []), index_file=test_index, source=source
+        )
+    else:
+        test_index = None
+
+    names_list = [str(n).strip() for n in (keypoint_names or []) if str(n).strip()]
+    if not names_list:
+        names_list = infer_labelme_keypoint_names(
+            pairs,
+            max_files=int(max_keypoint_files),
+            min_count=int(min_keypoint_count),
+        )
+    if not names_list:
+        raise ValueError(
+            "Could not infer keypoint names from LabelMe JSONs. "
+            "Provide keypoint names explicitly."
+        )
+
+    flip_idx = None
+    if bool(infer_flip_idx):
+        from annolid.segmentation.dino_kpseg.keypoints import infer_flip_idx_from_names
+
+        flip_idx = infer_flip_idx_from_names(names_list, kpt_count=len(names_list))
+
+    spec_out = spec_path or (dataset_root / "labelme_spec.yaml")
+    spec_file = build_labelme_spec(
+        dataset_root=dataset_root,
+        train_index=train_index if splits.get("train") else None,
+        val_index=val_index,
+        test_index=test_index,
+        keypoint_names=names_list,
+        kpt_dims=int(kpt_dims),
+        flip_idx=flip_idx,
+        output_yaml=Path(spec_out),
+    )
+    return {
+        "spec_path": str(spec_file),
+        "split_counts": {
+            "train": len(splits.get("train", [])),
+            "val": len(splits.get("val", [])),
+            "test": len(splits.get("test", [])),
+        },
+        "train_index": str(train_index),
+        "val_index": str(val_index) if val_index else None,
+        "test_index": str(test_index) if test_index else None,
+        "keypoint_names": names_list,
+        "flip_idx": flip_idx,
+    }
 
 
 def build_labelme_spec(

@@ -10,16 +10,13 @@ from qtpy import QtCore, QtGui, QtWidgets
 from annolid.datasets.labelme_collection import (
     DEFAULT_LABEL_INDEX_DIRNAME,
     DEFAULT_LABEL_INDEX_NAME,
-    build_labelme_spec,
     default_label_index_path,
-    infer_labelme_keypoint_names,
+    generate_labelme_spec_and_splits,
     index_labelme_pair,
-    iter_labelme_pairs,
     iter_labelme_json_files,
     load_indexed_image_paths,
+    normalize_labelme_sources,
     resolve_image_path,
-    split_labelme_pairs,
-    write_labelme_index,
 )
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.builders.label_index_yolo import build_yolo_from_label_index
@@ -127,95 +124,28 @@ def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> 
     }
 
     if job.write_spec:
-        if job.split_sources:
-            splits = {
-                "train": iter_labelme_pairs(
-                    [Path(p) for p in job.split_sources.get("train", [])],
-                    recursive=bool(job.recursive),
-                    include_empty=bool(job.include_empty),
-                ),
-                "val": iter_labelme_pairs(
-                    [Path(p) for p in job.split_sources.get("val", [])],
-                    recursive=bool(job.recursive),
-                    include_empty=bool(job.include_empty),
-                ),
-                "test": iter_labelme_pairs(
-                    [Path(p) for p in job.split_sources.get("test", [])],
-                    recursive=bool(job.recursive),
-                    include_empty=bool(job.include_empty),
-                ),
-            }
-            pairs = splits["train"] + splits["val"] + splits["test"]
-        else:
-            pairs = iter_labelme_pairs(
-                sources,
-                recursive=bool(job.recursive),
-                include_empty=bool(job.include_empty),
-            )
-            splits = split_labelme_pairs(
-                pairs,
-                val_size=float(job.val_size),
-                test_size=float(job.test_size),
-                seed=int(job.seed),
-                group_by=str(job.group_by),
-                group_regex=(str(job.group_regex) if job.group_regex else None),
-            )
-        split_dir = dataset_root / str(job.split_dir or DEFAULT_LABEL_INDEX_DIRNAME)
-        split_dir.mkdir(parents=True, exist_ok=True)
-        train_index = split_dir / "labelme_train.jsonl"
-        val_index = split_dir / "labelme_val.jsonl"
-        test_index = split_dir / "labelme_test.jsonl"
-
-        write_labelme_index(splits.get("train", []), index_file=train_index)
-        if splits.get("val"):
-            write_labelme_index(splits.get("val", []), index_file=val_index)
-        else:
-            val_index = None
-        if splits.get("test"):
-            write_labelme_index(splits.get("test", []), index_file=test_index)
-        else:
-            test_index = None
-
-        keypoint_names = list(job.keypoint_names or [])
-        if not keypoint_names:
-            keypoint_names = infer_labelme_keypoint_names(
-                pairs,
-                max_files=int(job.max_keypoint_files),
-                min_count=int(job.min_keypoint_count),
-            )
-        if not keypoint_names:
-            raise ValueError(
-                "Could not infer keypoint names from LabelMe JSONs. "
-                "Provide keypoint names in the dialog."
-            )
-
-        flip_idx = None
-        if bool(job.infer_flip_idx):
-            from annolid.segmentation.dino_kpseg.keypoints import (
-                infer_flip_idx_from_names,
-            )
-
-            flip_idx = infer_flip_idx_from_names(
-                keypoint_names, kpt_count=len(keypoint_names)
-            )
-
-        spec_out = job.spec_path or (dataset_root / "labelme_spec.yaml")
-        spec_path = build_labelme_spec(
+        spec_result = generate_labelme_spec_and_splits(
+            sources=sources,
             dataset_root=dataset_root,
-            train_index=train_index if splits.get("train") else None,
-            val_index=val_index,
-            test_index=test_index,
-            keypoint_names=keypoint_names,
+            recursive=bool(job.recursive),
+            include_empty=bool(job.include_empty),
+            split_dir=str(job.split_dir or DEFAULT_LABEL_INDEX_DIRNAME),
+            val_size=float(job.val_size),
+            test_size=float(job.test_size),
+            seed=int(job.seed),
+            group_by=str(job.group_by),
+            group_regex=(str(job.group_regex) if job.group_regex else None),
+            keypoint_names=list(job.keypoint_names or []),
             kpt_dims=int(job.kpt_dims),
-            flip_idx=flip_idx,
-            output_yaml=Path(spec_out),
+            infer_flip_idx=bool(job.infer_flip_idx),
+            max_keypoint_files=int(job.max_keypoint_files),
+            min_keypoint_count=int(job.min_keypoint_count),
+            spec_path=job.spec_path,
+            split_sources=job.split_sources,
+            source="annolid_gui_dialog",
         )
-        result["spec_path"] = str(spec_path)
-        result["split_counts"] = {
-            "train": len(splits.get("train", [])),
-            "val": len(splits.get("val", [])),
-            "test": len(splits.get("test", [])),
-        }
+        result["spec_path"] = spec_result.get("spec_path")
+        result["split_counts"] = spec_result.get("split_counts")
 
     return result
 
@@ -906,8 +836,20 @@ class LabelCollectionDialog(QtWidgets.QDialog):
                 self, "Missing sources", "Please add at least one source folder."
             )
             return
-
-        source_paths = [Path(s) for s in sources]
+        source_paths, missing_sources = normalize_labelme_sources(
+            [Path(s) for s in sources]
+        )
+        if missing_sources:
+            self._append_log(
+                "Missing sources:\n" + "\n".join(f"- {p}" for p in missing_sources)
+            )
+        if not source_paths:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Missing sources",
+                "None of the selected source folders exist.",
+            )
+            return
         dataset_root_text = self.dataset_root_edit.text().strip()
         dataset_root = (
             Path(dataset_root_text).expanduser()
@@ -1161,11 +1103,23 @@ class LabelCollectionDialog(QtWidgets.QDialog):
                 self, "No sources", "Please add at least one source folder."
             )
             return
+        source_paths, missing_sources = normalize_labelme_sources(
+            [Path(s) for s in sources]
+        )
+        if missing_sources:
+            self._append_log(
+                "Missing sources:\n" + "\n".join(f"- {p}" for p in missing_sources)
+            )
+        if not source_paths:
+            QtWidgets.QMessageBox.warning(
+                self, "No sources", "None of the selected source folders exist."
+            )
+            return
 
         recursive = self.recursive_cb.isChecked()
 
         # Use existing helper to find files
-        json_files = _build_json_list([Path(s) for s in sources], recursive=recursive)
+        json_files = _build_json_list(source_paths, recursive=recursive)
 
         audit_items = []
         import json

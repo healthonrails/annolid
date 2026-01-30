@@ -160,12 +160,9 @@ def _cmd_collect_labels(args: argparse.Namespace) -> int:
     from annolid.datasets.labelme_collection import (
         DEFAULT_LABEL_INDEX_NAME,
         DEFAULT_LABEL_INDEX_DIRNAME,
-        build_labelme_spec,
+        generate_labelme_spec_and_splits,
         index_labelme_dataset,
-        infer_labelme_keypoint_names,
-        iter_labelme_pairs,
-        split_labelme_pairs,
-        write_labelme_index,
+        normalize_labelme_sources,
     )
 
     dataset_root = Path(args.dataset_root).expanduser().resolve()
@@ -176,85 +173,50 @@ def _cmd_collect_labels(args: argparse.Namespace) -> int:
     if not index_file.is_absolute():
         index_file = dataset_root / index_file
 
+    sources, missing_sources = normalize_labelme_sources([Path(p) for p in args.source])
+    if missing_sources:
+        print(
+            "Warning: missing sources:\n" + "\n".join(f"- {p}" for p in missing_sources)
+        )
+    if not sources:
+        print("No existing sources provided.")
+        return 1
+
     summary = index_labelme_dataset(
-        sources=[Path(p) for p in args.source],
+        sources=sources,
         index_file=index_file,
         recursive=bool(args.recursive),
         include_empty=bool(args.include_empty),
         dedupe=not bool(args.allow_duplicates),
     )
-    spec_path = None
     if bool(args.write_spec):
-        pairs = iter_labelme_pairs(
-            [Path(p) for p in args.source],
+        raw_names = str(args.keypoint_names or "").strip()
+        keypoint_names = [n.strip() for n in raw_names.split(",") if n.strip()] or None
+        spec_result = generate_labelme_spec_and_splits(
+            sources=sources,
+            dataset_root=dataset_root,
             recursive=bool(args.recursive),
             include_empty=bool(args.include_empty),
-        )
-        splits = split_labelme_pairs(
-            pairs,
+            split_dir=str(args.split_dir or DEFAULT_LABEL_INDEX_DIRNAME),
             val_size=float(args.val_size),
             test_size=float(args.test_size),
             seed=int(args.seed),
             group_by=str(args.group_by),
             group_regex=(str(args.group_regex) if args.group_regex else None),
-        )
-        split_dir = dataset_root / str(args.split_dir or DEFAULT_LABEL_INDEX_DIRNAME)
-        split_dir.mkdir(parents=True, exist_ok=True)
-        train_index = split_dir / "labelme_train.jsonl"
-        val_index = split_dir / "labelme_val.jsonl"
-        test_index = split_dir / "labelme_test.jsonl"
-
-        write_labelme_index(splits.get("train", []), index_file=train_index)
-        if splits.get("val"):
-            write_labelme_index(splits.get("val", []), index_file=val_index)
-        else:
-            val_index = None
-        if splits.get("test"):
-            write_labelme_index(splits.get("test", []), index_file=test_index)
-        else:
-            test_index = None
-
-        raw_names = str(args.keypoint_names or "").strip()
-        if raw_names:
-            keypoint_names = [n.strip() for n in raw_names.split(",") if n.strip()]
-        else:
-            keypoint_names = infer_labelme_keypoint_names(
-                pairs,
-                max_files=int(args.max_keypoint_files),
-                min_count=int(args.min_keypoint_count),
-            )
-        if not keypoint_names:
-            raise ValueError(
-                "Could not infer keypoint names from LabelMe JSONs. "
-                "Provide --keypoint-names explicitly."
-            )
-
-        flip_idx = None
-        if bool(args.infer_flip_idx):
-            from annolid.segmentation.dino_kpseg.keypoints import (
-                infer_flip_idx_from_names,
-            )
-
-            flip_idx = infer_flip_idx_from_names(
-                keypoint_names, kpt_count=len(keypoint_names)
-            )
-
-        spec_path = build_labelme_spec(
-            dataset_root=dataset_root,
-            train_index=train_index if splits.get("train") else None,
-            val_index=val_index,
-            test_index=test_index,
             keypoint_names=keypoint_names,
             kpt_dims=int(args.kpt_dims),
-            flip_idx=flip_idx,
-            output_yaml=Path(args.spec_path or (dataset_root / "labelme_spec.yaml")),
+            infer_flip_idx=bool(args.infer_flip_idx),
+            max_keypoint_files=int(args.max_keypoint_files),
+            min_keypoint_count=int(args.min_keypoint_count),
+            spec_path=Path(args.spec_path) if args.spec_path else None,
+            source="annolid_cli",
         )
-        summary["spec_path"] = str(spec_path)
-        summary["split_counts"] = {
-            "train": len(splits.get("train", [])),
-            "val": len(splits.get("val", [])),
-            "test": len(splits.get("test", [])),
-        }
+        summary.update(
+            {
+                "spec_path": spec_result.get("spec_path"),
+                "split_counts": spec_result.get("split_counts"),
+            }
+        )
     print(json.dumps(summary, indent=2))
     return 0
 
