@@ -9,13 +9,44 @@ Annolid includes an experimental keypoint-centric segmentation model that:
 
 ## Training
 
-This trainer consumes a standard YOLO pose dataset (`data.yaml` with `kpt_shape` and labels in `labels/*.txt`).
+This trainer consumes either:
+
+- A standard YOLO pose dataset (`data.yaml` with `kpt_shape` and labels in `labels/*.txt`), or
+- A native LabelMe dataset (per-image `*.json` next to images, with point/polygon shapes).
 
 ```bash
 python -m annolid.segmentation.dino_kpseg.train \
   --data /path/to/YOLO_dataset/data.yaml \
   --epochs 50
 ```
+
+### Native LabelMe training
+
+Create a small spec YAML that points to a directory (or JSONL index) of LabelMe JSON files:
+
+```yaml
+format: labelme
+path: /path/to/dataset_root
+train: annotations/train   # dir of LabelMe JSONs (images resolved via imagePath/sidecars)
+val: annotations/val
+kpt_shape: [4, 3]          # K keypoints, dims (2 or 3)
+keypoint_names: [nose, leftear, rightear, tailbase]
+```
+
+Then train with:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/labelme_spec.yaml \
+  --data-format labelme \
+  --epochs 50
+```
+
+LabelMe conventions:
+
+- Keypoints are `shape_type: point` with `label` matching an entry in `keypoint_names`.
+- Instances are grouped via `group_id` (all shapes with the same `group_id` belong together).
+- Polygons (`shape_type: polygon`) are optional; when present they are used to compute per-instance crops in `--instance-mode per_instance`.
 
 Defaults include Gaussian heatmaps, Dice loss, and a coordinate regression loss. Override as needed:
 
@@ -106,6 +137,16 @@ python -m annolid.segmentation.dino_kpseg.eval \
   --weights /path/to/dino_kpseg/weights/best.pt \
   --split val \
   --thresholds 4,8,16
+```
+
+For LabelMe datasets, pass the spec YAML and set `--data-format labelme`:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.eval \
+  --data /path/to/labelme_spec.yaml \
+  --data-format labelme \
+  --weights /path/to/dino_kpseg/weights/best.pt \
+  --split val
 ```
 
 ## Running Inference (GUI)

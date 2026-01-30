@@ -9,13 +9,12 @@ import os
 import random
 import time
 import gc
-from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import numpy as np
-from torch import nn
+import yaml
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -24,7 +23,9 @@ from annolid.segmentation.dino_kpseg.data import (
     DinoKPSEGAugmentConfig,
     DinoKPSEGPoseDataset,
     build_extractor,
+    load_labelme_pose_spec,
     load_yolo_pose_spec,
+    summarize_labelme_pose_labels,
     summarize_yolo_pose_labels,
 )
 from annolid.segmentation.dino_kpseg.model import (
@@ -49,8 +50,7 @@ from annolid.utils.runs import allocate_run_dir, shared_runs_root
 from annolid.utils.logger import logger
 
 
-_AP_IOU_THRESHOLDS: Tuple[float, ...] = tuple(
-    0.50 + 0.05 * i for i in range(10))
+_AP_IOU_THRESHOLDS: Tuple[float, ...] = tuple(0.50 + 0.05 * i for i in range(10))
 
 _PCK_DEFAULT_THRESHOLDS: Tuple[float, ...] = (2.0, 4.0, 8.0, 16.0)
 
@@ -74,8 +74,7 @@ def _parse_weight_list(text: Optional[str], *, n: int) -> Tuple[float, ...]:
         return tuple(1.0 for _ in range(int(n)))
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     if len(parts) != int(n):
-        raise ValueError(
-            f"Expected {int(n)} comma-separated floats, got {len(parts)}")
+        raise ValueError(f"Expected {int(n)} comma-separated floats, got {len(parts)}")
     out: List[float] = []
     for p in parts:
         out.append(float(p))
@@ -187,8 +186,7 @@ def _average_precision(
         fp_cum.append(f)
 
     recalls = [tpi / float(num_gt) for tpi in tp_cum]
-    precisions = [tpi / max(1e-12, (tpi + fpi))
-                  for tpi, fpi in zip(tp_cum, fp_cum)]
+    precisions = [tpi / max(1e-12, (tpi + fpi)) for tpi, fpi in zip(tp_cum, fp_cum)]
 
     mrec = [0.0] + recalls + [1.0]
     mpre = [0.0] + precisions + [0.0]
@@ -205,7 +203,7 @@ def _average_precision(
 def _oks_from_distance(dist_px: torch.Tensor, *, sigma_px: float) -> torch.Tensor:
     """OKS-like similarity in [0,1] from pixel distance."""
     sigma = max(1e-6, float(sigma_px))
-    return torch.exp(-(dist_px ** 2) / (2.0 * sigma * sigma))
+    return torch.exp(-(dist_px**2) / (2.0 * sigma * sigma))
 
 
 def _ensure_dir(path: Path) -> None:
@@ -235,14 +233,13 @@ def _grid_images(
     ncol = (n + nrow - 1) // nrow
     grid_h = ncol * h + pad * (ncol - 1)
     grid_w = nrow * w + pad * (nrow - 1)
-    grid = torch.full((c, grid_h, grid_w), float(
-        pad_value), dtype=images.dtype)
+    grid = torch.full((c, grid_h, grid_w), float(pad_value), dtype=images.dtype)
     for idx in range(n):
         r = idx // nrow
         col = idx % nrow
         y0 = r * (h + pad)
         x0 = col * (w + pad)
-        grid[:, y0:y0 + h, x0:x0 + w] = images[idx]
+        grid[:, y0 : y0 + h, x0 : x0 + w] = images[idx]
     return grid
 
 
@@ -296,7 +293,9 @@ def _overlay_keypoints(
     arr = (img.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8, copy=True)
     height, width = int(arr.shape[0]), int(arr.shape[1])
 
-    def _draw(points: Sequence[Tuple[float, float]], color: Tuple[int, int, int]) -> None:
+    def _draw(
+        points: Sequence[Tuple[float, float]], color: Tuple[int, int, int]
+    ) -> None:
         for x, y in points:
             if not np.isfinite(x) or not np.isfinite(y):
                 continue
@@ -322,7 +321,9 @@ def _overlay_keypoints(
     return out
 
 
-def _draw_loss_curve_image(csv_path: Path, *, width: int = 720, height: int = 420) -> Optional[torch.Tensor]:
+def _draw_loss_curve_image(
+    csv_path: Path, *, width: int = 720, height: int = 420
+) -> Optional[torch.Tensor]:
     """Draw a loss curve PNG as a CHW float tensor in [0,1] without matplotlib."""
     try:
         text = csv_path.read_text(encoding="utf-8")
@@ -371,7 +372,7 @@ def _draw_loss_curve_image(csv_path: Path, *, width: int = 720, height: int = 42
         y_max = y_min + 1.0
 
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
         import numpy as np
     except Exception:
         return None
@@ -424,15 +425,15 @@ def _draw_loss_curve_image(csv_path: Path, *, width: int = 720, height: int = 42
     draw.text((x0 + 96, y0 + 6), "val", fill=(20, 20, 20))
 
     arr = np.array(img, dtype=np.uint8, copy=True)
-    tens = torch.from_numpy(arr).permute(
-        2, 0, 1).to(dtype=torch.float32) / 255.0
+    tens = torch.from_numpy(arr).permute(2, 0, 1).to(dtype=torch.float32) / 255.0
     return tens
 
 
-def _dice_loss(probs: torch.Tensor, targets: torch.Tensor, *, eps: float = 1e-6) -> torch.Tensor:
+def _dice_loss(
+    probs: torch.Tensor, targets: torch.Tensor, *, eps: float = 1e-6
+) -> torch.Tensor:
     if probs.shape != targets.shape:
-        raise ValueError(
-            "Dice loss requires probs and targets with the same shape")
+        raise ValueError("Dice loss requires probs and targets with the same shape")
     dims = tuple(range(1, probs.ndim))
     inter = (probs * targets).sum(dim=dims)
     denom = probs.sum(dim=dims) + targets.sum(dim=dims)
@@ -447,12 +448,14 @@ def _soft_argmax_coords(
 ) -> torch.Tensor:
     if probs.ndim != 3:
         raise ValueError("Expected probs in KHW format")
-    k, h_p, w_p = int(probs.shape[0]), int(probs.shape[1]), int(probs.shape[2])
+    h_p, w_p = int(probs.shape[1]), int(probs.shape[2])
     norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
-    xs = (torch.arange(w_p, device=probs.device,
-          dtype=probs.dtype) + 0.5) * float(patch_size)
-    ys = (torch.arange(h_p, device=probs.device,
-          dtype=probs.dtype) + 0.5) * float(patch_size)
+    xs = (torch.arange(w_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
+        patch_size
+    )
+    ys = (torch.arange(h_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
+        patch_size
+    )
     x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
     y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
     return torch.stack([x_exp, y_exp], dim=1)
@@ -472,10 +475,12 @@ def _soft_argmax_coords_batched(
         int(probs_bkhw.shape[3]),
     )
     norm = probs_bkhw.sum(dim=(2, 3), keepdim=False).clamp(min=1e-6)  # [B,K]
-    xs = (torch.arange(w_p, device=probs_bkhw.device,
-          dtype=probs_bkhw.dtype) + 0.5) * float(patch_size)
-    ys = (torch.arange(h_p, device=probs_bkhw.device,
-          dtype=probs_bkhw.dtype) + 0.5) * float(patch_size)
+    xs = (
+        torch.arange(w_p, device=probs_bkhw.device, dtype=probs_bkhw.dtype) + 0.5
+    ) * float(patch_size)
+    ys = (
+        torch.arange(h_p, device=probs_bkhw.device, dtype=probs_bkhw.dtype) + 0.5
+    ) * float(patch_size)
     x_exp = (probs_bkhw.sum(dim=2) * xs[None, None, :]).sum(dim=2) / norm
     y_exp = (probs_bkhw.sum(dim=3) * ys[None, None, :]).sum(dim=2) / norm
     out = torch.stack([x_exp, y_exp], dim=2)
@@ -523,8 +528,7 @@ def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
     coords_list: List[torch.Tensor] = []
     coord_mask_list: List[torch.Tensor] = []
 
-    have_images = any(isinstance(s.get("image"), torch.Tensor)
-                      for s in samples)
+    have_images = any(isinstance(s.get("image"), torch.Tensor) for s in samples)
     images_bchw = None
     if have_images:
         images_bchw = torch.zeros(
@@ -559,9 +563,14 @@ def _pad_collate(samples: list[dict], *, patch_size: int) -> dict:
 
         if images_bchw is not None:
             img = s.get("image")
-            if isinstance(img, torch.Tensor) and img.ndim == 3 and int(img.shape[0]) == 3:
-                images_bchw[idx, :, : int(img.shape[1]), : int(
-                    img.shape[2])] = img.to(dtype=torch.float32)
+            if (
+                isinstance(img, torch.Tensor)
+                and img.ndim == 3
+                and int(img.shape[0]) == 3
+            ):
+                images_bchw[idx, :, : int(img.shape[1]), : int(img.shape[2])] = img.to(
+                    dtype=torch.float32
+                )
         if have_gt:
             gt_instances = s.get("gt_instances")
             if isinstance(gt_instances, list):
@@ -625,14 +634,16 @@ def _masked_bce_with_logits(
         with torch.no_grad():
             pos = (targets_bkhw * valid).sum(dim=(0, 2, 3))
             neg = ((1.0 - targets_bkhw) * valid).sum(dim=(0, 2, 3))
-            pos_weight = (neg / pos.clamp(min=1e-6))
+            pos_weight = neg / pos.clamp(min=1e-6)
             # If a keypoint has no positives in this batch, don't upweight it.
             pos_weight = torch.where(
-                pos >= 1.0, pos_weight, torch.ones_like(pos_weight))
+                pos >= 1.0, pos_weight, torch.ones_like(pos_weight)
+            )
             pos_weight = pos_weight.clamp(1.0, float(max_pos_weight))
             # Ensure broadcasting targets the channel dimension for BKHW.
-            pos_weight = pos_weight.view(
-                1, -1, 1, 1).to(dtype=logits_bkhw.dtype, device=logits_bkhw.device)
+            pos_weight = pos_weight.view(1, -1, 1, 1).to(
+                dtype=logits_bkhw.dtype, device=logits_bkhw.device
+            )
 
     bce = F.binary_cross_entropy_with_logits(
         logits_bkhw,
@@ -661,8 +672,7 @@ def _masked_focal_bce_with_logits(
     bce = F.binary_cross_entropy_with_logits(
         logits_bkhw, targets_bkhw, reduction="none"
     )
-    alpha_t = float(alpha) * targets_bkhw + \
-        (1.0 - float(alpha)) * (1.0 - targets_bkhw)
+    alpha_t = float(alpha) * targets_bkhw + (1.0 - float(alpha)) * (1.0 - targets_bkhw)
     p_t = probs * targets_bkhw + (1.0 - probs) * (1.0 - targets_bkhw)
     loss = alpha_t * ((1.0 - p_t) ** float(gamma)) * bce
     return (loss * valid).sum() / denom
@@ -676,13 +686,11 @@ def _dice_loss_masked(
     eps: float = 1e-6,
 ) -> torch.Tensor:
     if probs_bkhw.shape != targets_bkhw.shape:
-        raise ValueError(
-            "Dice loss requires probs and targets with the same shape")
+        raise ValueError("Dice loss requires probs and targets with the same shape")
     valid = valid_mask_b1hw.to(dtype=probs_bkhw.dtype)
     dims = (0, 2, 3)
     inter = (probs_bkhw * targets_bkhw * valid).sum(dim=dims)
-    denom = (probs_bkhw * valid).sum(dim=dims) + \
-        (targets_bkhw * valid).sum(dim=dims)
+    denom = (probs_bkhw * valid).sum(dim=dims) + (targets_bkhw * valid).sum(dim=dims)
     dice = (2.0 * inter + float(eps)) / (denom + float(eps))
     return 1.0 - dice.mean()
 
@@ -695,8 +703,7 @@ def _coord_loss(
     mode: str,
 ) -> torch.Tensor:
     if pred_xy.shape != target_xy.shape:
-        raise ValueError(
-            "coord loss expects pred_xy and target_xy with same shape")
+        raise ValueError("coord loss expects pred_xy and target_xy with same shape")
     mask = mask.to(dtype=pred_xy.dtype)
     if mask.ndim == 1:
         mask = mask[:, None]
@@ -717,15 +724,21 @@ def _coord_loss(
     return (per * mask).sum() / valid
 
 
-def _compute_resize_hw(*, width: int, height: int, short_side: int, patch_size: int) -> tuple[int, int]:
+def _compute_resize_hw(
+    *, width: int, height: int, short_side: int, patch_size: int
+) -> tuple[int, int]:
     if height <= width:
         scale = float(short_side) / max(1, int(height))
     else:
         scale = float(short_side) / max(1, int(width))
-    new_w = max(int(patch_size), int(
-        ((width * scale) + patch_size - 1) // patch_size) * int(patch_size))
-    new_h = max(int(patch_size), int(
-        ((height * scale) + patch_size - 1) // patch_size) * int(patch_size))
+    new_w = max(
+        int(patch_size),
+        int(((width * scale) + patch_size - 1) // patch_size) * int(patch_size),
+    )
+    new_h = max(
+        int(patch_size),
+        int(((height * scale) + patch_size - 1) // patch_size) * int(patch_size),
+    )
     return int(new_h), int(new_w)
 
 
@@ -782,8 +795,7 @@ def _log_example_images(
 
     try:
         imgs = torch.stack(tensors, dim=0)
-        grid = _grid_images(imgs, nrow=min(
-            4, int(imgs.shape[0])), pad=2, pad_value=0.0)
+        grid = _grid_images(imgs, nrow=min(4, int(imgs.shape[0])), pad=2, pad_value=0.0)
         tb_writer.add_image(tag, grid, 0)
     except Exception:
         for idx, img in enumerate(tensors):
@@ -814,6 +826,7 @@ def _set_global_seed(seed: int) -> None:
 def train(
     *,
     data_yaml: Path,
+    data_format: str = "auto",
     output_dir: Path,
     model_name: str,
     short_side: int,
@@ -843,8 +856,7 @@ def train(
     early_stop_min_epochs: int = 0,
     best_metric: str = "pck@8px",
     early_stop_metric: Optional[str] = None,
-    pck_weighted_weights: Tuple[float, float,
-                                float, float] = (1.0, 1.0, 1.0, 1.0),
+    pck_weighted_weights: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0),
     tb_add_graph: bool = False,
     bce_type: str = "bce",
     focal_alpha: float = 0.25,
@@ -880,47 +892,112 @@ def train(
     if seed is not None:
         _set_global_seed(int(seed))
 
-    spec = load_yolo_pose_spec(data_yaml)
-    train_images = list(spec.train_images)
-    val_images = list(spec.val_images)
+    data_format_norm = str(data_format or "auto").strip().lower()
+    if data_format_norm not in {"auto", "yolo", "labelme"}:
+        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
+
+    if data_format_norm == "auto":
+        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+        fmt_token = ""
+        if isinstance(payload, dict):
+            fmt_token = (
+                str(payload.get("format") or payload.get("type") or "").strip().lower()
+            )
+        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+
+    if data_format_norm == "labelme":
+        spec_lm = load_labelme_pose_spec(data_yaml)
+        train_images = list(spec_lm.train_images)
+        val_images = list(spec_lm.val_images)
+        train_label_paths = list(spec_lm.train_json)
+        val_label_paths = list(spec_lm.val_json)
+        keypoint_names = list(spec_lm.keypoint_names)
+        flip_idx = spec_lm.flip_idx
+        kpt_count = int(spec_lm.kpt_count)
+        kpt_dims = int(spec_lm.kpt_dims)
+    else:
+        spec = load_yolo_pose_spec(data_yaml)
+        train_images = list(spec.train_images)
+        val_images = list(spec.val_images)
+        train_label_paths = None
+        val_label_paths = None
+        keypoint_names = list(spec.keypoint_names) if spec.keypoint_names else None
+        flip_idx = spec.flip_idx
+        kpt_count = int(spec.kpt_count)
+        kpt_dims = int(spec.kpt_dims)
     if not train_images:
         raise ValueError("No training images found")
 
-    summary = summarize_yolo_pose_labels(
-        train_images,
-        kpt_count=spec.kpt_count,
-        kpt_dims=spec.kpt_dims,
-        max_issues=8,
-    )
-    if summary.images_with_pose_instances <= 0:
-        details = "\n".join(
-            summary.example_issues) if summary.example_issues else "(no details)"
-        raise ValueError(
-            "No valid YOLO pose labels found for DinoKPSEG training.\n\n"
-            f"- images_total: {summary.images_total}\n"
-            f"- label_files_found: {summary.label_files_found}\n"
-            f"- images_with_pose_instances: {summary.images_with_pose_instances}\n"
-            f"- invalid_lines_total: {summary.invalid_lines_total}\n\n"
-            f"Examples:\n{details}\n\n"
-            "Expected each label file to contain YOLO pose lines:\n"
-            "  cls x y w h (kpt_count * kpt_dims)\n"
+    if data_format_norm == "labelme":
+        summary_lm = summarize_labelme_pose_labels(
+            train_images,
+            label_paths=train_label_paths,
+            keypoint_names=list(keypoint_names or []),
+            kpt_dims=kpt_dims,
+            max_issues=8,
         )
-    if summary.label_files_found < summary.images_total:
-        logger.warning(
-            "DinoKPSEG dataset has %d/%d images missing label files (first few issues: %s)",
-            summary.images_total - summary.label_files_found,
-            summary.images_total,
-            "; ".join(summary.example_issues[:3]),
+        if summary_lm.images_with_pose_instances <= 0:
+            details = (
+                "\n".join(summary_lm.example_issues)
+                if summary_lm.example_issues
+                else "(no details)"
+            )
+            raise ValueError(
+                "No valid LabelMe pose labels found for DinoKPSEG training.\n\n"
+                f"- images_total: {summary_lm.images_total}\n"
+                f"- label_files_found: {summary_lm.label_files_found}\n"
+                f"- images_with_pose_instances: {summary_lm.images_with_pose_instances}\n"
+                f"- invalid_shapes_total: {summary_lm.invalid_shapes_total}\n\n"
+                f"Examples:\n{details}\n\n"
+                "Expected LabelMe JSON shapes with:\n"
+                "  - point shapes: keypoints (label must match keypoint name)\n"
+                "  - polygon shapes: optional instance segmentation (used for bbox crops)\n"
+                "  - group_id: to associate shapes into instances\n"
+            )
+        if summary_lm.label_files_found < summary_lm.images_total:
+            logger.warning(
+                "DinoKPSEG dataset has %d/%d images missing LabelMe JSONs (first few issues: %s)",
+                summary_lm.images_total - summary_lm.label_files_found,
+                summary_lm.images_total,
+                "; ".join(summary_lm.example_issues[:3]),
+            )
+    else:
+        summary = summarize_yolo_pose_labels(
+            train_images,
+            kpt_count=kpt_count,
+            kpt_dims=kpt_dims,
+            max_issues=8,
         )
+        if summary.images_with_pose_instances <= 0:
+            details = (
+                "\n".join(summary.example_issues)
+                if summary.example_issues
+                else "(no details)"
+            )
+            raise ValueError(
+                "No valid YOLO pose labels found for DinoKPSEG training.\n\n"
+                f"- images_total: {summary.images_total}\n"
+                f"- label_files_found: {summary.label_files_found}\n"
+                f"- images_with_pose_instances: {summary.images_with_pose_instances}\n"
+                f"- invalid_lines_total: {summary.invalid_lines_total}\n\n"
+                f"Examples:\n{details}\n\n"
+                "Expected each label file to contain YOLO pose lines:\n"
+                "  cls x y w h (kpt_count * kpt_dims)\n"
+            )
+        if summary.label_files_found < summary.images_total:
+            logger.warning(
+                "DinoKPSEG dataset has %d/%d images missing label files (first few issues: %s)",
+                summary.images_total - summary.label_files_found,
+                summary.images_total,
+                "; ".join(summary.example_issues[:3]),
+            )
 
     device_str = normalize_device(device)
-    logger.info("Training DinoKPSEG on %s with device=%s",
-                data_yaml, device_str)
+    logger.info("Training DinoKPSEG on %s with device=%s", data_yaml, device_str)
 
     augment_cfg = augment or DinoKPSEGAugmentConfig(enabled=False)
     if augment_cfg.enabled and cache_features:
-        logger.warning(
-            "DinoKPSEG augmentations enabled; disabling feature caching.")
+        logger.warning("DinoKPSEG augmentations enabled; disabling feature caching.")
         cache_features = False
 
     overfit_n = max(0, int(overfit_n))
@@ -929,8 +1006,7 @@ def train(
         rng.shuffle(train_images)
         train_images = train_images[:overfit_n]
         val_images = list(train_images)
-        logger.info(
-            "DinoKPSEG overfit mode enabled: %d images", len(train_images))
+        logger.info("DinoKPSEG overfit mode enabled: %d images", len(train_images))
 
     extractor = build_extractor(
         model_name=model_name,
@@ -943,19 +1019,21 @@ def train(
     if cache_features:
         cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
         cache_fingerprint = hashlib.sha1(
-            f"{model_name}|{short_side}|{layers}".encode(
-                "utf-8", errors="ignore")
+            f"{model_name}|{short_side}|{layers}".encode("utf-8", errors="ignore")
         ).hexdigest()[:12]
         cache_dir = cache_root / cache_fingerprint
         _ensure_dir(cache_dir)
 
     train_ds = DinoKPSEGPoseDataset(
         train_images,
-        kpt_count=spec.kpt_count,
-        kpt_dims=spec.kpt_dims,
+        kpt_count=kpt_count,
+        kpt_dims=kpt_dims,
         radius_px=radius_px,
         extractor=extractor,
-        flip_idx=spec.flip_idx,
+        label_format=str(data_format_norm),
+        label_paths=train_label_paths,
+        keypoint_names=keypoint_names,
+        flip_idx=flip_idx,
         augment=augment_cfg,
         cache_dir=cache_dir,
         mask_type=str(mask_type),
@@ -967,11 +1045,14 @@ def train(
     val_ds = (
         DinoKPSEGPoseDataset(
             val_images,
-            kpt_count=spec.kpt_count,
-            kpt_dims=spec.kpt_dims,
+            kpt_count=kpt_count,
+            kpt_dims=kpt_dims,
             radius_px=radius_px,
             extractor=extractor,
-            flip_idx=spec.flip_idx,
+            label_format=str(data_format_norm),
+            label_paths=val_label_paths,
+            keypoint_names=keypoint_names,
+            flip_idx=flip_idx,
             augment=DinoKPSEGAugmentConfig(enabled=False),
             cache_dir=cache_dir,
             mask_type=str(mask_type),
@@ -996,19 +1077,18 @@ def train(
         )
 
     orientation_anchor_idx = (
-        infer_orientation_anchor_indices(spec.keypoint_names or [])
-        if spec.keypoint_names
+        infer_orientation_anchor_indices(list(keypoint_names or []))
+        if keypoint_names
         else []
     )
     if orientation_anchor_idx:
-        logger.info("DinoKPSEG orientation anchors (idx): %s",
-                    orientation_anchor_idx)
+        logger.info("DinoKPSEG orientation anchors (idx): %s", orientation_anchor_idx)
 
     if head_type_norm == "attn":
         head = DinoKPSEGAttentionHead(
             in_dim=in_dim,
             hidden_dim=hidden_dim,
-            num_parts=spec.kpt_count,
+            num_parts=kpt_count,
             num_heads=int(attn_heads),
             num_layers=int(attn_layers),
             orientation_anchor_idx=orientation_anchor_idx,
@@ -1017,14 +1097,15 @@ def train(
         head = DinoKPSEGHybridHead(
             in_dim=in_dim,
             hidden_dim=hidden_dim,
-            num_parts=spec.kpt_count,
+            num_parts=kpt_count,
             num_heads=int(attn_heads),
             num_layers=int(attn_layers),
             orientation_anchor_idx=orientation_anchor_idx,
         ).to(device_str)
     else:
-        head = DinoKPSEGHead(in_dim=in_dim, hidden_dim=hidden_dim,
-                             num_parts=spec.kpt_count).to(device_str)
+        head = DinoKPSEGHead(
+            in_dim=in_dim, hidden_dim=hidden_dim, num_parts=kpt_count
+        ).to(device_str)
 
     base_lr = float(lr)
     opt = torch.optim.AdamW(head.parameters(), lr=base_lr)
@@ -1057,25 +1138,28 @@ def train(
         model_name=model_name,
         short_side=int(short_side),
         layers=tuple(int(x) for x in layers),
-        num_parts=int(spec.kpt_count),
+        num_parts=int(kpt_count),
         radius_px=float(radius_px),
         threshold=float(threshold),
         in_dim=in_dim,
         hidden_dim=int(hidden_dim),
-        keypoint_names=spec.keypoint_names,
-        flip_idx=spec.flip_idx,
+        keypoint_names=list(keypoint_names) if keypoint_names else None,
+        flip_idx=list(flip_idx) if flip_idx else None,
         head_type=head_type_norm,
         attn_heads=int(attn_heads),
         attn_layers=int(attn_layers),
-        orientation_anchor_idx=orientation_anchor_idx if orientation_anchor_idx else None,
+        orientation_anchor_idx=orientation_anchor_idx
+        if orientation_anchor_idx
+        else None,
     )
 
     # Best-effort args.yaml compatible with existing YOLO training artifacts.
     args_text = "\n".join(
         [
-            f"mode: train",
-            f"task: dino_kpseg",
+            "mode: train",
+            "task: dino_kpseg",
             f"data: {str(data_yaml)}",
+            f"data_format: {str(data_format_norm)}",
             f"model_name: {model_name}",
             f"short_side: {short_side}",
             f"layers: {list(layers)}",
@@ -1146,13 +1230,10 @@ def train(
     )
     args_path.write_text(args_text, encoding="utf-8")
 
-    symmetric_pairs = (
-        symmetric_pairs_from_flip_idx(spec.flip_idx) if spec.flip_idx else []
-    )
+    symmetric_pairs = symmetric_pairs_from_flip_idx(flip_idx) if flip_idx else []
     lr_pairs = (
-        infer_left_right_pairs(spec.keypoint_names or [],
-                               flip_idx=spec.flip_idx)
-        if spec.keypoint_names and spec.flip_idx
+        infer_left_right_pairs(list(keypoint_names or []), flip_idx=flip_idx)
+        if keypoint_names and flip_idx
         else []
     )
     if symmetric_pairs:
@@ -1192,12 +1273,15 @@ def train(
 
     desired_best_metric = _normalize_metric_name(best_metric)
     desired_early_stop_metric = _normalize_metric_name(early_stop_metric)
-    if not desired_early_stop_metric or desired_early_stop_metric in {"auto", "same", "same_as_best"}:
+    if not desired_early_stop_metric or desired_early_stop_metric in {
+        "auto",
+        "same",
+        "same_as_best",
+    }:
         desired_early_stop_metric = desired_best_metric
 
     best_higher_is_better = _metric_higher_is_better(desired_best_metric)
-    early_stop_higher_is_better = _metric_higher_is_better(
-        desired_early_stop_metric)
+    early_stop_higher_is_better = _metric_higher_is_better(desired_early_stop_metric)
 
     if val_loader is None:
         if desired_best_metric not in {"train_loss", "loss/train", "train"}:
@@ -1215,8 +1299,7 @@ def train(
             desired_early_stop_metric = "train_loss"
             early_stop_higher_is_better = False
 
-    best_metric_value = (-float("inf")
-                         if best_higher_is_better else float("inf"))
+    best_metric_value = -float("inf") if best_higher_is_better else float("inf")
 
     patience = max(0, int(early_stop_patience))
     min_epochs = max(0, int(early_stop_min_epochs))
@@ -1224,8 +1307,9 @@ def train(
     if min_delta < 0:
         min_delta = 0.0
     early_stop_enabled = patience > 0
-    best_metric_for_stop = (-float("inf")
-                            if early_stop_higher_is_better else float("inf"))
+    best_metric_for_stop = (
+        -float("inf") if early_stop_higher_is_better else float("inf")
+    )
     bad_epochs = 0
 
     tb_writer = SummaryWriter(str(tb_dir))
@@ -1235,26 +1319,21 @@ def train(
         tb_writer.add_text("config/layers", str(list(layers)), 0)
         tb_writer.add_text("config/device", str(device_str), 0)
         tb_writer.add_text("config/short_side", str(short_side), 0)
-        tb_writer.add_text("config/patch_size",
-                           str(int(extractor.patch_size)), 0)
+        tb_writer.add_text("config/patch_size", str(int(extractor.patch_size)), 0)
         tb_writer.add_text("config/mask_type", str(mask_type), 0)
         tb_writer.add_text("config/bce_type", str(bce_type), 0)
         tb_writer.add_text("config/focal_alpha", str(float(focal_alpha)), 0)
         tb_writer.add_text("config/focal_gamma", str(float(focal_gamma)), 0)
-        tb_writer.add_text("config/coord_warmup_epochs",
-                           str(int(coord_warmup_epochs)), 0)
-        tb_writer.add_text("config/radius_schedule",
-                           str(radius_schedule), 0)
-        tb_writer.add_text("config/radius_start_px",
-                           str(radius_start_px), 0)
-        tb_writer.add_text("config/radius_end_px",
-                           str(radius_end_px), 0)
-        tb_writer.add_text("config/overfit_n",
-                           str(int(overfit_n)), 0)
+        tb_writer.add_text(
+            "config/coord_warmup_epochs", str(int(coord_warmup_epochs)), 0
+        )
+        tb_writer.add_text("config/radius_schedule", str(radius_schedule), 0)
+        tb_writer.add_text("config/radius_start_px", str(radius_start_px), 0)
+        tb_writer.add_text("config/radius_end_px", str(radius_end_px), 0)
+        tb_writer.add_text("config/overfit_n", str(int(overfit_n)), 0)
         if seed is not None:
             tb_writer.add_text("config/seed", str(int(seed)), 0)
-        tb_writer.add_text(
-            "config/heatmap_sigma_px", str(heatmap_sigma_px), 0)
+        tb_writer.add_text("config/heatmap_sigma_px", str(heatmap_sigma_px), 0)
         tb_writer.add_text("config/instance_mode", str(instance_mode), 0)
         tb_writer.add_text("config/bbox_scale", str(float(bbox_scale)), 0)
         tb_writer.add_text(
@@ -1274,8 +1353,9 @@ def train(
             ",".join(str(float(w)) for w in pck_weighted_weights),
             0,
         )
-        tb_writer.add_text("config/early_stop_metric",
-                           str(desired_early_stop_metric), 0)
+        tb_writer.add_text(
+            "config/early_stop_metric", str(desired_early_stop_metric), 0
+        )
         tb_writer.add_text(
             "config/early_stop_mode",
             "max" if early_stop_higher_is_better else "min",
@@ -1283,8 +1363,7 @@ def train(
         )
         tb_writer.add_text("config/tb_add_graph", str(bool(tb_add_graph)), 0)
         tb_writer.add_text("config/tb_projector", str(bool(tb_projector)), 0)
-        tb_writer.add_text("config/tb_projector_split",
-                           str(tb_projector_split), 0)
+        tb_writer.add_text("config/tb_projector_split", str(tb_projector_split), 0)
         tb_writer.add_text("config/head_type", str(head_type_norm), 0)
         tb_writer.add_text("config/attn_heads", str(int(attn_heads)), 0)
         tb_writer.add_text("config/attn_layers", str(int(attn_layers)), 0)
@@ -1293,64 +1372,79 @@ def train(
             str(orientation_anchor_idx),
             0,
         )
-        tb_writer.add_text("config/dice_loss_weight",
-                           str(float(dice_loss_weight)), 0)
-        tb_writer.add_text("config/coord_loss_weight",
-                           str(float(coord_loss_weight)), 0)
-        tb_writer.add_text("config/coord_loss_type",
-                           str(coord_loss_type), 0)
-        tb_writer.add_text("config/lr_pair_loss_weight",
-                           str(float(lr_pair_loss_weight)), 0)
-        tb_writer.add_text("config/lr_pair_margin_px",
-                           str(float(lr_pair_margin_px)), 0)
-        tb_writer.add_text("config/lr_side_loss_weight",
-                           str(float(lr_side_loss_weight)), 0)
-        tb_writer.add_text("config/lr_side_loss_margin",
-                           str(float(lr_side_loss_margin)), 0)
+        tb_writer.add_text("config/dice_loss_weight", str(float(dice_loss_weight)), 0)
+        tb_writer.add_text("config/coord_loss_weight", str(float(coord_loss_weight)), 0)
+        tb_writer.add_text("config/coord_loss_type", str(coord_loss_type), 0)
+        tb_writer.add_text(
+            "config/lr_pair_loss_weight", str(float(lr_pair_loss_weight)), 0
+        )
+        tb_writer.add_text("config/lr_pair_margin_px", str(float(lr_pair_margin_px)), 0)
+        tb_writer.add_text(
+            "config/lr_side_loss_weight", str(float(lr_side_loss_weight)), 0
+        )
+        tb_writer.add_text(
+            "config/lr_side_loss_margin", str(float(lr_side_loss_margin)), 0
+        )
         tb_writer.add_text("model/architecture", f"```\n{head}\n```", 0)
         try:
             total_params = int(sum(p.numel() for p in head.parameters()))
-            trainable_params = int(sum(p.numel()
-                                   for p in head.parameters() if p.requires_grad))
+            trainable_params = int(
+                sum(p.numel() for p in head.parameters() if p.requires_grad)
+            )
             tb_writer.add_scalar("model/params_total", total_params, 0)
             tb_writer.add_scalar("model/params_trainable", trainable_params, 0)
         except Exception:
             pass
         # Optional: export the computation graph (can be expensive / crash-prone on some builds).
-        if bool(tb_add_graph) or os.environ.get("ANNOLID_TB_ADD_GRAPH", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if bool(tb_add_graph) or os.environ.get(
+            "ANNOLID_TB_ADD_GRAPH", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}:
             try:
                 if head_type_norm == "attn":
-                    cpu_head = DinoKPSEGAttentionHead(
-                        in_dim=in_dim,
-                        hidden_dim=hidden_dim,
-                        num_parts=spec.kpt_count,
-                        num_heads=int(attn_heads),
-                        num_layers=int(attn_layers),
-                        orientation_anchor_idx=orientation_anchor_idx,
-                    ).cpu().eval()
+                    cpu_head = (
+                        DinoKPSEGAttentionHead(
+                            in_dim=in_dim,
+                            hidden_dim=hidden_dim,
+                            num_parts=kpt_count,
+                            num_heads=int(attn_heads),
+                            num_layers=int(attn_layers),
+                            orientation_anchor_idx=orientation_anchor_idx,
+                        )
+                        .cpu()
+                        .eval()
+                    )
                 elif head_type_norm == "hybrid":
-                    cpu_head = DinoKPSEGHybridHead(
-                        in_dim=in_dim,
-                        hidden_dim=hidden_dim,
-                        num_parts=spec.kpt_count,
-                        num_heads=int(attn_heads),
-                        num_layers=int(attn_layers),
-                        orientation_anchor_idx=orientation_anchor_idx,
-                    ).cpu().eval()
+                    cpu_head = (
+                        DinoKPSEGHybridHead(
+                            in_dim=in_dim,
+                            hidden_dim=hidden_dim,
+                            num_parts=kpt_count,
+                            num_heads=int(attn_heads),
+                            num_layers=int(attn_layers),
+                            orientation_anchor_idx=orientation_anchor_idx,
+                        )
+                        .cpu()
+                        .eval()
+                    )
                 else:
-                    cpu_head = DinoKPSEGHead(
-                        in_dim=in_dim, hidden_dim=hidden_dim, num_parts=spec.kpt_count).cpu().eval()
-                state = {k: v.detach().cpu()
-                         for k, v in head.state_dict().items()}
+                    cpu_head = (
+                        DinoKPSEGHead(
+                            in_dim=in_dim, hidden_dim=hidden_dim, num_parts=kpt_count
+                        )
+                        .cpu()
+                        .eval()
+                    )
+                state = {k: v.detach().cpu() for k, v in head.state_dict().items()}
                 cpu_head.load_state_dict(state, strict=True)
-                dummy = torch.zeros((1, int(in_dim), 2, 2),
-                                    dtype=torch.float32)
+                dummy = torch.zeros((1, int(in_dim), 2, 2), dtype=torch.float32)
                 tb_writer.add_graph(cpu_head, dummy)
                 tb_writer.add_text(
-                    "model/graph", "Graph exported via SummaryWriter.add_graph()", 0)
+                    "model/graph", "Graph exported via SummaryWriter.add_graph()", 0
+                )
             except Exception as exc:
-                tb_writer.add_text("model/graph_error",
-                                   f"{type(exc).__name__}: {exc}", 0)
+                tb_writer.add_text(
+                    "model/graph_error", f"{type(exc).__name__}: {exc}", 0
+                )
 
         _log_example_images(
             tb_writer,
@@ -1373,6 +1467,11 @@ def train(
                 log_dataset_health,
             )
 
+            if data_format_norm != "yolo":
+                raise RuntimeError(
+                    "Dataset audit currently requires a YOLO pose dataset."
+                )
+
             audit_report = audit_yolo_pose_dataset(
                 data_yaml,
                 split="both",
@@ -1380,9 +1479,7 @@ def train(
                 bbox_scale=float(bbox_scale),
             )
             audit_path = output_dir / "dataset_audit.json"
-            audit_path.write_text(
-                json.dumps(audit_report, indent=2), encoding="utf-8"
-            )
+            audit_path.write_text(json.dumps(audit_report, indent=2), encoding="utf-8")
             tb_writer.add_text(
                 "dataset/audit_summary",
                 json.dumps(audit_report.get("splits", {}), indent=2),
@@ -1392,27 +1489,25 @@ def train(
                 tb_writer=tb_writer,
                 report=audit_report,
                 split_name="train",
-                image_paths=spec.train_images,
-                kpt_count=int(spec.kpt_count),
-                kpt_dims=int(spec.kpt_dims),
-                keypoint_names=list(spec.keypoint_names or []),
+                image_paths=list(train_images),
+                kpt_count=int(kpt_count),
+                kpt_dims=int(kpt_dims),
+                keypoint_names=list(keypoint_names or []),
                 max_images=12,
-                seed=(int(augment_cfg.seed)
-                      if augment_cfg.seed is not None else 0),
+                seed=(int(augment_cfg.seed) if augment_cfg.seed is not None else 0),
                 tag_prefix="dataset",
             )
-            if spec.val_images:
+            if val_images:
                 log_dataset_health(
                     tb_writer=tb_writer,
                     report=audit_report,
                     split_name="val",
-                    image_paths=spec.val_images,
-                    kpt_count=int(spec.kpt_count),
-                    kpt_dims=int(spec.kpt_dims),
-                    keypoint_names=list(spec.keypoint_names or []),
+                    image_paths=list(val_images),
+                    kpt_count=int(kpt_count),
+                    kpt_dims=int(kpt_dims),
+                    keypoint_names=list(keypoint_names or []),
                     max_images=12,
-                    seed=(int(augment_cfg.seed)
-                          if augment_cfg.seed is not None else 0),
+                    seed=(int(augment_cfg.seed) if augment_cfg.seed is not None else 0),
                     tag_prefix="dataset",
                 )
         except Exception as exc:
@@ -1429,23 +1524,34 @@ def train(
                 )
 
                 kpt_names = (
-                    list(spec.keypoint_names)
-                    if spec.keypoint_names
-                    else [f"kpt_{i}" for i in range(int(spec.kpt_count))]
+                    list(keypoint_names)
+                    if keypoint_names
+                    else [f"kpt_{i}" for i in range(int(kpt_count))]
                 )
                 split_pref = str(tb_projector_split or "val").strip().lower()
-                splits: list[tuple[str, list[Path]]] = []
+                splits: list[
+                    tuple[str, list[Path], Optional[List[Optional[Path]]]]
+                ] = []
                 if split_pref == "both":
-                    splits = [("train", list(spec.train_images))]
+                    splits = [("train", list(train_images), train_label_paths)]
                     if val_ds is not None:
-                        splits.append(("val", list(spec.val_images)))
+                        splits.append(("val", list(val_images), val_label_paths))
                 elif split_pref == "train":
-                    splits = [("train", list(spec.train_images))]
+                    splits = [("train", list(train_images), train_label_paths)]
                 else:
-                    splits = [("val", list(spec.val_images)
-                               if val_ds is not None else list(spec.train_images))]
+                    splits = [
+                        (
+                            "val",
+                            list(val_images)
+                            if val_ds is not None
+                            else list(train_images),
+                            val_label_paths
+                            if val_ds is not None
+                            else train_label_paths,
+                        )
+                    ]
 
-                for split_name, paths in splits:
+                for split_name, paths, split_label_paths in splits:
                     if not paths:
                         continue
                     # Use a deterministic, non-augmented dataset for embeddings even
@@ -1453,11 +1559,14 @@ def train(
                     # stable and allows feature caching when enabled.
                     ds_obj = DinoKPSEGPoseDataset(
                         list(paths),
-                        kpt_count=spec.kpt_count,
-                        kpt_dims=spec.kpt_dims,
+                        kpt_count=kpt_count,
+                        kpt_dims=kpt_dims,
                         radius_px=radius_px,
                         extractor=extractor,
-                        flip_idx=spec.flip_idx,
+                        label_format=str(data_format_norm),
+                        label_paths=split_label_paths,
+                        keypoint_names=keypoint_names,
+                        flip_idx=flip_idx,
                         augment=DinoKPSEGAugmentConfig(enabled=False),
                         cache_dir=cache_dir,
                         mask_type=str(mask_type),
@@ -1474,17 +1583,16 @@ def train(
                         keypoint_names=kpt_names,
                         max_images=int(tb_projector_max_images),
                         max_patches=int(tb_projector_max_patches),
-                        per_image_per_keypoint=int(
-                            tb_projector_per_image_per_keypoint),
+                        per_image_per_keypoint=int(tb_projector_per_image_per_keypoint),
                         pos_threshold=float(tb_projector_pos_threshold),
                         add_negatives=bool(tb_projector_add_negatives),
                         neg_threshold=float(tb_projector_neg_threshold),
-                        negatives_per_image=int(
-                            tb_projector_negatives_per_image),
+                        negatives_per_image=int(tb_projector_negatives_per_image),
                         crop_px=int(tb_projector_crop_px),
                         sprite_border_px=int(tb_projector_sprite_border_px),
-                        seed=(int(augment_cfg.seed)
-                              if augment_cfg.seed is not None else 0),
+                        seed=(
+                            int(augment_cfg.seed) if augment_cfg.seed is not None else 0
+                        ),
                         tag=f"dino_kpseg/patch_embeddings/{split_name}",
                         predict_probs_patch=None,
                         write_csv=True,
@@ -1521,24 +1629,28 @@ def train(
                 radius_epoch = float(radius_px)
                 schedule = str(radius_schedule or "none").strip().lower()
                 if schedule != "none":
-                    start_px = float(
-                        radius_start_px) if radius_start_px is not None else float(radius_px)
-                    end_px = float(
-                        radius_end_px) if radius_end_px is not None else float(radius_px)
+                    start_px = (
+                        float(radius_start_px)
+                        if radius_start_px is not None
+                        else float(radius_px)
+                    )
+                    end_px = (
+                        float(radius_end_px)
+                        if radius_end_px is not None
+                        else float(radius_px)
+                    )
                     if int(epochs) > 1:
                         t = float(epoch - 1) / float(int(epochs) - 1)
                     else:
                         t = 1.0
                     if schedule == "linear":
-                        radius_epoch = start_px + \
-                            (end_px - start_px) * float(t)
+                        radius_epoch = start_px + (end_px - start_px) * float(t)
                     else:
                         radius_epoch = float(radius_px)
                     train_ds.radius_px = float(radius_epoch)
                     if val_ds is not None:
                         val_ds.radius_px = float(radius_epoch)
-                tb_writer.add_scalar(
-                    "train/radius_px", float(radius_epoch), epoch)
+                tb_writer.add_scalar("train/radius_px", float(radius_epoch), epoch)
 
                 coord_weight = float(coord_loss_weight)
                 if int(coord_warmup_epochs) > 0:
@@ -1546,12 +1658,14 @@ def train(
                         1.0, float(epoch) / float(coord_warmup_epochs)
                     )
                 tb_writer.add_scalar(
-                    "train/coord_loss_weight", float(coord_weight), epoch)
+                    "train/coord_loss_weight", float(coord_weight), epoch
+                )
 
                 head.train()
                 if warmup_epochs > 0 and int(epoch) <= int(warmup_epochs):
-                    warm_lr = float(base_lr) * float(epoch) / \
-                        float(max(1, warmup_epochs))
+                    warm_lr = (
+                        float(base_lr) * float(epoch) / float(max(1, warmup_epochs))
+                    )
                     for pg in opt.param_groups:
                         pg["lr"] = float(warm_lr)
                 t0 = time.time()
@@ -1573,10 +1687,8 @@ def train(
                 grad_norm_steps = 0
                 opt.zero_grad(set_to_none=True)
                 for batch in train_loader:
-                    feats = batch["feats"].to(
-                        device_str, non_blocking=True)  # BCHW
-                    masks = batch["masks"].to(
-                        device_str, non_blocking=True)  # BKHW
+                    feats = batch["feats"].to(device_str, non_blocking=True)  # BCHW
+                    masks = batch["masks"].to(device_str, non_blocking=True)  # BKHW
                     coords = batch.get("coords")
                     coord_mask = batch.get("coord_mask")
                     valid_mask = batch.get("valid_mask")
@@ -1596,21 +1708,24 @@ def train(
                             device=device_str,
                         )
                     else:
-                        coord_mask = coord_mask.to(
-                            device_str, non_blocking=True)
+                        coord_mask = coord_mask.to(device_str, non_blocking=True)
                     if not isinstance(valid_mask, torch.Tensor):
                         valid_mask = torch.ones(
-                            (int(masks.shape[0]), 1, int(
-                                masks.shape[2]), int(masks.shape[3])),
+                            (
+                                int(masks.shape[0]),
+                                1,
+                                int(masks.shape[2]),
+                                int(masks.shape[3]),
+                            ),
                             dtype=torch.bool,
                             device=device_str,
                         )
                     else:
-                        valid_mask = valid_mask.to(
-                            device_str, non_blocking=True)
+                        valid_mask = valid_mask.to(device_str, non_blocking=True)
                     if isinstance(key_padding_mask, torch.Tensor):
                         key_padding_mask = key_padding_mask.to(
-                            device_str, non_blocking=True)
+                            device_str, non_blocking=True
+                        )
                     else:
                         key_padding_mask = None
 
@@ -1667,7 +1782,7 @@ def train(
                     if (
                         float(lr_pair_loss_weight) > 0.0
                         and symmetric_pairs
-                        and int(logits.shape[1]) == int(spec.kpt_count)
+                        and int(logits.shape[1]) == int(kpt_count)
                     ):
                         bsz, k, h_p, w_p = probs.shape
                         overlap_acc = torch.zeros(
@@ -1677,18 +1792,22 @@ def train(
                             (), dtype=probs.dtype, device=probs.device
                         )
                         patch = float(extractor.patch_size)
-                        xs = (torch.arange(w_p, device=probs.device,
-                              dtype=probs.dtype) + 0.5) * patch
-                        ys = (torch.arange(h_p, device=probs.device,
-                              dtype=probs.dtype) + 0.5) * patch
+                        xs = (
+                            torch.arange(w_p, device=probs.device, dtype=probs.dtype)
+                            + 0.5
+                        ) * patch
+                        ys = (
+                            torch.arange(h_p, device=probs.device, dtype=probs.dtype)
+                            + 0.5
+                        ) * patch
                         for b_i in range(int(bsz)):
                             probs_flat = probs[b_i].reshape(k, -1)
-                            norm = probs_flat.sum(
-                                dim=1, keepdim=True).clamp(min=1e-6)
+                            norm = probs_flat.sum(dim=1, keepdim=True).clamp(min=1e-6)
                             dist = probs_flat / norm  # [K, HW]
                             for i, j in symmetric_pairs:
-                                overlap_acc = overlap_acc + \
-                                    (dist[int(i)] * dist[int(j)]).sum()
+                                overlap_acc = (
+                                    overlap_acc + (dist[int(i)] * dist[int(j)]).sum()
+                                )
                                 if float(lr_pair_margin_px) > 0.0:
                                     pi = dist[int(i)].view(h_p, w_p)
                                     pj = dist[int(j)].view(h_p, w_p)
@@ -1697,37 +1816,47 @@ def train(
                                     mux_j = (pj.sum(dim=0) * xs).sum()
                                     muy_j = (pj.sum(dim=1) * ys).sum()
                                     d = torch.sqrt(
-                                        (mux_i - mux_j) ** 2 + (muy_i - muy_j) ** 2 + 1e-8)
-                                    margin_acc = margin_acc + \
-                                        F.relu(float(lr_pair_margin_px) - d)
+                                        (mux_i - mux_j) ** 2
+                                        + (muy_i - muy_j) ** 2
+                                        + 1e-8
+                                    )
+                                    margin_acc = margin_acc + F.relu(
+                                        float(lr_pair_margin_px) - d
+                                    )
 
-                        denom_pairs = float(
-                            max(1, len(symmetric_pairs))) * float(max(1, int(bsz)))
+                        denom_pairs = float(max(1, len(symmetric_pairs))) * float(
+                            max(1, int(bsz))
+                        )
                         pair_overlap = overlap_acc / denom_pairs
                         pair_margin = margin_acc / denom_pairs
-                        loss = loss + float(lr_pair_loss_weight) * \
-                            (pair_overlap + pair_margin)
+                        loss = loss + float(lr_pair_loss_weight) * (
+                            pair_overlap + pair_margin
+                        )
 
                     if (
                         float(lr_side_loss_weight) > 0.0
                         and lr_pairs
                         and len(orientation_anchor_idx) >= 2
-                        and int(logits.shape[1]) == int(spec.kpt_count)
+                        and int(logits.shape[1]) == int(kpt_count)
                     ):
                         bsz, k, h_p, w_p = probs.shape
-                        xs = torch.arange(
-                            w_p, device=probs.device, dtype=probs.dtype) + 0.5
-                        ys = torch.arange(
-                            h_p, device=probs.device, dtype=probs.dtype) + 0.5
+                        xs = (
+                            torch.arange(w_p, device=probs.device, dtype=probs.dtype)
+                            + 0.5
+                        )
+                        ys = (
+                            torch.arange(h_p, device=probs.device, dtype=probs.dtype)
+                            + 0.5
+                        )
                         margin = float(lr_side_loss_margin)
                         loss_acc = torch.zeros(
-                            (), dtype=probs.dtype, device=probs.device)
+                            (), dtype=probs.dtype, device=probs.device
+                        )
                         a0 = int(orientation_anchor_idx[0])
                         a1 = int(orientation_anchor_idx[1])
                         for b_i in range(int(bsz)):
                             probs_flat = probs[b_i].reshape(k, -1)
-                            norm = probs_flat.sum(
-                                dim=1, keepdim=True).clamp(min=1e-6)
+                            norm = probs_flat.sum(dim=1, keepdim=True).clamp(min=1e-6)
                             dist = (probs_flat / norm).view(k, h_p, w_p)
                             px = (dist.sum(dim=1) * xs[None, :]).sum(dim=1)
                             py = (dist.sum(dim=2) * ys[None, :]).sum(dim=1)
@@ -1741,18 +1870,14 @@ def train(
                                 vy_l = py[li] - py[a0]
                                 vx_r = px[ri] - px[a0]
                                 vy_r = py[ri] - py[a0]
-                                vn_l = torch.sqrt(
-                                    vx_l * vx_l + vy_l * vy_l + 1e-8)
-                                vn_r = torch.sqrt(
-                                    vx_r * vx_r + vy_r * vy_r + 1e-8)
-                                s_l = (ax * vy_l - ay * vx_l) / \
-                                    (an * vn_l + 1e-8)
-                                s_r = (ax * vy_r - ay * vx_r) / \
-                                    (an * vn_r + 1e-8)
-                                loss_acc = loss_acc + \
-                                    F.relu(s_l * s_r + margin)
-                        denom_lr = float(max(1, len(lr_pairs))) * \
-                            float(max(1, int(bsz)))
+                                vn_l = torch.sqrt(vx_l * vx_l + vy_l * vy_l + 1e-8)
+                                vn_r = torch.sqrt(vx_r * vx_r + vy_r * vy_r + 1e-8)
+                                s_l = (ax * vy_l - ay * vx_l) / (an * vn_l + 1e-8)
+                                s_r = (ax * vy_r - ay * vx_r) / (an * vn_r + 1e-8)
+                                loss_acc = loss_acc + F.relu(s_l * s_r + margin)
+                        denom_lr = float(max(1, len(lr_pairs))) * float(
+                            max(1, int(bsz))
+                        )
                         side_loss = loss_acc / denom_lr
                         loss = loss + float(lr_side_loss_weight) * side_loss
 
@@ -1780,10 +1905,12 @@ def train(
                         coord_loss_sum += float(coord_loss.detach().cpu().item())
                         coord_terms_count += 1
                     if pair_overlap is not None:
-                        pair_overlap_sum += float(
-                            pair_overlap.detach().cpu().item())
-                        pair_margin_sum += float(pair_margin.detach().cpu().item()
-                                                 ) if pair_margin is not None else 0.0
+                        pair_overlap_sum += float(pair_overlap.detach().cpu().item())
+                        pair_margin_sum += (
+                            float(pair_margin.detach().cpu().item())
+                            if pair_margin is not None
+                            else 0.0
+                        )
                         pair_terms_count += 1
                     if side_loss is not None:
                         side_loss_sum += float(side_loss.detach().cpu().item())
@@ -1798,71 +1925,99 @@ def train(
                             masks0 = masks[0].detach()
                             preds = (probs0 >= 0.5).to(dtype=masks0.dtype)
                             inter = (preds * masks0).sum(dim=(1, 2))
-                            denom = preds.sum(dim=(1, 2)) + \
-                                masks0.sum(dim=(1, 2))
+                            denom = preds.sum(dim=(1, 2)) + masks0.sum(dim=(1, 2))
                             dice = (2.0 * inter) / torch.clamp(denom, min=1e-8)
                             tb_writer.add_scalar(
-                                "metrics/dice_mean_train_batch0", float(dice.mean().item()), epoch)
+                                "metrics/dice_mean_train_batch0",
+                                float(dice.mean().item()),
+                                epoch,
+                            )
                             tb_writer.add_scalar(
-                                "metrics/dice_min_train_batch0", float(dice.min().item()), epoch)
+                                "metrics/dice_min_train_batch0",
+                                float(dice.min().item()),
+                                epoch,
+                            )
                             tb_writer.add_scalar(
-                                "metrics/dice_max_train_batch0", float(dice.max().item()), epoch)
+                                "metrics/dice_max_train_batch0",
+                                float(dice.max().item()),
+                                epoch,
+                            )
                             batch_dice_sum += float(dice.mean().item())
                             batch_dice_count += 1
 
                             # Histograms (bounded to first batch per epoch)
                             try:
                                 tb_writer.add_histogram(
-                                    "debug/logits", logits[0].detach().float().cpu(), epoch)
+                                    "debug/logits",
+                                    logits[0].detach().float().cpu(),
+                                    epoch,
+                                )
                                 tb_writer.add_histogram(
-                                    "debug/probs", probs[0].detach().float().cpu(), epoch)
+                                    "debug/probs",
+                                    probs[0].detach().float().cpu(),
+                                    epoch,
+                                )
                             except Exception:
                                 pass
 
                             # Images: keypoint heatmaps at patch resolution.
                             k = int(min(8, int(masks0.shape[0])))
                             try:
-                                imgs = torch.cat(
-                                    [masks0[:k], probs0[:k]], dim=0).detach().float().cpu()
-                                imgs = imgs.unsqueeze(1).clamp(
-                                    0.0, 1.0)  # (2k,1,H,W)
-                                grid = _grid_images(
-                                    imgs, nrow=k, pad=2, pad_value=0.0)
+                                imgs = (
+                                    torch.cat([masks0[:k], probs0[:k]], dim=0)
+                                    .detach()
+                                    .float()
+                                    .cpu()
+                                )
+                                imgs = imgs.unsqueeze(1).clamp(0.0, 1.0)  # (2k,1,H,W)
+                                grid = _grid_images(imgs, nrow=k, pad=2, pad_value=0.0)
                                 tb_writer.add_image(
-                                    "qual/gt_then_pred_batch0", grid, epoch)
+                                    "qual/gt_then_pred_batch0", grid, epoch
+                                )
                             except Exception:
                                 pass
 
                             # Example input image + overlays (if available from the dataset).
-                            image_batch = batch.get("image") if isinstance(
-                                batch, dict) else None
-                            if isinstance(image_batch, torch.Tensor) and image_batch.ndim == 4:
-                                img0 = image_batch[0].detach().float(
-                                ).cpu().clamp(0.0, 1.0)  # 3HW
-                                tb_writer.add_image(
-                                    "qual/image_batch0", img0, epoch)
+                            image_batch = (
+                                batch.get("image") if isinstance(batch, dict) else None
+                            )
+                            if (
+                                isinstance(image_batch, torch.Tensor)
+                                and image_batch.ndim == 4
+                            ):
+                                img0 = (
+                                    image_batch[0]
+                                    .detach()
+                                    .float()
+                                    .cpu()
+                                    .clamp(0.0, 1.0)
+                                )  # 3HW
+                                tb_writer.add_image("qual/image_batch0", img0, epoch)
 
-                                prob_mean = probs0.detach().float().cpu().mean(dim=0)  # HW
+                                prob_mean = (
+                                    probs0.detach().float().cpu().mean(dim=0)
+                                )  # HW
                                 pmin = float(prob_mean.min().item())
                                 pmax = float(prob_mean.max().item())
-                                prob_norm = (prob_mean - pmin) / \
-                                    max(pmax - pmin, 1e-6)
+                                prob_norm = (prob_mean - pmin) / max(pmax - pmin, 1e-6)
 
                                 gt_sum = masks0.detach().float().cpu().sum(dim=0)
                                 gmin = float(gt_sum.min().item())
                                 gmax = float(gt_sum.max().item())
-                                gt_norm = (gt_sum - gmin) / \
-                                    max(gmax - gmin, 1e-6)
+                                gt_norm = (gt_sum - gmin) / max(gmax - gmin, 1e-6)
 
                                 tb_writer.add_image(
-                                    "qual/pred_mean_batch0", prob_norm.unsqueeze(0), epoch)
+                                    "qual/pred_mean_batch0",
+                                    prob_norm.unsqueeze(0),
+                                    epoch,
+                                )
                                 tb_writer.add_image(
-                                    "qual/gt_sum_batch0", gt_norm.unsqueeze(0), epoch)
+                                    "qual/gt_sum_batch0", gt_norm.unsqueeze(0), epoch
+                                )
 
                                 # Upsample patch-grid maps to image resolution for overlays.
                                 try:
-                                    target_hw = (
-                                        int(img0.shape[1]), int(img0.shape[2]))
+                                    target_hw = (int(img0.shape[1]), int(img0.shape[2]))
                                     prob_up = F.interpolate(
                                         prob_norm.unsqueeze(0).unsqueeze(0),
                                         size=target_hw,
@@ -1876,20 +2031,28 @@ def train(
                                         align_corners=False,
                                     )[0, 0].clamp(0.0, 1.0)
                                     tb_writer.add_image(
-                                        "qual/pred_mean_up_batch0", prob_up.unsqueeze(0), epoch)
+                                        "qual/pred_mean_up_batch0",
+                                        prob_up.unsqueeze(0),
+                                        epoch,
+                                    )
                                     tb_writer.add_image(
-                                        "qual/gt_sum_up_batch0", gt_up.unsqueeze(0), epoch)
+                                        "qual/gt_sum_up_batch0",
+                                        gt_up.unsqueeze(0),
+                                        epoch,
+                                    )
                                 except Exception:
                                     prob_up = prob_norm
 
                                 overlay = img0.clone()
                                 alpha = (0.55 * prob_up).clamp(0.0, 0.55)  # HW
-                                overlay[0] = overlay[0] * \
-                                    (1.0 - alpha) + alpha * 1.0
+                                overlay[0] = overlay[0] * (1.0 - alpha) + alpha * 1.0
                                 overlay[1] = overlay[1] * (1.0 - alpha)
                                 overlay[2] = overlay[2] * (1.0 - alpha)
                                 tb_writer.add_image(
-                                    "qual/overlay_pred_mean_batch0", overlay.clamp(0.0, 1.0), epoch)
+                                    "qual/overlay_pred_mean_batch0",
+                                    overlay.clamp(0.0, 1.0),
+                                    epoch,
+                                )
 
                 if int(n_train) % int(accumulate) != 0:
                     if float(grad_clip) > 0.0:
@@ -1908,13 +2071,13 @@ def train(
                 train_loss_total /= max(1, n_train)
                 if grad_norm_steps:
                     tb_writer.add_scalar(
-                        "train/grad_norm", grad_norm_sum /
-                        max(1, grad_norm_steps), epoch
+                        "train/grad_norm",
+                        grad_norm_sum / max(1, grad_norm_steps),
+                        epoch,
                     )
                 try:
                     tb_writer.add_scalar(
-                        "train/lr", float(
-                            opt.param_groups[0].get("lr", 0.0)), epoch
+                        "train/lr", float(opt.param_groups[0].get("lr", 0.0)), epoch
                     )
                 except Exception:
                     pass
@@ -1929,31 +2092,34 @@ def train(
                 if val_loader is not None:
                     head.eval()
                     losses = []
-                    tp = torch.zeros(int(spec.kpt_count),
-                                     device=device_str, dtype=torch.float32)
-                    fp = torch.zeros(int(spec.kpt_count),
-                                     device=device_str, dtype=torch.float32)
-                    fn = torch.zeros(int(spec.kpt_count),
-                                     device=device_str, dtype=torch.float32)
+                    tp = torch.zeros(
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
+                    fp = torch.zeros(
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
+                    fn = torch.zeros(
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
                     peak_dist_sum = torch.zeros(
-                        int(spec.kpt_count), device=device_str, dtype=torch.float32)
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
                     peak_dist_count = torch.zeros(
-                        int(spec.kpt_count), device=device_str, dtype=torch.float32)
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
                     coord_err_sum = torch.zeros(
-                        int(spec.kpt_count), device=device_str, dtype=torch.float32)
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
                     coord_err_count = torch.zeros(
-                        int(spec.kpt_count), device=device_str, dtype=torch.float32)
-                    det_scores: List[List[float]] = [
-                        [] for _ in range(int(spec.kpt_count))
-                    ]
-                    det_oks: List[List[float]] = [
-                        [] for _ in range(int(spec.kpt_count))
-                    ]
-                    gt_counts = [0 for _ in range(int(spec.kpt_count))]
+                        int(kpt_count), device=device_str, dtype=torch.float32
+                    )
+                    det_scores: List[List[float]] = [[] for _ in range(int(kpt_count))]
+                    det_oks: List[List[float]] = [[] for _ in range(int(kpt_count))]
+                    gt_counts = [0 for _ in range(int(kpt_count))]
                     pck_acc = DinoKPSEGEvalAccumulator(
-                        kpt_count=int(spec.kpt_count),
+                        kpt_count=int(kpt_count),
                         thresholds_px=pck_thresholds,
-                        keypoint_names=spec.keypoint_names,
+                        keypoint_names=list(keypoint_names) if keypoint_names else None,
                     )
                     error_samples: List[Tuple[float, torch.Tensor]] = []
                     pred_overlays: List[torch.Tensor] = []
@@ -1961,24 +2127,20 @@ def train(
                     pred_max = 4
                     with torch.no_grad():
                         for batch in val_loader:
-                            feats = batch["feats"].to(
-                                device_str, non_blocking=True)
-                            masks = batch["masks"].to(
-                                device_str, non_blocking=True)
+                            feats = batch["feats"].to(device_str, non_blocking=True)
+                            masks = batch["masks"].to(device_str, non_blocking=True)
                             coords = batch.get("coords")
                             coord_mask = batch.get("coord_mask")
                             valid_mask = batch.get("valid_mask")
                             key_padding_mask = batch.get("key_padding_mask")
                             if not isinstance(coords, torch.Tensor):
                                 coords = torch.zeros(
-                                    (int(masks.shape[0]), int(
-                                        masks.shape[1]), 2),
+                                    (int(masks.shape[0]), int(masks.shape[1]), 2),
                                     dtype=torch.float32,
                                     device=device_str,
                                 )
                             else:
-                                coords = coords.to(
-                                    device_str, non_blocking=True)
+                                coords = coords.to(device_str, non_blocking=True)
                             if not isinstance(coord_mask, torch.Tensor):
                                 coord_mask = torch.zeros(
                                     (int(masks.shape[0]), int(masks.shape[1])),
@@ -1987,26 +2149,32 @@ def train(
                                 )
                             else:
                                 coord_mask = coord_mask.to(
-                                    device_str, non_blocking=True)
+                                    device_str, non_blocking=True
+                                )
                             if not isinstance(valid_mask, torch.Tensor):
                                 valid_mask = torch.ones(
-                                    (int(masks.shape[0]), 1, int(
-                                        masks.shape[2]), int(masks.shape[3])),
+                                    (
+                                        int(masks.shape[0]),
+                                        1,
+                                        int(masks.shape[2]),
+                                        int(masks.shape[3]),
+                                    ),
                                     dtype=torch.bool,
                                     device=device_str,
                                 )
                             else:
                                 valid_mask = valid_mask.to(
-                                    device_str, non_blocking=True)
+                                    device_str, non_blocking=True
+                                )
                             if isinstance(key_padding_mask, torch.Tensor):
                                 key_padding_mask = key_padding_mask.to(
-                                    device_str, non_blocking=True)
+                                    device_str, non_blocking=True
+                                )
                             else:
                                 key_padding_mask = None
 
                             try:
-                                logits = head(
-                                    feats, key_padding_mask=key_padding_mask)
+                                logits = head(feats, key_padding_mask=key_padding_mask)
                             except TypeError:
                                 logits = head(feats)
                             logits = logits.masked_fill(~valid_mask, -20.0)
@@ -2029,10 +2197,14 @@ def train(
                                     gamma=float(focal_gamma),
                                 )
                             if float(dice_loss_weight) > 0.0:
-                                loss_val = loss_val + float(dice_loss_weight) * _dice_loss_masked(
-                                    probs, masks, valid_mask
-                                )
-                            if float(coord_weight) > 0.0 and coords.numel() > 0 and coord_mask.numel() > 0:
+                                loss_val = loss_val + float(
+                                    dice_loss_weight
+                                ) * _dice_loss_masked(probs, masks, valid_mask)
+                            if (
+                                float(coord_weight) > 0.0
+                                and coords.numel() > 0
+                                and coord_mask.numel() > 0
+                            ):
                                 pred_xy = _soft_argmax_coords_batched(
                                     probs, patch_size=int(extractor.patch_size)
                                 )
@@ -2042,21 +2214,21 @@ def train(
                                     coord_mask.reshape(-1),
                                     mode=coord_loss_type,
                                 )
-                            losses.append(
-                                float(loss_val.detach().cpu().item()))
+                            losses.append(float(loss_val.detach().cpu().item()))
 
                             gt = (masks > 0.5) & valid_mask
                             pred = (probs >= float(threshold)) & valid_mask
-                            tp += (pred & gt).sum(dim=(0, 2, 3)
-                                                  ).to(dtype=torch.float32)
-                            fp += (pred & ~gt).sum(dim=(0, 2, 3)
-                                                   ).to(dtype=torch.float32)
-                            fn += (~pred & gt).sum(dim=(0, 2, 3)
-                                                   ).to(dtype=torch.float32)
+                            tp += (pred & gt).sum(dim=(0, 2, 3)).to(dtype=torch.float32)
+                            fp += (
+                                (pred & ~gt).sum(dim=(0, 2, 3)).to(dtype=torch.float32)
+                            )
+                            fn += (
+                                (~pred & gt).sum(dim=(0, 2, 3)).to(dtype=torch.float32)
+                            )
 
                             bsz, k, h_p, w_p = probs.shape
                             flat_gt = masks.view(bsz, k, -1)
-                            gt_present = (flat_gt.sum(dim=2) > 0)
+                            gt_present = flat_gt.sum(dim=2) > 0
 
                             pred_idx = probs.view(bsz, k, -1).argmax(dim=2)
                             gt_idx = flat_gt.argmax(dim=2)
@@ -2066,14 +2238,20 @@ def train(
                             gt_x = (gt_idx % w_p).to(dtype=torch.float32)
 
                             dist = torch.sqrt(
-                                (pred_y - gt_y) ** 2 + (pred_x - gt_x) ** 2) * float(extractor.patch_size)
-                            peak_dist_sum += (dist *
-                                              gt_present.to(dtype=torch.float32)).sum(dim=0)
-                            peak_dist_count += gt_present.to(
-                                dtype=torch.float32).sum(dim=0)
+                                (pred_y - gt_y) ** 2 + (pred_x - gt_x) ** 2
+                            ) * float(extractor.patch_size)
+                            peak_dist_sum += (
+                                dist * gt_present.to(dtype=torch.float32)
+                            ).sum(dim=0)
+                            peak_dist_count += gt_present.to(dtype=torch.float32).sum(
+                                dim=0
+                            )
 
-                            conf = probs.view(
-                                bsz, k, -1).max(dim=2).values.to(dtype=torch.float32)
+                            conf = (
+                                probs.view(bsz, k, -1)
+                                .max(dim=2)
+                                .values.to(dtype=torch.float32)
+                            )
                             pred_xy = _soft_argmax_coords_batched(
                                 probs, patch_size=int(extractor.patch_size)
                             )  # B,K,2
@@ -2089,28 +2267,40 @@ def train(
                             if coords.numel() == peak_xy.numel():
                                 use_coords = (coord_mask > 0.5) & gt_present
                                 gt_xy_eval = torch.where(
-                                    use_coords[:, :, None], coords.to(dtype=torch.float32), peak_xy)
+                                    use_coords[:, :, None],
+                                    coords.to(dtype=torch.float32),
+                                    peak_xy,
+                                )
 
                             dist_xy = torch.sqrt(
-                                ((pred_xy - gt_xy_eval) ** 2).sum(dim=2))
+                                ((pred_xy - gt_xy_eval) ** 2).sum(dim=2)
+                            )
                             if isinstance(use_coords, torch.Tensor):
                                 coord_err_sum += (
-                                    dist_xy *
-                                    use_coords.to(dtype=dist_xy.dtype)
+                                    dist_xy * use_coords.to(dtype=dist_xy.dtype)
                                 ).sum(dim=0)
                                 coord_err_count += use_coords.to(
-                                    dtype=dist_xy.dtype).sum(dim=0)
+                                    dtype=dist_xy.dtype
+                                ).sum(dim=0)
                             oks = _oks_from_distance(
-                                dist_xy, sigma_px=float(extractor.patch_size))
+                                dist_xy, sigma_px=float(extractor.patch_size)
+                            )
                             oks = oks * gt_present.to(dtype=oks.dtype)
 
-                            for kp in range(int(spec.kpt_count)):
-                                gt_counts[kp] += int(gt_present[:,
-                                                     kp].sum().item())
+                            for kp in range(int(kpt_count)):
+                                gt_counts[kp] += int(gt_present[:, kp].sum().item())
                                 det_scores[kp].extend(
-                                    [float(x) for x in conf[:, kp].detach().cpu().tolist()])
+                                    [
+                                        float(x)
+                                        for x in conf[:, kp].detach().cpu().tolist()
+                                    ]
+                                )
                                 det_oks[kp].extend(
-                                    [float(x) for x in oks[:, kp].detach().cpu().tolist()])
+                                    [
+                                        float(x)
+                                        for x in oks[:, kp].detach().cpu().tolist()
+                                    ]
+                                )
 
                             gt_instances_batch = batch.get("gt_instances")
                             image_hw_batch = batch.get("image_hw")
@@ -2123,25 +2313,36 @@ def train(
                                     if bi >= len(value):
                                         return None
                                     item = value[bi]
-                                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                                    if (
+                                        isinstance(item, (list, tuple))
+                                        and len(item) == 2
+                                    ):
                                         return int(item[0]), int(item[1])
                                     return None
-                                if isinstance(value, tuple) and len(value) == 2 and all(
-                                    isinstance(v, torch.Tensor) for v in value
+                                if (
+                                    isinstance(value, tuple)
+                                    and len(value) == 2
+                                    and all(isinstance(v, torch.Tensor) for v in value)
                                 ):
                                     h_t, w_t = value
-                                    if bi >= int(h_t.shape[0]) or bi >= int(w_t.shape[0]):
+                                    if bi >= int(h_t.shape[0]) or bi >= int(
+                                        w_t.shape[0]
+                                    ):
                                         return None
                                     return int(h_t[bi].item()), int(w_t[bi].item())
                                 if isinstance(value, torch.Tensor):
                                     if value.ndim == 2 and int(value.shape[1]) == 2:
                                         if bi >= int(value.shape[0]):
                                             return None
-                                        return int(value[bi, 0].item()), int(value[bi, 1].item())
+                                        return int(value[bi, 0].item()), int(
+                                            value[bi, 1].item()
+                                        )
                                     if value.ndim == 2 and int(value.shape[0]) == 2:
                                         if bi >= int(value.shape[1]):
                                             return None
-                                        return int(value[0, bi].item()), int(value[1, bi].item())
+                                        return int(value[0, bi].item()), int(
+                                            value[1, bi].item()
+                                        )
                                 return None
 
                             have_gt_meta = (
@@ -2157,10 +2358,12 @@ def train(
                                     continue
                                 gt_instances = gt_instances_batch[bi]
                                 image_hw = _get_image_hw(image_hw_batch, bi)
-                                if not isinstance(gt_instances, list) or image_hw is None:
+                                if (
+                                    not isinstance(gt_instances, list)
+                                    or image_hw is None
+                                ):
                                     continue
-                                orig_h, orig_w = int(
-                                    image_hw[0]), int(image_hw[1])
+                                orig_h, orig_w = int(image_hw[0]), int(image_hw[1])
                                 if orig_h <= 0 or orig_w <= 0:
                                     continue
                                 valid_rows = valid_mask_cpu[bi, 0].any(dim=1)
@@ -2169,27 +2372,32 @@ def train(
                                 w_i = int(valid_cols.sum().item())
                                 if h_i <= 0 or w_i <= 0:
                                     continue
-                                resized_h = int(h_i) * \
-                                    int(extractor.patch_size)
-                                resized_w = int(w_i) * \
-                                    int(extractor.patch_size)
+                                resized_h = int(h_i) * int(extractor.patch_size)
+                                resized_w = int(w_i) * int(extractor.patch_size)
                                 if resized_h <= 0 or resized_w <= 0:
                                     continue
 
                                 pred_xy_resized = [
-                                    (float(x), float(y)) for x, y in pred_xy_cpu[bi].tolist()
+                                    (float(x), float(y))
+                                    for x, y in pred_xy_cpu[bi].tolist()
                                 ]
                                 if (
                                     image_batch is not None
                                     and isinstance(image_batch, torch.Tensor)
                                     and len(pred_overlays) < int(pred_max)
                                 ):
-                                    img = image_batch[bi, :, :resized_h, :resized_w].detach(
-                                    ).cpu()
+                                    img = (
+                                        image_batch[bi, :, :resized_h, :resized_w]
+                                        .detach()
+                                        .cpu()
+                                    )
                                     gt_xy_resized: List[Tuple[float, float]] = []
                                     if gt_instances:
                                         gt0 = gt_instances[0]
-                                        if isinstance(gt0, np.ndarray) and gt0.ndim == 2:
+                                        if (
+                                            isinstance(gt0, np.ndarray)
+                                            and gt0.ndim == 2
+                                        ):
                                             for row in gt0:
                                                 if row.shape[0] < 3:
                                                     continue
@@ -2197,10 +2405,10 @@ def train(
                                                     continue
                                                 gt_xy_resized.append(
                                                     (
-                                                        float(row[0]) *
-                                                        float(resized_w),
-                                                        float(row[1]) *
-                                                        float(resized_h),
+                                                        float(row[0])
+                                                        * float(resized_w),
+                                                        float(row[1])
+                                                        * float(resized_h),
                                                     )
                                                 )
                                     pred_overlays.append(
@@ -2212,10 +2420,8 @@ def train(
                                     )
                                 pred_xy_orig = [
                                     (
-                                        float(x) * (float(orig_w) /
-                                                    float(resized_w)),
-                                        float(y) * (float(orig_h) /
-                                                    float(resized_h)),
+                                        float(x) * (float(orig_w) / float(resized_w)),
+                                        float(y) * (float(orig_h) / float(resized_h)),
                                     )
                                     for x, y in pred_xy_resized
                                 ]
@@ -2228,7 +2434,7 @@ def train(
                                     )
 
                                 errors = []
-                                for kpt_idx in range(int(spec.kpt_count)):
+                                for kpt_idx in range(int(kpt_count)):
                                     candidates = _collect_gt_candidates(
                                         gt_instances,
                                         kpt_idx=kpt_idx,
@@ -2237,19 +2443,28 @@ def train(
                                     if not candidates:
                                         continue
                                     err = _min_error_px(
-                                        pred_xy_orig[kpt_idx], candidates)
+                                        pred_xy_orig[kpt_idx], candidates
+                                    )
                                     if err is not None:
                                         errors.append(float(err))
                                 if not errors:
                                     continue
                                 mean_err = float(sum(errors) / len(errors))
-                                if image_batch is not None and isinstance(image_batch, torch.Tensor):
-                                    img = image_batch[bi, :, :resized_h, :resized_w].detach(
-                                    ).cpu()
+                                if image_batch is not None and isinstance(
+                                    image_batch, torch.Tensor
+                                ):
+                                    img = (
+                                        image_batch[bi, :, :resized_h, :resized_w]
+                                        .detach()
+                                        .cpu()
+                                    )
                                     gt_xy_resized: List[Tuple[float, float]] = []
                                     if gt_instances:
                                         gt0 = gt_instances[0]
-                                        if isinstance(gt0, np.ndarray) and gt0.ndim == 2:
+                                        if (
+                                            isinstance(gt0, np.ndarray)
+                                            and gt0.ndim == 2
+                                        ):
                                             for row in gt0:
                                                 if row.shape[0] < 3:
                                                     continue
@@ -2257,10 +2472,10 @@ def train(
                                                     continue
                                                 gt_xy_resized.append(
                                                     (
-                                                        float(row[0]) *
-                                                        float(resized_w),
-                                                        float(row[1]) *
-                                                        float(resized_h),
+                                                        float(row[0])
+                                                        * float(resized_w),
+                                                        float(row[1])
+                                                        * float(resized_h),
                                                     )
                                                 )
                                     overlay = _overlay_keypoints(
@@ -2277,8 +2492,7 @@ def train(
                     if losses:
                         val_loss = float(sum(losses) / len(losses))
                     if pck_acc is not None:
-                        pck_summary = pck_acc.summary(
-                            include_per_keypoint=True)
+                        pck_summary = pck_acc.summary(include_per_keypoint=True)
                         swap_rate = pck_summary.get("swap_rate")
                     # Validation metrics (YOLO-like reporting) averaged over keypoints with GT present.
                     denom_dice = (2.0 * tp + fp + fn).clamp(min=1e-8)
@@ -2290,11 +2504,11 @@ def train(
                     if bool(valid_kpt.any().item()):
                         dice_mean = float(dice[valid_kpt].mean().item())
                         iou_mean = float(iou[valid_kpt].mean().item())
-                        precision_mean = float(
-                            precision[valid_kpt].mean().item())
+                        precision_mean = float(precision[valid_kpt].mean().item())
                         recall_mean = float(recall[valid_kpt].mean().item())
-                        peak_dist_px = (
-                            peak_dist_sum / peak_dist_count.clamp(min=1.0))[valid_kpt]
+                        peak_dist_px = (peak_dist_sum / peak_dist_count.clamp(min=1.0))[
+                            valid_kpt
+                        ]
                         peak_dist_px_mean = float(peak_dist_px.mean().item())
                     else:
                         dice_mean = float(dice.mean().item())
@@ -2302,7 +2516,9 @@ def train(
                         precision_mean = float(precision.mean().item())
                         recall_mean = float(recall.mean().item())
                         peak_dist_px_mean = float(
-                            (peak_dist_sum / peak_dist_count.clamp(min=1.0)).mean().item()
+                            (peak_dist_sum / peak_dist_count.clamp(min=1.0))
+                            .mean()
+                            .item()
                         )
 
                     # COCO-style AP over IoU thresholds (0.50:0.95) using confidence = max prob.
@@ -2311,7 +2527,7 @@ def train(
                     prec_list: List[float] = []
                     rec_list: List[float] = []
                     conf_gate = 0.25
-                    for i in range(int(spec.kpt_count)):
+                    for i in range(int(kpt_count)):
                         n_gt = int(gt_counts[i])
                         if n_gt <= 0:
                             continue
@@ -2321,11 +2537,9 @@ def train(
                         for thr in _AP_IOU_THRESHOLDS:
                             tp_flags = [float(v) >= float(thr) for v in oks_i]
                             ap_by_thr.append(
-                                _average_precision(
-                                    scores_i, tp_flags, num_gt=n_gt)
+                                _average_precision(scores_i, tp_flags, num_gt=n_gt)
                             )
-                        ap50_list.append(
-                            float(ap_by_thr[0] if ap_by_thr else 0.0))
+                        ap50_list.append(float(ap_by_thr[0] if ap_by_thr else 0.0))
                         ap5095_list.append(
                             float(sum(ap_by_thr) / max(1, len(ap_by_thr)))
                         )
@@ -2355,8 +2569,7 @@ def train(
                     else:
                         recall_pose_mean = 0.0
                     if prec_list:
-                        precision_pose_mean = float(
-                            sum(prec_list) / len(prec_list))
+                        precision_pose_mean = float(sum(prec_list) / len(prec_list))
                     else:
                         precision_pose_mean = 0.0
 
@@ -2375,19 +2588,26 @@ def train(
                         return f"{float(value):.6f}"
                     except Exception:
                         return ""
+
                 row = {
                     "epoch": epoch,
                     "train_loss": f"{train_loss_total:.6f}",
                     "val_loss": f"{val_loss:.6f}" if val_loss is not None else "",
-                    "metrics/precision(P)": "" if precision_pose_mean is None else f"{precision_pose_mean:.6f}",
-                    "metrics/recall(P)": "" if recall_pose_mean is None else f"{recall_pose_mean:.6f}",
+                    "metrics/precision(P)": ""
+                    if precision_pose_mean is None
+                    else f"{precision_pose_mean:.6f}",
+                    "metrics/recall(P)": ""
+                    if recall_pose_mean is None
+                    else f"{recall_pose_mean:.6f}",
                     "metrics/mAP50(P)": "" if map50 is None else f"{map50:.6f}",
                     "metrics/mAP50-95(P)": "" if map5095 is None else f"{map5095:.6f}",
                     "metrics/pck@2px": _pck_str(2.0),
                     "metrics/pck@4px": _pck_str(4.0),
                     "metrics/pck@8px": _pck_str(8.0),
                     "metrics/pck@16px": _pck_str(16.0),
-                    "metrics/swap_rate": "" if swap_rate is None else f"{float(swap_rate):.6f}",
+                    "metrics/swap_rate": ""
+                    if swap_rate is None
+                    else f"{float(swap_rate):.6f}",
                     "seconds": f"{elapsed:.2f}",
                 }
                 writer.writerow(row)
@@ -2428,21 +2648,23 @@ def train(
                     tb_writer.add_scalar("loss/val", val_loss, epoch)
                     tb_writer.add_scalar("val/dice_mean", dice_mean, epoch)
                     tb_writer.add_scalar("val/iou_mean", iou_mean, epoch)
-                    tb_writer.add_scalar(
-                        "val/precision_mean", precision_mean, epoch)
+                    tb_writer.add_scalar("val/precision_mean", precision_mean, epoch)
                     tb_writer.add_scalar("val/recall_mean", recall_mean, epoch)
                     tb_writer.add_scalar(
-                        "val/peak_dist_px_mean", peak_dist_px_mean, epoch)
+                        "val/peak_dist_px_mean", peak_dist_px_mean, epoch
+                    )
                     if map50 is not None and map5095 is not None:
+                        tb_writer.add_scalar("metrics/mAP50(P)", float(map50), epoch)
                         tb_writer.add_scalar(
-                            "metrics/mAP50(P)", float(map50), epoch)
-                        tb_writer.add_scalar(
-                            "metrics/mAP50-95(P)", float(map5095), epoch)
+                            "metrics/mAP50-95(P)", float(map5095), epoch
+                        )
                     if precision_pose_mean is not None and recall_pose_mean is not None:
                         tb_writer.add_scalar(
-                            "metrics/precision(P)", float(precision_pose_mean), epoch)
+                            "metrics/precision(P)", float(precision_pose_mean), epoch
+                        )
                         tb_writer.add_scalar(
-                            "metrics/recall(P)", float(recall_pose_mean), epoch)
+                            "metrics/recall(P)", float(recall_pose_mean), epoch
+                        )
                     tb_writer.add_scalar(
                         "val/keypoints_present_frac",
                         float(valid_kpt.float().mean().item()),
@@ -2462,8 +2684,11 @@ def train(
                             tb_writer.add_scalar(
                                 "val/swap_rate", float(swap_rate), epoch
                             )
-                        per_kpt = pck_summary.get("per_keypoint") if isinstance(
-                            pck_summary, dict) else None
+                        per_kpt = (
+                            pck_summary.get("per_keypoint")
+                            if isinstance(pck_summary, dict)
+                            else None
+                        )
                         if isinstance(per_kpt, dict):
                             for name, stats in per_kpt.items():
                                 if not isinstance(stats, dict):
@@ -2479,18 +2704,19 @@ def train(
                                         epoch,
                                     )
                     # Per-keypoint metrics
-                    names = spec.keypoint_names or []
-                    for i in range(int(spec.kpt_count)):
+                    names = list(keypoint_names or [])
+                    for i in range(int(kpt_count)):
                         name = names[i] if i < len(names) else f"kp_{i}"
                         tb_writer.add_scalar(
-                            f"val/dice/{name}", float(dice[i].item()), epoch)
+                            f"val/dice/{name}", float(dice[i].item()), epoch
+                        )
                         tb_writer.add_scalar(
-                            f"val/iou/{name}", float(iou[i].item()), epoch)
+                            f"val/iou/{name}", float(iou[i].item()), epoch
+                        )
                         if coord_err_count[i] > 0:
                             tb_writer.add_scalar(
                                 f"val/coord_error_px/{name}",
-                                float(
-                                    (coord_err_sum[i] / coord_err_count[i]).item()),
+                                float((coord_err_sum[i] / coord_err_count[i]).item()),
                                 epoch,
                             )
                     if error_samples:
@@ -2499,9 +2725,7 @@ def train(
                             [sample[1] for sample in error_samples],
                             pad_value=0.0,
                         ).clamp(0.0, 1.0)
-                        tb_writer.add_images(
-                            "val/error_overlays", overlay_stack, epoch
-                        )
+                        tb_writer.add_images("val/error_overlays", overlay_stack, epoch)
                     if pred_overlays:
                         tb_writer.add_images(
                             "val/pred_overlays",
@@ -2512,13 +2736,19 @@ def train(
                         )
                     if bool(tb_projector) and val_ds is not None:
                         interval = 5
-                        if int(epoch) == 1 or int(epoch) % int(interval) == 0 or int(epoch) == int(epochs):
+                        if (
+                            int(epoch) == 1
+                            or int(epoch) % int(interval) == 0
+                            or int(epoch) == int(epochs)
+                        ):
                             try:
                                 from annolid.segmentation.dino_kpseg.tensorboard_embeddings import (
                                     add_dino_kpseg_projector_embeddings,
                                 )
 
-                                def _predict_probs_patch(feats: torch.Tensor) -> torch.Tensor:
+                                def _predict_probs_patch(
+                                    feats: torch.Tensor,
+                                ) -> torch.Tensor:
                                     x = feats.unsqueeze(0).to(
                                         device_str, dtype=torch.float32
                                     )
@@ -2535,27 +2765,29 @@ def train(
                                     log_dir=tb_dir,
                                     split=split_tag,
                                     ds=val_ds,
-                                    keypoint_names=spec.keypoint_names
-                                    or [f"kpt_{i}" for i in range(int(spec.kpt_count))],
-                                    max_images=min(
-                                        int(tb_projector_max_images), 32),
+                                    keypoint_names=list(keypoint_names)
+                                    if keypoint_names
+                                    else [f"kpt_{i}" for i in range(int(kpt_count))],
+                                    max_images=min(int(tb_projector_max_images), 32),
                                     max_patches=min(
-                                        int(tb_projector_max_patches), 2000),
+                                        int(tb_projector_max_patches), 2000
+                                    ),
                                     per_image_per_keypoint=int(
-                                        tb_projector_per_image_per_keypoint),
-                                    pos_threshold=float(
-                                        tb_projector_pos_threshold),
-                                    add_negatives=bool(
-                                        tb_projector_add_negatives),
-                                    neg_threshold=float(
-                                        tb_projector_neg_threshold),
+                                        tb_projector_per_image_per_keypoint
+                                    ),
+                                    pos_threshold=float(tb_projector_pos_threshold),
+                                    add_negatives=bool(tb_projector_add_negatives),
+                                    neg_threshold=float(tb_projector_neg_threshold),
                                     negatives_per_image=int(
-                                        tb_projector_negatives_per_image),
+                                        tb_projector_negatives_per_image
+                                    ),
                                     crop_px=int(tb_projector_crop_px),
-                                    sprite_border_px=int(
-                                        tb_projector_sprite_border_px),
-                                    seed=(int(augment_cfg.seed)
-                                          if augment_cfg.seed is not None else 0),
+                                    sprite_border_px=int(tb_projector_sprite_border_px),
+                                    seed=(
+                                        int(augment_cfg.seed)
+                                        if augment_cfg.seed is not None
+                                        else 0
+                                    ),
                                     tag=f"dino_kpseg/patch_embeddings/{split_tag}",
                                     predict_probs_patch=_predict_probs_patch,
                                     write_csv=True,
@@ -2580,14 +2812,15 @@ def train(
                 selected_best = _resolve_selection_metric(
                     desired_best_metric,
                     train_loss=float(train_loss_total),
-                    val_loss=(float(val_loss)
-                              if val_loss is not None else None),
+                    val_loss=(float(val_loss) if val_loss is not None else None),
                     pck_vals=pck_vals,
                     pck_weighted_weights=pck_weighted_weights,
                 )
                 if selected_best is None or not math.isfinite(float(selected_best)):
-                    selected_best = float(val_loss) if val_loss is not None else float(
-                        train_loss_total
+                    selected_best = (
+                        float(val_loss)
+                        if val_loss is not None
+                        else float(train_loss_total)
                     )
 
                 improved_best = (
@@ -2609,14 +2842,15 @@ def train(
                 metric_for_stop = _resolve_selection_metric(
                     desired_early_stop_metric,
                     train_loss=float(train_loss_total),
-                    val_loss=(float(val_loss)
-                              if val_loss is not None else None),
+                    val_loss=(float(val_loss) if val_loss is not None else None),
                     pck_vals=pck_vals,
                     pck_weighted_weights=pck_weighted_weights,
                 )
                 if metric_for_stop is None or not math.isfinite(float(metric_for_stop)):
-                    metric_for_stop = float(val_loss) if val_loss is not None else float(
-                        train_loss_total
+                    metric_for_stop = (
+                        float(val_loss)
+                        if val_loss is not None
+                        else float(train_loss_total)
                     )
 
                 if early_stop_enabled and math.isfinite(float(metric_for_stop)):
@@ -2633,17 +2867,18 @@ def train(
                     else:
                         bad_epochs += 1
                     tb_writer.add_scalar(
-                        "early_stop/current_metric", float(
-                            metric_for_stop), epoch
+                        "early_stop/current_metric", float(metric_for_stop), epoch
                     )
                     tb_writer.add_scalar(
-                        "early_stop/best_metric", float(
-                            best_metric_for_stop), epoch
+                        "early_stop/best_metric", float(best_metric_for_stop), epoch
                     )
-                    tb_writer.add_scalar("early_stop/bad_epochs",
-                                         int(bad_epochs), epoch)
+                    tb_writer.add_scalar(
+                        "early_stop/bad_epochs", int(bad_epochs), epoch
+                    )
 
-                    if int(epoch) >= int(min_epochs) and int(bad_epochs) >= int(patience):
+                    if int(epoch) >= int(min_epochs) and int(bad_epochs) >= int(
+                        patience
+                    ):
                         reason = (
                             f"Early stopping triggered at epoch {epoch}: "
                             f"metric({desired_early_stop_metric})={float(metric_for_stop):.6f} "
@@ -2651,8 +2886,7 @@ def train(
                             f"min_delta={float(min_delta)} patience={int(patience)}"
                         )
                         logger.info(reason)
-                        tb_writer.add_text("early_stop/stop_reason",
-                                           reason, epoch)
+                        tb_writer.add_text("early_stop/stop_reason", reason, epoch)
                         tb_writer.flush()
                         break
 
@@ -2697,25 +2931,44 @@ def train(
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(
-        description="Train a DINOv3 keypoint mask segmentation head.")
-    p.add_argument("--data", required=True, help="Path to YOLO pose data.yaml")
+        description="Train a DINOv3 keypoint mask segmentation head."
+    )
+    p.add_argument(
+        "--data",
+        required=True,
+        help="Path to dataset YAML (YOLO pose data.yaml or LabelMe spec.yaml)",
+    )
+    p.add_argument(
+        "--data-format",
+        choices=("auto", "yolo", "labelme"),
+        default="auto",
+        help="Dataset annotation format (default: auto-detect from YAML).",
+    )
     p.add_argument(
         "--output",
         default=None,
         help="Run output directory (if omitted, creates a new run under ANNOLID_RUNS_ROOT/~/annolid_logs/runs).",
     )
-    p.add_argument("--runs-root", default=None,
-                   help="Runs root (overrides ANNOLID_RUNS_ROOT/~/annolid_logs/runs)")
-    p.add_argument("--run-name", default=None,
-                   help="Optional run name (default: timestamp)")
+    p.add_argument(
+        "--runs-root",
+        default=None,
+        help="Runs root (overrides ANNOLID_RUNS_ROOT/~/annolid_logs/runs)",
+    )
+    p.add_argument(
+        "--run-name", default=None, help="Optional run name (default: timestamp)"
+    )
     p.add_argument(
         "--model-name",
         default="facebook/dinov3-vits16-pretrain-lvd1689m",
         help="Hugging Face model id or dinov3 alias",
     )
     p.add_argument("--short-side", type=int, default=768)
-    p.add_argument("--layers", type=str, default="-1",
-                   help="Comma-separated transformer block indices")
+    p.add_argument(
+        "--layers",
+        type=str,
+        default="-1",
+        help="Comma-separated transformer block indices",
+    )
     p.add_argument("--radius-px", type=float, default=6.0)
     p.add_argument(
         "--mask-type",
@@ -2796,10 +3049,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         default="bce",
         help="Loss type for mask supervision (default: bce).",
     )
-    p.add_argument("--focal-alpha", type=float,
-                   default=0.25, help="Alpha for focal BCE.")
-    p.add_argument("--focal-gamma", type=float,
-                   default=2.0, help="Gamma for focal BCE.")
+    p.add_argument(
+        "--focal-alpha", type=float, default=0.25, help="Alpha for focal BCE."
+    )
+    p.add_argument(
+        "--focal-gamma", type=float, default=2.0, help="Gamma for focal BCE."
+    )
     sched_group = p.add_mutually_exclusive_group()
     sched_group.add_argument(
         "--cos-lr",
@@ -2844,14 +3099,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--radius-start-px", type=float, default=None)
     p.add_argument("--radius-end-px", type=float, default=None)
     p.add_argument("--device", default=None)
-    p.add_argument("--no-cache", action="store_true",
-                   help="Disable feature caching")
-    p.add_argument("--head-type", choices=("conv", "attn", "hybrid"),
-                   default="conv", help="Head architecture")
-    p.add_argument("--attn-heads", type=int, default=4,
-                   help="Attention heads (attn head only)")
-    p.add_argument("--attn-layers", type=int, default=1,
-                   help="Attention layers (attn head only)")
+    p.add_argument("--no-cache", action="store_true", help="Disable feature caching")
+    p.add_argument(
+        "--head-type",
+        choices=("conv", "attn", "hybrid"),
+        default="conv",
+        help="Head architecture",
+    )
+    p.add_argument(
+        "--attn-heads", type=int, default=4, help="Attention heads (attn head only)"
+    )
+    p.add_argument(
+        "--attn-layers", type=int, default=1, help="Attention layers (attn head only)"
+    )
     p.add_argument(
         "--lr-pair-loss-weight",
         type=float,
@@ -2894,12 +3154,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         default="smooth_l1",
         help="Coordinate regression loss type.",
     )
-    p.add_argument("--early-stop-patience", type=int, default=0,
-                   help="Early stop patience (0=off)")
-    p.add_argument("--early-stop-min-delta", type=float, default=0.0,
-                   help="Min metric improvement to reset patience")
-    p.add_argument("--early-stop-min-epochs", type=int, default=0,
-                   help="Do not early-stop before this epoch")
+    p.add_argument(
+        "--early-stop-patience", type=int, default=0, help="Early stop patience (0=off)"
+    )
+    p.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=0.0,
+        help="Min metric improvement to reset patience",
+    )
+    p.add_argument(
+        "--early-stop-min-epochs",
+        type=int,
+        default=0,
+        help="Do not early-stop before this epoch",
+    )
     p.add_argument(
         "--best-metric",
         choices=("pck@8px", "pck_weighted", "val_loss", "train_loss"),
@@ -2918,8 +3187,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         default="1,1,1,1",
         help="Comma-separated weights for pck_weighted over thresholds [2,4,8,16] px (default: 1,1,1,1).",
     )
-    p.add_argument("--tb-add-graph", action="store_true",
-                   help="Export model graph to TensorBoard (can be slow)")
+    p.add_argument(
+        "--tb-add-graph",
+        action="store_true",
+        help="Export model graph to TensorBoard (can be slow)",
+    )
     p.add_argument(
         "--tb-projector",
         action="store_true",
@@ -2933,32 +3205,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument("--tb-projector-max-images", type=int, default=64)
     p.add_argument("--tb-projector-max-patches", type=int, default=4000)
-    p.add_argument("--tb-projector-per-image-per-keypoint",
-                   type=int, default=3)
+    p.add_argument("--tb-projector-per-image-per-keypoint", type=int, default=3)
     p.add_argument("--tb-projector-pos-threshold", type=float, default=0.35)
     p.add_argument("--tb-projector-crop-px", type=int, default=96)
     p.add_argument("--tb-projector-sprite-border-px", type=int, default=3)
     p.add_argument("--tb-projector-add-negatives", action="store_true")
     p.add_argument("--tb-projector-neg-threshold", type=float, default=0.02)
     p.add_argument("--tb-projector-negatives-per-image", type=int, default=6)
-    p.add_argument("--augment", action="store_true",
-                   help="Enable YOLO-like pose augmentations")
-    p.add_argument("--hflip", type=float, default=0.5,
-                   help="Horizontal flip probability")
-    p.add_argument("--degrees", type=float, default=0.0,
-                   help="Random rotation degrees (+/-)")
-    p.add_argument("--translate", type=float, default=0.0,
-                   help="Random translate fraction (+/-)")
-    p.add_argument("--scale", type=float, default=0.0,
-                   help="Random scale fraction (+/-)")
-    p.add_argument("--brightness", type=float, default=0.0,
-                   help="Brightness jitter (+/-)")
-    p.add_argument("--contrast", type=float, default=0.0,
-                   help="Contrast jitter (+/-)")
-    p.add_argument("--saturation", type=float, default=0.0,
-                   help="Saturation jitter (+/-)")
-    p.add_argument("--seed", type=int, default=None,
-                   help="Optional RNG seed (also used for augmentations)")
+    p.add_argument(
+        "--augment", action="store_true", help="Enable YOLO-like pose augmentations"
+    )
+    p.add_argument(
+        "--hflip", type=float, default=0.5, help="Horizontal flip probability"
+    )
+    p.add_argument(
+        "--degrees", type=float, default=0.0, help="Random rotation degrees (+/-)"
+    )
+    p.add_argument(
+        "--translate", type=float, default=0.0, help="Random translate fraction (+/-)"
+    )
+    p.add_argument(
+        "--scale", type=float, default=0.0, help="Random scale fraction (+/-)"
+    )
+    p.add_argument(
+        "--brightness", type=float, default=0.0, help="Brightness jitter (+/-)"
+    )
+    p.add_argument("--contrast", type=float, default=0.0, help="Contrast jitter (+/-)")
+    p.add_argument(
+        "--saturation", type=float, default=0.0, help="Saturation jitter (+/-)"
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional RNG seed (also used for augmentations)",
+    )
     args = p.parse_args(argv)
 
     layers = parse_layers(args.layers)
@@ -2981,6 +3262,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     best = train(
         data_yaml=Path(args.data).expanduser().resolve(),
+        data_format=str(args.data_format),
         output_dir=out_dir,
         model_name=str(args.model_name),
         short_side=int(args.short_side),
@@ -3025,8 +3307,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         early_stop_min_epochs=int(args.early_stop_min_epochs),
         best_metric=str(args.best_metric),
         early_stop_metric=str(args.early_stop_metric),
-        pck_weighted_weights=_parse_weight_list(
-            args.pck_weighted_weights, n=4),
+        pck_weighted_weights=_parse_weight_list(args.pck_weighted_weights, n=4),
         tb_add_graph=bool(args.tb_add_graph),
         radius_schedule=str(args.radius_schedule),
         radius_start_px=(
@@ -3042,14 +3323,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         tb_projector_max_images=int(args.tb_projector_max_images),
         tb_projector_max_patches=int(args.tb_projector_max_patches),
         tb_projector_per_image_per_keypoint=int(
-            args.tb_projector_per_image_per_keypoint),
+            args.tb_projector_per_image_per_keypoint
+        ),
         tb_projector_pos_threshold=float(args.tb_projector_pos_threshold),
         tb_projector_crop_px=int(args.tb_projector_crop_px),
         tb_projector_sprite_border_px=int(args.tb_projector_sprite_border_px),
         tb_projector_add_negatives=bool(args.tb_projector_add_negatives),
         tb_projector_neg_threshold=float(args.tb_projector_neg_threshold),
-        tb_projector_negatives_per_image=int(
-            args.tb_projector_negatives_per_image),
+        tb_projector_negatives_per_image=int(args.tb_projector_negatives_per_image),
         augment=DinoKPSEGAugmentConfig(
             enabled=bool(args.augment),
             hflip_prob=float(args.hflip),

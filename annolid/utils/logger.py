@@ -3,12 +3,15 @@ import logging
 import os
 import sys
 
-import termcolor
 from pathlib import Path
-import datetime
 from typing import Union
 
 __appname__ = "annolid"
+
+try:
+    import termcolor  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    termcolor = None
 
 
 def resolve_path(path: Union[Path, str]) -> Path:
@@ -19,7 +22,7 @@ def resolve_path(path: Union[Path, str]) -> Path:
 home_dir = Path.home()
 
 # Define the directory name for logs
-logs_dir_name = f'{__appname__}_logs'
+logs_dir_name = f"{__appname__}_logs"
 
 # Create the path for the logs directory
 logs_dir_path = home_dir / logs_dir_name
@@ -35,7 +38,7 @@ if not resolved_logs_dir_path.exists():
 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
 
 # Define the log file name with the current date
-log_file_name = f'{__appname__}_{current_date}.log'
+log_file_name = f"{__appname__}_{current_date}.log"
 
 # Create the path for the log file
 log_file_path = resolved_logs_dir_path / log_file_name
@@ -45,6 +48,7 @@ resolved_log_file_path = resolve_path(log_file_path)
 
 if os.name == "nt":  # Windows
     import colorama
+
     colorama.init()
 
 
@@ -60,13 +64,14 @@ COLORS = {
 class ColoredFormatter(logging.Formatter):
     def __init__(self, fmt, use_color=True):
         logging.Formatter.__init__(self, fmt)
-        self.use_color = use_color
+        self.use_color = bool(use_color and termcolor is not None)
 
     def format(self, record):
         levelname = record.levelname
         if self.use_color and levelname in COLORS:
 
             def colored(text):
+                assert termcolor is not None
                 return termcolor.colored(
                     text,
                     color=COLORS[levelname],
@@ -77,11 +82,18 @@ class ColoredFormatter(logging.Formatter):
             record.message2 = colored(record.getMessage())
 
             asctime2 = datetime.datetime.fromtimestamp(record.created)
-            record.asctime2 = termcolor.colored(asctime2, color="green")
+            record.asctime2 = colored(str(asctime2))
 
             record.module2 = termcolor.colored(record.module, color="cyan")
             record.funcName2 = termcolor.colored(record.funcName, color="cyan")
             record.lineno2 = termcolor.colored(record.lineno, color="cyan")
+        else:
+            record.levelname2 = "{:<7}".format(record.levelname)
+            record.message2 = record.getMessage()
+            record.asctime2 = str(datetime.datetime.fromtimestamp(record.created))
+            record.module2 = record.module
+            record.funcName2 = record.funcName
+            record.lineno2 = record.lineno
         return logging.Formatter.format(self, record)
 
 
@@ -91,8 +103,7 @@ logger.setLevel(logging.INFO)
 # Configure logging to write to stderr
 stream_handler = logging.StreamHandler(sys.stderr)
 handler_format = ColoredFormatter(
-    "%(asctime)s [%(levelname2)s] %(module2)s:%(funcName2)s:%(lineno2)s"
-    "- %(message2)s"
+    "%(asctime)s [%(levelname2)s] %(module2)s:%(funcName2)s:%(lineno2)s- %(message2)s"
 )
 stream_handler.setFormatter(handler_format)
 logger.addHandler(stream_handler)

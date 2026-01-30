@@ -8,23 +8,27 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import yaml
 from PIL import Image, ImageOps
 
 from annolid.segmentation.dino_kpseg.cli_utils import normalize_device
 from annolid.segmentation.dino_kpseg.data import (
     _image_to_label_path,
+    _image_to_labelme_path,
+    _labelme_keypoint_instances_from_payload,
     _parse_yolo_pose_line,
+    build_extractor,
+    load_labelme_pose_spec,
     load_yolo_pose_spec,
+    merge_feature_layers,
 )
 from annolid.segmentation.dino_kpseg.keypoints import (
     infer_left_right_pairs,
     symmetric_pairs_from_flip_idx,
 )
 from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
-from annolid.segmentation.dino_kpseg.data import (
-    build_extractor,
-    merge_feature_layers,
-)
+from annolid.utils.annotation_store import load_labelme_json
+
 
 def _average_precision(
     scores: Sequence[float],
@@ -52,8 +56,7 @@ def _average_precision(
         fp_cum.append(f)
 
     recalls = [tpi / float(num_gt) for tpi in tp_cum]
-    precisions = [tpi / max(1e-12, (tpi + fpi))
-                  for tpi, fpi in zip(tp_cum, fp_cum)]
+    precisions = [tpi / max(1e-12, (tpi + fpi)) for tpi, fpi in zip(tp_cum, fp_cum)]
 
     mrec = [0.0] + recalls + [1.0]
     mpre = [0.0] + precisions + [0.0]
@@ -99,8 +102,7 @@ class DinoKPSEGEvalAccumulator:
         self.swap_pairs_swapped = 0
 
         self.keypoint_stats: Dict[int, _KeypointStats] = {
-            idx: _KeypointStats(
-                pck_counts={thr: 0 for thr in self.thresholds_px})
+            idx: _KeypointStats(pck_counts={thr: 0 for thr in self.thresholds_px})
             for idx in range(self.kpt_count)
         }
 
@@ -291,10 +293,8 @@ def _count_swaps(
         pred_l = pred_xy[li]
         pred_r = pred_xy[ri]
 
-        d_same = _min_error_px(
-            pred_l, [(lx, ly)]) + _min_error_px(pred_r, [(rx, ry)])
-        d_swap = _min_error_px(
-            pred_l, [(rx, ry)]) + _min_error_px(pred_r, [(lx, ly)])
+        d_same = _min_error_px(pred_l, [(lx, ly)]) + _min_error_px(pred_r, [(rx, ry)])
+        d_swap = _min_error_px(pred_l, [(rx, ry)]) + _min_error_px(pred_r, [(lx, ly)])
         total += 1
         if d_swap + 1e-6 < d_same:
             swaps += 1
@@ -320,10 +320,34 @@ def _load_pose_instances(
             continue
         tokens = line.split()
         kpts = _parse_yolo_pose_line(
-            tokens, kpt_count=int(kpt_count), dims=int(kpt_dims))
+            tokens, kpt_count=int(kpt_count), dims=int(kpt_dims)
+        )
         if kpts is not None:
             instances.append(kpts)
     return instances
+
+
+def _load_pose_instances_labelme(
+    json_path: Path,
+    *,
+    keypoint_names: Sequence[str],
+    kpt_dims: int,
+    image_hw: Tuple[int, int],
+) -> List[np.ndarray]:
+    if not Path(json_path).exists():
+        return []
+    try:
+        payload = load_labelme_json(Path(json_path))
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    return _labelme_keypoint_instances_from_payload(
+        payload,
+        keypoint_names=[str(x) for x in keypoint_names],
+        kpt_dims=int(kpt_dims),
+        image_hw=(int(image_hw[0]), int(image_hw[1])),
+    )
 
 
 def _predict_keypoints(
@@ -333,12 +357,14 @@ def _predict_keypoints(
 ) -> List[Tuple[float, float]]:
     if probs.ndim != 3:
         raise ValueError("Expected probs in KHW format")
-    k, h_p, w_p = int(probs.shape[0]), int(probs.shape[1]), int(probs.shape[2])
+    h_p, w_p = int(probs.shape[1]), int(probs.shape[2])
     norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
-    xs = (torch.arange(w_p, device=probs.device,
-          dtype=probs.dtype) + 0.5) * float(patch_size)
-    ys = (torch.arange(h_p, device=probs.device,
-          dtype=probs.dtype) + 0.5) * float(patch_size)
+    xs = (torch.arange(w_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
+        patch_size
+    )
+    ys = (torch.arange(h_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
+        patch_size
+    )
     x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
     y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
     return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
@@ -399,6 +425,7 @@ def _parse_threshold_grid(value: str) -> List[float]:
 def evaluate(
     *,
     data_yaml: Path,
+    data_format: str = "auto",
     weights: Path,
     split: str = "val",
     thresholds_px: Sequence[float] = (4.0, 8.0, 16.0),
@@ -406,19 +433,51 @@ def evaluate(
     max_images: Optional[int] = None,
     include_per_keypoint: bool = False,
 ) -> Dict[str, object]:
-    spec = load_yolo_pose_spec(data_yaml)
+    data_format_norm = str(data_format or "auto").strip().lower()
+    if data_format_norm not in {"auto", "yolo", "labelme"}:
+        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
+    if data_format_norm == "auto":
+        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+        fmt_token = ""
+        if isinstance(payload, dict):
+            fmt_token = (
+                str(payload.get("format") or payload.get("type") or "").strip().lower()
+            )
+        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+
+    if data_format_norm == "labelme":
+        spec_lm = load_labelme_pose_spec(data_yaml)
+        kpt_count = int(spec_lm.kpt_count)
+        kpt_dims = int(spec_lm.kpt_dims)
+        keypoint_names = list(spec_lm.keypoint_names)
+        train_images = list(spec_lm.train_images)
+        val_images = list(spec_lm.val_images)
+        train_labels = list(spec_lm.train_json)
+        val_labels = list(spec_lm.val_json)
+        flip_idx = spec_lm.flip_idx
+    else:
+        spec = load_yolo_pose_spec(data_yaml)
+        kpt_count = int(spec.kpt_count)
+        kpt_dims = int(spec.kpt_dims)
+        keypoint_names = list(spec.keypoint_names or [])
+        train_images = list(spec.train_images)
+        val_images = list(spec.val_images)
+        train_labels = None
+        val_labels = None
+        flip_idx = spec.flip_idx
     if split not in ("train", "val"):
         raise ValueError("split must be 'train' or 'val'")
-    image_paths = spec.train_images if split == "train" else spec.val_images
+    image_paths = train_images if split == "train" else val_images
+    label_paths = train_labels if split == "train" else val_labels
     if not image_paths:
         raise ValueError(f"No images found for split '{split}'")
 
     payload = torch.load(weights, map_location="cpu")
     head, meta = checkpoint_unpack(payload)
-    if int(spec.kpt_count) != int(meta.num_parts):
+    if int(kpt_count) != int(meta.num_parts):
         raise ValueError(
             "Keypoint count mismatch between dataset and checkpoint: "
-            f"dataset kpt_count={spec.kpt_count} vs checkpoint num_parts={meta.num_parts}."
+            f"dataset kpt_count={kpt_count} vs checkpoint num_parts={meta.num_parts}."
         )
     device_str = normalize_device(device)
     device_t = torch.device(device_str)
@@ -432,8 +491,8 @@ def evaluate(
 
     head = head.to(device_t).eval()
 
-    flip_idx = meta.flip_idx or spec.flip_idx
-    keypoint_names = meta.keypoint_names or spec.keypoint_names or []
+    flip_idx = meta.flip_idx or flip_idx
+    keypoint_names = meta.keypoint_names or keypoint_names or []
     lr_pairs = (
         infer_left_right_pairs(keypoint_names, flip_idx=flip_idx)
         if (keypoint_names and flip_idx)
@@ -445,7 +504,7 @@ def evaluate(
     acc = DinoKPSEGEvalAccumulator(
         kpt_count=int(meta.num_parts),
         thresholds_px=thresholds_px,
-        keypoint_names=meta.keypoint_names or spec.keypoint_names,
+        keypoint_names=meta.keypoint_names or keypoint_names,
     )
 
     limit = int(max_images) if max_images is not None else None
@@ -459,9 +518,23 @@ def evaluate(
         pil = ImageOps.exif_transpose(pil.convert("RGB"))
         width, height = pil.size
 
-        label_path = _image_to_label_path(Path(image_path))
-        gt_instances = _load_pose_instances(
-            label_path, kpt_count=spec.kpt_count, kpt_dims=spec.kpt_dims)
+        if data_format_norm == "labelme":
+            json_path = None
+            if label_paths is not None and idx < len(label_paths):
+                json_path = label_paths[idx]
+            if json_path is None:
+                json_path = _image_to_labelme_path(Path(image_path))
+            gt_instances = _load_pose_instances_labelme(
+                Path(json_path),
+                keypoint_names=list(keypoint_names),
+                kpt_dims=kpt_dims,
+                image_hw=(height, width),
+            )
+        else:
+            label_path = _image_to_label_path(Path(image_path))
+            gt_instances = _load_pose_instances(
+                label_path, kpt_count=kpt_count, kpt_dims=kpt_dims
+            )
         if not gt_instances:
             acc.update(
                 pred_xy=[],
@@ -486,8 +559,7 @@ def evaluate(
         resized_h, resized_w = h_p * patch_size, w_p * patch_size
 
         with torch.no_grad():
-            logits = head(feats.unsqueeze(0).to(
-                device_t, dtype=torch.float32))[0]
+            logits = head(feats.unsqueeze(0).to(device_t, dtype=torch.float32))[0]
         probs = torch.sigmoid(logits).to("cpu")
         pred_resized = _predict_keypoints(probs, patch_size=patch_size)
 
@@ -510,6 +582,7 @@ def evaluate(
 def calibrate_thresholds(
     *,
     data_yaml: Path,
+    data_format: str = "auto",
     weights: Path,
     split: str = "val",
     metric: str = "pck",
@@ -519,19 +592,49 @@ def calibrate_thresholds(
     max_images: Optional[int] = None,
     per_keypoint: bool = False,
 ) -> Dict[str, object]:
-    spec = load_yolo_pose_spec(data_yaml)
+    data_format_norm = str(data_format or "auto").strip().lower()
+    if data_format_norm not in {"auto", "yolo", "labelme"}:
+        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
+    if data_format_norm == "auto":
+        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+        fmt_token = ""
+        if isinstance(payload, dict):
+            fmt_token = (
+                str(payload.get("format") or payload.get("type") or "").strip().lower()
+            )
+        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+
+    if data_format_norm == "labelme":
+        spec_lm = load_labelme_pose_spec(data_yaml)
+        kpt_count = int(spec_lm.kpt_count)
+        kpt_dims = int(spec_lm.kpt_dims)
+        keypoint_names = list(spec_lm.keypoint_names)
+        train_images = list(spec_lm.train_images)
+        val_images = list(spec_lm.val_images)
+        train_labels = list(spec_lm.train_json)
+        val_labels = list(spec_lm.val_json)
+    else:
+        spec = load_yolo_pose_spec(data_yaml)
+        kpt_count = int(spec.kpt_count)
+        kpt_dims = int(spec.kpt_dims)
+        keypoint_names = list(spec.keypoint_names or [])
+        train_images = list(spec.train_images)
+        val_images = list(spec.val_images)
+        train_labels = None
+        val_labels = None
     if split not in ("train", "val"):
         raise ValueError("split must be 'train' or 'val'")
-    image_paths = spec.train_images if split == "train" else spec.val_images
+    image_paths = train_images if split == "train" else val_images
+    label_paths = train_labels if split == "train" else val_labels
     if not image_paths:
         raise ValueError(f"No images found for split '{split}'")
 
     payload = torch.load(weights, map_location="cpu")
     head, meta = checkpoint_unpack(payload)
-    if int(spec.kpt_count) != int(meta.num_parts):
+    if int(kpt_count) != int(meta.num_parts):
         raise ValueError(
             "Keypoint count mismatch between dataset and checkpoint: "
-            f"dataset kpt_count={spec.kpt_count} vs checkpoint num_parts={meta.num_parts}."
+            f"dataset kpt_count={kpt_count} vs checkpoint num_parts={meta.num_parts}."
         )
     device_str = normalize_device(device)
     device_t = torch.device(device_str)
@@ -544,7 +647,7 @@ def calibrate_thresholds(
     )
     head = head.to(device_t).eval()
 
-    keypoint_names = meta.keypoint_names or spec.keypoint_names or []
+    keypoint_names = meta.keypoint_names or keypoint_names or []
     records: Dict[int, List[Tuple[float, float]]] = {
         idx: [] for idx in range(int(meta.num_parts))
     }
@@ -560,9 +663,23 @@ def calibrate_thresholds(
         pil = ImageOps.exif_transpose(pil.convert("RGB"))
         width, height = pil.size
 
-        label_path = _image_to_label_path(Path(image_path))
-        gt_instances = _load_pose_instances(
-            label_path, kpt_count=spec.kpt_count, kpt_dims=spec.kpt_dims)
+        if data_format_norm == "labelme":
+            json_path = None
+            if label_paths is not None and idx < len(label_paths):
+                json_path = label_paths[idx]
+            if json_path is None:
+                json_path = _image_to_labelme_path(Path(image_path))
+            gt_instances = _load_pose_instances_labelme(
+                Path(json_path),
+                keypoint_names=list(keypoint_names),
+                kpt_dims=kpt_dims,
+                image_hw=(height, width),
+            )
+        else:
+            label_path = _image_to_label_path(Path(image_path))
+            gt_instances = _load_pose_instances(
+                label_path, kpt_count=kpt_count, kpt_dims=kpt_dims
+            )
         if not gt_instances:
             continue
 
@@ -581,11 +698,11 @@ def calibrate_thresholds(
         resized_h, resized_w = h_p * patch_size, w_p * patch_size
 
         with torch.no_grad():
-            logits = head(feats.unsqueeze(0).to(
-                device_t, dtype=torch.float32))[0]
+            logits = head(feats.unsqueeze(0).to(device_t, dtype=torch.float32))[0]
         probs = torch.sigmoid(logits).to("cpu")
         pred_resized, scores = _predict_keypoints_and_scores(
-            probs, patch_size=patch_size)
+            probs, patch_size=patch_size
+        )
 
         pred_xy = []
         for x_res, y_res in pred_resized:
@@ -607,9 +724,11 @@ def calibrate_thresholds(
             score = float(scores[kpt_idx]) if kpt_idx < len(scores) else 0.0
             records[kpt_idx].append((score, float(err)))
 
-    grid = [float(v) for v in threshold_grid] if threshold_grid else [
-        round(x, 2) for x in np.linspace(0.05, 0.95, 19).tolist()
-    ]
+    grid = (
+        [float(v) for v in threshold_grid]
+        if threshold_grid
+        else [round(x, 2) for x in np.linspace(0.05, 0.95, 19).tolist()]
+    )
     metric_name = str(metric or "pck").strip().lower()
     if metric_name not in ("pck", "ap"):
         metric_name = "pck"
@@ -618,9 +737,7 @@ def calibrate_thresholds(
         if not pairs:
             return 0.0
         if metric_name == "pck":
-            hits = sum(
-                1 for score, err in pairs if score >= thr and err <= pck_px
-            )
+            hits = sum(1 for score, err in pairs if score >= thr and err <= pck_px)
             return float(hits) / float(len(pairs))
         scores = [float(score) for score, _ in pairs if score >= thr]
         oks = [float(err) <= pck_px for score, err in pairs if score >= thr]
@@ -673,22 +790,45 @@ def calibrate_thresholds(
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate DinoKPSEG checkpoints on a YOLO pose dataset.")
-    parser.add_argument("--data", required=True,
-                        help="Path to YOLO pose data.yaml")
-    parser.add_argument("--weights", required=True,
-                        help="Path to DinoKPSEG checkpoint (.pt)")
-    parser.add_argument("--split", default="val",
-                        choices=("train", "val"))
-    parser.add_argument("--thresholds", default="4,8,16",
-                        help="Comma-separated PCK thresholds in pixels")
+        description="Evaluate DinoKPSEG checkpoints on a pose dataset (YOLO or LabelMe)."
+    )
+    parser.add_argument(
+        "--data",
+        required=True,
+        help="Path to dataset YAML (YOLO pose data.yaml or LabelMe spec.yaml)",
+    )
+    parser.add_argument(
+        "--data-format",
+        choices=("auto", "yolo", "labelme"),
+        default="auto",
+        help="Dataset annotation format (default: auto-detect from YAML).",
+    )
+    parser.add_argument(
+        "--weights", required=True, help="Path to DinoKPSEG checkpoint (.pt)"
+    )
+    parser.add_argument("--split", default="val", choices=("train", "val"))
+    parser.add_argument(
+        "--thresholds",
+        default="4,8,16",
+        help="Comma-separated PCK thresholds in pixels",
+    )
     parser.add_argument("--device", default=None)
-    parser.add_argument("--max-images", type=int, default=None,
-                        help="Optional cap on number of images to evaluate")
-    parser.add_argument("--per-keypoint", action="store_true",
-                        help="Include per-keypoint metrics in the output")
-    parser.add_argument("--auto-threshold", action="store_true",
-                        help="Calibrate confidence thresholds on the split")
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=None,
+        help="Optional cap on number of images to evaluate",
+    )
+    parser.add_argument(
+        "--per-keypoint",
+        action="store_true",
+        help="Include per-keypoint metrics in the output",
+    )
+    parser.add_argument(
+        "--auto-threshold",
+        action="store_true",
+        help="Calibrate confidence thresholds on the split",
+    )
     parser.add_argument(
         "--auto-threshold-metric",
         default="pck",
@@ -711,8 +851,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Include per-keypoint threshold calibration",
     )
-    parser.add_argument("--out", default=None,
-                        help="Optional JSON output path (default: stdout)")
+    parser.add_argument(
+        "--out", default=None, help="Optional JSON output path (default: stdout)"
+    )
     args = parser.parse_args(argv)
 
     thresholds = _parse_thresholds(args.thresholds)
@@ -723,6 +864,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         grid = _parse_threshold_grid(args.auto_threshold_grid)
         output = calibrate_thresholds(
             data_yaml=data_yaml,
+            data_format=str(args.data_format),
             weights=weights,
             split=str(args.split),
             metric=str(args.auto_threshold_metric),
@@ -735,6 +877,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         summary = evaluate(
             data_yaml=data_yaml,
+            data_format=str(args.data_format),
             weights=weights,
             split=str(args.split),
             thresholds_px=thresholds,
@@ -747,8 +890,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     text = json.dumps(output, indent=2)
     out_path = args.out
     if out_path:
-        Path(out_path).expanduser().resolve(
-        ).write_text(text, encoding="utf-8")
+        Path(out_path).expanduser().resolve().write_text(text, encoding="utf-8")
     else:
         print(text)
     return 0

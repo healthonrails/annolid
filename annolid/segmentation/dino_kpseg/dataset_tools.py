@@ -17,12 +17,16 @@ import torch
 from annolid.segmentation.dino_kpseg.cli_utils import parse_layers
 from annolid.segmentation.dino_kpseg.data import (
     _image_to_label_path,
+    _image_to_labelme_path,
+    _labelme_keypoint_instances_dict_from_payload,
     _parse_yolo_pose_line,
     DinoKPSEGPoseDataset,
     build_extractor,
+    load_labelme_pose_spec,
     load_yolo_pose_spec,
 )
 from annolid.segmentation.dino_kpseg.keypoints import infer_left_right_pairs
+from annolid.utils.annotation_store import load_labelme_json
 
 
 @dataclass
@@ -45,14 +49,15 @@ class _SplitAudit:
     bbox_invalid: int = 0
     kpt_out_of_bounds: int = 0
     class_out_of_range: int = 0
-    keypoint_stats: Dict[int, _KeypointAuditStats] = field(
-        default_factory=dict)
+    keypoint_stats: Dict[int, _KeypointAuditStats] = field(default_factory=dict)
     examples: Dict[str, List[str]] = field(default_factory=dict)
     crop_stats: Dict[str, float] = field(default_factory=dict)
     swap_ambiguity: Dict[str, object] = field(default_factory=dict)
 
 
-def _issue_add(examples: Dict[str, List[str]], key: str, msg: str, *, limit: int = 8) -> None:
+def _issue_add(
+    examples: Dict[str, List[str]], key: str, msg: str, *, limit: int = 8
+) -> None:
     bucket = examples.setdefault(key, [])
     if len(bucket) < int(limit):
         bucket.append(str(msg))
@@ -73,7 +78,12 @@ def _parse_yolo_pose_tokens(
     *,
     kpt_count: int,
     dims: int,
-) -> Tuple[Optional[int], Optional[Tuple[float, float, float, float]], Optional[np.ndarray], Optional[str]]:
+) -> Tuple[
+    Optional[int],
+    Optional[Tuple[float, float, float, float]],
+    Optional[np.ndarray],
+    Optional[str],
+]:
     """Parse a YOLO pose line into class id, bbox, and keypoints.
 
     Returns (cls, bbox_xywh, kpts, error). On error, returns None and message.
@@ -99,8 +109,7 @@ def _parse_yolo_pose_tokens(
     kpt_flat = nums[4:]
     if len(kpt_flat) != int(kpt_count) * int(dims):
         return None, None, None, "invalid_kpt_count"
-    kpts = np.array(kpt_flat, dtype=np.float32).reshape(
-        int(kpt_count), int(dims))
+    kpts = np.array(kpt_flat, dtype=np.float32).reshape(int(kpt_count), int(dims))
     return cls, (float(x), float(y), float(w), float(h)), kpts, None
 
 
@@ -128,8 +137,7 @@ def _suggest_fix(
     fixed[:, 1] = np.clip(fixed[:, 1], 0.0, 1.0)
     if dims >= 3:
         fixed[:, 2] = np.clip(fixed[:, 2], 0.0, 2.0)
-    tokens = [str(int(cls)), f"{x:.6f}", f"{y:.6f}",
-              f"{w:.6f}", f"{h:.6f}"]
+    tokens = [str(int(cls)), f"{x:.6f}", f"{y:.6f}", f"{w:.6f}", f"{h:.6f}"]
     for row in fixed:
         tokens.append(f"{row[0]:.6f}")
         tokens.append(f"{row[1]:.6f}")
@@ -211,17 +219,24 @@ def audit_yolo_pose_dataset(
             audit.images_total += 1
             label_path = _image_to_label_path(Path(image_path))
             if not label_path.exists():
-                _issue_add(audit.examples, "missing_label",
-                           f"{label_path}", limit=max_issue_examples)
+                _issue_add(
+                    audit.examples,
+                    "missing_label",
+                    f"{label_path}",
+                    limit=max_issue_examples,
+                )
                 continue
 
             audit.label_files_found += 1
             try:
-                lines = label_path.read_text(
-                    encoding="utf-8").splitlines()
+                lines = label_path.read_text(encoding="utf-8").splitlines()
             except Exception:
-                _issue_add(audit.examples, "unreadable_label",
-                           f"{label_path}", limit=max_issue_examples)
+                _issue_add(
+                    audit.examples,
+                    "unreadable_label",
+                    f"{label_path}",
+                    limit=max_issue_examples,
+                )
                 continue
 
             try:
@@ -261,7 +276,12 @@ def audit_yolo_pose_dataset(
                         f"{label_path}:{line_idx + 1} (w={w:.3f}, h={h:.3f})",
                         limit=max_issue_examples,
                     )
-                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 and 0.0 < w <= 1.0 and 0.0 < h <= 1.0):
+                if not (
+                    0.0 <= x <= 1.0
+                    and 0.0 <= y <= 1.0
+                    and 0.0 < w <= 1.0
+                    and 0.0 < h <= 1.0
+                ):
                     audit.bbox_out_of_bounds += 1
                     line_bbox_oob = True
                     _issue_add(
@@ -319,10 +339,8 @@ def audit_yolo_pose_dataset(
                     for li, ri in lr_pairs:
                         if li >= kpts.shape[0] or ri >= kpts.shape[0]:
                             continue
-                        lv = float(kpts[li, 2]) if int(
-                            spec.kpt_dims) >= 3 else 2.0
-                        rv = float(kpts[ri, 2]) if int(
-                            spec.kpt_dims) >= 3 else 2.0
+                        lv = float(kpts[li, 2]) if int(spec.kpt_dims) >= 3 else 2.0
+                        rv = float(kpts[ri, 2]) if int(spec.kpt_dims) >= 3 else 2.0
                         if lv <= 0 or rv <= 0:
                             continue
                         lx = float(kpts[li, 0]) * float(width)
@@ -335,8 +353,14 @@ def audit_yolo_pose_dataset(
                                     {
                                         "image": str(image_path),
                                         "pair": [int(li), int(ri)],
-                                        "left": [float(lx), float(kpts[li, 1]) * float(height)],
-                                        "right": [float(rx), float(kpts[ri, 1]) * float(height)],
+                                        "left": [
+                                            float(lx),
+                                            float(kpts[li, 1]) * float(height),
+                                        ],
+                                        "right": [
+                                            float(rx),
+                                            float(kpts[ri, 1]) * float(height),
+                                        ],
                                     }
                                 )
 
@@ -355,8 +379,7 @@ def audit_yolo_pose_dataset(
                     for k in range(int(spec.kpt_count)):
                         if k >= kpts.shape[0]:
                             continue
-                        v = float(kpts[k, 2]) if int(
-                            spec.kpt_dims) >= 3 else 2.0
+                        v = float(kpts[k, 2]) if int(spec.kpt_dims) >= 3 else 2.0
                         if v <= 0:
                             continue
                         visible_in_crop += 1
@@ -367,9 +390,10 @@ def audit_yolo_pose_dataset(
 
                 # Fix suggestion for out-of-range values.
                 if line_bbox_oob or line_kpt_oob:
-                    suggestion = _suggest_fix(
-                        cls, bbox, kpts, dims=int(spec.kpt_dims))
-                    if suggestion and len(report["fix_suggestions"]) < int(max_fix_suggestions):
+                    suggestion = _suggest_fix(cls, bbox, kpts, dims=int(spec.kpt_dims))
+                    if suggestion and len(report["fix_suggestions"]) < int(
+                        max_fix_suggestions
+                    ):
                         report["fix_suggestions"].append(
                             {
                                 "label_path": str(label_path),
@@ -403,6 +427,159 @@ def audit_yolo_pose_dataset(
                 "ambiguous_frac": float(swap_ambiguous) / float(swap_total),
                 "examples": swap_examples,
             }
+
+        report["splits"][split_name] = {
+            **audit.__dict__,
+            "keypoint_stats": {
+                str(k): stats.__dict__ for k, stats in audit.keypoint_stats.items()
+            },
+        }
+
+    return report
+
+
+def audit_labelme_pose_dataset(
+    data_yaml: Path,
+    *,
+    split: str = "both",
+    max_images: Optional[int] = None,
+    seed: int = 0,
+    max_issue_examples: int = 8,
+) -> Dict[str, object]:
+    """Audit a LabelMe pose dataset and return a structured report."""
+    data_yaml = Path(data_yaml)
+    spec = load_labelme_pose_spec(Path(data_yaml))
+    rng = random.Random(int(seed))
+
+    report: Dict[str, object] = {
+        "data_yaml": str(Path(data_yaml).expanduser().resolve()),
+        "format": "labelme",
+        "kpt_count": int(spec.kpt_count),
+        "kpt_dims": int(spec.kpt_dims),
+        "keypoint_names": list(spec.keypoint_names or []),
+        "flip_idx": list(spec.flip_idx or []),
+        "splits": {},
+        "fix_suggestions": [],
+    }
+
+    def _iter_labelme_splits() -> List[Tuple[str, List[Path], List[Optional[Path]]]]:
+        split_norm = str(split or "both").strip().lower()
+        if split_norm == "train":
+            return [("train", list(spec.train_images), list(spec.train_json))]
+        if split_norm == "val":
+            return [("val", list(spec.val_images), list(spec.val_json))]
+        return [
+            ("train", list(spec.train_images), list(spec.train_json)),
+            ("val", list(spec.val_images), list(spec.val_json)),
+        ]
+
+    for split_name, images, jsons in _iter_labelme_splits():
+        audit = _SplitAudit(
+            keypoint_stats={
+                idx: _KeypointAuditStats() for idx in range(int(spec.kpt_count))
+            },
+        )
+        if not images:
+            report["splits"][split_name] = audit.__dict__
+            continue
+
+        if max_images is not None:
+            combined = list(zip(images, jsons))
+            rng.shuffle(combined)
+            combined = combined[: max(0, int(max_images))]
+            images = [x for x, _ in combined]
+            jsons = [y for _, y in combined]
+
+        for idx, image_path in enumerate(images):
+            audit.images_total += 1
+            json_path = None
+            if idx < len(jsons):
+                json_path = jsons[idx]
+            if json_path is None:
+                candidate = _image_to_labelme_path(Path(image_path))
+                json_path = candidate if candidate.exists() else None
+            if json_path is None or not Path(json_path).exists():
+                _issue_add(
+                    audit.examples,
+                    "missing_label",
+                    f"{image_path}",
+                    limit=max_issue_examples,
+                )
+                continue
+            audit.label_files_found += 1
+
+            try:
+                payload = load_labelme_json(Path(json_path))
+            except Exception:
+                _issue_add(
+                    audit.examples,
+                    "unreadable_label",
+                    f"{json_path}",
+                    limit=max_issue_examples,
+                )
+                continue
+            if not isinstance(payload, dict):
+                _issue_add(
+                    audit.examples,
+                    "invalid_label",
+                    f"{json_path}",
+                    limit=max_issue_examples,
+                )
+                continue
+
+            try:
+                h = int(payload.get("imageHeight") or 0)
+                w = int(payload.get("imageWidth") or 0)
+            except Exception:
+                h, w = 0, 0
+            if h <= 0 or w <= 0:
+                try:
+                    pil = Image.open(image_path)
+                    pil = ImageOps.exif_transpose(pil.convert("RGB"))
+                    w, h = pil.size
+                except Exception:
+                    h, w = 0, 0
+
+            instances = _labelme_keypoint_instances_dict_from_payload(
+                payload,
+                keypoint_names=list(spec.keypoint_names),
+                kpt_dims=int(spec.kpt_dims),
+                image_hw=(int(h), int(w)),
+            )
+            if not instances:
+                _issue_add(
+                    audit.examples,
+                    "no_instances",
+                    f"{json_path}",
+                    limit=max_issue_examples,
+                )
+                continue
+
+            valid_instances = 0
+            for _, kpts in sorted(instances.items(), key=lambda kv: kv[0]):
+                if (
+                    kpts.ndim != 2
+                    or int(kpts.shape[0]) != int(spec.kpt_count)
+                    or int(kpts.shape[1]) < 3
+                ):
+                    audit.invalid_lines += 1
+                    continue
+                if not bool((kpts[:, 2] > 0).any()):
+                    continue
+                valid_instances += 1
+                for k in range(int(spec.kpt_count)):
+                    stats = audit.keypoint_stats[int(k)]
+                    v = float(kpts[k, 2])
+                    stats.present += 1
+                    if v <= 0:
+                        stats.missing += 1
+                    elif v >= 2:
+                        stats.visible += 1
+                    else:
+                        stats.occluded += 1
+            if valid_instances > 0:
+                audit.images_with_instances += 1
+                audit.instances_total += int(valid_instances)
 
         report["splits"][split_name] = {
             **audit.__dict__,
@@ -511,17 +688,18 @@ def log_dataset_health(
                     continue
                 radius = 3
                 color = (64, 170, 92) if v > 1 else (230, 179, 62)
-                draw.ellipse([x - radius, y - radius, x + radius,
-                             y + radius], outline=color, width=2)
+                draw.ellipse(
+                    [x - radius, y - radius, x + radius, y + radius],
+                    outline=color,
+                    width=2,
+                )
         rendered.append(np.array(pil, dtype=np.uint8, copy=True))
 
     if rendered:
         arr = np.stack(rendered, axis=0)  # NHWC
         arr = arr.astype(np.float32) / 255.0
         arr = np.transpose(arr, (0, 3, 1, 2))
-        tb_writer.add_images(
-            f"{tag_prefix}/{split_name}/samples", arr, global_step=0
-        )
+        tb_writer.add_images(f"{tag_prefix}/{split_name}/samples", arr, global_step=0)
 
     split = report.get("splits", {}).get(split_name, {})
     stats_dict = split.get("keypoint_stats", {})
@@ -529,9 +707,7 @@ def log_dataset_health(
     for k, v in stats_dict.items():
         stats[str(k)] = _KeypointAuditStats(**v)
     if stats:
-        hist = _draw_keypoint_histogram(
-            keypoint_names=keypoint_names, stats=stats
-        )
+        hist = _draw_keypoint_histogram(keypoint_names=keypoint_names, stats=stats)
         hist_arr = np.array(hist, dtype=np.uint8, copy=True)
         hist_arr = hist_arr.astype(np.float32) / 255.0
         hist_arr = np.transpose(hist_arr, (2, 0, 1))
@@ -592,8 +768,7 @@ def stratified_split(
 
     groups: Dict[str, List[Path]] = {}
     for path in all_images:
-        key = _group_key_from_path(
-            Path(path), group_by=group_by, regex=group_regex)
+        key = _group_key_from_path(Path(path), group_by=group_by, regex=group_regex)
         groups.setdefault(key, []).append(Path(path))
 
     rng = random.Random(int(seed))
@@ -623,13 +798,11 @@ def stratified_split(
         encoding="utf-8",
     )
 
-    payload = yaml.safe_load(
-        Path(data_yaml).read_text(encoding="utf-8")) or {}
+    payload = yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8")) or {}
     payload["train"] = str(train_list)
     payload["val"] = str(val_list)
     split_yaml = output_dir / "data_split.yaml"
-    split_yaml.write_text(
-        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    split_yaml.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     return {
         "train_list": str(train_list),
@@ -645,6 +818,7 @@ def stratified_split(
 def precompute_features(
     *,
     data_yaml: Path,
+    data_format: str = "auto",
     model_name: str,
     short_side: int,
     layers: Sequence[int],
@@ -655,8 +829,44 @@ def precompute_features(
     cache_dir: Optional[Path] = None,
     cache_dtype: str = "float16",
 ) -> Dict[str, object]:
-    """Precompute and cache DINOv3 features for a YOLO pose dataset."""
-    spec = load_yolo_pose_spec(Path(data_yaml))
+    """Precompute and cache DINOv3 features for a pose dataset (YOLO or LabelMe)."""
+    data_yaml = Path(data_yaml)
+    data_format_norm = str(data_format or "auto").strip().lower()
+    if data_format_norm not in {"auto", "yolo", "labelme"}:
+        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
+    if data_format_norm == "auto":
+        try:
+            payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+        except Exception:
+            payload = {}
+        fmt_token = ""
+        if isinstance(payload, dict):
+            fmt_token = (
+                str(payload.get("format") or payload.get("type") or "").strip().lower()
+            )
+        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+
+    if data_format_norm == "labelme":
+        spec_lm = load_labelme_pose_spec(Path(data_yaml))
+        train_images = list(spec_lm.train_images)
+        val_images = list(spec_lm.val_images)
+        train_labels = list(spec_lm.train_json)
+        val_labels = list(spec_lm.val_json)
+        kpt_count = int(spec_lm.kpt_count)
+        kpt_dims = int(spec_lm.kpt_dims)
+        keypoint_names = list(spec_lm.keypoint_names)
+        flip_idx = spec_lm.flip_idx
+    else:
+        spec = load_yolo_pose_spec(Path(data_yaml))
+        train_images = list(spec.train_images)
+        val_images = list(spec.val_images)
+        train_labels = None
+        val_labels = None
+        kpt_count = int(spec.kpt_count)
+        kpt_dims = int(spec.kpt_dims)
+        keypoint_names = list(spec.keypoint_names or [])
+        flip_idx = spec.flip_idx
+
     extractor = build_extractor(
         model_name=str(model_name),
         short_side=int(short_side),
@@ -666,8 +876,9 @@ def precompute_features(
     if cache_dir is None:
         cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
         fingerprint = f"{model_name}|{short_side}|{tuple(int(x) for x in layers)}"
-        digest = __import__("hashlib").sha1(
-            fingerprint.encode("utf-8")).hexdigest()[:12]
+        digest = (
+            __import__("hashlib").sha1(fingerprint.encode("utf-8")).hexdigest()[:12]
+        )
         cache_dir = cache_root / digest
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -684,20 +895,36 @@ def precompute_features(
         "short_side": int(short_side),
         "layers": [int(x) for x in layers],
         "split": str(split),
+        "data_format": str(data_format_norm),
         "counts": {},
     }
 
-    for split_name, images in _iter_splits(spec, split=split):
+    split_norm = str(split or "both").strip().lower()
+    split_items: List[Tuple[str, List[Path], Optional[List[Optional[Path]]]]] = []
+    if split_norm == "train":
+        split_items = [("train", train_images, train_labels)]
+    elif split_norm == "val":
+        split_items = [("val", val_images, val_labels)]
+    else:
+        split_items = [
+            ("train", train_images, train_labels),
+            ("val", val_images, val_labels),
+        ]
+
+    for split_name, images, label_paths in split_items:
         if not images:
             summary["counts"][split_name] = 0
             continue
         ds = DinoKPSEGPoseDataset(
             list(images),
-            kpt_count=spec.kpt_count,
-            kpt_dims=spec.kpt_dims,
+            kpt_count=kpt_count,
+            kpt_dims=kpt_dims,
             radius_px=6.0,
             extractor=extractor,
-            flip_idx=spec.flip_idx,
+            label_format=str(data_format_norm),
+            label_paths=label_paths,
+            keypoint_names=keypoint_names,
+            flip_idx=flip_idx,
             augment=None,
             cache_dir=cache_dir,
             mask_type="gaussian",
@@ -720,66 +947,118 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    audit_p = sub.add_parser("audit", help="Audit a YOLO pose dataset.")
-    audit_p.add_argument("--data", required=True,
-                         help="Path to YOLO pose data.yaml")
+    audit_p = sub.add_parser("audit", help="Audit a pose dataset (YOLO or LabelMe).")
     audit_p.add_argument(
-        "--split", choices=("train", "val", "both"), default="both")
+        "--data",
+        required=True,
+        help="Path to dataset YAML (YOLO pose data.yaml or LabelMe spec.yaml)",
+    )
+    audit_p.add_argument(
+        "--data-format",
+        choices=("auto", "yolo", "labelme"),
+        default="auto",
+        help="Dataset annotation format (default: auto-detect from YAML).",
+    )
+    audit_p.add_argument("--split", choices=("train", "val", "both"), default="both")
     audit_p.add_argument("--max-images", type=int, default=None)
     audit_p.add_argument("--seed", type=int, default=0)
-    audit_p.add_argument("--instance-mode", choices=("auto", "union", "per_instance"),
-                         default="auto")
+    audit_p.add_argument(
+        "--instance-mode", choices=("auto", "union", "per_instance"), default="auto"
+    )
     audit_p.add_argument("--bbox-scale", type=float, default=1.25)
-    audit_p.add_argument("--out", default=None,
-                         help="Optional output JSON path")
+    audit_p.add_argument("--out", default=None, help="Optional output JSON path")
 
-    split_p = sub.add_parser(
-        "split", help="Create a stratified train/val split.")
-    split_p.add_argument("--data", required=True,
-                         help="Path to YOLO pose data.yaml")
-    split_p.add_argument("--output", required=True,
-                         help="Output directory for split lists")
+    split_p = sub.add_parser("split", help="Create a stratified train/val split.")
+    split_p.add_argument("--data", required=True, help="Path to YOLO pose data.yaml")
+    split_p.add_argument(
+        "--output", required=True, help="Output directory for split lists"
+    )
     split_p.add_argument("--val-size", type=float, default=0.1)
     split_p.add_argument("--seed", type=int, default=0)
-    split_p.add_argument("--group-by", choices=("parent",
-                         "grandparent", "stem_prefix", "regex"), default="parent")
+    split_p.add_argument(
+        "--group-by",
+        choices=("parent", "grandparent", "stem_prefix", "regex"),
+        default="parent",
+    )
     split_p.add_argument("--group-regex", default=None)
-    split_p.add_argument("--include-val", action="store_true",
-                         help="Include existing val images when splitting")
+    split_p.add_argument(
+        "--include-val",
+        action="store_true",
+        help="Include existing val images when splitting",
+    )
 
     pre_p = sub.add_parser(
         "precompute",
         help="Precompute and cache DINOv3 features for a dataset.",
     )
-    pre_p.add_argument("--data", required=True,
-                       help="Path to YOLO pose data.yaml")
-    pre_p.add_argument("--model-name", required=True,
-                       help="Hugging Face model id or dinov3 alias")
+    pre_p.add_argument(
+        "--data",
+        required=True,
+        help="Path to dataset YAML (YOLO pose data.yaml or LabelMe spec.yaml)",
+    )
+    pre_p.add_argument(
+        "--data-format",
+        choices=("auto", "yolo", "labelme"),
+        default="auto",
+        help="Dataset annotation format (default: auto-detect from YAML).",
+    )
+    pre_p.add_argument(
+        "--model-name", required=True, help="Hugging Face model id or dinov3 alias"
+    )
     pre_p.add_argument("--short-side", type=int, default=768)
     pre_p.add_argument("--layers", type=str, default="-1")
     pre_p.add_argument("--device", default=None)
-    pre_p.add_argument("--split", choices=("train",
-                       "val", "both"), default="both")
-    pre_p.add_argument("--instance-mode", choices=("auto", "union", "per_instance"),
-                       default="auto")
+    pre_p.add_argument("--split", choices=("train", "val", "both"), default="both")
+    pre_p.add_argument(
+        "--instance-mode", choices=("auto", "union", "per_instance"), default="auto"
+    )
     pre_p.add_argument("--bbox-scale", type=float, default=1.25)
     pre_p.add_argument("--cache-dir", default=None)
-    pre_p.add_argument("--cache-dtype", choices=("float16",
-                       "float32"), default="float16")
+    pre_p.add_argument(
+        "--cache-dtype", choices=("float16", "float32"), default="float16"
+    )
     return p.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
     if args.command == "audit":
-        report = audit_yolo_pose_dataset(
-            Path(args.data).expanduser().resolve(),
-            split=str(args.split),
-            max_images=args.max_images,
-            seed=int(args.seed),
-            instance_mode=str(args.instance_mode),
-            bbox_scale=float(args.bbox_scale),
+        data_yaml = Path(args.data).expanduser().resolve()
+        data_format_norm = (
+            str(getattr(args, "data_format", "auto") or "auto").strip().lower()
         )
+        if data_format_norm not in {"auto", "yolo", "labelme"}:
+            raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
+        if data_format_norm == "auto":
+            try:
+                payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+            except Exception:
+                payload = {}
+            fmt_token = ""
+            if isinstance(payload, dict):
+                fmt_token = (
+                    str(payload.get("format") or payload.get("type") or "")
+                    .strip()
+                    .lower()
+                )
+            data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+
+        if data_format_norm == "labelme":
+            report = audit_labelme_pose_dataset(
+                data_yaml,
+                split=str(args.split),
+                max_images=args.max_images,
+                seed=int(args.seed),
+            )
+        else:
+            report = audit_yolo_pose_dataset(
+                data_yaml,
+                split=str(args.split),
+                max_images=args.max_images,
+                seed=int(args.seed),
+                instance_mode=str(args.instance_mode),
+                bbox_scale=float(args.bbox_scale),
+            )
         out = args.out
         if out:
             out_path = Path(out).expanduser().resolve()
@@ -803,6 +1082,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         layers = parse_layers(str(args.layers))
         summary = precompute_features(
             data_yaml=Path(args.data).expanduser().resolve(),
+            data_format=str(args.data_format),
             model_name=str(args.model_name),
             short_side=int(args.short_side),
             layers=layers,
@@ -810,8 +1090,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             split=str(args.split),
             instance_mode=str(args.instance_mode),
             bbox_scale=float(args.bbox_scale),
-            cache_dir=(Path(args.cache_dir).expanduser().resolve()
-                       if args.cache_dir else None),
+            cache_dir=(
+                Path(args.cache_dir).expanduser().resolve() if args.cache_dir else None
+            ),
             cache_dtype=str(args.cache_dtype),
         )
         print(json.dumps(summary, indent=2))
