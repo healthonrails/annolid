@@ -161,7 +161,10 @@ from annolid.gui.theme import apply_modern_theme, apply_light_theme, apply_dark_
 __appname__ = "Annolid"
 __version__ = "1.4.0"
 
-LABEL_COLORMAP = imgviz.label_colormap(value=200)
+try:
+    LABEL_COLORMAP = imgviz.label_colormap(value=200)
+except TypeError:
+    LABEL_COLORMAP = imgviz.label_colormap()
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 
