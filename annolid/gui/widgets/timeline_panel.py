@@ -553,7 +553,14 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                 original_start=event.start_frame,
                 original_end=event.end_frame,
             )
-            if self._edit_mode and self._edit_callback and event.end_frame is not None:
+            is_editable_event = (
+                self._edit_mode
+                and self._edit_callback
+                and event.end_frame is not None
+                and event.kind == "behavior"
+                and bool(event.behavior)
+            )
+            if is_editable_event:
                 item = TimelineEventItem(
                     rect,
                     context,
@@ -568,11 +575,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
             else:
                 self._scene.addRect(rect, QtGui.QPen(QtCore.Qt.NoPen), brush)
             if width > 60:
-                if (
-                    self._edit_mode
-                    and self._edit_callback
-                    and event.end_frame is not None
-                ):
+                if is_editable_event:
                     text_item = QtWidgets.QGraphicsSimpleTextItem(event.label, item)
                     text_item.setPos(4, 1)
                     text_item.setBrush(QtGui.QBrush(QtGui.QColor(20, 20, 20)))

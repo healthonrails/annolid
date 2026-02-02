@@ -46,7 +46,18 @@
 - Behavior exports and summaries automatically exclude auto (unconfirmed) events.
 - Use **Save CSV** or **Behavior Time Budget** to generate reports from confirmed data.
 
-## 9. Quick Checklist
+## 9. Describe Behavior (Caption dock)
+
+The **Caption** dock includes a **Describe behavior** action that can turn frames into a natural-language behavior log.
+
+- **Segment summary (sample frames)**: pick a time range and choose how many frames to sample uniformly.
+- **Timeline (describe every N seconds)**: generate timestamped lines over long videos (e.g., every `1s`), batching multiple frames per model call.
+- Timeline results are persisted per timestamp in a sidecar (`<video>.<ext>.behavior_timeline.json`) and auto-loaded, so scrubbing frames inside that interval restores the saved behavior text.
+- Re-running timeline mode skips already described timestamps and resumes from where the previous run stopped.
+
+For long ranges, increase the step size (e.g., `2–5s`) to reduce runtime and output length.
+
+## 10. Quick Checklist
 
 1. Run the agent or use previously cached results.
 2. Review events in the Behavior Log → confirm/reject/edit.

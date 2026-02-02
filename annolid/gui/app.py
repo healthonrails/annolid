@@ -1317,6 +1317,59 @@ class AnnolidWindow(MainWindow):
         )  # Update canvas
         self.caption_widget.imageGenerated.connect(self.display_generated_image)
 
+        if self.video_file and self.fps and self.num_frames:
+            self.caption_widget.set_video_context(
+                self.video_file,
+                self.fps,
+                self.num_frames,
+            )
+            try:
+                self.caption_widget.set_video_segments(
+                    self._current_video_defined_segments
+                )
+            except Exception:
+                pass
+
+        if self.filename:
+            self.caption_widget.set_image_path(self.filename)
+        if self.video_loader is not None:
+            self.caption_widget.set_video_context(
+                self.video_file,
+                self.fps,
+                self.num_frames,
+            )
+            self.caption_widget.set_video_segments(
+                getattr(self, "_current_video_defined_segments", [])
+            )
+            if getattr(self.caption_widget, "behavior_widget", None) is not None:
+                try:
+                    self.caption_widget.behavior_widget.set_current_frame(
+                        self.frame_number
+                    )
+                except Exception:
+                    pass
+
+    def _apply_timeline_caption_if_available(
+        self,
+        frame_number: Optional[int],
+        *,
+        only_if_empty: bool,
+    ) -> bool:
+        widget = getattr(self, "caption_widget", None)
+        if widget is None:
+            return False
+        behavior_widget = getattr(widget, "behavior_widget", None)
+        if behavior_widget is None:
+            return False
+        try:
+            return bool(
+                behavior_widget.apply_timeline_description(
+                    frame_number, only_if_empty=only_if_empty
+                )
+            )
+        except Exception:
+            return False
+
     def openFlorence2(self):
         """Open or show the Florence-2 dock widget."""
         dock = getattr(self, "florence_dock", None)
@@ -6927,6 +6980,13 @@ class AnnolidWindow(MainWindow):
                     self.fps,
                     self.num_frames,
                 )
+                if getattr(self.caption_widget, "behavior_widget", None) is not None:
+                    try:
+                        self.caption_widget.behavior_widget.set_current_frame(
+                            self.frame_number if self.frame_number is not None else 0
+                        )
+                    except Exception:
+                        pass
             self._configure_audio_for_video(self.video_file, self.fps)
             if self.seekbar:
                 self.statusBar().removeWidget(self.seekbar)
@@ -6976,6 +7036,9 @@ class AnnolidWindow(MainWindow):
 
             # load the first frame
             self.set_frame_number(self.frame_number)
+            self._apply_timeline_caption_if_available(
+                self.frame_number, only_if_empty=True
+            )
 
             self.actions.openNextImg.setEnabled(True)
 
@@ -7790,6 +7853,12 @@ class AnnolidWindow(MainWindow):
                 if self.caption_widget is None:
                     self.openCaption()
                 self.caption_widget.set_caption(caption)
+            elif self.caption_widget is not None:
+                applied = self._apply_timeline_caption_if_available(
+                    frame_number, only_if_empty=False
+                )
+                if not applied:
+                    self.caption_widget.set_caption("")
             label_loaded = True
             break
 
@@ -7826,7 +7895,11 @@ class AnnolidWindow(MainWindow):
 
         # No label file or prediction available; clear caption if any.
         if not label_loaded and self.caption_widget is not None:
-            self.caption_widget.set_caption("")
+            applied = self._apply_timeline_caption_if_available(
+                frame_number, only_if_empty=False
+            )
+            if not applied:
+                self.caption_widget.set_caption("")
 
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
