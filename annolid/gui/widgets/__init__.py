@@ -10,7 +10,20 @@ from annolid.gui.widgets.flags import FlagTableWidget
 from annolid.gui.widgets.video_recording import RecordingWidget
 from annolid.gui.widgets.screen_shot import CanvasScreenshotWidget
 from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
-from annolid.gui.widgets.realtime_control_widget import RealtimeControlWidget
+
+try:
+    # Optional dependency chain: realtime_control_widget -> realtime.perception -> pyzmq.
+    # Keep package imports working in environments where pyzmq is not installed.
+    from annolid.gui.widgets.realtime_control_widget import RealtimeControlWidget
+except ModuleNotFoundError:  # pragma: no cover - depends on optional runtime extras
+
+    class RealtimeControlWidget:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            raise ModuleNotFoundError(
+                "RealtimeControlWidget requires optional dependency 'pyzmq'."
+            )
+
+
 from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
 from annolid.gui.widgets.label_collection_dialog import LabelCollectionDialog
 from annolid.gui.widgets.training_dashboard import (
