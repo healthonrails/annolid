@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     # Avoid NumPy 2 ABI breakage with compiled deps (e.g., scikit-image/labelme).
     'numpy>=1.24',
+    'numba>=0.60.0',
     'scipy>=1.5.2',
     'easydict>=1.9',
     'opencv-contrib-python>=4.1.2.30',
