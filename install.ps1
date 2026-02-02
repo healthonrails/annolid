@@ -343,6 +343,14 @@ function Write-Summary {
     Write-Host "Documentation: https://annolid.com"
     Write-Host "Issues: https://github.com/healthonrails/annolid/issues"
     Write-Host ""
+
+    if (Prompt-YesNo "Launch Annolid now?" $true) {
+        Write-Step "Launching Annolid..."
+
+        # We need to activate environment and run annolid
+        . $script:ActivateCmd
+        annolid
+    }
 }
 
 # =============================================================================

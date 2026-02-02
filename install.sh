@@ -77,6 +77,27 @@ show_help() {
     exit 0
 }
 
+# Wrapper for read that works when script is piped via curl | bash
+read_input() {
+    local prompt="$1"
+    local variable="$2"
+    local default="$3"
+
+    # Try to read specific variable value
+    if [[ -t 0 ]]; then
+        # Standard stdin is a TTY
+        read -p "$prompt" -r "$variable"
+    else
+        # Script is being piped, try /dev/tty
+        if [[ -e /dev/tty ]]; then
+            read -p "$prompt" -r "$variable" < /dev/tty
+        else
+            # No TTY available (CI/CD?), use default
+            eval "$variable='$default'"
+        fi
+    fi
+}
+
 prompt_yes_no() {
     local prompt="$1"
     local default="$2"
@@ -85,17 +106,34 @@ prompt_yes_no() {
         [[ "$default" == "y" ]] && return 0 || return 1
     fi
 
+    # Prepare prompt string
+    local full_prompt
     if [[ "$default" == "y" ]]; then
-        read -p "$prompt [Y/n] " -n 1 -r
+        full_prompt="$prompt [Y/n] "
     else
-        read -p "$prompt [y/N] " -n 1 -r
+        full_prompt="$prompt [y/N] "
+    fi
+
+    local response
+    if [[ -t 0 ]]; then
+        read -p "$full_prompt" -n 1 -r response
+    else
+        if [[ -e /dev/tty ]]; then
+            read -p "$full_prompt" -n 1 -r response < /dev/tty
+        else
+            response="$default"
+        fi
     fi
     echo
 
+    if [[ -z "$response" ]]; then
+        response="$default"
+    fi
+
     if [[ "$default" == "y" ]]; then
-        [[ ! $REPLY =~ ^[Nn]$ ]]
+        [[ ! $response =~ ^[Nn]$ ]]
     else
-        [[ $REPLY =~ ^[Yy]$ ]]
+        [[ $response =~ ^[Yy]$ ]]
     fi
 }
 
@@ -356,7 +394,7 @@ interactive_config() {
     # Installation directory
     if [[ -z "$INSTALL_DIR" ]]; then
         echo -e "  ${CYAN}Where would you like to install Annolid?${NC}"
-        read -p "  Install directory [./annolid]: " INSTALL_DIR
+        read_input "  Install directory [./annolid]: " INSTALL_DIR "./annolid"
         INSTALL_DIR="${INSTALL_DIR:-./annolid}"
     fi
 
@@ -567,6 +605,20 @@ print_summary() {
     echo "Documentation: https://annolid.com"
     echo "Issues: https://github.com/healthonrails/annolid/issues"
     echo ""
+
+    if prompt_yes_no "Launch Annolid now?" "y"; then
+        print_step "Launching Annolid..."
+
+        # We need to activate environment and run annolid
+        if [[ "$USE_CONDA" == true ]]; then
+             eval "$(conda shell.bash hook)"
+             conda activate annolid-env
+        else
+             source "$VENV_PATH/bin/activate"
+        fi
+
+        annolid
+    fi
 }
 
 # =============================================================================
