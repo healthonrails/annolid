@@ -15,7 +15,6 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-import qimage2ndarray
 import zmq
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QThread, Signal, QObject
@@ -31,9 +30,43 @@ from annolid.utils.files import (
 from annolid.utils.logger import logger
 
 try:
+    import qimage2ndarray
+except ImportError:  # Optional dependency
+    qimage2ndarray = None
+
+try:
     import torch
 except ImportError:  # PyTorch is optional for lighter desktop bundles
     torch = None
+
+
+def _array_to_qimage(frame: np.ndarray) -> QtGui.QImage:
+    """Convert a NumPy frame to QImage, with optional qimage2ndarray acceleration."""
+    if qimage2ndarray is not None:
+        return qimage2ndarray.array2qimage(frame)
+
+    if frame is None:
+        raise ValueError("Cannot convert an empty frame to QImage.")
+
+    arr = np.ascontiguousarray(frame)
+    if arr.ndim == 2:
+        h, w = arr.shape
+        image = QtGui.QImage(
+            arr.data, w, h, arr.strides[0], QtGui.QImage.Format_Grayscale8
+        )
+    elif arr.ndim == 3 and arr.shape[2] == 3:
+        h, w, _ = arr.shape
+        image = QtGui.QImage(arr.data, w, h, arr.strides[0], QtGui.QImage.Format_RGB888)
+    elif arr.ndim == 3 and arr.shape[2] == 4:
+        h, w, _ = arr.shape
+        image = QtGui.QImage(
+            arr.data, w, h, arr.strides[0], QtGui.QImage.Format_RGBA8888
+        )
+    else:
+        raise ValueError(f"Unsupported frame shape for QImage conversion: {arr.shape}")
+
+    # Ensure the returned image owns its data after this function returns.
+    return image.copy()
 
 
 class PredictionWorker(QObject):
@@ -53,9 +86,10 @@ class PredictionWorker(QObject):
 
 class TrackAllWorker(QThread):
     """Worker thread to process videos with Cutie tracking, ensuring one processor per video."""
+
     progress = Signal(int, str)  # Progress percentage and message
-    finished = Signal(str)      # Completion message
-    error = Signal(str)         # Error message
+    finished = Signal(str)  # Completion message
+    error = Signal(str)  # Error message
 
     # video_path, output_folder_path
     video_processing_started = Signal(str, str)
@@ -66,15 +100,15 @@ class TrackAllWorker(QThread):
         super().__init__(parent)
         self.video_paths = self._validate_video_paths(video_paths)
         self.config = config or {
-            'mem_every': 5,
-            'epsilon_for_polygon': 2.0,
-            't_max_value': 5,
-            'use_cpu_only': False,
-            'auto_recovery_missing_instances': False,
-            'save_video_with_color_mask': False,
-            'compute_optical_flow': True,
-            'optical_flow_backend': 'farneback',  # farneback | farneback_torch | raft
-            'has_occlusion': True
+            "mem_every": 5,
+            "epsilon_for_polygon": 2.0,
+            "t_max_value": 5,
+            "use_cpu_only": False,
+            "auto_recovery_missing_instances": False,
+            "save_video_with_color_mask": False,
+            "compute_optical_flow": True,
+            "optical_flow_backend": "farneback",  # farneback | farneback_torch | raft
+            "has_occlusion": True,
         }
         self.is_running = True
         logging.basicConfig(level=logging.INFO)
@@ -87,11 +121,10 @@ class TrackAllWorker(QThread):
         valid_paths = []
         for path in video_paths:
             path = Path(path)
-            if path.is_file() and path.suffix.lower() in {'.mp4', '.avi', '.mov'}:
+            if path.is_file() and path.suffix.lower() in {".mp4", ".avi", ".mov"}:
                 valid_paths.append(str(path))
             else:
-                self.logger.warning(
-                    f"Invalid or non-existent video path: {path}")
+                self.logger.warning(f"Invalid or non-existent video path: {path}")
         if not valid_paths:
             raise ValueError("No valid video files provided.")
         return valid_paths
@@ -107,13 +140,13 @@ class TrackAllWorker(QThread):
             cap.release()
         if fps <= 0.0:
             self.logger.warning(
-                f"Unable to determine FPS for {video_path.name}; defaulting to 0.0.")
+                f"Unable to determine FPS for {video_path.name}; defaulting to 0.0."
+            )
         return fps
 
     def _load_saved_segments(self, video_path: Path) -> List[TrackingSegment]:
         """Load persisted segments for a video if available."""
-        sidecar_path = video_path.with_suffix(
-            video_path.suffix + ".segments.json")
+        sidecar_path = video_path.with_suffix(video_path.suffix + ".segments.json")
         if not sidecar_path.exists():
             return []
 
@@ -122,7 +155,8 @@ class TrackAllWorker(QThread):
                 raw_segments = json.load(f)
         except Exception as exc:
             self.logger.error(
-                f"Failed to read segments from {sidecar_path.name}: {exc}")
+                f"Failed to read segments from {sidecar_path.name}: {exc}"
+            )
             return []
 
         segments: List[TrackingSegment] = []
@@ -140,7 +174,8 @@ class TrackAllWorker(QThread):
                 segments.append(TrackingSegment.from_dict(entry))
             except Exception as exc:
                 self.logger.error(
-                    f"Invalid segment entry in {sidecar_path.name}: {exc}")
+                    f"Invalid segment entry in {sidecar_path.name}: {exc}"
+                )
         return segments
 
     def select_device(self):
@@ -151,22 +186,24 @@ class TrackAllWorker(QThread):
             )
         if torch.cuda.is_available():
             return torch.device("cuda:0")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
 
-    def _process_segments_for_video(self,
-                                    video_path: Path,
-                                    segments: List[TrackingSegment],
-                                    idx: int,
-                                    total_videos: int,
-                                    device: torch.device) -> bool:
+    def _process_segments_for_video(
+        self,
+        video_path: Path,
+        segments: List[TrackingSegment],
+        idx: int,
+        total_videos: int,
+        device: torch.device,
+    ) -> bool:
         """Run tracking for pre-defined segments of a single video."""
         if not segments:
             return False
 
         video_name = video_path.stem
-        output_folder = video_path.with_suffix('')
+        output_folder = video_path.with_suffix("")
         output_folder.mkdir(exist_ok=True, parents=True)
 
         total_segments = len(segments)
@@ -189,31 +226,33 @@ class TrackAllWorker(QThread):
                     device=device,
                 )
             except Exception as exc:
-                error_msg = (
-                    f"Failed to initialize CutieEngine for {video_name}: {exc}")
+                error_msg = f"Failed to initialize CutieEngine for {video_name}: {exc}"
                 self.error.emit(error_msg)
                 self.logger.error(error_msg, exc_info=True)
                 return False
 
         for seg_idx, segment in enumerate(segments, start=1):
             if not self.is_running:
-                self.logger.info(
-                    f"Segment processing interrupted for {video_name}.")
+                self.logger.info(f"Segment processing interrupted for {video_name}.")
                 break
 
             if not segment.is_annotation_valid():
                 warning_msg = (
                     f"Skipping segment annotated at frame {segment.annotated_frame} "
-                    f"for {video_name}: annotation JSON not found.")
+                    f"for {video_name}: annotation JSON not found."
+                )
                 self.logger.warning(warning_msg)
                 self.error.emit(warning_msg)
                 continue
 
-            progress_fraction = (
-                (idx - 1) + (seg_idx / total_segments)) / max(total_videos, 1)
+            progress_fraction = ((idx - 1) + (seg_idx / total_segments)) / max(
+                total_videos, 1
+            )
             progress_value = max(0, min(100, int(progress_fraction * 100)))
-            status_msg = (f"Processing {video_name}: segment {seg_idx}/{total_segments} "
-                          f"({segment.segment_start_frame}-{segment.segment_end_frame})")
+            status_msg = (
+                f"Processing {video_name}: segment {seg_idx}/{total_segments} "
+                f"({segment.segment_start_frame}-{segment.segment_end_frame})"
+            )
             self.progress.emit(progress_value, status_msg)
             self.log_gpu_memory(video_name, f"Segment {seg_idx} - Before")
 
@@ -243,18 +282,22 @@ class TrackAllWorker(QThread):
                     cutie_engine=shared_cutie_engine,
                 )
                 result_message = segment_executor.process_segment()
-                if any(keyword in result_message for keyword in ["Error", "not found", "Failed"]):
+                if any(
+                    keyword in result_message
+                    for keyword in ["Error", "not found", "Failed"]
+                ):
                     error_msg = (
-                        f"Segment {seg_idx} for {video_name} failed: {result_message}")
+                        f"Segment {seg_idx} for {video_name} failed: {result_message}"
+                    )
                     self.error.emit(error_msg)
                     self.logger.error(error_msg)
                 else:
                     successful_segments += 1
                     self.logger.info(
-                        f"Segment {seg_idx} for {video_name} completed: {result_message}")
+                        f"Segment {seg_idx} for {video_name} completed: {result_message}"
+                    )
             except Exception as exc:
-                error_msg = (
-                    f"Unexpected exception while processing segment {seg_idx} for {video_name}: {exc}")
+                error_msg = f"Unexpected exception while processing segment {seg_idx} for {video_name}: {exc}"
                 self.error.emit(error_msg)
                 self.logger.error(error_msg, exc_info=True)
             finally:
@@ -277,13 +320,13 @@ class TrackAllWorker(QThread):
                 self.logger.error(csv_error, exc_info=True)
 
         if total_segments > 0:
-            completion_progress = min(
-                100, int((idx / max(total_videos, 1)) * 100))
+            completion_progress = min(100, int((idx / max(total_videos, 1)) * 100))
             if successful_segments == total_segments:
-                completion_msg = f"Completed all {total_segments} segments for {video_name}."
-            else:
                 completion_msg = (
-                    f"Processed {successful_segments}/{total_segments} segments for {video_name}.")
+                    f"Completed all {total_segments} segments for {video_name}."
+                )
+            else:
+                completion_msg = f"Processed {successful_segments}/{total_segments} segments for {video_name}."
             self.progress.emit(completion_progress, completion_msg)
 
         return successful_segments == total_segments and successful_segments > 0
@@ -307,7 +350,8 @@ class TrackAllWorker(QThread):
                 torch.mps.empty_cache()
             except AttributeError:
                 self.logger.info(
-                    "MPS cache clearing not supported in this PyTorch version")
+                    "MPS cache clearing not supported in this PyTorch version"
+                )
 
     def log_gpu_memory(self, video_name, stage):
         """Log device memory usage."""
@@ -319,25 +363,29 @@ class TrackAllWorker(QThread):
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**2
             reserved = torch.cuda.memory_reserved() / 1024**2
-            self.logger.info(f"GPU Memory (CUDA - {stage} - {video_name}): "
-                             f"Allocated: {allocated:.2f} MB, Reserved: {reserved:.2f} MB")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            self.logger.info(
+                f"GPU Memory (CUDA - {stage} - {video_name}): "
+                f"Allocated: {allocated:.2f} MB, Reserved: {reserved:.2f} MB"
+            )
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             allocated = torch.mps.current_allocated_memory() / 1024**2
-            self.logger.info(f"GPU Memory (MPS - {stage} - {video_name}): "
-                             f"Allocated: {allocated:.2f} MB")
+            self.logger.info(
+                f"GPU Memory (MPS - {stage} - {video_name}): "
+                f"Allocated: {allocated:.2f} MB"
+            )
         else:
             self.logger.info(
-                f"No GPU available ({stage} - {video_name}): Running on CPU")
+                f"No GPU available ({stage} - {video_name}): Running on CPU"
+            )
 
     def is_video_finished(self, video_path, total_frames):
         """Check if a video is already processed."""
         video_name = Path(video_path).stem
-        output_folder = Path(video_path).with_suffix('')
+        output_folder = Path(video_path).with_suffix("")
         csv_pattern = str(output_folder / f"{video_name}*_tracking.csv")
         csv_files = glob.glob(csv_pattern)
         if csv_files:
-            self.logger.info(
-                f"Found tracking CSV for {video_name}: {csv_files[0]}")
+            self.logger.info(f"Found tracking CSV for {video_name}: {csv_files[0]}")
             return True
         last_frame = total_frames - 1
         json_filename = output_folder / f"{video_name}_{last_frame:09d}.json"
@@ -348,10 +396,9 @@ class TrackAllWorker(QThread):
         video_path = Path(video_path)
         video_path_str = str(video_path)
         video_name = video_path.stem
-        output_folder = video_path.with_suffix('')
+        output_folder = video_path.with_suffix("")
         output_folder.mkdir(exist_ok=True, parents=True)
-        self.logger.info(
-            f"Processing {video_name}: Output folder = {output_folder}")
+        self.logger.info(f"Processing {video_name}: Output folder = {output_folder}")
 
         self.video_processing_started.emit(video_path_str, str(output_folder))
 
@@ -452,8 +499,7 @@ class TrackAllWorker(QThread):
 
             json_file = output_folder / sorted(json_files)[-1]
             try:
-                labeled_frame_number = get_frame_number_from_json(
-                    str(json_file))
+                labeled_frame_number = get_frame_number_from_json(str(json_file))
                 label_file = LabelFile(str(json_file), is_video_frame=True)
                 valid_shapes = [
                     shape
@@ -468,9 +514,7 @@ class TrackAllWorker(QThread):
                     )
                     return False
             except Exception as exc:
-                self.error.emit(
-                    f"Invalid JSON file for {video_name}: {str(exc)}"
-                )
+                self.error.emit(f"Invalid JSON file for {video_name}: {str(exc)}")
                 self.logger.error(
                     f"JSON error for {video_name}: {str(exc)}", exc_info=True
                 )
@@ -528,15 +572,11 @@ class TrackAllWorker(QThread):
                 self.error.emit(
                     f"Failed to set pred_worker for {video_name}: {str(exc)}"
                 )
-                self.logger.error(
-                    f"pred_worker error: {str(exc)}", exc_info=True
-                )
+                self.logger.error(f"pred_worker error: {str(exc)}", exc_info=True)
                 return False
 
             try:
-                processor.reset_cutie_processor(
-                    mem_every=self.config["mem_every"]
-                )
+                processor.reset_cutie_processor(mem_every=self.config["mem_every"])
                 self.logger.info(f"Reset Cutie processor for {video_name}")
             except AttributeError:
                 self.logger.warning(
@@ -577,9 +617,7 @@ class TrackAllWorker(QThread):
                 self.error.emit(
                     f"Failed to convert JSON to CSV for {video_name}: {str(exc)}"
                 )
-                self.logger.error(
-                    f"CSV conversion error: {str(exc)}", exc_info=True
-                )
+                self.logger.error(f"CSV conversion error: {str(exc)}", exc_info=True)
                 return False
 
             self.progress.emit(
@@ -649,6 +687,7 @@ class LoadFrameThread(QtCore.QObject):
     """
     Thread for loading video frames with optimized performance.
     """
+
     res_frame = QtCore.Signal(int, QtGui.QImage)
     process = QtCore.Signal()
     video_loader = None
@@ -670,9 +709,7 @@ class LoadFrameThread(QtCore.QObject):
         self._shutting_down = False
 
         # Ensure frame processing runs on the worker thread event loop
-        self.process.connect(
-            self._optimized_load, type=QtCore.Qt.QueuedConnection
-        )
+        self.process.connect(self._optimized_load, type=QtCore.Qt.QueuedConnection)
 
     def _optimized_load(self):
         """Optimized version of load() with better error handling and caching."""
@@ -700,7 +737,7 @@ class LoadFrameThread(QtCore.QObject):
             frame = self.video_loader.load_frame(frame_number)
 
             # Convert frame to QImage
-            qimage = qimage2ndarray.array2qimage(frame)
+            qimage = _array_to_qimage(frame)
 
             # Update cache
             self._update_cache(frame_number, qimage)
@@ -880,7 +917,8 @@ class FlexibleWorker(QtCore.QObject):
                     request_stop()
                 except Exception:
                     logger.debug(
-                        "FlexibleWorker target stop request failed.", exc_info=True)
+                        "FlexibleWorker target stop request failed.", exc_info=True
+                    )
                 return
 
     def report_progress(self, progress):
@@ -896,8 +934,7 @@ class FlexibleWorker(QtCore.QObject):
         try:
             return self._safe_emit(signal, *args)
         except RuntimeError:
-            logger.debug(
-                "FlexibleWorker signal emission failed (object deleted).")
+            logger.debug("FlexibleWorker signal emission failed (object deleted).")
             return False
 
     def _safe_emit(self, signal, *args) -> bool:
@@ -906,8 +943,7 @@ class FlexibleWorker(QtCore.QObject):
             signal.emit(*args)
             return True
         except RuntimeError:
-            logger.debug(
-                "FlexibleWorker signal emission failed (object deleted).")
+            logger.debug("FlexibleWorker signal emission failed (object deleted).")
             return False
 
 
@@ -928,7 +964,7 @@ class FrameExtractorWorker(QThread):
                 extract_frames_from_videos(
                     input_folder=os.path.dirname(video),
                     output_folder=self.output_folder,
-                    num_frames=self.num_frames
+                    num_frames=self.num_frames,
                 )
                 progress_value = int((idx / len(self.videos)) * 100)
                 self.progress.emit(progress_value)
@@ -940,7 +976,7 @@ class FrameExtractorWorker(QThread):
 class ProcessVideosWorker(QThread):
     progress = Signal(int)  # Signal to update progress
     finished = Signal(str)  # Signal when processing is complete
-    error = Signal(str)     # Signal to handle errors
+    error = Signal(str)  # Signal to handle errors
 
     def __init__(self, videos, agent, parent=None):
         super().__init__(parent)
@@ -957,11 +993,13 @@ class ProcessVideosWorker(QThread):
 
                     # Process video with the agent
                     from annolid.agents import behavior_agent
+
                     response = behavior_agent.process_video_with_agent(
-                        video_path, user_prompt, self.agent)
+                        video_path, user_prompt, self.agent
+                    )
 
                     # Save response to a text file
-                    response_file = Path(video_path).with_suffix('.txt')
+                    response_file = Path(video_path).with_suffix(".txt")
                     with open(response_file, "w") as f:
                         f.write(response)
 
@@ -1001,8 +1039,7 @@ class PerceptionProcessWorker(QtCore.QThread):
             asyncio.set_event_loop(self._loop)
             self._loop.run_until_complete(self._run_main())
         except Exception as exc:
-            logger.error("Realtime perception worker error: %s",
-                         exc, exc_info=True)
+            logger.error("Realtime perception worker error: %s", exc, exc_info=True)
             self.error.emit(str(exc))
         finally:
             try:
@@ -1032,8 +1069,7 @@ class PerceptionProcessWorker(QtCore.QThread):
             try:
                 await self._perception.shutdown()
             except Exception as exc:
-                logger.error("Error during perception shutdown: %s",
-                             exc, exc_info=True)
+                logger.error("Error during perception shutdown: %s", exc, exc_info=True)
 
     def request_stop(self):
         """Signal the perception loop to terminate."""
@@ -1045,11 +1081,11 @@ class PerceptionProcessWorker(QtCore.QThread):
         perception = self._perception
         if loop and perception:
             try:
-                asyncio.run_coroutine_threadsafe(
-                    perception.shutdown(), loop)
+                asyncio.run_coroutine_threadsafe(perception.shutdown(), loop)
             except Exception as exc:
-                logger.error("Failed to request perception shutdown: %s",
-                             exc, exc_info=True)
+                logger.error(
+                    "Failed to request perception shutdown: %s", exc, exc_info=True
+                )
 
 
 class RealtimeSubscriberWorker(QtCore.QThread):
@@ -1088,10 +1124,11 @@ class RealtimeSubscriberWorker(QtCore.QThread):
             return
         keys = sorted(
             self._detections.keys(),
-            key=lambda item: item[1] if isinstance(
-                item[1], (int, float)) else float("inf")
+            key=lambda item: item[1]
+            if isinstance(item[1], (int, float))
+            else float("inf"),
         )
-        for key in keys[:len(self._detections) - max_entries]:
+        for key in keys[: len(self._detections) - max_entries]:
             self._detections.pop(key, None)
 
     def _close(self):
@@ -1132,8 +1169,9 @@ class RealtimeSubscriberWorker(QtCore.QThread):
                     events = dict(poller.poll(timeout=100))
                 except zmq.error.ZMQError as exc:
                     if self._running:
-                        logger.error("Realtime subscriber poll error: %s",
-                                     exc, exc_info=True)
+                        logger.error(
+                            "Realtime subscriber poll error: %s", exc, exc_info=True
+                        )
                         self.error.emit(str(exc))
                     break
 
@@ -1144,8 +1182,9 @@ class RealtimeSubscriberWorker(QtCore.QThread):
                     parts = self._socket.recv_multipart()
                 except zmq.error.ZMQError as exc:
                     if self._running:
-                        logger.error("Realtime subscriber recv error: %s",
-                                     exc, exc_info=True)
+                        logger.error(
+                            "Realtime subscriber recv error: %s", exc, exc_info=True
+                        )
                         self.error.emit(str(exc))
                     break
 
@@ -1173,8 +1212,9 @@ class RealtimeSubscriberWorker(QtCore.QThread):
             return
 
         metadata = payload.get("metadata") or {}
-        key = self._make_key(metadata.get("frame_index"),
-                             metadata.get("capture_timestamp"))
+        key = self._make_key(
+            metadata.get("frame_index"), metadata.get("capture_timestamp")
+        )
         self._detections.setdefault(key, []).append(payload)
         self._prune_detections()
 
@@ -1202,8 +1242,9 @@ class RealtimeSubscriberWorker(QtCore.QThread):
             QtGui.QImage.Format_RGB888,
         ).copy()
 
-        key = self._make_key(metadata.get("frame_index"),
-                             metadata.get("capture_timestamp"))
+        key = self._make_key(
+            metadata.get("frame_index"), metadata.get("capture_timestamp")
+        )
         detections = self._detections.pop(key, [])
         self.frame_received.emit(qimage, metadata, detections)
         self._prune_detections()
