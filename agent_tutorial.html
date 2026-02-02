@@ -148,8 +148,19 @@
 <li><p>Use <strong>Save CSV</strong> or <strong>Behavior Time Budget</strong> to generate reports from confirmed data.</p></li>
 </ul>
 </section>
+<section id="describe-behavior-caption-dock">
+<h2>9. Describe Behavior (Caption dock)<a class="headerlink" href="#describe-behavior-caption-dock" title="Link to this heading"></a></h2>
+<p>The <strong>Caption</strong> dock includes a <strong>Describe behavior</strong> action that can turn frames into a natural-language behavior log.</p>
+<ul class="simple">
+<li><p><strong>Segment summary (sample frames)</strong>: pick a time range and choose how many frames to sample uniformly.</p></li>
+<li><p><strong>Timeline (describe every N seconds)</strong>: generate timestamped lines over long videos (e.g., every <code class="docutils literal notranslate"><span class="pre">1s</span></code>), batching multiple frames per model call.</p></li>
+<li><p>Timeline results are persisted per timestamp in a sidecar (<code class="docutils literal notranslate"><span class="pre">&lt;video&gt;.&lt;ext&gt;.behavior_timeline.json</span></code>) and auto-loaded, so scrubbing frames inside that interval restores the saved behavior text.</p></li>
+<li><p>Re-running timeline mode skips already described timestamps and resumes from where the previous run stopped.</p></li>
+</ul>
+<p>For long ranges, increase the step size (e.g., <code class="docutils literal notranslate"><span class="pre">2–5s</span></code>) to reduce runtime and output length.</p>
+</section>
 <section id="quick-checklist">
-<h2>9. Quick Checklist<a class="headerlink" href="#quick-checklist" title="Link to this heading"></a></h2>
+<h2>10. Quick Checklist<a class="headerlink" href="#quick-checklist" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
 <li><p>Run the agent or use previously cached results.</p></li>
 <li><p>Review events in the Behavior Log → confirm/reject/edit.</p></li>
