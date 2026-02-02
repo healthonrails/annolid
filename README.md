@@ -48,8 +48,9 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
 - Sample datasets, posters, and publications are available in the `docs/` folder of this repository.
 - Join the discussion on the [Annolid Google Group](https://groups.google.com/g/annolid).
 
-## Quick Start
-Install [Anaconda](https://docs.anaconda.com/anaconda/install/index.html), then set up Annolid in a new environment:
+## Quick Start (Anaconda)
+
+If you prefer using [Anaconda](https://docs.anaconda.com/anaconda/install/index.html) to manage environments:
 
 ```bash
 conda create -n annolid-env python=3.11
@@ -61,11 +62,11 @@ pip install -e .
 annolid  # launches the GUI
 ```
 
-The `annolid` command detects your hardware automatically. If you need tighter control (for example, to target a specific CUDA toolkit), use the environment files described below.
+## Installation
 
-## One-Line Installation Script (Recommended)
+### 🚀 One-Line Installation (Recommended)
 
-For a streamlined setup, use the installation script that clone the repo, auto-detects your system and handles everything:
+Get Annolid running in minutes with our automated script. It handles downloading, environment setup, and dependency installation (including `uv` acceleration if available).
 
 **macOS / Linux:**
 ```bash
@@ -77,98 +78,16 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
 ```
 
-**Script Features:**
-- **Full Setup**: Clones the repository, creates a virtual environment, and installs dependencies.
-- **Auto-Detection**: Identifies OS, architecture (Intel/Apple Silicon), and compatible Python version (3.10-3.13, or 3.14 via uv).
-- **Interactive**: Prompts for installation directory and optional features (e.g., SAM3, Text-to-Speech).
-- **Fast**: Uses `uv` for high-speed package resolution if available.
+The script will:
+- Clone the repository.
+- Detect your OS and Hardware (Intel/Apple Silicon).
+- Create an isolated virtual environment.
+- Prompt for optional features (SAM3, Text-to-Speech, etc.).
+- Offer to launch Annolid immediately.
 
-**Advanced Usage:**
-You can pass arguments to the script by piping to `bash -s` (Linux/macOS) or using parameters (Windows).
+### Other Installation Methods
 
-*macOS / Linux:*
-```bash
-# Non-interactive install to specific directory with extras
-curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- --install-dir ./annolid --no-interactive --extras sam3
-```
-
-*Windows:*
-```powershell
-# Download the script first for advanced options
-curl -o install.ps1 https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1
-.\install.ps1 -InstallDir .\annolid -NoInteractive -Extras sam3
-```
-
-## Installation Options
-
-### Conda environment (GPU-ready, Ubuntu 20.04 tested)
-```bash
-git clone --recurse-submodules https://github.com/healthonrails/annolid.git
-cd annolid
-conda env create -f environment.yml
-conda activate annolid-env
-annolid
-```
-
-If you see `CUDA capability sm_86 is not compatible with the current PyTorch installation`, install a matching build:
-```bash
-conda install pytorch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 cudatoolkit=12.1 -c pytorch -c nvidia
-```
-
-### Pip-only installation
-```bash
-python -m venv annolid-env
-source annolid-env/bin/activate
-pip install --upgrade pip
-pip install annolid
-pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
-annolid
-```
-This route works well on machines without Conda, but you remain responsible for installing system dependencies such as `ffmpeg`.
-
-### uv (lightweight venv + installer)
-Use [uv](https://docs.astral.sh/uv/) if you prefer fast virtualenv creation and dependency resolution:
-```bash
-pip install --user uv  # or grab the standalone binary
-git clone --recurse-submodules https://github.com/healthonrails/annolid.git
-cd annolid
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e .
-annolid
-```
-Generate a lock file for reproducible installs with `uv pip compile pyproject.toml -o uv.lock`, then reproduce the environment elsewhere via `uv pip sync uv.lock`. Ensure `ffmpeg`/`ffprobe` is available on your PATH (`brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Ubuntu) so timestamp tools work correctly.
-
-### Apple Silicon (macOS M1/M2)
-Some Intel-specific libraries can trigger MKL errors on Apple Silicon. If you observe messages such as:
-```
-Intel MKL FATAL ERROR: This system does not meet the minimum requirements...
-```
-recreate the environment with native wheels:
-```bash
-conda create -n annolid-env python=3.11
-conda activate annolid-env
-git clone --recurse-submodules https://github.com/healthonrails/annolid.git
-cd annolid
-pip install -e .
-annolid
-```
-
-### Optional dependencies
-- **Detectron2** (required for training new instance segmentation models):
-  ```bash
-  conda activate annolid-env
-  python -m pip install --user "git+https://github.com/facebookresearch/detectron2.git"
-  ```
-- **Segment Anything 2 (SAM2)** for object tracking:
-  ```bash
-  cd segmentation/SAM/segment-anything-2
-  pip install -e .
-  ```
-- **FFmpeg** is recommended for format conversion and improved compatibility with OpenCV-based video I/O:
-  ```bash
-  conda install -c conda-forge ffmpeg
-  ```
+For advanced users, Docker, Conda, or manual Pip installation, please see the [Detailed Installation Guide](docs/installation.md).
 
 ## Using Annolid
 - Launch the GUI:
