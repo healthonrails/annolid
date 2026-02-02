@@ -223,21 +223,35 @@ check_git() {
     print_step "Checking Git installation..."
 
     if ! command -v git &> /dev/null; then
-        print_error "Git not found. Please install Git first."
-        echo ""
-        echo "Installation instructions:"
-        if [[ "$OS_TYPE" == "macos" ]]; then
-            echo "  xcode-select --install"
-            echo "  # or: brew install git"
-        elif [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
-            echo "  sudo apt install git"
-        elif [[ "$DISTRO" == "fedora" ]]; then
-            echo "  sudo dnf install git"
-        fi
-        exit 1
-    fi
+        print_warning "Git not found. Attempting automatic installation..."
 
-    print_success "Git found"
+        INSTALLED=false
+        if [[ "$OS_TYPE" == "macos" ]]; then
+             if command -v brew &> /dev/null; then
+                brew install git
+                INSTALLED=true
+             else
+                print_error "Homebrew not found. Please install git manually."
+                echo "  xcode-select --install"
+                exit 1
+             fi
+        elif [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
+            sudo apt update && sudo apt install -y git
+            INSTALLED=true
+        elif [[ "$DISTRO" == "fedora" ]]; then
+            sudo dnf install -y git
+            INSTALLED=true
+        fi
+
+        if ! command -v git &> /dev/null; then
+             print_error "Git installation failed. Please install manually."
+             exit 1
+        fi
+
+        print_success "Git installed successfully"
+    else
+        print_success "Git found"
+    fi
 }
 
 # =============================================================================
@@ -342,19 +356,42 @@ check_ffmpeg() {
         echo "  $FFMPEG_VERSION"
         print_success "FFmpeg found"
     else
-        print_warning "FFmpeg not found. Video processing may be limited."
-        echo ""
-        echo "  To install FFmpeg:"
+        print_warning "FFmpeg not found. Attempting automatic installation..."
+
+        INSTALLED=false
         if [[ "$OS_TYPE" == "macos" ]]; then
-            echo "    brew install ffmpeg"
+             if command -v brew &> /dev/null; then
+                brew install ffmpeg
+                INSTALLED=true
+             else
+                print_warning "Homebrew not found. Cannot auto-install FFmpeg."
+             fi
         elif [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
-            echo "    sudo apt install ffmpeg"
+            sudo apt update && sudo apt install -y ffmpeg
+            INSTALLED=true
         elif [[ "$DISTRO" == "fedora" ]]; then
-            echo "    sudo dnf install ffmpeg"
+            sudo dnf install -y ffmpeg
+            INSTALLED=true
         fi
-        echo ""
-        if ! prompt_yes_no "  Continue without FFmpeg?" "y"; then
-            exit 1
+
+        if command -v ffmpeg &> /dev/null; then
+             print_success "FFmpeg installed successfully"
+        else
+             print_warning "Automatic installation failed or not supported."
+             print_warning "Video processing may be limited."
+
+             # Fallback instructions
+             echo "  To install manually:"
+             if [[ "$OS_TYPE" == "macos" ]]; then
+                 echo "    brew install ffmpeg"
+             elif [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" ]]; then
+                 echo "    sudo apt install ffmpeg"
+             fi
+             echo ""
+
+             if ! prompt_yes_no "  Continue without FFmpeg?" "y"; then
+                exit 1
+             fi
         fi
     fi
 }

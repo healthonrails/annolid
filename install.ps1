@@ -71,11 +71,23 @@ function Test-Git {
         $null = Get-Command git -ErrorAction Stop
         Write-Success "Git found"
     } catch {
-        Write-Error-Msg "Git not found. Please install Git first."
-        Write-Host ""
-        Write-Host "  Download from: https://git-scm.com/download/win"
-        Write-Host "  Or: winget install Git.Git"
-        exit 1
+        Write-Warning-Msg "Git not found. Attempting automatic installation via Winget..."
+
+        try {
+            winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+
+            # Simple check if command became available (might need restart)
+            if (Get-Command git -ErrorAction SilentlyContinue) {
+                Write-Success "Git installed successfully"
+            } else {
+                Write-Warning-Msg "Git installed but may need shell restart to be recognized."
+            }
+        } catch {
+            Write-Error-Msg "Git automatic installation failed. Please install Git manually."
+            Write-Host ""
+            Write-Host "  Download from: https://git-scm.com/download/win"
+            exit 1
+        }
     }
 }
 
@@ -145,12 +157,19 @@ function Test-FFmpeg {
         Write-Host "  $ffmpegVersion"
         Write-Success "FFmpeg found"
     } catch {
-        Write-Warning-Msg "FFmpeg not found. Video processing may be limited."
-        Write-Host ""
-        Write-Host "  To install: winget install Gyan.FFmpeg"
-        Write-Host ""
-        if (-not (Prompt-YesNo "  Continue without FFmpeg?" $true)) {
-            exit 1
+        Write-Warning-Msg "FFmpeg not found. Attempting automatic installation via Winget..."
+
+        try {
+            winget install --id Gyan.FFmpeg -e --source winget --accept-package-agreements --accept-source-agreements
+            Write-Success "FFmpeg installed successfully (may need shell restart)"
+        } catch {
+            Write-Warning-Msg "Automatic installation failed or canceled."
+            Write-Host ""
+            Write-Host "  To install: winget install Gyan.FFmpeg"
+            Write-Host ""
+            if (-not (Prompt-YesNo "  Continue without FFmpeg?" $true)) {
+                exit 1
+            }
         }
     }
 }
