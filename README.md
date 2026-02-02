@@ -63,6 +63,42 @@ annolid  # launches the GUI
 
 The `annolid` command detects your hardware automatically. If you need tighter control (for example, to target a specific CUDA toolkit), use the environment files described below.
 
+## One-Line Installation Script (Recommended)
+
+For a streamlined setup, use the installation script that clone the repo, auto-detects your system and handles everything:
+
+**macOS / Linux:**
+```bash
+curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
+```
+
+**Script Features:**
+- **Full Setup**: Clones the repository, creates a virtual environment, and installs dependencies.
+- **Auto-Detection**: Identifies OS, architecture (Intel/Apple Silicon), and compatible Python version (3.10-3.13, or 3.14 via uv).
+- **Interactive**: Prompts for installation directory and optional features (e.g., SAM3, Text-to-Speech).
+- **Fast**: Uses `uv` for high-speed package resolution if available.
+
+**Advanced Usage:**
+You can pass arguments to the script by piping to `bash -s` (Linux/macOS) or using parameters (Windows).
+
+*macOS / Linux:*
+```bash
+# Non-interactive install to specific directory with extras
+curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- --install-dir ./annolid --no-interactive --extras sam3
+```
+
+*Windows:*
+```powershell
+# Download the script first for advanced options
+curl -o install.ps1 https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1
+.\install.ps1 -InstallDir .\annolid -NoInteractive -Extras sam3
+```
+
 ## Installation Options
 
 ### Conda environment (GPU-ready, Ubuntu 20.04 tested)
@@ -207,9 +243,9 @@ annolid
 [![Mouse behavior analysis with instance segmentation based deep learning networks](http://img.youtube.com/vi/op3A4_LuVj8/0.jpg)](http://www.youtube.com/watch?v=op3A4_LuVj8)
 
 ## Troubleshooting
-- Video playback errors (`OpenCV: FFMPEG: tag ...` or missing codecs):  
+- Video playback errors (`OpenCV: FFMPEG: tag ...` or missing codecs):
   Install FFmpeg via your package manager or `conda install -c conda-forge ffmpeg` to extend codec support.
-- macOS Qt warning (`Class QCocoaPageLayoutDelegate is implemented in both ...`):  
+- macOS Qt warning (`Class QCocoaPageLayoutDelegate is implemented in both ...`):
   `conda install qtpy` resolves the conflict between OpenCV and PyQt.
 - If the GUI does not launch, confirm the correct environment is active and run `annolid --help` for CLI usage.
 - For model training/inference from the terminal, use `annolid-run list-models`, `annolid-run train <model> --help-model`, and `annolid-run predict <model> --help-model`.
@@ -258,9 +294,9 @@ If you use Annolid in your research, please cite:
 ## Publications
 - **2022 – Ultrasonic vocalization study.** Pranic *et al.* relate mouse pup vocalizations to non-vocal behaviors ([bioRxiv](https://doi.org/10.1101/2022.10.14.512301)).
 - **2022 – Digging and pain behavior.** Pattison *et al.* link digging behaviors to wellbeing in mice (*Pain*, 2022).
-- **SfN Posters:**  
-  - [2021: Annolid — instance segmentation-based multiple-animal tracking](https://youtu.be/tVIE6vG9Gao)  
-  - 2023: PSTR512.01 *Scoring rodent digging behavior with Annolid*  
+- **SfN Posters:**
+  - [2021: Annolid — instance segmentation-based multiple-animal tracking](https://youtu.be/tVIE6vG9Gao)
+  - 2023: PSTR512.01 *Scoring rodent digging behavior with Annolid*
   - 2023: PSTR512.02 *Annolid: Annotate, Segment, and Track Anything You Need*
 - For more applications and datasets, visit [https://cplab.science/annolid](https://cplab.science/annolid).
 
