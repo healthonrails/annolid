@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass
@@ -23,6 +24,10 @@ from annolid.utils.logger import logger
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 DEFAULT_LABEL_INDEX_DIRNAME = "annolid_logs"
 DEFAULT_LABEL_INDEX_NAME = "annolid_dataset.jsonl"
+_SPLIT_NAME_PATTERN = re.compile(
+    r"^(train(?:ing)?|val|valid(?:ation)?|test)(?:[_-].+)?$",
+    re.IGNORECASE,
+)
 
 
 def default_label_index_path(dataset_root: Path) -> Path:
@@ -409,6 +414,84 @@ def _group_key_from_path(path: Path, *, group_by: str, regex: Optional[str]) -> 
     return path.parent.name or path.name
 
 
+def _normalize_split_name(name: str) -> Optional[str]:
+    token = str(name or "").strip().lower()
+    match = _SPLIT_NAME_PATTERN.match(token)
+    if not match:
+        return None
+    base = match.group(1).lower()
+    if base.startswith("train"):
+        return "train"
+    if base.startswith("val") or base.startswith("valid"):
+        return "val"
+    if base == "test":
+        return "test"
+    return None
+
+
+def _infer_split_from_relative_path(rel_path: Path) -> Optional[str]:
+    # Infer from directory names only (not from file stem).
+    for part in rel_path.parts[:-1]:
+        split = _normalize_split_name(part)
+        if split:
+            return split
+    return None
+
+
+def infer_split_pairs_from_sources(
+    pairs: Sequence[Tuple[Path, Path]],
+    *,
+    sources: Sequence[Path],
+) -> Optional[Dict[str, List[Tuple[Path, Path]]]]:
+    roots = []
+    for src in sources:
+        candidate = Path(src).expanduser()
+        if not candidate.exists():
+            continue
+        try:
+            roots.append(candidate.resolve())
+        except OSError:
+            roots.append(candidate)
+    if not roots:
+        return None
+
+    # Prefer the most specific source root first.
+    roots.sort(key=lambda p: len(p.parts), reverse=True)
+    splits: Dict[str, List[Tuple[Path, Path]]] = {"train": [], "val": [], "test": []}
+    unmatched: List[Tuple[Path, Path]] = []
+
+    for pair in pairs:
+        json_path = Path(pair[0])
+        try:
+            resolved = json_path.resolve()
+        except OSError:
+            resolved = json_path
+
+        split_name: Optional[str] = None
+        for root in roots:
+            try:
+                rel = resolved.relative_to(root)
+            except ValueError:
+                continue
+            split_name = _infer_split_from_relative_path(rel)
+            if split_name:
+                break
+
+        if split_name:
+            splits[split_name].append(pair)
+        else:
+            unmatched.append(pair)
+
+    if not any(splits.values()):
+        return None
+
+    # Keep non-matching files in train by default.
+    if unmatched:
+        splits["train"].extend(unmatched)
+
+    return splits
+
+
 def split_labelme_pairs(
     pairs: Sequence[Tuple[Path, Path]],
     *,
@@ -582,14 +665,18 @@ def generate_labelme_spec_and_splits(
             recursive=recursive,
             include_empty=include_empty,
         )
-        splits = split_labelme_pairs(
-            pairs,
-            val_size=float(val_size),
-            test_size=float(test_size),
-            seed=int(seed),
-            group_by=str(group_by),
-            group_regex=(str(group_regex) if group_regex else None),
-        )
+        inferred_splits = infer_split_pairs_from_sources(pairs, sources=sources)
+        if inferred_splits:
+            splits = inferred_splits
+        else:
+            splits = split_labelme_pairs(
+                pairs,
+                val_size=float(val_size),
+                test_size=float(test_size),
+                seed=int(seed),
+                group_by=str(group_by),
+                group_regex=(str(group_regex) if group_regex else None),
+            )
 
     train_index = split_dir_path / "labelme_train.jsonl"
     val_index = split_dir_path / "labelme_val.jsonl"
