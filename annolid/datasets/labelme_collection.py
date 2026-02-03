@@ -431,7 +431,7 @@ def _normalize_split_name(name: str) -> Optional[str]:
 
 def _infer_split_from_relative_path(rel_path: Path) -> Optional[str]:
     # Infer from directory names only (not from file stem).
-    for part in rel_path.parts[:-1]:
+    for part in reversed(rel_path.parts[:-1]):
         split = _normalize_split_name(part)
         if split:
             return split

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 from annolid.annotation.labelme2yolo import Labelme2YOLO
 from annolid.datasets.labelme_collection import (
@@ -22,6 +23,29 @@ from annolid.utils.logger import logger
 class IndexedPair:
     json_path: Path
     image_path: Path
+
+
+_SPLIT_NAME_PATTERN = re.compile(
+    r"^(train(?:ing)?|val|valid(?:ation)?|test)(?:[_-].+)?$",
+    re.IGNORECASE,
+)
+
+
+def _infer_split_from_path(path: Path) -> Optional[str]:
+    parts = Path(path).parts[:-1]
+    for part in reversed(parts):
+        token = str(part).strip().lower()
+        match = _SPLIT_NAME_PATTERN.match(token)
+        if not match:
+            continue
+        base = match.group(1).lower()
+        if base.startswith("train"):
+            return "train"
+        if base.startswith("val") or base.startswith("valid"):
+            return "val"
+        if base == "test":
+            return "test"
+    return None
 
 
 def _short_hash(value: str, length: int = 10) -> str:
@@ -86,7 +110,10 @@ def iter_indexed_pairs(
                 continue
             image_path = resolved
 
-        yield IndexedPair(json_path=json_path.resolve(), image_path=image_path.resolve()), "ok"
+        yield (
+            IndexedPair(json_path=json_path.resolve(), image_path=image_path.resolve()),
+            "ok",
+        )
 
 
 def build_yolo_from_label_index(
@@ -167,8 +194,8 @@ def build_yolo_from_label_index(
             if not isinstance(shapes, list):
                 continue
             if any(
-                isinstance(s, dict) and (s.get("shape_type")
-                                         or "polygon").lower() == "point"
+                isinstance(s, dict)
+                and (s.get("shape_type") or "polygon").lower() == "point"
                 for s in shapes
             ):
                 dataset_has_points = True
@@ -178,8 +205,7 @@ def build_yolo_from_label_index(
 
     staging_root = output_dir / "annolid_logs"
     staging_root.mkdir(parents=True, exist_ok=True)
-    staging_dir = Path(
-        tempfile.mkdtemp(prefix="index_staging_", dir=str(staging_root)))
+    staging_dir = Path(tempfile.mkdtemp(prefix="index_staging_", dir=str(staging_root)))
 
     try:
         total = len(pairs)
@@ -189,8 +215,11 @@ def build_yolo_from_label_index(
 
             unique = _short_hash(str(pair.json_path))
             stem = f"{pair.json_path.stem}__{unique}"
-            staged_json = staging_dir / f"{stem}.json"
-            staged_png = staging_dir / f"{stem}.png"
+            split_name = _infer_split_from_path(pair.json_path)
+            split_dir = staging_dir / split_name if split_name else staging_dir
+            split_dir.mkdir(parents=True, exist_ok=True)
+            staged_json = split_dir / f"{stem}.json"
+            staged_png = split_dir / f"{stem}.png"
 
             # Ensure the staged image uses .png to satisfy existing Labelme2YOLO filtering.
             if pair.image_path.suffix.lower() == ".png":
@@ -210,12 +239,10 @@ def build_yolo_from_label_index(
             try:
                 payload = load_labelme_json(pair.json_path)
             except Exception as exc:
-                logger.warning("Skipping unreadable JSON %s: %s",
-                               pair.json_path, exc)
+                logger.warning("Skipping unreadable JSON %s: %s", pair.json_path, exc)
                 continue
             if not isinstance(payload, dict):
-                logger.warning(
-                    "Skipping non-dict JSON payload: %s", pair.json_path)
+                logger.warning("Skipping non-dict JSON payload: %s", pair.json_path)
                 continue
             payload = dict(payload)
 
@@ -226,7 +253,8 @@ def build_yolo_from_label_index(
                 payload["shapes"] = [
                     s
                     for s in shapes
-                    if isinstance(s, dict) and (s.get("shape_type") or "polygon").lower() != "point"
+                    if isinstance(s, dict)
+                    and (s.get("shape_type") or "polygon").lower() != "point"
                 ]
             # For pose, keep polygons + points so polygons can provide better bounds.
 
@@ -253,8 +281,7 @@ def build_yolo_from_label_index(
 
         staged_dataset_dir = staging_dir / dataset_name
         if not staged_dataset_dir.exists():
-            raise RuntimeError(
-                f"YOLO dataset folder not created: {staged_dataset_dir}")
+            raise RuntimeError(f"YOLO dataset folder not created: {staged_dataset_dir}")
 
         shutil.move(str(staged_dataset_dir), str(dataset_dir))
 
@@ -272,5 +299,4 @@ def build_yolo_from_label_index(
             try:
                 shutil.rmtree(staging_dir, ignore_errors=True)
             except Exception:
-                logger.debug(
-                    "Failed to cleanup staging directory.", exc_info=True)
+                logger.debug("Failed to cleanup staging directory.", exc_info=True)

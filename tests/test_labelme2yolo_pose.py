@@ -11,8 +11,7 @@ def _write_sample_annotation(tmp_path: Path) -> Path:
     image_width = 100
     image_height = 80
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -55,8 +54,7 @@ def _write_points_only_annotation(tmp_path: Path) -> Path:
     image_width = 120
     image_height = 90
     image_path = tmp_path / "mouse.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -123,9 +121,7 @@ def test_labelme2yolo_pose_with_visibility(tmp_path):
     converter.create_yolo_dataset_dirs()
     converter.json_to_text("train/", "sample.json")
 
-    label_path = (
-        tmp_path / "YOLO_pose_vis" / "labels" / "train" / "sample.txt"
-    )
+    label_path = tmp_path / "YOLO_pose_vis" / "labels" / "train" / "sample.txt"
     content = label_path.read_text().strip().split()
     assert content[0] == "0"
     # class + 4 bbox values + 2 keypoints * (x, y, v)
@@ -144,8 +140,7 @@ def test_labelme2yolo_pose_visibility_from_flags(tmp_path: Path):
     image_width = 100
     image_height = 80
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -245,13 +240,14 @@ def test_labelme2yolo_pose_reads_metadata_outside_flags(tmp_path: Path) -> None:
     assert floats[7:10] == pytest.approx([0.55, 0.5625, 1.0])
 
 
-def test_labelme2yolo_pose_visibility_ignores_confidence_description(tmp_path: Path) -> None:
+def test_labelme2yolo_pose_visibility_ignores_confidence_description(
+    tmp_path: Path,
+) -> None:
     """LabelMe `description` may store a confidence float, not YOLO visibility."""
     image_width = 100
     image_height = 80
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -291,8 +287,7 @@ def test_labelme2yolo_does_not_expand_single_instance_pose_schema(tmp_path: Path
     image_width = 100
     image_height = 80
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     (tmp_path / "pose_schema.json").write_text(
         json.dumps(
@@ -354,9 +349,7 @@ def test_labelme2yolo_pose_points_only(tmp_path):
     converter.create_yolo_dataset_dirs()
     converter.json_to_text("train/", "mouse_000000000.json")
 
-    label_path = tmp_path / \
-        "YOLO_dataset" / "labels" / \
-        "train" / "mouse_000000000.txt"
+    label_path = tmp_path / "YOLO_dataset" / "labels" / "train" / "mouse_000000000.txt"
     content = label_path.read_text().strip().split()
 
     assert content[0] == "0"
@@ -372,8 +365,7 @@ def test_labelme2yolo_does_not_split_concatenated_keypoint_labels(tmp_path):
     image_width = 120
     image_height = 90
     image_path = tmp_path / "mouse.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -401,12 +393,13 @@ def test_labelme2yolo_does_not_split_concatenated_keypoint_labels(tmp_path):
     assert "base" not in converter.keypoint_labels_order
 
 
-def test_labelme2yolo_pose_assigns_points_to_polygons_without_group_id(tmp_path: Path) -> None:
+def test_labelme2yolo_pose_assigns_points_to_polygons_without_group_id(
+    tmp_path: Path,
+) -> None:
     image_width = 100
     image_height = 60
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -466,8 +459,7 @@ def test_labelme2yolo_pose_strips_trailing_instance_separators(tmp_path: Path) -
     image_width = 100
     image_height = 60
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     annotation = {
         "imagePath": str(image_path),
@@ -480,14 +472,22 @@ def test_labelme2yolo_pose_strips_trailing_instance_separators(tmp_path: Path) -
                 "shape_type": "polygon",
             },
             {"label": "resident_nose", "points": [[20, 20]], "shape_type": "point"},
-            {"label": "resident_tail_base", "points": [[30, 35]], "shape_type": "point"},
+            {
+                "label": "resident_tail_base",
+                "points": [[30, 35]],
+                "shape_type": "point",
+            },
             {
                 "label": "intruder_",
                 "points": [[55, 5], [95, 5], [95, 45], [55, 45]],
                 "shape_type": "polygon",
             },
             {"label": "intruder_nose", "points": [[70, 20]], "shape_type": "point"},
-            {"label": "intruder_tail_base", "points": [[80, 35]], "shape_type": "point"},
+            {
+                "label": "intruder_tail_base",
+                "points": [[80, 35]],
+                "shape_type": "point",
+            },
         ],
     }
     (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
@@ -527,8 +527,7 @@ def test_labelme2yolo_normalizes_prefixed_pose_schema_keypoints(tmp_path: Path) 
     image_width = 100
     image_height = 80
     image_path = tmp_path / "sample.png"
-    Image.new("RGB", (image_width, image_height),
-              color=(0, 0, 0)).save(image_path)
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
 
     (tmp_path / "pose_schema.json").write_text(
         json.dumps(
@@ -589,3 +588,41 @@ def test_labelme2yolo_normalizes_prefixed_pose_schema_keypoints(tmp_path: Path) 
     yaml_text = yaml_path.read_text()
     assert "kpt_shape: [2, 2]" in yaml_text
     assert "flip_idx: [1, 0]" in yaml_text
+
+
+def test_labelme2yolo_uses_prefixed_split_folders_without_random_split(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "dataset"
+    split_dirs = {
+        "train": root / "train_session01",
+        "val": root / "validation_session01",
+        "test": root / "test_session01",
+    }
+
+    for split_name, folder in split_dirs.items():
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = f"{split_name}_sample"
+        image_path = folder / f"{stem}.png"
+        Image.new("RGB", (64, 64), color=(0, 0, 0)).save(image_path)
+        annotation = {
+            "imagePath": image_path.name,
+            "imageHeight": 64,
+            "imageWidth": 64,
+            "shapes": [
+                {
+                    "label": "animal",
+                    "points": [[10, 10], [40, 10], [40, 40], [10, 40]],
+                    "shape_type": "polygon",
+                }
+            ],
+        }
+        (folder / f"{stem}.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(str(root))
+    converter.convert(val_size=0.9, test_size=0.9)
+
+    yolo_root = root / "YOLO_dataset"
+    assert len(list((yolo_root / "labels" / "train").glob("*.txt"))) == 1
+    assert len(list((yolo_root / "labels" / "val").glob("*.txt"))) == 1
+    assert len(list((yolo_root / "labels" / "test").glob("*.txt"))) == 1

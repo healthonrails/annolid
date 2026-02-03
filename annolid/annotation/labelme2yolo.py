@@ -27,6 +27,26 @@ from annolid.annotation.keypoint_visibility import (
 )
 from annolid.core.behavior.spec import DEFAULT_SCHEMA_FILENAME, load_behavior_spec
 
+_SPLIT_NAME_PATTERN = re.compile(
+    r"^(train(?:ing)?|val|valid(?:ation)?|test)(?:[_-].+)?$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_split_name(name: str) -> Optional[str]:
+    token = str(name or "").strip().lower()
+    match = _SPLIT_NAME_PATTERN.match(token)
+    if not match:
+        return None
+    base = match.group(1).lower()
+    if base.startswith("train"):
+        return "train"
+    if base.startswith("val") or base.startswith("valid"):
+        return "val"
+    if base == "test":
+        return "test"
+    return None
+
 
 def point_list_to_numpy_array(point_list: List[str]) -> np.ndarray:
     """
@@ -434,8 +454,11 @@ class Labelme2YOLO:
                 continue
 
             preset_split = None
-            if rel.parts and rel.parts[0] in ("train", "val", "test"):
-                preset_split = rel.parts[0]
+            for part in reversed(rel.parts[:-1]):
+                split_name = _normalize_split_name(part)
+                if split_name:
+                    preset_split = split_name
+                    break
 
             items.append(
                 Labelme2YOLO._LabelmeItem(
@@ -1167,7 +1190,8 @@ class Labelme2YOLO:
         if not items:
             return
 
-        # If dataset already has train/val/test directories, respect them.
+        # If dataset already has split-like directories (e.g. train*, val*, test*),
+        # always respect them and ignore val_size/test_size.
         preset = [
             item for item in items if item.preset_split in ("train", "val", "test")
         ]
@@ -1175,11 +1199,15 @@ class Labelme2YOLO:
             train_items = [i for i in items if i.preset_split == "train"]
             val_items = [i for i in items if i.preset_split == "val"]
             test_items = [i for i in items if i.preset_split == "test"]
-            # If preset exists but any split is empty, fall back to random split for robustness.
+            train_items.extend(
+                i for i in items if i.preset_split not in ("train", "val", "test")
+            )
+            # Ensure train split is non-empty when possible.
             if not train_items:
-                train_items, val_items, test_items = self.split_jsons(
-                    [], items, val_size, test_size
-                )
+                if val_items:
+                    train_items.append(val_items.pop())
+                elif test_items:
+                    train_items.append(test_items.pop())
         else:
             train_items, val_items, test_items = self.split_jsons(
                 [], items, val_size, test_size

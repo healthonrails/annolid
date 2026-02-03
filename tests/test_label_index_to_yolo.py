@@ -31,8 +31,7 @@ def _write_labelme_pair(folder: Path, *, stem: str) -> tuple[Path, Path]:
 
 
 def test_build_yolo_from_index_skips_missing_json(tmp_path):
-    src_json, src_img = _write_labelme_pair(
-        tmp_path / "src", stem="clip_000000000")
+    src_json, src_img = _write_labelme_pair(tmp_path / "src", stem="clip_000000000")
     missing_json = tmp_path / "src" / "missing_000000000.json"
 
     index_file = tmp_path / "annolid_dataset.jsonl"
@@ -48,8 +47,9 @@ def test_build_yolo_from_index_skips_missing_json(tmp_path):
             "json_path": str(missing_json.resolve()),
         },
     ]
-    index_file.write_text("\n".join(json.dumps(r)
-                          for r in records) + "\n", encoding="utf-8")
+    index_file.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
 
     out_dir = tmp_path / "out"
     summary = build_yolo_from_label_index(
@@ -164,3 +164,55 @@ def test_build_yolo_from_index_mixed_shapes_can_force_pose(tmp_path):
     dataset_dir = Path(summary["dataset_dir"])
     data_yaml = (dataset_dir / "data.yaml").read_text(encoding="utf-8")
     assert "kpt_shape" not in data_yaml
+
+
+def test_build_yolo_from_index_uses_prefixed_split_folders(tmp_path):
+    src_root = tmp_path / "src"
+    train_json, train_img = _write_labelme_pair(
+        src_root / "train_session01", stem="train_000000000"
+    )
+    val_json, val_img = _write_labelme_pair(
+        src_root / "validation_session01", stem="val_000000000"
+    )
+    test_json, test_img = _write_labelme_pair(
+        src_root / "test_session01", stem="test_000000000"
+    )
+
+    index_file = tmp_path / "annolid_dataset.jsonl"
+    records = [
+        {
+            "record_version": 1,
+            "image_path": str(train_img.resolve()),
+            "json_path": str(train_json.resolve()),
+        },
+        {
+            "record_version": 1,
+            "image_path": str(val_img.resolve()),
+            "json_path": str(val_json.resolve()),
+        },
+        {
+            "record_version": 1,
+            "image_path": str(test_img.resolve()),
+            "json_path": str(test_json.resolve()),
+        },
+    ]
+    index_file.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+    )
+
+    summary = build_yolo_from_label_index(
+        index_file=index_file,
+        output_dir=tmp_path / "out",
+        dataset_name="ds",
+        val_size=0.0,
+        test_size=0.0,
+        link_mode="copy",
+        overwrite=True,
+        keep_staging=False,
+    )
+
+    assert summary["status"] == "ok"
+    dataset_dir = Path(summary["dataset_dir"])
+    assert len(list((dataset_dir / "labels" / "train").glob("*.txt"))) == 1
+    assert len(list((dataset_dir / "labels" / "val").glob("*.txt"))) == 1
+    assert len(list((dataset_dir / "labels" / "test").glob("*.txt"))) == 1
