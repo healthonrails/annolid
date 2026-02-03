@@ -19,6 +19,7 @@ import sys
 from huggingface_hub import hf_hub_download
 from hydra import initialize_config_module
 from hydra.core.global_hydra import GlobalHydra
+
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -99,8 +100,7 @@ class BaseSAMVideoProcessor:
 
         # Prefer extracted frames if present.
         if self.frame_names:
-            first_frame_path = os.path.join(
-                self.video_dir, self.frame_names[0])
+            first_frame_path = os.path.join(self.video_dir, self.frame_names[0])
             first_frame = cv2.imread(first_frame_path)
             if first_frame is None:
                 raise ValueError(
@@ -153,14 +153,11 @@ class BaseSAMVideoProcessor:
             )
             current_shape.mask = mask
             try:
-                current_shape.other_data.update(
-                    meta_lookup.get(str(label_id), {}))
+                current_shape.other_data.update(meta_lookup.get(str(label_id), {}))
             except Exception:
                 # Keep best-effort metadata attachment; shapes still persist.
                 pass
-            polygons = current_shape.toPolygons(
-                epsilon=self.epsilon_for_polygon
-            )
+            polygons = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
             if not polygons:
                 continue
             current_shape = polygons[0]
@@ -250,18 +247,7 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
 
     def _initialize_predictor(self):
         """Initializes the SAM2 video predictor."""
-        try:
-            from sam2.build_sam import build_sam2_video_predictor
-        except ImportError:
-            print(
-                "The segment-anything-2 package is not installed. "
-                "Please install it with the following commands:"
-            )
-            print(
-                "cd /path/to/annolid/annolid/segmentation/SAM/segment-anything-2"
-            )
-            print("pip install -e .")
-            raise
+        build_sam2_video_predictor = self._load_sam2_builder()
 
         # Ensure Hydra is configured for SAM2 configs, even if another
         # Hydra-based project (e.g. EfficientTAM) was used earlier.
@@ -282,6 +268,58 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
         return build_sam2_video_predictor(
             self.model_config, self.checkpoint_path, device=self.device
         )
+
+    @staticmethod
+    def _load_sam2_builder():
+        """Load SAM2 builder from installed package or vendored source."""
+        try:
+            from sam2.build_sam import build_sam2_video_predictor
+
+            SAM2VideoProcessor._ensure_sam2_runtime_deps()
+            return build_sam2_video_predictor
+        except ImportError:
+            pass
+
+        sam2_repo_dir = Path(__file__).resolve().parent / "segment-anything-2"
+        if sam2_repo_dir.is_dir():
+            sam2_repo_dir_str = str(sam2_repo_dir)
+            if sam2_repo_dir_str not in sys.path:
+                sys.path.insert(0, sam2_repo_dir_str)
+            try:
+                from sam2.build_sam import build_sam2_video_predictor
+
+                SAM2VideoProcessor._ensure_sam2_runtime_deps()
+                logger.info("Loaded SAM2 from vendored source at %s", sam2_repo_dir)
+                return build_sam2_video_predictor
+            except ImportError as exc:
+                raise ModuleNotFoundError(
+                    "Unable to import 'sam2' from vendored path "
+                    f"'{sam2_repo_dir}'. Install it with: "
+                    f"'pip install -e {sam2_repo_dir}'."
+                ) from exc
+
+        raise ModuleNotFoundError(
+            "SAM2 package not found. Expected vendored source at "
+            f"'{sam2_repo_dir}'. Install it with: "
+            f"'pip install -e {sam2_repo_dir}'."
+        )
+
+    @staticmethod
+    def _ensure_sam2_runtime_deps() -> None:
+        """Validate non-vendored SAM2 runtime dependencies are available."""
+        try:
+            from iopath.common.file_io import g_pathmgr
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "Missing SAM2 dependency 'iopath'. "
+                "Install SAM2 dependencies with:\n"
+                "python -m pip install -e "
+                f"{Path(__file__).resolve().parent / 'segment-anything-2'}\n"
+                "Or install only the missing package with:\n"
+                "python -m pip install iopath"
+            ) from exc
+
+        _ = g_pathmgr
 
     def _handle_device_specific_settings(self):
         """Handles settings specific to the device (MPS or CUDA)."""
@@ -327,13 +365,9 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
                     annotation["labels"],
                 )
             elif annot_type == "box":
-                self._add_box(
-                    inference_state, frame_idx, obj_id, annotation["box"]
-                )
+                self._add_box(inference_state, frame_idx, obj_id, annotation["box"])
             elif annot_type == "mask":
-                self._add_mask(
-                    inference_state, frame_idx, obj_id, annotation["mask"]
-                )
+                self._add_mask(inference_state, frame_idx, obj_id, annotation["mask"])
             else:
                 print(f"Unknown annotation type: {annot_type}")
 
@@ -373,13 +407,9 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
             out_mask_logits,
         ) in self.predictor.propagate_in_video(inference_state):
             mask_dict = {}
-            filename = os.path.join(
-                self.video_dir, f"{out_frame_idx:09}.json"
-            )
+            filename = os.path.join(self.video_dir, f"{out_frame_idx:09}.json")
             for i, out_obj_id in enumerate(out_obj_ids):
-                _obj_mask = (
-                    (out_mask_logits[i] > 0.0).cpu().numpy().squeeze()
-                )
+                _obj_mask = (out_mask_logits[i] > 0.0).cpu().numpy().squeeze()
                 mask_dict[str(out_obj_id)] = _obj_mask
             self._save_annotations(
                 filename, mask_dict, self.frame_shape, frame_idx=out_frame_idx
@@ -441,9 +471,7 @@ def load_annotations_from_video(video_path):
         except ValueError:
             ann_frame_idx = 0
         label_processor = LabelProcessor(anno_json)
-        annotations = label_processor.convert_shapes_to_annotations(
-            ann_frame_idx
-        )
+        annotations = label_processor.convert_shapes_to_annotations(ann_frame_idx)
         all_annotations.extend(annotations)
         id_to_labels.update(label_processor.get_id_to_labels())
 
@@ -675,16 +703,13 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
                     annotation["labels"],
                 )
             elif annot_type == "box":
-                self._add_box(
-                    inference_state, frame_idx, obj_id, annotation["box"]
-                )
+                self._add_box(inference_state, frame_idx, obj_id, annotation["box"])
             elif annot_type == "mask":
-                self._add_mask(
-                    inference_state, frame_idx, obj_id, annotation["mask"]
-                )
+                self._add_mask(inference_state, frame_idx, obj_id, annotation["mask"])
             else:
                 logger.warning(
-                    "Unknown annotation type for EfficientTAM: %s", annot_type)
+                    "Unknown annotation type for EfficientTAM: %s", annot_type
+                )
 
     def _add_points(self, inference_state, frame_idx, obj_id, points, labels):
         """Handles the addition of points annotations."""
@@ -722,13 +747,9 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
             out_mask_logits,
         ) in self.predictor.propagate_in_video(inference_state):
             mask_dict = {}
-            filename = os.path.join(
-                self.video_dir, f"{out_frame_idx:09}.json"
-            )
+            filename = os.path.join(self.video_dir, f"{out_frame_idx:09}.json")
             for i, out_obj_id in enumerate(out_obj_ids):
-                _obj_mask = (
-                    (out_mask_logits[i] > 0.0).cpu().numpy().squeeze()
-                )
+                _obj_mask = (out_mask_logits[i] > 0.0).cpu().numpy().squeeze()
                 mask_dict[str(out_obj_id)] = _obj_mask
             if self.frame_shape is None:
                 self.frame_shape = self.get_frame_shape()
