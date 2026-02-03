@@ -26,25 +26,26 @@ MODEL_REGISTRY = [
     ModelConfig("yoloe-11s-seg.pt", "yoloe-11s-seg.pt", "yoloe-11s-seg.pt"),
     ModelConfig("yoloe-11l-seg.pt", "yoloe-11l-seg.pt", "yoloe-11l-seg.pt"),
     # YOLOE-26 (prompted: text + visual prompts)
-    ModelConfig("YOLOE-26s-seg (Prompted)",
-                "yoloe-26s-seg", "yoloe-26s-seg.pt"),
-    ModelConfig("YOLOE-26m-seg (Prompted)",
-                "yoloe-26m-seg", "yoloe-26m-seg.pt"),
-    ModelConfig("YOLOE-26l-seg (Prompted)",
-                "yoloe-26l-seg", "yoloe-26l-seg.pt"),
+    ModelConfig("YOLOE-26s-seg (Prompted)", "yoloe-26s-seg", "yoloe-26s-seg.pt"),
+    ModelConfig("YOLOE-26m-seg (Prompted)", "yoloe-26m-seg", "yoloe-26m-seg.pt"),
+    ModelConfig("YOLOE-26l-seg (Prompted)", "yoloe-26l-seg", "yoloe-26l-seg.pt"),
     # YOLOE-26 prompt-free (built-in vocabulary; do not provide prompts)
-    ModelConfig("YOLOE-26s-seg (Prompt-free)",
-                "yoloe-26s-seg-pf", "yoloe-26s-seg-pf.pt"),
-    ModelConfig("YOLOE-26m-seg (Prompt-free)",
-                "yoloe-26m-seg-pf", "yoloe-26m-seg-pf.pt"),
-    ModelConfig("YOLOE-26l-seg (Prompt-free)",
-                "yoloe-26l-seg-pf", "yoloe-26l-seg-pf.pt"),
+    ModelConfig(
+        "YOLOE-26s-seg (Prompt-free)", "yoloe-26s-seg-pf", "yoloe-26s-seg-pf.pt"
+    ),
+    ModelConfig(
+        "YOLOE-26m-seg (Prompt-free)", "yoloe-26m-seg-pf", "yoloe-26m-seg-pf.pt"
+    ),
+    ModelConfig(
+        "YOLOE-26l-seg (Prompt-free)", "yoloe-26l-seg-pf", "yoloe-26l-seg-pf.pt"
+    ),
     ModelConfig("YOLO26n-seg", "yolo26n-seg", "yolo26n-seg.pt"),
     ModelConfig("YOLO26x-seg", "yolo26x-seg", "yolo26x-seg.pt"),
     ModelConfig("YOLO26n-pose", "yolo26n-pose", "yolo26n-pose.pt"),
     ModelConfig("YOLO26x-pose", "yolo26x-pose", "yolo26x-pose.pt"),
-    ModelConfig("DINOv3 Keypoint Tracker",
-                "dinov3_keypoint_tracker", "DINO_KEYPOINT_TRACKER"),
+    ModelConfig(
+        "DINOv3 Keypoint Tracker", "dinov3_keypoint_tracker", "DINO_KEYPOINT_TRACKER"
+    ),
     ModelConfig(
         "Cutie + DINOv3 Keypoint Segmentation",
         "dino_kpseg_tracker",
@@ -64,16 +65,22 @@ MODEL_REGISTRY = [
 PATCH_SIMILARITY_MODELS = [
     ModelConfig("DINOv2 Base (open)", "facebook/dinov2-base", ""),
     ModelConfig("DINOv2 Large (open)", "facebook/dinov2-large", ""),
-    ModelConfig("DINOv3 ViT-S/16 (gated)",
-                "facebook/dinov3-vits16-pretrain-lvd1689m", ""),
-    ModelConfig("DINOv3 ViT-S/16+ (gated)",
-                "facebook/dinov3-vits16plus-pretrain-lvd1689m", ""),
-    ModelConfig("DINOv3 ViT-L/16 (gated)",
-                "facebook/dinov3-vitl16-pretrain-lvd1689m", ""),
-    ModelConfig("DINOv3 ViT-H/16+ (gated)",
-                "facebook/dinov3-vith16plus-pretrain-lvd1689m", ""),
-    ModelConfig("DINOv3 ViT-7B/16 (gated)",
-                "facebook/dinov3-vit7b16-pretrain-lvd1689m", ""),
+    ModelConfig(
+        "DINOv3 ViT-S/16 (gated)", "facebook/dinov3-vits16-pretrain-lvd1689m", ""
+    ),
+    ModelConfig(
+        "DINOv3 ViT-S/16+ (gated)", "facebook/dinov3-vits16plus-pretrain-lvd1689m", ""
+    ),
+    ModelConfig(
+        "DINOv3 ViT-L/16 (gated)", "facebook/dinov3-vitl16-pretrain-lvd1689m", ""
+    ),
+    ModelConfig(
+        "DINOv3 ViT-H/16+ (gated)", "facebook/dinov3-vith16plus-pretrain-lvd1689m", ""
+    ),
+    ModelConfig(
+        "DINOv3 ViT-7B/16 (gated)", "facebook/dinov3-vit7b16-pretrain-lvd1689m", ""
+    ),
+    ModelConfig("NVIDIA RADIOv4-SO400M", "nvidia/C-RADIOv4-SO400M", ""),
 ]
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier

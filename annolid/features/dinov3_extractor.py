@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image, ImageOps
+
 try:  # transformers is an optional dependency
     from transformers import AutoImageProcessor, AutoModel
 except ImportError as exc:  # pragma: no cover - informative path
@@ -87,6 +88,16 @@ class Dinov3FeatureExtractor:
       - map between patches and image pixels
     """
 
+    def __new__(cls, config: Optional[Dinov3Config] = None) -> Dinov3FeatureExtractor:
+        # Factory dispatch for RADIO models
+        if cls is Dinov3FeatureExtractor:
+            cfg = config or Dinov3Config()
+            if "radio" in cfg.model_name.lower():
+                from .radio_extractor import RadioFeatureExtractor
+
+                return super().__new__(RadioFeatureExtractor)
+        return super().__new__(cls)
+
     def __init__(self, config: Optional[Dinov3Config] = None) -> None:
         if _TRANSFORMERS_IMPORT_ERROR is not None:
             raise ImportError(
@@ -97,7 +108,8 @@ class Dinov3FeatureExtractor:
 
         # Resolve model identifier and cache directory
         self.model_id = LEGACY_ALIAS_TO_HF_ID.get(
-            self.cfg.model_name, self.cfg.model_name)
+            self.cfg.model_name, self.cfg.model_name
+        )
         cache_env = os.getenv("DINOV3_LOCATION")
         self.cache_dir = self.cfg.cache_dir or cache_env or None
 
@@ -110,29 +122,8 @@ class Dinov3FeatureExtractor:
         self.model.to(self.device)
         self.model.eval()
 
-        # Determine feature geometry from model config
-        self.patch_size = int(
-            getattr(self.model.config, "patch_size", self.cfg.patch_size))
-        if self.patch_size != self.cfg.patch_size:
-            logger.info(
-                "Using patch_size=%s from model config (override config value %s)",
-                self.patch_size,
-                self.cfg.patch_size,
-            )
-
-        cls_tokens = 1 if getattr(
-            self.model.config, "use_cls_token", True) else 0
-        register_tokens = int(
-            getattr(self.model.config, "num_register_tokens", 0))
-        self._num_special_tokens = cls_tokens + register_tokens
-
-        self.num_hidden_layers = int(
-            getattr(self.model.config, "num_hidden_layers", 0))
-        if self.num_hidden_layers <= 0:
-            raise RuntimeError("DINOv3 model did not report num_hidden_layers")
-
-        self._layers = tuple(self.cfg.layers) if self.cfg.layers is not None else tuple(
-            range(self.num_hidden_layers))
+        # Determine features: patch_size, layers, special_tokens
+        self._resolve_model_properties()
 
         # Store normalization from processor if available
         proc_mean = getattr(self.processor, "image_mean", None)
@@ -142,10 +133,36 @@ class Dinov3FeatureExtractor:
 
         # Avg-pool kernel for mask quantization into patch grid
         self._patch_quant_filter = torch.nn.Conv2d(
-            1, 1, self.patch_size, stride=self.patch_size, bias=False)
+            1, 1, self.patch_size, stride=self.patch_size, bias=False
+        )
         with torch.no_grad():
             self._patch_quant_filter.weight.data.fill_(
-                1.0 / (self.patch_size * self.patch_size))
+                1.0 / (self.patch_size * self.patch_size)
+            )
+
+    def _resolve_model_properties(self) -> None:
+        """Resolve model properties (patch size, layers, tokens)."""
+        # Standard DINOv3 logic
+        self.patch_size = int(
+            getattr(self.model.config, "patch_size", self.cfg.patch_size)
+        )
+
+        if self.patch_size != self.cfg.patch_size:
+            logger.info("Using patch_size=%s from model config", self.patch_size)
+
+        cls_tokens = 1 if getattr(self.model.config, "use_cls_token", True) else 0
+        register_tokens = int(getattr(self.model.config, "num_register_tokens", 0))
+        self._num_special_tokens = cls_tokens + register_tokens
+
+        self.num_hidden_layers = int(getattr(self.model.config, "num_hidden_layers", 0))
+        if self.num_hidden_layers <= 0:
+            raise RuntimeError("DINOv3 model did not report num_hidden_layers")
+
+        self._layers = (
+            tuple(self.cfg.layers)
+            if self.cfg.layers is not None
+            else tuple(range(self.num_hidden_layers))
+        )
 
     # --------------------------
     # Device & loading helpers
@@ -178,12 +195,13 @@ class Dinov3FeatureExtractor:
 
     def _load_model(self):
         try:
-            logger.info("Loading DINOv3 model '%s' via Hugging Face Transformers",
-                        self.model_id)
+            logger.info(
+                "Loading DINOv3 model '%s' via Hugging Face Transformers", self.model_id
+            )
             processor = AutoImageProcessor.from_pretrained(
-                self.model_id, cache_dir=self.cache_dir)
-            model = AutoModel.from_pretrained(
-                self.model_id, cache_dir=self.cache_dir)
+                self.model_id, cache_dir=self.cache_dir
+            )
+            model = AutoModel.from_pretrained(self.model_id, cache_dir=self.cache_dir)
             return processor, model
         except Exception as exc:  # pragma: no cover - informative path
             hint = (
@@ -196,7 +214,10 @@ class Dinov3FeatureExtractor:
     # Preprocessing utilities
     # --------------------------
     @staticmethod
-    def _to_pil(image: Union[Image.Image, np.ndarray], color_space: Literal["RGB", "BGR"] = "RGB") -> Image.Image:
+    def _to_pil(
+        image: Union[Image.Image, np.ndarray],
+        color_space: Literal["RGB", "BGR"] = "RGB",
+    ) -> Image.Image:
         if isinstance(image, Image.Image):
             img = image
         elif isinstance(image, np.ndarray):
@@ -221,10 +242,14 @@ class Dinov3FeatureExtractor:
             scale = short / h
         else:
             scale = short / w
-        new_w = max(self.patch_size, int(
-            math.ceil((w * scale) / self.patch_size) * self.patch_size))
-        new_h = max(self.patch_size, int(
-            math.ceil((h * scale) / self.patch_size) * self.patch_size))
+        new_w = max(
+            self.patch_size,
+            int(math.ceil((w * scale) / self.patch_size) * self.patch_size),
+        )
+        new_h = max(
+            self.patch_size,
+            int(math.ceil((h * scale) / self.patch_size) * self.patch_size),
+        )
         return new_h, new_w
 
     def _preprocess(self, pil: Image.Image) -> torch.Tensor:
@@ -235,14 +260,18 @@ class Dinov3FeatureExtractor:
         if arr.ndim != 3 or arr.shape[2] < 3:
             raise ValueError("Expected HxWx3 image for preprocessing")
         arr = arr[..., :3]
-        x = torch.from_numpy(arr).permute(
-            2, 0, 1).to(dtype=torch.float32) / 255.0
+        x = torch.from_numpy(arr).permute(2, 0, 1).to(dtype=torch.float32) / 255.0
         x = x.unsqueeze(0)  # NCHW
 
         kwargs = {"mode": "bilinear", "align_corners": False}
         try:
-            x = F.interpolate(x, size=(int(new_h), int(new_w)),
-                              antialias=True, **kwargs)  # type: ignore[arg-type]
+            x = F.interpolate(
+                x,
+                size=(int(new_h), int(new_w)),
+                # type: ignore[arg-type]
+                antialias=True,
+                **kwargs,
+            )
         except TypeError:
             x = F.interpolate(x, size=(int(new_h), int(new_w)), **kwargs)
 
@@ -328,7 +357,8 @@ class Dinov3FeatureExtractor:
                     resolved_idx = num_layers + layer_idx
                 if resolved_idx < 0 or resolved_idx >= num_layers:
                     raise IndexError(
-                        f"Requested layer {layer_idx} outside available range -{num_layers}..{num_layers - 1}")
+                        f"Requested layer {layer_idx} outside available range -{num_layers}..{num_layers - 1}"
+                    )
                 tokens = hidden_states[resolved_idx + 1]
                 grid = self._tokens_to_grid(
                     tokens,
@@ -362,8 +392,7 @@ class Dinov3FeatureExtractor:
             tokens = tokens.detach()
         B, seq_len, dim = tokens.shape
         if B != 1:
-            raise ValueError(
-                "Only batch size 1 is supported for feature extraction")
+            raise ValueError("Only batch size 1 is supported for feature extraction")
         H, W = spatial_hw
         grid_h = H // self.patch_size
         grid_w = W // self.patch_size
@@ -375,7 +404,8 @@ class Dinov3FeatureExtractor:
             pass  # no special tokens to drop
         else:
             raise ValueError(
-                f"Unexpected sequence length {seq_len}; expected {expected} or {expected}+{special} (special tokens)")
+                f"Unexpected sequence length {seq_len}; expected {expected} or {expected}+{special} (special tokens)"
+            )
         grid = tokens.transpose(1, 2).reshape(1, dim, grid_h, grid_w).to("cpu")
         grid = grid.squeeze(0)
         if normalize:
@@ -405,8 +435,9 @@ class Dinov3FeatureExtractor:
         if arr.ndim == 3 and arr.shape[2] == 4:
             mask = arr[:, :, 3]
         elif arr.ndim == 3 and arr.shape[2] == 3:
-            mask = (0.299 * arr[:, :, 0] + 0.587 * arr[:, :,
-                    1] + 0.114 * arr[:, :, 2]).astype(np.uint8)
+            mask = (
+                0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+            ).astype(np.uint8)
         else:
             mask = arr.squeeze()
 
@@ -417,8 +448,9 @@ class Dinov3FeatureExtractor:
         new_h, new_w = self._compute_resized_hw(w, h)
         kwargs = {"mode": "bilinear", "align_corners": False}
         try:
-            tens = F.interpolate(tens, size=(int(new_h), int(
-                new_w)), antialias=True, **kwargs)  # type: ignore[arg-type]
+            tens = F.interpolate(
+                tens, size=(int(new_h), int(new_w)), antialias=True, **kwargs
+            )  # type: ignore[arg-type]
         except TypeError:
             tens = F.interpolate(tens, size=(int(new_h), int(new_w)), **kwargs)
 
