@@ -9,6 +9,7 @@ from importlib import metadata
 from typing import Any, Optional, Sequence
 
 from annolid.gui.cli import parse_cli
+from annolid.utils.logger import configure_logging
 
 
 def _print_version() -> None:
@@ -25,6 +26,8 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
     if version_requested:
         _print_version()
         return 0
+
+    configure_logging()
 
     # Import heavy dependencies only when actually launching the GUI.
     from annolid.gui import app as gui_app

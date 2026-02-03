@@ -45,7 +45,7 @@ from labelme.app import MainWindow
 from labelme.utils import newAction
 from labelme.widgets import LabelListWidgetItem
 from labelme import utils
-from annolid.utils.logger import logger
+from annolid.utils.logger import configure_logging, logger
 from annolid.utils.files import (
     should_start_predictions_from_frame0,
 )
@@ -8453,6 +8453,8 @@ def main(argv=None, *, config=None):
     if version_requested:
         print(__version__)
         return 0
+
+    configure_logging()
 
     qt_args = sys.argv if argv is None else [sys.argv[0], *argv]
     app = create_qapp(qt_args)

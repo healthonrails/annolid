@@ -12,6 +12,7 @@ from annolid.engine.registry import (
     list_models,
     load_builtin_models,
 )
+from annolid.utils.logger import configure_logging
 
 
 def _cmd_list_models(_: argparse.Namespace) -> int:
@@ -925,6 +926,7 @@ def _dispatch_model_subcommand(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    configure_logging()
     argv = list(sys.argv[1:] if argv is None else argv)
     p = _build_root_parser()
     args, rest = p.parse_known_args(argv)

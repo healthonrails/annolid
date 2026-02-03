@@ -18,37 +18,23 @@ def resolve_path(path: Union[Path, str]) -> Path:
     return Path(path).expanduser().resolve()
 
 
-# Get the current user's home directory
-home_dir = Path.home()
+def _bool_from_env(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
-# Define the directory name for logs
-logs_dir_name = f"{__appname__}_logs"
 
-# Create the path for the logs directory
-logs_dir_path = home_dir / logs_dir_name
+def _default_log_file_path() -> Path:
+    current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    log_file_name = f"{__appname__}_{current_date}.log"
+    return resolve_path(Path.home() / f"{__appname__}_logs" / log_file_name)
 
-# Resolve the path to the logs directory
-resolved_logs_dir_path = resolve_path(logs_dir_path)
 
-# Create the logs directory if it doesn't exist
-if not resolved_logs_dir_path.exists():
-    resolved_logs_dir_path.mkdir(parents=True)
-
-# Get the current date
-current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-
-# Define the log file name with the current date
-log_file_name = f"{__appname__}_{current_date}.log"
-
-# Create the path for the log file
-log_file_path = resolved_logs_dir_path / log_file_name
-
-# Resolve the path to the log file
-resolved_log_file_path = resolve_path(log_file_path)
-
-if os.name == "nt":  # Windows
-    import colorama
-
+def _init_windows_colorama() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import colorama
+    except ModuleNotFoundError:  # pragma: no cover
+        return
     colorama.init()
 
 
@@ -98,21 +84,58 @@ class ColoredFormatter(logging.Formatter):
 
 
 logger = logging.getLogger(__appname__)
-logger.setLevel(logging.INFO)
+logger.propagate = False
+_is_configured = False
 
-# Configure logging to write to stderr
-stream_handler = logging.StreamHandler(sys.stderr)
-handler_format = ColoredFormatter(
-    "%(asctime)s [%(levelname2)s] %(module2)s:%(funcName2)s:%(lineno2)s- %(message2)s"
-)
-stream_handler.setFormatter(handler_format)
-logger.addHandler(stream_handler)
 
-# Configure logging to write to a log file
-log_file = resolved_log_file_path  # Set the path to your log file
-file_handler = logging.FileHandler(log_file)
-file_format = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(module)s:%(funcName)s:%(lineno)d - %(message)s"
-)
-file_handler.setFormatter(file_format)
-logger.addHandler(file_handler)
+def configure_logging(
+    *,
+    level: int = logging.INFO,
+    enable_console: bool = True,
+    enable_file_logging: Union[bool, None] = None,
+    log_file: Union[str, Path, None] = None,
+    force: bool = False,
+) -> logging.Logger:
+    """Configure Annolid logging once, from runtime entrypoints only."""
+    global _is_configured
+
+    if _is_configured and not force:
+        return logger
+
+    if force:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+        _is_configured = False
+
+    logger.setLevel(level)
+    _init_windows_colorama()
+
+    if enable_console:
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.setFormatter(
+            ColoredFormatter(
+                "%(asctime)s [%(levelname2)s] %(module2)s:%(funcName2)s:%(lineno2)s- %(message2)s"
+            )
+        )
+        logger.addHandler(stream_handler)
+
+    if enable_file_logging is None:
+        enable_file_logging = _bool_from_env(os.getenv("ANNOLID_LOG_TO_FILE", "0"))
+
+    if enable_file_logging:
+        try:
+            log_path = resolve_path(log_file) if log_file else _default_log_file_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(log_path)
+            file_handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s [%(levelname)s] %(module)s:%(funcName)s:%(lineno)d - %(message)s"
+                )
+            )
+            logger.addHandler(file_handler)
+        except OSError as exc:
+            logger.warning("File logging disabled: unable to open log file (%s)", exc)
+
+    _is_configured = True
+    return logger
