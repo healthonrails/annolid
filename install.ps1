@@ -325,10 +325,12 @@ function Install-Annolid {
 
     . $script:ActivateCmd
 
-    $pipCmd = if ($script:UseUv) { @($script:UvCmd, "pip") } else { @("pip") }
-
     Write-Host "  Upgrading pip..."
-    & @pipCmd install --upgrade pip
+    if ($script:UseUv) {
+        & $script:UvCmd pip install --upgrade pip
+    } else {
+        & pip install --upgrade pip
+    }
 
     $installTarget = "-e ."
     if (-not [string]::IsNullOrEmpty($Extras)) {
@@ -337,11 +339,19 @@ function Install-Annolid {
     }
 
     Write-Host "  Installing annolid (this may take a few minutes)..."
-    & @pipCmd install $installTarget
+    if ($script:UseUv) {
+        & $script:UvCmd pip install $installTarget
+    } else {
+        & pip install $installTarget
+    }
 
     Write-Host "  Installing SAM-HQ..."
     try {
-        & @pipCmd install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+        if ($script:UseUv) {
+            & $script:UvCmd pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+        } else {
+            & pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+        }
     } catch {
         Write-Warning-Msg "SAM-HQ installation failed."
     }
