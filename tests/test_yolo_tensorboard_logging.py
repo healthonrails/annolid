@@ -25,9 +25,10 @@ class _StubWriter:
     def add_text(self, tag: str, text_string: str, global_step: int) -> None:
         self.texts.append((tag, str(text_string), int(global_step)))
 
-    def add_image(self, tag: str, img_tensor: Any, global_step: int, dataformats: str = "HWC") -> None:
-        self.images.append(
-            (tag, img_tensor, int(global_step), str(dataformats)))
+    def add_image(
+        self, tag: str, img_tensor: Any, global_step: int, dataformats: str = "HWC"
+    ) -> None:
+        self.images.append((tag, img_tensor, int(global_step), str(dataformats)))
 
     def flush(self) -> None:
         self.flushed += 1
@@ -117,5 +118,6 @@ def test_tb_logger_polls_images(tmp_path: Path):
     tb = YOLORunTensorBoardLogger(run_dir=run_dir, writer=writer)
     written = tb.poll_and_log_images(step=1)
     assert written >= 1
-    assert any(tag.startswith("annolid/images")
-               for (tag, _arr, _step, _fmt) in writer.images)
+    assert any(
+        tag.startswith("annolid/images") for (tag, _arr, _step, _fmt) in writer.images
+    )

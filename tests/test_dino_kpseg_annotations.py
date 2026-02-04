@@ -10,14 +10,11 @@ from annolid.tracking.dino_kpseg_annotations import DinoKPSEGAnnotationParser
 
 def test_merge_shapes_respects_group_id_and_shape_type():
     existing = [
-        {"label": "nose", "group_id": 0,
-            "shape_type": "point", "points": [[1, 1]]},
-        {"label": "nose", "group_id": 1,
-            "shape_type": "point", "points": [[2, 2]]},
+        {"label": "nose", "group_id": 0, "shape_type": "point", "points": [[1, 1]]},
+        {"label": "nose", "group_id": 1, "shape_type": "point", "points": [[2, 2]]},
     ]
     new = [
-        {"label": "nose", "group_id": 0,
-            "shape_type": "point", "points": [[3, 3]]},
+        {"label": "nose", "group_id": 0, "shape_type": "point", "points": [[3, 3]]},
     ]
     merged = merge_shapes(new, existing)
     assert len(merged) == 2
@@ -63,8 +60,7 @@ def test_dino_kpseg_annotation_parser_assigns_points_to_instance_masks(tmp_path:
     json_path = tmp_path / "frame_000000000.json"
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    adapter = AnnotationAdapter(
-        image_height=64, image_width=64, persist_json=False)
+    adapter = AnnotationAdapter(image_height=64, image_width=64, persist_json=False)
     parser = DinoKPSEGAnnotationParser(
         image_height=64,
         image_width=64,
@@ -81,8 +77,7 @@ def test_dino_kpseg_annotation_parser_assigns_points_to_instance_masks(tmp_path:
 
 
 def test_dino_kpseg_annotation_parser_reuses_group_ids_by_polygon_label(tmp_path: Path):
-    adapter = AnnotationAdapter(
-        image_height=32, image_width=32, persist_json=False)
+    adapter = AnnotationAdapter(image_height=32, image_width=32, persist_json=False)
     parser = DinoKPSEGAnnotationParser(
         image_height=32,
         image_width=32,

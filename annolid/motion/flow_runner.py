@@ -14,6 +14,7 @@ Notes:
 - NDJSON output mirrors depth-anything metadata: one record per frame with
   base64-encoded uint16 flow components and scales for reconstruction.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,7 +46,7 @@ def flow_to_color(flow: np.ndarray, max_mag: Optional[float] = None) -> np.ndarr
         else:
             max_mag = 1.0
     max_mag = max(max_mag, 1e-6)
-    hue = (ang * 180.0 / np.pi / 2.0)  # [0,180)
+    hue = ang * 180.0 / np.pi / 2.0  # [0,180)
     sat = np.clip(mag / max_mag, 0.0, 1.0) * 255.0
     val = np.full_like(hue, 255.0)
     hsv = np.stack(
@@ -75,7 +76,7 @@ def _build_flow_record(
     """Create a depth-like NDJSON record for optical flow."""
     dx = flow[..., 0].astype(np.float16)
     dy = flow[..., 1].astype(np.float16)
-    mag = np.sqrt(dx ** 2 + dy ** 2).astype(np.float16)
+    mag = np.sqrt(dx**2 + dy**2).astype(np.float16)
 
     return {
         "version": "OpticalFlow",
@@ -106,9 +107,7 @@ def _encode_array(arr: np.ndarray, quantize: bool = True) -> dict:
         if abs(d_max - d_min) < 1e-6:
             d_max = d_min + 1e-6
         normalized = (data - d_min) / (d_max - d_min)
-        quantized = np.clip(np.round(normalized * 65535.0), 0, 65535).astype(
-            np.uint16
-        )
+        quantized = np.clip(np.round(normalized * 65535.0), 0, 65535).astype(np.uint16)
         raw_bytes = quantized.tobytes()
         dtype = "uint16"
     else:
@@ -134,30 +133,31 @@ def _append_flow_ndjson(ndjson_path: Path, record: dict) -> None:
         fh.write("\n")
 
 
-def process_video_flow(video_path: str,
-                       backend: str = "farneback",
-                       save_csv: Optional[str] = None,
-                       save_ndjson: Optional[str] = None,
-                       sample_stride: int = 1,
-                       visualization: str = "quiver",
-                       raft_model: str = "small",
-                       opacity: int = 70,
-                       quiver_step: int = 16,
-                       quiver_gain: float = 1.0,
-                       stable_hsv: bool = True,
-                       smooth: bool = False,
-                       smooth_kernel: int = 3,
-                       quantize: bool = True,
-                       use_torch_farneback: bool = False,
-                       farneback_pyr_scale: float = 0.5,
-                       farneback_levels: int = 1,
-                       farneback_winsize: int = 1,
-                       farneback_iterations: int = 3,
-                       farneback_poly_n: int = 3,
-                       farneback_poly_sigma: float = 1.1,
-                       progress_callback: Optional[Callable[[
-                           int], None]] = None,
-                       preview_callback: Optional[Callable[[dict], None]] = None) -> None:
+def process_video_flow(
+    video_path: str,
+    backend: str = "farneback",
+    save_csv: Optional[str] = None,
+    save_ndjson: Optional[str] = None,
+    sample_stride: int = 1,
+    visualization: str = "quiver",
+    raft_model: str = "small",
+    opacity: int = 70,
+    quiver_step: int = 16,
+    quiver_gain: float = 1.0,
+    stable_hsv: bool = True,
+    smooth: bool = False,
+    smooth_kernel: int = 3,
+    quantize: bool = True,
+    use_torch_farneback: bool = False,
+    farneback_pyr_scale: float = 0.5,
+    farneback_levels: int = 1,
+    farneback_winsize: int = 1,
+    farneback_iterations: int = 3,
+    farneback_poly_n: int = 3,
+    farneback_poly_sigma: float = 1.1,
+    progress_callback: Optional[Callable[[int], None]] = None,
+    preview_callback: Optional[Callable[[dict], None]] = None,
+) -> None:
     """
     Compute optical flow for a video and optionally stream overlays/metrics.
 
@@ -192,9 +192,9 @@ def process_video_flow(video_path: str,
 
     stats: List[Tuple[int, float, float, float]] = []
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    total_flows = max(
-        1, (total_frames - 1) // max(sample_stride, 1)
-    ) if total_frames > 1 else 0
+    total_flows = (
+        max(1, (total_frames - 1) // max(sample_stride, 1)) if total_frames > 1 else 0
+    )
 
     ret, prev_frame = cap.read()
     frame_idx = 0
@@ -213,7 +213,8 @@ def process_video_flow(video_path: str,
             continue
 
         flow_hsv, flow = compute_optical_flow(
-            prev_frame, curr_frame,
+            prev_frame,
+            curr_frame,
             use_raft=use_raft_backend,
             raft_model=raft_model,
             use_torch_farneback=use_torch,
@@ -231,28 +232,23 @@ def process_video_flow(video_path: str,
             flow[..., 0] = cv2.GaussianBlur(flow[..., 0], (k, k), 0)
             flow[..., 1] = cv2.GaussianBlur(flow[..., 1], (k, k), 0)
         if visualization.lower() == "hsv":
-            mag = np.sqrt(flow[..., 0] ** 2 + flow[..., 1]
-                          ** 2).astype(np.float32)
+            mag = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2).astype(np.float32)
             finite = mag[np.isfinite(mag)]
             if stable_hsv and finite.size:
                 current_p95 = float(np.percentile(finite, 95))
                 if mag_scale is None:
                     mag_scale = max(current_p95, 1e-6)
                 else:
-                    mag_scale = ema_alpha * mag_scale + \
-                        (1.0 - ema_alpha) * current_p95
-            overlay_out = flow_to_color(
-                flow, max_mag=mag_scale if stable_hsv else None)
+                    mag_scale = ema_alpha * mag_scale + (1.0 - ema_alpha) * current_p95
+            overlay_out = flow_to_color(flow, max_mag=mag_scale if stable_hsv else None)
         else:
             flow_scaled = flow * float(quiver_gain)
             blank = np.zeros_like(curr_frame)
-            arrows_bgr = draw.draw_flow(
-                blank, flow_scaled, step=int(quiver_step))
+            arrows_bgr = draw.draw_flow(blank, flow_scaled, step=int(quiver_step))
             arrows_rgb = cv2.cvtColor(arrows_bgr, cv2.COLOR_BGR2RGB)
             mask = np.any(arrows_bgr != 0, axis=2)
             alpha_val = int(np.clip(opacity, 0, 100) / 100.0 * 255.0)
-            alpha = np.zeros(
-                (arrows_rgb.shape[0], arrows_rgb.shape[1]), dtype=np.uint8)
+            alpha = np.zeros((arrows_rgb.shape[0], arrows_rgb.shape[1]), dtype=np.uint8)
             alpha[mask] = alpha_val
             overlay_out = np.ascontiguousarray(np.dstack([arrows_rgb, alpha]))
         mean_dx, mean_dy, mean_mag = _compute_mean_flow(flow)
@@ -289,6 +285,7 @@ def process_video_flow(video_path: str,
 
     if save_csv and stats:
         import csv
+
         with open(save_csv, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["frame", "mean_dx", "mean_dy", "mean_magnitude"])
@@ -300,34 +297,61 @@ def process_video_flow(video_path: str,
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Optical flow runner")
     p.add_argument("--video", required=True, help="Path to input video")
-    p.add_argument("--backend", default="farneback",
-                   choices=["farneback", "farneback_torch", "raft"],
-                   help="Flow backend")
-    p.add_argument("--csv", help="Path to save CSV of mean flow stats")
-    p.add_argument("--stride", type=int, default=1,
-                   help="Process every Nth frame (default 1)")
     p.add_argument(
-        "--ndjson", help="Path to save NDJSON of per-frame flow maps")
-    p.add_argument("--viz", default="quiver",
-                   choices=["quiver", "hsv"], help="Overlay visualization style")
-    p.add_argument("--raft-model", default="small",
-                   choices=["small", "large"], help="RAFT model size")
-    p.add_argument("--opacity", type=int, default=70,
-                   help="Overlay opacity percent (0-100)")
-    p.add_argument("--quiver-step", type=int, default=16,
-                   help="Quiver sampling step")
-    p.add_argument("--quiver-gain", type=float, default=1.0,
-                   help="Quiver arrow gain")
-    p.add_argument("--stable-hsv", dest="stable_hsv", action="store_true",
-                   help="Stabilize HSV magnitude across frames")
-    p.add_argument("--no-stable-hsv", dest="stable_hsv", action="store_false",
-                   help="Disable stabilized HSV magnitude")
-    p.add_argument("--smooth", action="store_true",
-                   help="Spatially smooth flow before saving")
-    p.add_argument("--smooth-kernel", type=int, default=3,
-                   help="Gaussian kernel size when smoothing")
-    p.add_argument("--no-quantize", dest="quantize", action="store_false",
-                   help="Store raw float16 instead of quantized uint16")
+        "--backend",
+        default="farneback",
+        choices=["farneback", "farneback_torch", "raft"],
+        help="Flow backend",
+    )
+    p.add_argument("--csv", help="Path to save CSV of mean flow stats")
+    p.add_argument(
+        "--stride", type=int, default=1, help="Process every Nth frame (default 1)"
+    )
+    p.add_argument("--ndjson", help="Path to save NDJSON of per-frame flow maps")
+    p.add_argument(
+        "--viz",
+        default="quiver",
+        choices=["quiver", "hsv"],
+        help="Overlay visualization style",
+    )
+    p.add_argument(
+        "--raft-model",
+        default="small",
+        choices=["small", "large"],
+        help="RAFT model size",
+    )
+    p.add_argument(
+        "--opacity", type=int, default=70, help="Overlay opacity percent (0-100)"
+    )
+    p.add_argument("--quiver-step", type=int, default=16, help="Quiver sampling step")
+    p.add_argument("--quiver-gain", type=float, default=1.0, help="Quiver arrow gain")
+    p.add_argument(
+        "--stable-hsv",
+        dest="stable_hsv",
+        action="store_true",
+        help="Stabilize HSV magnitude across frames",
+    )
+    p.add_argument(
+        "--no-stable-hsv",
+        dest="stable_hsv",
+        action="store_false",
+        help="Disable stabilized HSV magnitude",
+    )
+    p.add_argument(
+        "--smooth", action="store_true", help="Spatially smooth flow before saving"
+    )
+    p.add_argument(
+        "--smooth-kernel",
+        type=int,
+        default=3,
+        help="Gaussian kernel size when smoothing",
+    )
+    p.add_argument(
+        "--no-quantize",
+        dest="quantize",
+        action="store_false",
+        help="Store raw float16 instead of quantized uint16",
+    )
     p.set_defaults(stable_hsv=True)
     p.set_defaults(quantize=True)
     return p.parse_args()

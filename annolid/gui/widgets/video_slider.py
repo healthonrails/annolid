@@ -1,21 +1,18 @@
 """
-    Customized video slider.
-    Modified from here
-    https://github.com/murthylab/sleap/blob/1eb06f81eb8f0bc1beedd1c3dd10902f8ff9e724/sleap/gui/widgets/slider.py
+Customized video slider.
+Modified from here
+https://github.com/murthylab/sleap/blob/1eb06f81eb8f0bc1beedd1c3dd10902f8ff9e724/sleap/gui/widgets/slider.py
 
 """
+
 from dataclasses import dataclass
 import itertools
 import numpy as np
 from qtpy import QtCore, QtWidgets, QtGui
-from qtpy.QtGui import (QPen, QBrush, QColor, QKeyEvent,
-                        QPolygonF, QPainterPath)
+from qtpy.QtGui import QPen, QBrush, QColor, QKeyEvent, QPolygonF, QPainterPath
 
 
-from typing import (Callable, Dict,
-                    Iterable, List,
-                    Optional, Tuple,
-                    Union)
+from typing import Callable, Dict, Iterable, List, Optional, Union
 
 
 @dataclass(frozen=True)
@@ -77,7 +74,7 @@ class VideoSliderMark:
     def QColor(self):
         """Returns color of mark as `QColor`."""
         c = self.color
-        if type(c) == str:
+        if isinstance(c, str):
             return QColor(c)
         else:
             return QColor(*c)
@@ -114,7 +111,13 @@ class VideoSliderMark:
     def visual_width(self):
         if self.mark_type in ("open", "filled", "tick", "event_start", "event_end"):
             return 2
-        if self.mark_type in ("tick_column", "simple", "predicted", "predicted_existing", "prediction_progress"):
+        if self.mark_type in (
+            "tick_column",
+            "simple",
+            "predicted",
+            "predicted_existing",
+            "prediction_progress",
+        ):
             return 1
         return 2
 
@@ -173,8 +176,9 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.setScene(self.scene)
         self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
 
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                           QtWidgets.QSizePolicy.Expanding)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
 
@@ -203,14 +207,11 @@ class VideoSlider(QtWidgets.QGraphicsView):
 
         # Add drag handle rect
         self._handle_width = 6
-        handle_rect = QtCore.QRectF(
-            0, self._handle_top, self._handle_width, self._handle_height
-        )
         self.setMinimumHeight(self._min_height)
         self.setMaximumHeight(self._min_height)
-        self.handle = self.scene.addRect(QtCore.QRectF(
-            0, self._handle_top, self._handle_width, self._handle_height
-        ))
+        self.handle = self.scene.addRect(
+            QtCore.QRectF(0, self._handle_top, self._handle_width, self._handle_height)
+        )
         self.handle.setPen(QPen(QColor(80, 80, 80)))
         self.handle.setBrush(QColor(128, 128, 128, 128))
 
@@ -240,8 +241,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
 
         pen = QPen(QColor(80, 80, 255), 0.5)
         pen.setCosmetic(True)
-        self.poly = self.scene.addPath(
-            QPainterPath(), pen, self.select_box.brush())
+        self.poly = self.scene.addPath(QPainterPath(), pen, self.select_box.brush())
         self.headerSeries = dict()
         self._draw_header()
 
@@ -280,7 +280,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
         x = self._toPos(val)
         self.handle.setPos(x, 0)
         self.ensureVisible(x, 0, self._handle_width, 0, 3, 0)
-        if hasattr(self, 'input_value'):
+        if hasattr(self, "input_value"):
             # Update input text value with slider's current value
             self.input_value.setText(str(self._val_main))
 
@@ -353,13 +353,11 @@ class VideoSlider(QtWidgets.QGraphicsView):
 
             if mark in self._mark_labels:
                 label_x = max(
-                    0, mark_x -
-                    self._mark_labels[mark].boundingRect().width() // 2
+                    0, mark_x - self._mark_labels[mark].boundingRect().width() // 2
                 )
                 self._mark_labels[mark].setPos(label_x, 4)
 
     def _get_min_max_slider_heights(self):
-
         # Start with padding height
         extra_height = 8 + self._header_height
         min_height = extra_height
@@ -593,7 +591,6 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self._draw_zoom_box(current_val, self._zoom_start_val)
 
     def releaseZoomDrag(self, x, y):
-
         self.zoom_box.hide()
 
         val_a = self._zoom_start_val
@@ -612,7 +609,6 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self._zoom_start_val = None
 
     def setZoomRange(self, start_val: float, end_val: float):
-
         zoom_val_range = end_val - start_val
         if zoom_val_range > 0:
             self.zoom_factor = self.value_range / zoom_val_range
@@ -710,7 +706,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
     def getMarks(self, mark_type: str = ""):
         """Returns list of marks."""
         if mark_type:
-            return [mark for mark in self._marks if mark.mark_type == type]
+            return [mark for mark in self._marks if mark.mark_type == mark_type]
 
         return self._marks
 
@@ -744,7 +740,9 @@ class VideoSlider(QtWidgets.QGraphicsView):
         )
 
         color = new_mark.QColor
-        is_interval = new_mark.mark_type == "behavior_interval" and new_mark.has_interval
+        is_interval = (
+            new_mark.mark_type == "behavior_interval" and new_mark.has_interval
+        )
 
         if is_interval:
             pen = QPen(QtCore.Qt.NoPen)
@@ -759,8 +757,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
             item.setZValue(0.3)
         else:
             width = new_mark.visual_width
-            item = self.scene.addRect(-width // 2,
-                                      v_offset, width, height, pen, brush)
+            item = self.scene.addRect(-width // 2, v_offset, width, height, pen, brush)
 
             if new_mark.mark_type in ["tick", "event_start", "event_end"]:
                 # Show tick mark behind other slider marks
@@ -857,8 +854,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
         for idx, val in series.items():
             points.append((self._toPos(idx, center=True), toYPos(val)))
             if step_chart:
-                points.append(
-                    (self._toPos(idx + step, center=True), toYPos(val)))
+                points.append((self._toPos(idx + step, center=True), toYPos(val)))
         points.append(
             (self._toPos(max(series.keys()) + 1, center=True), toYPos(series_min))
         )
@@ -974,7 +970,11 @@ class VideoSlider(QtWidgets.QGraphicsView):
         return [
             mark
             for mark in self._marks
-            if (mark.val == val and mark.mark_type not in ("tick", "tick_column", "event_start", "event_end"))
+            if (
+                mark.val == val
+                and mark.mark_type
+                not in ("tick", "tick_column", "event_start", "event_end")
+            )
         ]
 
     def isMarkedVal(self, val: int) -> bool:
@@ -1147,8 +1147,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
 
         # Show tooltip with information about frame under mouse
         if self._get_val_tooltip:
-            hover_frame_idx = self._toVal(
-                self.mapMouseXToHandleX(scenePos.x()))
+            hover_frame_idx = self._toVal(self.mapMouseXToHandleX(scenePos.x()))
             tooltip = self._get_val_tooltip(hover_frame_idx)
             QtWidgets.QToolTip.showText(event.globalPos(), tooltip)
 
@@ -1204,7 +1203,9 @@ class VideoSlider(QtWidgets.QGraphicsView):
     def removeMarksByType(self, mark_type_to_remove: str):
         """Removes all marks of a specific type from the slider."""
         marks_to_delete = []
-        if hasattr(self, "_marks") and self._marks:  # Check if _marks exists and is not empty
+        if (
+            hasattr(self, "_marks") and self._marks
+        ):  # Check if _marks exists and is not empty
             for mark_instance in list(self._marks):  # Iterate over a copy
                 if mark_instance.mark_type == mark_type_to_remove:
                     marks_to_delete.append(mark_instance)

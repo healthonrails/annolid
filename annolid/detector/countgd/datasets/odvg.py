@@ -5,7 +5,8 @@ import json
 from PIL import Image
 import torch
 import random
-import os, sys
+import os
+import sys
 
 sys.path.append(os.path.dirname(sys.path[0]))
 
@@ -253,10 +254,7 @@ def build_odvg(image_set, args, datasetinfo):
     img_folder = datasetinfo["root"]
     ann_file = datasetinfo["anno"]
     label_map = datasetinfo["label_map"] if "label_map" in datasetinfo else None
-    try:
-        strong_aug = args.strong_aug
-    except:
-        strong_aug = False
+    strong_aug = getattr(args, "strong_aug", False)
     print(img_folder, ann_file, label_map)
     dataset = ODVGDataset(
         img_folder,

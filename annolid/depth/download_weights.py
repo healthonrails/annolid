@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
@@ -87,13 +86,17 @@ def _normalize_selection(items: Sequence[str]) -> Sequence[str]:
     for entry in items:
         key = entry.lower()
         if key not in lower:
-            raise ValueError(f"Unknown model {entry!r}. Available: {', '.join(MODEL_SPECS)}")
+            raise ValueError(
+                f"Unknown model {entry!r}. Available: {', '.join(MODEL_SPECS)}"
+            )
         selected.append(lower[key])
     return selected
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Download Video-Depth-Anything checkpoints.")
+    parser = argparse.ArgumentParser(
+        description="Download Video-Depth-Anything checkpoints."
+    )
     parser.add_argument(
         "-m",
         "--model",

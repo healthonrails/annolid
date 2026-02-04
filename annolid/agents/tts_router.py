@@ -23,7 +23,9 @@ def _adjust_pocket_speed(samples: np.ndarray, speed: float) -> np.ndarray:
     return np.asarray(resampled, dtype=np.float32)
 
 
-def _synthesize_kokoro(text: str, settings: Dict[str, object]) -> Optional[Tuple[np.ndarray, int]]:
+def _synthesize_kokoro(
+    text: str, settings: Dict[str, object]
+) -> Optional[Tuple[np.ndarray, int]]:
     from annolid.agents.kokoro_tts import text_to_speech
 
     return text_to_speech(
@@ -51,7 +53,10 @@ def _synthesize_pocket(
         )
         return None
 
-    voice = str(settings.get("pocket_voice", POCKET_DEFAULT_VOICE)).strip() or POCKET_DEFAULT_VOICE
+    voice = (
+        str(settings.get("pocket_voice", POCKET_DEFAULT_VOICE)).strip()
+        or POCKET_DEFAULT_VOICE
+    )
     pocket_prompt = str(settings.get("pocket_prompt_path", "")).strip()
     voice_spec = pocket_prompt if pocket_prompt else voice
     audio = text_to_speech(text, voice_spec)
@@ -78,14 +83,14 @@ def _synthesize_chatterbox(
         voice_wav_path=str(settings.get("chatterbox_voice_path", "")),
         dtype=str(settings.get("chatterbox_dtype", "fp32")),
         max_new_tokens=int(settings.get("chatterbox_max_new_tokens", 1024)),
-        repetition_penalty=float(settings.get(
-            "chatterbox_repetition_penalty", 1.2)),
-        apply_watermark=bool(settings.get(
-            "chatterbox_apply_watermark", False)),
+        repetition_penalty=float(settings.get("chatterbox_repetition_penalty", 1.2)),
+        apply_watermark=bool(settings.get("chatterbox_apply_watermark", False)),
     )
 
 
-def _synthesize_gtts(text: str, settings: Dict[str, object]) -> Optional[Tuple[np.ndarray, int]]:
+def _synthesize_gtts(
+    text: str, settings: Dict[str, object]
+) -> Optional[Tuple[np.ndarray, int]]:
     try:
         from gtts import gTTS
         from pydub import AudioSegment

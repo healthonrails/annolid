@@ -4,7 +4,7 @@ ECCV 2020
 Zachary Teed and Jia Deng
 https://github.com/princeton-vl/RAFT/blob/master/core/raft.py
 """
-import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,11 +12,11 @@ import torch.nn.functional as F
 from update import BasicUpdateBlock, SmallUpdateBlock
 from extractor import BasicEncoder, SmallEncoder
 from corr import CorrBlock, AlternateCorrBlock
-from annolid.motion.utils import bilinear_sampler, coords_grid, upflow8
+from annolid.motion.utils import coords_grid, upflow8
 
 try:
     autocast = torch.cuda.amp.autocast
-except:
+except AttributeError:
     # dummy autocast for PyTorch < 1.6
     class autocast:
         def __init__(self, enabled):
@@ -46,25 +46,29 @@ class RAFT(nn.Module):
             args.corr_levels = 4
             args.corr_radius = 4
 
-        if 'dropout' not in self.args:
+        if "dropout" not in self.args:
             self.args.dropout = 0
 
-        if 'alternate_corr' not in self.args:
+        if "alternate_corr" not in self.args:
             self.args.alternate_corr = False
 
         # feature network, context network, and update block
         if args.small:
             self.fnet = SmallEncoder(
-                output_dim=128, norm_fn='instance', dropout=args.dropout)
+                output_dim=128, norm_fn="instance", dropout=args.dropout
+            )
             self.cnet = SmallEncoder(
-                output_dim=hdim+cdim, norm_fn='none', dropout=args.dropout)
+                output_dim=hdim + cdim, norm_fn="none", dropout=args.dropout
+            )
             self.update_block = SmallUpdateBlock(self.args, hidden_dim=hdim)
 
         else:
             self.fnet = BasicEncoder(
-                output_dim=256, norm_fn='instance', dropout=args.dropout)
+                output_dim=256, norm_fn="instance", dropout=args.dropout
+            )
             self.cnet = BasicEncoder(
-                output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
+                output_dim=hdim + cdim, norm_fn="batch", dropout=args.dropout
+            )
             self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
 
     def freeze_bn(self):
@@ -73,16 +77,16 @@ class RAFT(nn.Module):
                 m.eval()
 
     def initialize_flow(self, img):
-        """ Flow is represented as difference between two coordinate grids flow = coords1 - coords0"""
+        """Flow is represented as difference between two coordinate grids flow = coords1 - coords0"""
         N, C, H, W = img.shape
-        coords0 = coords_grid(N, H//8, W//8).to(img.device)
-        coords1 = coords_grid(N, H//8, W//8).to(img.device)
+        coords0 = coords_grid(N, H // 8, W // 8).to(img.device)
+        coords1 = coords_grid(N, H // 8, W // 8).to(img.device)
 
         # optical flow computed as difference: flow = coords1 - coords0
         return coords0, coords1
 
     def upsample_flow(self, flow, mask):
-        """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
+        """Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination"""
         N, _, H, W = flow.shape
         mask = mask.view(N, 1, 9, 8, 8, H, W)
         mask = torch.softmax(mask, dim=2)
@@ -92,10 +96,12 @@ class RAFT(nn.Module):
 
         up_flow = torch.sum(mask * up_flow, dim=2)
         up_flow = up_flow.permute(0, 1, 4, 2, 5, 3)
-        return up_flow.reshape(N, 2, 8*H, 8*W)
+        return up_flow.reshape(N, 2, 8 * H, 8 * W)
 
-    def forward(self, image1, image2, iters=12, flow_init=None, upsample=True, test_mode=False):
-        """ Estimate optical flow between pair of frames """
+    def forward(
+        self, image1, image2, iters=12, flow_init=None, upsample=True, test_mode=False
+    ):
+        """Estimate optical flow between pair of frames"""
 
         image1 = 2 * (image1 / 255.0) - 1.0
         image2 = 2 * (image2 / 255.0) - 1.0
@@ -113,8 +119,7 @@ class RAFT(nn.Module):
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
         if self.args.alternate_corr:
-            corr_fn = AlternateCorrBlock(
-                fmap1, fmap2, radius=self.args.corr_radius)
+            corr_fn = AlternateCorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
         else:
             corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
 
@@ -137,8 +142,7 @@ class RAFT(nn.Module):
 
             flow = coords1 - coords0
             with autocast(enabled=self.args.mixed_precision):
-                net, up_mask, delta_flow = self.update_block(
-                    net, inp, corr, flow)
+                net, up_mask, delta_flow = self.update_block(net, inp, corr, flow)
 
             # F(t+1) = F(t) + \Delta(t)
             coords1 = coords1 + delta_flow

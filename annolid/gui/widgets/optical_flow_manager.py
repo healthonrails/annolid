@@ -66,8 +66,7 @@ class OpticalFlowManager(QtCore.QObject):
     def update_overlay_for_frame(
         self, frame_number: int, frame_rgb: Optional[np.ndarray] = None
     ) -> None:
-        self.optical_flow_tool.update_overlay_for_frame(
-            frame_number, frame_rgb)
+        self.optical_flow_tool.update_overlay_for_frame(frame_number, frame_rgb)
 
     # ------------------------------------------------------------------ settings
     def _apply_to_window(self) -> None:
@@ -94,57 +93,62 @@ class OpticalFlowManager(QtCore.QObject):
         if isinstance(settings, QtCore.QSettings):
             try:
                 self.optical_flow_backend = str(
-                    settings.value("optical_flow/backend",
-                                   self.optical_flow_backend)
+                    settings.value("optical_flow/backend", self.optical_flow_backend)
                 )
                 self.optical_flow_raft_model = str(
-                    settings.value("optical_flow/raft_model",
-                                   self.optical_flow_raft_model)
+                    settings.value(
+                        "optical_flow/raft_model", self.optical_flow_raft_model
+                    )
                 )
                 self.flow_visualization = str(
-                    settings.value("optical_flow/visualization",
-                                   self.flow_visualization)
+                    settings.value(
+                        "optical_flow/visualization", self.flow_visualization
+                    )
                 )
                 self.flow_opacity = int(
                     settings.value("optical_flow/opacity", self.flow_opacity)
                 )
                 self.flow_quiver_step = int(
-                    settings.value("optical_flow/quiver_step",
-                                   self.flow_quiver_step)
+                    settings.value("optical_flow/quiver_step", self.flow_quiver_step)
                 )
                 self.flow_quiver_gain = float(
-                    settings.value("optical_flow/quiver_gain",
-                                   self.flow_quiver_gain)
+                    settings.value("optical_flow/quiver_gain", self.flow_quiver_gain)
                 )
                 self.flow_stable_hsv = bool(
-                    settings.value("optical_flow/stable_hsv",
-                                   self.flow_stable_hsv)
+                    settings.value("optical_flow/stable_hsv", self.flow_stable_hsv)
                 )
                 self.flow_farneback_pyr_scale = float(
                     settings.value(
-                        "optical_flow/farneback_pyr_scale", self.flow_farneback_pyr_scale
+                        "optical_flow/farneback_pyr_scale",
+                        self.flow_farneback_pyr_scale,
                     )
                 )
                 self.flow_farneback_levels = int(
-                    settings.value("optical_flow/farneback_levels",
-                                   self.flow_farneback_levels)
+                    settings.value(
+                        "optical_flow/farneback_levels", self.flow_farneback_levels
+                    )
                 )
                 self.flow_farneback_winsize = int(
-                    settings.value("optical_flow/farneback_winsize",
-                                   self.flow_farneback_winsize)
+                    settings.value(
+                        "optical_flow/farneback_winsize", self.flow_farneback_winsize
+                    )
                 )
                 self.flow_farneback_iterations = int(
                     settings.value(
-                        "optical_flow/farneback_iterations", self.flow_farneback_iterations
+                        "optical_flow/farneback_iterations",
+                        self.flow_farneback_iterations,
                     )
                 )
                 self.flow_farneback_poly_n = int(
-                    settings.value("optical_flow/farneback_poly_n",
-                                   self.flow_farneback_poly_n)
+                    settings.value(
+                        "optical_flow/farneback_poly_n", self.flow_farneback_poly_n
+                    )
                 )
                 self.flow_farneback_poly_sigma = float(
-                    settings.value("optical_flow/farneback_poly_sigma",
-                                   self.flow_farneback_poly_sigma)
+                    settings.value(
+                        "optical_flow/farneback_poly_sigma",
+                        self.flow_farneback_poly_sigma,
+                    )
                 )
             except Exception:
                 pass

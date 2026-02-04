@@ -23,15 +23,14 @@ class StepSizeWidget(QtWidgets.QWidget):
         self.occclusion_checkbox = QtWidgets.QCheckBox(self.tr("Auto"))
         self.occclusion_checkbox.setChecked(True)
         self.occclusion_checkbox.setToolTip(
-            self.tr("Enable automatic occlusion handling"))
+            self.tr("Enable automatic occlusion handling")
+        )
         self.occclusion_checkbox.setFocusPolicy(QtCore.Qt.NoFocus)
 
         # Predict Button
         self.predict_button = QtWidgets.QPushButton(self.tr("Pred"))
-        self.predict_button.setStyleSheet(
-            "background-color: green; color: white;")
-        self.predict_button.setToolTip(
-            self.tr("Run prediction on the next frame"))
+        self.predict_button.setStyleSheet("background-color: green; color: white;")
+        self.predict_button.setToolTip(self.tr("Run prediction on the next frame"))
         self.predict_button.setFocusPolicy(QtCore.Qt.NoFocus)
 
         # Connect valueChanged signal of QSpinBox to self.valueChanged
@@ -42,15 +41,11 @@ class StepSizeWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.setAlignment(QtCore.Qt.AlignHCenter)
-        layout.addWidget(self.occclusion_checkbox,
-                         alignment=QtCore.Qt.AlignHCenter)
-        layout.addWidget(self.step_size_spin_box,
-                         alignment=QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.occclusion_checkbox, alignment=QtCore.Qt.AlignHCenter)
+        layout.addWidget(self.step_size_spin_box, alignment=QtCore.Qt.AlignHCenter)
         layout.addWidget(self.predict_button, alignment=QtCore.Qt.AlignHCenter)
         self.setLayout(layout)
-        self.predict_button.setFixedWidth(
-            self.step_size_spin_box.sizeHint().width()
-        )
+        self.predict_button.setFixedWidth(self.step_size_spin_box.sizeHint().width())
 
     def set_value(self, value):
         self.step_size_spin_box.setValue(value)

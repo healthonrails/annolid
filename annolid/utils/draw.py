@@ -1,8 +1,9 @@
 """
-Modified from here: 
+Modified from here:
 https://github.com/ZQPei/deep_sort_pytorch/blob/master/utils/draw.py
 
 """
+
 import logging
 import numpy as np
 import cv2
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_keypoint_connection_rules(keypoint_cfg_file=None):
-    """Keypoint connection rules defined in the config file. 
+    """Keypoint connection rules defined in the config file.
 
     Args:
         keypoint_cfg_file (str, optional): a yaml config file. Defaults to None.
@@ -22,8 +23,7 @@ def get_keypoint_connection_rules(keypoint_cfg_file=None):
         [(tuples),]: [(body_part_1,body_part2,(225,255,0))]
     """
     if keypoint_cfg_file is None:
-        keypoint_cfg_file = Path(__file__).parent.parent / \
-            'configs' / 'keypoints.yaml'
+        keypoint_cfg_file = Path(__file__).parent.parent / "configs" / "keypoints.yaml"
 
     keypoints_connection_rules = []
     head_rules = {}
@@ -56,17 +56,14 @@ def get_keypoint_connection_rules(keypoint_cfg_file=None):
 
     # color is a placeholder for future customization
     for k, v in head_rules.items():
-        v, r, g, b = v.split(',')
+        v, r, g, b = v.split(",")
         color = (int(r), int(g), int(b))
         keypoints_connection_rules.append((k, v, color))
     for k, v in body_rules.items():
-        v, r, g, b = v.split(',')
+        v, r, g, b = v.split(",")
         color = (int(r), int(g), int(b))
         keypoints_connection_rules.append((k, v, color))
-    return (keypoints_connection_rules,
-            name_rules,
-            event_rules,
-            zone_rules)
+    return (keypoints_connection_rules, name_rules, event_rules, zone_rules)
 
 
 def _keypoint_color():
@@ -84,9 +81,8 @@ def compute_color_for_labels(label):
     """
     Simple function that adds fixed color depending on the class
     """
-    palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
-    color = [int((p * (label ** 2 - label + 1)) % 255)
-             for p in palette]
+    palette = (2**11 - 1, 2**15 - 1, 2**20 - 1)
+    color = [int((p * (label**2 - label + 1)) % 255) for p in palette]
     return tuple(color)
 
 
@@ -97,22 +93,18 @@ def get_label_color(label_id):
         try:
             _id = int(label_id) if label_id is not None else 0
             color = compute_color_for_labels(_id)
-            label = '{}{:d}'.format("", _id)
-        except:
-            if ':' in label_id:
+            label = "{}{:d}".format("", _id)
+        except (TypeError, ValueError):
+            if ":" in label_id:
                 _label_id = label_id.split(":")[0]
             else:
                 _label_id = label_id
             color = compute_color_for_labels(hash(_label_id) % 100)
-            label = f'{label_id}'
+            label = f"{label_id}"
         return label, color
 
 
-def draw_binary_masks(img,
-                      masks,
-                      identities=None
-                      ):
-
+def draw_binary_masks(img, masks, identities=None):
     img_alpha = np.zeros(img.shape, img.dtype)
     for i, _mask in enumerate(masks):
         label, color = get_label_color(identities[i])
@@ -122,13 +114,9 @@ def draw_binary_masks(img,
     return img
 
 
-def draw_boxes(img,
-               bbox,
-               identities=None,
-               offset=(0, 0),
-               draw_track=False,
-               points=None
-               ):
+def draw_boxes(
+    img, bbox, identities=None, offset=(0, 0), draw_track=False, points=None
+):
     for i, box in enumerate(bbox):
         x1, y1, x2, y2 = [int(i) for i in box]
         x1 += offset[0]
@@ -140,46 +128,43 @@ def draw_boxes(img,
 
         label, color = get_label_color(_id)
 
-        t_size = cv2.getTextSize(label,
-                                 cv2.FONT_HERSHEY_PLAIN,
-                                 2, 2)[0]
+        t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 2, 2)[0]
         cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
         cv2.rectangle(
-            img, (x1, y1), (x1+t_size[0]+3, y1+t_size[1]+4),
-            color, -1)
+            img, (x1, y1), (x1 + t_size[0] + 3, y1 + t_size[1] + 4), color, -1
+        )
         cv2.putText(
-            img, label, (x1, y1+t_size[1]+4),
-            cv2.FONT_HERSHEY_PLAIN, 2,
-            [255, 255, 255], 2)
+            img,
+            label,
+            (x1, y1 + t_size[1] + 4),
+            cv2.FONT_HERSHEY_PLAIN,
+            2,
+            [255, 255, 255],
+            2,
+        )
 
         if draw_track:
             if isinstance(_id, str):
                 _id = hash(_id) % 100
-            center = (int((x2 + x1)/2), int((y2+y1)/2))
+            center = (int((x2 + x1) / 2), int((y2 + y1) / 2))
             points[_id].append(center)
             thickness = 2
             for j in range(len(points[_id])):
-                if points[_id][j-1] is None or points[_id] is None:
+                if points[_id][j - 1] is None or points[_id] is None:
                     continue
-                cv2.line(
-                    img,
-                    points[_id][j-1],
-                    points[_id][j],
-                    color,
-                    thickness
-                )
+                cv2.line(img, points[_id][j - 1], points[_id][j], color, thickness)
 
     return img
 
 
 def draw_flow(img, flow, step=16, quiver=(0, 100, 0)):
     """
-    Modified from here 
+    Modified from here
     https://gist.github.com/RodolfoFerro/11d39fad57e21b5e85fe4d4a906cf098
     """
 
     h, w = img.shape[:2]
-    y, x = np.mgrid[step/2:h:step, step/2:w:step].reshape(2, -1).astype(int)
+    y, x = np.mgrid[step / 2 : h : step, step / 2 : w : step].reshape(2, -1).astype(int)
     fx, fy = flow[y, x].T
 
     # Filter out zero flow vectors
@@ -201,12 +186,10 @@ def draw_flow(img, flow, step=16, quiver=(0, 100, 0)):
     return vis
 
 
-def draw_keypoint_connections(frame,
-                              keypoints,
-                              keypoint_connection_rules=None,
-                              max_dist=250):
-    """draw the lines between defined keypoints
-    """
+def draw_keypoint_connections(
+    frame, keypoints, keypoint_connection_rules=None, max_dist=250
+):
+    """draw the lines between defined keypoints"""
 
     if keypoint_connection_rules is None:
         # # rules for drawing a line for a pair of keypoints.
@@ -226,7 +209,7 @@ def draw_keypoint_connections(frame,
             kp0_point = keypoints[kp0][0:2]
             # kp0_color = keypoints[kp0][-1]
             kp1_point = keypoints[kp1][0:2]
-            dist = np.linalg.norm(np.array(kp0_point)-np.array(kp1_point))
+            dist = np.linalg.norm(np.array(kp0_point) - np.array(kp1_point))
             if dist < max_dist:
                 cv2.line(frame, kp0_point, kp1_point, color, 3)
             else:

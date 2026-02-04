@@ -486,7 +486,7 @@ def merge_annotation_folders(
 
 
 def get_freezing_results(results_dir, video_name):
-    """check and fliter all the output results files from freezing analyzer.
+    """Check and filter all output result files from freezing analyzer.
 
     Args:
         results_dir (str): path to the result folder

@@ -1,6 +1,14 @@
 import os
 from qtpy.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressBar, QCheckBox
+    QDialog,
+    QVBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QFileDialog,
+    QMessageBox,
+    QProgressBar,
+    QCheckBox,
 )
 from qtpy.QtCore import Qt, QThread, Signal
 from annolid.annotation.labelme2yolo import Labelme2YOLO
@@ -12,7 +20,14 @@ class YOLOConverterWorker(QThread):
     message = Signal(str)
     error = Signal(str)
 
-    def __init__(self, json_dir, val_size, test_size, pose_schema_path=None, include_visibility=False):
+    def __init__(
+        self,
+        json_dir,
+        val_size,
+        test_size,
+        pose_schema_path=None,
+        include_visibility=False,
+    ):
         super().__init__()
         self.json_dir = json_dir
         self.val_size = val_size
@@ -59,8 +74,7 @@ class YOLOConverterWidget(QDialog):
         # Optional pose schema selector (for flip_idx + keypoint order)
         self.pose_schema_label = QLabel("Pose schema (optional):")
         self.pose_schema_input = QLineEdit()
-        self.pose_schema_input.setPlaceholderText(
-            "pose_schema.json (or .yaml)")
+        self.pose_schema_input.setPlaceholderText("pose_schema.json (or .yaml)")
         self.pose_schema_browse = QPushButton("Browse")
         self.pose_schema_browse.clicked.connect(self.select_pose_schema_file)
         self.layout.addWidget(self.pose_schema_label)
@@ -103,8 +117,7 @@ class YOLOConverterWidget(QDialog):
         """
         Opens a file dialog to select the directory containing JSON files.
         """
-        json_dir = QFileDialog.getExistingDirectory(
-            self, "Select JSON Directory")
+        json_dir = QFileDialog.getExistingDirectory(self, "Select JSON Directory")
         if json_dir:
             self.json_dir_input.setText(json_dir)
             # Auto-fill pose schema if present in folder
@@ -132,12 +145,10 @@ class YOLOConverterWidget(QDialog):
         val_size = self.val_size_input.text().strip()
         test_size = self.test_size_input.text().strip()
         pose_schema_path = self.pose_schema_input.text().strip() or None
-        include_visibility = bool(
-            self.include_visibility_checkbox.isChecked())
+        include_visibility = bool(self.include_visibility_checkbox.isChecked())
 
         if not os.path.isdir(json_dir):
-            QMessageBox.warning(
-                self, "Error", "Please select a valid JSON directory.")
+            QMessageBox.warning(self, "Error", "Please select a valid JSON directory.")
             return
 
         try:
@@ -145,17 +156,20 @@ class YOLOConverterWidget(QDialog):
             test_size = float(test_size)
             if not (0 <= val_size <= 1) or not (0 <= test_size <= 1):
                 raise ValueError(
-                    "Validation and test sizes must be between 0.0 and 1.0.")
+                    "Validation and test sizes must be between 0.0 and 1.0."
+                )
         except ValueError:
             QMessageBox.warning(
-                self, "Error", "Please enter valid numbers for validation and test sizes.")
+                self,
+                "Error",
+                "Please enter valid numbers for validation and test sizes.",
+            )
             return
 
         self.convert_button.setEnabled(False)  # Disable the button
 
         if pose_schema_path and not os.path.isfile(pose_schema_path):
-            QMessageBox.warning(
-                self, "Error", "Pose schema file does not exist.")
+            QMessageBox.warning(self, "Error", "Pose schema file does not exist.")
             self.convert_button.setEnabled(True)
             return
 
@@ -174,13 +188,11 @@ class YOLOConverterWidget(QDialog):
 
     def on_conversion_finished(self):
         self.convert_button.setEnabled(True)  # Re-enable the button
-        QMessageBox.information(
-            self, "Success", "YOLO dataset created successfully.")
+        QMessageBox.information(self, "Success", "YOLO dataset created successfully.")
         self.close()  # Close the dialog
 
     def on_conversion_error(self, error_message):
         self.convert_button.setEnabled(True)  # Re-enable the button
         self.progress_bar.setValue(0)
         self.message_label.setText(f"Error: {error_message}")
-        QMessageBox.critical(
-            self, "Error", f"An error occurred: {error_message}")
+        QMessageBox.critical(self, "Error", f"An error occurred: {error_message}")

@@ -54,19 +54,29 @@ class RunConfig:
 
 def _parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(
-        description="Train polygon frame classifier from CSV features.")
-    parser.add_argument("--config", type=str, default=None,
-                        help="YAML/JSON config to seed parameters (CLI overrides).")
-    parser.add_argument("--train_csv", required=False,
-                        default=None, help="Path to training CSV.")
-    parser.add_argument("--test_csv", required=False,
-                        default=None, help="Path to test CSV.")
-    parser.add_argument("--output_dir", default="results",
-                        help="Directory to save models and metrics.")
-    parser.add_argument("--log_dir", default="logs",
-                        help="Directory for log files.")
-    parser.add_argument("--tb_log_dir", default="runs",
-                        help="Directory for TensorBoard logs (unused placeholder).")
+        description="Train polygon frame classifier from CSV features."
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="YAML/JSON config to seed parameters (CLI overrides).",
+    )
+    parser.add_argument(
+        "--train_csv", required=False, default=None, help="Path to training CSV."
+    )
+    parser.add_argument(
+        "--test_csv", required=False, default=None, help="Path to test CSV."
+    )
+    parser.add_argument(
+        "--output_dir", default="results", help="Directory to save models and metrics."
+    )
+    parser.add_argument("--log_dir", default="logs", help="Directory for log files.")
+    parser.add_argument(
+        "--tb_log_dir",
+        default="runs",
+        help="Directory for TensorBoard logs (unused placeholder).",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--log_level", default="INFO", help="Logging level.")
 
@@ -97,8 +107,11 @@ def _parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--early_stopping_patience", type=int, default=20)
     parser.add_argument("--val_split_ratio", type=float, default=0.1)
     parser.add_argument("--num_workers", type=int, default=2)
-    parser.add_argument("--sampling_strategy", default="balanced_sampler",
-                        choices=["balanced_sampler", "random"])
+    parser.add_argument(
+        "--sampling_strategy",
+        default="balanced_sampler",
+        choices=["balanced_sampler", "random"],
+    )
     parser.add_argument("--log_every", type=int, default=50)
     parser.add_argument(
         "--label_smoothing",
@@ -169,7 +182,7 @@ def _increment_path(base: Path) -> Path:
     existing = [p.name for p in parent.glob(f"{name}*") if p.is_dir()]
     indices: List[int] = []
     for n in existing:
-        suffix = n[len(name):]
+        suffix = n[len(name) :]
         if suffix == "":
             indices.append(1)
         elif suffix.isdigit():
@@ -190,7 +203,9 @@ def _load_config_file(path: Optional[str]) -> Dict[str, Any]:
         return json.load(fh)
 
 
-def _collect_cli_overrides(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Dict[str, Any]:
+def _collect_cli_overrides(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
     for key, value in vars(args).items():
         default = parser.get_default(key)
@@ -201,7 +216,11 @@ def _collect_cli_overrides(args: argparse.Namespace, parser: argparse.ArgumentPa
     return overrides
 
 
-def _merge_section(defaults: Dict[str, Any], config_values: Dict[str, Any], cli_overrides: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_section(
+    defaults: Dict[str, Any],
+    config_values: Dict[str, Any],
+    cli_overrides: Dict[str, Any],
+) -> Dict[str, Any]:
     merged = dict(defaults)
     for key, val in (config_values or {}).items():
         if key in merged:
@@ -235,7 +254,7 @@ def _apply_rolling_median_probs(
             padded = np.concatenate([pad_left, series, pad_right])
             out = np.empty_like(series)
             for t in range(t_len):
-                out[t] = np.median(padded[t:t + window])
+                out[t] = np.median(padded[t : t + window])
             smoothed[idxs, c] = out
     return smoothed
 
@@ -276,8 +295,9 @@ def _evaluate(
             all_probs.extend(probs.cpu().tolist())
 
     avg_loss = total_loss / max(1, len(loader))
-    label_names = [dataset.index_to_label[idx]
-                   for idx in range(len(dataset.index_to_label))]
+    label_names = [
+        dataset.index_to_label[idx] for idx in range(len(dataset.index_to_label))
+    ]
 
     prob_array = np.asarray(all_probs, dtype=float)
     true_array = np.asarray(all_targets, dtype=int)
@@ -293,7 +313,8 @@ def _evaluate(
 
     accuracy = metrics.accuracy_score(true_array, pred_array)
     macro_f1 = metrics.f1_score(
-        true_array, pred_array, average="macro", zero_division=0)
+        true_array, pred_array, average="macro", zero_division=0
+    )
     per_class = metrics.classification_report(
         true_array,
         pred_array,
@@ -302,7 +323,8 @@ def _evaluate(
         output_dict=True,
     )
     confusion = metrics.confusion_matrix(
-        true_array, pred_array, labels=list(range(len(label_names)))).tolist()
+        true_array, pred_array, labels=list(range(len(label_names)))
+    ).tolist()
 
     # Per-class AP and mAP using smoothed probability scores.
     per_class_ap: Dict[str, float] = {}
@@ -310,8 +332,11 @@ def _evaluate(
         ap_scores = []
         for idx, name in enumerate(label_names):
             binary_true = (true_array == idx).astype(int)
-            ap = metrics.average_precision_score(
-                binary_true, prob_array[:, idx]) if prob_array.size else 0.0
+            ap = (
+                metrics.average_precision_score(binary_true, prob_array[:, idx])
+                if prob_array.size
+                else 0.0
+            )
             if np.isnan(ap):
                 ap = 0.0
             per_class_ap[name] = float(ap)
@@ -425,7 +450,9 @@ def _plot_eval_curves_and_confusion(
     logger.info(f"Saved PR curves plot to {pr_path}")
 
 
-def _save_checkpoint(state: Dict[str, Any], output_dir: Path, label: str = "best") -> Path:
+def _save_checkpoint(
+    state: Dict[str, Any], output_dir: Path, label: str = "best"
+) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     ckpt_path = output_dir / f"polygon_frame_classifier_{label}_{ts}.pt"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -433,7 +460,9 @@ def _save_checkpoint(state: Dict[str, Any], output_dir: Path, label: str = "best
     return ckpt_path
 
 
-def _dump_run_artifacts(output_dir: Path, run_payload: Dict[str, Any], suffix: str) -> Path:
+def _dump_run_artifacts(
+    output_dir: Path, run_payload: Dict[str, Any], suffix: str
+) -> Path:
     path = output_dir / f"run_{suffix}.yaml"
     with path.open("w", encoding="utf-8") as fh:
         yaml.safe_dump(_to_builtin(run_payload), fh, sort_keys=False)
@@ -442,7 +471,8 @@ def _dump_run_artifacts(output_dir: Path, run_payload: Dict[str, Any], suffix: s
 
 def _log_run_artifacts(run_payload: Dict[str, Any], label: str) -> None:
     logger.info(
-        f"{label} configuration/details:\n{json.dumps(_to_builtin(run_payload), indent=2)}")
+        f"{label} configuration/details:\n{json.dumps(_to_builtin(run_payload), indent=2)}"
+    )
 
 
 def _configure_run_logger(log_dir: Path, command: str) -> Path:
@@ -451,8 +481,9 @@ def _configure_run_logger(log_dir: Path, command: str) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"experiment_{timestamp}.log"
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
     logger.addHandler(file_handler)
     logger.info(f"Logging initiated. Log file: {log_file}")
     logger.info(f"Command: {command}")
@@ -480,8 +511,8 @@ def main() -> None:
         "train_csv": None,
         "test_csv": None,
         "output_dir": "results",  # project directory, e.g. runs/polygon_frame
-        "log_dir": "logs",        # subdirectory inside each run directory
-        "tb_log_dir": "tb",       # subdirectory inside each run directory
+        "log_dir": "logs",  # subdirectory inside each run directory
+        "tb_log_dir": "tb",  # subdirectory inside each run directory
         "seed": 42,
         "log_level": "INFO",
         "run_name": "exp",
@@ -490,18 +521,19 @@ def main() -> None:
     model_defaults = asdict(ModelConfig())
     training_defaults = asdict(TrainingConfig())
 
-    run_params = _merge_section(
-        run_defaults, cfg_file.get("run", {}), cli_overrides)
+    run_params = _merge_section(run_defaults, cfg_file.get("run", {}), cli_overrides)
     feature_params = _merge_section(
-        feature_defaults, cfg_file.get("feature", {}), cli_overrides)
+        feature_defaults, cfg_file.get("feature", {}), cli_overrides
+    )
     model_params = _merge_section(
-        model_defaults, cfg_file.get("model", {}), cli_overrides)
+        model_defaults, cfg_file.get("model", {}), cli_overrides
+    )
     training_params = _merge_section(
-        training_defaults, cfg_file.get("training", {}), cli_overrides)
+        training_defaults, cfg_file.get("training", {}), cli_overrides
+    )
 
     if not run_params["train_csv"] or not run_params["test_csv"]:
-        raise ValueError(
-            "train_csv and test_csv must be provided via config or CLI.")
+        raise ValueError("train_csv and test_csv must be provided via config or CLI.")
 
     project_dir = Path(run_params["output_dir"])
     _ensure_dir(project_dir)
@@ -576,8 +608,7 @@ def main() -> None:
     if "latest_model_state" in best_state:
         latest_state = dict(best_state)
         latest_state["model_state"] = latest_state.pop("latest_model_state")
-        ckpt_latest = _save_checkpoint(
-            latest_state, run_cfg.output_dir, label="latest")
+        ckpt_latest = _save_checkpoint(latest_state, run_cfg.output_dir, label="latest")
         logger.info(f"Saved latest checkpoint to {ckpt_latest}")
     _dump_run_artifacts(
         run_cfg.output_dir,
@@ -601,7 +632,8 @@ def main() -> None:
 
     # Evaluate on test set with the learned label mapping and polygon lengths.
     test_feature_config = replace(
-        feature_config, polygon_pad_len=best_state["polygon_lengths"])
+        feature_config, polygon_pad_len=best_state["polygon_lengths"]
+    )
     normalization = best_state.get("normalization")
     test_dataset = PolygonFrameDataset(
         run_cfg.test_csv,
@@ -626,8 +658,7 @@ def main() -> None:
         loaded_state = torch.load(ckpt_best, map_location=device)
         if isinstance(loaded_state, dict) and "model_state" in loaded_state:
             eval_state = loaded_state
-            logger.info(
-                f"Loaded best checkpoint from {ckpt_best} for evaluation.")
+            logger.info(f"Loaded best checkpoint from {ckpt_best} for evaluation.")
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
             f"Failed to load best checkpoint from {ckpt_best}, using in-memory state: {exc}"
@@ -642,12 +673,13 @@ def main() -> None:
         smooth_window=training_config.rolling_window,
     )
     metrics_path = run_cfg.output_dir / "metrics.json"
-    metrics_payload = _to_builtin({
-        "test_metrics": metrics,
-        "label_to_index": best_state["label_to_index"],
-    })
-    metrics_path.write_text(json.dumps(
-        metrics_payload, indent=2), encoding="utf-8")
+    metrics_payload = _to_builtin(
+        {
+            "test_metrics": metrics,
+            "label_to_index": best_state["label_to_index"],
+        }
+    )
+    metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
     logger.info(
         f"Test metrics | loss: {metrics.get('loss', 0.0):.4f} | "
         f"acc: {metrics.get('accuracy', 0.0):.4f} | "

@@ -69,4 +69,3 @@ def download_stable_diffusion_cpp_preset(
         llm=llm,
         llm_vision=llm_vision,
     )
-

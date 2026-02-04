@@ -35,8 +35,8 @@
 ## 7. Run Track All
 1. In Video Manager, click **Track All**.
 2. Annolid automatically
-   - closes the current video, 
-   - opens the next video in the queue, and 
+   - closes the current video,
+   - opens the next video in the queue, and
    - processes each saved segment in order using the Cutie tracker.
 3. For videos without saved segments, Annolid falls back to whole-video tracking.
 

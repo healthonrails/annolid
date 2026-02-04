@@ -38,9 +38,7 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         self.tip_label.setStyleSheet("color: #5f6368;")
         layout.addWidget(self.tip_label)
 
-        self.enable_checkbox = QtWidgets.QCheckBox(
-            "Enable click-to-read", self
-        )
+        self.enable_checkbox = QtWidgets.QCheckBox("Enable click-to-read", self)
         self.enable_checkbox.setChecked(True)
         self.enable_checkbox.toggled.connect(self._on_enabled_toggled)
         layout.addWidget(self.enable_checkbox)
@@ -99,9 +97,7 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         self.status_label.setText(state_label)
         if total > 0:
             current_display = max(1, min(current + 1, total))
-            self.progress_label.setText(
-                f"Paragraph {current_display} / {total}"
-            )
+            self.progress_label.setText(f"Paragraph {current_display} / {total}")
         else:
             self.progress_label.setText("Paragraph - / -")
 

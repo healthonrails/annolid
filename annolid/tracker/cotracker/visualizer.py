@@ -14,6 +14,7 @@
 Modified from:
 https://github.com/facebookresearch/co-tracker
 """
+
 import os
 import numpy as np
 import imageio
@@ -110,8 +111,7 @@ class Visualizer:
             assert segm_mask is not None
         if segm_mask is not None:
             coords = tracks[0, query_frame].round().long()
-            segm_mask = segm_mask[0,
-                                  query_frame][coords[:, 1], coords[:, 0]].long()
+            segm_mask = segm_mask[0, query_frame][coords[:, 1], coords[:, 0]].long()
 
         video = F.pad(
             video,
@@ -136,8 +136,7 @@ class Visualizer:
             compensate_for_camera_motion=compensate_for_camera_motion,
         )
         if save_video:
-            self.save_video(res_video, filename=filename,
-                            writer=writer, step=step)
+            self.save_video(res_video, filename=filename, writer=writer, step=step)
         return res_video
 
     def save_video(self, video, filename, writer=None, step=0):
@@ -151,8 +150,7 @@ class Visualizer:
         else:
             os.makedirs(self.save_dir, exist_ok=True)
             wide_list = list(video.unbind(1))
-            wide_list = [wide[0].permute(1, 2, 0).cpu().numpy()
-                         for wide in wide_list]
+            wide_list = [wide[0].permute(1, 2, 0).cpu().numpy() for wide in wide_list]
 
             # Prepare the video file path
             save_path = os.path.join(self.save_dir, f"{filename}.mp4")
@@ -183,8 +181,7 @@ class Visualizer:
 
         assert D == 2
         assert C == 3
-        video = video[0].permute(0, 2, 3, 1).byte(
-        ).detach().cpu().numpy()  # S, H, W, C
+        video = video[0].permute(0, 2, 3, 1).byte().detach().cpu().numpy()  # S, H, W, C
         tracks = tracks[0].long().detach().cpu().numpy()  # S, N, 2
         if gt_tracks is not None:
             gt_tracks = gt_tracks[0].detach().cpu().numpy()
@@ -199,8 +196,7 @@ class Visualizer:
         if self.mode == "optical_flow":
             import flow_vis
 
-            vector_colors = flow_vis.flow_to_color(
-                tracks - tracks[query_frame][None])
+            vector_colors = flow_vis.flow_to_color(tracks - tracks[query_frame][None])
         elif segm_mask is None:
             if self.mode == "rainbow":
                 y_min, y_max = (
@@ -236,24 +232,24 @@ class Visualizer:
                 # color changes with segm class
                 segm_mask = segm_mask.cpu()
                 color = np.zeros((segm_mask.shape[0], 3), dtype=np.float32)
-                color[segm_mask > 0] = np.array(
-                    self.color_map(1.0)[:3]) * 255.0
-                color[segm_mask <= 0] = np.array(
-                    self.color_map(0.0)[:3]) * 255.0
+                color[segm_mask > 0] = np.array(self.color_map(1.0)[:3]) * 255.0
+                color[segm_mask <= 0] = np.array(self.color_map(0.0)[:3]) * 255.0
                 vector_colors = np.repeat(color[None], T, axis=0)
 
         #  draw tracks
         if self.tracks_leave_trace != 0:
             for t in range(query_frame + 1, T):
                 first_ind = (
-                    max(0, t - self.tracks_leave_trace) if self.tracks_leave_trace >= 0 else 0
+                    max(0, t - self.tracks_leave_trace)
+                    if self.tracks_leave_trace >= 0
+                    else 0
                 )
-                curr_tracks = tracks[first_ind: t + 1]
-                curr_colors = vector_colors[first_ind: t + 1]
+                curr_tracks = tracks[first_ind : t + 1]
+                curr_colors = vector_colors[first_ind : t + 1]
                 if compensate_for_camera_motion:
                     diff = (
-                        tracks[first_ind: t + 1, segm_mask <= 0]
-                        - tracks[t: t + 1, segm_mask <= 0]
+                        tracks[first_ind : t + 1, segm_mask <= 0]
+                        - tracks[t : t + 1, segm_mask <= 0]
                     ).mean(1)[:, None]
 
                     curr_tracks = curr_tracks - diff
@@ -267,7 +263,8 @@ class Visualizer:
                 )
                 if gt_tracks is not None:
                     res_video[t] = self._draw_gt_tracks(
-                        res_video[t], gt_tracks[first_ind: t + 1])
+                        res_video[t], gt_tracks[first_ind : t + 1]
+                    )
 
         #  draw points
         for t in range(query_frame, T):
@@ -321,8 +318,11 @@ class Visualizer:
                     )
             if self.tracks_leave_trace > 0:
                 rgb = Image.fromarray(
-                    np.uint8(add_weighted(np.array(rgb), alpha,
-                             np.array(original), 1 - alpha, 0))
+                    np.uint8(
+                        add_weighted(
+                            np.array(rgb), alpha, np.array(original), 1 - alpha, 0
+                        )
+                    )
                 )
         rgb = np.array(rgb)
         return rgb
@@ -341,10 +341,8 @@ class Visualizer:
                 #  draw a red cross
                 if gt_tracks[0] > 0 and gt_tracks[1] > 0:
                     length = self.linewidth * 3
-                    coord_y = (int(gt_tracks[0]) + length,
-                               int(gt_tracks[1]) + length)
-                    coord_x = (int(gt_tracks[0]) - length,
-                               int(gt_tracks[1]) - length)
+                    coord_y = (int(gt_tracks[0]) + length, int(gt_tracks[1]) + length)
+                    coord_x = (int(gt_tracks[0]) - length, int(gt_tracks[1]) - length)
                     rgb = draw_line(
                         rgb,
                         coord_y,
@@ -352,10 +350,8 @@ class Visualizer:
                         color,
                         self.linewidth,
                     )
-                    coord_y = (int(gt_tracks[0]) - length,
-                               int(gt_tracks[1]) + length)
-                    coord_x = (int(gt_tracks[0]) + length,
-                               int(gt_tracks[1]) - length)
+                    coord_y = (int(gt_tracks[0]) - length, int(gt_tracks[1]) + length)
+                    coord_x = (int(gt_tracks[0]) + length, int(gt_tracks[1]) - length)
                     rgb = draw_line(
                         rgb,
                         coord_y,

@@ -3,7 +3,7 @@ import shutil
 
 import yaml
 
-from labelme.logger import logger
+from annolid.utils.annotation_compat import logger
 
 
 here = osp.dirname(osp.abspath(__file__))
@@ -59,11 +59,12 @@ def _coerce_ai_default_if_unknown(config):
     causes noisy warnings like \"Default AI model is not found\" during startup.
     We silently fall back to a valid model name if available.
     """
+    LABELME_MODELS = []
     try:
-        from labelme.ai import MODELS as LABELME_MODELS  # type: ignore
+        from annolid.utils.annotation_compat import AI_MODELS as LABELME_MODELS
     except Exception:
-        # If labelme.ai is unavailable, we cannot validate; keep config as-is.
-        return config
+        # If model registry is unavailable, we cannot validate; keep config as-is.
+        pass
 
     if not isinstance(config, dict):
         return config
@@ -73,9 +74,7 @@ def _coerce_ai_default_if_unknown(config):
     if not default_name:
         return config
 
-    available_names = {
-        getattr(m, "name", str(m)) for m in LABELME_MODELS
-    }
+    available_names = {getattr(m, "name", str(m)) for m in LABELME_MODELS}
     if default_name in available_names:
         return config
 
@@ -124,9 +123,7 @@ def get_default_config():
 def validate_config_item(key, value):
     if key == "validate_label" and value not in [None, "exact"]:
         raise ValueError(
-            "Unexpected value for config key 'validate_label': {}".format(
-                value
-            )
+            "Unexpected value for config key 'validate_label': {}".format(value)
         )
     if key == "shape_color" and value not in [None, "auto", "manual"]:
         raise ValueError(
@@ -147,22 +144,16 @@ def get_config(config_file_or_yaml=None, config_from_args=None):
         config_from_yaml = yaml.safe_load(config_file_or_yaml)
         if not isinstance(config_from_yaml, dict):
             with open(config_from_yaml) as f:
-                logger.info(
-                    "Loading config file from: {}".format(config_from_yaml)
-                )
+                logger.info("Loading config file from: {}".format(config_from_yaml))
                 config_from_yaml = yaml.safe_load(f)
         config_from_yaml = _normalize_legacy_top_level_keys(config_from_yaml)
-        update_dict(
-            config, config_from_yaml, validate_item=validate_config_item
-        )
+        update_dict(config, config_from_yaml, validate_item=validate_config_item)
 
     # 3. command line argument or specified config file
     if config_from_args is not None:
         # CLI shouldn't normally carry legacy keys, but normalize defensively.
         config_from_args = _normalize_legacy_top_level_keys(config_from_args)
-        update_dict(
-            config, config_from_args, validate_item=validate_config_item
-        )
+        update_dict(config, config_from_args, validate_item=validate_config_item)
 
     config = _coerce_ai_default_if_unknown(config)
     return config

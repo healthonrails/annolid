@@ -49,8 +49,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         for model in MODEL_REGISTRY:
             self.model_combo.addItem(model.display_name, model)
         self.model_combo.addItem(self.tr("Custom…"), "__custom__")
-        self.model_combo.currentIndexChanged.connect(
-            self._on_model_combo_changed)
+        self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
 
         self.model_path_edit = QtWidgets.QLineEdit()
         self.model_path_edit.setPlaceholderText(
@@ -73,8 +72,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         source_form = QtWidgets.QFormLayout(source_group)
 
         self.camera_edit = QtWidgets.QLineEdit()
-        self.camera_edit.setPlaceholderText(
-            self.tr("e.g. 0, rtsp://, filename"))
+        self.camera_edit.setPlaceholderText(self.tr("e.g. 0, rtsp://, filename"))
 
         self.server_edit = QtWidgets.QLineEdit()
         self.server_edit.setPlaceholderText("localhost")
@@ -90,7 +88,8 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
         self.targets_edit = QtWidgets.QLineEdit()
         self.targets_edit.setPlaceholderText(
-            self.tr("Comma separated behaviours (leave blank for all)"))
+            self.tr("Comma separated behaviours (leave blank for all)")
+        )
 
         source_form.addRow(self.tr("Camera / Stream"), self.camera_edit)
         source_form.addRow(self.tr("Remote Server"), self.server_edit)
@@ -128,18 +127,19 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         output_group = QtWidgets.QGroupBox(self.tr("Output Options"))
         output_layout = QtWidgets.QGridLayout(output_group)
         self.publish_frames_check = QtWidgets.QCheckBox(
-            self.tr("Publish frames to GUI"))
+            self.tr("Publish frames to GUI")
+        )
         self.publish_annotated_check = QtWidgets.QCheckBox(
-            self.tr("Send annotated frames"))
-        self.publish_frames_check.toggled.connect(
-            self._on_publish_frames_toggled)
-        self.log_check = QtWidgets.QCheckBox(
-            self.tr("Log detections to NDJSON"))
+            self.tr("Send annotated frames")
+        )
+        self.publish_frames_check.toggled.connect(self._on_publish_frames_toggled)
+        self.log_check = QtWidgets.QCheckBox(self.tr("Log detections to NDJSON"))
         self.log_check.toggled.connect(self._on_log_toggled)
 
         self.log_path_edit = QtWidgets.QLineEdit()
         self.log_path_edit.setPlaceholderText(
-            self.tr("Directory or *.ndjson file (optional)"))
+            self.tr("Directory or *.ndjson file (optional)")
+        )
         self.log_path_edit.setEnabled(False)
 
         browse_log_btn = QtWidgets.QPushButton(self.tr("Browse…"))
@@ -198,13 +198,14 @@ class RealtimeControlWidget(QtWidgets.QWidget):
                 self.model_path_edit.setText(str(preset.weight_file))
 
         self.camera_edit.setText(str(defaults.get("camera_index", "0")))
-        self.server_edit.setText(
-            str(defaults.get("server_address", "localhost")))
+        self.server_edit.setText(str(defaults.get("server_address", "localhost")))
         self.port_spin.setValue(int(defaults.get("server_port", 5002)))
         self.publisher_edit.setText(
-            str(defaults.get("publisher_address", "tcp://*:5555")))
+            str(defaults.get("publisher_address", "tcp://*:5555"))
+        )
         self.subscriber_edit.setText(
-            str(defaults.get("subscriber_address", "tcp://127.0.0.1:5555")))
+            str(defaults.get("subscriber_address", "tcp://127.0.0.1:5555"))
+        )
 
         targets = defaults.get("targets")
         if isinstance(targets, list):
@@ -218,18 +219,23 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.width_spin.setValue(int(defaults.get("frame_width", 640)))
         self.height_spin.setValue(int(defaults.get("frame_height", 480)))
         self.max_fps_spin.setValue(float(defaults.get("max_fps", 30.0)))
-        self.confidence_spin.setValue(float(defaults.get("confidence_threshold",
-                                                         defaults.get("confidence", 0.25))))
+        self.confidence_spin.setValue(
+            float(
+                defaults.get("confidence_threshold", defaults.get("confidence", 0.25))
+            )
+        )
 
-        self.publish_frames_check.setChecked(
-            bool(defaults.get("publish_frames", True)))
-        self.publish_annotated_check.setChecked(bool(
-            defaults.get("publish_annotated_frames",
-                         defaults.get("publish_annotated", True))))
+        self.publish_frames_check.setChecked(bool(defaults.get("publish_frames", True)))
+        self.publish_annotated_check.setChecked(
+            bool(
+                defaults.get(
+                    "publish_annotated_frames", defaults.get("publish_annotated", True)
+                )
+            )
+        )
 
         self.log_check.setChecked(bool(defaults.get("log_to_ndjson", False)))
-        log_path = defaults.get(
-            "log_path") or defaults.get("ndjson_path") or ""
+        log_path = defaults.get("log_path") or defaults.get("ndjson_path") or ""
         if log_path:
             self.log_path_edit.setText(str(log_path))
         self._on_publish_frames_toggled(self.publish_frames_check.isChecked())
@@ -251,9 +257,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             self,
             self.tr("Select YOLO Model"),
             last_path,
-            self.tr(
-                "YOLO Models (*.pt *.onnx *.engine *.mlpackage);;All Files (*.*)"
-            ),
+            self.tr("YOLO Models (*.pt *.onnx *.engine *.mlpackage);;All Files (*.*)"),
         )
         if selected:
             self._custom_model_path = Path(selected)
@@ -269,9 +273,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
     def _browse_log_path(self):
         initial = self.log_path_edit.text().strip() or str(Path.home())
         directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            self.tr("Select log directory"),
-            initial
+            self, self.tr("Select log directory"), initial
         )
         if directory:
             self.log_path_edit.setText(directory)
@@ -303,9 +305,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             config, extras = self._build_runtime_config()
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Invalid Realtime Configuration"),
-                str(exc)
+                self, self.tr("Invalid Realtime Configuration"), str(exc)
             )
             return
 
@@ -332,8 +332,9 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
         targets_text = self.targets_edit.text().strip()
         if targets_text:
-            targets_list = [token.strip()
-                            for token in targets_text.split(",") if token.strip()]
+            targets_list = [
+                token.strip() for token in targets_text.split(",") if token.strip()
+            ]
         else:
             targets_list = []
 

@@ -19,8 +19,9 @@ def test_stabilize_swaps_left_right_pair() -> None:
     prev = [(0.0, 0.0), (10.0, 0.0), (5.0, 5.0)]
     curr = [(10.0, 0.0), (0.0, 0.0), (5.0, 5.0)]
     pairs = [(0, 1)]
-    out = stabilize_symmetric_keypoints_xy(prev, list(
-        curr), pairs=pairs, cfg=LRStabilizeConfig(enabled=True))
+    out = stabilize_symmetric_keypoints_xy(
+        prev, list(curr), pairs=pairs, cfg=LRStabilizeConfig(enabled=True)
+    )
     assert out[0] == prev[0]
     assert out[1] == prev[1]
     assert out[2] == prev[2]
@@ -43,5 +44,4 @@ def test_predictor_resolves_checkpoint_dir(tmp_path: Path) -> None:
     (tmp_path / "weights").mkdir(parents=True, exist_ok=True)
     ckpt = tmp_path / "weights" / "best.pt"
     ckpt.write_bytes(b"not a real checkpoint")
-    assert DinoKPSEGPredictor._resolve_checkpoint_path(
-        tmp_path) == ckpt.resolve()
+    assert DinoKPSEGPredictor._resolve_checkpoint_path(tmp_path) == ckpt.resolve()

@@ -39,14 +39,21 @@ def load_annotation(json_path: Union[str, Path]) -> Optional[Dict[str, object]]:
     path = Path(json_path)
     try:
         return load_labelme_json(path)
-    except (AnnotationStoreError, FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+    except (
+        AnnotationStoreError,
+        FileNotFoundError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
         logger.error("Failed to load annotation %s: %s", path, exc)
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Unexpected error loading %s: %s", path, exc)
     return None
 
 
-def resample_polygon(points: Polygon, num_points: int, fill_value: float = 0.0) -> List[List[float]]:
+def resample_polygon(
+    points: Polygon, num_points: int, fill_value: float = 0.0
+) -> List[List[float]]:
     """Resample a polygon to exactly ``num_points`` vertices using linear interpolation."""
     if num_points <= 0:
         return []
@@ -162,8 +169,7 @@ def polygons_by_label(
     context: str = "",
 ) -> Dict[str, List[List[float]]]:
     """Return a mapping of label -> polygon points, defaulting to empty lists when missing."""
-    found: Dict[str, Optional[List[List[float]]]] = {
-        label: None for label in labels}
+    found: Dict[str, Optional[List[List[float]]]] = {label: None for label in labels}
     for shape in shapes:
         if shape.get("shape_type") != "polygon":
             continue
@@ -175,7 +181,9 @@ def polygons_by_label(
             found[label] = points
         elif context:
             logger.warning(
-                "Multiple '%s' polygons found for %s; using the first one", label, context
+                "Multiple '%s' polygons found for %s; using the first one",
+                label,
+                context,
             )
 
     result: Dict[str, List[List[float]]] = {}

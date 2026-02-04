@@ -110,8 +110,7 @@ def play_audio_buffer(samples, sample_rate: int, *, blocking: bool = False) -> b
     if samples is None or getattr(samples, "size", 0) == 0:
         return False
     if sample_rate is None or sample_rate <= 0:
-        logger.debug(
-            "Audio playback skipped: invalid sample rate %s", sample_rate)
+        logger.debug("Audio playback skipped: invalid sample rate %s", sample_rate)
         return False
     if not audio_playback_available():
         logger.info(

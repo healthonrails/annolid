@@ -36,33 +36,31 @@ def convert_to_davis_format(input_folder, output_folder):
 
     for video_folder in video_folders:
         # Get all mask files in the current video folder
-        mask_files = glob.glob(os.path.join(video_folder, '*_mask.png'))
+        mask_files = glob.glob(os.path.join(video_folder, "*_mask.png"))
         for mask_file in mask_files:
             mask_file_name = os.path.basename(mask_file)
-            img_file_name = mask_file_name.replace('_mask', '')
+            img_file_name = mask_file_name.replace("_mask", "")
 
             # Detect resolution from the image file
             img_path = os.path.join(video_folder, img_file_name)
             resolution = detect_resolution(img_path)
 
             # Define paths for the DAVIS structure using pathlib
-            jpeg_images_folder = Path(
-                output_folder) / 'JPEGImages' / resolution
-            annotations_folder = Path(
-                output_folder) / 'Annotations' / resolution
+            jpeg_images_folder = Path(output_folder) / "JPEGImages" / resolution
+            annotations_folder = Path(output_folder) / "Annotations" / resolution
 
             # Create directories if they don't exist
             jpeg_images_folder.mkdir(parents=True, exist_ok=True)
             annotations_folder.mkdir(parents=True, exist_ok=True)
 
             # Extract the base name without extension
-            base_name = img_file_name.removesuffix('.png')
+            base_name = img_file_name.removesuffix(".png")
 
             # Extract the video_name (folder name)
             video_name = video_folder.name
 
             # Extract the frame number (everything after the last underscore)
-            frame_number = base_name.rsplit('_', 1)[1]
+            frame_number = base_name.rsplit("_", 1)[1]
 
             # Create directories for the video sequence
             video_jpeg_folder = jpeg_images_folder / video_name
@@ -87,9 +85,9 @@ def convert_to_davis_format(input_folder, output_folder):
     print(f"Conversion to DAVIS format completed in {output_folder}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Example usage
-    input_folder = '/path/to/Freezing'
-    output_folder = '/path/to/Freezing/mouse_parts'
+    input_folder = "/path/to/Freezing"
+    output_folder = "/path/to/Freezing/mouse_parts"
 
     convert_to_davis_format(input_folder, output_folder)

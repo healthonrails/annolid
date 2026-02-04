@@ -19,7 +19,8 @@ def simplify_polygons(masks_xy):
             mask_np = mask_xy.astype(np.int32)
         else:
             raise TypeError(
-                f"Expected torch.Tensor or numpy.ndarray, got {type(mask_xy)}")
+                f"Expected torch.Tensor or numpy.ndarray, got {type(mask_xy)}"
+            )
 
         if len(mask_np) == 0:  # Skip empty masks
             continue
@@ -68,28 +69,29 @@ def polygon_features(polygon_points):
         polygon = polygon.buffer(0)
 
     features = {}
-    features['area'] = polygon.area
-    features['perimeter'] = polygon.length
+    features["area"] = polygon.area
+    features["perimeter"] = polygon.length
     centroid = polygon.centroid
-    features['centroid'] = (centroid.x, centroid.y)
+    features["centroid"] = (centroid.x, centroid.y)
     # Returns (minx, miny, maxx, maxy)
-    features['bounding_box'] = polygon.bounds
+    features["bounding_box"] = polygon.bounds
     convex_hull = polygon.convex_hull
-    features['convex_area'] = convex_hull.area
+    features["convex_area"] = convex_hull.area
 
     # Extent: ratio of polygon area to the area of its bounding box
     minx, miny, maxx, maxy = polygon.bounds
     bbox_area = (maxx - minx) * (maxy - miny)
-    features['extent'] = polygon.area / bbox_area if bbox_area > 0 else 0
+    features["extent"] = polygon.area / bbox_area if bbox_area > 0 else 0
 
     # Circularity: 4*pi*area/(perimeter^2) (1 indicates a perfect circle)
-    features['circularity'] = 4 * math.pi * polygon.area / \
-        (polygon.length ** 2) if polygon.length > 0 else 0
+    features["circularity"] = (
+        4 * math.pi * polygon.area / (polygon.length**2) if polygon.length > 0 else 0
+    )
 
     # Aspect Ratio: width divided by height of the bounding box
     width = maxx - minx
     height = maxy - miny
-    features['aspect_ratio'] = width / height if height > 0 else 0
+    features["aspect_ratio"] = width / height if height > 0 else 0
 
     return features
 
@@ -119,10 +121,8 @@ def resample_polygon(points, num_points=10):
             resampled.append(points[idx].tolist())
         else:
             # Linear interpolation between two surrounding points.
-            ratio = (d - cumulative[idx - 1]) / \
-                (cumulative[idx] - cumulative[idx - 1])
-            new_point = points[idx - 1] + ratio * \
-                (points[idx] - points[idx - 1])
+            ratio = (d - cumulative[idx - 1]) / (cumulative[idx] - cumulative[idx - 1])
+            new_point = points[idx - 1] + ratio * (points[idx] - points[idx - 1])
             resampled.append(new_point.tolist())
     return resampled
 
@@ -143,6 +143,7 @@ def are_polygons_close_or_overlap(shape1, shape2, threshold):
     Returns:
         bool: True if the shapes are close or overlapping, False otherwise.
     """
+
     def get_points(shape):
         if isinstance(shape, dict):
             return shape.get("points", [])
@@ -172,87 +173,33 @@ def are_polygons_close_or_overlap(shape1, shape2, threshold):
 # Example usage:
 if __name__ == "__main__":
     # Define a mouse polygon
-    mouse_polygon_points = np.array([[
-        691.0,
-        365.0
-    ],
+    mouse_polygon_points = np.array(
         [
-        688.0,
-        369.0
-    ],
-        [
-        692.0,
-        385.0
-    ],
-        [
-        691.0,
-        441.0
-    ],
-        [
-        696.0,
-        455.0
-    ],
-        [
-        754.0,
-        499.0
-    ],
-        [
-        753.0,
-        508.0
-    ],
-        [
-        758.0,
-        511.0
-    ],
-        [
-        768.0,
-        511.0
-    ],
-        [
-        783.0,
-        503.0
-    ],
-        [
-        804.0,
-        505.0
-    ],
-        [
-        812.0,
-        510.0
-    ],
-        [
-        818.0,
-        510.0
-    ],
-        [
-        829.0,
-        497.0
-    ],
-        [
-        828.0,
-        484.0
-    ],
-        [
-        804.0,
-        428.0
-    ],
-        [
-        781.0,
-        386.0
-    ],
-        [
-        770.0,
-        376.0
-    ],
-        [
-        755.0,
-        370.0
-    ]])
+            [691.0, 365.0],
+            [688.0, 369.0],
+            [692.0, 385.0],
+            [691.0, 441.0],
+            [696.0, 455.0],
+            [754.0, 499.0],
+            [753.0, 508.0],
+            [758.0, 511.0],
+            [768.0, 511.0],
+            [783.0, 503.0],
+            [804.0, 505.0],
+            [812.0, 510.0],
+            [818.0, 510.0],
+            [829.0, 497.0],
+            [828.0, 484.0],
+            [804.0, 428.0],
+            [781.0, 386.0],
+            [770.0, 376.0],
+            [755.0, 370.0],
+        ]
+    )
     features = polygon_features(mouse_polygon_points)
     print("Polygon Features:")
     for key, value in features.items():
         print(f"{key}: {value}")
-    resamped_points = resample_polygon(
-        mouse_polygon_points.tolist(), num_points=20)
-    print(f"Resampled Points (20 points):{ resamped_points}")
+    resamped_points = resample_polygon(mouse_polygon_points.tolist(), num_points=20)
+    print(f"Resampled Points (20 points):{resamped_points}")
     assert len(resamped_points) == 20, "Resampled points should be exactly 20."

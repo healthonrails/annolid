@@ -11,7 +11,7 @@ class TrackDialog(QtWidgets.QDialog):
         self.slider()
         self.top_k_slider()
         self.score_threshold = 0.15
-        self.algo = 'Detectron2'
+        self.algo = "Detectron2"
         self.config_file = None
         self.out_dir = None
         self.video_folder = None
@@ -25,11 +25,11 @@ class TrackDialog(QtWidgets.QDialog):
         self.buttonbox.rejected.connect(self.reject)
 
         self.groupBoxModelFiles = QtWidgets.QGroupBox(
-            "Please select a trained .pth model file")
+            "Please select a trained .pth model file"
+        )
         self.inputModelFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputModelFileButton = QtWidgets.QPushButton('Open', self)
-        self.inputModelFileButton.clicked.connect(
-            self.onInputModelFileButtonClicked)
+        self.inputModelFileButton = QtWidgets.QPushButton("Open", self)
+        self.inputModelFileButton.clicked.connect(self.onInputModelFileButtonClicked)
         model_hboxLayOut = QtWidgets.QHBoxLayout()
 
         model_hboxLayOut.addWidget(self.inputModelFileLineEdit)
@@ -37,20 +37,20 @@ class TrackDialog(QtWidgets.QDialog):
         self.groupBoxModelFiles.setLayout(model_hboxLayOut)
 
         self.groupBoxVideoFiles = QtWidgets.QGroupBox(
-            "Please choose a folder with videos")
+            "Please choose a folder with videos"
+        )
         self.inputVideoFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputVideoFileButton = QtWidgets.QPushButton('Open', self)
-        self.inputVideoFileButton.clicked.connect(
-            self.onInputVideoFolderButtonClicked)
+        self.inputVideoFileButton = QtWidgets.QPushButton("Open", self)
+        self.inputVideoFileButton.clicked.connect(self.onInputVideoFolderButtonClicked)
         video_hboxLayOut = QtWidgets.QHBoxLayout()
 
         video_hboxLayOut.addWidget(self.inputVideoFileLineEdit)
         video_hboxLayOut.addWidget(self.inputVideoFileButton)
         self.groupBoxVideoFiles.setLayout(video_hboxLayOut)
 
-        self.label1 = QtWidgets.QLabel(f"Please select class score threshold")
+        self.label1 = QtWidgets.QLabel("Please select class score threshold")
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputFileButton = QtWidgets.QPushButton('Open', self)
+        self.inputFileButton = QtWidgets.QPushButton("Open", self)
         self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
 
         hboxLayOut = QtWidgets.QHBoxLayout()
@@ -61,9 +61,10 @@ class TrackDialog(QtWidgets.QDialog):
         self.groupBoxFiles.setLayout(hboxLayOut)
 
         self.groupBoxOutDir = QtWidgets.QGroupBox(
-            "Please choose output directory (Optional)")
+            "Please choose output directory (Optional)"
+        )
         self.outFileDirEdit = QtWidgets.QLineEdit(self)
-        self.outDirButton = QtWidgets.QPushButton('Select', self)
+        self.outDirButton = QtWidgets.QPushButton("Select", self)
         self.outDirButton.clicked.connect(self.onOutDirButtonClicked)
         hboxLayOutDir = QtWidgets.QHBoxLayout()
         hboxLayOutDir.addWidget(self.outFileDirEdit)
@@ -107,33 +108,29 @@ class TrackDialog(QtWidgets.QDialog):
             parent=self,
             caption="Open trained model file",
             directory=str(Path()),
-            filter='*'
+            filter="*",
         )
         if self.trained_model is not None:
             self.inputModelFileLineEdit.setText(self.trained_model)
 
     def onInputVideoFolderButtonClicked(self):
         self.video_folder = QtWidgets.QFileDialog.getExistingDirectory(
-            parent=self,
-            caption="Open video folder",
-            directory=str(Path())
+            parent=self, caption="Open video folder", directory=str(Path())
         )
         if self.video_folder is not None:
             self.inputVideoFileLineEdit.setText(self.video_folder)
 
     def onInputFileButtonClicked(self):
         self.config_file, filter = QtWidgets.QFileDialog.getOpenFileName(
-            parent=self,
-            caption="Open config file",
-            directory=str(Path()),
-            filter='*'
+            parent=self, caption="Open config file", directory=str(Path()), filter="*"
         )
         if self.config_file is not None:
             self.inputFileLineEdit.setText(self.config_file)
 
     def onOutDirButtonClicked(self):
         self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Directory")
+            self, "Select Directory"
+        )
         if self.out_dir is not None:
             self.outFileDirEdit.setText(self.out_dir)
 
@@ -176,10 +173,10 @@ class TrackDialog(QtWidgets.QDialog):
 
     def onTopKSliderChange(self):
         self.top_k = self.top_k_slider.value()
-        self.label2.setText(
-            f"You selected top {str(self.top_k)} segmentations")
+        self.label2.setText(f"You selected top {str(self.top_k)} segmentations")
 
     def onSliderChange(self):
         self.score_threshold = self.slider.value() / 100
         self.label1.setText(
-            f"You selected {str(self.score_threshold)} as score threshold")
+            f"You selected {str(self.score_threshold)} as score threshold"
+        )

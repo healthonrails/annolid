@@ -53,7 +53,9 @@ def mask_bbox(
     return (x1, y1, x2, y2)
 
 
-def crop_mask(mask: Optional[np.ndarray], bbox_xyxy: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
+def crop_mask(
+    mask: Optional[np.ndarray], bbox_xyxy: Tuple[int, int, int, int]
+) -> Optional[np.ndarray]:
     if mask is None:
         return None
     x1, y1, x2, y2 = bbox_xyxy
@@ -77,8 +79,7 @@ def build_instance_crops(
             continue
         if mask.shape[:2] != (height, width):
             raise ValueError("Instance mask must match frame size")
-        bbox = mask_bbox(mask.astype(bool), pad_px=pad_px,
-                         image_hw=(height, width))
+        bbox = mask_bbox(mask.astype(bool), pad_px=pad_px, image_hw=(height, width))
         if bbox is None:
             continue
         x1, y1, x2, y2 = bbox
@@ -110,8 +111,7 @@ def predict_on_instance_crops(
         feats = predictor.extract_features(crop.crop_bgr)
         pred = predictor.predict_from_features(
             feats,
-            frame_shape=(int(crop.crop_bgr.shape[0]),
-                         int(crop.crop_bgr.shape[1])),
+            frame_shape=(int(crop.crop_bgr.shape[0]), int(crop.crop_bgr.shape[1])),
             mask=crop.crop_mask,
             threshold=threshold,
             return_patch_masks=return_patch_masks,
@@ -120,8 +120,7 @@ def predict_on_instance_crops(
             instance_id=int(crop.instance_id),
         )
         shifted_xy = [
-            (float(x) + float(crop.offset_xy[0]),
-             float(y) + float(crop.offset_xy[1]))
+            (float(x) + float(crop.offset_xy[0]), float(y) + float(crop.offset_xy[1]))
             for x, y in pred.keypoints_xy
         ]
         results.append(

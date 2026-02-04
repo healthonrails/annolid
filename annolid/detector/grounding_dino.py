@@ -9,50 +9,54 @@ from annolid.annotation.keypoints import save_labels
 
 class GroundingDINO:
     """
-    Open-Set object detection model using Grounding_DINO
-    Reference: @article{liu2023grounding,
-  title={Grounding dino: Marrying dino with grounded pre-training for open-set object detection},
-  author={Liu, Shilong and Zeng, Zhaoyang and Ren, Tianhe and Li, Feng and Zhang, Hao and Yang,
-    Jie and Li, Chunyuan and Yang, Jianwei and Su, Hang and Zhu, Jun and others},
-  journal={arXiv preprint arXiv:2303.05499},
-  year={2023}
-}
-    https://github.com/IDEA-Research/GroundingDINO
-    Modified from:
-    https://github.com/CVHub520/X-AnyLabeling/blob/main/anylabeling/services/auto_labeling/grounding_dino.py
-    Onnx Model: 
-    https://github.com/CVHub520/X-AnyLabeling/releases/download/v1.0.0/groundingdino_swinb_cogcoor_quant.onnx
+        Open-Set object detection model using Grounding_DINO
+        Reference: @article{liu2023grounding,
+      title={Grounding dino: Marrying dino with grounded pre-training for open-set object detection},
+      author={Liu, Shilong and Zeng, Zhaoyang and Ren, Tianhe and Li, Feng and Zhang, Hao and Yang,
+        Jie and Li, Chunyuan and Yang, Jianwei and Su, Hang and Zhu, Jun and others},
+      journal={arXiv preprint arXiv:2303.05499},
+      year={2023}
+    }
+        https://github.com/IDEA-Research/GroundingDINO
+        Modified from:
+        https://github.com/CVHub520/X-AnyLabeling/blob/main/anylabeling/services/auto_labeling/grounding_dino.py
+        Onnx Model:
+        https://github.com/CVHub520/X-AnyLabeling/releases/download/v1.0.0/groundingdino_swinb_cogcoor_quant.onnx
     """
 
-    def __init__(self,
-                 model_abs_path=None,
-                 model_type="groundingdino_swinb_cogcoor") -> None:
+    def __init__(
+        self, model_abs_path=None, model_type="groundingdino_swinb_cogcoor"
+    ) -> None:
         """
         Initialize GroundingDINO model
         Args:
             model_abs_path (str): Absolute path to the model
             model_type (str): Type of the model
         """
-        self.remote_onnx_url = "https://github.com/healthonrails/annolid/releases/download/v1.1.3/"
+        self.remote_onnx_url = (
+            "https://github.com/healthonrails/annolid/releases/download/v1.1.3/"
+        )
         self.onnx_md5 = "b301409dadcd46c23271af8cf1ff364e"
 
         if model_abs_path is None:
             current_directory = os.path.dirname(os.path.abspath(__file__))
-            onnx_model_name = model_type + '_quant.onnx'
-            model_abs_path = os.path.join(
-                current_directory, onnx_model_name)
+            onnx_model_name = model_type + "_quant.onnx"
+            model_abs_path = os.path.join(current_directory, onnx_model_name)
             if not os.path.exists(model_abs_path):
                 import gdown
-                gdown.cached_download(self.remote_onnx_url + onnx_model_name,
-                                      model_abs_path,
-                                      md5=self.onnx_md5
-                                      )
+
+                gdown.cached_download(
+                    self.remote_onnx_url + onnx_model_name,
+                    model_abs_path,
+                    md5=self.onnx_md5,
+                )
 
         self.net = ONNXBaseModel(model_abs_path)
         self.model_configs = self._get_configs(model_type)
-        self.net.max_text_len = self.model_configs['max_text_len']
+        self.net.max_text_len = self.model_configs["max_text_len"]
         self.net.tokenizer = self._get_tokenizer(
-            self.model_configs['text_encoder_type'])
+            self.model_configs["text_encoder_type"]
+        )
         self.box_threshold = 0.3
         self.text_threshold = 0.2
         self.target_size = (1200, 800)
@@ -68,8 +72,7 @@ class GroundingDINO:
             inputs: Preprocessed inputs
             captions: Processed captions
         """
-        image = cv2.resize(image, self.target_size,
-                           interpolation=cv2.INTER_LINEAR)
+        image = cv2.resize(image, self.target_size, interpolation=cv2.INTER_LINEAR)
         image = image.astype(np.float32) / 255.0
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
@@ -81,23 +84,29 @@ class GroundingDINO:
         tokenized_raw_results = self.net.tokenizer.encode(captions)
         tokenized = {
             "input_ids": np.array([tokenized_raw_results.ids], dtype=np.int64),
-            "token_type_ids": np.array([tokenized_raw_results.type_ids], dtype=np.int64),
+            "token_type_ids": np.array(
+                [tokenized_raw_results.type_ids], dtype=np.int64
+            ),
             "attention_mask": np.array([tokenized_raw_results.attention_mask]),
         }
         special_tokens = [101, 102, 1012, 1029]
-        text_self_attention_masks, position_ids, _ = self._generate_masks_with_special_tokens_and_transfer_map(
-            tokenized, special_tokens
+        text_self_attention_masks, position_ids, _ = (
+            self._generate_masks_with_special_tokens_and_transfer_map(
+                tokenized, special_tokens
+            )
         )
         if text_self_attention_masks.shape[1] > self.net.max_text_len:
-            text_self_attention_masks = text_self_attention_masks[:,
-                                                                  :self.net.max_text_len, :self.net.max_text_len]
-            position_ids = position_ids[:, :self.net.max_text_len]
-            tokenized["input_ids"] = tokenized["input_ids"][:,
-                                                            :self.net.max_text_len]
-            tokenized["attention_mask"] = tokenized["attention_mask"][:,
-                                                                      :self.net.max_text_len]
-            tokenized["token_type_ids"] = tokenized["token_type_ids"][:,
-                                                                      :self.net.max_text_len]
+            text_self_attention_masks = text_self_attention_masks[
+                :, : self.net.max_text_len, : self.net.max_text_len
+            ]
+            position_ids = position_ids[:, : self.net.max_text_len]
+            tokenized["input_ids"] = tokenized["input_ids"][:, : self.net.max_text_len]
+            tokenized["attention_mask"] = tokenized["attention_mask"][
+                :, : self.net.max_text_len
+            ]
+            tokenized["token_type_ids"] = tokenized["token_type_ids"][
+                :, : self.net.max_text_len
+            ]
 
         inputs = {
             "img": image,
@@ -137,7 +146,9 @@ class GroundingDINO:
             tokenized_raw_results = tokenlizer.encode(caption)
             tokenized = {
                 "input_ids": np.array(tokenized_raw_results.ids, dtype=np.int64),
-                "token_type_ids": np.array(tokenized_raw_results.type_ids, dtype=np.int64),
+                "token_type_ids": np.array(
+                    tokenized_raw_results.type_ids, dtype=np.int64
+                ),
                 "attention_mask": np.array(tokenized_raw_results.attention_mask),
             }
 
@@ -145,14 +156,14 @@ class GroundingDINO:
             for logit in logits_filt:
                 posmap = logit > self.text_threshold
                 pred_phrase = self._get_phrases_from_posmap(
-                    posmap, tokenized, tokenlizer)
+                    posmap, tokenized, tokenlizer
+                )
                 if with_logits:
                     pred_phrases.append([pred_phrase, logit.max()])
                 else:
                     pred_phrases.append([pred_phrase, 1.0])
         else:
-            raise NotImplementedError(
-                "Using token_spans is not implemented yet")
+            raise NotImplementedError("Using token_spans is not implemented yet")
 
         return boxes_filt, pred_phrases
 
@@ -171,8 +182,7 @@ class GroundingDINO:
             return []
 
         blob, inputs, caption = self.preprocess(image, text_prompt)
-        outputs = self.net.get_onnx_inference(
-            blob, input_data=inputs, extract=False)
+        outputs = self.net.get_onnx_inference(blob, input_data=inputs, extract=False)
         boxes_filt, pred_phrases = self.postprocess(outputs, caption)
 
         shapes = []
@@ -203,8 +213,7 @@ class GroundingDINO:
             return []
 
         blob, inputs, caption = self.preprocess(image, text_prompt)
-        outputs = self.net.get_onnx_inference(
-            blob, input_data=inputs, extract=False)
+        outputs = self.net.get_onnx_inference(blob, input_data=inputs, extract=False)
         boxes_filt, pred_phrases = self.postprocess(outputs, caption)
 
         bboxes = []
@@ -386,6 +395,7 @@ class GroundingDINO:
             tokenizer: Instance of the tokenizer
         """
         from tokenizers import Tokenizer
+
         current_dir = os.path.dirname(__file__)
         cfg_name = text_encoder_type.replace("-", "_") + "_tokenizer.json"
         cfg_file = os.path.join(current_dir, "configs", cfg_name)
@@ -393,11 +403,13 @@ class GroundingDINO:
         return tokenizer
 
     @staticmethod
-    def _get_phrases_from_posmap(posmap: np.ndarray,
-                                 tokenized: Dict,
-                                 tokenizer,
-                                 left_idx: int = 0,
-                                 right_idx: int = 255):
+    def _get_phrases_from_posmap(
+        posmap: np.ndarray,
+        tokenized: Dict,
+        tokenizer,
+        left_idx: int = 0,
+        right_idx: int = 255,
+    ):
         """
         Get phrases from position map.
 
@@ -413,7 +425,7 @@ class GroundingDINO:
         """
         assert isinstance(posmap, np.ndarray), "posmap must be numpy.ndarray"
         if posmap.ndim == 1:
-            posmap[0: left_idx + 1] = False
+            posmap[0 : left_idx + 1] = False
             posmap[right_idx:] = False
             non_zero_idx = np.where(posmap)[0]
             token_ids = [tokenized["input_ids"][i] for i in non_zero_idx]
@@ -422,7 +434,9 @@ class GroundingDINO:
             raise NotImplementedError("posmap must be 1-dim")
 
     @staticmethod
-    def _generate_masks_with_special_tokens_and_transfer_map(tokenized, special_tokens_list):
+    def _generate_masks_with_special_tokens_and_transfer_map(
+        tokenized, special_tokens_list
+    ):
         """
         Generate masks with special tokens and transfer map.
 
@@ -447,9 +461,7 @@ class GroundingDINO:
         idxs = np.argwhere(special_tokens_mask)
 
         # generate attention mask and positional ids
-        attention_mask = np.eye(num_token, dtype=bool).reshape(
-            1, num_token, num_token
-        )
+        attention_mask = np.eye(num_token, dtype=bool).reshape(1, num_token, num_token)
         attention_mask = np.tile(attention_mask, (bs, 1, 1))
         position_ids = np.zeros((bs, num_token), dtype=int)
         cate_to_token_mask_list = [[] for _ in range(bs)]
@@ -461,13 +473,13 @@ class GroundingDINO:
                 position_ids[row, col] = 0
             else:
                 attention_mask[
-                    row, previous_col + 1: col + 1, previous_col + 1: col + 1
+                    row, previous_col + 1 : col + 1, previous_col + 1 : col + 1
                 ] = True
-                position_ids[row, previous_col + 1: col + 1] = np.arange(
+                position_ids[row, previous_col + 1 : col + 1] = np.arange(
                     0, col - previous_col
                 )
                 c2t_maski = np.zeros((num_token), dtype=bool)
-                c2t_maski[previous_col + 1: col] = True
+                c2t_maski[previous_col + 1 : col] = True
                 cate_to_token_mask_list[row].append(c2t_maski)
             previous_col = col
 
@@ -479,7 +491,7 @@ class GroundingDINO:
         return attention_mask, position_ids, cate_to_token_mask_list
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     model_abs_path = "groundingdino_swinb_cogcoor_quant.onnx"
     gd = GroundingDINO(model_abs_path)
     image_path = "bird1_000000002.png"
@@ -487,7 +499,12 @@ if __name__ == '__main__':
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     height, width = image.shape[:2]
     shapes = gd.predict_shapes(image, text_prompt="bird")
-    filename = image_path.replace('.png', '.json')
+    filename = image_path.replace(".png", ".json")
 
-    save_labels(filename=filename, imagePath=image_path, label_list=shapes,
-                height=height, width=width)
+    save_labels(
+        filename=filename,
+        imagePath=image_path,
+        label_list=shapes,
+        height=height,
+        width=width,
+    )

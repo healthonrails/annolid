@@ -1,4 +1,4 @@
-__all__ = ['build_detector']
+__all__ = ["build_detector"]
 
 
 def build_detector(*args, **kwargs):

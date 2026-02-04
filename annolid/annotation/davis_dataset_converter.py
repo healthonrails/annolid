@@ -21,32 +21,28 @@ def detect_resolution(image_path):
     return f"{height}p"
 
 
-def create_davis_structure(output_folder,
-                           dataset_name,
-                           dataset_year):
+def create_davis_structure(output_folder, dataset_name, dataset_year):
     """
     Creates the folder structure for the DAVIS dataset.
 
     Args:
-        output_folder (str): Path to the output folder 
+        output_folder (str): Path to the output folder
         where the DAVIS structure will be created.
         dataset_name (str): Name of the dataset.
         dataset_year (str): Year of the dataset.
     """
     dataset_folder = Path(output_folder) / dataset_name / dataset_year
-    trainval_folder = dataset_folder / 'trainval'
-    test_dev_folder = dataset_folder / 'test-dev'
+    trainval_folder = dataset_folder / "trainval"
+    test_dev_folder = dataset_folder / "test-dev"
 
-    for subfolder in ['Annotations', 'JPEGImages']:
+    for subfolder in ["Annotations", "JPEGImages"]:
         for main_folder in [trainval_folder, test_dev_folder]:
             (main_folder / subfolder).mkdir(parents=True, exist_ok=True)
 
     return trainval_folder, test_dev_folder
 
 
-def copy_files(mask_file, img_file_name,
-               video_folder, resolution,
-               output_subfolder):
+def copy_files(mask_file, img_file_name, video_folder, resolution, output_subfolder):
     """
     Copies image and mask files to the appropriate location in the DAVIS structure.
 
@@ -58,16 +54,16 @@ def copy_files(mask_file, img_file_name,
         output_subfolder (str): Path to the output subfolder (trainval or test-dev).
     """
     img_path = os.path.join(video_folder, img_file_name)
-    jpeg_images_folder = output_subfolder / 'JPEGImages' / resolution
-    annotations_folder = output_subfolder / 'Annotations' / resolution
+    jpeg_images_folder = output_subfolder / "JPEGImages" / resolution
+    annotations_folder = output_subfolder / "Annotations" / resolution
 
     # Create directories if they don't exist
     jpeg_images_folder.mkdir(parents=True, exist_ok=True)
     annotations_folder.mkdir(parents=True, exist_ok=True)
 
-    base_name = img_file_name.removesuffix('.png')
+    base_name = img_file_name.removesuffix(".png")
     video_name = Path(video_folder).name
-    frame_number = base_name.rsplit('_', 1)[1]
+    frame_number = base_name.rsplit("_", 1)[1]
 
     video_jpeg_folder = jpeg_images_folder / video_name
     video_annotation_folder = annotations_folder / video_name
@@ -88,22 +84,20 @@ def copy_files(mask_file, img_file_name,
 
 def process_video_folder(video_folder, output_subfolder):
     """
-    Processes a single video folder, copying its files 
+    Processes a single video folder, copying its files
     to the appropriate location in the DAVIS structure.
 
     Args:
         video_folder (str): Path to the video folder to process.
         output_subfolder (str): Path to the output subfolder (trainval or test-dev).
     """
-    mask_files = glob.glob(os.path.join(video_folder, '*_mask.png'))
+    mask_files = glob.glob(os.path.join(video_folder, "*_mask.png"))
     for mask_file in mask_files:
         mask_file_name = os.path.basename(mask_file)
-        img_file_name = mask_file_name.replace('_mask', '')
+        img_file_name = mask_file_name.replace("_mask", "")
 
-        resolution = detect_resolution(
-            os.path.join(video_folder, img_file_name))
-        copy_files(mask_file, img_file_name, video_folder,
-                   resolution, output_subfolder)
+        resolution = detect_resolution(os.path.join(video_folder, img_file_name))
+        copy_files(mask_file, img_file_name, video_folder, resolution, output_subfolder)
 
 
 def split_video_folders(video_folders, trainval_ratio=0.8):
@@ -124,10 +118,13 @@ def split_video_folders(video_folders, trainval_ratio=0.8):
     return trainval_folders, test_dev_folders
 
 
-def convert_to_davis_format(input_folder, output_folder,
-                            dataset_name='DAVIS',
-                            dataset_year='2017',
-                            trainval_ratio=0.8):
+def convert_to_davis_format(
+    input_folder,
+    output_folder,
+    dataset_name="DAVIS",
+    dataset_year="2017",
+    trainval_ratio=0.8,
+):
     """
     Converts video frames and their corresponding masks from a custom format to the DAVIS format.
 
@@ -139,11 +136,13 @@ def convert_to_davis_format(input_folder, output_folder,
         trainval_ratio (float): Ratio of the data to be used for training/validation.
     """
     trainval_folder, test_dev_folder = create_davis_structure(
-        output_folder, dataset_name, dataset_year)
+        output_folder, dataset_name, dataset_year
+    )
     video_folders = [f for f in Path(input_folder).iterdir() if f.is_dir()]
 
     trainval_folders, test_dev_folders = split_video_folders(
-        video_folders, trainval_ratio)
+        video_folders, trainval_ratio
+    )
 
     for video_folder in trainval_folders:
         process_video_folder(video_folder, trainval_folder)
@@ -154,9 +153,9 @@ def convert_to_davis_format(input_folder, output_folder,
     print(f"Conversion to {dataset_name} format completed in {output_folder}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Example usage
-    input_folder = '.'
-    output_folder = 'animals_dataset'
+    input_folder = "."
+    output_folder = "animals_dataset"
 
     convert_to_davis_format(input_folder, output_folder)

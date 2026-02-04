@@ -17,7 +17,7 @@ INSTRUCTIONS = [
     "  'r' - Reset all unsaved zones",
     "  's' - Save zones to config file",
     "  'q' - Quit without saving",
-    "Left-Click: Add point to current zone"
+    "Left-Click: Add point to current zone",
 ]
 
 
@@ -53,13 +53,13 @@ class ZoneEditor:
         """Loads existing zones from the YAML file to allow for editing/adding."""
         if self.config_path.exists():
             print(f"Loading existing configuration from {self.config_path}...")
-            with open(self.config_path, 'r') as f:
+            with open(self.config_path, "r") as f:
                 self.full_config = yaml.safe_load(f) or {}
-                self.zones = self.full_config.get('zones', [])
+                self.zones = self.full_config.get("zones", [])
             print(f"Loaded {len(self.zones)} existing zones.")
         else:
             print("No existing config file found. Starting fresh.")
-            self.full_config = {'zones': [], 'events': []}
+            self.full_config = {"zones": [], "events": []}
 
     def _save_zones(self):
         """Saves the current zones to the YAML file, preserving other keys."""
@@ -68,11 +68,10 @@ class ZoneEditor:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Update the 'zones' key in our loaded config
-        self.full_config['zones'] = self.zones
+        self.full_config["zones"] = self.zones
 
-        with open(self.config_path, 'w') as f:
-            yaml.dump(self.full_config, f, sort_keys=False,
-                      default_flow_style=False)
+        with open(self.config_path, "w") as f:
+            yaml.dump(self.full_config, f, sort_keys=False, default_flow_style=False)
         print("Save complete!")
         time.sleep(1)  # Give user time to see the message
 
@@ -113,13 +112,26 @@ class ZoneEditor:
             # Draw existing saved zones
             for zone in self.zones:
                 pixel_points = np.array(
-                    [self._normalized_to_pixel(p) for p in zone['polygon']], np.int32)
-                cv2.polylines(display_frame, [pixel_points], isClosed=True, color=(
-                    0, 255, 0), thickness=2)
+                    [self._normalized_to_pixel(p) for p in zone["polygon"]], np.int32
+                )
+                cv2.polylines(
+                    display_frame,
+                    [pixel_points],
+                    isClosed=True,
+                    color=(0, 255, 0),
+                    thickness=2,
+                )
                 # Put zone name
                 text_pos = pixel_points[0]
-                cv2.putText(display_frame, zone['name'], (text_pos[0], text_pos[1] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(
+                    display_frame,
+                    zone["name"],
+                    (text_pos[0], text_pos[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
 
             # Draw the current polygon being created
             if self.is_drawing and self.current_polygon_pixels:
@@ -129,22 +141,34 @@ class ZoneEditor:
                 # Draw connecting lines
                 if len(self.current_polygon_pixels) > 1:
                     pts = np.array(self.current_polygon_pixels, np.int32)
-                    cv2.polylines(display_frame, [pts], isClosed=False, color=(
-                        0, 255, 255), thickness=2)
+                    cv2.polylines(
+                        display_frame,
+                        [pts],
+                        isClosed=False,
+                        color=(0, 255, 255),
+                        thickness=2,
+                    )
 
             # Display instructions
             for i, line in enumerate(INSTRUCTIONS):
-                cv2.putText(display_frame, line, (10, 30 + i * 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(
+                    display_frame,
+                    line,
+                    (10, 30 + i * 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                )
 
             cv2.imshow(WINDOW_NAME, display_frame)
             key = cv2.waitKey(1) & 0xFF
 
             # --- Handle Keyboard Input ---
-            if key == ord('q'):
+            if key == ord("q"):
                 break
 
-            elif key == ord('n'):  # Start new zone
+            elif key == ord("n"):  # Start new zone
                 if not self.is_drawing:
                     self.is_drawing = True
                     self.current_polygon_pixels = []
@@ -152,18 +176,20 @@ class ZoneEditor:
                 else:
                     print("Already drawing a zone. Press 'd' to finish it first.")
 
-            elif key == ord('d'):  # Done drawing zone
+            elif key == ord("d"):  # Done drawing zone
                 if self.is_drawing and len(self.current_polygon_pixels) > 2:
                     self.is_drawing = False
                     print("\n--- Zone shape finished. ---")
                     # Prompt for name in the console
-                    zone_name = input(
-                        ">>> Enter a name for this zone: ").strip()
+                    zone_name = input(">>> Enter a name for this zone: ").strip()
                     if zone_name:
-                        normalized_points = [self._pixel_to_normalized(
-                            p) for p in self.current_polygon_pixels]
+                        normalized_points = [
+                            self._pixel_to_normalized(p)
+                            for p in self.current_polygon_pixels
+                        ]
                         self.zones.append(
-                            {'name': zone_name, 'polygon': normalized_points})
+                            {"name": zone_name, "polygon": normalized_points}
+                        )
                         self.current_polygon_pixels = []
                         print(f"Zone '{zone_name}' added.")
                     else:
@@ -171,19 +197,20 @@ class ZoneEditor:
                 elif self.is_drawing:
                     print("A zone must have at least 3 points.")
 
-            elif key == ord('c'):  # Clear last point
+            elif key == ord("c"):  # Clear last point
                 if self.is_drawing and self.current_polygon_pixels:
                     self.current_polygon_pixels.pop()
                     print("Removed last point.")
 
-            elif key == ord('r'):  # Reset
+            elif key == ord("r"):  # Reset
                 self.is_drawing = False
                 self.current_polygon_pixels = []
                 self.zones = self.full_config.get(
-                    'zones', [])  # Revert to last saved state
+                    "zones", []
+                )  # Revert to last saved state
                 print("Reset all unsaved changes.")
 
-            elif key == ord('s'):  # Save
+            elif key == ord("s"):  # Save
                 self._save_zones()
 
         # Cleanup
@@ -193,18 +220,24 @@ class ZoneEditor:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Interactive Zone Editor for Annolid")
-    parser.add_argument('--camera-index', type=int, default=0,
-                        help="Index of the camera to use for the feed.")
-    parser.add_argument('--config', type=str, default=str(CONFIG_FILE_PATH),
-                        help="Path to the events configuration YAML file.")
+    parser = argparse.ArgumentParser(description="Interactive Zone Editor for Annolid")
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=0,
+        help="Index of the camera to use for the feed.",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=str(CONFIG_FILE_PATH),
+        help="Path to the events configuration YAML file.",
+    )
     args = parser.parse_args()
 
-    editor = ZoneEditor(camera_index=args.camera_index,
-                        config_path=Path(args.config))
+    editor = ZoneEditor(camera_index=args.camera_index, config_path=Path(args.config))
     editor.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

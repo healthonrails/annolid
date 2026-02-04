@@ -10,4 +10,3 @@ YOLACT:
     name: "yolact_plus_resnet50_a4"
     dataset: "coco_a4_dataset"
     max_size: 512
-    

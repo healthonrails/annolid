@@ -96,7 +96,7 @@ class CocoEvaluator(object):
             else:
                 labels = prediction["labels"]
 
-        
+
             try:
                 coco_results.extend(
                     [

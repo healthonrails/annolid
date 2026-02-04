@@ -2,7 +2,6 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
-import os
 import warnings
 
 import gdown
@@ -11,8 +10,12 @@ from annolid.utils.audio_playback import play_audio_buffer
 from annolid.utils.logger import logger
 
 # --- Configuration ---
-BASE_V1_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-ZH_V1_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+BASE_V1_URL = (
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+)
+ZH_V1_URL = (
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+)
 ZH_CONFIG_URL = "https://huggingface.co/hexgrad/Kokoro-82M-v1.1-zh/raw/main/config.json"
 
 BASE_V1_MODEL = "kokoro-v1.0.onnx"
@@ -236,8 +239,7 @@ def _ensure_file(filepath: Path, url: Optional[str], label: str) -> None:
             "%s path '%s' requested but no URL provided; skipping.", label, filepath
         )
         return
-    logger.info("%s file '%s' not found in cache. Downloading...",
-                label, filepath.name)
+    logger.info("%s file '%s' not found in cache. Downloading...", label, filepath.name)
     download_file(url, filepath)
     logger.info("%s file downloaded to '%s'", label, filepath)
 
@@ -274,9 +276,7 @@ def ensure_files_exist(
 
     model_filepath = cache_dir / pack["model"]
     voices_filepath = cache_dir / pack["voices"]
-    config_path: Optional[Path] = (
-        cache_dir / pack["config"] if pack["config"] else None
-    )
+    config_path: Optional[Path] = cache_dir / pack["config"] if pack["config"] else None
 
     _ensure_file(model_filepath, pack.get("model_url"), "Model")
     _ensure_file(voices_filepath, pack.get("voices_url"), "Voices")
@@ -365,9 +365,7 @@ def _maybe_g2p(text: str, lang: str):
                 phonemes, _ = converter(text)
                 return phonemes, True
             except Exception as exc:
-                logger.warning(
-                    "Chinese G2P failed (%s); using raw text instead.", exc
-                )
+                logger.warning("Chinese G2P failed (%s); using raw text instead.", exc)
     if lang_lower.startswith("ja") or lang_lower == "j":
         converter = _get_cached_misaki("ja")
         if converter:
@@ -375,9 +373,7 @@ def _maybe_g2p(text: str, lang: str):
                 phonemes, _ = converter(text)
                 return phonemes, True
             except Exception as exc:
-                logger.warning(
-                    "Japanese G2P failed (%s); using raw text instead.", exc
-                )
+                logger.warning("Japanese G2P failed (%s); using raw text instead.", exc)
     return text, False
 
 
@@ -484,7 +480,8 @@ def _resolve_voice_from_list(requested: str, voices: List[str]) -> str:
         fallback = DEFAULT_VOICE
     if requested and requested != fallback:
         logger.warning(
-            "Voice '%s' not found. Falling back to '%s'.", requested, fallback)
+            "Voice '%s' not found. Falling back to '%s'.", requested, fallback
+        )
     return fallback
 
 
@@ -513,9 +510,7 @@ def text_to_speech(
     """
     try:
         if _kokoro_class() is None:
-            logger.warning(
-                "Kokoro is not available. Install kokoro-onnx to use TTS."
-            )
+            logger.warning("Kokoro is not available. Install kokoro-onnx to use TTS.")
             return None
 
         import re
@@ -556,8 +551,7 @@ def text_to_speech(
                 raise
 
         available_voices = list(
-            _cached_kokoro_voice_list(
-                str(model_path), str(voices_path), config_str)
+            _cached_kokoro_voice_list(str(model_path), str(voices_path), config_str)
         )
         resolved_voice = _resolve_voice_from_list(voice, available_voices)
         g2p_text, is_phonemes = _maybe_g2p(cleaned, normalized_lang)
@@ -609,7 +603,8 @@ if __name__ == "__main__":
 
     # Set output_path to None to not save to file
     audio_data = text_to_speech(
-        input_text, voice="af_sarah", speed=1.1, output_path=None)
+        input_text, voice="af_sarah", speed=1.1, output_path=None
+    )
 
     if audio_data:
         samples, sample_rate = audio_data

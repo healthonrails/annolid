@@ -1,6 +1,12 @@
-from qtpy.QtWidgets import (QVBoxLayout, QPushButton,
-                            QFileDialog, QLineEdit, QLabel, QDialog,
-                            QMessageBox)
+from qtpy.QtWidgets import (
+    QVBoxLayout,
+    QPushButton,
+    QFileDialog,
+    QLineEdit,
+    QLabel,
+    QDialog,
+    QMessageBox,
+)
 
 from annolid.postprocessing.skeletonization import main as extract_shape_keypoints
 
@@ -23,7 +29,8 @@ class ExtractShapeKeyPointsDialog(QDialog):
 
         self.instanceNamesEdit = QLineEdit()
         self.instanceNamesEdit.setPlaceholderText(
-            "Enter instance names separated by space")
+            "Enter instance names separated by space"
+        )
         layout.addWidget(self.instanceNamesEdit)
 
         self.runBtn = QPushButton("Run")

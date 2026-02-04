@@ -12,7 +12,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.tensorboard import ensure_tensorboard, stop_tensorboard
-from annolid.utils.logger import logger
 from annolid.utils.runs import shared_runs_root
 
 
@@ -100,7 +99,9 @@ def _read_last_csv_row(path: Path) -> Optional[Dict[str, str]]:
         return None
 
 
-def _read_csv_rows(path: Path, *, max_rows: int = 250) -> Tuple[Tuple[str, ...], List[Dict[str, str]]]:
+def _read_csv_rows(
+    path: Path, *, max_rows: int = 250
+) -> Tuple[Tuple[str, ...], List[Dict[str, str]]]:
     try:
         with path.open("r", encoding="utf-8", newline="") as fh:
             reader = csv.DictReader(fh)
@@ -108,10 +109,15 @@ def _read_csv_rows(path: Path, *, max_rows: int = 250) -> Tuple[Tuple[str, ...],
             rows: List[Dict[str, str]] = []
             for row in reader:
                 if row:
-                    rows.append({str(k): ("" if v is None else str(v))
-                                for k, v in row.items() if k is not None})
+                    rows.append(
+                        {
+                            str(k): ("" if v is None else str(v))
+                            for k, v in row.items()
+                            if k is not None
+                        }
+                    )
             if max_rows and len(rows) > int(max_rows):
-                rows = rows[-int(max_rows):]
+                rows = rows[-int(max_rows) :]
             return columns, rows
     except Exception:
         return (), []
@@ -142,7 +148,9 @@ def _read_total_epochs(args_yaml: Path) -> Optional[int]:
         pass
 
     try:
-        for line in args_yaml.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in args_yaml.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
@@ -252,7 +260,9 @@ def _format_timeline_line(epoch: int, row: Dict[str, str]) -> str:
 class TrainingDashboardWidget(QtWidgets.QWidget):
     """Training dashboard with TensorBoard embed + lightweight progress monitoring."""
 
-    def __init__(self, *, settings: Optional[QtCore.QSettings] = None, parent=None) -> None:
+    def __init__(
+        self, *, settings: Optional[QtCore.QSettings] = None, parent=None
+    ) -> None:
         super().__init__(parent=parent)
         self._settings = settings
         self._tb_process: Optional[subprocess.Popen] = None
@@ -294,8 +304,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
 
         bar = QtWidgets.QHBoxLayout()
         self.runs_root_edit = QtWidgets.QLineEdit()
-        self.runs_root_edit.setPlaceholderText(
-            "Runs root (shared across trainings)")
+        self.runs_root_edit.setPlaceholderText("Runs root (shared across trainings)")
         self.runs_root_browse = QtWidgets.QPushButton("Browse…")
         self.runs_root_browse.clicked.connect(self._browse_runs_root)
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
@@ -341,16 +350,21 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self.active_tab)
         self.active_table = QtWidgets.QTableWidget(0, 8, self)
         self.active_table.setHorizontalHeaderLabels(
-            ["Task", "Model", "Status", "Run Dir", "Epoch",
-                "Train Loss", "Val Loss", "Updated"]
+            [
+                "Task",
+                "Model",
+                "Status",
+                "Run Dir",
+                "Epoch",
+                "Train Loss",
+                "Val Loss",
+                "Updated",
+            ]
         )
-        self.active_table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectRows)
-        self.active_table.setEditTriggers(
-            QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.active_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.active_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.active_table.horizontalHeader().setStretchLastSection(True)
-        self.active_table.cellDoubleClicked.connect(
-            self._open_selected_run_dir)
+        self.active_table.cellDoubleClicked.connect(self._open_selected_run_dir)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, self.active_tab)
         splitter.addWidget(self.active_table)
@@ -361,7 +375,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
 
         header_row = QtWidgets.QHBoxLayout()
         self.selected_run_label = QtWidgets.QLabel(
-            "Select a run to view details.", details)
+            "Select a run to view details.", details
+        )
         self.selected_run_label.setStyleSheet("color: #666;")
         header_row.addWidget(self.selected_run_label, 1)
         self.open_log_btn = QtWidgets.QPushButton("Open Log", details)
@@ -381,8 +396,9 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         self.follow_log_checkbox = QtWidgets.QCheckBox("Follow log", details)
         self.follow_log_checkbox.setChecked(True)
         self.follow_log_checkbox.stateChanged.connect(
-            lambda _=None: setattr(self, "_follow_log", bool(
-                self.follow_log_checkbox.isChecked()))
+            lambda _=None: setattr(
+                self, "_follow_log", bool(self.follow_log_checkbox.isChecked())
+            )
         )
         progress_row.addWidget(self.follow_log_checkbox)
         details_layout.addLayout(progress_row)
@@ -394,10 +410,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         self.details_tabs.addTab(self.epochs_tab, "Epochs")
         epochs_layout = QtWidgets.QVBoxLayout(self.epochs_tab)
         self.epoch_table = QtWidgets.QTableWidget(0, 0, self.epochs_tab)
-        self.epoch_table.setEditTriggers(
-            QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.epoch_table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectRows)
+        self.epoch_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.epoch_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.epoch_table.horizontalHeader().setStretchLastSection(True)
         epochs_layout.addWidget(self.epoch_table, 1)
 
@@ -432,7 +446,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
 
         try:
             self.active_table.selectionModel().selectionChanged.connect(
-                self._on_active_selection_changed)
+                self._on_active_selection_changed
+            )
         except Exception:
             pass
 
@@ -480,8 +495,9 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
     def _save_settings(self) -> None:
         if self._settings is None:
             return
-        self._settings.setValue("training/runs_root",
-                                self.runs_root_edit.text().strip())
+        self._settings.setValue(
+            "training/runs_root", self.runs_root_edit.text().strip()
+        )
 
     def _sync_env_runs_root(self) -> None:
         root = self.runs_root_edit.text().strip()
@@ -494,8 +510,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         self._refresh_runs_list()
 
     def _browse_runs_root(self) -> None:
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select runs root")
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select runs root")
         if not folder:
             return
         self.runs_root_edit.setText(folder)
@@ -505,7 +520,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         root = self.runs_root()
         if not root.exists():
             QtWidgets.QMessageBox.information(
-                self, "Not found", f"Runs root does not exist:\n{root}")
+                self, "Not found", f"Runs root does not exist:\n{root}"
+            )
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(root)))
 
@@ -530,8 +546,9 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         try:
             process, url = ensure_tensorboard(
                 log_dir=log_dir,
-                preferred_port=QtCore.QUrl(self._tb_url).port() if QtCore.QUrl(
-                    self._tb_url).port() != -1 else 6006,
+                preferred_port=QtCore.QUrl(self._tb_url).port()
+                if QtCore.QUrl(self._tb_url).port() != -1
+                else 6006,
                 host="127.0.0.1",
             )
         except Exception as exc:
@@ -539,8 +556,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
             return
         self._tb_process = process
         self._tb_url = str(url)
-        self.tb_status.setText(
-            f"TensorBoard: {self._tb_url} (logdir={log_dir})")
+        self.tb_status.setText(f"TensorBoard: {self._tb_url} (logdir={log_dir})")
         if getattr(self, "tb_view", None) is not None:
             try:
                 self.tb_view.setUrl(QtCore.QUrl(self._tb_url))
@@ -582,8 +598,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
     def _open_run_item(self, item: QtWidgets.QListWidgetItem) -> None:
         path = Path(item.text())
         if path.exists():
-            QtGui.QDesktopServices.openUrl(
-                QtCore.QUrl.fromLocalFile(str(path)))
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     def _open_selected_run_dir(self, *_args) -> None:
         row = self.active_table.currentRow()
@@ -594,8 +609,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
             return
         path = Path(item.text())
         if path.exists():
-            QtGui.QDesktopServices.openUrl(
-                QtCore.QUrl.fromLocalFile(str(path)))
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     def _open_selected_log(self) -> None:
         key = self._selected_run_key
@@ -606,8 +620,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
             return
         path = state.log_path
         if path.exists():
-            QtGui.QDesktopServices.openUrl(
-                QtCore.QUrl.fromLocalFile(str(path)))
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     def _on_active_selection_changed(self, *_args) -> None:
         self._selected_run_key = self._current_selected_run_key()
@@ -683,8 +696,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
                 if rows:
                     state.csv_rows = rows
                     row = rows[-1]
-                    state.last_epoch = _safe_int(
-                        row.get("epoch") or row.get("Epoch"))
+                    state.last_epoch = _safe_int(row.get("epoch") or row.get("Epoch"))
                     state.train_loss = _loss_from_row(
                         row,
                         (
@@ -712,7 +724,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
                         if prev_epoch is not None and epoch <= prev_epoch:
                             continue
                         state.epoch_timeline.append(
-                            _format_timeline_line(int(epoch), row))
+                            _format_timeline_line(int(epoch), row)
+                        )
                         prev_epoch = int(epoch)
                     state.timeline_last_epoch = prev_epoch
                     if len(state.epoch_timeline) > 800:
@@ -725,38 +738,41 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
     def _refresh_active_table(self) -> None:
         selected_key = self._selected_run_key or self._current_selected_run_key()
         self.active_table.setRowCount(0)
-        for idx, state in enumerate(sorted(self._runs.values(), key=lambda s: s.started_at, reverse=True)):
+        for idx, state in enumerate(
+            sorted(self._runs.values(), key=lambda s: s.started_at, reverse=True)
+        ):
             self.active_table.insertRow(idx)
+            self.active_table.setItem(idx, 0, QtWidgets.QTableWidgetItem(state.task))
+            self.active_table.setItem(idx, 1, QtWidgets.QTableWidgetItem(state.model))
+            self.active_table.setItem(idx, 2, QtWidgets.QTableWidgetItem(state.status))
             self.active_table.setItem(
-                idx, 0, QtWidgets.QTableWidgetItem(state.task))
-            self.active_table.setItem(
-                idx, 1, QtWidgets.QTableWidgetItem(state.model))
-            self.active_table.setItem(
-                idx, 2, QtWidgets.QTableWidgetItem(state.status))
-            self.active_table.setItem(
-                idx, 3, QtWidgets.QTableWidgetItem(str(state.run_dir)))
+                idx, 3, QtWidgets.QTableWidgetItem(str(state.run_dir))
+            )
             epoch_txt = ""
             if state.last_epoch is not None:
                 if state.total_epochs is not None and state.total_epochs > 0:
                     epoch_txt = f"{state.last_epoch}/{state.total_epochs}"
                 else:
                     epoch_txt = str(state.last_epoch)
+            self.active_table.setItem(idx, 4, QtWidgets.QTableWidgetItem(epoch_txt))
             self.active_table.setItem(
-                idx, 4, QtWidgets.QTableWidgetItem(epoch_txt))
-            self.active_table.setItem(
-                idx, 5, QtWidgets.QTableWidgetItem(
-                    "" if state.train_loss is None else f"{state.train_loss:.6f}")
+                idx,
+                5,
+                QtWidgets.QTableWidgetItem(
+                    "" if state.train_loss is None else f"{state.train_loss:.6f}"
+                ),
             )
             self.active_table.setItem(
-                idx, 6, QtWidgets.QTableWidgetItem(
-                    "" if state.val_loss is None else f"{state.val_loss:.6f}")
+                idx,
+                6,
+                QtWidgets.QTableWidgetItem(
+                    "" if state.val_loss is None else f"{state.val_loss:.6f}"
+                ),
             )
             updated = ""
             if state.updated_at is not None:
-                updated = time.strftime(
-                    "%H:%M:%S", time.localtime(state.updated_at))
-            self.active_table.setItem(
-                idx, 7, QtWidgets.QTableWidgetItem(updated))
+                updated = time.strftime("%H:%M:%S", time.localtime(state.updated_at))
+            self.active_table.setItem(idx, 7, QtWidgets.QTableWidgetItem(updated))
 
         self.active_table.resizeColumnsToContents()
         if selected_key:
@@ -803,10 +819,12 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
             return
 
         self.selected_run_label.setText(
-            f"{state.task} · {state.model} · {state.status} · {state.run_dir}")
+            f"{state.task} · {state.model} · {state.status} · {state.run_dir}"
+        )
         self.selected_run_label.setStyleSheet("color: #222;")
         self.open_log_btn.setEnabled(
-            state.log_path is not None and state.log_path.exists())
+            state.log_path is not None and state.log_path.exists()
+        )
 
         self._render_epoch_table(state)
         self._render_progress(state)
@@ -828,9 +846,9 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         self.progress_bar.setEnabled(True)
         self.progress_bar.setRange(0, int(state.total_epochs))
         self.progress_bar.setValue(
-            int(max(0, min(state.last_epoch, state.total_epochs))))
-        self.progress_bar.setFormat(
-            f"Epoch {state.last_epoch}/{state.total_epochs}")
+            int(max(0, min(state.last_epoch, state.total_epochs)))
+        )
+        self.progress_bar.setFormat(f"Epoch {state.last_epoch}/{state.total_epochs}")
 
     def _render_epoch_table(self, state: TrainingRunState) -> None:
         if not state.csv_rows or not state.csv_columns:
@@ -859,7 +877,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         for r, row in enumerate(state.csv_rows):
             for c, col in enumerate(columns):
                 self.epoch_table.setItem(
-                    r, c, QtWidgets.QTableWidgetItem(str(row.get(col, ""))))
+                    r, c, QtWidgets.QTableWidgetItem(str(row.get(col, "")))
+                )
         self.epoch_table.resizeColumnsToContents()
         try:
             self.epoch_table.scrollToBottom()
@@ -901,20 +920,19 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
 class TrainingDashboardDialog(QtWidgets.QDialog):
     """Standalone window wrapper for the training dashboard widget."""
 
-    def __init__(self, *, settings: Optional[QtCore.QSettings] = None, parent=None) -> None:
+    def __init__(
+        self, *, settings: Optional[QtCore.QSettings] = None, parent=None
+    ) -> None:
         super().__init__(parent=parent)
         self.setWindowTitle("Training Dashboard")
         self.setModal(False)
         self.setWindowFlags(
-            self.windowFlags()
-            | QtCore.Qt.Window
-            | QtCore.Qt.WindowMinMaxButtonsHint
+            self.windowFlags() | QtCore.Qt.Window | QtCore.Qt.WindowMinMaxButtonsHint
         )
         self.resize(1100, 700)
 
         layout = QtWidgets.QVBoxLayout(self)
-        self.dashboard = TrainingDashboardWidget(
-            settings=settings, parent=self)
+        self.dashboard = TrainingDashboardWidget(settings=settings, parent=self)
         layout.addWidget(self.dashboard)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:

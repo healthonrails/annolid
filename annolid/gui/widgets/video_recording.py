@@ -1,7 +1,7 @@
 from qtpy import QtWidgets, QtGui, QtCore
 import cv2
 from datetime import datetime
-from labelme import utils
+from annolid.gui.window_base import utils
 from pathlib import Path
 
 
@@ -18,12 +18,10 @@ class RecordingWidget(QtWidgets.QWidget):
         self.capture_timer = None
         self.here = Path(__file__).resolve().parent.parent
         self.record_icon = QtGui.QIcon(str(self.here / "icons/record.png"))
-        self.stop_record_icon = QtGui.QIcon(
-            str(self.here / "icons/stop_record.png"))
+        self.stop_record_icon = QtGui.QIcon(str(self.here / "icons/stop_record.png"))
 
         # Add a record button to the toolbar
-        self.record_action = QtWidgets.QAction(
-            self.record_icon, "Record", self)
+        self.record_action = QtWidgets.QAction(self.record_icon, "Record", self)
         self.record_action.setCheckable(True)
         self.record_action.toggled.connect(self.toggle_record)
 
@@ -39,11 +37,13 @@ class RecordingWidget(QtWidgets.QWidget):
             self._notify_canvas_missing_before_recording()
             return
         # Prompt the user to select a folder
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Folder")
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Folder")
         if not folder:
             QtWidgets.QMessageBox.warning(
-                self, "No Folder Selected", "Please select a folder to save the recording.")
+                self,
+                "No Folder Selected",
+                "Please select a folder to save the recording.",
+            )
             self._set_action_unchecked()
             return
 
@@ -60,16 +60,18 @@ class RecordingWidget(QtWidgets.QWidget):
         fps = self.fps if self.fps is not None else 30  # Default to 30 if not available
 
         # Define the codec and create VideoWriter object
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Use 'mp4v' codec for .mp4
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Use 'mp4v' codec for .mp4
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Store the filename with selected folder
         self.output_filename = f"{folder}/canvas_recording_{timestamp}.mp4"
         self.video_writer = cv2.VideoWriter(
-            self.output_filename, fourcc, fps, (width, height))
+            self.output_filename, fourcc, fps, (width, height)
+        )
 
         if not self.video_writer.isOpened():
             QtWidgets.QMessageBox.critical(
-                self, "Error", f"Could not open video writer for {self.output_filename}")
+                self, "Error", f"Could not open video writer for {self.output_filename}"
+            )
             self.is_recording = False
             self.video_writer = None
             self._set_action_unchecked()
@@ -117,18 +119,21 @@ class RecordingWidget(QtWidgets.QWidget):
 
         if show_message and self.output_filename:
             QtWidgets.QMessageBox.information(
-                self, "Recording Saved", f"Canvas recording saved to {self.output_filename}")
+                self,
+                "Recording Saved",
+                f"Canvas recording saved to {self.output_filename}",
+            )
 
     def _notify_canvas_missing_before_recording(self):
         QtWidgets.QMessageBox.warning(
-            self, "Recording Error",
-            "Canvas is no longer available. Recording cannot be started."
+            self,
+            "Recording Error",
+            "Canvas is no longer available. Recording cannot be started.",
         )
         self._set_action_unchecked()
 
     def _abort_recording_due_to_missing_canvas(self, message: str):
-        QtWidgets.QMessageBox.warning(
-            self, "Recording Aborted", message)
+        QtWidgets.QMessageBox.warning(self, "Recording Aborted", message)
         self.stop_recording(show_message=False)
         self._set_action_unchecked()
 
@@ -143,7 +148,8 @@ class RecordingWidget(QtWidgets.QWidget):
             return canvas.grab()
         except RuntimeError:
             self._abort_recording_due_to_missing_canvas(
-                "Canvas was closed while recording.")
+                "Canvas was closed while recording."
+            )
             return None
 
     def _set_action_unchecked(self):

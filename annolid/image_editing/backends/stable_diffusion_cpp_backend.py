@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image
 
@@ -82,7 +82,10 @@ class StableDiffusionCppBackend(ImageEditingBackend):
             if proc.returncode != 0:
                 stderr = proc.stderr or ""
                 hint = ""
-                if "unsupported op 'DIAG_MASK_INF'" in stderr and "ggml_metal" in stderr:
+                if (
+                    "unsupported op 'DIAG_MASK_INF'" in stderr
+                    and "ggml_metal" in stderr
+                ):
                     hint = (
                         "Metal backend crash: ggml-metal does not support DIAG_MASK_INF for this build.\n"
                         "Fix: update/rebuild stable-diffusion.cpp from a newer commit, or build a CPU-only sd-cli by disabling Metal "
@@ -128,7 +131,10 @@ class StableDiffusionCppBackend(ImageEditingBackend):
                     "StableDiffusionCppBackend requires either model_path or diffusion_model_path"
                 )
             args.extend(
-                ["--diffusion-model", _ensure_file(self.diffusion_model_path, "diffusion model")]
+                [
+                    "--diffusion-model",
+                    _ensure_file(self.diffusion_model_path, "diffusion model"),
+                ]
             )
             if not self.vae_path:
                 raise InvalidRequestError(
@@ -186,7 +192,8 @@ class StableDiffusionCppBackend(ImageEditingBackend):
         if request.mode in ("image_to_image", "inpaint"):
             if not init_img:
                 raise InvalidRequestError(
-                    "init_img is required for image_to_image/inpaint")
+                    "init_img is required for image_to_image/inpaint"
+                )
             cmd.extend(["--init-img", init_img])
             cmd.extend(["--strength", str(float(request.strength))])
 
@@ -197,8 +204,7 @@ class StableDiffusionCppBackend(ImageEditingBackend):
 
         if request.mode == "ref_image_edit":
             if not ref_imgs:
-                raise InvalidRequestError(
-                    "ref_imgs is required for ref_image_edit")
+                raise InvalidRequestError("ref_imgs is required for ref_image_edit")
             for path in ref_imgs:
                 cmd.extend(["--ref-image", path])
 

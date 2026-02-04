@@ -290,18 +290,16 @@ class OpticalFlowTool(QtCore.QObject):
         settings.setValue("optical_flow/quiver_step", prefs.quiver_step)
         settings.setValue("optical_flow/quiver_gain", prefs.quiver_gain)
         settings.setValue("optical_flow/stable_hsv", prefs.stable_hsv)
-        settings.setValue("optical_flow/farneback_pyr_scale",
-                          prefs.farneback_pyr_scale)
-        settings.setValue("optical_flow/farneback_levels",
-                          prefs.farneback_levels)
-        settings.setValue("optical_flow/farneback_winsize",
-                          prefs.farneback_winsize)
-        settings.setValue("optical_flow/farneback_iterations",
-                          prefs.farneback_iterations)
-        settings.setValue("optical_flow/farneback_poly_n",
-                          prefs.farneback_poly_n)
-        settings.setValue("optical_flow/farneback_poly_sigma",
-                          prefs.farneback_poly_sigma)
+        settings.setValue("optical_flow/farneback_pyr_scale", prefs.farneback_pyr_scale)
+        settings.setValue("optical_flow/farneback_levels", prefs.farneback_levels)
+        settings.setValue("optical_flow/farneback_winsize", prefs.farneback_winsize)
+        settings.setValue(
+            "optical_flow/farneback_iterations", prefs.farneback_iterations
+        )
+        settings.setValue("optical_flow/farneback_poly_n", prefs.farneback_poly_n)
+        settings.setValue(
+            "optical_flow/farneback_poly_sigma", prefs.farneback_poly_sigma
+        )
 
     def _current_preferences(self) -> FlowPreferences:
         w = self._window
@@ -313,23 +311,19 @@ class OpticalFlowTool(QtCore.QObject):
             quiver_step=int(getattr(w, "flow_quiver_step", 16)),
             quiver_gain=float(getattr(w, "flow_quiver_gain", 1.0)),
             stable_hsv=bool(getattr(w, "flow_stable_hsv", True)),
-            farneback_pyr_scale=float(
-                getattr(w, "flow_farneback_pyr_scale", 0.5)),
+            farneback_pyr_scale=float(getattr(w, "flow_farneback_pyr_scale", 0.5)),
             farneback_levels=int(getattr(w, "flow_farneback_levels", 1)),
             farneback_winsize=int(getattr(w, "flow_farneback_winsize", 1)),
-            farneback_iterations=int(
-                getattr(w, "flow_farneback_iterations", 3)),
+            farneback_iterations=int(getattr(w, "flow_farneback_iterations", 3)),
             farneback_poly_n=int(getattr(w, "flow_farneback_poly_n", 3)),
-            farneback_poly_sigma=float(
-                getattr(w, "flow_farneback_poly_sigma", 1.1)),
+            farneback_poly_sigma=float(getattr(w, "flow_farneback_poly_sigma", 1.1)),
         )
 
     def _start_worker(self, settings: FlowRunSettings) -> None:
         w = self._window
         self._live_running = True
         backend_val = str(settings.backend).lower()
-        use_torch_farneback = ("torch" in backend_val) and (
-            "raft" not in backend_val)
+        use_torch_farneback = ("torch" in backend_val) and ("raft" not in backend_val)
         worker = FlexibleWorker(
             process_video_flow,
             settings.video_path,
@@ -353,8 +347,8 @@ class OpticalFlowTool(QtCore.QObject):
             progress_callback=None,
             preview_callback=None,
         )
-        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(
-            percent
+        worker._kwargs["progress_callback"] = (
+            lambda percent: worker.progress_signal.emit(percent)
         )
         worker._kwargs["preview_callback"] = lambda payload: worker.preview_signal.emit(
             payload
@@ -386,9 +380,7 @@ class OpticalFlowTool(QtCore.QObject):
         opacity = float(getattr(w, "flow_opacity", 70))
         return int(np.clip(opacity, 0, 100) / 100.0 * 255.0)
 
-    def _default_ndjson_path(
-        self, video_file: Optional[str] = None
-    ) -> Path:
+    def _default_ndjson_path(self, video_file: Optional[str] = None) -> Path:
         path = self._flow_ndjson_path(video_file)
         if path:
             return path
@@ -414,8 +406,7 @@ class OpticalFlowTool(QtCore.QObject):
                 return None
             try:
                 raw = gzip.decompress(base64.b64decode(b64))
-                dtype = np.float16 if comp.get(
-                    "dtype") == "float16" else np.uint16
+                dtype = np.float16 if comp.get("dtype") == "float16" else np.uint16
                 arr = np.frombuffer(raw, dtype=dtype)
                 shape = comp.get("shape") or []
                 try:
@@ -438,13 +429,11 @@ class OpticalFlowTool(QtCore.QObject):
                 v_max = float(scale.get("max", 0.0))
                 if abs(v_max - v_min) < 1e-6:
                     v_max = v_min + 1e-6
-                arr = (arr.astype(np.float32) / 65535.0) * \
-                    (v_max - v_min) + v_min
+                arr = (arr.astype(np.float32) / 65535.0) * (v_max - v_min) + v_min
             v_min = float(scale.get("min", 0.0))
             v_max = float(scale.get("max", 0.0))
             arr = np.clip(arr, v_min, v_max)
-            arr = cv2.resize(arr, (width, height),
-                             interpolation=cv2.INTER_LINEAR)
+            arr = cv2.resize(arr, (width, height), interpolation=cv2.INTER_LINEAR)
             return arr.astype(np.float32)
         except Exception:
             return None
@@ -467,8 +456,11 @@ class OpticalFlowTool(QtCore.QObject):
             flow = np.stack([dx, dy], axis=-1).astype(np.float32)
             viz = str(getattr(w, "flow_visualization", "hsv")).lower()
             if viz == "hsv":
-                global_max = self._global_mag_max if bool(
-                    getattr(w, "flow_stable_hsv", True)) else None
+                global_max = (
+                    self._global_mag_max
+                    if bool(getattr(w, "flow_stable_hsv", True))
+                    else None
+                )
                 return flow_to_color(flow, max_mag=global_max)
 
             flow_scaled = flow * float(getattr(w, "flow_quiver_gain", 1.0))
@@ -539,9 +531,7 @@ class OpticalFlowTool(QtCore.QObject):
         self._worker_thread = None
 
         if isinstance(result, Exception):
-            QtWidgets.QMessageBox.critical(
-                w, w.tr("Optical flow error"), str(result)
-            )
+            QtWidgets.QMessageBox.critical(w, w.tr("Optical flow error"), str(result))
             return
 
         self._load_records_from_path(ndjson_path)

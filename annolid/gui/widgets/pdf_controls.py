@@ -89,8 +89,7 @@ class PdfControlsWidget(QtWidgets.QWidget):
     def set_zoom_percent(self, percent: float) -> None:
         """Sync the slider/value label without emitting a new signal."""
         value = int(round(percent))
-        value = max(self.zoom_slider.minimum(),
-                    min(self.zoom_slider.maximum(), value))
+        value = max(self.zoom_slider.minimum(), min(self.zoom_slider.maximum(), value))
         self._ignore_zoom_signal = True
         try:
             self.zoom_slider.setValue(value)

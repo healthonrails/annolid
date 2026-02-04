@@ -28,8 +28,7 @@ class PdfImportWidget(QtWidgets.QWidget):
         elif not window.mayContinue():
             return
 
-        start_dir = Path(
-            window.lastOpenDir) if window.lastOpenDir else Path.home()
+        start_dir = Path(window.lastOpenDir) if window.lastOpenDir else Path.home()
         pdf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
             window,
             window.tr("Select PDF File"),
@@ -60,13 +59,11 @@ class PdfImportWidget(QtWidgets.QWidget):
                     QtWidgets.QMessageBox.information(
                         window,
                         window.tr("Empty PDF"),
-                        window.tr(
-                            "The selected PDF does not contain any pages."),
+                        window.tr("The selected PDF does not contain any pages."),
                     )
                     return
         except Exception as exc:
-            logger.error("Failed to open PDF %s: %s",
-                         pdf_file, exc, exc_info=True)
+            logger.error("Failed to open PDF %s: %s", pdf_file, exc, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 window,
                 window.tr("Failed to Open PDF"),

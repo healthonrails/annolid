@@ -9,8 +9,8 @@ from annolid.gui.theme import (
     refresh_app_styles,
 )
 
-from labelme import utils
-from labelme.utils import newAction
+from annolid.gui.window_base import utils
+from annolid.gui.window_base import newAction, format_tool_button_text
 
 from annolid.gui.widgets.text_prompt import AiRectangleWidget
 from annolid.gui.widgets import RecordingWidget
@@ -81,27 +81,27 @@ class MenuController:
             icon="objects",
             tip=w.tr("Start creating polygons with segment anything"),
         )
+        w.createPolygonSAMMode.setIcon(QtGui.QIcon(str(here / "icons/ai_polygons.svg")))
 
-        create_ai_polygon_mode = self._action_factory(
-            w.tr("Create AI-Polygon"),
-            lambda: w.toggleDrawMode(False, createMode="ai_polygon"),
-            None,
-            "objects",
-            w.tr("Start drawing ai_polygon. Ctrl+LeftClick ends creation."),
-            enabled=False,
-        )
-        create_ai_polygon_mode.changed.connect(
-            lambda: w.canvas.initializeAiModel(
-                name=w._selectAiModelComboBox.currentText(),
-                _custom_ai_models=w.ai_model_manager.custom_model_names,
+        # Configure in-tree actions from AnnolidWindowBase (do not replace them).
+        # We wire draw-mode actions in AnnolidWindow after the canvas exists.
+        try:
+            w.actions.createAiPolygonMode.setIcon(QtGui.QIcon.fromTheme("objects"))
+            w.actions.createAiPolygonMode.setToolTip(
+                w.tr("Start drawing AI polygons. Ctrl+Click ends creation.")
             )
-            if w.canvas.createMode == "ai_polygon"
-            else None
-        )
-        w.actions.createAiPolygonMode = create_ai_polygon_mode
+        except Exception:
+            pass
+        try:
+            w.actions.createAiMaskMode.setIcon(QtGui.QIcon.fromTheme("objects"))
+            w.actions.createAiMaskMode.setToolTip(
+                w.tr("Start drawing AI masks. Ctrl+Click ends creation.")
+            )
+        except Exception:
+            pass
 
         w.createGroundingSAMMode = self._action_factory(
-            w.tr("Create GroundingSAM"),
+            w.tr("Grounding SAM"),
             lambda: w.toggleDrawMode(False, createMode="grounding_sam"),
             None,
             "objects",
@@ -116,6 +116,31 @@ class MenuController:
         w.stepSizeWidget.setWhatsThis(w.tr("Step for the next or prev image. e.g. 30"))
         w.stepSizeWidget.setEnabled(False)
         registry["step_size"] = step_size
+
+        zoom_widget_action = QtWidgets.QWidgetAction(w)
+        zoom_container = QtWidgets.QWidget(w)
+        zoom_layout = QtWidgets.QVBoxLayout(zoom_container)
+        zoom_layout.setContentsMargins(0, 0, 0, 0)
+        zoom_layout.setSpacing(1)
+        zoom_label = QtWidgets.QLabel(w.tr("Zoom"), zoom_container)
+        zoom_label.setAlignment(QtCore.Qt.AlignCenter)
+        zoom_layout.addWidget(zoom_label)
+        zoom_layout.addWidget(w.zoomWidget)
+        zoom_widget_action.setDefaultWidget(zoom_container)
+        registry["zoom_widget"] = zoom_widget_action
+
+        ai_model_action = QtWidgets.QWidgetAction(w)
+        model_container = QtWidgets.QWidget(w)
+        model_layout = QtWidgets.QVBoxLayout(model_container)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(1)
+        model_label = QtWidgets.QLabel(w.tr("AI Model"), model_container)
+        model_label.setAlignment(QtCore.Qt.AlignCenter)
+        model_layout.addWidget(model_label)
+        w._selectAiModelComboBox.setMinimumWidth(180)
+        model_layout.addWidget(w._selectAiModelComboBox)
+        ai_model_action.setDefaultWidget(model_container)
+        registry["ai_model_widget"] = ai_model_action
 
         simple_specs = [
             {
@@ -156,7 +181,7 @@ class MenuController:
                 "tip": w.tr(
                     "Florence-2 captioning and segmentation panel for the current project"
                 ),
-                "icon_name": "objects",
+                "icon_path": here / "icons/florence2.svg",
             },
             {
                 "name": "open_image_editing",
@@ -165,7 +190,7 @@ class MenuController:
                 "tip": w.tr(
                     "Generate/edit images with Diffusers or stable-diffusion.cpp (supports Qwen-Image GGUF presets)"
                 ),
-                "icon_name": "objects",
+                "icon_path": here / "icons/image_editing.svg",
             },
             {
                 "name": "downsample_video",
@@ -389,14 +414,14 @@ class MenuController:
                 "text": w.tr("Video Depth Anything..."),
                 "slot": w.run_video_depth_anything,
                 "tip": w.tr("Estimate depth for a video with Video-Depth-Anything"),
-                "icon_name": "visualization",
+                "icon_path": here / "icons/depth_anything.svg",
             },
             {
                 "name": "sam3d_reconstruct",
                 "text": w.tr("Reconstruct 3D (SAM 3D)..."),
                 "slot": w.run_sam3d_reconstruction,
                 "tip": w.tr("Generate a 3D Gaussian splat from video"),
-                "icon_name": "objects",
+                "icon_path": here / "icons/reconstruct_3d.svg",
             },
             {
                 "name": "optical_flow_settings",
@@ -486,7 +511,11 @@ class MenuController:
             QtGui.QIcon(str(here / "icons/fast_forward.png"))
         )
 
-        registry["create_ai_polygon_mode"] = create_ai_polygon_mode
+        # Keep a registry entry for backwards compatibility.
+        try:
+            registry["create_ai_polygon_mode"] = w.actions.createAiPolygonMode
+        except Exception:
+            pass
 
         # 3D Viewer action
         w.open_3d_viewer_action = self._action_factory(
@@ -566,53 +595,88 @@ class MenuController:
 
     @staticmethod
     def _format_tool_button_text(text: str) -> str:
-        base = text.replace("&", "").strip()
-        if not base or "\n" in base:
-            return base
-        parts = base.split()
-        if len(parts) >= 2:
-            first, rest = parts[0], " ".join(parts[1:])
-            return f"{first}\n{rest}"
-        return base
+        return format_tool_button_text(text)
 
     def _populate_tools_and_menus(self) -> None:
         w = self._window
         actions = self._actions
 
-        tool_actions = list(w.actions.tool)
-        tool_actions.insert(0, actions["frames"])
-        tool_actions.insert(1, actions["open_video"])
-        tool_actions.insert(2, actions["step_size"])
-        tool_actions.append(w.aiRectangle.aiRectangleAction)
-        tool_actions.append(actions["tracks"])
-        tool_actions.append(actions["glitter2"])
-        tool_actions.append(actions["coco"])
-        tool_actions.append(actions["models"])
-        tool_actions.append(w.createPolygonSAMMode)
-        tool_actions.append(actions["save_labels"])
-        tool_actions.append(actions["quality_control"])
-        tool_actions.append(actions["colab"])
-        tool_actions.append(actions["video_depth_anything"])
-        tool_actions.append(actions["sam3d_reconstruct"])
-        tool_actions.append(actions["visualization"])
-        tool_actions.append(actions["open_florence2"])
-        tool_actions.append(actions["open_image_editing"])
-        tool_actions.append(w.patch_similarity_action)
-        tool_actions.append(w.pca_map_action)
-        tool_actions.append(w.recording_widget.record_action)
+        tool_actions = [
+            actions["frames"],
+            actions["open_video"],
+            actions["step_size"],
+            w.actions.open,
+            w.actions.openDir,
+            w.actions.openPrevImg,
+            w.actions.openNextImg,
+            w.actions.save,
+            w.actions.deleteFile,
+            w.actions.createMode,
+            w.actions.editMode,
+            w.actions.duplicateShapes,
+            w.actions.deleteShapes,
+            w.actions.undo,
+            w.actions.brightnessContrast,
+            w.actions.fitWindow,
+            w.actions.zoomOut,
+            w.actions.zoomIn,
+            actions["ai_model_widget"],
+            w.aiRectangle.aiRectangleAction,
+            actions["tracks"],
+            actions["glitter2"],
+            actions["coco"],
+            actions["models"],
+            w.createPolygonSAMMode,
+            None,
+            actions["colab"],
+            actions["video_depth_anything"],
+            actions["sam3d_reconstruct"],
+            actions["visualization"],
+            actions["open_florence2"],
+            actions["open_image_editing"],
+            w.patch_similarity_action,
+            w.pca_map_action,
+            w.recording_widget.record_action,
+        ]
         w.actions.tool = tuple(tool_actions)
 
         w.tools.clear()
         w.tools.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
         w.tools.setIconSize(QtCore.QSize(32, 32))
-        utils.addActions(w.tools, w.actions.tool)
-        for action in w.actions.tool:
-            button = w.tools.widgetForAction(action)
-            if isinstance(button, QtWidgets.QToolButton):
-                button.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
-                button.setIconSize(QtCore.QSize(32, 32))
-                text = self._format_tool_button_text(action.text())
-                button.setText(text)
+        # Use AnnolidToolButton widgets to guarantee multi-line labels (macOS styles
+        # often force toolbar labels to single-line otherwise).
+        for item in w.actions.tool:
+            if item is None:
+                w.tools.addSeparator()
+                continue
+
+            # QWidgetAction: embeds its own widget (combo boxes, prompt panel, etc).
+            if isinstance(item, QtWidgets.QWidgetAction):
+                w.tools.addAction(item)
+                continue
+
+            # QMenu objects (rare in the main toolbar).
+            if hasattr(item, "menuAction") and not isinstance(item, QtWidgets.QAction):
+                w.tools.addAction(item.menuAction())
+                continue
+
+            if isinstance(item, QtWidgets.QAction):
+                formatted = self._format_tool_button_text(item.text())
+                try:
+                    item.setIconText(formatted)
+                except Exception:
+                    pass
+                w.tools.add_stacked_action(
+                    item,
+                    formatted,
+                    width=58,
+                    min_height=68,
+                    icon_size=QtCore.QSize(32, 32),
+                )
+                continue
+
+            # Fallback: keep existing behavior.
+            w.tools.addAction(item)
 
         # ============================================================
         # FILE MENU - Open, Save, Export operations only

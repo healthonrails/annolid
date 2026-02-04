@@ -19,7 +19,7 @@ class ShapePropagationDialog(QtWidgets.QDialog):
 
     def __init__(self, canvas, main_window, current_frame, max_frame, parent=None):
         super().__init__(parent)
-        self.canvas = canvas           # Reference to the Canvas widget
+        self.canvas = canvas  # Reference to the Canvas widget
         self.main_window = main_window  # Reference to the main window
         self.current_frame = current_frame
         self.max_frame = max_frame
@@ -37,10 +37,8 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         # Drop-down for selecting the action.
         # Now includes "Define Proximity Event" as an additional action.
         self.action_combo = QtWidgets.QComboBox(self)
-        self.action_combo.addItems(
-            ["Propagate", "Delete", "Define Proximity Event"])
-        self.action_combo.currentIndexChanged.connect(
-            self.update_action_fields)
+        self.action_combo.addItems(["Propagate", "Delete", "Define Proximity Event"])
+        self.action_combo.currentIndexChanged.connect(self.update_action_fields)
 
         # Spin box for selecting the target frame (used in propagate and delete actions).
         self.frame_spin_label = QtWidgets.QLabel("Apply action until frame:")
@@ -50,14 +48,18 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         # Determine the default value from a mask file if one exists.
         default_future_frame = None
         folder_to_check = None
-        if hasattr(main_window, "video_results_folder") and main_window.video_results_folder:
+        if (
+            hasattr(main_window, "video_results_folder")
+            and main_window.video_results_folder
+        ):
             folder_to_check = main_window.video_results_folder
         elif hasattr(main_window, "annotation_dir") and main_window.annotation_dir:
             folder_to_check = main_window.annotation_dir
 
         if folder_to_check:
             default_future_frame = get_future_frame_from_mask(
-                folder_to_check, current_frame)
+                folder_to_check, current_frame
+            )
 
         if default_future_frame is None:
             default_future_frame = current_frame + 100
@@ -75,7 +77,12 @@ class ShapePropagationDialog(QtWidgets.QDialog):
 
         self.target_group_combo = QtWidgets.QComboBox(self)
         shape_labels = sorted(
-            {shape.label for shape in self.canvas.shapes if shape.shape_type in ["polygon", "mask"]})
+            {
+                shape.label
+                for shape in self.canvas.shapes
+                if shape.shape_type in ["polygon", "mask"]
+            }
+        )
         for label in shape_labels:
             self.target_group_combo.addItem(label)
         self.target_group_combo.addItem("All Others")
@@ -90,8 +97,7 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         self.proximity_threshold_spin.setMinimum(1)
         self.proximity_threshold_spin.setMaximum(10000)
         self.proximity_threshold_spin.setValue(50)
-        event_layout.addWidget(QtWidgets.QLabel(
-            "Proximity Threshold (pixels):"))
+        event_layout.addWidget(QtWidgets.QLabel("Proximity Threshold (pixels):"))
         event_layout.addWidget(self.proximity_threshold_spin)
 
         self.rule_type_combo = QtWidgets.QComboBox(self)
@@ -167,8 +173,7 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         """
         main_window = self.main_window
         if not osp.exists(label_file):
-            logger.info(
-                f"Label file {label_file} not found. Creating a new one.")
+            logger.info(f"Label file {label_file} not found. Creating a new one.")
             lf = LabelFile()
             lf.filename = label_file
             try:
@@ -193,7 +198,8 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         item = self.shape_list.currentItem()
         if not item:
             QtWidgets.QMessageBox.warning(
-                self, "No Selection", "Please select a shape.")
+                self, "No Selection", "Please select a shape."
+            )
             return
 
         selected_shape = item.data(QtCore.Qt.UserRole)
@@ -208,7 +214,7 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                 "Confirm Deletion",
                 "Are you sure you want to delete this shape? This action cannot be undone.",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No
+                QtWidgets.QMessageBox.No,
             )
             if reply != QtWidgets.QMessageBox.Yes:
                 # User decided not to delete, so exit the method.
@@ -233,18 +239,26 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                 shapes = lf.shapes
 
                 if action == "propagate":
-                    new_shape = selected_shape.copy() if hasattr(
-                        selected_shape, "copy") else selected_shape
+                    new_shape = (
+                        selected_shape.copy()
+                        if hasattr(selected_shape, "copy")
+                        else selected_shape
+                    )
                     new_shape_dict = shape_to_dict(new_shape)
                     shapes.append(new_shape_dict)
                 elif action == "delete":
                     # Convert the shape to a dictionary for detailed logging.
-                    shape_details = shape_to_dict(selected_shape) if hasattr(
-                        selected_shape, "points") else selected_shape
+                    shape_details = (
+                        shape_to_dict(selected_shape)
+                        if hasattr(selected_shape, "points")
+                        else selected_shape
+                    )
                     logger.info(
-                        f"Deleting shape with label: {selected_shape.label} | Details: {shape_details}")
-                    shapes = [s for s in shapes if s.get(
-                        "label") != selected_shape.label]
+                        f"Deleting shape with label: {selected_shape.label} | Details: {shape_details}"
+                    )
+                    shapes = [
+                        s for s in shapes if s.get("label") != selected_shape.label
+                    ]
 
                 lf.shapes = shapes
 
@@ -263,8 +277,9 @@ class ShapePropagationDialog(QtWidgets.QDialog):
 
             main_window.set_frame_number(original_frame)
             QtWidgets.QMessageBox.information(
-                self, f"{action.capitalize()} Complete",
-                f"The shape has been {action}ed in future frames."
+                self,
+                f"{action.capitalize()} Complete",
+                f"The shape has been {action}ed in future frames.",
             )
             self.accept()
 
@@ -273,7 +288,8 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             event_name = self.event_name_line.text().strip()
             if not event_name:
                 QtWidgets.QMessageBox.warning(
-                    self, "Missing Input", "Please enter an event name.")
+                    self, "Missing Input", "Please enter an event name."
+                )
                 return
             proximity_threshold = self.proximity_threshold_spin.value()
             rule_type = self.rule_type_combo.currentText().lower()  # "any" or "all"
@@ -281,7 +297,10 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             event_end_frame = self.event_end_frame_spin.value()
             if event_start_frame > event_end_frame:
                 QtWidgets.QMessageBox.warning(
-                    self, "Invalid Frame Range", "Event start frame must be less than or equal to event end frame.")
+                    self,
+                    "Invalid Frame Range",
+                    "Event start frame must be less than or equal to event end frame.",
+                )
                 return
 
             frames_updated = 0
@@ -307,7 +326,8 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                 if target_shapes:
                     proximity_results = [
                         are_polygons_close_or_overlap(
-                            selected_shape, target, proximity_threshold)
+                            selected_shape, target, proximity_threshold
+                        )
                         for target in target_shapes
                     ]
                     if rule_type == "any":
@@ -333,12 +353,12 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                         lf.flags,
                         lf.caption,
                     )
-                    logger.info(
-                        f"Frame {frame} updated with event flag: {event_name}.")
+                    logger.info(f"Frame {frame} updated with event flag: {event_name}.")
 
             main_window.set_frame_number(self.current_frame)
             QtWidgets.QMessageBox.information(
-                self, "Define Proximity Event Complete",
-                f"Event '{event_name}' applied to {frames_updated} frame(s) where the condition was met."
+                self,
+                "Define Proximity Event Complete",
+                f"Event '{event_name}' applied to {frames_updated} frame(s) where the condition was met.",
             )
             self.accept()

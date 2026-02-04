@@ -28,13 +28,12 @@ from annolid.features.dinov3_patch_similarity import DinoPatchSimilarity
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_EXTRACTOR_CACHE: Dict[Tuple[str, int, Optional[str]],
-                       Dinov3FeatureExtractor] = {}
+_EXTRACTOR_CACHE: Dict[Tuple[str, int, Optional[str]], Dinov3FeatureExtractor] = {}
 
 
-def _get_or_create_extractor(model_name: str,
-                             short_side: int,
-                             device: Optional[str]) -> Dinov3FeatureExtractor:
+def _get_or_create_extractor(
+    model_name: str, short_side: int, device: Optional[str]
+) -> Dinov3FeatureExtractor:
     """Load (and cache) a Dinov3FeatureExtractor for the given configuration."""
 
     key = (model_name, short_side, device)
@@ -42,9 +41,7 @@ def _get_or_create_extractor(model_name: str,
     if extractor is not None:
         return extractor
 
-    cfg = Dinov3Config(model_name=model_name,
-                       short_side=short_side,
-                       device=device)
+    cfg = Dinov3Config(model_name=model_name, short_side=short_side, device=device)
     extractor = Dinov3FeatureExtractor(cfg)
     _EXTRACTOR_CACHE[key] = extractor
     return extractor
@@ -212,8 +209,7 @@ class _DinoPCAWorker(QtCore.QObject):
             rgb_uint8 = (rgb * 255.0).astype(np.uint8)
             alpha_val = int(np.clip(self._request.alpha * 255.0, 0, 255))
             overlay_rgba = np.dstack(
-                [rgb_uint8, np.full(rgb_uint8.shape[:2],
-                                    alpha_val, dtype=np.uint8)]
+                [rgb_uint8, np.full(rgb_uint8.shape[:2], alpha_val, dtype=np.uint8)]
             )
 
             if self._request.mask is not None:

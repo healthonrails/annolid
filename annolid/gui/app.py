@@ -12,14 +12,13 @@ import csv
 import re
 import os.path as osp
 import time
-import html
 import shutil
 import sys
 import hashlib
 import json
 import io
 import copy
-from PIL import ImageQt, Image
+from PIL import ImageQt, Image, ImageEnhance
 import pandas as pd
 import numpy as np
 import imgviz
@@ -36,24 +35,27 @@ from qtpy import QtCore
 from qtpy.QtCore import Qt, Slot, Signal
 from qtpy import QtWidgets
 from qtpy import QtGui
-from labelme import PY2
-from labelme import QT5
+from annolid.gui.window_base import (
+    PY2,
+    QT5,
+    AnnolidLabelListItem,
+    AnnolidToolBar,
+    AnnolidWindowBase,
+    format_tool_button_text,
+    newAction,
+    utils,
+)
 from annolid.gui.widgets.video_manager import VideoManagerWidget
 from annolid.gui.workers import (
     FlexibleWorker,
     LoadFrameThread,
 )
 from annolid.gui.shape import Shape
-from labelme.app import MainWindow
-from labelme.utils import newAction
-from labelme.widgets import LabelListWidgetItem
-from labelme import utils
 from annolid.utils.logger import configure_logging, logger
 from annolid.utils.files import (
     should_start_predictions_from_frame0,
 )
 from annolid.utils.annotation_store import AnnotationStore
-from labelme.widgets import ToolBar
 from annolid.gui.label_file import LabelFileError
 from annolid.gui.label_file import LabelFile
 from annolid.gui.widgets.canvas import Canvas
@@ -86,6 +88,7 @@ from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import SystemInfoDialog
 from annolid.gui.widgets import FlagTableWidget
 from annolid.gui.widgets import LabelCollectionDialog
+from annolid.gui.widgets import AnnolidLabelDialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.gui.widgets import ProgressingWindow
@@ -188,8 +191,8 @@ def _hex_to_rgb(color: str) -> Optional[Tuple[int, int, int]]:
     return None
 
 
-class AnnolidWindow(MainWindow):
-    """Annolid Main Window based on Labelme."""
+class AnnolidWindow(AnnolidWindowBase):
+    """Annolid main window built on AnnolidWindowBase."""
 
     live_annolid_frame_updated = Signal(int, str)  # For modeless dialogs if any
 
@@ -277,6 +280,7 @@ class AnnolidWindow(MainWindow):
         self._df_deeplabcut_multi_animal = False
         self.label_stats = {}
         self.shape_hash_ids = {}
+        self._noSelectionSlot = False
         self.changed_json_stats = {}
         self._pred_res_folder_suffix = "_tracking_results_labelme"
         self.ai_model_manager = AIModelManager(
@@ -336,6 +340,9 @@ class AnnolidWindow(MainWindow):
         self.menu_controller = MenuController(self)
         self.menu_controller.setup()
 
+        # In-tree replacement for LabelMe's label dialog.
+        self.labelDialog = AnnolidLabelDialog(parent=self, config=self._config)
+
         self.prediction_progress_watcher = None
         self.last_known_predicted_frame = -1  # Track the latest frame seen
         self.prediction_start_timestamp = 0.0
@@ -386,6 +393,10 @@ class AnnolidWindow(MainWindow):
         self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
+        self._setup_label_list_connections()
+
+        # Ensure all drawing/edit mode actions work without relying on LabelMe.
+        self._setup_drawing_mode_actions()
 
         self.flag_widget = FlagTableWidget()
         self.flag_dock.setWidget(self.flag_widget)
@@ -572,7 +583,8 @@ class AnnolidWindow(MainWindow):
         the canvas inside `self._viewer_stack`, so resizing the canvas can leave
         it top-aligned within the stacked widget and show a large empty area.
         """
-        assert not self.image.isNull(), "cannot paint null image"
+        if self.image.isNull():
+            return
         self.canvas.scale = 0.01 * self.zoomWidget.value()
         self.canvas.updateGeometry()
         if getattr(self, "_viewer_stack", None) is not None:
@@ -1514,7 +1526,33 @@ class AnnolidWindow(MainWindow):
     def populateModeActions(self):
         tool, menu = self.actions.tool, self.actions.menu
         self.tools.clear()
-        utils.addActions(self.tools, tool)
+        self.tools.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+        self.tools.setIconSize(QtCore.QSize(32, 32))
+        for item in tool:
+            if item is None:
+                self.tools.addSeparator()
+                continue
+            if isinstance(item, QtWidgets.QWidgetAction):
+                self.tools.addAction(item)
+                continue
+            if hasattr(item, "menuAction") and not isinstance(item, QtWidgets.QAction):
+                self.tools.addAction(item.menuAction())
+                continue
+            if isinstance(item, QtWidgets.QAction):
+                stacked = format_tool_button_text(item.text())
+                try:
+                    item.setIconText(stacked)
+                except Exception:
+                    pass
+                self.tools.add_stacked_action(
+                    item,
+                    stacked,
+                    width=58,
+                    min_height=68,
+                    icon_size=QtCore.QSize(32, 32),
+                )
+                continue
+            self.tools.addAction(item)
         self.canvas.menus[0].clear()
         utils.addActions(self.canvas.menus[0], menu)
         self.menus.edit.clear()
@@ -1575,27 +1613,158 @@ class AnnolidWindow(MainWindow):
 
     def toggleDrawMode(self, edit=True, createMode="polygon"):
         draw_actions = {
-            "polygon": self.actions.createMode,
-            "rectangle": self.actions.createRectangleMode,
-            "circle": self.actions.createCircleMode,
-            "point": self.actions.createPointMode,
-            "line": self.actions.createLineMode,
-            "linestrip": self.actions.createLineStripMode,
-            "ai_polygon": self.actions.createAiPolygonMode,
-            "ai_mask": self.actions.createAiMaskMode,
-            "polygonSAM": self.createPolygonSAMMode,
-            "grouding_sam": self.createGroundingSAMMode,
+            "polygon": getattr(self.actions, "createMode", None),
+            "rectangle": getattr(self.actions, "createRectangleMode", None),
+            "circle": getattr(self.actions, "createCircleMode", None),
+            "point": getattr(self.actions, "createPointMode", None),
+            "line": getattr(self.actions, "createLineMode", None),
+            "linestrip": getattr(self.actions, "createLineStripMode", None),
+            "ai_polygon": getattr(self.actions, "createAiPolygonMode", None),
+            "ai_mask": getattr(self.actions, "createAiMaskMode", None),
+            "grounding_sam": getattr(self.actions, "createGroundingSAMMode", None),
+            "polygonSAM": getattr(self, "createPolygonSAMMode", None),
         }
 
-        self.canvas.setEditing(edit)
-        self.canvas.createMode = createMode
+        self.canvas.setEditing(bool(edit))
+        if not edit:
+            self.canvas.createMode = createMode
+
+        # Enable/disable draw actions similarly to LabelMe (disable the active one).
         if edit:
-            for draw_action in draw_actions.values():
-                draw_action.setEnabled(True)
+            for action in draw_actions.values():
+                if action is not None:
+                    action.setEnabled(True)
+            if getattr(self.actions, "editMode", None) is not None:
+                self.actions.editMode.setEnabled(False)
         else:
-            for draw_mode, draw_action in draw_actions.items():
-                draw_action.setEnabled(createMode != draw_mode)
-        self.actions.editMode.setEnabled(not edit)
+            for mode, action in draw_actions.items():
+                if action is not None:
+                    action.setEnabled(createMode != mode)
+            if getattr(self.actions, "editMode", None) is not None:
+                self.actions.editMode.setEnabled(True)
+
+        self._sync_draw_mode_action_checks(edit=bool(edit), createMode=str(createMode))
+
+    def _setup_drawing_mode_actions(self) -> None:
+        """Wire draw-mode actions to the canvas (LabelMe-compatible behavior)."""
+        if getattr(self, "_draw_mode_actions_initialized", False):
+            return
+        self._draw_mode_actions_initialized = True
+
+        # Group actions so only one draw/edit mode is checked at a time.
+        group = QtWidgets.QActionGroup(self)
+        group.setExclusive(True)
+        self._draw_mode_action_group = group
+
+        def _safe_disconnect(action: QtWidgets.QAction) -> None:
+            for sig in ("triggered", "toggled"):
+                try:
+                    getattr(action, sig).disconnect()
+                except Exception:
+                    pass
+
+        def _wire(action: QtWidgets.QAction, *, edit: bool, mode: str) -> None:
+            if action is None:
+                return
+            action.setCheckable(True)
+            group.addAction(action)
+            _safe_disconnect(action)
+
+            def _on_toggled(checked: bool) -> None:
+                if not checked:
+                    return
+                if edit:
+                    self.toggleDrawMode(True, createMode="polygon")
+                    return
+                if mode == "polygonSAM":
+                    # Loads predictor + enters SAM polygon mode.
+                    self.segmentAnything()
+                    return
+                # Initialize the current AI model when entering AI point-based modes.
+                if mode in ("ai_polygon", "ai_mask"):
+                    try:
+                        self.canvas.initializeAiModel(
+                            name=self._selectAiModelComboBox.currentText(),
+                            _custom_ai_models=self.ai_model_manager.custom_model_names,
+                        )
+                    except Exception:
+                        logger.debug("Failed to initialize AI model.", exc_info=True)
+                self.toggleDrawMode(False, createMode=mode)
+
+            action.toggled.connect(_on_toggled)
+
+        _wire(getattr(self.actions, "editMode", None), edit=True, mode="edit")
+        _wire(getattr(self.actions, "createMode", None), edit=False, mode="polygon")
+        _wire(
+            getattr(self.actions, "createRectangleMode", None),
+            edit=False,
+            mode="rectangle",
+        )
+        _wire(
+            getattr(self.actions, "createCircleMode", None), edit=False, mode="circle"
+        )
+        _wire(getattr(self.actions, "createLineMode", None), edit=False, mode="line")
+        _wire(getattr(self.actions, "createPointMode", None), edit=False, mode="point")
+        _wire(
+            getattr(self.actions, "createLineStripMode", None),
+            edit=False,
+            mode="linestrip",
+        )
+        _wire(
+            getattr(self.actions, "createAiPolygonMode", None),
+            edit=False,
+            mode="ai_polygon",
+        )
+        _wire(
+            getattr(self.actions, "createAiMaskMode", None),
+            edit=False,
+            mode="ai_mask",
+        )
+        _wire(
+            getattr(self.actions, "createGroundingSAMMode", None),
+            edit=False,
+            mode="grounding_sam",
+        )
+        # LabelMe-style "SAM polygon mode" (loads predictor, then enters draw mode).
+        _wire(
+            getattr(self, "createPolygonSAMMode", None), edit=False, mode="polygonSAM"
+        )
+
+        # Ensure we start in edit mode (checked) if present.
+        try:
+            if getattr(self.actions, "editMode", None) is not None:
+                self.actions.editMode.setChecked(True)
+        except Exception:
+            pass
+
+    def _sync_draw_mode_action_checks(self, *, edit: bool, createMode: str) -> None:
+        """Keep QAction checked states consistent with canvas mode without recursion."""
+        actions = {
+            "edit": getattr(self.actions, "editMode", None),
+            "polygon": getattr(self.actions, "createMode", None),
+            "rectangle": getattr(self.actions, "createRectangleMode", None),
+            "circle": getattr(self.actions, "createCircleMode", None),
+            "line": getattr(self.actions, "createLineMode", None),
+            "point": getattr(self.actions, "createPointMode", None),
+            "linestrip": getattr(self.actions, "createLineStripMode", None),
+            "ai_polygon": getattr(self.actions, "createAiPolygonMode", None),
+            "ai_mask": getattr(self.actions, "createAiMaskMode", None),
+            "grounding_sam": getattr(self.actions, "createGroundingSAMMode", None),
+            "polygonSAM": getattr(self, "createPolygonSAMMode", None),
+        }
+
+        target = "edit" if edit else createMode
+        for key, action in actions.items():
+            if action is None or not action.isCheckable():
+                continue
+            should = key == target
+            if action.isChecked() == should:
+                continue
+            action.blockSignals(True)
+            try:
+                action.setChecked(should)
+            finally:
+                action.blockSignals(False)
 
     def closeFile(self, _value=False, *, suppress_tracking_prompt=False):
         if not self.mayContinue():
@@ -1784,9 +1953,11 @@ class AnnolidWindow(MainWindow):
         super().closeEvent(event)
 
     def toolbar(self, title, actions=None):
-        toolbar = ToolBar(title)
+        toolbar = AnnolidToolBar(title)
         toolbar.setObjectName("%sToolBar" % title)
-        # toolbar.setOrientation(Qt.Vertical)
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setIconSize(QtCore.QSize(32, 32))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         if actions:
             utils.addActions(toolbar, actions)
@@ -1958,11 +2129,6 @@ class AnnolidWindow(MainWindow):
             pass
 
     def _update_shape_color(self, shape):
-        if not self.uniqLabelList.findItemByLabel(shape.label):
-            item = self.uniqLabelList.createItemFromLabel(shape.label)
-            self.uniqLabelList.addItem(item)
-            rgb = self._get_rgb_by_label(shape.label)
-            self.uniqLabelList.setItemLabel(item, shape.label, rgb)
         r, g, b = self._get_rgb_by_label(shape.label)
         shape.line_color = QtGui.QColor(r, g, b)
         if not shape.visible:
@@ -1975,7 +2141,91 @@ class AnnolidWindow(MainWindow):
         shape.select_fill_color = QtGui.QColor(r, g, b, 155)
         return r, g, b
 
-    def addLabel(self, shape):
+    def _rebuild_unique_label_list(self) -> None:
+        """Rebuild the unique label list from current canvas shapes."""
+        # Preserve selected labels (based on UserRole).
+        selected = set()
+        try:
+            for it in self.uniqLabelList.selectedItems():
+                val = it.data(QtCore.Qt.UserRole)
+                if val:
+                    selected.add(str(val))
+        except Exception:
+            selected = set()
+
+        counts: dict[str, int] = {}
+        for shape in getattr(self.canvas, "shapes", []) or []:
+            label = str(getattr(shape, "label", "") or "").strip()
+            if not label:
+                continue
+            counts[label] = counts.get(label, 0) + 1
+
+        self.uniqLabelList.blockSignals(True)
+        try:
+            self.uniqLabelList.clear()
+            for label in sorted(counts.keys(), key=lambda s: s.lower()):
+                item = self.uniqLabelList.createItemFromLabel(label)
+                self.uniqLabelList.addItem(item)
+                rgb = self._get_rgb_by_label(label)
+                # Keep display compact; count is informative but does not affect UserRole.
+                count = counts[label]
+                display = f"{label} [{count}]"
+                self.uniqLabelList.setItemLabel(item, display, rgb)
+                if label in selected:
+                    item.setSelected(True)
+        finally:
+            self.uniqLabelList.blockSignals(False)
+
+    def _setup_label_list_connections(self) -> None:
+        """Wire label list UI interactions to the canvas."""
+        if getattr(self, "_label_list_connections_setup", False):
+            return
+        self._label_list_connections_setup = True
+
+        def on_selection_changed() -> None:
+            if getattr(self, "_noSelectionSlot", False):
+                return
+            # Selecting rows in the instances list selects shapes on the canvas.
+            shapes = []
+            for it in self.labelList.selectedItems():
+                try:
+                    shape = it.shape()
+                except Exception:
+                    shape = None
+                if shape is not None:
+                    shapes.append(shape)
+            try:
+                self._noSelectionSlot = True
+                self.canvas.selectShapes(shapes)
+            finally:
+                self._noSelectionSlot = False
+
+        try:
+            self.labelList.itemSelectionChanged.disconnect()
+        except Exception:
+            pass
+        self.labelList.itemSelectionChanged.connect(on_selection_changed)
+
+        try:
+            self.labelList.itemDoubleClicked.disconnect()
+        except Exception:
+            pass
+        self.labelList.itemDoubleClicked.connect(self.editLabel)
+
+    def _set_label_list_item_text(
+        self,
+        item: AnnolidLabelListItem,
+        *,
+        base_text: str,
+        marker: str,
+        rgb: tuple[int, int, int],
+    ) -> None:
+        """Render label list rows as plain text (no HTML literal leakage)."""
+        r, g, b = rgb
+        item.setText(f"{base_text} {marker}")
+        item.setForeground(QtGui.QBrush(QtGui.QColor(r, g, b)))
+
+    def addLabel(self, shape, *, rebuild_unique: bool = True):
         def marker_for_shape(shape_obj: Shape) -> str:
             if str(getattr(shape_obj, "shape_type", "") or "").lower() != "point":
                 return "●"
@@ -1986,38 +2236,22 @@ class AnnolidWindow(MainWindow):
             text = str(shape.label)
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
-        shape_points_hash = hash(str(sorted(shape.points, key=lambda point: point.x())))
-        self.shape_hash_ids[shape_points_hash] = (
-            self.shape_hash_ids.get(shape_points_hash, 0) + 1
-        )
-        if self.shape_hash_ids[shape_points_hash] <= 1:
-            self.label_stats[text] = self.label_stats.get(text, 0) + 1
-        label_list_item = LabelListWidgetItem(text, shape)
+        label_list_item = AnnolidLabelListItem(text, shape)
         self.labelList.addItem(label_list_item)
-        item = self.uniqLabelList.findItemByLabel(shape.label)
-        if item is None:
-            item = self.uniqLabelList.createItemFromLabel(shape.label)
-            self.uniqLabelList.addItem(item)
-            rgb = self._get_rgb_by_label(shape.label)
-            self.uniqLabelList.setItemLabel(
-                item, f"{shape.label} [{self.label_stats.get(text, 0)} instance]", rgb
-            )
-        else:
-            rgb = self._get_rgb_by_label(shape.label)
-            self.uniqLabelList.setItemLabel(
-                item, f"{shape.label} [{self.label_stats.get(text, 0)} instances]", rgb
-            )
 
         self.labelDialog.addLabelHistory(str(shape.label))
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
 
-        r, g, b = self._update_shape_color(shape)
-        label_list_item.setText(
-            '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
-                html.escape(text), r, g, b, marker_for_shape(shape)
-            )
+        rgb = self._update_shape_color(shape)
+        self._set_label_list_item_text(
+            label_list_item,
+            base_text=text,
+            marker=marker_for_shape(shape),
+            rgb=rgb,
         )
+        if rebuild_unique:
+            self._rebuild_unique_label_list()
 
     def propagateSelectedShape(self):
         """
@@ -2056,8 +2290,8 @@ class AnnolidWindow(MainWindow):
             self.statusBar().showMessage("Shape propagation canceled.")
 
     def editLabel(self, item=None):
-        if item and not isinstance(item, LabelListWidgetItem):
-            raise TypeError("item must be LabelListWidgetItem type")
+        if item and not isinstance(item, AnnolidLabelListItem):
+            raise TypeError("item must be AnnolidLabelListItem type")
 
         if not self.canvas.editing():
             return
@@ -2092,7 +2326,7 @@ class AnnolidWindow(MainWindow):
         shape.group_id = group_id
         shape.description = description
 
-        r, g, b = self._update_shape_color(shape)
+        rgb = self._update_shape_color(shape)
 
         base_text = (
             str(shape.label)
@@ -2103,16 +2337,14 @@ class AnnolidWindow(MainWindow):
         if str(getattr(shape, "shape_type", "") or "").lower() == "point":
             visibility = keypoint_visibility_from_shape_object(shape)
             marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
-        item.setText(
-            '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
-                html.escape(base_text), r, g, b, marker
-            )
+        self._set_label_list_item_text(
+            item,
+            base_text=base_text,
+            marker=marker,
+            rgb=rgb,
         )
         self.setDirty()
-        if not self.uniqLabelList.findItemByLabel(shape.label):
-            item = QtWidgets.QListWidgetItem()
-            item.setData(Qt.UserRole, shape.label)
-            self.uniqLabelList.addItem(item)
+        self._rebuild_unique_label_list()
 
     def _selected_shapes_for_keypoint_visibility(self) -> list[Shape]:
         shapes = list(getattr(self.canvas, "selectedShapes", None) or [])
@@ -2122,7 +2354,7 @@ class AnnolidWindow(MainWindow):
             item = self.currentItem()
         except Exception:
             item = None
-        if isinstance(item, LabelListWidgetItem):
+        if isinstance(item, AnnolidLabelListItem):
             shape = item.shape()
             if shape is not None:
                 return [shape]
@@ -2133,12 +2365,12 @@ class AnnolidWindow(MainWindow):
             return
         target_ids = {id(s) for s in shapes}
         for item in self.labelList:
-            if not isinstance(item, LabelListWidgetItem):
+            if not isinstance(item, AnnolidLabelListItem):
                 continue
             shape = item.shape()
             if shape is None or id(shape) not in target_ids:
                 continue
-            r, g, b = self._update_shape_color(shape)
+            rgb = self._update_shape_color(shape)
             base_text = (
                 str(shape.label)
                 if shape.group_id is None
@@ -2148,10 +2380,11 @@ class AnnolidWindow(MainWindow):
             if str(getattr(shape, "shape_type", "") or "").lower() == "point":
                 visibility = keypoint_visibility_from_shape_object(shape)
                 marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
-            item.setText(
-                '{} <font color="#{:02x}{:02x}{:02x}">{}</font>'.format(
-                    html.escape(base_text), r, g, b, marker
-                )
+            self._set_label_list_item_text(
+                item,
+                base_text=base_text,
+                marker=marker,
+                rgb=rgb,
             )
 
     def set_selected_keypoint_visibility(self, visible: bool) -> None:
@@ -7217,28 +7450,113 @@ class AnnolidWindow(MainWindow):
         return bytes(buffer.data())
 
     def brightnessContrast(self, value):
-        """Run brightness/contrast dialog, converting QImage lazily when needed."""
-        restore_image = None
-        converted = False
+        """Interactive brightness/contrast adjustment with live preview."""
+        _ = value
+        if self.image is None or self.image.isNull():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Brightness/Contrast"),
+                self.tr("Open an image or video frame first."),
+            )
+            return
 
-        if isinstance(self.imageData, QtGui.QImage):
-            image_bytes = self._qimage_to_bytes(self.imageData)
-            if image_bytes is None:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Brightness/Contrast Unavailable"),
-                    self.tr("Unable to prepare image data for adjustment."),
-                )
+        original_image = QtGui.QImage(self.image)
+        original_data = self.imageData
+        key = self.filename or self.imagePath or "__current__"
+        init_brightness, init_contrast = self.brightnessContrast_values.get(key, (0, 0))
+        init_brightness = int(init_brightness or 0)
+        init_contrast = int(init_contrast or 0)
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("Brightness / Contrast"))
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        brightness_label = QtWidgets.QLabel(self.tr("Brightness: 0"), dialog)
+        brightness_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, dialog)
+        brightness_slider.setRange(-100, 100)
+        brightness_slider.setValue(init_brightness)
+
+        contrast_label = QtWidgets.QLabel(self.tr("Contrast: 0"), dialog)
+        contrast_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, dialog)
+        contrast_slider.setRange(-100, 100)
+        contrast_slider.setValue(init_contrast)
+
+        layout.addWidget(brightness_label)
+        layout.addWidget(brightness_slider)
+        layout.addWidget(contrast_label)
+        layout.addWidget(contrast_slider)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok
+            | QtWidgets.QDialogButtonBox.Cancel
+            | QtWidgets.QDialogButtonBox.Reset,
+            QtCore.Qt.Horizontal,
+            dialog,
+        )
+        layout.addWidget(buttons)
+
+        def _apply_preview(brightness: int, contrast: int) -> None:
+            adjusted = self._apply_brightness_contrast_qimage(
+                original_image, brightness, contrast
+            )
+            if adjusted is None or adjusted.isNull():
                 return
-            restore_image = self.imageData
-            self.imageData = image_bytes
-            converted = True
+            self.image = adjusted
+            self.imageData = adjusted
+            self.canvas.loadPixmap(QtGui.QPixmap.fromImage(adjusted))
+            self.paintCanvas()
 
+        def _on_change() -> None:
+            b = int(brightness_slider.value())
+            c = int(contrast_slider.value())
+            brightness_label.setText(self.tr("Brightness: %d") % b)
+            contrast_label.setText(self.tr("Contrast: %d") % c)
+            _apply_preview(b, c)
+
+        brightness_slider.valueChanged.connect(_on_change)
+        contrast_slider.valueChanged.connect(_on_change)
+        _on_change()
+
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        reset_button = buttons.button(QtWidgets.QDialogButtonBox.Reset)
+        if reset_button is not None:
+            reset_button.clicked.connect(
+                lambda: (brightness_slider.setValue(0), contrast_slider.setValue(0))
+            )
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            b = int(brightness_slider.value())
+            c = int(contrast_slider.value())
+            self.brightnessContrast_values[key] = (b, c)
+        else:
+            self.image = original_image
+            self.imageData = original_data
+            self.canvas.loadPixmap(QtGui.QPixmap.fromImage(original_image))
+            self.paintCanvas()
+
+    def _apply_brightness_contrast_qimage(
+        self, image: QtGui.QImage, brightness: int, contrast: int
+    ) -> QtGui.QImage:
+        """Apply brightness/contrast and return a new QImage."""
+        image_bytes = self._qimage_to_bytes(image)
+        if image_bytes is None:
+            return QtGui.QImage()
         try:
-            return super().brightnessContrast(value)
-        finally:
-            if converted:
-                self.imageData = restore_image
+            pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+            b_factor = max(0.0, 1.0 + (float(brightness) / 100.0))
+            c_factor = max(0.0, 1.0 + (float(contrast) / 100.0))
+            if b_factor != 1.0:
+                pil_img = ImageEnhance.Brightness(pil_img).enhance(b_factor)
+            if c_factor != 1.0:
+                pil_img = ImageEnhance.Contrast(pil_img).enhance(c_factor)
+            out_buf = io.BytesIO()
+            pil_img.save(out_buf, format="PNG")
+            qimg = QtGui.QImage.fromData(out_buf.getvalue(), "PNG")
+            return qimg
+        except Exception:
+            logger.debug("Failed to apply brightness/contrast.", exc_info=True)
+            return QtGui.QImage()
 
     def adjustScale(self, initial=False):
         """Safely adjust zoom while handling cases with no active pixmap."""
@@ -7669,13 +7987,16 @@ class AnnolidWindow(MainWindow):
 
     def loadShapes(self, shapes, replace=True):
         self._noSelectionSlot = True
+        if replace:
+            self.labelList.clear()
         for shape in shapes:
             if not isinstance(shape.points[0], QtCore.QPointF):
                 shape.points = [QtCore.QPointF(x, y) for x, y in shape.points]
-            self.addLabel(shape)
+            self.addLabel(shape, rebuild_unique=False)
         self.labelList.clearSelection()
         self._noSelectionSlot = False
         self.canvas.loadShapes(shapes, replace=replace)
+        self._rebuild_unique_label_list()
         try:
             caption = self.labelFile.get_caption() if self.labelFile else None
         except AttributeError:
@@ -7685,6 +8006,41 @@ class AnnolidWindow(MainWindow):
                 self.openCaption()
             self.caption_widget.set_caption(caption)  # Update caption widget
             self.caption_widget.set_image_path(self.filename)
+
+    def remLabels(self, shapes) -> None:
+        super().remLabels(shapes)
+        self._rebuild_unique_label_list()
+
+    def deleteSelectedShapes(self, _value=False) -> None:
+        deleted = self.canvas.deleteSelected() or []
+        if deleted:
+            self.remLabels(deleted)
+            self.setDirty()
+            # Clear selection in instances list after deletion.
+            try:
+                self.labelList.clearSelection()
+            except Exception:
+                pass
+
+    def duplicateSelectedShapes(self, _value=False) -> None:
+        duplicated = self.canvas.duplicateSelectedShapes() or []
+        if not duplicated:
+            return
+        # Add list items for any newly-created shapes.
+        existing_ids: set[int] = set()
+        for idx in range(self.labelList.count()):
+            try:
+                shape = self.labelList.item(idx).shape()
+                if shape is not None:
+                    existing_ids.add(id(shape))
+            except Exception:
+                continue
+        for shape in duplicated:
+            if shape is not None and id(shape) not in existing_ids:
+                self.addLabel(shape, rebuild_unique=False)
+        self._rebuild_unique_label_list()
+        self.shapeSelectionChanged(duplicated)
+        self.setDirty()
 
     def update_flags_from_file(self, label_file):
         """Update flags from label file with proper validation and error handling.

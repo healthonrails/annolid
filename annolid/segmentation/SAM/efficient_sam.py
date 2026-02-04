@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-import cv2
 import numpy as np
 import torch
 from torchvision.transforms import ToTensor
@@ -9,7 +8,7 @@ from PIL import Image
 class EfficientSAM:
     """
     Class for EfficientSAM segmentation.
-    Reference: 
+    Reference:
     https://github.com/yformer/EfficientSAM
     @article{xiong2023efficientsam,
     title={EfficientSAM: Leveraged Masked Image Pretraining for Efficient Segment Anything},
@@ -68,8 +67,11 @@ class EfficientSAM:
         - ax: Matplotlib axis to display the mask.
         - random_color (bool): Whether to use a random color for the mask.
         """
-        color = np.concatenate([np.random.random(3), np.array(
-            [0.6])], axis=0) if random_color else np.array([30 / 255, 144 / 255, 255 / 255, 0.8])
+        color = (
+            np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+            if random_color
+            else np.array([30 / 255, 144 / 255, 255 / 255, 0.8])
+        )
         h, w = mask.shape[-2:]
         mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
         ax.imshow(mask_image)
@@ -86,10 +88,8 @@ class EfficientSAM:
         """
         pos_points = coords[labels == 1]
         neg_points = coords[labels == 0]
-        self._scatter_points(ax, pos_points, color="green",
-                             marker_size=marker_size)
-        self._scatter_points(ax, neg_points, color="red",
-                             marker_size=marker_size)
+        self._scatter_points(ax, pos_points, color="green", marker_size=marker_size)
+        self._scatter_points(ax, neg_points, color="red", marker_size=marker_size)
 
     def _scatter_points(self, ax, points, color, marker_size):
         ax.scatter(
@@ -113,8 +113,9 @@ class EfficientSAM:
         x0, y0, x1, y1 = box
         w, h = x1 - x0, y1 - y0
         ax.add_patch(
-            plt.Rectangle((x0, y0), w, h, edgecolor="yellow",
-                          facecolor=(0, 0, 0, 0), lw=5)
+            plt.Rectangle(
+                (x0, y0), w, h, edgecolor="yellow", facecolor=(0, 0, 0, 0), lw=5
+            )
         )
 
     def show_annotations(self, mask, ax):

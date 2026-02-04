@@ -116,8 +116,10 @@ def test_extract_yolo_results_uses_track_ids_as_group_id() -> None:
     shapes = processor.extract_yolo_results(result)
     assert len(shapes) == 4
     assert {s.group_id for s in shapes} == {42, 99}
-    assert {s.other_data.get("instance_label")
-            for s in shapes} == {"mouse_42", "mouse_99"}
+    assert {s.other_data.get("instance_label") for s in shapes} == {
+        "mouse_42",
+        "mouse_99",
+    }
 
 
 def test_extract_yolo_results_uses_prompt_class_names_override() -> None:
@@ -143,5 +145,7 @@ def test_extract_yolo_results_uses_prompt_class_names_override() -> None:
     )
 
     shapes = processor.extract_yolo_results(result)
-    assert {s.other_data.get("instance_label")
-            for s in shapes} == {"resident", "intruder"}
+    assert {s.other_data.get("instance_label") for s in shapes} == {
+        "resident",
+        "intruder",
+    }

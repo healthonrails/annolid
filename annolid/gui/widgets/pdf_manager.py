@@ -89,7 +89,7 @@ class PdfManager(QtCore.QObject):
                 continue
             seen.add(resolved)
             cleaned.append(resolved)
-        self._pdf_files = cleaned[-self._RECENT_PDFS_LIMIT:]
+        self._pdf_files = cleaned[-self._RECENT_PDFS_LIMIT :]
 
     def _save_recent_pdfs(self) -> None:
         settings = self._settings()
@@ -120,8 +120,7 @@ class PdfManager(QtCore.QObject):
 
     def ensure_pdf_tts_dock(self) -> None:
         if self.pdf_tts_dock is None:
-            dock = QtWidgets.QDockWidget(
-                self.window.tr("PDF Speech"), self.window)
+            dock = QtWidgets.QDockWidget(self.window.tr("PDF Speech"), self.window)
             dock.setObjectName("PdfTtsDock")
             dock.setFeatures(
                 QtWidgets.QDockWidget.DockWidgetMovable
@@ -150,8 +149,7 @@ class PdfManager(QtCore.QObject):
 
     def ensure_pdf_controls_dock(self) -> None:
         if self.pdf_controls_dock is None:
-            dock = QtWidgets.QDockWidget(
-                self.window.tr("PDF Controls"), self.window)
+            dock = QtWidgets.QDockWidget(self.window.tr("PDF Controls"), self.window)
             dock.setObjectName("PdfControlsDock")
             dock.setFeatures(
                 QtWidgets.QDockWidget.DockWidgetMovable
@@ -185,8 +183,7 @@ class PdfManager(QtCore.QObject):
 
     def ensure_pdf_reader_dock(self) -> None:
         if self.pdf_reader_dock is None:
-            dock = QtWidgets.QDockWidget(
-                self.window.tr("PDF Reader"), self.window)
+            dock = QtWidgets.QDockWidget(self.window.tr("PDF Reader"), self.window)
             dock.setObjectName("PdfReaderDock")
             dock.setFeatures(
                 QtWidgets.QDockWidget.DockWidgetMovable
@@ -210,8 +207,7 @@ class PdfManager(QtCore.QObject):
 
             controls.reader_enabled_changed.connect(self._set_reader_enabled)
             controls.pdfjs_mode_requested.connect(self._set_reader_pdfjs_mode)
-            controls.pause_resume_requested.connect(
-                self._toggle_reader_pause_resume)
+            controls.pause_resume_requested.connect(self._toggle_reader_pause_resume)
             controls.stop_requested.connect(self._stop_reader)
             controls.previous_requested.connect(self._reader_prev_sentence)
             controls.next_requested.connect(self._reader_next_sentence)
@@ -223,9 +219,7 @@ class PdfManager(QtCore.QObject):
 
     def ensure_pdf_log_dock(self) -> None:
         if self.pdf_log_dock is None:
-            dock = QtWidgets.QDockWidget(
-                self.window.tr("PDF Reading Log"), self.window
-            )
+            dock = QtWidgets.QDockWidget(self.window.tr("PDF Reading Log"), self.window)
             dock.setObjectName("PdfReadingLogDock")
             dock.setFeatures(
                 QtWidgets.QDockWidget.DockWidgetMovable
@@ -264,8 +258,7 @@ class PdfManager(QtCore.QObject):
         try:
             viewer.load_pdf(pdf_path)
         except Exception as exc:  # pragma: no cover - user-facing dialog
-            logger.error("Failed to open PDF %s: %s",
-                         pdf_path, exc, exc_info=True)
+            logger.error("Failed to open PDF %s: %s", pdf_path, exc, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 self.window,
                 self.window.tr("Failed to Open PDF"),
@@ -295,8 +288,7 @@ class PdfManager(QtCore.QObject):
         self._record_pdf_entry(str(pdf_path))
         self.window.lastOpenDir = str(Path(pdf_path).parent)
         self.window.statusBar().showMessage(
-            self.window.tr("Loaded PDF %1").replace(
-                "%1", Path(pdf_path).name), 3000
+            self.window.tr("Loaded PDF %1").replace("%1", Path(pdf_path).name), 3000
         )
 
     def close_pdf(self) -> None:
@@ -403,11 +395,14 @@ class PdfManager(QtCore.QObject):
         # Clamp to a sane narrow default; users can still resize manually.
         target = max(240, min(360, target + 16))
         try:
-            self.window.resizeDocks(
-                docks, [target] * len(docks), Qt.Horizontal)
+            self.window.resizeDocks(docks, [target] * len(docks), Qt.Horizontal)
         except Exception:
             # Fallback: set a minimum width on the PDF docks only.
-            for dock in (self.pdf_tts_dock, self.pdf_controls_dock, self.pdf_reader_dock):
+            for dock in (
+                self.pdf_tts_dock,
+                self.pdf_controls_dock,
+                self.pdf_reader_dock,
+            ):
                 try:
                     if dock is not None:
                         dock.setMinimumWidth(target)
@@ -468,7 +463,7 @@ class PdfManager(QtCore.QObject):
             except ValueError:
                 pass
         self._pdf_files.append(resolved)
-        self._pdf_files = self._pdf_files[-self._RECENT_PDFS_LIMIT:]
+        self._pdf_files = self._pdf_files[-self._RECENT_PDFS_LIMIT :]
         self._save_recent_pdfs()
         self._populate_pdf_file_list()
 
@@ -482,8 +477,7 @@ class PdfManager(QtCore.QObject):
             return
         voice = self._suggest_default_voice(lang)
         try:
-            controls.set_language_and_voice(
-                lang=lang, voice=voice, persist=True)
+            controls.set_language_and_voice(lang=lang, voice=voice, persist=True)
         except Exception:
             return
 
@@ -536,8 +530,7 @@ class PdfManager(QtCore.QObject):
                                 if t:
                                     block_texts.append(t)
                             if block_texts:
-                                chunk = (chunk + "\n" +
-                                         "\n".join(block_texts)).strip()
+                                chunk = (chunk + "\n" + "\n".join(block_texts)).strip()
                         except Exception:
                             pass
                     if len(chunk) < 60:
@@ -730,8 +723,7 @@ class PdfManager(QtCore.QObject):
                 if not enabled
                 else ""
             )
-            self.pdf_controls_widget.set_controls_enabled(
-                enabled, reason=reason)
+            self.pdf_controls_widget.set_controls_enabled(enabled, reason=reason)
 
     def _sync_pdf_controls_state(self) -> None:
         viewer = self.pdf_viewer
@@ -798,8 +790,7 @@ class PdfManager(QtCore.QObject):
 
     def _on_reader_availability_changed(self, available: bool, reason: str) -> None:
         if self.pdf_reader_controls is not None:
-            self.pdf_reader_controls.set_reader_available(
-                available, reason=reason)
+            self.pdf_reader_controls.set_reader_available(available, reason=reason)
         self._sync_pdf_reader_state()
 
     def _set_reader_enabled(self, enabled: bool) -> None:

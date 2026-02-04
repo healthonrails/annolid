@@ -65,9 +65,9 @@ This breakthrough is driven by an innovative data engine that has automatically 
 
 ### Quickstart in Annolid (video)
 
-1) Select a SAM3 model in the GUI and open your video.  
-2) Enter a short text prompt (e.g., “mouse”, “two mice in cage”). If you have LabelMe boxes/masks next to your frames, SAM3 will seed from them; otherwise it will use text-only prompts.  
-3) Click “Predict” — outputs are stored under the video folder as `*_annotations.ndjson`, plus per-frame JSONs.  
+1) Select a SAM3 model in the GUI and open your video.
+2) Enter a short text prompt (e.g., “mouse”, “two mice in cage”). If you have LabelMe boxes/masks next to your frames, SAM3 will seed from them; otherwise it will use text-only prompts.
+3) Click “Predict” — outputs are stored under the video folder as `*_annotations.ndjson`, plus per-frame JSONs.
 4) If the first pass leaves empty frames, Annolid auto-runs a fast per-frame recovery using the last good masks + text to fill gaps.
 
 ### Programmatic entry points used by Annolid

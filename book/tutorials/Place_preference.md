@@ -5,7 +5,7 @@
 We recommend labeling only the first frame of your video for the zones. Draw polygons around the zones of interest and include the keyword "zone" in the label description field, as shown in the image below.
 ![Labeling Zones](../images/place_preference_zone.png)
 
-## Running Place Preference Analysis 
+## Running Place Preference Analysis
 
 1. Go to the File menu and click on "Place Preference" as shown in the image below.
 ![Place Preference Menu](../images/place_preference_menu.png)
@@ -37,7 +37,7 @@ Before getting started, ensure you have the following:
 - Open your video file.
 - Use AI Polygon to automatically create zone shapes.
 - Name the zones and specify the keyword "zone" in the label description field.
-  
+
 ### 2. Load SLEAP Prediction File
 
 - Go to the file menu and select "Load SLEAP h5"
@@ -70,4 +70,3 @@ Before getting started, ensure you have the following:
 ## Conclusion
 
 By following these steps, you can efficiently convert SLEAP keypoint predictions into JSON files and utilize Annolid for tracking and analysis purposes. Happy tracking!
-

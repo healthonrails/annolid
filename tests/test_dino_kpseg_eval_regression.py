@@ -7,9 +7,7 @@ from annolid.segmentation.dino_kpseg.eval import DinoKPSEGEvalAccumulator
 
 
 def test_eval_accumulator_pck_and_swap_rate_regression() -> None:
-    acc = DinoKPSEGEvalAccumulator(
-        kpt_count=3, thresholds_px=[2.0, 4.0, 8.0, 16.0]
-    )
+    acc = DinoKPSEGEvalAccumulator(kpt_count=3, thresholds_px=[2.0, 4.0, 8.0, 16.0])
 
     gt1 = np.array(
         [

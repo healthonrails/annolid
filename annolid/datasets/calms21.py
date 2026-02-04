@@ -20,14 +20,21 @@ class CalMS21ToLabelme:
         self.output_dir = Path(output_dir)
         self.image_width = 1024  # Original image dimensions
         self.image_height = 570
-        self.body_parts = ['nose', 'left_ear', 'right_ear', 'neck',
-                           'left_hip', 'right_hip', 'tail_base']
+        self.body_parts = [
+            "nose",
+            "left_ear",
+            "right_ear",
+            "neck",
+            "left_hip",
+            "right_hip",
+            "tail_base",
+        ]
         self.video_name = None
         self.behavior_mapping = {
-            0: 'attack',
-            1: 'investigation',
-            2: 'mount',
-            3: 'other'
+            0: "attack",
+            1: "investigation",
+            2: "mount",
+            3: "other",
         }
 
     def convert(self):
@@ -45,32 +52,35 @@ class CalMS21ToLabelme:
                 video_dir = self.output_dir / video_name
                 video_dir.mkdir(parents=True, exist_ok=True)
 
-                keypoints = video_data.get('keypoints', [])
-                scores = video_data.get('scores', [])
-                annotations = video_data.get('annotations', [])
+                keypoints = video_data.get("keypoints", [])
+                scores = video_data.get("scores", [])
+                annotations = video_data.get("annotations", [])
 
                 # Process each frame
-                for frame_idx, (frame_keypoints, frame_scores) in enumerate(zip(keypoints, scores)):
+                for frame_idx, (frame_keypoints, frame_scores) in enumerate(
+                    zip(keypoints, scores)
+                ):
                     labelme_json = self._create_labelme_json(
                         frame_keypoints,
                         frame_scores,
                         annotations[frame_idx] if annotations else None,
-                        video_data.get('metadata', {}),
-                        frame_idx
+                        video_data.get("metadata", {}),
+                        frame_idx,
                     )
 
                     # Save LabelMe JSON
-                    json_path = video_dir / \
-                        f"{self.video_name}_{frame_idx:09d}.json"
-                    with open(json_path, 'w') as f:
+                    json_path = video_dir / f"{self.video_name}_{frame_idx:09d}.json"
+                    with open(json_path, "w") as f:
                         json.dump(labelme_json, f, indent=2)
 
-    def _create_labelme_json(self,
-                             frame_keypoints: np.ndarray,
-                             frame_scores: np.ndarray,
-                             behavior_id: int = None,
-                             metadata: Dict = None,
-                             frame_idx: int = 0) -> Dict:
+    def _create_labelme_json(
+        self,
+        frame_keypoints: np.ndarray,
+        frame_scores: np.ndarray,
+        behavior_id: int = None,
+        metadata: Dict = None,
+        frame_idx: int = 0,
+    ) -> Dict:
         """Create LabelMe JSON for a single frame."""
         shapes = []
 
@@ -80,7 +90,10 @@ class CalMS21ToLabelme:
 
             # Add keypoints for each body part
             for part_idx, part_name in enumerate(self.body_parts):
-                x, y = frame_keypoints[mouse_idx][0][part_idx], frame_keypoints[mouse_idx][1][part_idx]
+                x, y = (
+                    frame_keypoints[mouse_idx][0][part_idx],
+                    frame_keypoints[mouse_idx][1][part_idx],
+                )
                 confidence = frame_scores[mouse_idx][part_idx]
 
                 shape = {
@@ -91,28 +104,28 @@ class CalMS21ToLabelme:
                     "flags": {},
                     "description": f"{confidence:.4f}",
                     "visible": True,
-
                 }
                 shapes.append(shape)
 
         return {
             "version": "5.5.0",
-            "flags": {self.behavior_mapping.get(behavior_id, 'unknown'): True} if behavior_id is not None else {},
+            "flags": {self.behavior_mapping.get(behavior_id, "unknown"): True}
+            if behavior_id is not None
+            else {},
             "shapes": shapes,
             "imagePath": "",
             "imageData": None,
             "imageHeight": self.image_height,
-            "imageWidth": self.image_width
+            "imageWidth": self.image_width,
         }
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(
-        description='Convert CalMS21 to LabelMe format')
-    parser.add_argument('calms21_json', help='Path to CalMS21 JSON file')
-    parser.add_argument(
-        'output_dir', help='Output directory for LabelMe JSON files')
+
+    parser = argparse.ArgumentParser(description="Convert CalMS21 to LabelMe format")
+    parser.add_argument("calms21_json", help="Path to CalMS21 JSON file")
+    parser.add_argument("output_dir", help="Output directory for LabelMe JSON files")
     args = parser.parse_args()
 
     converter = CalMS21ToLabelme(args.calms21_json, args.output_dir)

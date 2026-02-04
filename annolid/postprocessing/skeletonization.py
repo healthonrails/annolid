@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.ndimage import distance_transform_edt, label
+from scipy.ndimage import distance_transform_edt, label as ndi_label
 from skimage.morphology import medial_axis, skeletonize
 from annolid.annotation.labelme2binarymasks import LabelMeProcessor
 from sklearn.decomposition import PCA
@@ -51,7 +51,7 @@ class ShapeProcessor:
         np.ndarray:
             The pruned medial axis.
         """
-        labeled, _ = label(self.medial_axis)
+        labeled, _ = ndi_label(self.medial_axis)
         sizes = np.bincount(labeled.ravel())
         mask_sizes = sizes >= threshold_length
         mask_sizes[0] = 0  # Ensure that background is removed
@@ -80,7 +80,9 @@ class ShapeProcessor:
         axis = pca.components_[0]  # first principal component
         return center, axis
 
-    def refine_keypoints_with_symmetry(self, candidates: dict, extra_features: dict = None) -> dict:
+    def refine_keypoints_with_symmetry(
+        self, candidates: dict, extra_features: dict = None
+    ) -> dict:
         """
         Refine keypoint assignments using symmetry and additional anatomical cues.
 
@@ -109,14 +111,16 @@ class ShapeProcessor:
         if extra_features:
             # For instance, assume the nose should be near the center of eyes and ears.
             face_features = []
-            for feat in ['left_ear', 'right_ear', 'eye_left', 'eye_right']:
+            for feat in ["left_ear", "right_ear", "eye_left", "eye_right"]:
                 if feat in extra_features:
                     face_features.append(np.array(extra_features[feat]))
             if face_features:
                 face_center = np.mean(face_features, axis=0)
                 nose_to_face = np.linalg.norm(nose_candidate - face_center)
                 # Weight the deviation: lower nose_to_face distance further supports nose candidate.
-                deviation *= 0.5 if nose_to_face < 20 else 1.0  # threshold is an example value
+                deviation *= (
+                    0.5 if nose_to_face < 20 else 1.0
+                )  # threshold is an example value
         # Use the deviation as a quality measure: lower is better. If the candidate deviates too much,
         # consider swapping with a more symmetric candidate if available.
         # assign refined nose candidate
@@ -149,11 +153,14 @@ class ShapeProcessor:
         y_coords, x_coords = np.nonzero(self.medial_axis)
         if len(x_coords) == 0 or len(y_coords) == 0:
             logging.warning(
-                "Medial axis has no nonzero points; using default centroid (0, 0).")
+                "Medial axis has no nonzero points; using default centroid (0, 0)."
+            )
             return (0.0, 0.0)
         return (np.mean(x_coords), np.mean(y_coords))
 
-    def calculate_extreme_points_on_medial_axis(self) -> Optional[Dict[str, Tuple[int, int]]]:
+    def calculate_extreme_points_on_medial_axis(
+        self,
+    ) -> Optional[Dict[str, Tuple[int, int]]]:
         """
         Calculate the extreme points (leftmost, rightmost, topmost, bottommost) on the medial axis.
 
@@ -174,7 +181,12 @@ class ShapeProcessor:
         topmost = min(points, key=lambda p: p[1])
         bottommost = max(points, key=lambda p: p[1])
 
-        return {"leftmost": leftmost, "rightmost": rightmost, "topmost": topmost, "bottommost": bottommost}
+        return {
+            "leftmost": leftmost,
+            "rightmost": rightmost,
+            "topmost": topmost,
+            "bottommost": bottommost,
+        }
 
     def distance_to_centroid(self, point: Tuple[float, float]) -> float:
         """
@@ -192,7 +204,9 @@ class ShapeProcessor:
         """
         return np.linalg.norm(np.array(point) - np.array(self.centroid))
 
-    def calculate_distance(self, point1: Tuple[float, float], point2: Tuple[float, float]) -> float:
+    def calculate_distance(
+        self, point1: Tuple[float, float], point2: Tuple[float, float]
+    ) -> float:
         """
         Compute the Euclidean distance between two points.
 
@@ -237,9 +251,8 @@ class ShapeProcessor:
             The minimum distance.
         """
         edge_points = self.calculate_polygon_edge_points()
-        distances = [self.calculate_distance(
-            point, (ex, ey)) for ex, ey in edge_points]
-        return min(distances) if distances else float('inf')
+        distances = [self.calculate_distance(point, (ex, ey)) for ex, ey in edge_points]
+        return min(distances) if distances else float("inf")
 
     def compute_medial_axis_curvature(self) -> list:
         """
@@ -283,8 +296,7 @@ class ShapeProcessor:
                 dot = np.dot(v1, v2)
                 cos_angle = np.clip(dot / (norm1 * norm2), -1.0, 1.0)
                 curvature = np.arccos(cos_angle)
-            curvature_points.append(
-                (curvature, (int(p_curr[0]), int(p_curr[1]))))
+            curvature_points.append((curvature, (int(p_curr[0]), int(p_curr[1]))))
         return curvature_points
 
     def local_thickness(self, point: tuple) -> float:
@@ -318,7 +330,7 @@ class ShapeProcessor:
         # Select head candidate as the point closest to the centroid.
         head_label = min(
             self.extreme_points,
-            key=lambda k: self.distance_to_centroid(self.extreme_points[k])
+            key=lambda k: self.distance_to_centroid(self.extreme_points[k]),
         )
         head_point = self.extreme_points[head_label]
 
@@ -327,13 +339,13 @@ class ShapeProcessor:
         # The tail should be long (high distance from head) and thin (low local thickness).
         epsilon = 1e-6  # small constant to avoid division by zero
         candidate_scores = {}
-        for label, pt in self.extreme_points.items():
-            if label == head_label:
+        for point_name, pt in self.extreme_points.items():
+            if point_name == head_label:
                 continue
             # The candidate score favors points that are far from the head relative to their thickness.
             distance = self.calculate_distance(pt, head_point)
             thickness = self.local_thickness(pt)
-            candidate_scores[label] = distance / (thickness + epsilon)
+            candidate_scores[point_name] = distance / (thickness + epsilon)
         tail_label = max(candidate_scores, key=candidate_scores.get)
         tail_point = self.extreme_points[tail_label]
 
@@ -342,8 +354,10 @@ class ShapeProcessor:
         curvature_points = self.compute_medial_axis_curvature()
         if curvature_points:
             nose_candidates = [
-                cp for cp in curvature_points
-                if self.calculate_distance(cp[1], head_point) < self.calculate_distance(tail_point, head_point) * 0.5
+                cp
+                for cp in curvature_points
+                if self.calculate_distance(cp[1], head_point)
+                < self.calculate_distance(tail_point, head_point) * 0.5
             ]
             if nose_candidates:
                 nose_point = max(nose_candidates, key=lambda x: x[0])[1]
@@ -355,7 +369,7 @@ class ShapeProcessor:
         # Approximate tailbase as the midpoint between head and tail.
         tailbase_point = (
             (head_point[0] + tail_point[0]) / 2,
-            (head_point[1] + tail_point[1]) / 2
+            (head_point[1] + tail_point[1]) / 2,
         )
 
         # Use the geometric centroid as body_center.
@@ -364,7 +378,7 @@ class ShapeProcessor:
             "nose": nose_point,
             "tail": tail_point,
             "tailbase": tailbase_point,
-            "body_center": self.centroid
+            "body_center": self.centroid,
         }
         return labels
 
@@ -378,8 +392,8 @@ class ShapeProcessor:
         head_pt = self.labeled_points["head"]
         current_tail = self.labeled_points["tail"]
         max_dist = self.calculate_distance(head_pt, current_tail)
-        for label, pt in self.labeled_points.items():
-            if label in ["head", "tail"]:
+        for point_name, pt in self.labeled_points.items():
+            if point_name in ["head", "tail"]:
                 continue
             d = self.calculate_distance(head_pt, pt)
             if d > max_dist:
@@ -391,11 +405,11 @@ class ShapeProcessor:
         Visualize the binary mask, medial axis, and key points with annotations.
         """
         plt.figure(figsize=(10, 5))
-        plt.imshow(self.binary_mask, cmap='gray')
-        plt.imshow(self.medial_axis, cmap='jet', alpha=0.5)
-        for label, point in self.labeled_points.items():
-            plt.plot(point[0], point[1], 'o', label=label.capitalize())
-        plt.title('Medial Axis and Labeled Points')
+        plt.imshow(self.binary_mask, cmap="gray")
+        plt.imshow(self.medial_axis, cmap="jet", alpha=0.5)
+        for point_name, point in self.labeled_points.items():
+            plt.plot(point[0], point[1], "o", label=point_name.capitalize())
+        plt.title("Medial Axis and Labeled Points")
         plt.legend()
         plt.show()
 
@@ -435,7 +449,9 @@ def extract_medial_axis(binary_image: np.ndarray) -> np.ndarray:
     return medial
 
 
-def add_key_points_to_labelme_json(json_path: str, instance_names: List[str], is_vis: bool = False) -> None:
+def add_key_points_to_labelme_json(
+    json_path: str, instance_names: List[str], is_vis: bool = False
+) -> None:
     """
     Process a LabelMe JSON file, extract key points for specified instances, and add these as new point annotations.
 
@@ -449,7 +465,7 @@ def add_key_points_to_labelme_json(json_path: str, instance_names: List[str], is
         If True, visualize the medial axis and key points during processing.
     """
     try:
-        with open(json_path, 'r') as f:
+        with open(json_path, "r") as f:
             data = json.load(f)
     except Exception as e:
         logging.error(f"Failed to load JSON file {json_path}: {e}")
@@ -458,21 +474,23 @@ def add_key_points_to_labelme_json(json_path: str, instance_names: List[str], is
     mask_converter = LabelMeProcessor(json_path)
     binary_masks = mask_converter.get_all_masks()
 
-    for binary_mask, label in binary_masks:
-        if label in instance_names:
+    for binary_mask, instance_label in binary_masks:
+        if instance_label in instance_names:
             processor = ShapeProcessor(binary_mask)
             if is_vis:
                 processor.visualize()
             for point_label, point in processor.labeled_points.items():
-                data.setdefault('shapes', []).append({
-                    "label": f"{label}_{point_label}",
-                    "points": [[int(point[0]), int(point[1])]],
-                    "shape_type": "point",
-                    "visible": True,
-                })
+                data.setdefault("shapes", []).append(
+                    {
+                        "label": f"{instance_label}_{point_label}",
+                        "points": [[int(point[0]), int(point[1])]],
+                        "shape_type": "point",
+                        "visible": True,
+                    }
+                )
 
     try:
-        with open(json_path, 'w') as f:
+        with open(json_path, "w") as f:
             json.dump(data, f, indent=4)
     except Exception as e:
         logging.error(f"Failed to save updated JSON file {json_path}: {e}")
@@ -494,16 +512,16 @@ def extract_ground_truth_keypoints(json_path: str) -> Dict[str, Any]:
         Dictionary mapping keypoint labels to their coordinates.
     """
     try:
-        with open(json_path, 'r') as f:
+        with open(json_path, "r") as f:
             data = json.load(f)
     except Exception as e:
         logging.error(f"Error loading {json_path}: {e}")
         return {}
 
     ground_truth = {}
-    for shape in data.get('shapes', []):
-        if shape.get('shape_type') == 'point' and '_' not in shape.get('label', ''):
-            ground_truth[shape['label']] = shape['points'][0]
+    for shape in data.get("shapes", []):
+        if shape.get("shape_type") == "point" and "_" not in shape.get("label", ""):
+            ground_truth[shape["label"]] = shape["points"][0]
     return ground_truth
 
 
@@ -518,29 +536,29 @@ def main(input_folder: str, instance_names: List[str]) -> None:
     instance_names : List[str]
         List of instance names to process.
     """
-    json_files = glob.glob(os.path.join(
-        input_folder, '**/*.json'), recursive=True)
+    json_files = glob.glob(os.path.join(input_folder, "**/*.json"), recursive=True)
     ground_truth_keypoints = None
 
     for json_file in json_files:
         base_filename = os.path.basename(json_file)
-        if '00000000.json' in base_filename:
+        if "00000000.json" in base_filename:
             ground_truth_keypoints = extract_ground_truth_keypoints(json_file)
             logging.info(
-                f"Extracted ground truth keypoints from {json_file}: {ground_truth_keypoints}")
+                f"Extracted ground truth keypoints from {json_file}: {ground_truth_keypoints}"
+            )
         else:
             add_key_points_to_labelme_json(json_file, instance_names)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(levelname)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
-        description="Add key points to LabelMe JSON files.")
+        description="Add key points to LabelMe JSON files."
+    )
     parser.add_argument(
-        "input_folder", help="Path to the folder containing JSON files.")
-    parser.add_argument("instance_names", nargs="+",
-                        help="List of instance names.")
+        "input_folder", help="Path to the folder containing JSON files."
+    )
+    parser.add_argument("instance_names", nargs="+", help="List of instance names.")
     args = parser.parse_args()
 
     main(args.input_folder, args.instance_names)

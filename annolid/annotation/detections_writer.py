@@ -31,11 +31,13 @@ class DetectionsWriter:
     batch processing and realtime pipelines that need to materialize detections.
     """
 
-    def __init__(self,
-                 output_dir: Path,
-                 *,
-                 enable_annotation_store: bool = True,
-                 ndjson_filename: str = "predictions.ndjson"):
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        enable_annotation_store: bool = True,
+        ndjson_filename: str = "predictions.ndjson",
+    ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -49,15 +51,20 @@ class DetectionsWriter:
                     self.ndjson_path.unlink()
                 self.ndjson_path.touch()
             except OSError as exc:
-                logger.error("Unable to initialise NDJSON output at %s: %s",
-                             self.ndjson_path, exc)
+                logger.error(
+                    "Unable to initialise NDJSON output at %s: %s",
+                    self.ndjson_path,
+                    exc,
+                )
                 self.ndjson_path = None
 
-    def write(self,
-              frame_index: int,
-              frame_shape: tuple,
-              shapes: Iterable,
-              frame_other_data: Optional[dict] = None) -> None:
+    def write(
+        self,
+        frame_index: int,
+        frame_shape: tuple,
+        shapes: Iterable,
+        frame_other_data: Optional[dict] = None,
+    ) -> None:
         shapes = list(shapes)
         if not shapes:
             return

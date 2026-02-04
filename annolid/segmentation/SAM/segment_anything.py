@@ -1,4 +1,5 @@
 """modified from https://github.com/wkentaro/labelme/blob/main/labelme/ai/models/segment_anything.py"""
+
 import collections
 import threading
 
@@ -7,7 +8,7 @@ import numpy as np
 import onnxruntime
 import skimage.measure
 import cv2
-from labelme.logger import logger
+from annolid.utils.annotation_compat import logger
 
 
 class SegmentAnythingModel:
@@ -47,9 +48,7 @@ class SegmentAnythingModel:
             )
             if len(self._image_embedding_cache) > 10:
                 self._image_embedding_cache.popitem(last=False)
-            self._image_embedding_cache[
-                self._image.tobytes()
-            ] = self._image_embedding
+            self._image_embedding_cache[self._image.tobytes()] = self._image_embedding
             logger.debug("Done computing image embedding.")
 
     def _get_image_embedding(self):
@@ -112,11 +111,11 @@ def _resize_image(image_size, image):
 
 def postprocess_masks(mask, img_size, input_size, original_size):
     mask = mask.squeeze(0).transpose(1, 2, 0)
-    mask = cv2.resize(mask, (img_size, img_size),
-                      interpolation=cv2.INTER_LINEAR)
-    mask = mask[:input_size[0], :input_size[1], :]
+    mask = cv2.resize(mask, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
+    mask = mask[: input_size[0], : input_size[1], :]
     mask = cv2.resize(
-        mask, (original_size[1], original_size[0]), interpolation=cv2.INTER_LINEAR)
+        mask, (original_size[1], original_size[0]), interpolation=cv2.INTER_LINEAR
+    )
     mask = mask.transpose(2, 0, 1)[None, :, :, :]
     return mask
 
@@ -138,9 +137,8 @@ def _compute_image_embedding(image_size, encoder_session, image):
     )
     x = x.transpose(2, 0, 1)[None, :, :, :]
     input_names = [input.name for input in encoder_session.get_inputs()]
-    if input_names[0] == 'image':
-        output = encoder_session.run(
-            output_names=None, input_feed={"image": x})
+    if input_names[0] == "image":
+        output = encoder_session.run(output_names=None, input_feed={"image": x})
     else:
         output = encoder_session.run(output_names=None, input_feed={"x": x})
     image_embedding = output[0]
@@ -155,17 +153,17 @@ def _get_contour_length(contour):
 
 
 def _compute_mask_from_points(
-        image_size, decoder_session, image, image_embedding,
-        points, point_labels):
+    image_size, decoder_session, image, image_embedding, points, point_labels
+):
     input_point = np.array(points, dtype=np.float32)
     input_label = np.array(point_labels, dtype=np.int32)
 
     onnx_coord = np.concatenate([input_point, np.array([[0.0, 0.0]])], axis=0)[
         None, :, :
     ]
-    onnx_label = np.concatenate([input_label, np.array([-1])], axis=0)[
-        None, :
-    ].astype(np.float32)
+    onnx_label = np.concatenate([input_label, np.array([-1])], axis=0)[None, :].astype(
+        np.float32
+    )
 
     scale, new_height, new_width = _compute_scale_to_resize_image(
         image_size=image_size, image=image
@@ -180,14 +178,18 @@ def _compute_mask_from_points(
 
     input_names = [input.name for input in decoder_session.get_inputs()]
     if len(input_names) <= 3:
-        outputs = decoder_session.run(None, {
-            'image_embeddings': image_embedding,
-            'point_coords': onnx_coord,
-            'point_labels': onnx_label,
-        })
+        outputs = decoder_session.run(
+            None,
+            {
+                "image_embeddings": image_embedding,
+                "point_coords": onnx_coord,
+                "point_labels": onnx_label,
+            },
+        )
         scores, masks = outputs
         masks = postprocess_masks(
-            masks, image_size, (new_height, new_width), np.array(image.shape[:2]))
+            masks, image_size, (new_height, new_width), np.array(image.shape[:2])
+        )
 
     else:
         decoder_inputs = {
@@ -209,9 +211,7 @@ def _compute_mask_from_points(
     )
 
     if 0:
-        imgviz.io.imsave(
-            "mask.jpg", imgviz.label2rgb(mask, imgviz.rgb2gray(image))
-        )
+        imgviz.io.imsave("mask.jpg", imgviz.label2rgb(mask, imgviz.rgb2gray(image)))
     return mask
 
 
@@ -219,6 +219,7 @@ def _compute_polygon_from_points(
     image_size, decoder_session, image, image_embedding, points, point_labels
 ):
     from annolid.annotation.masks import mask_to_polygons
+
     mask = _compute_mask_from_points(
         image_size=image_size,
         decoder_session=decoder_session,
@@ -232,6 +233,5 @@ def _compute_polygon_from_points(
         logger.warning("No polygon found, returning empty polygon.")
         return np.empty((0, 2), dtype=np.float32)
     polys = polygons[0]
-    all_points = np.array(
-        list(zip(polys[0::2], polys[1::2])))
+    all_points = np.array(list(zip(polys[0::2], polys[1::2])))
     return all_points

@@ -27,10 +27,8 @@ class ImageEditPlugin(ModelPluginBase):
             default=None,
             help="Edit mode (default: inferred from provided inputs).",
         )
-        parser.add_argument("--prompt", required=True,
-                            help="Text prompt/instruction.")
-        parser.add_argument("--negative-prompt",
-                            default="", help="Negative prompt.")
+        parser.add_argument("--prompt", required=True, help="Text prompt/instruction.")
+        parser.add_argument("--negative-prompt", default="", help="Negative prompt.")
         parser.add_argument("--width", type=int, default=1024)
         parser.add_argument("--height", type=int, default=1024)
         parser.add_argument("--steps", type=int, default=20)
@@ -168,8 +166,7 @@ class ImageEditPlugin(ModelPluginBase):
             else:
                 mode = "text_to_image"
 
-        init_image = Image.open(args.init_img).convert(
-            "RGB") if args.init_img else None
+        init_image = Image.open(args.init_img).convert("RGB") if args.init_img else None
         mask_image = Image.open(args.mask).convert("L") if args.mask else None
         ref_images: Optional[List[Image.Image]] = None
         if args.ref_image:
@@ -216,9 +213,7 @@ class ImageEditPlugin(ModelPluginBase):
             ),
             sdcpp_vae_path=(str(args.vae) if args.vae else None),
             sdcpp_llm_path=(str(args.llm) if args.llm else None),
-            sdcpp_llm_vision_path=(
-                str(args.llm_vision) if args.llm_vision else None
-            ),
+            sdcpp_llm_vision_path=(str(args.llm_vision) if args.llm_vision else None),
             sdcpp_preset=preset_cfg,
             sdcpp_extra_args=tuple(args.extra_arg or ()),
         )

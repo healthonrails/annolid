@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
-import math
 
 import torch
 import triton
@@ -405,16 +404,16 @@ def connected_components_triton(input_tensor: torch.Tensor):
             - A BxHxW output tensor with dense labels. Background is 0.
             - A BxHxW tensor with the size of the connected component for each pixel.
     """
-    assert (
-        input_tensor.is_cuda and input_tensor.is_contiguous()
-    ), "Input tensor must be a contiguous CUDA tensor."
+    assert input_tensor.is_cuda and input_tensor.is_contiguous(), (
+        "Input tensor must be a contiguous CUDA tensor."
+    )
     out_shape = input_tensor.shape
     if input_tensor.dim() == 4 and input_tensor.shape[1] == 1:
         input_tensor = input_tensor.squeeze(1)
     else:
-        assert (
-            input_tensor.dim() == 3
-        ), "Input tensor must be (B, H, W) or (B, 1, H, W)."
+        assert input_tensor.dim() == 3, (
+            "Input tensor must be (B, H, W) or (B, 1, H, W)."
+        )
 
     B, H, W = input_tensor.shape
     numel = B * H * W
@@ -435,15 +434,20 @@ def connected_components_triton(input_tensor: torch.Tensor):
     )
 
     # --- Phase 2 ---
-    grid_local_prop = lambda meta: (
-        B,
-        triton.cdiv(H, meta["BLOCK_SIZE_H"]) * triton.cdiv(W, meta["BLOCK_SIZE_W"]),
-    )
+    def grid_local_prop(meta):
+        return (
+            B,
+            triton.cdiv(H, meta["BLOCK_SIZE_H"]) * triton.cdiv(W, meta["BLOCK_SIZE_W"]),
+        )
+
     _local_prop_kernel[grid_local_prop](labels, input_tensor, H, W)
 
     # --- Phase 3 ---
     BLOCK_SIZE = 256
-    grid_jump = lambda meta: (triton.cdiv(numel, meta["BLOCK_SIZE"]),)
+
+    def grid_jump(meta):
+        return (triton.cdiv(numel, meta["BLOCK_SIZE"]),)
+
     _pointer_jump_kernel[grid_jump](labels, output, numel, BLOCK_SIZE=BLOCK_SIZE)
 
     # --- Phase 4 ---

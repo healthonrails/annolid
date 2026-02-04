@@ -49,9 +49,7 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_score_threshold_detection = float(
             sam3_runtime.get("score_threshold_detection") or 0.35
         )
-        self.sam3_new_det_thresh = float(
-            sam3_runtime.get("new_det_thresh") or 0.25
-        )
+        self.sam3_new_det_thresh = float(sam3_runtime.get("new_det_thresh") or 0.25)
         self.sam3_propagation_direction = str(
             sam3_runtime.get("propagation_direction") or "both"
         )
@@ -59,8 +57,9 @@ class AdvancedParametersDialog(QDialog):
             "max_frame_num_to_track", None
         )
         self.sam3_device_override = (
-            "" if sam3_runtime.get("device") is None else str(
-                sam3_runtime.get("device"))
+            ""
+            if sam3_runtime.get("device") is None
+            else str(sam3_runtime.get("device"))
         )
         self.sam3_sliding_window_size = int(
             sam3_runtime.get("sliding_window_size") or 5
@@ -70,23 +69,23 @@ class AdvancedParametersDialog(QDialog):
         )
         # Agent seeding defaults
         self.sam3_agent_det_thresh = float(
-            sam3_runtime.get(
-                "agent_det_thresh") or self.sam3_score_threshold_detection
+            sam3_runtime.get("agent_det_thresh") or self.sam3_score_threshold_detection
         )
         self.sam3_agent_window_size = int(
-            sam3_runtime.get(
-                "agent_window_size") or self.sam3_sliding_window_size
+            sam3_runtime.get("agent_window_size") or self.sam3_sliding_window_size
         )
         self.sam3_agent_stride = sam3_runtime.get("agent_stride", None)
         self.sam3_agent_output_dir = str(
             sam3_runtime.get("agent_output_dir") or "sam3_agent_out"
         )
         raw_compile = sam3_runtime.get("compile_model")
-        self.sam3_compile_model = bool(
-            raw_compile) if raw_compile is not None else False
+        self.sam3_compile_model = (
+            bool(raw_compile) if raw_compile is not None else False
+        )
         raw_offload = sam3_runtime.get("offload_video_to_cpu")
-        self.sam3_offload_video_to_cpu = True if raw_offload is None else bool(
-            raw_offload)
+        self.sam3_offload_video_to_cpu = (
+            True if raw_offload is None else bool(raw_offload)
+        )
 
         layout = QVBoxLayout()
         layout.setContentsMargins(14, 14, 14, 14)
@@ -97,8 +96,7 @@ class AdvancedParametersDialog(QDialog):
             "Tooltips and helper text explain how each option affects the workflow."
         )
         intro_label.setWordWrap(True)
-        intro_label.setStyleSheet(
-            "color: palette(window-text); font-weight: 500;")
+        intro_label.setStyleSheet("color: palette(window-text); font-weight: 500;")
 
         tabs = QTabWidget()
         tabs.setTabBarAutoHide(False)
@@ -109,8 +107,7 @@ class AdvancedParametersDialog(QDialog):
         layout.addWidget(intro_label)
         layout.addWidget(tabs)
 
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -148,8 +145,7 @@ class AdvancedParametersDialog(QDialog):
             "Upper bound used during polygon approximation (default 5–20)."
         )
 
-        self.automatic_pause_checkbox = QCheckBox(
-            "Automatic Pause on Error Detection")
+        self.automatic_pause_checkbox = QCheckBox("Automatic Pause on Error Detection")
         self.automatic_pause_checkbox.setChecked(self.automatic_pause_enabled)
         self.automatic_pause_checkbox.setToolTip(
             "Pause processing automatically if the app detects unexpected errors."
@@ -173,7 +169,8 @@ class AdvancedParametersDialog(QDialog):
 
         self.optical_flow_backend_combo = QComboBox()
         self.optical_flow_backend_combo.addItems(
-            ["farneback (default)", "farneback (torch)", "raft (torchvision)"])
+            ["farneback (default)", "farneback (torch)", "raft (torchvision)"]
+        )
         backend_val = str(self.optical_flow_backend).lower()
         if "raft" in backend_val:
             backend_idx = 2
@@ -199,8 +196,7 @@ class AdvancedParametersDialog(QDialog):
         self.compute_optical_flow_checkbox = QCheckBox(
             "Compute Motion Index based on optical flow over instance mask"
         )
-        self.compute_optical_flow_checkbox.setChecked(
-            self.compute_optical_flow)
+        self.compute_optical_flow_checkbox.setChecked(self.compute_optical_flow)
         self.compute_optical_flow_checkbox.setToolTip(
             "Toggle motion index calculation using optical flow across instance masks."
         )
@@ -285,11 +281,9 @@ class AdvancedParametersDialog(QDialog):
         if current_preset and current_preset in presets:
             self.tracker_preset_combo.setCurrentText(str(current_preset))
         else:
-            self.tracker_preset_combo.setCurrentText(
-                self._CUSTOM_TRACKER_PRESET)
+            self.tracker_preset_combo.setCurrentText(self._CUSTOM_TRACKER_PRESET)
 
-        self.mask_enforce_checkbox = QCheckBox(
-            "Clamp keypoints to instance mask")
+        self.mask_enforce_checkbox = QCheckBox("Clamp keypoints to instance mask")
         self.mask_enforce_checkbox.setChecked(
             bool(self._tracker_config.mask_enforce_position)
         )
@@ -322,9 +316,7 @@ class AdvancedParametersDialog(QDialog):
             int(self._tracker_config.mask_enforce_snap_radius)
         )
 
-        self.mask_enforce_reject_checkbox = QCheckBox(
-            "Reject updates outside the mask"
-        )
+        self.mask_enforce_reject_checkbox = QCheckBox("Reject updates outside the mask")
         self.mask_enforce_reject_checkbox.setChecked(
             bool(self._tracker_config.mask_enforce_reject_outside)
         )
@@ -534,9 +526,7 @@ class AdvancedParametersDialog(QDialog):
         tracker_layout.addLayout(tracker_form)
         tracker_layout.addStretch(1)
 
-        self.tracker_preset_combo.currentTextChanged.connect(
-            self._apply_tracker_preset
-        )
+        self.tracker_preset_combo.currentTextChanged.connect(self._apply_tracker_preset)
         return tab
 
     def _apply_tracker_preset(self, preset: str) -> None:
@@ -546,42 +536,45 @@ class AdvancedParametersDialog(QDialog):
             cfg = CutieDinoTrackerConfig.from_preset(str(preset))
         except ValueError:
             return
-        self.keypoint_refine_radius_spinbox.setValue(
-            int(cfg.keypoint_refine_radius))
-        self.keypoint_refine_sigma_spinbox.setValue(
-            float(cfg.keypoint_refine_sigma))
+        self.keypoint_refine_radius_spinbox.setValue(int(cfg.keypoint_refine_radius))
+        self.keypoint_refine_sigma_spinbox.setValue(float(cfg.keypoint_refine_sigma))
         self.keypoint_refine_temperature_spinbox.setValue(
             float(cfg.keypoint_refine_temperature)
         )
         self.mask_enforce_checkbox.setChecked(bool(cfg.mask_enforce_position))
-        self.mask_enforce_radius_spinbox.setValue(
-            int(cfg.mask_enforce_snap_radius))
+        self.mask_enforce_radius_spinbox.setValue(int(cfg.mask_enforce_snap_radius))
         self.mask_enforce_reject_checkbox.setChecked(
             bool(cfg.mask_enforce_reject_outside)
         )
-        self.motion_search_tighten_spinbox.setValue(
-            float(cfg.motion_search_tighten))
+        self.motion_search_tighten_spinbox.setValue(float(cfg.motion_search_tighten))
         self.motion_search_gain_spinbox.setValue(float(cfg.motion_search_gain))
         self.motion_search_flow_gain_spinbox.setValue(
             float(cfg.motion_search_flow_gain)
         )
         self.motion_search_min_radius_spinbox.setValue(
-            float(cfg.motion_search_min_radius))
+            float(cfg.motion_search_min_radius)
+        )
         self.motion_search_max_radius_spinbox.setValue(
-            float(cfg.motion_search_max_radius))
+            float(cfg.motion_search_max_radius)
+        )
         self.motion_search_miss_boost_spinbox.setValue(
-            float(cfg.motion_search_miss_boost))
+            float(cfg.motion_search_miss_boost)
+        )
         self.motion_prior_penalty_weight_spinbox.setValue(
             float(cfg.motion_prior_penalty_weight)
         )
         self.motion_prior_soft_radius_spinbox.setValue(
-            float(cfg.motion_prior_soft_radius_px))
+            float(cfg.motion_prior_soft_radius_px)
+        )
         self.motion_prior_radius_factor_spinbox.setValue(
-            float(cfg.motion_prior_radius_factor))
+            float(cfg.motion_prior_radius_factor)
+        )
         self.motion_prior_miss_relief_spinbox.setValue(
-            float(cfg.motion_prior_miss_relief))
+            float(cfg.motion_prior_miss_relief)
+        )
         self.motion_prior_flow_relief_spinbox.setValue(
-            float(cfg.motion_prior_flow_relief))
+            float(cfg.motion_prior_flow_relief)
+        )
 
     def _build_sam3_tab(self) -> QWidget:
         """Controls specific to SAM3 tracking and agent seeding."""
@@ -602,8 +595,7 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_score_thresh_spinbox = QDoubleSpinBox()
         self.sam3_score_thresh_spinbox.setRange(0.0, 1.0)
         self.sam3_score_thresh_spinbox.setSingleStep(0.01)
-        self.sam3_score_thresh_spinbox.setValue(
-            self.sam3_score_threshold_detection)
+        self.sam3_score_thresh_spinbox.setValue(self.sam3_score_threshold_detection)
         self.sam3_score_thresh_spinbox.setToolTip(
             "Score threshold for SAM3 detections. Lower to accept more masks."
         )
@@ -618,8 +610,7 @@ class AdvancedParametersDialog(QDialog):
 
         self.sam3_direction_combo = QComboBox()
         self.sam3_direction_combo.addItems(["forward", "backward", "both"])
-        idx = self.sam3_direction_combo.findText(
-            self.sam3_propagation_direction)
+        idx = self.sam3_direction_combo.findText(self.sam3_propagation_direction)
         if idx >= 0:
             self.sam3_direction_combo.setCurrentIndex(idx)
 
@@ -627,8 +618,9 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_max_frames_spinbox.setRange(0, 100000)
         self.sam3_max_frames_spinbox.setSpecialValueText("auto")
         self.sam3_max_frames_spinbox.setValue(
-            0 if self.sam3_max_frame_num_to_track in (
-                None, "") else int(self.sam3_max_frame_num_to_track)
+            0
+            if self.sam3_max_frame_num_to_track in (None, "")
+            else int(self.sam3_max_frame_num_to_track)
         )
 
         self.sam3_device_lineedit = QLineEdit(self.sam3_device_override)
@@ -637,17 +629,14 @@ class AdvancedParametersDialog(QDialog):
             "Optional device override for SAM3 tracker (e.g., cuda, mps, cpu). Leave empty for auto."
         )
 
-        self.sam3_compile_checkbox = QCheckBox(
-            "Enable torch.compile (CUDA only)")
+        self.sam3_compile_checkbox = QCheckBox("Enable torch.compile (CUDA only)")
         self.sam3_compile_checkbox.setChecked(bool(self.sam3_compile_model))
         self.sam3_compile_checkbox.setToolTip(
             "Uses torch.compile to speed up SAM3 on NVIDIA GPUs. First run may be slower due to compilation."
         )
 
-        self.sam3_offload_checkbox = QCheckBox(
-            "Offload video to CPU (lower VRAM)")
-        self.sam3_offload_checkbox.setChecked(
-            bool(self.sam3_offload_video_to_cpu))
+        self.sam3_offload_checkbox = QCheckBox("Offload video to CPU (lower VRAM)")
+        self.sam3_offload_checkbox.setChecked(bool(self.sam3_offload_video_to_cpu))
         self.sam3_offload_checkbox.setToolTip(
             "Keep frame storage on CPU to reduce VRAM usage. Disable on powerful GPUs to reduce CPU↔GPU transfers."
         )
@@ -663,8 +652,9 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_window_stride_spinbox.setRange(0, 1000)
         self.sam3_window_stride_spinbox.setSpecialValueText("auto")
         self.sam3_window_stride_spinbox.setValue(
-            0 if self.sam3_sliding_window_stride in (
-                None, "") else int(self.sam3_sliding_window_stride)
+            0
+            if self.sam3_sliding_window_stride in (None, "")
+            else int(self.sam3_sliding_window_stride)
         )
         self.sam3_window_stride_spinbox.setToolTip(
             "Stride between windows; 0 uses window size."
@@ -681,8 +671,7 @@ class AdvancedParametersDialog(QDialog):
 
         self.sam3_agent_window_size_spinbox = QSpinBox()
         self.sam3_agent_window_size_spinbox.setRange(1, 1000)
-        self.sam3_agent_window_size_spinbox.setValue(
-            self.sam3_agent_window_size)
+        self.sam3_agent_window_size_spinbox.setValue(self.sam3_agent_window_size)
         self.sam3_agent_window_size_spinbox.setToolTip(
             "Frames per agent window; first frame of each window is corrected by the agent."
         )
@@ -691,17 +680,14 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_agent_stride_spinbox.setRange(0, 1000)
         self.sam3_agent_stride_spinbox.setSpecialValueText("auto")
         self.sam3_agent_stride_spinbox.setValue(
-            0 if self.sam3_agent_stride in (
-                None, "") else int(self.sam3_agent_stride)
+            0 if self.sam3_agent_stride in (None, "") else int(self.sam3_agent_stride)
         )
         self.sam3_agent_stride_spinbox.setToolTip(
             "Stride between agent windows; 0 uses agent window size."
         )
 
-        self.sam3_agent_output_dir_lineedit = QLineEdit(
-            self.sam3_agent_output_dir)
-        self.sam3_agent_output_dir_lineedit.setPlaceholderText(
-            "sam3_agent_out")
+        self.sam3_agent_output_dir_lineedit = QLineEdit(self.sam3_agent_output_dir)
+        self.sam3_agent_output_dir_lineedit.setPlaceholderText("sam3_agent_out")
         self.sam3_agent_output_dir_lineedit.setToolTip(
             "Directory for agent JSON/PNG outputs."
         )
@@ -821,8 +807,7 @@ class AdvancedParametersDialog(QDialog):
         if hint:
             hint_label = QLabel(hint)
             hint_label.setWordWrap(True)
-            hint_label.setStyleSheet(
-                "color: palette(window-text); font-size: 11px;")
+            hint_label.setStyleSheet("color: palette(window-text); font-size: 11px;")
             column.addWidget(hint_label)
 
         return wrapper
@@ -877,9 +862,7 @@ class AdvancedParametersDialog(QDialog):
         }
         self.sam3_score_threshold_detection = self.sam3_score_thresh_spinbox.value()
         self.sam3_new_det_thresh = self.sam3_new_det_thresh_spinbox.value()
-        self.sam3_propagation_direction = str(
-            self.sam3_direction_combo.currentText()
-        )
+        self.sam3_propagation_direction = str(self.sam3_direction_combo.currentText())
         self.sam3_max_frame_num_to_track = (
             None
             if self.sam3_max_frames_spinbox.value() == 0
@@ -888,25 +871,21 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_device_override = self.sam3_device_lineedit.text().strip()
         if self.sam3_device_override == "":
             self.sam3_device_override = None
-        self.sam3_sliding_window_size = int(
-            self.sam3_window_size_spinbox.value())
+        self.sam3_sliding_window_size = int(self.sam3_window_size_spinbox.value())
         self.sam3_sliding_window_stride = (
             None
             if self.sam3_window_stride_spinbox.value() == 0
             else int(self.sam3_window_stride_spinbox.value())
         )
         self.sam3_agent_det_thresh = self.sam3_agent_det_thresh_spinbox.value()
-        self.sam3_agent_window_size = int(
-            self.sam3_agent_window_size_spinbox.value()
-        )
+        self.sam3_agent_window_size = int(self.sam3_agent_window_size_spinbox.value())
         self.sam3_agent_stride = (
             None
             if self.sam3_agent_stride_spinbox.value() == 0
             else int(self.sam3_agent_stride_spinbox.value())
         )
         self.sam3_agent_output_dir = (
-            self.sam3_agent_output_dir_lineedit.text().strip()
-            or "sam3_agent_out"
+            self.sam3_agent_output_dir_lineedit.text().strip() or "sam3_agent_out"
         )
         self.sam3_compile_model = self.sam3_compile_checkbox.isChecked()
         self.sam3_offload_video_to_cpu = self.sam3_offload_checkbox.isChecked()

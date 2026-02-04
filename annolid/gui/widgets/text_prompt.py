@@ -21,17 +21,15 @@ class AiRectangleWidget(QtWidgets.QWidget):
         self._aiRectanglePrompt = QtWidgets.QLineEdit()
         self._aiRectanglePrompt.setMaxLength(50)
         self._aiRectanglePrompt.setFont(QtGui.QFont("Arial", 10))
-        self._aiRectanglePrompt.setFixedWidth(200)
+        self._aiRectanglePrompt.setFixedWidth(170)
 
         aiRectangleLabel = QtWidgets.QLabel(self.tr("Text Prompt"))
         aiRectangleLabel.setAlignment(QtCore.Qt.AlignCenter)
         aiRectangleLabel.setFont(QtGui.QFont(None, 10))
-        aiRectangleLabel.setFixedWidth(200)
+        aiRectangleLabel.setFixedWidth(170)
 
         # Optional CountGD toggle (off by default)
-        self._useCountGDCheckbox = QtWidgets.QCheckBox(
-            self.tr("Use CountGD")
-        )
+        self._useCountGDCheckbox = QtWidgets.QCheckBox(self.tr("Use CountGD"))
         self._useCountGDCheckbox.setToolTip(
             self.tr(
                 "Enable CountGD-based object counting in addition to "

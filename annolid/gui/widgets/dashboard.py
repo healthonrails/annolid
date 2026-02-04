@@ -7,7 +7,7 @@ quick-action buttons, and workflow guidance for new users.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Callable
+from typing import List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -18,6 +18,7 @@ from qtpy.QtCore import Qt, Signal
 @dataclass
 class RecentProject:
     """Represents a recently opened project or video."""
+
     name: str
     path: str
     last_opened: datetime
@@ -426,8 +427,12 @@ class DashboardWidget(QtWidgets.QWidget):
 
         # Workflow steps
         steps = [
-            ("project", 1, "Define Project",
-             "Set up subjects, behaviors, and keypoints"),
+            (
+                "project",
+                1,
+                "Define Project",
+                "Set up subjects, behaviors, and keypoints",
+            ),
             ("collect", 2, "Collect Data", "Import videos and extract frames"),
             ("annotate", 3, "Annotate", "Label frames with AI assistance"),
             ("train", 4, "Train Model", "Train detection/pose models on your data"),
@@ -521,9 +526,11 @@ class DashboardWidget(QtWidgets.QWidget):
         items = []
         for path in recent_files[:8]:
             if Path(path).exists():
-                items.append(RecentProject(
-                    name=Path(path).name,
-                    path=path,
-                    last_opened=datetime.now(),  # Ideally track actual times
-                ))
+                items.append(
+                    RecentProject(
+                        name=Path(path).name,
+                        path=path,
+                        last_opened=datetime.now(),  # Ideally track actual times
+                    )
+                )
         self.set_recent_items(items)

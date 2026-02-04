@@ -38,17 +38,21 @@ class DinoPatchSimilarity:
         colormap: str = "inferno",
     ) -> Image.Image:
         H, W = base.height, base.width
-        heat_img = Image.fromarray(
-            (heat01 * 255).astype(np.uint8)).resize((W, H), resample=Image.NEAREST)
-        rgba = (cm.get_cmap(colormap)(np.asarray(
-            heat_img) / 255.0) * 255).astype(np.uint8)
+        heat_img = Image.fromarray((heat01 * 255).astype(np.uint8)).resize(
+            (W, H), resample=Image.NEAREST
+        )
+        rgba = (cm.get_cmap(colormap)(np.asarray(heat_img) / 255.0) * 255).astype(
+            np.uint8
+        )
         ov = Image.fromarray(rgba, "RGBA")
         ov.putalpha(int(alpha * 255))
         out = Image.alpha_composite(base.convert("RGBA"), ov)
         if box is not None:
             from PIL import ImageDraw
+
             ImageDraw.Draw(out, "RGBA").rectangle(
-                box, outline=(255, 255, 255, 220), width=2)
+                box, outline=(255, 255, 255, 220), width=2
+            )
         return out
 
     @torch.inference_mode()
@@ -66,7 +70,8 @@ class DinoPatchSimilarity:
         """
         # Extract features [D,h,w]
         feats = self.extractor.extract(
-            image, return_layer="last", normalize=True)  # [D,h,w] CPU
+            image, return_layer="last", normalize=True
+        )  # [D,h,w] CPU
         if isinstance(feats, np.ndarray):
             feats_t = torch.from_numpy(feats)
         else:
@@ -89,8 +94,9 @@ class DinoPatchSimilarity:
         j = min(max(int(click_y_resized / px_y), 0), h - 1)
 
         # Cosine similarity (prefer device matmul if available)
-        device = torch.device(
-            "cuda") if torch.cuda.is_available() else torch.device("cpu")
+        device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
         feats_dev = feats_t.to(device)
         flat = F.normalize(feats_dev.permute(1, 2, 0).reshape(-1, D), dim=1)
         v = F.normalize(feats_dev[:, j, i].reshape(1, D), dim=1)
@@ -98,8 +104,7 @@ class DinoPatchSimilarity:
 
         # Normalize to [0,1]
         smin, smax = float(sims.min()), float(sims.max())
-        heat01 = ((sims - smin) / (smax - smin + 1e-12)
-                  ).detach().to("cpu").numpy()
+        heat01 = ((sims - smin) / (smax - smin + 1e-12)).detach().to("cpu").numpy()
 
         # Box in original image coordinates
         bx0 = int(i * (base.width / w))
@@ -119,6 +124,7 @@ class DinoPatchSimilarity:
 #           CLI
 # -------------------------
 
+
 def _build_argparser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="DINOv3 patch similarity heatmap")
     ap.add_argument("--image", required=True, help="Path to image")
@@ -127,17 +133,32 @@ def _build_argparser() -> argparse.ArgumentParser:
         default="facebook/dinov3-vits16-pretrain-lvd1689m",
         help="Hugging Face model id or legacy alias (e.g., facebook/dinov3-vits16-pretrain-lvd1689m)",
     )
-    ap.add_argument("--short-side", type=int, default=768,
-                    help="Target short side before snapping to patch multiple")
-    ap.add_argument("--click", required=False,
-                    help="Click 'x,y' in original image pixels (defaults to center)")
-    ap.add_argument("--opacity", type=float, default=0.55,
-                    help="Overlay alpha in [0,1]")
+    ap.add_argument(
+        "--short-side",
+        type=int,
+        default=768,
+        help="Target short side before snapping to patch multiple",
+    )
+    ap.add_argument(
+        "--click",
+        required=False,
+        help="Click 'x,y' in original image pixels (defaults to center)",
+    )
+    ap.add_argument(
+        "--opacity", type=float, default=0.55, help="Overlay alpha in [0,1]"
+    )
     ap.add_argument("--out", default="overlay.png", help="Output image path")
     ap.add_argument(
-        "--device", choices=["cuda", "mps", "cpu"], default=None, help="Force compute device")
-    ap.add_argument("--no-overlay", action="store_true",
-                    help="Only write heatmap .npy; skip PNG overlay")
+        "--device",
+        choices=["cuda", "mps", "cpu"],
+        default=None,
+        help="Force compute device",
+    )
+    ap.add_argument(
+        "--no-overlay",
+        action="store_true",
+        help="Only write heatmap .npy; skip PNG overlay",
+    )
     return ap
 
 
@@ -152,21 +173,24 @@ def _parse_click(val: Optional[str], w: int, h: int) -> Tuple[int, int]:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     ap = _build_argparser()
     args = ap.parse_args()
 
     # Build extractor per user choices
-    cfg = Dinov3Config(model_name=args.model,
-                       short_side=args.short_side, device=args.device)
+    cfg = Dinov3Config(
+        model_name=args.model, short_side=args.short_side, device=args.device
+    )
     engine = DinoPatchSimilarity(Dinov3FeatureExtractor(cfg))
 
     img = Image.open(args.image).convert("RGB")
     click = _parse_click(args.click, img.width, img.height)
 
     res = engine.similarity(
-        img, click_xy=click, alpha=args.opacity, return_overlay=(not args.no_overlay))
+        img, click_xy=click, alpha=args.opacity, return_overlay=(not args.no_overlay)
+    )
 
     # Save outputs
     np.save(args.out.replace(".png", "_heat.npy"), res.heat01)

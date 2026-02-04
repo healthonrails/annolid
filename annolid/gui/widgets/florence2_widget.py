@@ -87,9 +87,7 @@ class Florence2Widget(QtWidgets.QWidget):
             "Number of frames to skip between Florence-2 runs when processing the entire video."
         )
 
-        self.replace_checkbox = QtWidgets.QCheckBox(
-            "Replace existing Florence shapes"
-        )
+        self.replace_checkbox = QtWidgets.QCheckBox("Replace existing Florence shapes")
         self.replace_checkbox.setChecked(True)
         self.replace_checkbox.setToolTip(
             "Remove shapes created by Florence-2 before adding new ones."
@@ -244,8 +242,7 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
             QtWidgets.QMessageBox.warning(
                 self.window,
                 self.window.tr("No video loaded"),
-                self.window.tr(
-                    "Open a video before processing it with Florence-2."),
+                self.window.tr("Open a video before processing it with Florence-2."),
             )
             return
         self._start_florence_job(request, video_path=video_path)
@@ -262,7 +259,8 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
                 self.window,
                 self.window.tr("Florence-2 busy"),
                 self.window.tr(
-                    "Please wait for the current Florence-2 task to finish."),
+                    "Please wait for the current Florence-2 task to finish."
+                ),
             )
             return
 
@@ -277,27 +275,18 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
         self._florence_thread = QtCore.QThread()
         self._florence_worker.moveToThread(self._florence_thread)
         self._florence_worker.start_signal.connect(self._florence_worker.run)
-        self._florence_worker.result_signal.connect(
-            self._handle_florence_result)
-        self._florence_worker.finished_signal.connect(
-            self._handle_florence_finished
-        )
-        self._florence_worker.finished_signal.connect(
-            self._florence_thread.quit)
-        self._florence_worker.finished_signal.connect(
-            self._florence_worker.deleteLater
-        )
+        self._florence_worker.result_signal.connect(self._handle_florence_result)
+        self._florence_worker.finished_signal.connect(self._handle_florence_finished)
+        self._florence_worker.finished_signal.connect(self._florence_thread.quit)
+        self._florence_worker.finished_signal.connect(self._florence_worker.deleteLater)
         self._florence_thread.finished.connect(self._clear_florence_worker)
-        self._florence_thread.finished.connect(
-            self._florence_thread.deleteLater)
+        self._florence_thread.finished.connect(self._florence_thread.deleteLater)
 
         self._running_florence_request = request
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         self.window.statusBar().showMessage(self.window.tr("Running Florence-2…"))
         self._florence_thread.start()
-        QtCore.QTimer.singleShot(
-            0, lambda: self._florence_worker.start_signal.emit()
-        )
+        QtCore.QTimer.singleShot(0, lambda: self._florence_worker.start_signal.emit())
 
     @staticmethod
     def _execute_florence_job(
@@ -309,8 +298,7 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
     ) -> FlorenceResultPayload:
         if request.target == "frame":
             if image is None:
-                raise ValueError(
-                    "Florence-2 frame request missing image data.")
+                raise ValueError("Florence-2 frame request missing image data.")
             result = predictor.predict(
                 image,
                 text_input=request.text_input,
@@ -321,8 +309,7 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
             return request, result
 
         if video_path is None:
-            raise ValueError(
-                "Florence-2 video request requires an open video file.")
+            raise ValueError("Florence-2 video request requires an open video file.")
 
         process_nth_frame_from_video(
             video_path,

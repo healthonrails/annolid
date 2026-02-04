@@ -109,7 +109,9 @@ class InstanceState:
         for kp in keypoints:
             self.upsert_keypoint(kp)
 
-    def set_mask(self, *, bitmap: Optional[np.ndarray], polygon: Optional[MaskPolygon]) -> None:
+    def set_mask(
+        self, *, bitmap: Optional[np.ndarray], polygon: Optional[MaskPolygon]
+    ) -> None:
         self.mask_bitmap = bitmap if bitmap is None else np.asarray(bitmap)
         self.polygon = list(polygon) if polygon is not None else None
 
@@ -123,7 +125,8 @@ class InstanceRegistry:
 
     instances: MutableMapping[str, InstanceState] = field(default_factory=dict)
     _keypoint_index: Dict[str, Tuple[str, str]] = field(
-        default_factory=dict, init=False)
+        default_factory=dict, init=False
+    )
 
     def ensure_instance(self, label: str) -> InstanceState:
         if label not in self.instances:
@@ -152,7 +155,9 @@ class InstanceRegistry:
             payload.extend(instance.to_tracker_payload())
         return payload
 
-    def apply_tracker_results(self, results: Iterable[KeypointPayload], frame_number: Optional[int] = None) -> None:
+    def apply_tracker_results(
+        self, results: Iterable[KeypointPayload], frame_number: Optional[int] = None
+    ) -> None:
         for result in results:
             key = str(result["id"])
             keypoint = self.get_keypoint(key)
@@ -175,7 +180,11 @@ class InstanceRegistry:
             instance.last_updated_frame = frame_number
 
     def instances_with_masks(self) -> List[InstanceState]:
-        return [instance for instance in self.instances.values() if instance.polygon is not None]
+        return [
+            instance
+            for instance in self.instances.values()
+            if instance.polygon is not None
+        ]
 
     def __iter__(self):  # pragma: no cover - convenience
         return iter(self.instances.values())

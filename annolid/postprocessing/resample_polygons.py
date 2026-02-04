@@ -18,7 +18,7 @@ def resample_polygon(points, num_points):
         points = np.vstack([points, points[0]])
 
     # Compute Euclidean distances between consecutive points
-    dists = np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1))
+    dists = np.sqrt(np.sum(np.diff(points, axis=0) ** 2, axis=1))
     cumulative = np.concatenate(([0], np.cumsum(dists)))
     total_length = cumulative[-1]
 
@@ -41,12 +41,11 @@ def resample_polygon(points, num_points):
 
 def main(args):
     # Configure logging
-    logging.basicConfig(level=logging.INFO,
-                        format='%(levelname)s: %(message)s')
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     logging.info("Reading input JSON file: %s", args.input)
 
     # Read the input JSON file
-    with open(args.input, 'r') as f:
+    with open(args.input, "r") as f:
         data = json.load(f)
 
     # List to hold the new, resampled polygon shapes
@@ -57,12 +56,17 @@ def main(args):
         if shape.get("shape_type") == "polygon":
             original_points = shape.get("points", [])
             if len(original_points) < 2:
-                logging.warning("Skipping shape '%s' because it has fewer than 2 points.", shape.get(
-                    "label", "unknown"))
+                logging.warning(
+                    "Skipping shape '%s' because it has fewer than 2 points.",
+                    shape.get("label", "unknown"),
+                )
                 continue
 
-            logging.info("Resampling shape '%s' with %d original points.", shape.get(
-                "label", "unknown"), len(original_points))
+            logging.info(
+                "Resampling shape '%s' with %d original points.",
+                shape.get("label", "unknown"),
+                len(original_points),
+            )
             new_points = resample_polygon(original_points, args.points)
 
             # Create a new shape with a modified label
@@ -76,20 +80,23 @@ def main(args):
     data["shapes"].extend(resampled_shapes)
 
     # Save the updated JSON to the output file
-    with open(args.output, 'w') as f:
+    with open(args.output, "w") as f:
         json.dump(data, f, indent=2)
     logging.info("Resampled polygons saved to %s", args.output)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Resample polygon points in a JSON file.")
-    parser.add_argument('--input', required=True,
-                        help="Path to the input JSON file.")
-    parser.add_argument('--output', required=True,
-                        help="Path to the output JSON file.")
-    parser.add_argument('--points', type=int, required=True,
-                        help="Desired number of points per polygon.")
+        description="Resample polygon points in a JSON file."
+    )
+    parser.add_argument("--input", required=True, help="Path to the input JSON file.")
+    parser.add_argument("--output", required=True, help="Path to the output JSON file.")
+    parser.add_argument(
+        "--points",
+        type=int,
+        required=True,
+        help="Desired number of points per polygon.",
+    )
 
     args = parser.parse_args()
     main(args)

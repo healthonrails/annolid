@@ -1,13 +1,25 @@
 from pathlib import Path
 import os
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QTableWidget, QFileDialog,
-    QTableWidgetItem, QProgressBar, QMessageBox, QAbstractItemView,
-    QHBoxLayout, QTextEdit
+    QWidget,
+    QVBoxLayout,
+    QPushButton,
+    QTableWidget,
+    QFileDialog,
+    QTableWidgetItem,
+    QProgressBar,
+    QMessageBox,
+    QAbstractItemView,
+    QHBoxLayout,
+    QTextEdit,
 )
 from qtpy.QtCore import Signal, Qt, Slot
 from annolid.data.videos import extract_frames_from_videos
-from annolid.gui.workers import FrameExtractorWorker, ProcessVideosWorker, TrackAllWorker
+from annolid.gui.workers import (
+    FrameExtractorWorker,
+    ProcessVideosWorker,
+    TrackAllWorker,
+)
 from annolid.utils.files import find_most_recent_file
 from annolid.utils.annotation_store import AnnotationStore
 from annolid.utils.logger import logger
@@ -97,16 +109,16 @@ class VideoManagerWidget(QWidget):
         self.main_layout.addWidget(self.chat_display)
 
     def import_videos(self):
-        folder_path = QFileDialog.getExistingDirectory(
-            self, "Select Video Folder")
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Video Folder")
         if not folder_path:
             return
 
-        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.mpg'}
+        video_extensions = {".mp4", ".avi", ".mov", ".mkv", ".mpg"}
         video_files = [
             os.path.join(root, file)
             for root, _, files in os.walk(folder_path)
-            for file in files if os.path.splitext(file)[1].lower() in video_extensions
+            for file in files
+            if os.path.splitext(file)[1].lower() in video_extensions
         ]
 
         for video in video_files:
@@ -115,14 +127,14 @@ class VideoManagerWidget(QWidget):
 
     def check_json_exists(self, video_path):
         """Check if a JSON label file exists for the video's first frame."""
-        video_name = Path(video_path).stem
-        output_folder = Path(video_path).with_suffix('')  # e.g., video_name/
-        json_file = find_most_recent_file(output_folder, '.json')
+        output_folder = Path(video_path).with_suffix("")  # e.g., video_name/
+        json_file = find_most_recent_file(output_folder, ".json")
         if json_file and Path(json_file).exists():
             return "Yes"
 
         store = AnnotationStore.for_frame_path(
-            output_folder / f"{output_folder.name}_000000000.json")
+            output_folder / f"{output_folder.name}_000000000.json"
+        )
         if store.store_path.exists() and list(store.iter_frames()):
             return "Yes"
 
@@ -146,14 +158,17 @@ class VideoManagerWidget(QWidget):
         load_button = QPushButton("Load")
         # Use a partial to pass video_path, row determination will be dynamic
         load_button.clicked.connect(
-            lambda checked=False, vp=video_path: self.load_video_and_response(vp))  # Pass video_path
+            lambda checked=False, vp=video_path: self.load_video_and_response(vp)
+        )  # Pass video_path
         self.video_table.setCellWidget(row_position, 2, load_button)
 
         # Add Close Button
         close_button = QPushButton("Close")
         # For close, knowing the row index might not be as critical if it just emits a global close
         close_button.clicked.connect(
-            lambda checked=False, r=row_position: self.close_video_and_clear_by_sender_or_row(r))
+            lambda checked=False,
+            r=row_position: self.close_video_and_clear_by_sender_or_row(r)
+        )
         self.video_table.setCellWidget(row_position, 3, close_button)
 
         # Add Delete Button
@@ -179,7 +194,8 @@ class VideoManagerWidget(QWidget):
                 # Check if cellWidget in column 4 (Delete button column) is our button
                 if self.video_table.cellWidget(row, 4) == button:
                     video_path_to_delete = button.property(
-                        "video_path")  # Retrieve stored path
+                        "video_path"
+                    )  # Retrieve stored path
                     # Now call the original delete_video logic with the correct current row
                     self.delete_video(row, video_path_to_delete)
                     break  # Found and processed, exit loop
@@ -208,20 +224,22 @@ class VideoManagerWidget(QWidget):
         self.chat_display.clear()
         self.chat_display.setVisible(False)
         if row_closed != -1:
-            QMessageBox.information(self, "Video Closed",
-                                    f"Video '{video_name_closed}' (formerly at row {row_closed + 1}) interface closed.")
-        else:
             QMessageBox.information(
-                self, "Video Closed", "Video interface closed.")
+                self,
+                "Video Closed",
+                f"Video '{video_name_closed}' (formerly at row {row_closed + 1}) interface closed.",
+            )
+        else:
+            QMessageBox.information(self, "Video Closed", "Video interface closed.")
 
     def load_video_and_response(self, video_path):
-        response_file = Path(video_path).with_suffix('.txt')
+        response_file = Path(video_path).with_suffix(".txt")
 
         # Check if response file exists
         if response_file.exists():
             try:
                 # Read response content
-                with open(response_file, 'r') as file:
+                with open(response_file, "r") as file:
                     content = file.read()
 
                 # Emit signal to load the video (or pass to a player widget)
@@ -231,30 +249,32 @@ class VideoManagerWidget(QWidget):
                 self.chat_display.setVisible(True)
                 self.chat_display.clear()
                 self.chat_display.append(
-                    f"<b>Response for:</b> {os.path.basename(video_path)}<br><br>")
-                self.chat_display.append(content.replace('\n', '<br>'))
+                    f"<b>Response for:</b> {os.path.basename(video_path)}<br><br>"
+                )
+                self.chat_display.append(content.replace("\n", "<br>"))
 
             except Exception as e:
-                QMessageBox.critical(
-                    self, "Error", f"Failed to load response: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to load response: {e}")
         else:
             self.video_selected.emit(video_path)
 
     def track_all_videos(self):
         """Initiate Track All for all imported videos with JSON label files."""
         if not self.imported_videos:
-            QMessageBox.warning(self, "No Videos",
-                                "Please import videos before tracking.")
+            QMessageBox.warning(
+                self, "No Videos", "Please import videos before tracking."
+            )
             return
 
         # Get all video paths
-        video_paths = [self.video_table.item(row, 1).text()
-                       for row in range(self.video_table.rowCount())]
+        video_paths = [
+            self.video_table.item(row, 1).text()
+            for row in range(self.video_table.rowCount())
+        ]
 
         # Initialize worker
         self.worker = TrackAllWorker(video_paths=video_paths, parent=self)
-        self.track_all_worker_created.emit(
-            self.worker)  # Emit the worker instance
+        self.track_all_worker_created.emit(self.worker)  # Emit the worker instance
         self.worker.progress.connect(self.update_track_progress)
         self.worker.finished.connect(self.on_track_all_complete)
         self.worker.error.connect(self.show_error)
@@ -266,12 +286,17 @@ class VideoManagerWidget(QWidget):
 
     def stop_tracking(self):
         """Stop the Track All worker."""
-        if hasattr(self, 'worker') and self.worker.isRunning():
+        if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.stop()
             # Also tell AnnolidWindow to finalize progress for the video that was interrupted
-            if self.parent() and hasattr(self.parent(), '_handle_track_all_video_finished') and self.worker.current_processing_video_path:  # you'd need to store this in worker
+            if (
+                self.parent()
+                and hasattr(self.parent(), "_handle_track_all_video_finished")
+                and self.worker.current_processing_video_path
+            ):  # you'd need to store this in worker
                 self.parent()._handle_track_all_video_finished(
-                    self.worker.current_processing_video_path)
+                    self.worker.current_processing_video_path
+                )
         self.stop_track_button.setVisible(False)
         self.progress_bar.setVisible(False)
 
@@ -288,7 +313,7 @@ class VideoManagerWidget(QWidget):
         self.progress_bar.setVisible(False)
         self.update_json_status()  # Refresh JSON Labeled column
         for video_path in self.imported_videos:
-            output_folder = Path(video_path).with_suffix('')
+            output_folder = Path(video_path).with_suffix("")
             self.output_folder_ready.emit(str(output_folder))
 
     def show_error(self, error_message):
@@ -297,10 +322,15 @@ class VideoManagerWidget(QWidget):
         QMessageBox.warning(self, "Error", error_message)
 
     def delete_video(self, row, video_path):
-        if QMessageBox.question(
-            self, "Delete Video", "Are you sure you want to delete this video from the list?",
-            QMessageBox.Yes | QMessageBox.No
-        ) == QMessageBox.Yes:
+        if (
+            QMessageBox.question(
+                self,
+                "Delete Video",
+                "Are you sure you want to delete this video from the list?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            == QMessageBox.Yes
+        ):
             self.imported_videos.discard(video_path)
             self.video_table.removeRow(row)
 
@@ -312,27 +342,28 @@ class VideoManagerWidget(QWidget):
             return
 
         video_path = self.video_table.item(selected_row, 1).text()
-        response_file = Path(video_path).with_suffix('.txt')
+        response_file = Path(video_path).with_suffix(".txt")
 
         if not response_file.exists():
-            QMessageBox.warning(self, "File Not Found",
-                                "No response file found for the selected video.")
+            QMessageBox.warning(
+                self, "File Not Found", "No response file found for the selected video."
+            )
             return
 
         # Display response content
         try:
-            with open(response_file, 'r') as file:
+            with open(response_file, "r") as file:
                 content = file.read()
 
             self.chat_display.setVisible(True)
             self.chat_display.clear()
             self.chat_display.append(
-                f"<b>Response for:</b> {response_file.name}<br><br>")
-            self.chat_display.append(content.replace('\n', '<br>'))
+                f"<b>Response for:</b> {response_file.name}<br><br>"
+            )
+            self.chat_display.append(content.replace("\n", "<br>"))
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to load response: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load response: {e}")
 
     def update_progress(self, value):
         """
@@ -358,7 +389,8 @@ class VideoManagerWidget(QWidget):
 
         # Optionally, notify the user
         QMessageBox.information(
-            self, "Clear All", "All videos and results have been cleared.")
+            self, "Clear All", "All videos and results have been cleared."
+        )
 
     def update_json_status(self):
         """Update the JSON Labeled column for all videos in the table."""
@@ -381,7 +413,7 @@ class VideoManagerWidget(QWidget):
         try:
             json_filename = Path(json_filename)
             # Validate JSON file
-            if not json_filename.exists() or json_filename.suffix != '.json':
+            if not json_filename.exists() or json_filename.suffix != ".json":
                 logger.warning(f"Invalid JSON file: {json_filename}")
                 return
 
@@ -392,19 +424,21 @@ class VideoManagerWidget(QWidget):
                     json_item = QTableWidgetItem("Yes")
                     json_item.setFlags(json_item.flags() & ~Qt.ItemIsEditable)
                     self.video_table.setItem(row, 5, json_item)
-                    logger.debug(
-                        f"Updated JSON Labeled to 'Yes' for {video_path}")
+                    logger.debug(f"Updated JSON Labeled to 'Yes' for {video_path}")
                     break
             else:
                 logger.warning(f"Video not found in table: {video_path}")
 
         except Exception as e:
             logger.error(
-                f"Failed to update JSON Labeled for {video_path}: {str(e)}", exc_info=True)
+                f"Failed to update JSON Labeled for {video_path}: {str(e)}",
+                exc_info=True,
+            )
 
     def on_extraction_complete(self, output_folder):
         QMessageBox.information(
-            self, "Extraction Complete", "Frame extraction finished successfully!")
+            self, "Extraction Complete", "Frame extraction finished successfully!"
+        )
         self.progress_bar.setValue(100)
         # Emit signal to notify the main window
         self.output_folder_ready.emit(output_folder)
@@ -421,12 +455,12 @@ class VideoManagerWidget(QWidget):
     def extract_frames(self):
         if not self.imported_videos:
             QMessageBox.warning(
-                self, "No Videos", "Please import videos before extracting frames.")
+                self, "No Videos", "Please import videos before extracting frames."
+            )
             return
 
         # Select output folder
-        output_folder = QFileDialog.getExistingDirectory(
-            self, "Select Output Folder")
+        output_folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
         if not output_folder:
             return
         self.progress_bar.setVisible(True)
@@ -443,16 +477,14 @@ class VideoManagerWidget(QWidget):
             for idx, video_path in enumerate(self.imported_videos, start=1):
                 # Extract frames for the current video
                 video_folder = os.path.dirname(video_path)
-                extract_frames_from_videos(
-                    video_folder, output_folder, num_frames=5)
+                extract_frames_from_videos(video_folder, output_folder, num_frames=5)
 
                 # Update progress bar
                 progress = int((idx / total_videos) * 100)
                 self.progress_bar.setValue(progress)
 
             self.progress_bar.setValue(100)
-            QMessageBox.information(
-                self, "Success", "Frame extraction completed.")
+            QMessageBox.information(self, "Success", "Frame extraction completed.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred: {e}")
         finally:
@@ -460,17 +492,18 @@ class VideoManagerWidget(QWidget):
 
     def process_all_videos(self):
         if not self.imported_videos:
-            QMessageBox.warning(self, "No Videos",
-                                "Please import videos before processing.")
+            QMessageBox.warning(
+                self, "No Videos", "Please import videos before processing."
+            )
             return
 
         # Initialize behavior agent
         try:
             from annolid.agents import behavior_agent
+
             agent = behavior_agent.initialize_agent()
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to initialize agent: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to initialize agent: {str(e)}")
             return
 
         # Create and start the worker

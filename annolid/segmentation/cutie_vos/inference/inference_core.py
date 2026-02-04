@@ -192,15 +192,15 @@ class InferenceCore:
         image: 3*H*W
         mask: H*W (if idx mask) or len(objects)*H*W or None
         objects: list of object ids that are valid in the mask Tensor.
-                The ids themselves do not need to be consecutive/in order, but they need to be 
+                The ids themselves do not need to be consecutive/in order, but they need to be
                 in the same position in the list as the corresponding mask
                 in the tensor in non-idx-mask mode.
-                objects is ignored if the mask is None. 
+                objects is ignored if the mask is None.
                 If idx_mask is False and objects is None, we sequentially infer the object ids.
         idx_mask: if True, mask is expected to contain an object id at every pixel.
                   If False, mask should have multiple channels with each channel representing one object.
         end: if we are at the end of the sequence, we do not need to update memory
-            if unsure just set it to False 
+            if unsure just set it to False
         delete_buffer: whether to delete the image feature buffer after this step
         force_permanent: the memory recorded this frame will be added to the permanent memory
         """

@@ -1,6 +1,6 @@
 """
 Modified from https://github.com/nwojke/deep_sort
-Reference: 
+Reference:
 @inproceedings{Wojke2017simple,
   title={Simple Online and Realtime Tracking with a Deep Association Metric},
   author={Wojke, Nicolai and Bewley, Alex and Paulus, Dietrich},
@@ -21,9 +21,9 @@ Reference:
   doi={10.1109/WACV.2018.00087}
 }
 """
+
 from annolid.tracker import kalman_filter
 from annolid.tracker import match
-from enum import Enum
 import numpy as np
 
 
@@ -69,6 +69,7 @@ class Detection(object):
         ret[:2] += ret[2:] / 2
         ret[2] /= ret[3]
         return ret
+
 
 class TrackState:
     """
@@ -118,7 +119,7 @@ class Track:
     hits : int
         Total number of measurement updates.
     age : int
-        Total number of frames since first occurance.
+        Total number of frames since first occurrence.
     time_since_update : int
         Total number of frames since last measurement update.
     state : TrackState
@@ -128,8 +129,7 @@ class Track:
         vector is added to this list.
     """
 
-    def __init__(self, mean, covariance, track_id, n_init, max_age,
-                 feature=None):
+    def __init__(self, mean, covariance, track_id, n_init, max_age, feature=None):
         self.mean = mean
         self.covariance = covariance
         self.track_id = track_id
@@ -193,7 +193,8 @@ class Track:
             The associated detection.
         """
         self.mean, self.covariance = kf.update(
-            self.mean, self.covariance, detection.to_xyah())
+            self.mean, self.covariance, detection.to_xyah()
+        )
         self.features.append(detection.feature)
 
         self.hits += 1
@@ -202,16 +203,14 @@ class Track:
             self.state = TrackState.Confirmed
 
     def mark_missed(self):
-        """Mark this track as missed (no association at the current time step).
-        """
+        """Mark this track as missed (no association at the current time step)."""
         if self.state == TrackState.Tentative:
             self.state = TrackState.Deleted
         elif self.time_since_update > self._max_age:
             self.state = TrackState.Deleted
 
     def is_tentative(self):
-        """Returns True if this track is tentative (unconfirmed).
-        """
+        """Returns True if this track is tentative (unconfirmed)."""
         return self.state == TrackState.Tentative
 
     def is_confirmed(self):
@@ -222,17 +221,13 @@ class Track:
         """Returns True if this track is dead and should be deleted."""
         return self.state == TrackState.Deleted
 
-class Tracker():
+
+class Tracker:
     """
-    Mutiple aninal tracker.
+    Multiple animal tracker.
     """
 
-    def __init__(self,
-                 metric,
-                 max_iou_distance=0.7,
-                 max_age=100,
-                 n_init=3
-                 ):
+    def __init__(self, metric, max_iou_distance=0.7, max_age=100, n_init=3):
         self.metric = metric
         self.max_iou_distance = max_iou_distance
         self.max_age = max_age
@@ -247,13 +242,10 @@ class Tracker():
             track.predict(self.kf)
 
     def update(self, detections):
-        matches, unmatched_tracks, unmatched_detections = \
-            self.match(detections)
+        matches, unmatched_tracks, unmatched_detections = self.match(detections)
 
         for track_idx, detection_idx in matches:
-            self.tracks[track_idx].update(
-                self.kf, detections[detection_idx]
-            )
+            self.tracks[track_idx].update(self.kf, detections[detection_idx])
         for track_idx in unmatched_tracks:
             self.tracks[track_idx].mark_missed()
 
@@ -262,10 +254,9 @@ class Tracker():
 
         self.tracks = [t for t in self.tracks if not t.is_deleted()]
 
-        active_targets = [t.track_id
-                          for t in self.tracks if t.is_confirmed()]
+        active_targets = [t.track_id for t in self.tracks if t.is_confirmed()]
 
-        #features, targets, flows, _targets = [], [], [], []
+        # features, targets, flows, _targets = [], [], [], []
         features = []
         targets = []
 
@@ -273,31 +264,24 @@ class Tracker():
             if not track.is_confirmed():
                 continue
             features += track.features
-            #flows += track.flows
+            # flows += track.flows
             targets += [track.track_id for _ in track.features]
-            #_targets += [track.track_id for _ in track.flows]
+            # _targets += [track.track_id for _ in track.flows]
             track.features = []
-            #track.flows = []
+            # track.flows = []
         self.metric.partial_fit(
-            np.asarray(features),
-            np.asarray(targets),
-            active_targets
+            np.asarray(features), np.asarray(targets), active_targets
         )
 
     def match(self, detections):
-
-        def gated_matrix(tracks,
-                         detections,
-                         track_indices,
-                         detection_indices
-                         ):
+        def gated_matrix(tracks, detections, track_indices, detection_indices):
             features = np.array([detections[i].feature for i in detection_indices])
-#             features = np.array([sorted(detections[i].flow.reshape(-1),
-#                                         reverse=True)[:256]
-#                                  + sorted(detections[i].feature,
-#                                           reverse=True)[:256]
-#                                  for i in detection_indices])
-#             features = np.abs(features)
+            #             features = np.array([sorted(detections[i].flow.reshape(-1),
+            #                                         reverse=True)[:256]
+            #                                  + sorted(detections[i].feature,
+            #                                           reverse=True)[:256]
+            #                                  for i in detection_indices])
+            #             features = np.abs(features)
             targets = np.array([tracks[i].track_id for i in track_indices])
             cost_matrix = self.metric.distance(features, targets)
             cost_matrix = match.gate_cost_matrix(
@@ -306,64 +290,55 @@ class Tracker():
                 tracks,
                 detections,
                 track_indices,
-                detection_indices
+                detection_indices,
             )
             return cost_matrix
 
-        confirmed_tracks = [
-            i for i, t in enumerate(self.tracks)
-            if t.is_confirmed()
-        ]
+        confirmed_tracks = [i for i, t in enumerate(self.tracks) if t.is_confirmed()]
         unconfirmed_tracks = [
-            i for i, t in enumerate(self.tracks)
-            if not t.is_confirmed()
+            i for i, t in enumerate(self.tracks) if not t.is_confirmed()
         ]
 
-        matches_a, unmatched_tracks_a, unmatched_detections = \
-            match.matching_cascade(
-                gated_matrix,
-                self.metric.matching_threshold,
-                self.max_age,
-                self.tracks,
-                detections,
-                confirmed_tracks
-            )
+        matches_a, unmatched_tracks_a, unmatched_detections = match.matching_cascade(
+            gated_matrix,
+            self.metric.matching_threshold,
+            self.max_age,
+            self.tracks,
+            detections,
+            confirmed_tracks,
+        )
 
         iou_track_candidates = unconfirmed_tracks + [
-            k for k in unmatched_tracks_a if
-            self.tracks[k].time_since_update == 1
+            k for k in unmatched_tracks_a if self.tracks[k].time_since_update == 1
         ]
 
         unmatched_tracks_a = [
-            k for k in unmatched_tracks_a if
-            self.tracks[k].time_since_update != 1
+            k for k in unmatched_tracks_a if self.tracks[k].time_since_update != 1
         ]
 
-        matches_b, unmatched_tracks_b, unmatched_detections = \
-            match.min_cost_matching(
-                match.iou_cost,
-                self.max_iou_distance,
-                self.tracks,
-                detections,
-                iou_track_candidates,
-                unmatched_detections
-
-            )
+        matches_b, unmatched_tracks_b, unmatched_detections = match.min_cost_matching(
+            match.iou_cost,
+            self.max_iou_distance,
+            self.tracks,
+            detections,
+            iou_track_candidates,
+            unmatched_detections,
+        )
 
         matches = matches_a + matches_b
-        unmatched_tracks = list(set(unmatched_tracks_a +
-                                    unmatched_tracks_b))
+        unmatched_tracks = list(set(unmatched_tracks_a + unmatched_tracks_b))
         return matches, unmatched_tracks, unmatched_detections
 
     def init_track(self, detection):
         mean, covariance = self.kf.initiate(detection.to_xyah())
         self.tracks.append(
-            Track(mean, 
-                  covariance,
-                  self.next_id,
-                  self.n_init,
-                  self.max_age,
-                  detection.feature
-                  )
+            Track(
+                mean,
+                covariance,
+                self.next_id,
+                self.n_init,
+                self.max_age,
+                detection.feature,
+            )
         )
         self.next_id += 1

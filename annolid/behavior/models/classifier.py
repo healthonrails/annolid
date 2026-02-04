@@ -22,13 +22,14 @@ class PositionalEncoding(nn.Module):
 
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(
-            0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         # Make (max_len, 1, d_model) for proper broadcasting
         pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)  # Register as a buffer, not a parameter
+        self.register_buffer("pe", pe)  # Register as a buffer, not a parameter
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -40,9 +41,9 @@ class PositionalEncoding(nn.Module):
         Returns:
             torch.Tensor: The output tensor with positional encoding added.
         """
-        x = x + \
-            self.pe[:x.size(
-                0), :]  # Use slicing for correct positional encoding length.
+        x = (
+            x + self.pe[: x.size(0), :]
+        )  # Use slicing for correct positional encoding length.
         return x
 
 
@@ -60,13 +61,20 @@ class BehaviorClassifier(nn.Module):
         num_classes (int, optional): The number of behavior classes. Defaults to 5.
     """
 
-    def __init__(self, feature_extractor: nn.Module, d_model: int = 768, nhead: int = 8,
-                 num_layers: int = 6, dim_feedforward: int = 2048, dropout: float = 0.1,
-                 num_classes: int = 5, feature_dim: Optional[int] = None):
+    def __init__(
+        self,
+        feature_extractor: nn.Module,
+        d_model: int = 768,
+        nhead: int = 8,
+        num_layers: int = 6,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        num_classes: int = 5,
+        feature_dim: Optional[int] = None,
+    ):
         super().__init__()
         self.feature_extractor = feature_extractor
-        inferred_dim = feature_dim or getattr(
-            feature_extractor, "feature_dim", None)
+        inferred_dim = feature_dim or getattr(feature_extractor, "feature_dim", None)
         if inferred_dim is None:
             raise ValueError(
                 "Unable to infer feature dimension. Specify `feature_dim` when constructing BehaviorClassifier."
@@ -76,14 +84,15 @@ class BehaviorClassifier(nn.Module):
             d_model = self.feature_dim
 
         self.input_projection = (
-            nn.Linear(self.feature_dim,
-                      d_model) if self.feature_dim != d_model else nn.Identity()
+            nn.Linear(self.feature_dim, d_model)
+            if self.feature_dim != d_model
+            else nn.Identity()
         )
         self.positional_encoding = PositionalEncoding(d_model)
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model, nhead, dim_feedforward, dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers)
+            d_model, nhead, dim_feedforward, dropout, batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
         self.classifier = nn.Linear(d_model, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -107,7 +116,6 @@ class BehaviorClassifier(nn.Module):
 
         features = self.positional_encoding(features)
         encoded_features = self.transformer_encoder(features)
-        pooled_features = encoded_features.mean(
-            dim=1)  # Global average pooling
+        pooled_features = encoded_features.mean(dim=1)  # Global average pooling
         output = self.classifier(pooled_features)
         return output

@@ -2,7 +2,7 @@
 big_modules.py - This file stores higher-level network blocks.
 
 x - usually denotes features that are shared between objects.
-g - usually denotes features that are not shared between objects 
+g - usually denotes features that are not shared between objects
     with an extra "num_objects" dimension (batch_size * num_objects * num_channels * H * W).
 
 The trailing number of a variable usually denotes the stride

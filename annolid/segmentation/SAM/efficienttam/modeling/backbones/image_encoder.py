@@ -4,11 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import List, Optional
+from typing import List
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from annolid.segmentation.SAM.efficienttam.modeling.efficienttam_utils import (
     LayerNorm2d,
@@ -26,9 +25,9 @@ class ImageEncoder(nn.Module):
         self.trunk = trunk
         self.neck = neck
         self.scalp = scalp
-        assert (
-            self.trunk.channel_list == self.neck.backbone_channel_list
-        ), f"Channel dims of trunk and neck do not match. Trunk: {self.trunk.channel_list}, neck: {self.neck.backbone_channel_list}"
+        assert self.trunk.channel_list == self.neck.backbone_channel_list, (
+            f"Channel dims of trunk and neck do not match. Trunk: {self.trunk.channel_list}, neck: {self.neck.backbone_channel_list}"
+        )
 
     def forward(self, sample: torch.Tensor):
         # Forward through backbone

@@ -99,7 +99,9 @@ class ConvertDLCDialog(QtWidgets.QDialog):
         form.addRow("", self.multi_animal_check)
 
         self.output_dir_edit = QtWidgets.QLineEdit()
-        self.output_dir_edit.setPlaceholderText("Output directory (defaults to <video stem>/)")
+        self.output_dir_edit.setPlaceholderText(
+            "Output directory (defaults to <video stem>/)"
+        )
         out_row = QtWidgets.QHBoxLayout()
         out_row.addWidget(self.output_dir_edit, 1)
         out_browse = QtWidgets.QPushButton("Browse…")
@@ -133,13 +135,17 @@ class ConvertDLCDialog(QtWidgets.QDialog):
         self.recursive_check.setChecked(True)
         form.addRow("", self.recursive_check)
 
-        self.write_pose_schema_check = QtWidgets.QCheckBox("Write pose schema (pose_schema.json)")
+        self.write_pose_schema_check = QtWidgets.QCheckBox(
+            "Write pose schema (pose_schema.json)"
+        )
         self.write_pose_schema_check.setChecked(True)
         self.write_pose_schema_check.toggled.connect(self._update_enabled_state)
         form.addRow("", self.write_pose_schema_check)
 
         self.pose_schema_out_edit = QtWidgets.QLineEdit()
-        self.pose_schema_out_edit.setPlaceholderText("pose_schema.json output path (defaults to <labeled-data>/pose_schema.json)")
+        self.pose_schema_out_edit.setPlaceholderText(
+            "pose_schema.json output path (defaults to <labeled-data>/pose_schema.json)"
+        )
         ps_row = QtWidgets.QHBoxLayout()
         ps_row.addWidget(self.pose_schema_out_edit, 1)
         ps_browse = QtWidgets.QPushButton("Browse…")
@@ -245,7 +251,9 @@ class ConvertDLCDialog(QtWidgets.QDialog):
         idx = self.mode_combo.currentIndex()
         if idx == 0:
             video_path = self.video_path_edit.text().strip()
-            output_dir = self.output_dir_edit.text().strip() or str(Path(video_path).with_suffix(""))
+            output_dir = self.output_dir_edit.text().strip() or str(
+                Path(video_path).with_suffix("")
+            )
             is_multi = bool(self.multi_animal_check.isChecked())
 
             def task() -> Dict[str, Any]:
@@ -257,7 +265,9 @@ class ConvertDLCDialog(QtWidgets.QDialog):
 
         labeled_data = Path(self.labeled_data_edit.text().strip()).expanduser()
         if not labeled_data.exists():
-            QtWidgets.QMessageBox.critical(self, "Error", f"Folder does not exist:\n{labeled_data}")
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Folder does not exist:\n{labeled_data}"
+            )
             return
         dataset_root = labeled_data.parent
         instance_label = self.instance_label_edit.text().strip() or "mouse"
@@ -265,7 +275,9 @@ class ConvertDLCDialog(QtWidgets.QDialog):
         recursive = bool(self.recursive_check.isChecked())
 
         write_pose_schema = bool(self.write_pose_schema_check.isChecked())
-        pose_schema_out = self.pose_schema_out_edit.text().strip() or str(labeled_data / "pose_schema.json")
+        pose_schema_out = self.pose_schema_out_edit.text().strip() or str(
+            labeled_data / "pose_schema.json"
+        )
         preset = self.pose_schema_preset_combo.currentText().strip() or "mouse"
         instance_separator = self.instance_separator_edit.text().strip() or "_"
 

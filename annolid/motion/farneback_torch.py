@@ -34,11 +34,9 @@ def _to_gray_f32(img: np.ndarray) -> np.ndarray:
             b, g, r = img[..., 0], img[..., 1], img[..., 2]
             gray = b * 0.114 + g * 0.587 + r * 0.299
         else:
-            raise ValueError(
-                f"Unexpected channel count for gray conversion: {c}")
+            raise ValueError(f"Unexpected channel count for gray conversion: {c}")
     else:
-        raise ValueError(
-            f"Unexpected image shape for gray conversion: {img.shape}")
+        raise ValueError(f"Unexpected image shape for gray conversion: {img.shape}")
     return np.ascontiguousarray(gray, dtype=np.float32)
 
 
@@ -65,8 +63,9 @@ def _acc_dtype_for_device(device: torch.device) -> torch.dtype:
 
 
 _BORDER_SCALE_CACHE: dict[tuple[str, int, int, int], torch.Tensor] = {}
-_BASE_COORDS_CACHE: dict[tuple[str, int, int, int],
-                         tuple[torch.Tensor, torch.Tensor]] = {}
+_BASE_COORDS_CACHE: dict[
+    tuple[str, int, int, int], tuple[torch.Tensor, torch.Tensor]
+] = {}
 
 
 def _device_key(device: torch.device) -> tuple[str, int]:
@@ -122,8 +121,9 @@ def _get_border_scale(H: int, W: int, device: torch.device) -> torch.Tensor:
         _BORDER_SCALE_CACHE[key] = scale
         return scale
 
-    border = torch.tensor([0.14, 0.14, 0.4472, 0.4472, 0.4472],
-                          device=device, dtype=torch.float32)
+    border = torch.tensor(
+        [0.14, 0.14, 0.4472, 0.4472, 0.4472], device=device, dtype=torch.float32
+    )
 
     xs_i = torch.arange(W, device=device, dtype=torch.int64)
     ys_i = torch.arange(H, device=device, dtype=torch.int64)
@@ -150,7 +150,9 @@ def _get_border_scale(H: int, W: int, device: torch.device) -> torch.Tensor:
     return scale
 
 
-def _get_base_coords(H: int, W: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def _get_base_coords(
+    H: int, W: int, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
     key = (*_device_key(device), H, W)
     coords = _BASE_COORDS_CACHE.get(key)
     if coords is not None:
@@ -167,8 +169,8 @@ def _get_base_coords(H: int, W: int, device: torch.device) -> tuple[torch.Tensor
 class FarnebackGaussKernels:
     n: int
     sigma: float
-    g: torch.Tensor    # (2n+1) for offsets [-n..n], indexed by offset+n
-    xg: torch.Tensor   # (2n+1)
+    g: torch.Tensor  # (2n+1) for offsets [-n..n], indexed by offset+n
+    xg: torch.Tensor  # (2n+1)
     xxg: torch.Tensor  # (2n+1)
     ig11: float
     ig03: float
@@ -184,11 +186,12 @@ class FarnebackGaussKernels:
 # OpenCV-parity core
 # ---------------------------
 
-_GAUSS_KERNEL_CACHE: dict[tuple[str, int, int, float],
-                          FarnebackGaussKernels] = {}
+_GAUSS_KERNEL_CACHE: dict[tuple[str, int, int, float], FarnebackGaussKernels] = {}
 
 
-def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> FarnebackGaussKernels:
+def farneback_prepare_gaussian(
+    n: int, sigma: float, device: torch.device
+) -> FarnebackGaussKernels:
     """
     Matches OpenCV FarnebackPrepareGaussian (optflowgf.cpp):
     - build g/xg/xxg over [-n..n]
@@ -252,8 +255,7 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
     xg_cpu = torch.from_numpy(xg.astype(np.float32))
     xxg_cpu = torch.from_numpy(xxg.astype(np.float32))
 
-    kv_cpu = torch.stack([g_cpu, xg_cpu, xxg_cpu], dim=0).view(
-        3, 1, 2 * n + 1, 1)
+    kv_cpu = torch.stack([g_cpu, xg_cpu, xxg_cpu], dim=0).view(3, 1, 2 * n + 1, 1)
     kh_cpu = torch.zeros((6, 3, 1, 2 * n + 1), dtype=torch.float32)
     kh_cpu[0, 0, 0, :] = g_cpu
     kh_cpu[1, 0, 0, :] = xg_cpu
@@ -293,7 +295,9 @@ def farneback_prepare_gaussian(n: int, sigma: float, device: torch.device) -> Fa
     return kernels
 
 
-def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -> torch.Tensor:
+def farneback_polyexp(
+    img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels
+) -> torch.Tensor:
     """
     Matches OpenCV FarnebackPolyExp output layout: (H,W,5).
 
@@ -323,10 +327,16 @@ def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -
         kh = kernels.kh_f32
     else:
         src_4d = img_1x1hw.to(dtype=acc_dtype)
-        kv = kernels.kv_f64 if kernels.kv_f64 is not None else kernels.kv_f32.to(
-            dtype=acc_dtype)
-        kh = kernels.kh_f64 if kernels.kh_f64 is not None else kernels.kh_f32.to(
-            dtype=acc_dtype)
+        kv = (
+            kernels.kv_f64
+            if kernels.kv_f64 is not None
+            else kernels.kv_f32.to(dtype=acc_dtype)
+        )
+        kh = (
+            kernels.kh_f64
+            if kernels.kh_f64 is not None
+            else kernels.kh_f32.to(dtype=acc_dtype)
+        )
 
     src_pad_v = F.pad(src_4d, (0, 0, n, n), mode="replicate")
     row = F.conv2d(src_pad_v, kv)  # (1,3,H,W)
@@ -346,15 +356,16 @@ def farneback_polyexp(img_1x1hw: torch.Tensor, kernels: FarnebackGaussKernels) -
     return dst.contiguous()
 
 
-def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_hw2: torch.Tensor) -> torch.Tensor:
+def farneback_update_matrices(
+    R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_hw2: torch.Tensor
+) -> torch.Tensor:
     """
     Builds matM (H,W,5) like OpenCV FarnebackUpdateMatrices.
 
     Includes OpenCV-exact border attenuation:
         scale = (x<B ? border[x] : 1) * (x>=W-B ? border[W-x-1] : 1) * ...
     """
-    R0_hw5, R1_hw5, flow_hw2, H, W = _normalize_flow_hw2(
-        R0_hw5, R1_hw5, flow_hw2)
+    R0_hw5, R1_hw5, flow_hw2, H, W = _normalize_flow_hw2(R0_hw5, R1_hw5, flow_hw2)
     device = R0_hw5.device
     assert R0_hw5.dtype == torch.float32
 
@@ -380,8 +391,8 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
         x1c = torch.clamp(x1, 0, W - 2)
         y1c = torch.clamp(y1, 0, H - 2)
 
-        fx_frac = (fx - x1.to(torch.float32))
-        fy_frac = (fy - y1.to(torch.float32))
+        fx_frac = fx - x1.to(torch.float32)
+        fy_frac = fy - y1.to(torch.float32)
         a00 = (1.0 - fx_frac) * (1.0 - fy_frac)
         a01 = fx_frac * (1.0 - fy_frac)
         a10 = (1.0 - fx_frac) * fy_frac
@@ -442,11 +453,11 @@ def farneback_update_matrices(R0_hw5: torch.Tensor, R1_hw5: torch.Tensor, flow_h
 
     matM = torch.stack(
         [
-            r4 * r4 + r6 * r6,          # G(1,1)
-            (r4 + r5) * r6,             # G(1,2)
-            r5 * r5 + r6 * r6,          # G(2,2)
-            r4 * r2 + r6 * r3,          # h(1)
-            r6 * r2 + r5 * r3,          # h(2)
+            r4 * r4 + r6 * r6,  # G(1,1)
+            (r4 + r5) * r6,  # G(1,2)
+            r5 * r5 + r6 * r6,  # G(2,2)
+            r4 * r2 + r6 * r3,  # h(1)
+            r6 * r2 + r5 * r3,  # h(2)
         ],
         dim=-1,
     )
@@ -477,11 +488,14 @@ def _normalize_flow_hw2(
         H, W = Hc, Wc
     if flow_hw2.shape != (H, W, 2):
         raise ValueError(
-            f"Expected flow shape {(H, W, 2)}, got {tuple(flow_hw2.shape)}")
+            f"Expected flow shape {(H, W, 2)}, got {tuple(flow_hw2.shape)}"
+        )
     return R0_hw5, R1_hw5, flow_hw2, H, W
 
 
-def _grid_sample_R1(R1_hw5: torch.Tensor, fx: torch.Tensor, fy: torch.Tensor) -> torch.Tensor:
+def _grid_sample_R1(
+    R1_hw5: torch.Tensor, fx: torch.Tensor, fy: torch.Tensor
+) -> torch.Tensor:
     """MPS-safe bilinear sampling of R1 without int64 indexing."""
     H, W = fx.shape
     if W > 1:
@@ -601,20 +615,20 @@ def calc_optical_flow_farneback_torch(
     pyr_nxt: list[np.ndarray] = []
     H0, W0 = prev_f.shape[:2]
     for lvl in range(0, levels + 1):
-        scale = pyr_scale ** lvl
+        scale = pyr_scale**lvl
         sigma = (1.0 / scale - 1.0) * 0.5 if scale > 0 else 0.0
         smooth_sz = int(round(sigma * 5.0)) | 1
         smooth_sz = max(smooth_sz, 3)
         w = max(1, int(round(W0 * scale)))
         h = max(1, int(round(H0 * scale)))
         prev_blur = cv2.GaussianBlur(
-            prev_f, (smooth_sz, smooth_sz), sigmaX=sigma, sigmaY=sigma)
+            prev_f, (smooth_sz, smooth_sz), sigmaX=sigma, sigmaY=sigma
+        )
         nxt_blur = cv2.GaussianBlur(
-            nxt_f, (smooth_sz, smooth_sz), sigmaX=sigma, sigmaY=sigma)
-        pyr_prev.append(cv2.resize(prev_blur, (w, h),
-                        interpolation=cv2.INTER_LINEAR))
-        pyr_nxt.append(cv2.resize(nxt_blur, (w, h),
-                       interpolation=cv2.INTER_LINEAR))
+            nxt_f, (smooth_sz, smooth_sz), sigmaX=sigma, sigmaY=sigma
+        )
+        pyr_prev.append(cv2.resize(prev_blur, (w, h), interpolation=cv2.INTER_LINEAR))
+        pyr_nxt.append(cv2.resize(nxt_blur, (w, h), interpolation=cv2.INTER_LINEAR))
 
     def _run_torch(dev_run: torch.device) -> torch.Tensor:
         prev_threads: Optional[int] = None
@@ -629,8 +643,7 @@ def calc_optical_flow_farneback_torch(
 
         try:
             with torch.inference_mode():
-                kernels = farneback_prepare_gaussian(
-                    poly_n, poly_sigma, dev_run)
+                kernels = farneback_prepare_gaussian(poly_n, poly_sigma, dev_run)
 
                 flow_t: Optional[torch.Tensor] = None
 
@@ -644,13 +657,14 @@ def calc_optical_flow_farneback_torch(
 
                     if flow_t is None:
                         flow_t = torch.zeros(
-                            (H, W, 2), device=dev_run, dtype=torch.float32)
+                            (H, W, 2), device=dev_run, dtype=torch.float32
+                        )
                     else:
                         flow_t = flow_t.permute(2, 0, 1).unsqueeze(0)
-                        flow_t = F.interpolate(flow_t, size=(
-                            H, W), mode="bilinear", align_corners=False)
-                        flow_t = flow_t.squeeze(0).permute(
-                            1, 2, 0).contiguous()
+                        flow_t = F.interpolate(
+                            flow_t, size=(H, W), mode="bilinear", align_corners=False
+                        )
+                        flow_t = flow_t.squeeze(0).permute(1, 2, 0).contiguous()
                         flow_t = flow_t * (1.0 / pyr_scale)
 
                     R0 = farneback_polyexp(t0, kernels)
@@ -659,7 +673,8 @@ def calc_optical_flow_farneback_torch(
                     use_gaussian = (flags & OPTFLOW_FARNEBACK_GAUSSIAN) != 0
                     if use_gaussian:
                         raise NotImplementedError(
-                            "Gaussian window update path not implemented in this script.")
+                            "Gaussian window update path not implemented in this script."
+                        )
 
                     matM = farneback_update_matrices(R0, R1, flow_t)
                     for it in range(iterations):
@@ -676,19 +691,20 @@ def calc_optical_flow_farneback_torch(
                     k = int(outlier_ksize)
                     if k % 2 == 0:
                         k += 1
-                    flow_chw = flow_t.permute(
-                        2, 0, 1).unsqueeze(0)  # (1,2,H,W)
+                    flow_chw = flow_t.permute(2, 0, 1).unsqueeze(0)  # (1,2,H,W)
                     flow_mean = F.avg_pool2d(
-                        flow_chw, kernel_size=k, stride=1, padding=k // 2)
+                        flow_chw, kernel_size=k, stride=1, padding=k // 2
+                    )
                     mag = _vector_norm_chw(flow_chw)
                     mag_mean = F.avg_pool2d(
-                        mag, kernel_size=k, stride=1, padding=k // 2)
+                        mag, kernel_size=k, stride=1, padding=k // 2
+                    )
                     ratio = mag / (mag_mean + 1e-6)
                     mask = (ratio > float(outlier_ratio)) & (
-                        mag > float(outlier_min_magnitude))
+                        mag > float(outlier_min_magnitude)
+                    )
                     flow_chw = torch.where(mask, flow_mean, flow_chw)
-                    flow_t = flow_chw.squeeze(
-                        0).permute(1, 2, 0).contiguous()
+                    flow_t = flow_chw.squeeze(0).permute(1, 2, 0).contiguous()
 
                 return flow_t
         finally:

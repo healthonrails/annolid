@@ -1,8 +1,15 @@
 import sys
 import os
-from qtpy.QtWidgets import (QApplication, QVBoxLayout, QDialog,
-                            QFormLayout, QLabel, QLineEdit,
-                            QPushButton, QFileDialog, QMessageBox)
+from qtpy.QtWidgets import (
+    QApplication,
+    QVBoxLayout,
+    QDialog,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QFileDialog,
+)
 from annolid.postprocessing.tracking_results_analyzer import TrackingResultsAnalyzer
 from annolid.data.videos import CV2Video
 from pathlib import Path
@@ -25,8 +32,7 @@ class TrackingAnalyzerDialog(QDialog):
         self.video_path_button.clicked.connect(self.browse_video)
 
         self.zone_path_edit = QLineEdit()
-        self.zone_path_edit.setPlaceholderText(
-            "(Optional)Enter zone JSON path")
+        self.zone_path_edit.setPlaceholderText("(Optional)Enter zone JSON path")
         self.zone_path_button = QPushButton("Browse...")
         self.zone_path_button.clicked.connect(self.browse_zone)
 
@@ -49,7 +55,8 @@ class TrackingAnalyzerDialog(QDialog):
 
     def browse_video(self):
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mkv *.mov,)")
+            self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mkv *.mov,)"
+        )
         if filename:
             self.video_path_edit.setText(filename)
             # Try to extract FPS and find corresponding zone file
@@ -61,7 +68,8 @@ class TrackingAnalyzerDialog(QDialog):
 
     def browse_zone(self):
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Select Zone JSON File", "", "JSON Files (*.json)")
+            self, "Select Zone JSON File", "", "JSON Files (*.json)"
+        )
         if filename:
             self.zone_path_edit.setText(filename)
 
@@ -71,7 +79,7 @@ class TrackingAnalyzerDialog(QDialog):
         if os.path.exists(video_path):
             fps = CV2Video(video_path).get_fps()
             # Search for corresponding zone file
-            video_dir = Path(video_path).with_suffix('')
+            video_dir = Path(video_path).with_suffix("")
             json_files = find_manual_labeled_json_files(video_dir)
             # assume the zone shapes are in the first frame
             if json_files:
@@ -83,13 +91,12 @@ class TrackingAnalyzerDialog(QDialog):
         zone_path = self.zone_path_edit.text()
         fps = float(self.fps_edit.text()) if self.fps_edit.text() else None
 
-        analyzer = TrackingResultsAnalyzer(
-            video_path, zone_file=zone_path, fps=fps)
+        analyzer = TrackingResultsAnalyzer(video_path, zone_file=zone_path, fps=fps)
         try:
             analyzer.merge_and_calculate_distance()
-            output_csv_path = analyzer.save_all_instances_zone_time_to_csv()
-        except:
-            output_csv_path = None
+            analyzer.save_all_instances_zone_time_to_csv()
+        except Exception:
+            pass
 
         # Optional: Notify the user with the path of the result CSV file
         # if output_csv_path:
@@ -109,7 +116,7 @@ class TrackingAnalyzerDialog(QDialog):
         self.analyze()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     dialog = TrackingAnalyzerDialog()
     dialog.exec_()

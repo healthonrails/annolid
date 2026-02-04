@@ -6,11 +6,9 @@ from torchvision.transforms import functional as F
 
 
 def get_maskrcnn_model(
-        num_classes=None,
-        num_hidden_layer=256,
-        finetuning=True,
-        pretrained: bool = True):
-    """ Get the pretrained mask rcnn model for finetuning or unmodified
+    num_classes=None, num_hidden_layer=256, finetuning=True, pretrained: bool = True
+):
+    """Get the pretrained mask rcnn model for finetuning or unmodified
 
     Args:
         num_classes ([int], optional): number of class for custom dataset. Defaults to None.
@@ -42,10 +40,7 @@ def get_maskrcnn_model(
         # number of input features for the classifier
         in_features = model.roi_heads.box_predictor.cls_score.in_features
         # replace the pretrained head
-        model.roi_heads.box_predictor = FastRCNNPredictor(
-            in_features,
-            num_classes
-        )
+        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
         # the number of input features for the mask classifier
         in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
@@ -53,9 +48,7 @@ def get_maskrcnn_model(
         hidden_layer = num_hidden_layer
         # replace the mask predictor
         model.roi_heads.mask_predictor = MaskRCNNPredictor(
-            in_features_mask,
-            hidden_layer,
-            num_classes
+            in_features_mask, hidden_layer, num_classes
         )
 
     return model
@@ -72,8 +65,9 @@ def predict_coco(img, device=None, *, pretrained: bool = True):
         [dict]: prediction with bbox, masks, and labels
     """
     if device is None:
-        device = torch.device(
-            'cuda') if torch.cuda.is_available() else torch.device('cpu')
+        device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
 
     if not isinstance(img, torch.Tensor):
         img = F.to_tensor(img)

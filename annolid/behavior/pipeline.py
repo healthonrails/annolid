@@ -5,7 +5,10 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from annolid.behavior.data_loading.transforms import IdentityTransform, ResizeCenterCropNormalize
+from annolid.behavior.data_loading.transforms import (
+    IdentityTransform,
+    ResizeCenterCropNormalize,
+)
 from annolid.behavior.models.classifier import BehaviorClassifier
 from annolid.behavior.models.feature_extractors import (
     CLIPFeatureExtractor,
@@ -34,8 +37,7 @@ def build_feature_extractor(
     if backbone == "clip":
         extractor = CLIPFeatureExtractor()
         if feature_dim is not None and feature_dim != extractor.feature_dim:
-            raise ValueError(
-                "CLIP backbone does not support overriding feature_dim.")
+            raise ValueError("CLIP backbone does not support overriding feature_dim.")
         return extractor.to(device), extractor.feature_dim
     if backbone == "resnet18":
         target_dim = feature_dim or 512
@@ -51,7 +53,8 @@ def build_feature_extractor(
         )
         return extractor.to(device), extractor.feature_dim
     raise ValueError(
-        f"Unsupported backbone '{backbone}'. Valid options: {BACKBONE_CHOICES}")
+        f"Unsupported backbone '{backbone}'. Valid options: {BACKBONE_CHOICES}"
+    )
 
 
 def build_classifier(

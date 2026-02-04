@@ -23,7 +23,9 @@ class AnnotationStore:
         self.store_path = store_path
 
     @classmethod
-    def for_frame_path(cls, frame_path: Union[str, Path], store_name: Optional[str] = None) -> "AnnotationStore":
+    def for_frame_path(
+        cls, frame_path: Union[str, Path], store_name: Optional[str] = None
+    ) -> "AnnotationStore":
         frame_path = Path(frame_path)
         store_path = cls._derive_store_path(frame_path, store_name)
         return cls(store_path)
@@ -113,7 +115,8 @@ class AnnotationStore:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     logger.warning(
-                        "Skipping invalid annotation store line in %s", self.store_path)
+                        "Skipping invalid annotation store line in %s", self.store_path
+                    )
                     continue
                 frame = data.get("frame")
                 if frame is None:
@@ -186,8 +189,7 @@ class AnnotationStore:
 
                     # Ensure the newline is preserved when rewriting.
                     lines_to_keep.append(
-                        raw_line if raw_line.endswith(
-                            "\n") else f"{raw_line}\n"
+                        raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
                     )
         except OSError as exc:
             logger.error(
@@ -200,8 +202,7 @@ class AnnotationStore:
         if removed == 0:
             return 0
 
-        temp_path = self.store_path.with_suffix(
-            self.store_path.suffix + ".tmp")
+        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
 
         try:
             with temp_path.open("w", encoding="utf-8") as fh:
@@ -279,8 +280,7 @@ class AnnotationStore:
 
                     if frame_number in protected:
                         lines_to_keep.append(
-                            raw_line if raw_line.endswith(
-                                "\n") else f"{raw_line}\n"
+                            raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
                         )
                         continue
 
@@ -293,8 +293,7 @@ class AnnotationStore:
                         continue
 
                     lines_to_keep.append(
-                        raw_line if raw_line.endswith(
-                            "\n") else f"{raw_line}\n"
+                        raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
                     )
         except OSError as exc:
             logger.error(
@@ -307,8 +306,7 @@ class AnnotationStore:
         if removed == 0:
             return 0
 
-        temp_path = self.store_path.with_suffix(
-            self.store_path.suffix + ".tmp")
+        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
 
         try:
             with temp_path.open("w", encoding="utf-8") as fh:
@@ -374,13 +372,13 @@ def _record_to_labelme_payload(record: Dict[str, Any]) -> Dict[str, Any]:
 def _load_from_store(path: Path) -> Dict[str, Any]:
     frame = AnnotationStore.frame_number_from_path(path)
     if frame is None:
-        raise AnnotationStoreError(
-            f"Cannot infer frame number from path {path}")
+        raise AnnotationStoreError(f"Cannot infer frame number from path {path}")
     store = AnnotationStore.for_frame_path(path)
     record = store.get_frame(frame)
     if record is None:
         raise AnnotationStoreError(
-            f"Frame {frame} not present in store {store.store_path}")
+            f"Frame {frame} not present in store {store.store_path}"
+        )
     return _record_to_labelme_payload(record)
 
 
@@ -391,14 +389,14 @@ def _resolve_stub(data: Dict[str, Any], source: Union[str, Path]) -> Dict[str, A
 
     frame = data.get("frame")
     if frame is None:
-        raise AnnotationStoreError(
-            "Annotation stub missing frame identifier.")
+        raise AnnotationStoreError("Annotation stub missing frame identifier.")
 
     store = AnnotationStore.for_frame_path(source, annotation_store)
     record = store.get_frame(frame)
     if record is None:
         raise AnnotationStoreError(
-            f"Frame {frame} not present in store {store.store_path}")
+            f"Frame {frame} not present in store {store.store_path}"
+        )
 
     return _record_to_labelme_payload(record)
 
@@ -431,7 +429,8 @@ def _patched_json_load(fp, *args, **kwargs):
         return _resolve_stub(result, Path(source_name))
     except AnnotationStoreError as exc:
         logger.warning(
-            "Failed to resolve annotation store reference for %s: %s", source_name, exc)
+            "Failed to resolve annotation store reference for %s: %s", source_name, exc
+        )
         return result
 
 

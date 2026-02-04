@@ -31,7 +31,7 @@ def renorm(img: torch.FloatTensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224
         -> torch.FloatTensor:
     # img: tensor(3,H,W) or tensor(B,3,H,W)
     # return: same as img
-    assert img.dim() == 3 or img.dim() == 4, "img.dim() should be 3 or 4 but %d" % img.dim() 
+    assert img.dim() == 3 or img.dim() == 4, "img.dim() should be 3 or 4 but %d" % img.dim()
     if img.dim() == 3:
         assert img.size(0) == 3, 'img.size(0) shoule be 3 but "%d". (%s)' % (img.size(0), str(img.size()))
         img_perm = img.permute(1,2,0)
@@ -73,7 +73,7 @@ def to_device(item, device):
 
 
 
-# 
+#
 def get_gaussian_mean(x, axis, other_axis, softmax=True):
     """
 
@@ -107,7 +107,7 @@ def get_expected_points_from_map(hm, softmax=True):
     Args:
         hm (float): Input images(BxCxHxW)
 
-    Returns: 
+    Returns:
         weighted index for axis, BxCx2. float between 0 and 1.
 
     """
@@ -124,7 +124,7 @@ class Embedder:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.create_embedding_fn()
-        
+
     def create_embedding_fn(self):
         embed_fns = []
         d = self.kwargs['input_dims']
@@ -132,23 +132,23 @@ class Embedder:
         if self.kwargs['include_input']:
             embed_fns.append(lambda x : x)
             out_dim += d
-            
+
         max_freq = self.kwargs['max_freq_log2']
         N_freqs = self.kwargs['num_freqs']
-        
+
         if self.kwargs['log_sampling']:
             freq_bands = 2.**torch.linspace(0., max_freq, steps=N_freqs)
         else:
             freq_bands = torch.linspace(2.**0., 2.**max_freq, steps=N_freqs)
-            
+
         for freq in freq_bands:
             for p_fn in self.kwargs['periodic_fns']:
                 embed_fns.append(lambda x, p_fn=p_fn, freq=freq : p_fn(x * freq))
                 out_dim += d
-                    
+
         self.embed_fns = embed_fns
         self.out_dim = out_dim
-        
+
     def embed(self, inputs):
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
 
@@ -157,7 +157,7 @@ def get_embedder(multires, i=0):
     import torch.nn as nn
     if i == -1:
         return nn.Identity(), 3
-    
+
     embed_kwargs = {
                 'include_input' : True,
                 'input_dims' : 3,
@@ -166,7 +166,7 @@ def get_embedder(multires, i=0):
                 'log_sampling' : True,
                 'periodic_fns' : [torch.sin, torch.cos],
     }
-    
+
     embedder_obj = Embedder(**embed_kwargs)
     embed = lambda x, eo=embedder_obj : eo.embed(x)
     return embed, embedder_obj.out_dim
@@ -206,13 +206,13 @@ from util.slconfig import SLConfig
 def get_raw_dict(args):
     """
     return the dicf contained in args.
-    
+
     e.g:
         >>> with open(path, 'w') as f:
                 json.dump(get_raw_dict(args), f, indent=2)
     """
-    if isinstance(args, argparse.Namespace): 
-        return vars(args)   
+    if isinstance(args, argparse.Namespace):
+        return vars(args)
     elif isinstance(args, dict):
         return args
     elif isinstance(args, SLConfig):
@@ -437,7 +437,7 @@ class BestMetricHolder():
         if use_ema:
             self.best_ema = BestMetricSingle(init_res, better)
             self.best_regular = BestMetricSingle(init_res, better)
-    
+
 
     def update(self, new_res, epoch, is_ema=False):
         """
@@ -468,4 +468,3 @@ class BestMetricHolder():
 
     def __str__(self) -> str:
         return self.__repr__()
-            

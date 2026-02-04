@@ -1,16 +1,16 @@
-# Copyright (2025) Bytedance Ltd. and/or its affiliates 
+# Copyright (2025) Bytedance Ltd. and/or its affiliates
 
-# Licensed under the Apache License, Version 2.0 (the "License"); 
-# you may not use this file except in compliance with the License. 
-# You may obtain a copy of the License at 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 
-#     http://www.apache.org/licenses/LICENSE-2.0 
+#     http://www.apache.org/licenses/LICENSE-2.0
 
-# Unless required by applicable law or agreed to in writing, software 
-# distributed under the License is distributed on an "AS IS" BASIS, 
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
-# See the License for the specific language governing permissions and 
-# limitations under the License. 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -20,11 +20,11 @@ from easydict import EasyDict
 
 
 class DPTHeadTemporal(DPTHead):
-    def __init__(self, 
-        in_channels, 
-        features=256, 
-        use_bn=False, 
-        out_channels=[256, 512, 1024, 1024], 
+    def __init__(self,
+        in_channels,
+        features=256,
+        use_bn=False,
+        out_channels=[256, 512, 1024, 1024],
         use_clstoken=False,
         num_frames=32,
         pe='ape'
@@ -40,7 +40,7 @@ class DPTHeadTemporal(DPTHead):
                                         pos_embedding_type                 = pe)
 
         self.motion_modules = nn.ModuleList([
-            TemporalModule(in_channels=out_channels[2], 
+            TemporalModule(in_channels=out_channels[2],
                            **motion_module_kwargs),
             TemporalModule(in_channels=out_channels[3],
                            **motion_module_kwargs),
@@ -106,7 +106,7 @@ class DPTHeadTemporal(DPTHead):
             with torch.autocast(device_type="cuda", enabled=False):
                 out = self.scratch.output_conv2(out.float())
 
-            output = out.to(ori_type) 
+            output = out.to(ori_type)
         else:
             ret = []
             for i in range(0, batch_size, micro_batch_size):
@@ -121,5 +121,5 @@ class DPTHeadTemporal(DPTHead):
                     out = self.scratch.output_conv2(out.float())
                 ret.append(out.to(ori_type))
             output = torch.cat(ret, dim=0)
-        
+
         return output, h0 + h1 + h2 + h3

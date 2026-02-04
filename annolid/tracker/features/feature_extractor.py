@@ -1,6 +1,6 @@
 """
-Modified from 
-Reference: 
+Modified from
+Reference:
 https://github.com/ZQPei/deep_sort_pytorch
 """
 
@@ -18,16 +18,19 @@ class Extractor(object):
         self.net = Net(reid=True)
         self.device = "cuda" if torch.cuda.is_available() and use_cuda else "cpu"
         state_dict = torch.load(model_path, map_location=lambda storage, loc: storage)[
-            'net_dict']
+            "net_dict"
+        ]
         self.net.load_state_dict(state_dict)
         logger = logging.getLogger("root.tracker")
         logger.info("Loading weights from {}... Done!".format(model_path))
         self.net.to(self.device)
         self.size = (64, 128)
-        self.norm = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        self.norm = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        )
 
     def _preprocess(self, im_crops):
         """
@@ -38,11 +41,13 @@ class Extractor(object):
             3. to torch Tensor
             4. normalize
         """
-        def _resize(im, size):
-            return cv2.resize(im.astype(np.float32)/255., size)
 
-        im_batch = torch.cat([self.norm(_resize(im, self.size)).unsqueeze(
-            0) for im in im_crops], dim=0).float()
+        def _resize(im, size):
+            return cv2.resize(im.astype(np.float32) / 255.0, size)
+
+        im_batch = torch.cat(
+            [self.norm(_resize(im, self.size)).unsqueeze(0) for im in im_crops], dim=0
+        ).float()
         return im_batch
 
     def __call__(self, im_crops):

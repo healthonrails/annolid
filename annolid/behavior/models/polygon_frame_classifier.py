@@ -173,7 +173,8 @@ class PolygonFrameDataset(Dataset):
         self._augment_dynamic_features()
 
         self.label_to_index = label_to_index or {
-            label: idx for idx, label in enumerate(sorted(self.dataframe["label"].unique()))
+            label: idx
+            for idx, label in enumerate(sorted(self.dataframe["label"].unique()))
         }
         self.index_to_label = {v: k for k, v in self.label_to_index.items()}
 
@@ -217,7 +218,8 @@ class PolygonFrameDataset(Dataset):
         for video, df in self.dataframe.groupby("video"):
             if "frame" in df:
                 df_sorted = df.sort_values(
-                    by="frame", key=lambda s: s.map(_frame_sort_key))
+                    by="frame", key=lambda s: s.map(_frame_sort_key)
+                )
             else:
                 df_sorted = df.sort_index()
 
@@ -247,8 +249,7 @@ class PolygonFrameDataset(Dataset):
                     dt = max(1, frame_number - prev_frame_number)
 
                 if prev_distance is not None:
-                    rel_velocities[idx] = float(
-                        prev_distance - distance) / float(dt)
+                    rel_velocities[idx] = float(prev_distance - distance) / float(dt)
                 else:
                     rel_velocities[idx] = 0.0
                 prev_distance = distance
@@ -257,19 +258,16 @@ class PolygonFrameDataset(Dataset):
                 # Facing angle derived from intruder polygon coordinates:
                 # use vector from centroid to the furthest intruder point
                 # and compare to vector from centroid to resident.
-                intruder_coords = _parse_array(
-                    row.get("intruder_features", []))
+                intruder_coords = _parse_array(row.get("intruder_features", []))
                 if intruder_coords and distance > 0.0:
-                    arr = np.asarray(
-                        intruder_coords, dtype=float).reshape(-1, 2)
+                    arr = np.asarray(intruder_coords, dtype=float).reshape(-1, 2)
                     centroid_arr = np.asarray(centroid_i[:2], dtype=float)
                     offsets = arr - centroid_arr
                     dists = np.linalg.norm(offsets, axis=1)
                     head_idx = int(np.argmax(dists))
                     head_vec = offsets[head_idx]
                     to_resident = np.asarray(
-                        [centroid_r[0] - centroid_i[0],
-                         centroid_r[1] - centroid_i[1]],
+                        [centroid_r[0] - centroid_i[0], centroid_r[1] - centroid_i[1]],
                         dtype=float,
                     )
                     head_norm = float(np.linalg.norm(head_vec))
@@ -313,10 +311,7 @@ class PolygonFrameDataset(Dataset):
                 lengths[col] = pad_len
                 continue
             lengths[col] = int(
-                self.dataframe[col]
-                .dropna()
-                .apply(lambda x: len(_parse_array(x)))
-                .max()
+                self.dataframe[col].dropna().apply(lambda x: len(_parse_array(x))).max()
             )
         return lengths
 
@@ -335,8 +330,12 @@ class PolygonFrameDataset(Dataset):
 
         dx = centroid_i[0] - centroid_r[0]
         dy = centroid_i[1] - centroid_r[1]
-        diag = math.hypot(self.feature_config.frame_width,
-                          self.feature_config.frame_height) or 1.0
+        diag = (
+            math.hypot(
+                self.feature_config.frame_width, self.feature_config.frame_height
+            )
+            or 1.0
+        )
         centroid_distance = math.hypot(dx, dy) / diag
 
         eps = 1e-6
@@ -360,14 +359,18 @@ class PolygonFrameDataset(Dataset):
                 # treat pairs as x,y; clip to [0,1] after scaling
                 arr = np.asarray(padded, dtype=float).reshape(-1, 2)
                 arr[:, 0] = np.clip(
-                    arr[:, 0] / max(self.feature_config.frame_width, 1), 0.0, 1.0)
+                    arr[:, 0] / max(self.feature_config.frame_width, 1), 0.0, 1.0
+                )
                 arr[:, 1] = np.clip(
-                    arr[:, 1] / max(self.feature_config.frame_height, 1), 0.0, 1.0)
+                    arr[:, 1] / max(self.feature_config.frame_height, 1), 0.0, 1.0
+                )
                 padded = arr.flatten().tolist()
             values.extend(padded)
 
         for col in self.feature_config.extra_cols:
-            if (not self.feature_config.compute_motion_index) and ("motion_index" in col):
+            if (not self.feature_config.compute_motion_index) and (
+                "motion_index" in col
+            ):
                 continue
             parsed = _parse_array(row.get(col, 0))
             values.extend(parsed)
@@ -380,7 +383,8 @@ class PolygonFrameDataset(Dataset):
         for video, df in grouped:
             if "frame" in df:
                 df_sorted = df.sort_values(
-                    by="frame", key=lambda s: s.map(_frame_sort_key))
+                    by="frame", key=lambda s: s.map(_frame_sort_key)
+                )
             else:
                 df_sorted = df.sort_index()
             features = []
@@ -391,8 +395,7 @@ class PolygonFrameDataset(Dataset):
             feature_array = np.asarray(features, dtype=np.float32)
             if self.feature_dim is None:
                 self.feature_dim = feature_array.shape[1]
-                logger.info(
-                    f"Determined feature dimension: {self.feature_dim}")
+                logger.info(f"Determined feature dimension: {self.feature_dim}")
             self.video_features[video] = feature_array
             self.video_labels[video] = np.asarray(labels, dtype=np.int64)
             for idx in range(len(labels)):
@@ -415,19 +418,16 @@ class PolygonFrameDataset(Dataset):
             pad_top = max(0, half - center)
             pad_bottom = self.window_size - len(window) - pad_top
             if pad_top:
-                window = np.vstack(
-                    (np.repeat(window[:1], pad_top, axis=0), window))
+                window = np.vstack((np.repeat(window[:1], pad_top, axis=0), window))
             if pad_bottom:
-                window = np.vstack(
-                    (window, np.repeat(window[-1:], pad_bottom, axis=0)))
+                window = np.vstack((window, np.repeat(window[-1:], pad_bottom, axis=0)))
         return window
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         video, center = self.indices[idx]
         window = self._window_slice(video, center)
         if self.feature_config.normalize_features and self._normalization:
-            window = (
-                window - self._normalization["mean"]) / self._normalization["std"]
+            window = (window - self._normalization["mean"]) / self._normalization["std"]
         label = int(self.video_labels[video][center])
         return torch.from_numpy(window), label
 
@@ -437,8 +437,9 @@ class PolygonFrameDataset(Dataset):
         except ValueError:
             return None
         mean = stacked.astype(np.float32).mean(axis=0)
-        std = stacked.astype(np.float32).std(axis=0) + \
-            float(self.feature_config.normalization_eps)
+        std = stacked.astype(np.float32).std(axis=0) + float(
+            self.feature_config.normalization_eps
+        )
         return {"mean": mean.astype(np.float32), "std": std.astype(np.float32)}
 
 
@@ -447,13 +448,15 @@ class ResidualBlock(nn.Module):
         super().__init__()
         padding = kernel_size // 2
         self.conv1 = nn.Conv1d(
-            channels, channels, kernel_size, padding=padding, bias=False)
+            channels, channels, kernel_size, padding=padding, bias=False
+        )
         self.bn1 = nn.BatchNorm1d(channels)
         self.act1 = nn.LeakyReLU(0.01, inplace=True)
         self.dp1 = nn.Dropout(dropout)
 
         self.conv2 = nn.Conv1d(
-            channels, channels, kernel_size, padding=padding, bias=False)
+            channels, channels, kernel_size, padding=padding, bias=False
+        )
         self.bn2 = nn.BatchNorm1d(channels)
         self.act2 = nn.LeakyReLU(0.01, inplace=True)
         self.dp2 = nn.Dropout(dropout)
@@ -509,21 +512,20 @@ class ImprovedFrameLabelConvNet(nn.Module):
         super().__init__()
         padding = kernel_size // 2
         self.initial_conv = nn.Conv1d(
-            feature_dim, hidden_dim, kernel_size, padding=padding, bias=False)
+            feature_dim, hidden_dim, kernel_size, padding=padding, bias=False
+        )
         self.initial_bn = nn.BatchNorm1d(hidden_dim)
         self.initial_act = nn.LeakyReLU(0.01, inplace=True)
         self.initial_dropout = nn.Dropout(dropout)
 
         self.res_blocks = nn.Sequential(
             *[
-                ResidualBlock(
-                    hidden_dim, kernel_size=kernel_size, dropout=dropout)
+                ResidualBlock(hidden_dim, kernel_size=kernel_size, dropout=dropout)
                 for _ in range(num_residual_blocks)
             ]
         )
 
-        self.attention = ChannelAttention(
-            hidden_dim) if use_attention else None
+        self.attention = ChannelAttention(hidden_dim) if use_attention else None
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(hidden_dim, num_classes)
 
@@ -551,14 +553,17 @@ def _make_sampler(labels: np.ndarray, strategy: str) -> Optional[WeightedRandomS
     if strategy != "balanced_sampler":
         return None
     class_sample_count = np.bincount(labels)
-    class_sample_count = np.where(
-        class_sample_count == 0, 1, class_sample_count)
+    class_sample_count = np.where(class_sample_count == 0, 1, class_sample_count)
     weights = 1.0 / class_sample_count
     sample_weights = weights[labels]
-    return WeightedRandomSampler(torch.as_tensor(sample_weights, dtype=torch.float), len(sample_weights))
+    return WeightedRandomSampler(
+        torch.as_tensor(sample_weights, dtype=torch.float), len(sample_weights)
+    )
 
 
-def _collate_fn(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Tensor, torch.Tensor]:
+def _collate_fn(
+    batch: List[Tuple[torch.Tensor, int]],
+) -> Tuple[torch.Tensor, torch.Tensor]:
     windows, labels = zip(*batch)
     return torch.stack(windows, dim=0), torch.as_tensor(labels, dtype=torch.long)
 
@@ -570,7 +575,9 @@ def _seed_worker(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
-def _mean_average_precision(probs: List[np.ndarray], targets: List[int], num_classes: int) -> float:
+def _mean_average_precision(
+    probs: List[np.ndarray], targets: List[int], num_classes: int
+) -> float:
     if not probs:
         return 0.0
     y_true = np.zeros((len(targets), num_classes), dtype=float)
@@ -584,7 +591,9 @@ def _mean_average_precision(probs: List[np.ndarray], targets: List[int], num_cla
         return 0.0
 
 
-def _plot_training_curves(history: Dict[str, List[float]], output_dir: Path, prefix: str) -> None:
+def _plot_training_curves(
+    history: Dict[str, List[float]], output_dir: Path, prefix: str
+) -> None:
     if plt is None:
         return
     if not history.get("epoch"):
@@ -594,19 +603,15 @@ def _plot_training_curves(history: Dict[str, List[float]], output_dir: Path, pre
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     ax1, ax2 = axes
 
-    ax1.plot(epochs, history.get("train_loss", []),
-             label="train_loss", marker="o")
-    ax1.plot(epochs, history.get("val_loss", []),
-             label="val_loss", marker="o")
+    ax1.plot(epochs, history.get("train_loss", []), label="train_loss", marker="o")
+    ax1.plot(epochs, history.get("val_loss", []), label="val_loss", marker="o")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    ax2.plot(epochs, history.get("val_map", []),
-             label="val mAP", marker="o")
-    ax2.plot(epochs, history.get("val_macro_f1", []),
-             label="val macro F1", marker="o")
+    ax2.plot(epochs, history.get("val_map", []), label="val mAP", marker="o")
+    ax2.plot(epochs, history.get("val_macro_f1", []), label="val macro F1", marker="o")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Score")
     ax2.legend()
@@ -619,7 +624,9 @@ def _plot_training_curves(history: Dict[str, List[float]], output_dir: Path, pre
     logger.info(f"Saved training curves plot to {out_path}")
 
 
-def _save_training_history(history: Dict[str, List[float]], output_dir: Path, prefix: str) -> None:
+def _save_training_history(
+    history: Dict[str, List[float]], output_dir: Path, prefix: str
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{prefix}_history.json"
     with path.open("w", encoding="utf-8") as fh:
@@ -637,16 +644,20 @@ def _make_loss(
     label_smoothing: float,
 ) -> nn.Module:
     if loss_type == "focal":
+
         class FocalLoss(nn.Module):
             def __init__(self, weights: torch.Tensor, gamma: float):
                 super().__init__()
                 self.weights = weights
                 self.gamma = gamma
 
-            def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+            def forward(
+                self, logits: torch.Tensor, targets: torch.Tensor
+            ) -> torch.Tensor:
                 probs = torch.softmax(logits, dim=1)
                 targets_one_hot = torch.nn.functional.one_hot(
-                    targets, num_classes=probs.shape[1]).float()
+                    targets, num_classes=probs.shape[1]
+                ).float()
                 pt = (probs * targets_one_hot).sum(dim=1).clamp(min=1e-6)
                 log_pt = pt.log()
                 weights = self.weights[targets]
@@ -672,8 +683,7 @@ def _make_loss(
             with torch.no_grad():
                 true_dist = torch.zeros_like(log_probs)
                 true_dist.fill_(self.smoothing / (num_classes - 1))
-                true_dist.scatter_(1, targets.unsqueeze(1),
-                                   1.0 - self.smoothing)
+                true_dist.scatter_(1, targets.unsqueeze(1), 1.0 - self.smoothing)
 
             nll_loss = -(true_dist * log_probs).sum(dim=1)
             weights = self.weights[targets]
@@ -710,12 +720,16 @@ def train_polygon_frame_classifier(
         window_size=model_config.window_size,
     )
     labels_ordered = np.asarray(
-        [full_dataset.video_labels[vid][idx] for vid, idx in full_dataset.indices])
-    label_names = [full_dataset.index_to_label[idx]
-                   for idx in range(len(full_dataset.index_to_label))]
+        [full_dataset.video_labels[vid][idx] for vid, idx in full_dataset.indices]
+    )
+    label_names = [
+        full_dataset.index_to_label[idx]
+        for idx in range(len(full_dataset.index_to_label))
+    ]
     unique_labels, label_counts = np.unique(labels_ordered, return_counts=True)
-    distribution = {label_names[int(lbl)]: int(cnt)
-                    for lbl, cnt in zip(unique_labels, label_counts)}
+    distribution = {
+        label_names[int(lbl)]: int(cnt) for lbl, cnt in zip(unique_labels, label_counts)
+    }
     logger.info(f"Label distribution (full dataset): {distribution}")
 
     splitter = GroupShuffleSplit(
@@ -723,8 +737,7 @@ def train_polygon_frame_classifier(
     )
     groups = np.asarray([vid for vid, _ in full_dataset.indices])
     dummy = np.zeros(len(full_dataset))
-    train_indices, val_indices = next(
-        splitter.split(dummy, dummy, groups=groups))
+    train_indices, val_indices = next(splitter.split(dummy, dummy, groups=groups))
     if len(val_indices) == 0:
         if len(train_indices) <= 1:
             logger.warning(
@@ -736,7 +749,8 @@ def train_polygon_frame_classifier(
             train_indices = train_indices[:-1]
             logger.warning(
                 "Validation split was empty; moved 1 sample from train to validation. "
-                "Consider increasing val_split_ratio or number of videos.")
+                "Consider increasing val_split_ratio or number of videos."
+            )
     logger.info(
         f"Split dataset into train={len(train_indices)}, val={len(val_indices)} "
         f"(val_split={training_config.val_split_ratio:.2f})",
@@ -781,21 +795,28 @@ def train_polygon_frame_classifier(
 
     # Weighted CE/Focal using inverse class frequency; normalize weights to mean=1 to avoid tiny losses.
     class_counts = np.bincount(
-        labels_ordered, minlength=len(full_dataset.label_to_index))
+        labels_ordered, minlength=len(full_dataset.label_to_index)
+    )
     class_counts = np.where(class_counts == 0, 1, class_counts)
     raw_weights = 1.0 / class_counts
     normalized_weights = raw_weights / np.mean(raw_weights)
-    class_weights = torch.tensor(
-        normalized_weights, dtype=torch.float, device=device)
-    criterion = _make_loss(training_config.loss_type,
-                           class_weights, training_config.focal_gamma, training_config.label_smoothing)
+    class_weights = torch.tensor(normalized_weights, dtype=torch.float, device=device)
+    criterion = _make_loss(
+        training_config.loss_type,
+        class_weights,
+        training_config.focal_gamma,
+        training_config.label_smoothing,
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_config.learning_rate,
         weight_decay=training_config.weight_decay,
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=training_config.scheduler_patience, factor=0.5, verbose=False
+        optimizer,
+        patience=training_config.scheduler_patience,
+        factor=0.5,
+        verbose=False,
     )
 
     def _maybe_save_checkpoint(state: Dict[str, object], label: str) -> Optional[Path]:
@@ -837,8 +858,7 @@ def train_polygon_frame_classifier(
             inputs = inputs.to(device)
             targets = targets.to(device)
             if training_config.add_noise_std > 0:
-                noise = torch.randn_like(
-                    inputs) * training_config.add_noise_std
+                noise = torch.randn_like(inputs) * training_config.add_noise_std
                 inputs = inputs + noise
             outputs = model(inputs)
             loss = criterion(outputs, targets)
@@ -853,12 +873,10 @@ def train_polygon_frame_classifier(
             optimizer.step()
             total_loss += loss.item()
             if step % training_config.log_every == 0:
-                logger.info(
-                    f"Epoch {epoch + 1} Step {step} - loss {loss.item():.4f}")
+                logger.info(f"Epoch {epoch + 1} Step {step} - loss {loss.item():.4f}")
 
         if nan_loss_detected:
-            logger.info(
-                "Stopping training early due to non-finite loss.")
+            logger.info("Stopping training early due to non-finite loss.")
             break
 
         avg_train_loss = total_loss / max(1, len(train_loader))
@@ -880,14 +898,20 @@ def train_polygon_frame_classifier(
         has_val = len(val_targets) > 0
         if has_val:
             val_map = _mean_average_precision(
-                val_probs, val_targets, num_classes=len(full_dataset.label_to_index))
+                val_probs, val_targets, num_classes=len(full_dataset.label_to_index)
+            )
             scheduler.step(val_loss)
             val_macro_f1 = metrics.f1_score(
-                val_targets, np.argmax(val_probs, axis=1), average="macro", zero_division=0)
+                val_targets,
+                np.argmax(val_probs, axis=1),
+                average="macro",
+                zero_division=0,
+            )
         else:
             logger.warning(
                 "Validation set is empty; skipping validation metrics. "
-                "Increase val_split_ratio or ensure multiple videos are available.")
+                "Increase val_split_ratio or ensure multiple videos are available."
+            )
             val_map = 0.0
             val_macro_f1 = 0.0
             scheduler.step(val_loss)
@@ -904,9 +928,8 @@ def train_polygon_frame_classifier(
             f"Val mAP: {val_map:.4f} | Val F1(macro): {val_macro_f1:.4f}"
         )
         improved_map = has_val and (
-            val_map > best_val_map or (
-                val_map == best_val_map and val_loss < best_val_loss
-            )
+            val_map > best_val_map
+            or (val_map == best_val_map and val_loss < best_val_loss)
         )
         improved_loss = has_val and val_loss < best_val_loss
         if training_config.early_stopping_monitor == "loss":
@@ -960,7 +983,8 @@ def train_polygon_frame_classifier(
             epochs_without_improve += 1
             if epochs_without_improve >= training_config.early_stopping_patience:
                 logger.info(
-                    f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
+                    f"Early stopping triggered after {epochs_without_improve} epochs without improvement."
+                )
                 break
 
     # Merge references so downstream can access both best and latest.

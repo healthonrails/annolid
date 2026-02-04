@@ -45,7 +45,9 @@ def test_has_manual_labeled_frame_annotation_store_fallback(tmp_path: Path) -> N
     assert should_start_predictions_from_frame0(folder) is False
 
 
-def test_should_start_predictions_from_frame0_when_no_seed_or_output(tmp_path: Path) -> None:
+def test_should_start_predictions_from_frame0_when_no_seed_or_output(
+    tmp_path: Path,
+) -> None:
     folder = tmp_path / "video"
     folder.mkdir()
 

@@ -13,14 +13,14 @@ class TestBpodController(unittest.TestCase):
         self.bpod_controller = BpodController(port="/dev/ttyUSB0")
 
         # Patch the serial.Serial to simulate port opening behavior
-        patch('annolid.hardware.bpod.bpod_interface.serial.Serial',
-              self.mock_serial).start()
+        patch(
+            "annolid.hardware.bpod.bpod_interface.serial.Serial", self.mock_serial
+        ).start()
 
     def test_connect_invalid_port(self):
         """Test handling of an invalid port."""
         # Simulate a failure in opening the port
-        self.mock_serial.side_effect = OSError(
-            "Could not open port /dev/ttyUSB0")
+        self.mock_serial.side_effect = OSError("Could not open port /dev/ttyUSB0")
 
         with self.assertRaises(OSError):
             self.bpod_controller.connect()

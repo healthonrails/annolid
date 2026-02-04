@@ -6,13 +6,12 @@ import collections
 import numpy as np
 from imgaug import augmenters as iaa
 import imgaug as ia
-from imgaug.augmentables.polys import Polygon, PolygonsOnImage
+from imgaug.augmentables.polys import Polygon
 
 from annolid.utils.annotation_store import load_labelme_json
 
 
 class LabelStats:
-
     def __init__(self, anno_dir):
         self.anno_dir = anno_dir
         self.instance_counter = collections.defaultdict(int)
@@ -21,23 +20,18 @@ class LabelStats:
         label_files = Path(self.anno_dir).glob("*.json")
         for lf in label_files:
             label_file = load_labelme_json(lf)
-            for shape in label_file['shapes']:
-                label = shape['label']
+            for shape in label_file["shapes"]:
+                label = shape["label"]
                 self.instance_counter[label] += 1
         return self.instance_counter
 
     def to_table(self):
         count_dict = self.count()
-        df = pd.DataFrame(
-            dict(count_dict).items(),
-            columns=['instance_name', 'counts'
-                     ]
-        )
+        df = pd.DataFrame(dict(count_dict).items(), columns=["instance_name", "counts"])
         return df.sort_values(by="counts")
 
 
 class Augmentation(LabelStats):
-
     def __init__(self, anno_dir):
         ia.seed(4)
         self.anno_dir = anno_dir
@@ -47,62 +41,57 @@ class Augmentation(LabelStats):
         self.augment_list = []
 
     def augment(self):
-        few_instances = self.df[self.df['counts'] < self.df['counts'].median()]
-        aug_list = list(few_instances['instance_name'])
+        few_instances = self.df[self.df["counts"] < self.df["counts"].median()]
+        aug_list = list(few_instances["instance_name"])
         label_files = Path(self.anno_dir).glob("*.json")
 
-        aug = iaa.Sequential([
-            iaa.AdditiveGaussianNoise(scale=10),
-            # The following transformations will change the polygon
-            # iaa.Affine(rotate=(-0.05, 0.05), translate_percent=(-0.05, 0.05), scale=(0.8, 1.2),
-            #            mode=["constant", "edge"], cval=0),
-            # iaa.CoarseDropout(0.1,size_px=8),
-            # iaa.Fliplr(0.5),
-            # iaa.PerspectiveTransform((0.01, 0.01)),
-            # iaa.LinearContrast((0.8, 1.2), per_channel=0.5),
-            iaa.Sometimes(0.05, iaa.Snowflakes()),
-
-            iaa.AddToHueAndSaturation((-50, 50)),
-        ])
+        aug = iaa.Sequential(
+            [
+                iaa.AdditiveGaussianNoise(scale=10),
+                # The following transformations will change the polygon
+                # iaa.Affine(rotate=(-0.05, 0.05), translate_percent=(-0.05, 0.05), scale=(0.8, 1.2),
+                #            mode=["constant", "edge"], cval=0),
+                # iaa.CoarseDropout(0.1,size_px=8),
+                # iaa.Fliplr(0.5),
+                # iaa.PerspectiveTransform((0.01, 0.01)),
+                # iaa.LinearContrast((0.8, 1.2), per_channel=0.5),
+                iaa.Sometimes(0.05, iaa.Snowflakes()),
+                iaa.AddToHueAndSaturation((-50, 50)),
+            ]
+        )
 
         for lf in label_files:
             label_file = load_labelme_json(lf)
-            img_path = lf.with_suffix('.jpg')
+            img_path = lf.with_suffix(".jpg")
             img = imageio.imread(img_path)
             image_polys = np.copy(img)
-            polys = []
-            is_aug = False
 
-            aug_dir = img_path.parent.parent / (img_path.parent.stem + '_aug')
+            aug_dir = img_path.parent.parent / (img_path.parent.stem + "_aug")
             aug_dir.mkdir(exist_ok=True)
 
-            for i, shape in enumerate(label_file['shapes']):
-                label = shape['label']
+            for i, shape in enumerate(label_file["shapes"]):
+                label = shape["label"]
                 if label in aug_list:
-                    is_aug = True
-                    points = shape['points']
+                    points = shape["points"]
 
                     polygon = Polygon(points, [label])
-                    psoi = ia.PolygonsOnImage(
-                        [polygon], shape=image_polys.shape)
-                    instance_counts_median = self.df['counts'].median()
-                    instance_counts = (
-                        self.df[self.df['instance_name'] == label]['counts'].values[0])
+                    psoi = ia.PolygonsOnImage([polygon], shape=image_polys.shape)
+                    instance_counts_median = self.df["counts"].median()
+                    instance_counts = self.df[self.df["instance_name"] == label][
+                        "counts"
+                    ].values[0]
                     for j in range(int(instance_counts_median - instance_counts)):
-                        aug_img, psoi_aug = aug(
-                            image=image_polys, polygons=psoi)
-                        aug_img_path = aug_dir / \
-                            (img_path.stem + f'_{j}_aug.jpg')
-                        aug_json_path = aug_img_path.with_suffix('.json')
+                        aug_img, psoi_aug = aug(image=image_polys, polygons=psoi)
+                        aug_img_path = aug_dir / (img_path.stem + f"_{j}_aug.jpg")
+                        aug_json_path = aug_img_path.with_suffix(".json")
                         aug_points = psoi_aug.polygons[0].exterior
-                        imageio.imsave(aug_img_path, aug_img, '.jpg')
+                        imageio.imsave(aug_img_path, aug_img, ".jpg")
                         label_file["imageData"] = None
-                        label_file['imagePath'] = aug_img_path.name
+                        label_file["imagePath"] = aug_img_path.name
                         with open(aug_json_path, "w") as f:
-                            json.dump(label_file, f,
-                                      ensure_ascii=False, indent=2)
+                            json.dump(label_file, f, ensure_ascii=False, indent=2)
 
-                        label_file['shapes'][i]['points'] = aug_points.tolist()
+                        label_file["shapes"][i]["points"] = aug_points.tolist()
 
                     self.augment_list.append(lf)
         return set(self.augment_list)

@@ -46,4 +46,3 @@ If you use EfficientTAM through Annolid in your research, please cite the origin
 ```
 
 For details about model design, training data, and the broader ecosystem (SAM2, EfficientSAM, etc.), refer to the upstream EfficientTAM repository and paper.
-

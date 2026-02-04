@@ -85,7 +85,11 @@ def allocate_run_dir(
     parent = (root / _slugify(task) / _slugify(model)).resolve()
     parent.mkdir(parents=True, exist_ok=True)
 
-    base = _slugify(run_name) if run_name else (timestamp or time.strftime("%Y%m%d_%H%M%S", time.localtime()))
+    base = (
+        _slugify(run_name)
+        if run_name
+        else (timestamp or time.strftime("%Y%m%d_%H%M%S", time.localtime()))
+    )
 
     for attempt in range(max(1, int(max_tries))):
         suffix = "" if attempt == 0 else f"_{attempt}"

@@ -239,7 +239,7 @@ class CUTIE(nn.Module):
                         src_dict[k] = torch.cat([src_dict[k], pads], 1)
         elif self.single_object:
             """
-            If the model is multiple-object and we are training in single-object, 
+            If the model is multiple-object and we are training in single-object,
             we strip the last channel of conv1.
             This is not supposed to happen in standard training except when users are trying to
             finetune a trained model with single object datasets.

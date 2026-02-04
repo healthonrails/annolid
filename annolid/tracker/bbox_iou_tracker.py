@@ -1,36 +1,29 @@
 # This code defines a class `D2BBoxIOUTracker` that is responsible for tracking objects
 # in a video using the IOUWeightedHungarianBBoxIOUTracker algorithm.
 
-import copy
-import numpy as np
-from typing import Dict
-import torch
 
 # Importing required modules from the detectron2 library
 from detectron2.config import CfgNode as CfgNode_
 from detectron2.config import instantiate
-from detectron2.structures import Boxes, Instances
 from detectron2.tracking.base_tracker import build_tracker_head
-from detectron2.tracking.iou_weighted_hungarian_bbox_iou_tracker import (
-    IOUWeightedHungarianBBoxIOUTracker,
-)
 
 
 class D2BBoxIOUTracker:
     """
-    This class is responsible for tracking objects in a video using 
+    This class is responsible for tracking objects in a video using
     the IOUWeightedHungarianBBoxIOUTracker algorithm.
     """
 
-    def __init__(self,
-                 prev_instances,
-                 curr_instances,
-                 max_num_instances=10,
-                 max_lost_frame_count=3,
-                 min_box_rel_dim=0.02,
-                 min_instance_period=1,
-                 track_iou_threshold=0.5
-                 ) -> None:
+    def __init__(
+        self,
+        prev_instances,
+        curr_instances,
+        max_num_instances=10,
+        max_lost_frame_count=3,
+        min_box_rel_dim=0.02,
+        min_instance_period=1,
+        track_iou_threshold=0.5,
+    ) -> None:
         """
         Instantiates the class with instances from the previous and current frame.
 
@@ -91,7 +84,6 @@ class D2BBoxIOUTracker:
         return tracker
 
     def extra_fields(self):
-
         tracker = self.get_tracker()
         instances = tracker._initialize_extra_fields(self._curr_instances)
         # self.assertTrue(instances.has("ID"))
@@ -100,7 +92,6 @@ class D2BBoxIOUTracker:
         return instances
 
     def _update(self):
-
         tracker = self.get_tracker()
         _ = tracker.update(self._prev_instances)
         curr_instances = tracker.update(self._curr_instances)

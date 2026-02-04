@@ -46,4 +46,3 @@ def test_save_labels_sanitizes_shape_flags_for_labelme(tmp_path: Path) -> None:
     # Image-level flags are boolean-only; unparseable entries are preserved in meta.
     assert payload.get("flags") == {"trial_ok": True}
     assert payload.get("annolid_flags_meta") == {"confidence": 0.25}
-

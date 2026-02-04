@@ -25,6 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover - depends on optional runtime ex
 
 
 from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
+from annolid.gui.widgets.label_dialog import AnnolidLabelDialog
 from annolid.gui.widgets.label_collection_dialog import LabelCollectionDialog
 from annolid.gui.widgets.training_dashboard import (
     TrainingDashboardDialog,
@@ -55,6 +56,7 @@ __all__ = [
     "ConvertDLCDialog",
     "RealtimeControlWidget",
     "DepthSettingsDialog",
+    "AnnolidLabelDialog",
     "LabelCollectionDialog",
     "TrainingDashboardDialog",
     "TrainingDashboardWidget",

@@ -185,9 +185,7 @@ def _ensure_pdfjs_http_server() -> str:
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         _PDFJS_HTTP_THREAD = thread
-        logger.info(
-            f"PDF.js local HTTP server started on 127.0.0.1:{_PDFJS_HTTP_PORT}"
-        )
+        logger.info(f"PDF.js local HTTP server started on 127.0.0.1:{_PDFJS_HTTP_PORT}")
         return f"http://127.0.0.1:{_PDFJS_HTTP_PORT}"
 
 

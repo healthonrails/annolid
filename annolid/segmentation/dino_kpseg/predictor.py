@@ -36,7 +36,9 @@ class DinoKPSEGPrediction:
 class DinoKPSEGPredictor:
     """Run keypoint mask segmentation using frozen DINOv3 features."""
 
-    def __init__(self, weight_path: str | Path, *, device: Optional[str] = None) -> None:
+    def __init__(
+        self, weight_path: str | Path, *, device: Optional[str] = None
+    ) -> None:
         weight_path = self._resolve_checkpoint_path(weight_path)
         payload = torch.load(weight_path, map_location="cpu")
         head, meta = checkpoint_unpack(payload)
@@ -54,14 +56,17 @@ class DinoKPSEGPredictor:
                 self.flip_idx = candidate
         if self.flip_idx is None and meta.keypoint_names:
             self.flip_idx = infer_flip_idx_from_names(
-                meta.keypoint_names, kpt_count=int(meta.num_parts))
-        self._symmetric_pairs = symmetric_pairs_from_flip_idx(
-            self.flip_idx) if self.flip_idx else []
+                meta.keypoint_names, kpt_count=int(meta.num_parts)
+            )
+        self._symmetric_pairs = (
+            symmetric_pairs_from_flip_idx(self.flip_idx) if self.flip_idx else []
+        )
 
         self._prev_keypoints_xy: Optional[List[Tuple[float, float]]] = None
         self._prev_keypoint_scores: Optional[List[float]] = None
-        self._prev_by_instance: dict[int,
-                                     Tuple[List[Tuple[float, float]], List[float]]] = {}
+        self._prev_by_instance: dict[
+            int, Tuple[List[Tuple[float, float]], List[float]]
+        ] = {}
 
         device_norm = normalize_device(device)
         self.device = torch.device(device_norm)
@@ -84,13 +89,14 @@ class DinoKPSEGPredictor:
     ) -> List[Tuple[float, float]]:
         if probs.ndim != 3:
             raise ValueError("Expected probs in KHW format")
-        k, h_p, w_p = int(probs.shape[0]), int(
-            probs.shape[1]), int(probs.shape[2])
+        h_p, w_p = int(probs.shape[1]), int(probs.shape[2])
         norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
-        xs = (torch.arange(w_p, device=probs.device,
-              dtype=probs.dtype) + 0.5) * float(patch_size)
-        ys = (torch.arange(h_p, device=probs.device,
-              dtype=probs.dtype) + 0.5) * float(patch_size)
+        xs = (torch.arange(w_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
+            patch_size
+        )
+        ys = (torch.arange(h_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
+            patch_size
+        )
         x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
         y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
         return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
@@ -108,12 +114,10 @@ class DinoKPSEGPredictor:
             for c in candidates:
                 if c.is_file():
                     return c.resolve()
-            raise FileNotFoundError(
-                f"No DinoKPSEG checkpoint found under: {p}")
+            raise FileNotFoundError(f"No DinoKPSEG checkpoint found under: {p}")
         resolved = p.resolve()
         if not resolved.exists():
-            raise FileNotFoundError(
-                f"DinoKPSEG checkpoint not found: {resolved}")
+            raise FileNotFoundError(f"DinoKPSEG checkpoint not found: {resolved}")
         return resolved
 
     def reset_state(self) -> None:
@@ -155,7 +159,7 @@ class DinoKPSEGPredictor:
             # Always return at least the global maximum, even if below threshold,
             # so downstream pipelines can continue deterministically.
             flat_idx = int(torch.argmax(heatmap).item())
-            h, w = int(heatmap.shape[0]), int(heatmap.shape[1])
+            w = int(heatmap.shape[1])
             y = flat_idx // max(1, w)
             x = flat_idx % max(1, w)
             return [(int(x), int(y))], [float(heatmap[int(y), int(x)].item())]
@@ -187,9 +191,7 @@ class DinoKPSEGPredictor:
         if mask is not None:
             mask_arr = np.asarray(mask)
             if mask_arr.shape[:2] != tuple(frame_shape):
-                raise ValueError(
-                    "mask must have the same HxW as the input frame/crop"
-                )
+                raise ValueError("mask must have the same HxW as the input frame/crop")
             if mask_arr.dtype == bool:
                 mask_arr = mask_arr.astype(np.uint8) * 255
             elif np.issubdtype(mask_arr.dtype, np.floating):
@@ -288,7 +290,8 @@ class DinoKPSEGPredictor:
     def extract_features(self, frame_bgr: np.ndarray) -> torch.Tensor:
         """Extract frozen DINO features (CHW) for a frame or crop."""
         feats = self.extractor.extract(
-            frame_bgr, color_space="BGR", return_type="torch")
+            frame_bgr, color_space="BGR", return_type="torch"
+        )
         feats = merge_feature_layers(feats)
         if feats.ndim != 3:
             raise ValueError("Expected DINO features as CHW")
@@ -353,8 +356,7 @@ class DinoKPSEGPredictor:
             feats, frame_shape=frame_shape, mask=mask
         )
 
-        thr = float(threshold) if threshold is not None else float(
-            self.meta.threshold)
+        thr = float(threshold) if threshold is not None else float(self.meta.threshold)
         masks: Optional[np.ndarray] = None
         masks_t = None
         if return_patch_masks:
@@ -363,7 +365,8 @@ class DinoKPSEGPredictor:
 
         # Soft-argmax per keypoint channel for sub-patch localization.
         coords_resized = self._soft_argmax_coords(
-            probs.to(dtype=torch.float32), patch_size=patch_size)
+            probs.to(dtype=torch.float32), patch_size=patch_size
+        )
 
         # Scores from peak probability for consistency with prior outputs.
         flat = probs.view(probs.shape[0], -1)

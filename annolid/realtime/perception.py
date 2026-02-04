@@ -21,9 +21,11 @@ import numpy as np
 import zmq
 import zmq.asyncio
 from ffpyplayer.pic import Image, SWScale
-from tree_config.utils import (yaml_loads as orig_yaml_loads,
-                               get_yaml,
-                               yaml_dumps as orig_yaml_dumps)
+from tree_config.utils import (
+    yaml_loads as orig_yaml_loads,
+    get_yaml,
+    yaml_dumps as orig_yaml_dumps,
+)
 from pycocotools import mask as maskUtils
 
 from ultralytics.engine.results import Masks
@@ -35,15 +37,17 @@ from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
 
 # --- Configuration and Validation ---
 
+
 @dataclass
 class Config:
     """Configuration for the PerceptionProcess with validation."""
+
     camera_index: Union[int, str] = 0
     server_address: str = "localhost"
     server_port: int = 5002
     model_base_name: str = "yolo11n-seg.pt"  # Default to segmentation model
     publisher_address: str = "tcp://*:5555"
-    target_behaviors: List[str] = field(default_factory=lambda: ['mouse'])
+    target_behaviors: List[str] = field(default_factory=lambda: ["mouse"])
     confidence_threshold: float = 0.25
     frame_width: int = 640
     frame_height: int = 480
@@ -72,6 +76,7 @@ class Config:
 # --- Recording State Management ---
 class RecordingState(Enum):
     """Server recording states."""
+
     UNKNOWN = auto()
     RECORDING = auto()
     STOPPED = auto()
@@ -97,7 +102,8 @@ class RecordingStateManager:
                 self.last_state_change = time.time()
 
                 logger.info(
-                    f"Recording state changed: {old_state.name} -> {new_state.name}")
+                    f"Recording state changed: {old_state.name} -> {new_state.name}"
+                )
 
                 # Notify callbacks
                 for callback in self.state_change_callbacks:
@@ -117,7 +123,9 @@ class RecordingStateManager:
 
         # Always process when recording or state is unknown (fail-safe)
         should_process = self.state in (
-            RecordingState.RECORDING, RecordingState.UNKNOWN)
+            RecordingState.RECORDING,
+            RecordingState.UNKNOWN,
+        )
         return should_process
 
     def get_state_info(self) -> Dict[str, Any]:
@@ -125,18 +133,18 @@ class RecordingStateManager:
         return {
             "state": self.state.name,
             "time_since_change": time.time() - self.last_state_change,
-            "should_process": self.should_process_frames()
+            "should_process": self.should_process_frames(),
         }
 
 
 # --- Protocols for Better Type Safety ---
 
+
 class FrameSource(Protocol):
     """Protocol for frame sources."""
 
     async def connect(self) -> bool: ...
-    async def get_frame(self) -> Optional[Tuple[np.ndarray,
-                                                Dict[str, Any]]]: ...
+    async def get_frame(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]: ...
 
     async def disconnect(self) -> None: ...
 
@@ -144,14 +152,20 @@ class FrameSource(Protocol):
 class DetectionResult:
     """Structured detection result with support for pre-encoded segmentation masks."""
 
-    def __init__(self, behavior: str, confidence: float, bbox_normalized: List[float],
-                 timestamp: float, metadata: Dict[str, Any],
-                 bbox_pixels: Optional[List[float]] = None,
-                 mask_data: Optional[Dict[str, Any]] = None,
-                 keypoints_normalized: Optional[List[List[float]]] = None,
-                 keypoints_pixels: Optional[List[List[float]]] = None,
-                 keypoint_scores: Optional[List[float]] = None,
-                 keypoint_labels: Optional[List[str]] = None):
+    def __init__(
+        self,
+        behavior: str,
+        confidence: float,
+        bbox_normalized: List[float],
+        timestamp: float,
+        metadata: Dict[str, Any],
+        bbox_pixels: Optional[List[float]] = None,
+        mask_data: Optional[Dict[str, Any]] = None,
+        keypoints_normalized: Optional[List[List[float]]] = None,
+        keypoints_pixels: Optional[List[List[float]]] = None,
+        keypoint_scores: Optional[List[float]] = None,
+        keypoint_labels: Optional[List[str]] = None,
+    ):
         self.behavior = behavior
         self.confidence = confidence
         self.bbox_normalized = bbox_normalized
@@ -175,13 +189,15 @@ class DetectionResult:
             "bbox_pixels": self.bbox_pixels,
             "timestamp": self.timestamp,
             "metadata": self.metadata,
-            "has_mask": self.mask_data is not None
+            "has_mask": self.mask_data is not None,
         }
 
         if self.mask_data:
             result["mask"] = self.mask_data
 
-        result["has_keypoints"] = self.keypoints_normalized is not None or self.keypoints_pixels is not None
+        result["has_keypoints"] = (
+            self.keypoints_normalized is not None or self.keypoints_pixels is not None
+        )
 
         # Backward compatibility: keep `keypoints` as normalized coordinates.
         if self.keypoints_normalized is not None:
@@ -199,6 +215,7 @@ class DetectionResult:
 
         return result
 
+
 # --- Network Protocol Handling ---
 
 
@@ -211,29 +228,44 @@ class NetworkProtocolHandler:
 
     def _create_yaml_loads_fix(self):
         """Creates a fixed version of yaml_loads for binary data."""
+
         def _yaml_loads_fixed(value):
-            if len(value) >= 12 and value.startswith('!!binary |\n') and value[11] != ' ':
-                value = value[:11] + ' ' + value[11:]
+            if (
+                len(value) >= 12
+                and value.startswith("!!binary |\n")
+                and value[11] != " "
+            ):
+                value = value[:11] + " " + value[11:]
             return orig_yaml_loads(value, get_yaml_obj=get_yaml)
+
         return _yaml_loads_fixed
 
     def encode_msg(self, msg: str, value) -> bytes:
         """Encodes a message into bytes for network transmission."""
         try:
             bin_data = []
-            if msg == 'image':
+            if msg == "image":
                 image, metadata = value
                 bin_data = image.to_bytearray()
-                data = self.yaml_dumps((
-                    'image', (list(map(len, bin_data)), image.get_pixel_format(),
-                              image.get_size(), image.get_linesizes(), metadata)))
-                data = data.encode('utf8')
+                data = self.yaml_dumps(
+                    (
+                        "image",
+                        (
+                            list(map(len, bin_data)),
+                            image.get_pixel_format(),
+                            image.get_size(),
+                            image.get_linesizes(),
+                            metadata,
+                        ),
+                    )
+                )
+                data = data.encode("utf8")
             else:
                 data = self.yaml_dumps((msg, value))
-                data = data.encode('utf8')
+                data = data.encode("utf8")
 
-            header = struct.pack('>II', len(data), sum(map(len, bin_data)))
-            return header + data + b''.join(bin_data)
+            header = struct.pack(">II", len(data), sum(map(len, bin_data)))
+            return header + data + b"".join(bin_data)
         except Exception as e:
             logger.error(f"Failed to encode message '{msg}': {e}")
             raise
@@ -243,13 +275,14 @@ class NetworkProtocolHandler:
         n, bin_n = msg_len
         if not (n + bin_n == len(msg_buff)):
             raise ValueError(
-                f"Buffer length mismatch: expected {n + bin_n}, got {len(msg_buff)}")
+                f"Buffer length mismatch: expected {n + bin_n}, got {len(msg_buff)}"
+            )
 
         try:
-            data_str = msg_buff[:n].decode('utf8')
+            data_str = msg_buff[:n].decode("utf8")
             msg, value = self.yaml_loads(data_str)
 
-            if msg == 'image':
+            if msg == "image":
                 bin_data = msg_buff[n:]
                 planes_sizes, pix_fmt, size, linesize, metadata = value
                 starts = list(accumulate([0] + list(planes_sizes[:-1])))
@@ -264,6 +297,7 @@ class NetworkProtocolHandler:
 
 
 # --- Enhanced Color Space Converter ---
+
 
 class ColorSpaceConverter:
     """Handles color space conversion with caching and error handling."""
@@ -281,19 +315,19 @@ class ColorSpaceConverter:
                 # Suppress ffmpeg warnings for known non-accelerated conversions
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    converter = SWScale(
-                        width, height, input_format, ofmt='bgr24')
+                    converter = SWScale(width, height, input_format, ofmt="bgr24")
                     self._converter_cache[cache_key] = converter
 
                     # Log once per format about acceleration
                     if input_format not in self._warned_formats:
                         self._warned_formats.add(input_format)
-                        logger.debug(f"Created converter for {input_format} -> BGR24 "
-                                     f"(hardware acceleration may not be available)")
+                        logger.debug(
+                            f"Created converter for {input_format} -> BGR24 "
+                            f"(hardware acceleration may not be available)"
+                        )
 
             except Exception as e:
-                logger.error(
-                    f"Failed to create converter for {input_format}: {e}")
+                logger.error(f"Failed to create converter for {input_format}: {e}")
                 raise
 
         return self._converter_cache[cache_key]
@@ -307,9 +341,9 @@ class ColorSpaceConverter:
             converter = self.get_converter(width, height, input_format)
             img_bgr = converter.scale(img)
 
-            frame = np.frombuffer(
-                img_bgr.to_bytearray()[0], dtype=np.uint8
-            ).reshape((height, width, 3))
+            frame = np.frombuffer(img_bgr.to_bytearray()[0], dtype=np.uint8).reshape(
+                (height, width, 3)
+            )
 
             return frame
 
@@ -319,6 +353,7 @@ class ColorSpaceConverter:
 
 
 # --- Remote Video Source ---
+
 
 class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
     """Async remote video client with improved connection and recording state management."""
@@ -343,21 +378,23 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                 return True
 
             logger.info(
-                f"Connecting to {self.config.server_address}:{self.config.server_port}")
+                f"Connecting to {self.config.server_address}:{self.config.server_port}"
+            )
             try:
                 conn_future = asyncio.open_connection(
-                    self.config.server_address, self.config.server_port)
+                    self.config.server_address, self.config.server_port
+                )
                 self.reader, self.writer = await asyncio.wait_for(
-                    conn_future, timeout=self.config.remote_connect_timeout)
+                    conn_future, timeout=self.config.remote_connect_timeout
+                )
 
                 self._is_active = True
-                self._listener_task = asyncio.create_task(
-                    self._listen_for_messages())
-                await self._send_message('started_playing', None)
+                self._listener_task = asyncio.create_task(self._listen_for_messages())
+                await self._send_message("started_playing", None)
                 logger.info("Successfully connected to remote server")
 
                 # Request current recording state
-                await self._send_message('get_recording_state', None)
+                await self._send_message("get_recording_state", None)
                 return True
 
             except (OSError, socket.gaierror, asyncio.TimeoutError) as e:
@@ -372,16 +409,18 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                 try:
                     # Read message header
                     header_data = await asyncio.wait_for(
-                        self.reader.readexactly(8), timeout=5.0)
-                    msg_len = struct.unpack('>II', header_data)
+                        self.reader.readexactly(8), timeout=5.0
+                    )
+                    msg_len = struct.unpack(">II", header_data)
 
                     # Read message body
                     total_size = sum(msg_len)
                     if total_size > 0:
                         msg_buff = await asyncio.wait_for(
-                            self.reader.readexactly(total_size), timeout=10.0)
+                            self.reader.readexactly(total_size), timeout=10.0
+                        )
                     else:
-                        msg_buff = b''
+                        msg_buff = b""
 
                     msg, value = self.decode_data(msg_buff, msg_len)
                     await self._handle_message(msg, value)
@@ -400,7 +439,7 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
 
     async def _handle_message(self, msg: str, value):
         """Handle different message types with enhanced recording state management."""
-        if msg == 'image':
+        if msg == "image":
             # Always accept frames when not paused, regardless of queue state
             if not self._paused:
                 try:
@@ -414,44 +453,41 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                 except asyncio.QueueFull:
                     pass  # This shouldn't happen now, but keep as safety
 
-        elif msg == 'started_recording':
-            logger.info(
-                "✅ Server started recording - resuming frame processing")
+        elif msg == "started_recording":
+            logger.info("✅ Server started recording - resuming frame processing")
             await self.recording_manager.update_state(RecordingState.RECORDING)
             # Always resume processing when recording starts, regardless of config
             was_paused = self._paused
             self._paused = False
             if was_paused:
-                logger.info(
-                    "🔄 Frame processing resumed - ready to accept new frames")
+                logger.info("🔄 Frame processing resumed - ready to accept new frames")
 
-        elif msg == 'stopped_recording':
+        elif msg == "stopped_recording":
             logger.info(
-                "⏸️  Server stopped recording - processing behavior depends on config")
+                "⏸️  Server stopped recording - processing behavior depends on config"
+            )
             await self.recording_manager.update_state(RecordingState.STOPPED)
             if self.config.pause_on_recording_stop:
                 self._paused = True
-                logger.info(
-                    "📋 Frame processing paused until recording resumes")
+                logger.info("📋 Frame processing paused until recording resumes")
                 # Clear frame queue when paused
                 await self._clear_frame_queue()
             else:
-                logger.info(
-                    "▶️  Continuing frame processing despite recording stop")
+                logger.info("▶️  Continuing frame processing despite recording stop")
 
-        elif msg == 'recording_state':
+        elif msg == "recording_state":
             # Handle response to get_recording_state request
-            current_state = RecordingState.RECORDING if value else RecordingState.STOPPED
+            current_state = (
+                RecordingState.RECORDING if value else RecordingState.STOPPED
+            )
             await self.recording_manager.update_state(current_state)
             old_paused = self._paused
             self._paused = self.config.pause_on_recording_stop and not value
 
             if old_paused and not self._paused:
-                logger.info(
-                    "🔄 Processing resumed based on recording state query")
+                logger.info("🔄 Processing resumed based on recording state query")
             elif not old_paused and self._paused:
-                logger.info(
-                    "📋 Processing paused based on recording state query")
+                logger.info("📋 Processing paused based on recording state query")
                 await self._clear_frame_queue()
 
         else:
@@ -480,12 +516,13 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
         try:
             # Use a shorter timeout when not paused to be more responsive
             raw_frame_data, timestamp = await asyncio.wait_for(
-                self.frame_queue.get(), timeout=0.5)
+                self.frame_queue.get(), timeout=0.5
+            )
             frame, metadata = self._process_raw_frame(raw_frame_data)
-            metadata['capture_timestamp'] = timestamp
-            metadata['source'] = 'remote'
-            metadata['recording_state'] = self.recording_manager.state.name
-            metadata['paused'] = self._paused
+            metadata["capture_timestamp"] = timestamp
+            metadata["source"] = "remote"
+            metadata["recording_state"] = self.recording_manager.state.name
+            metadata["paused"] = self._paused
             return frame, metadata
         except asyncio.TimeoutError:
             # Don't log timeouts as they're normal during sparse frame periods
@@ -495,8 +532,12 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
         """Process raw frame data into numpy array with enhanced error handling."""
         try:
             plane_buffers, pix_fmt, size, linesize, metadata = raw_frame_data
-            img = Image(plane_buffers=plane_buffers, pix_fmt=pix_fmt,
-                        size=size, linesize=linesize)
+            img = Image(
+                plane_buffers=plane_buffers,
+                pix_fmt=pix_fmt,
+                size=size,
+                linesize=linesize,
+            )
 
             # Use cached converter to reduce warnings and improve performance
             frame = self._frame_processor.convert_frame(img)
@@ -549,6 +590,7 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
 
 # --- Local Camera Source ---
 
+
 class CameraSource:
     """Local camera source with improved error handling."""
 
@@ -582,8 +624,11 @@ class CameraSource:
     def _init_camera(self) -> Optional[cv2.VideoCapture]:
         """Initialize camera in thread."""
         try:
-            source = int(self.config.camera_index) if str(
-                self.config.camera_index).isdigit() else self.config.camera_index
+            source = (
+                int(self.config.camera_index)
+                if str(self.config.camera_index).isdigit()
+                else self.config.camera_index
+            )
             cap = cv2.VideoCapture(source)
 
             if cap.isOpened():
@@ -611,7 +656,7 @@ class CameraSource:
                 return frame, {
                     "source": "local",
                     "capture_timestamp": time.time(),
-                    "recording_state": self.recording_manager.state.name
+                    "recording_state": self.recording_manager.state.name,
                 }
             return None
         except Exception as e:
@@ -628,6 +673,7 @@ class CameraSource:
 
 
 # --- Source State Management ---
+
 
 class SourceState(Enum):
     DISCONNECTED = auto()
@@ -688,7 +734,8 @@ class HybridVideoSource:
             else:
                 # The connection is truly inactive. NOW it's correct to fall back.
                 logger.warning(
-                    "Remote source connection is inactive, falling back to local.")
+                    "Remote source connection is inactive, falling back to local."
+                )
                 await self.remote.disconnect()
                 async with self._state_lock:
                     self.state = SourceState.TRYING_LOCAL
@@ -722,7 +769,7 @@ class HybridVideoSource:
     async def _try_remote_reconnect(self):
         """Periodically attempt remote reconnection."""
         current_time = time.time()
-        if (current_time - self.last_remote_attempt > self.config.remote_retry_cooldown):
+        if current_time - self.last_remote_attempt > self.config.remote_retry_cooldown:
             self.last_remote_attempt = current_time
             logger.info("Attempting remote reconnection...")
 
@@ -739,6 +786,7 @@ class HybridVideoSource:
 
 
 # --- Performance Metrics ---
+
 
 class PerformanceMetrics:
     """Enhanced metrics collection and reporting."""
@@ -771,7 +819,9 @@ class PerformanceMetrics:
         """Check if it's time to generate a report."""
         return time.time() - self.last_report_time >= self.report_interval
 
-    def generate_report(self, source_state: str, recording_state: str) -> Dict[str, Any]:
+    def generate_report(
+        self, source_state: str, recording_state: str
+    ) -> Dict[str, Any]:
         """Generate performance report with recording state info."""
         current_time = time.time()
         elapsed = current_time - self.last_report_time
@@ -779,8 +829,9 @@ class PerformanceMetrics:
         fps = self.frame_count / elapsed if elapsed > 0 else 0
         self.fps_history.append(fps)
 
-        avg_latency = statistics.mean(
-            self.latency_history) if self.latency_history else 0
+        avg_latency = (
+            statistics.mean(self.latency_history) if self.latency_history else 0
+        )
         avg_fps = statistics.mean(self.fps_history) if self.fps_history else 0
 
         report = {
@@ -792,7 +843,7 @@ class PerformanceMetrics:
             "source_state": source_state,
             "recording_state": recording_state,
             "frames_processed": self.frame_count,
-            "frames_skipped": self.skipped_frame_count
+            "frames_skipped": self.skipped_frame_count,
         }
 
         # Reset counters
@@ -804,6 +855,7 @@ class PerformanceMetrics:
 
 
 # --- Detection Publisher ---
+
 
 class DetectionPublisher:
     """ZMQ publisher for detection results."""
@@ -831,11 +883,13 @@ class DetectionPublisher:
         except Exception as e:
             logger.error(f"Failed to publish status: {e}")
 
-    async def publish_frame(self,
-                            frame: np.ndarray,
-                            metadata: Dict[str, Any],
-                            encoding: str = "jpg",
-                            quality: int = 80):
+    async def publish_frame(
+        self,
+        frame: np.ndarray,
+        metadata: Dict[str, Any],
+        encoding: str = "jpg",
+        quality: int = 80,
+    ):
         """Publish an encoded frame with associated metadata."""
         if frame is None:
             return
@@ -852,16 +906,19 @@ class DetectionPublisher:
                 encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
 
             success, buffer = await asyncio.to_thread(
-                cv2.imencode, f".{encoding}", frame, encode_params)
+                cv2.imencode, f".{encoding}", frame, encode_params
+            )
             if not success:
                 logger.error("Failed to encode frame for publishing")
                 return
 
             payload_metadata = dict(metadata or {})
             payload_metadata.setdefault(
-                "encoding", "jpeg" if encoding in ("jpg", "jpeg") else encoding)
+                "encoding", "jpeg" if encoding in ("jpg", "jpeg") else encoding
+            )
             payload_metadata.setdefault(
-                "shape", [int(frame.shape[0]), int(frame.shape[1])])
+                "shape", [int(frame.shape[0]), int(frame.shape[1])]
+            )
 
             await self.socket.send_string("frames", flags=zmq.SNDMORE)
             await self.socket.send_json(payload_metadata, flags=zmq.SNDMORE)
@@ -881,6 +938,7 @@ class DetectionPublisher:
 
 # --- Main Perception Process ---
 
+
 class PerceptionProcess:
     """Main perception process orchestrator with recording state management."""
 
@@ -897,7 +955,8 @@ class PerceptionProcess:
 
         if self.config.enable_pose and self.config.enable_segmentation:
             logger.info(
-                "Pose mode detected; disabling segmentation processing for compatibility.")
+                "Pose mode detected; disabling segmentation processing for compatibility."
+            )
             self.config.enable_segmentation = False
 
         # Initialize recording state manager
@@ -913,7 +972,8 @@ class PerceptionProcess:
 
         # Setup recording state callbacks
         self.recording_manager.add_state_change_callback(
-            self._on_recording_state_change)
+            self._on_recording_state_change
+        )
 
     def _extract_keypoint_labels(self, model: YOLO) -> Optional[List[str]]:
         """Attempt to extract keypoint labels from the loaded YOLO model."""
@@ -936,7 +996,8 @@ class PerceptionProcess:
             overrides = getattr(model, "overrides", None)
             if overrides:
                 labels = _normalize_labels(
-                    overrides.get("kpt_label") or overrides.get("kpt_labels"))
+                    overrides.get("kpt_label") or overrides.get("kpt_labels")
+                )
                 if labels:
                     return labels
 
@@ -948,8 +1009,7 @@ class PerceptionProcess:
                 if labels:
                     return labels
 
-            inner_model = getattr(model_obj, "model",
-                                  None) if model_obj else None
+            inner_model = getattr(model_obj, "model", None) if model_obj else None
             for attr in candidate_attrs:
                 labels = _normalize_labels(getattr(inner_model, attr, None))
                 if labels:
@@ -960,28 +1020,35 @@ class PerceptionProcess:
 
         return None
 
-    async def _on_recording_state_change(self, old_state: RecordingState, new_state: RecordingState):
+    async def _on_recording_state_change(
+        self, old_state: RecordingState, new_state: RecordingState
+    ):
         """Handle recording state changes."""
         state_info = self.recording_manager.get_state_info()
 
         # Log the state change with processing status
         if new_state == RecordingState.RECORDING:
             logger.info(
-                f"🎬 Recording state: {old_state.name} → {new_state.name} (Processing: {'ENABLED' if state_info['should_process'] else 'DISABLED'})")
+                f"🎬 Recording state: {old_state.name} → {new_state.name} (Processing: {'ENABLED' if state_info['should_process'] else 'DISABLED'})"
+            )
         elif new_state == RecordingState.STOPPED:
             logger.info(
-                f"🛑 Recording state: {old_state.name} → {new_state.name} (Processing: {'ENABLED' if state_info['should_process'] else 'DISABLED'})")
+                f"🛑 Recording state: {old_state.name} → {new_state.name} (Processing: {'ENABLED' if state_info['should_process'] else 'DISABLED'})"
+            )
         else:
             logger.info(
-                f"📡 Recording state: {old_state.name} → {new_state.name} (Processing: {'ENABLED' if state_info['should_process'] else 'DISABLED'})")
+                f"📡 Recording state: {old_state.name} → {new_state.name} (Processing: {'ENABLED' if state_info['should_process'] else 'DISABLED'})"
+            )
 
-        await self.publisher.publish_status({
-            "event": "recording_state_change",
-            "old_state": old_state.name,
-            "new_state": new_state.name,
-            "should_process": state_info["should_process"],
-            "timestamp": time.time()
-        })
+        await self.publisher.publish_status(
+            {
+                "event": "recording_state_change",
+                "old_state": old_state.name,
+                "new_state": new_state.name,
+                "should_process": state_info["should_process"],
+                "timestamp": time.time(),
+            }
+        )
 
     @asynccontextmanager
     async def _model_context(self) -> AsyncIterator[YOLO]:
@@ -994,18 +1061,18 @@ class PerceptionProcess:
             keypoint_labels = self._extract_keypoint_labels(model)
             if keypoint_labels:
                 if not self.config.enable_pose:
-                    logger.info(
-                        "Pose metadata detected; enabling pose processing.")
+                    logger.info("Pose metadata detected; enabling pose processing.")
                 self.config.enable_pose = True
                 self.keypoint_labels = keypoint_labels
                 if self.config.enable_segmentation:
                     logger.info(
-                        "Disabling segmentation because pose keypoints are present.")
+                        "Disabling segmentation because pose keypoints are present."
+                    )
                     self.config.enable_segmentation = False
                 logger.info(
                     "Keypoint labels (%d): %s",
                     len(keypoint_labels),
-                    ", ".join(keypoint_labels)
+                    ", ".join(keypoint_labels),
                 )
             logger.info("YOLO model loaded successfully")
             yield model
@@ -1072,48 +1139,61 @@ class PerceptionProcess:
 
                         # Process results
                         detection_count = await self._process_detections(
-                            results, loop_start, metadata)
+                            results, loop_start, metadata
+                        )
 
                         # Update metrics
-                        self.metrics.record_frame(
-                            inference_time, detection_count)
+                        self.metrics.record_frame(inference_time, detection_count)
 
                         # Prepare visualization output if requested
                         annotated_frame = None
-                        if self.config.visualize or self.config.publish_annotated_frames:
+                        if (
+                            self.config.visualize
+                            or self.config.publish_annotated_frames
+                        ):
                             annotated_frame = self._visualize_results(
-                                results, frame, show_window=self.config.visualize)
+                                results, frame, show_window=self.config.visualize
+                            )
 
                         # Report metrics
                         if self.metrics.should_report():
                             report = self.metrics.generate_report(
                                 self.video_source.state.name,
-                                self.recording_manager.state.name
+                                self.recording_manager.state.name,
                             )
                             logger.info(f"Performance: {json.dumps(report)}")
-                            await self.publisher.publish_status({
-                                "event": "performance_report",
-                                **report,
-                                "timestamp": time.time()
-                            })
+                            await self.publisher.publish_status(
+                                {
+                                    "event": "performance_report",
+                                    **report,
+                                    "timestamp": time.time(),
+                                }
+                            )
 
                         if self.config.publish_frames:
-                            frame_to_publish = annotated_frame if (
-                                self.config.publish_annotated_frames and annotated_frame is not None
-                            ) else frame
+                            frame_to_publish = (
+                                annotated_frame
+                                if (
+                                    self.config.publish_annotated_frames
+                                    and annotated_frame is not None
+                                )
+                                else frame
+                            )
                             await self.publisher.publish_frame(
                                 frame_to_publish,
                                 {
                                     "frame_index": metadata["frame_index"],
-                                    "capture_timestamp": metadata.get("capture_timestamp"),
+                                    "capture_timestamp": metadata.get(
+                                        "capture_timestamp"
+                                    ),
                                     "source": metadata.get("source"),
                                     "recording_state": self.recording_manager.state.name,
                                     "processing": processing_active,
                                     "detection_count": detection_count,
-                                    "inference_ms": inference_time * 1000.0
+                                    "inference_ms": inference_time * 1000.0,
                                 },
                                 encoding=self.config.frame_encoding,
-                                quality=self.config.frame_quality
+                                quality=self.config.frame_quality,
                             )
                     finally:
                         self._frame_index += 1
@@ -1130,17 +1210,20 @@ class PerceptionProcess:
         """Run YOLO inference on frame."""
         try:
             results = await asyncio.to_thread(
-                self.model, frame,
+                self.model,
+                frame,
                 stream=False,
                 conf=self.config.confidence_threshold,
-                verbose=False
+                verbose=False,
             )
             return results[0]
         except Exception as e:
             logger.error(f"Inference error: {e}")
             raise
 
-    def _encode_mask(self, masks_obj: Masks, detection_index: int) -> Optional[Dict[str, Any]]:
+    def _encode_mask(
+        self, masks_obj: Masks, detection_index: int
+    ) -> Optional[Dict[str, Any]]:
         """
         Encodes a single mask from a Masks object based on the configured strategy.
 
@@ -1162,7 +1245,7 @@ class PerceptionProcess:
                 return {
                     "encoding": "polygon",
                     # .tolist() is essential for JSON serialization
-                    "points": polygon_pixels.tolist()
+                    "points": polygon_pixels.tolist(),
                 }
 
             # --- STRATEGY 2: COCO RLE (Standard & Compressed) ---
@@ -1172,12 +1255,10 @@ class PerceptionProcess:
                 mask_tensor = masks_obj.data[detection_index]
 
                 # Convert to a numpy array in the format pycocotools expects
-                mask_bitmap = (mask_tensor > 0.5).cpu(
-                ).numpy().astype(np.uint8)
+                mask_bitmap = (mask_tensor > 0.5).cpu().numpy().astype(np.uint8)
                 target_shape = getattr(masks_obj, "orig_shape", None)
                 if target_shape and mask_bitmap.shape[:2] != tuple(target_shape):
-                    target_h, target_w = int(
-                        target_shape[0]), int(target_shape[1])
+                    target_h, target_w = int(target_shape[0]), int(target_shape[1])
                     mask_bitmap = cv2.resize(
                         mask_bitmap,
                         (target_w, target_h),
@@ -1189,13 +1270,13 @@ class PerceptionProcess:
                 rle = maskUtils.encode(mask_fortran)
 
                 # Decode the byte string for JSON compatibility
-                if isinstance(rle['counts'], bytes):
-                    rle['counts'] = rle['counts'].decode('utf-8')
+                if isinstance(rle["counts"], bytes):
+                    rle["counts"] = rle["counts"].decode("utf-8")
 
                 return {
                     "encoding": "coco_rle",
-                    "size": rle['size'],
-                    "counts": rle['counts']
+                    "size": rle["size"],
+                    "counts": rle["counts"],
                 }
 
             # --- STRATEGY 3: Bitmap (Uncompressed Fallback) ---
@@ -1205,21 +1286,23 @@ class PerceptionProcess:
                 # Not directly JSON serializable, so we don't implement this by default.
                 # If needed, one could use base64 encoding here.
                 logger.warning(
-                    "Bitmap encoding is not recommended for network transmission.")
+                    "Bitmap encoding is not recommended for network transmission."
+                )
                 return None
 
             else:
                 logger.warning(
-                    f"Unknown mask_encoding type: '{encoding_type}'. No mask will be sent.")
+                    f"Unknown mask_encoding type: '{encoding_type}'. No mask will be sent."
+                )
                 return None
 
         except Exception as e:
-            logger.error(
-                f"Failed to encode mask with strategy '{encoding_type}': {e}")
+            logger.error(f"Failed to encode mask with strategy '{encoding_type}': {e}")
             return None
 
-    async def _process_detections(self, result, timestamp: float,
-                                  metadata: Dict[str, Any]) -> int:
+    async def _process_detections(
+        self, result, timestamp: float, metadata: Dict[str, Any]
+    ) -> int:
         """Process detection results and publish with mask support."""
         if not result.boxes or len(result.boxes) == 0:
             return 0
@@ -1242,10 +1325,18 @@ class PerceptionProcess:
         boxes = result.boxes
 
         # Check if segmentation masks are available in the result object
-        masks = result.masks if self.config.enable_segmentation and hasattr(
-            result, 'masks') and result.masks is not None else None
-        keypoints_obj = result.keypoints if hasattr(
-            result, 'keypoints') and result.keypoints is not None else None
+        masks = (
+            result.masks
+            if self.config.enable_segmentation
+            and hasattr(result, "masks")
+            and result.masks is not None
+            else None
+        )
+        keypoints_obj = (
+            result.keypoints
+            if hasattr(result, "keypoints") and result.keypoints is not None
+            else None
+        )
 
         for i in range(len(boxes)):
             try:
@@ -1278,8 +1369,14 @@ class PerceptionProcess:
                     if conf_data is not None and i < len(conf_data):
                         keypoint_scores = _to_list(conf_data[i])
 
-                keypoint_labels = self.keypoint_labels if self.keypoint_labels and (
-                    keypoints_pixels is not None or keypoints_normalized is not None) else None
+                keypoint_labels = (
+                    self.keypoint_labels
+                    if self.keypoint_labels
+                    and (
+                        keypoints_pixels is not None or keypoints_normalized is not None
+                    )
+                    else None
+                )
 
                 # Create the DetectionResult with the pre-encoded mask and pose data
                 detection = DetectionResult(
@@ -1293,7 +1390,7 @@ class PerceptionProcess:
                     keypoints_normalized=keypoints_normalized,
                     keypoints_pixels=keypoints_pixels,
                     keypoint_scores=keypoint_scores,
-                    keypoint_labels=keypoint_labels
+                    keypoint_labels=keypoint_labels,
                 )
 
                 await self.publisher.publish_detection(detection)
@@ -1304,21 +1401,32 @@ class PerceptionProcess:
 
         return detection_count
 
-    def _visualize_results(self, result, frame: np.ndarray, show_window: bool = True) -> np.ndarray:
+    def _visualize_results(
+        self, result, frame: np.ndarray, show_window: bool = True
+    ) -> np.ndarray:
         """Create an annotated frame and optionally display it locally."""
         try:
             # Use the built-in YOLO plotting that handles masks automatically
             annotated_frame = result.plot()
 
             # Alternative: Manual mask overlay if you want custom styling
-            if self.config.enable_segmentation and hasattr(result, 'masks') and result.masks is not None:
+            if (
+                self.config.enable_segmentation
+                and hasattr(result, "masks")
+                and result.masks is not None
+            ):
                 masks = result.masks.data.cpu().numpy()
                 boxes = result.boxes
 
                 # Create colored mask overlay
                 mask_overlay = np.zeros_like(frame)
-                colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255),
-                          (255, 255, 0), (255, 0, 255)]
+                colors = [
+                    (255, 0, 0),
+                    (0, 255, 0),
+                    (0, 0, 255),
+                    (255, 255, 0),
+                    (255, 0, 255),
+                ]
 
                 for i, mask in enumerate(masks):
                     if i < len(boxes):
@@ -1329,47 +1437,102 @@ class PerceptionProcess:
                         if class_name in self.config.target_behaviors:
                             color = colors[i % len(colors)]
                             mask_resized = cv2.resize(
-                                mask, (frame.shape[1], frame.shape[0]))
+                                mask, (frame.shape[1], frame.shape[0])
+                            )
                             mask_bool = mask_resized > 0.5
                             mask_overlay[mask_bool] = color
 
                 # Blend with original frame
                 alpha = 0.3
                 annotated_frame = cv2.addWeighted(
-                    annotated_frame, 1-alpha, mask_overlay, alpha, 0)
+                    annotated_frame, 1 - alpha, mask_overlay, alpha, 0
+                )
 
             # Add performance info (existing code)
-            fps_text = f"FPS: {self.metrics.fps_history[-1]:.1f}" if self.metrics.fps_history else "FPS: N/A"
+            fps_text = (
+                f"FPS: {self.metrics.fps_history[-1]:.1f}"
+                if self.metrics.fps_history
+                else "FPS: N/A"
+            )
             source_text = f"Source: {self.video_source.state.name}"
             recording_text = f"Recording: {self.recording_manager.state.name}"
 
             # Color code recording state
             recording_color = (
-                0, 255, 0) if self.recording_manager.state == RecordingState.RECORDING else (0, 165, 255)
-            processing_text = "PROCESSING" if self.recording_manager.should_process_frames() else "PAUSED"
+                (0, 255, 0)
+                if self.recording_manager.state == RecordingState.RECORDING
+                else (0, 165, 255)
+            )
+            processing_text = (
+                "PROCESSING"
+                if self.recording_manager.should_process_frames()
+                else "PAUSED"
+            )
             processing_color = (
-                0, 255, 0) if self.recording_manager.should_process_frames() else (0, 0, 255)
+                (0, 255, 0)
+                if self.recording_manager.should_process_frames()
+                else (0, 0, 255)
+            )
 
             # Draw text overlays
-            cv2.putText(annotated_frame, fps_text, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(annotated_frame, source_text, (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(annotated_frame, recording_text, (10, 90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, recording_color, 2)
-            cv2.putText(annotated_frame, processing_text, (10, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, processing_color, 2)
+            cv2.putText(
+                annotated_frame,
+                fps_text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
+            cv2.putText(
+                annotated_frame,
+                source_text,
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
+            cv2.putText(
+                annotated_frame,
+                recording_text,
+                (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                recording_color,
+                2,
+            )
+            cv2.putText(
+                annotated_frame,
+                processing_text,
+                (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                processing_color,
+                2,
+            )
 
             # Add segmentation info
-            if self.config.enable_segmentation and hasattr(result, 'masks') and result.masks is not None:
+            if (
+                self.config.enable_segmentation
+                and hasattr(result, "masks")
+                and result.masks is not None
+            ):
                 seg_text = f"Masks: {len(result.masks.data)}"
-                cv2.putText(annotated_frame, seg_text, (10, 150),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                cv2.putText(
+                    annotated_frame,
+                    seg_text,
+                    (10, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 0),
+                    2,
+                )
 
             if show_window:
                 cv2.imshow("Perception System", annotated_frame)
 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                if cv2.waitKey(1) & 0xFF == ord("q"):
                     self.running = False
                     self._shutdown_event.set()
 
@@ -1402,43 +1565,61 @@ class PerceptionProcess:
 
 # --- Configuration and Main ---
 
+
 def create_config_from_args() -> Config:
     """Create configuration from command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Enhanced Computer Vision Perception System")
+        description="Enhanced Computer Vision Perception System"
+    )
 
-    parser.add_argument('--camera-index', type=str, default='0',
-                        help="Camera index or video file path")
-    parser.add_argument('--server-address', type=str, default="localhost",
-                        help="Remote server address")
-    parser.add_argument('--server-port', type=int, default=5002,
-                        help="Remote server port")
-    parser.add_argument('--model', type=str, default="yolo11n-seg.pt",
-                        help="YOLO model file name")
-    parser.add_argument('--publisher', type=str, default="tcp://*:5555",
-                        help="ZeroMQ publisher address")
-    parser.add_argument('--targets', type=str, nargs='+', default=['mouse'],
-                        help="Target class names")
-    parser.add_argument('--confidence', type=float, default=0.25,
-                        help="Confidence threshold")
-    parser.add_argument('--width', type=int, default=640, help="Frame width")
-    parser.add_argument('--height', type=int, default=480, help="Frame height")
-    parser.add_argument('--max-fps', type=float,
-                        default=30.0, help="Maximum FPS")
-    parser.add_argument('--visualize', action='store_true',
-                        help="Enable visualization")
-    parser.add_argument('--publish-annotated', action='store_true',
-                        help="Publish annotated frames instead of raw frames")
-    parser.add_argument('--continue-on-stop', action='store_true',
-                        help="Continue processing when recording stops (default: pause)")
-    parser.add_argument('--recording-timeout', type=float, default=30.0,
-                        help="Timeout for recording state changes")
+    parser.add_argument(
+        "--camera-index", type=str, default="0", help="Camera index or video file path"
+    )
+    parser.add_argument(
+        "--server-address", type=str, default="localhost", help="Remote server address"
+    )
+    parser.add_argument(
+        "--server-port", type=int, default=5002, help="Remote server port"
+    )
+    parser.add_argument(
+        "--model", type=str, default="yolo11n-seg.pt", help="YOLO model file name"
+    )
+    parser.add_argument(
+        "--publisher", type=str, default="tcp://*:5555", help="ZeroMQ publisher address"
+    )
+    parser.add_argument(
+        "--targets", type=str, nargs="+", default=["mouse"], help="Target class names"
+    )
+    parser.add_argument(
+        "--confidence", type=float, default=0.25, help="Confidence threshold"
+    )
+    parser.add_argument("--width", type=int, default=640, help="Frame width")
+    parser.add_argument("--height", type=int, default=480, help="Frame height")
+    parser.add_argument("--max-fps", type=float, default=30.0, help="Maximum FPS")
+    parser.add_argument("--visualize", action="store_true", help="Enable visualization")
+    parser.add_argument(
+        "--publish-annotated",
+        action="store_true",
+        help="Publish annotated frames instead of raw frames",
+    )
+    parser.add_argument(
+        "--continue-on-stop",
+        action="store_true",
+        help="Continue processing when recording stops (default: pause)",
+    )
+    parser.add_argument(
+        "--recording-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout for recording state changes",
+    )
 
     args = parser.parse_args()
 
     # Convert camera index
-    camera_index = int(
-        args.camera_index) if args.camera_index.isdigit() else args.camera_index
+    camera_index = (
+        int(args.camera_index) if args.camera_index.isdigit() else args.camera_index
+    )
 
     is_pose_model = "pose" in args.model.lower()
 
@@ -1458,7 +1639,7 @@ def create_config_from_args() -> Config:
         pause_on_recording_stop=not args.continue_on_stop,
         recording_state_timeout=args.recording_timeout,
         enable_segmentation=not is_pose_model,
-        enable_pose=is_pose_model
+        enable_pose=is_pose_model,
     )
 
 
@@ -1470,7 +1651,8 @@ async def main():
 
         logger.info("🚀 Starting Enhanced Computer Vision Perception System")
         logger.info(
-            f"📋 Recording behavior: {'Pause on stop' if config.pause_on_recording_stop else 'Continue on stop'}")
+            f"📋 Recording behavior: {'Pause on stop' if config.pause_on_recording_stop else 'Continue on stop'}"
+        )
 
         perception = PerceptionProcess(config)
 
@@ -1478,7 +1660,8 @@ async def main():
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(
-                sig, lambda: asyncio.create_task(perception.shutdown()))
+                sig, lambda: asyncio.create_task(perception.shutdown())
+            )
 
         # Run the perception process
         await perception.run()
@@ -1493,7 +1676,7 @@ async def main():
         logger.info("👋 Application terminated")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

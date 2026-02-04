@@ -79,8 +79,7 @@ class TrackingController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     @QtCore.Slot(int, str)
     def _update_main_status_progress(self, percentage: int, message: str) -> None:
-        self._window.statusBar().showMessage(
-            f"{message} ({percentage}%)", 4000)
+        self._window.statusBar().showMessage(f"{message} ({percentage}%)", 4000)
 
     @QtCore.Slot(str)
     def _on_tracking_job_finished(self, completion_message: str) -> None:
@@ -122,10 +121,7 @@ class TrackingController(QtCore.QObject):
             worker_instance.wait(500)
             worker_instance.deleteLater()
             return
-        if (
-            self._track_all_worker
-            and self._track_all_worker is not worker_instance
-        ):
+        if self._track_all_worker and self._track_all_worker is not worker_instance:
             self._disconnect_track_all_worker(self._track_all_worker)
 
         self._track_all_worker = worker_instance
@@ -165,9 +161,7 @@ class TrackingController(QtCore.QObject):
         self, video_path_str: str, output_folder_str: str
     ) -> None:
         window = self._window
-        logger.info(
-            "AnnolidWindow UI: Job started for video %s", video_path_str
-        )
+        logger.info("AnnolidWindow UI: Job started for video %s", video_path_str)
         if window.filename != video_path_str:
             logger.info(
                 "Worker started on %s, but canvas shows %s. Opening programmatically.",
@@ -202,9 +196,7 @@ class TrackingController(QtCore.QObject):
     @QtCore.Slot(str)
     def _handle_tracking_video_finished_ui_update(self, video_path_str: str) -> None:
         window = self._window
-        logger.info(
-            "AnnolidWindow UI: Job finished for video %s", video_path_str
-        )
+        logger.info("AnnolidWindow UI: Job finished for video %s", video_path_str)
         current_watched_folder = ""
         watcher = window.prediction_progress_watcher
         if watcher and watcher.directories():
@@ -233,12 +225,10 @@ class TrackingController(QtCore.QObject):
             video_path=video_path,
             programmatic_call=True,
         )
-        if (
-            window.video_file == video_path
-            and window.video_results_folder == Path(output_folder_path)
+        if window.video_file == video_path and window.video_results_folder == Path(
+            output_folder_path
         ):
-            logger.info("TrackAll: Setting up watcher for %s",
-                        output_folder_path)
+            logger.info("TrackAll: Setting up watcher for %s", output_folder_path)
             window._setup_prediction_folder_watcher(output_folder_path)
             if hasattr(window, "progress_bar"):
                 window._initialize_progress_bar()
@@ -291,9 +281,7 @@ class TrackingController(QtCore.QObject):
     def _on_track_all_finished(self, completion_message: str) -> None:
         self._window.statusBar().showMessage(completion_message, 5000)
         self._window.set_tracking_ui_state(is_tracking=False)
-        self._window._finalize_prediction_progress(
-            "Track All run finished."
-        )
+        self._window._finalize_prediction_progress("Track All run finished.")
         worker = self._track_all_worker
         if worker:
             self._disconnect_track_all_worker(worker)
@@ -303,9 +291,7 @@ class TrackingController(QtCore.QObject):
 
     @QtCore.Slot(str)
     def _on_track_all_error(self, error_message: str) -> None:
-        QtWidgets.QMessageBox.critical(
-            self._window, "Track All Error", error_message
-        )
+        QtWidgets.QMessageBox.critical(self._window, "Track All Error", error_message)
         self._window.statusBar().showMessage(f"Error: {error_message}", 0)
         worker = self._track_all_worker
         if worker:
@@ -322,8 +308,7 @@ class TrackingController(QtCore.QObject):
         self, worker_instance: Optional[TrackingWorker]
     ) -> None:
         if not worker_instance:
-            logger.warning(
-                "Attempted to connect signals to a null worker instance.")
+            logger.warning("Attempted to connect signals to a null worker instance.")
             return
 
         previous_worker = self._previous_connected_worker

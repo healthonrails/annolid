@@ -10,14 +10,14 @@ from annolid.utils.devices import has_gpu
 class SamHQSegmenter:
     """
     SamHQSegmenter class for segmenting objects using HQ-SAM model.
-    References: 
+    References:
     @inproceedings{sam_hq,
     title={Segment Anything in High Quality},
-    author={Ke, Lei and Ye, Mingqiao and Danelljan, Martin and Liu, 
+    author={Ke, Lei and Ye, Mingqiao and Danelljan, Martin and Liu,
     Yifan and Tai, Yu-Wing and Tang, Chi-Keung and Yu, Fisher},
     booktitle={NeurIPS},
     year={2023}
-}  
+}
     https://github.com/SysCV/sam-hq
     """
 

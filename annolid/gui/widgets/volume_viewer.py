@@ -21,7 +21,9 @@ class VolumeViewerDialog(QtWidgets.QDialog):
     This is a built-in viewer with no external 3D dependencies.
     """
 
-    def __init__(self, tiff_path: str | Path, parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(
+        self, tiff_path: str | Path, parent: Optional[QtWidgets.QWidget] = None
+    ):
         super().__init__(parent)
         self.setWindowTitle("3D Stack Viewer")
         self.resize(900, 700)
@@ -36,7 +38,9 @@ class VolumeViewerDialog(QtWidgets.QDialog):
         self._image_label = QtWidgets.QLabel()
         self._image_label.setAlignment(QtCore.Qt.AlignCenter)
         self._image_label.setBackgroundRole(QtGui.QPalette.Base)
-        self._image_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self._image_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         self._image_label.setMinimumSize(200, 200)
 
         self._z_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -44,7 +48,9 @@ class VolumeViewerDialog(QtWidgets.QDialog):
         self._z_label = QtWidgets.QLabel("Z: -/-")
 
         self._mip_checkbox = QtWidgets.QCheckBox("MIP (Z)")
-        self._mip_checkbox.setToolTip("Maximum Intensity Projection across Z (requires volume in memory)")
+        self._mip_checkbox.setToolTip(
+            "Maximum Intensity Projection across Z (requires volume in memory)"
+        )
         self._mip_checkbox.stateChanged.connect(self._on_controls_changed)
 
         self._invert_checkbox = QtWidgets.QCheckBox("Invert")
@@ -184,7 +190,9 @@ class VolumeViewerDialog(QtWidgets.QDialog):
         self._update_view()
 
     # ------------------------- Rendering ----------------------------
-    def _apply_window(self, arr: np.ndarray, lo: float, hi: float, invert: bool) -> np.ndarray:
+    def _apply_window(
+        self, arr: np.ndarray, lo: float, hi: float, invert: bool
+    ) -> np.ndarray:
         if arr.dtype.kind in ("i", "u", "f"):
             arrf = arr.astype(np.float32)
             denom = max(hi - lo, 1e-6)
@@ -224,7 +232,7 @@ class VolumeViewerDialog(QtWidgets.QDialog):
     def _update_view(self):
         # Update Z label
         z = self._z_slider.value()
-        self._z_label.setText(f"Z: {z+1}/{self._n_frames}")
+        self._z_label.setText(f"Z: {z + 1}/{self._n_frames}")
 
         # Select data
         if self._mip_checkbox.isChecked() and self._volume is not None:
@@ -241,7 +249,9 @@ class VolumeViewerDialog(QtWidgets.QDialog):
         qimage = self._render_image(arr)
         pixmap = QtGui.QPixmap.fromImage(qimage)
         scaled = pixmap.scaled(
-            self._image_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            self._image_label.size(),
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation,
         )
         self._image_label.setPixmap(scaled)
 

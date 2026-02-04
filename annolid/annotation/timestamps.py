@@ -1,4 +1,3 @@
-
 def convert_time_to_frame_number(time_stamp, fps=29.97):
     """Convert string format timestamp to frame number.
     e.g. convert_time_to_frame_number('0:02:33.8',fps) -> 4585
@@ -8,17 +7,17 @@ def convert_time_to_frame_number(time_stamp, fps=29.97):
         fps (float, optional): frame rate per second. Defaults to 29.97.
 
     Returns:
-        int: frame number 
+        int: frame number
     """
-    h, m, s = time_stamp.split(':')
-    seconds, milliseconds = s.split('.')
+    h, m, s = time_stamp.split(":")
+    seconds, milliseconds = s.split(".")
     total_seconds = int(h) * 3600 + int(m) * 60 + int(seconds)
     total_frames = int(total_seconds * fps) + int(milliseconds) * fps // 1000
     return int(total_frames)
 
 
 def convert_frame_number_to_time(frame_number, fps=29.97):
-    """Convert video frame_number ot timestamps. 
+    """Convert video frame_number to timestamps.
     e.g. convert_frame_number_to_time(555, fps) -> '00:00:18.518'
 
     Args:
@@ -53,6 +52,6 @@ def convert_timestamp_to_seconds(timestamp):
         >>> convert_timestamp_to_seconds('01:23:45.678')
         5025.678
     """
-    hours, minutes, seconds = map(float, timestamp.split(':'))
+    hours, minutes, seconds = map(float, timestamp.split(":"))
     total_seconds = (hours * 3600) + (minutes * 60) + seconds
     return total_seconds

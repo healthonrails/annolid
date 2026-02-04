@@ -55,4 +55,3 @@ class PillowBackend(ImageEditingBackend):
         text = prompt if len(prompt) <= 120 else prompt[:117] + "..."
         draw.rectangle([(0, 0), (img.width, 32)], fill=(0, 0, 0))
         draw.text((8, 8 + 10 * line_offset), text, fill=(255, 255, 255), font=font)
-

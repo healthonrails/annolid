@@ -3,11 +3,17 @@ class Event:
     Represents an event that occurs at a specific time during a video.
     """
 
-    def __init__(self, name, start_time,
-                 end_time=None, color=None,
-                 description=None, notes=None,
-                 location=None,
-                 participants=None):
+    def __init__(
+        self,
+        name,
+        start_time,
+        end_time=None,
+        color=None,
+        description=None,
+        notes=None,
+        location=None,
+        participants=None,
+    ):
         """
         Initializes an Event object with the specified properties.
 
@@ -76,26 +82,26 @@ class Event:
     def to_dict(self):
         """converts the event object to a dictionary for easy serialization and storage in a database"""
         return {
-            'name': self.name,
-            'start_time': self.start_time,
-            'end_time': self.end_time,
-            'color': self.color,
-            'description': self.description,
-            'notes': self.notes,
-            'location': self.location,
-            'participants': self.participants,
+            "name": self.name,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "color": self.color,
+            "description": self.description,
+            "notes": self.notes,
+            "location": self.location,
+            "participants": self.participants,
         }
 
     @classmethod
     def from_dict(cls, event_dict):
         """creates an event object from a dictionary"""
         return cls(
-            name=event_dict['name'],
-            start_time=event_dict['start_time'],
-            end_time=event_dict.get('end_time', None),
-            color=event_dict.get('color', None),
-            description=event_dict.get('description', None),
-            notes=event_dict.get('notes', None),
-            location=event_dict.get('location', None),
-            participants=event_dict.get('participants', None),
+            name=event_dict["name"],
+            start_time=event_dict["start_time"],
+            end_time=event_dict.get("end_time", None),
+            color=event_dict.get("color", None),
+            description=event_dict.get("description", None),
+            notes=event_dict.get("notes", None),
+            location=event_dict.get("location", None),
+            participants=event_dict.get("participants", None),
         )

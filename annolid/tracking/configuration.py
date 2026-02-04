@@ -172,9 +172,7 @@ class CutieDinoTrackerConfig:
         return tuple(sorted(TRACKER_PRESETS.keys()))
 
     @classmethod
-    def from_preset(
-        cls, preset: str, **overrides: object
-    ) -> "CutieDinoTrackerConfig":
+    def from_preset(cls, preset: str, **overrides: object) -> "CutieDinoTrackerConfig":
         cfg = cls(tracker_preset=str(preset))
         for key, value in overrides.items():
             if key in cls.__dataclass_fields__:
@@ -190,29 +188,22 @@ class CutieDinoTrackerConfig:
             self._apply_preset_defaults(str(self.tracker_preset))
 
         if self.mask_enforce_snap_radius is None:
-            self.mask_enforce_snap_radius = int(
-                self.mask_enforce_search_radius)
+            self.mask_enforce_snap_radius = int(self.mask_enforce_search_radius)
         else:
-            self.mask_enforce_search_radius = int(
-                self.mask_enforce_snap_radius)
+            self.mask_enforce_search_radius = int(self.mask_enforce_snap_radius)
 
         if self.motion_search_flow_gain is None:
             self.motion_search_flow_gain = float(self.motion_search_gain)
         else:
             self.motion_search_flow_gain = float(self.motion_search_flow_gain)
 
-        self.mask_enforce_search_radius = max(
-            1, int(self.mask_enforce_search_radius))
-        self.mask_enforce_snap_radius = max(
-            1, int(self.mask_enforce_snap_radius))
-        self.mask_enforce_reject_outside = bool(
-            self.mask_enforce_reject_outside)
-        self.motion_prior_flow_relief = max(
-            0.0, float(self.motion_prior_flow_relief))
+        self.mask_enforce_search_radius = max(1, int(self.mask_enforce_search_radius))
+        self.mask_enforce_snap_radius = max(1, int(self.mask_enforce_snap_radius))
+        self.mask_enforce_reject_outside = bool(self.mask_enforce_reject_outside)
+        self.motion_prior_flow_relief = max(0.0, float(self.motion_prior_flow_relief))
 
         self.keypoint_refine_radius = max(0, int(self.keypoint_refine_radius))
-        self.keypoint_refine_sigma = max(
-            1e-4, float(self.keypoint_refine_sigma))
+        self.keypoint_refine_sigma = max(1e-4, float(self.keypoint_refine_sigma))
         self.keypoint_refine_temperature = max(
             1e-4, float(self.keypoint_refine_temperature)
         )
@@ -220,8 +211,7 @@ class CutieDinoTrackerConfig:
         if mode not in ("never", "auto", "always"):
             mode = "never"
         self.kpseg_apply_mode = mode
-        self.kpseg_min_reliable_frames = max(
-            1, int(self.kpseg_min_reliable_frames))
+        self.kpseg_min_reliable_frames = max(1, int(self.kpseg_min_reliable_frames))
         self.kpseg_reliable_ratio = float(
             min(1.0, max(0.0, float(self.kpseg_reliable_ratio)))
         )
@@ -234,8 +224,7 @@ class CutieDinoTrackerConfig:
         self.kpseg_use_mask_gate = bool(self.kpseg_use_mask_gate)
         self.kpseg_fallback_to_track = bool(self.kpseg_fallback_to_track)
         self.kpseg_max_jump_px = max(0.0, float(self.kpseg_max_jump_px))
-        fallback_mode = str(
-            self.kpseg_fallback_mode or "per_keypoint").strip().lower()
+        fallback_mode = str(self.kpseg_fallback_mode or "per_keypoint").strip().lower()
         if fallback_mode not in ("per_keypoint", "instance"):
             fallback_mode = "per_keypoint"
         self.kpseg_fallback_mode = fallback_mode
@@ -249,40 +238,32 @@ class CutieDinoTrackerConfig:
         self.kpseg_smoothing_alpha = float(
             min(1.0, max(0.0, float(self.kpseg_smoothing_alpha)))
         )
-        self.kpseg_smoothing_min_score = max(
-            0.0, float(self.kpseg_smoothing_min_score)
-        )
+        self.kpseg_smoothing_min_score = max(0.0, float(self.kpseg_smoothing_min_score))
         if self.kpseg_smoothing_fps is not None:
-            self.kpseg_smoothing_fps = max(
-                1e-3, float(self.kpseg_smoothing_fps)
-            )
+            self.kpseg_smoothing_fps = max(1e-3, float(self.kpseg_smoothing_fps))
         self.kpseg_one_euro_min_cutoff = max(
             1e-6, float(self.kpseg_one_euro_min_cutoff)
         )
-        self.kpseg_one_euro_d_cutoff = max(
-            1e-6, float(self.kpseg_one_euro_d_cutoff)
-        )
+        self.kpseg_one_euro_d_cutoff = max(1e-6, float(self.kpseg_one_euro_d_cutoff))
         self.kpseg_kalman_process_noise = max(
             1e-8, float(self.kpseg_kalman_process_noise)
         )
         self.kpseg_kalman_measurement_noise = max(
             1e-8, float(self.kpseg_kalman_measurement_noise)
         )
-        self.part_shared_weight = max(
-            0.0, min(1.0, float(self.part_shared_weight)))
-        self.part_shared_momentum = max(
-            0.0, min(1.0, float(self.part_shared_momentum)))
+        self.part_shared_weight = max(0.0, min(1.0, float(self.part_shared_weight)))
+        self.part_shared_momentum = max(0.0, min(1.0, float(self.part_shared_momentum)))
         self.context_radius = max(0, int(self.context_radius))
         self.context_radius_large = max(
-            self.context_radius, int(self.context_radius_large))
-        self.context_large_weight = max(
-            0.0, min(1.0, float(self.context_large_weight)))
-        self.context_weight = max(
-            0.0, min(1.0, float(self.context_weight)))
+            self.context_radius, int(self.context_radius_large)
+        )
+        self.context_large_weight = max(0.0, min(1.0, float(self.context_large_weight)))
+        self.context_weight = max(0.0, min(1.0, float(self.context_weight)))
         self.candidate_prune_ratio = max(
-            0.0, min(1.0, float(self.candidate_prune_ratio)))
+            0.0, min(1.0, float(self.candidate_prune_ratio))
+        )
         self.candidate_prune_min = max(0, int(self.candidate_prune_min))
-        
+
         # Validate multi-animal tracking parameters
         self.tracking_enable = bool(self.tracking_enable)
         matcher = str(self.tracking_matcher_algorithm or "greedy").strip().lower()
@@ -307,12 +288,10 @@ class CutieDinoTrackerConfig:
         self.tracking_constraint_max_velocity_px = max(
             1.0, float(self.tracking_constraint_max_velocity_px)
         )
-        self.tracking_centroid_weight = max(
-            0.0, float(self.tracking_centroid_weight)
-        )
+        self.tracking_centroid_weight = max(0.0, float(self.tracking_centroid_weight))
         self.tracking_pose_weight = max(0.0, float(self.tracking_pose_weight))
         self.tracking_size_weight = max(0.0, float(self.tracking_size_weight))
-        
+
         # Validate temporal smoothing parameters
         self.tracking_smoother_enable = bool(self.tracking_smoother_enable)
         smoother_mode = str(self.tracking_smoother_mode or "one_euro").strip().lower()

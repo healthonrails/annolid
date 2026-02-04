@@ -14,7 +14,7 @@ class Config:
     BATCH_SIZE = 1
     NUM_EPOCHS = 10
     LEARNING_RATE = 0.001
-    MODEL_NAME = 'slowfast'  # Default model
+    MODEL_NAME = "slowfast"  # Default model
     PRETRAINED = True
     NUM_WORKERS = 4
     NUM_FRAMES = 30

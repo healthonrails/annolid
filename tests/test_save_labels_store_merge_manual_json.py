@@ -54,9 +54,16 @@ def test_save_labels_writes_store_even_when_manual_json_exists(tmp_path: Path) -
     shapes = rec.get("shapes") or []
     assert isinstance(shapes, list)
     # Polygon from the manual JSON is preserved, point prediction is added.
-    assert any(s.get("shape_type") == "polygon" and s.get("label") == "resident" for s in shapes)
-    assert any(s.get("shape_type") == "point" and s.get("label") == "nose" and s.get("group_id") == 0 for s in shapes)
+    assert any(
+        s.get("shape_type") == "polygon" and s.get("label") == "resident"
+        for s in shapes
+    )
+    assert any(
+        s.get("shape_type") == "point"
+        and s.get("label") == "nose"
+        and s.get("group_id") == 0
+        for s in shapes
+    )
 
     # Manual JSON should remain unchanged (no overwrite when persist_json=False).
     assert json_path.read_text(encoding="utf-8") == json_text
-

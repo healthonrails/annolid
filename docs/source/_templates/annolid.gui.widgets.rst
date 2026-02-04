@@ -12,10 +12,10 @@ annolid.gui.widgets.convert\_yolo\_dialog module
    :undoc-members:
    :show-inheritance:
 
-annolid.gui.widgets.covert\_coco\_dialog module
------------------------------------------------
+annolid.gui.widgets.convert\_coco\_dialog module
+------------------------------------------------
 
-.. automodule:: annolid.gui.widgets.covert_coco_dialog
+.. automodule:: annolid.gui.widgets.convert_coco_dialog
    :members:
    :undoc-members:
    :show-inheritance:

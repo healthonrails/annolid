@@ -29,9 +29,9 @@ class BackgroundTask(QObject):
         This method will run the task function with the provided arguments and emit the task_completed signal when done.
         """
         try:
-            result = self.task_function(*self.args, **self.kwargs)
+            self.task_function(*self.args, **self.kwargs)
             self.task_completed.emit()
-        except Exception as e:
+        except Exception:
             # Handle exceptions as needed
             self.task_completed.emit()
 
@@ -55,12 +55,12 @@ class BackgroundTaskThread(QThread):
 
 # Usage Example:
 if __name__ == "__main__":
-    from PyQt5.QtCore import QTimer
     from PyQt5.QtWidgets import QApplication
 
     def time_consuming_task():
         # Simulate a time-consuming task
         import time
+
         time.sleep(2)
 
     app = QApplication([])

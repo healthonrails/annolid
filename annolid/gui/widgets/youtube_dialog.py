@@ -90,18 +90,14 @@ class YouTubeVideoDialog(QtWidgets.QDialog):
         )
         if answer != QtWidgets.QMessageBox.Yes:
             raise RuntimeError(
-                self.tr(
-                    "YouTube download cancelled because 'yt-dlp' is not installed."
-                )
+                self.tr("YouTube download cancelled because 'yt-dlp' is not installed.")
             )
 
         python_executable = sys.executable or "python"
         self._set_status(self.tr("Installing yt-dlp..."))
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            subprocess.check_call(
-                [python_executable, "-m", "pip", "install", "yt-dlp"]
-            )
+            subprocess.check_call([python_executable, "-m", "pip", "install", "yt-dlp"])
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 self.tr("Failed to install yt-dlp (pip exit code %d).") % exc.returncode
@@ -114,9 +110,7 @@ class YouTubeVideoDialog(QtWidgets.QDialog):
             importlib.import_module("yt_dlp")
         except ImportError as exc:  # pragma: no cover - defensive path
             raise RuntimeError(
-                self.tr(
-                    "yt-dlp installation completed but the module is unavailable."
-                )
+                self.tr("yt-dlp installation completed but the module is unavailable.")
             ) from exc
 
     @QtCore.Slot()

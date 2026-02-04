@@ -13,13 +13,14 @@ from watchdog.observers import Observer
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 
 # Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # Constants
-IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff'}
-ANNOTATION_EXTENSIONS = {'.json'}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff"}
+ANNOTATION_EXTENSIONS = {".json"}
 
 
 class Config:
@@ -34,7 +35,9 @@ clip = registry.get("open-clip").create()
 
 
 class LanceDBFrameIndexer:
-    def __init__(self, db_path: str = Config.DB_PATH, table_name: str = Config.TABLE_NAME):
+    def __init__(
+        self, db_path: str = Config.DB_PATH, table_name: str = Config.TABLE_NAME
+    ):
         self.db_uri = db_path
         self.table_name = table_name
         self.db = None  # Lazy load the client
@@ -51,10 +54,7 @@ class LanceDBFrameIndexer:
             if self.table_name in await db.table_names():
                 self.table = await db.open_table(self.table_name)
             else:
-                self.table = await db.create_table(
-                    self.table_name,
-                    schema=LanceDBFrame
-                )
+                self.table = await db.create_table(self.table_name, schema=LanceDBFrame)
         return self.table
 
     async def index_frames(self, frame_data: List[Dict[str, Any]]):
@@ -68,16 +68,18 @@ class LanceDBFrameIndexer:
 
     async def search_similar_images(self, query_image, limit=3) -> List["LanceDBFrame"]:
         """Searches the table for similar images.
-          Args:
-              query_image (PIL.Image.Image or np.ndarray): The query image.
-              limit (int): The number of results to return.
+        Args:
+            query_image (PIL.Image.Image or np.ndarray): The query image.
+            limit (int): The number of results to return.
 
-          Returns:
-              List[LanceDBFrame]: A list of pydantic objects that match the query.
+        Returns:
+            List[LanceDBFrame]: A list of pydantic objects that match the query.
         """
         try:
             table = await self.get_async_table()
-            results = await table.search(query_image).limit(limit).to_pydantic(LanceDBFrame)
+            results = (
+                await table.search(query_image).limit(limit).to_pydantic(LanceDBFrame)
+            )
             return results
         except Exception as e:
             logger.error(f"Error searching images: {e}")
@@ -96,7 +98,7 @@ class LanceDBFrameIndexer:
 class LanceDBFrame(lancedb.pydantic.LanceModel):
     vector: Vector(clip.ndims()) = clip.VectorField()
     image_uri: str = clip.SourceField()
-    flags:  Optional[List[str]] = None
+    flags: Optional[List[str]] = None
     caption: Optional[str] = None
 
 
@@ -120,22 +122,20 @@ class FolderMonitor(FileSystemEventHandler):
         if annotation_file.exists():
             try:
                 annotation_data = load_labelme_json(annotation_file)
-                frame_labels = list(annotation_data.get('flags', {}).keys())
-                caption = annotation_data.get('caption', '')
+                frame_labels = list(annotation_data.get("flags", {}).keys())
+                caption = annotation_data.get("caption", "")
 
                 frame_data = [
-                    {"image_uri": str(file_path),
-                     "flags": frame_labels,
-                     "caption": caption}
+                    {
+                        "image_uri": str(file_path),
+                        "flags": frame_labels,
+                        "caption": caption,
+                    }
                 ]
             except (AnnotationStoreError, Exception) as e:
                 logger.error(f"Error indexing new image:{file_path} - {e}")
         else:
-            frame_data = [
-                {"image_uri": str(file_path),
-                 "flags": [],
-                 "caption": ''}
-            ]
+            frame_data = [{"image_uri": str(file_path), "flags": [], "caption": ""}]
         await self.indexer.index_frames(frame_data)
 
 
@@ -146,11 +146,9 @@ async def index_existing_images(folder_path: Path, indexer: LanceDBFrameIndexer)
         logger.warning("No images or annotation files found in the folder.")
         return
 
-    image_uris = [str(f)
-                  for f in image_uris if f.suffix.lower() in IMAGE_EXTENSIONS]
+    image_uris = [str(f) for f in image_uris if f.suffix.lower() in IMAGE_EXTENSIONS]
 
-    sampled_uris = sample(image_uris, min(
-        Config.MAX_INDEX_IMAGES, len(image_uris)))
+    sampled_uris = sample(image_uris, min(Config.MAX_INDEX_IMAGES, len(image_uris)))
 
     logger.info(f"Indexing {len(sampled_uris)} images from folder.")
 
@@ -163,16 +161,20 @@ async def index_existing_images(folder_path: Path, indexer: LanceDBFrameIndexer)
                 frame_data_list.append(
                     {
                         "image_uri": image_file,
-                        "flags": list(annotation_data.get('flags', {}).keys()),
-                        'caption': annotation_data.get('caption', ''),
+                        "flags": list(annotation_data.get("flags", {}).keys()),
+                        "caption": annotation_data.get("caption", ""),
                     }
                 )
             except (AnnotationStoreError, Exception) as e:
-                logger.error(
-                    f"Error indexing existing image: {image_file} - {e}")
+                logger.error(f"Error indexing existing image: {image_file} - {e}")
         else:
             frame_data_list.append(
-                {"image_uri": image_file, "flags": [], 'caption': '', })
+                {
+                    "image_uri": image_file,
+                    "flags": [],
+                    "caption": "",
+                }
+            )
 
     if frame_data_list:
         await indexer.index_frames(frame_data_list)
@@ -217,12 +219,14 @@ async def embed_frames(folder_path: str):
     finally:
         await indexer.optimize_table()
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(
-        description="Index and monitor a folder of images and their annotations.")
-    parser.add_argument(
-        "folder_path", help="Path to the folder containing images.")
+        description="Index and monitor a folder of images and their annotations."
+    )
+    parser.add_argument("folder_path", help="Path to the folder containing images.")
     args = parser.parse_args()
 
     asyncio.run(embed_frames(args.folder_path))

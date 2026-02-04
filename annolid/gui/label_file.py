@@ -6,11 +6,11 @@ import os.path as osp
 
 import PIL.Image
 
-from labelme import PY2
-from labelme import QT4
-from labelme import __version__
-from labelme import utils
-from labelme.logger import logger
+from annolid.utils.annotation_compat import PY2
+from annolid.utils.annotation_compat import QT4
+from annolid.utils.annotation_compat import __version__
+from annolid.utils.annotation_compat import logger
+from annolid.utils.annotation_compat import utils
 
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 
@@ -36,9 +36,7 @@ class LabelFileError(Exception):
 class LabelFile(object):
     suffix = ".json"
 
-    def __init__(self,
-                 filename=None,
-                 is_video_frame=None):
+    def __init__(self, filename=None, is_video_frame=None):
         self.shapes = []
         self.imagePath = None
         self.imageData = None
@@ -132,11 +130,11 @@ class LabelFile(object):
                     flags=s.get("flags", {}),
                     description=s.get("description"),
                     group_id=s.get("group_id"),
-                    mask=utils.img_b64_to_arr(
-                        s["mask"]).astype(bool) if s.get("mask") else None,
+                    mask=utils.img_b64_to_arr(s["mask"]).astype(bool)
+                    if s.get("mask")
+                    else None,
                     visible=s.get("visible"),
-                    other_data={k: v for k,
-                                v in s.items() if k not in shape_keys},
+                    other_data={k: v for k, v in s.items() if k not in shape_keys},
                 )
                 for s in data["shapes"]
             ]

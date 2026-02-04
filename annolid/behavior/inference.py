@@ -1,6 +1,5 @@
 import argparse
 import logging
-from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -22,21 +21,48 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run behavior inference.")
-    parser.add_argument("--video_folder", type=str, default=VIDEO_FOLDER,
-                        help="Path to the video folder.")
-    parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH,
-                        help="Path to the trained model checkpoint.")
-    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE,
-                        help="Batch size for inference.")
-    parser.add_argument("--feature_backbone", type=str, choices=BACKBONE_CHOICES,
-                        default="clip", help="Feature extraction backbone to use.")
-    parser.add_argument("--dinov3_model_name", type=str, default=DEFAULT_DINOV3_MODEL,
-                        help="DINOv3 checkpoint to use when --feature_backbone=dinov3.")
-    parser.add_argument("--feature_dim", type=int, default=None,
-                        help="Optional feature dimension override for compatible backbones.")
-    parser.add_argument("--transformer_dim", type=int, default=768,
-                        help="Transformer embedding dimension (d_model).")
+    parser.add_argument(
+        "--video_folder",
+        type=str,
+        default=VIDEO_FOLDER,
+        help="Path to the video folder.",
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        default=CHECKPOINT_PATH,
+        help="Path to the trained model checkpoint.",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=BATCH_SIZE, help="Batch size for inference."
+    )
+    parser.add_argument(
+        "--feature_backbone",
+        type=str,
+        choices=BACKBONE_CHOICES,
+        default="clip",
+        help="Feature extraction backbone to use.",
+    )
+    parser.add_argument(
+        "--dinov3_model_name",
+        type=str,
+        default=DEFAULT_DINOV3_MODEL,
+        help="DINOv3 checkpoint to use when --feature_backbone=dinov3.",
+    )
+    parser.add_argument(
+        "--feature_dim",
+        type=int,
+        default=None,
+        help="Optional feature dimension override for compatible backbones.",
+    )
+    parser.add_argument(
+        "--transformer_dim",
+        type=int,
+        default=768,
+        help="Transformer embedding dimension (d_model).",
+    )
     return parser.parse_args()
+
 
 def predict(model, data_loader, device):
     """Runs inference and prints predictions."""
@@ -51,7 +77,7 @@ def predict(model, data_loader, device):
             predictions.extend(zip(video_names, predicted.cpu().numpy()))
 
             # Print progress
-            logger.info(f"Processed batch {i+1}/{len(data_loader)}")
+            logger.info(f"Processed batch {i + 1}/{len(data_loader)}")
 
     return predictions
 
@@ -60,8 +86,9 @@ def main():
     args = parse_args()
 
     # Setup logging
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")

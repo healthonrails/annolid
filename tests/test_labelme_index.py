@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
-from annolid.datasets.labelme_collection import index_labelme_dataset, index_labelme_pair
+from annolid.datasets.labelme_collection import (
+    index_labelme_dataset,
+    index_labelme_pair,
+)
 
 
 def _write_labelme_pair(
@@ -40,11 +43,17 @@ def _write_labelme_pair(
 
 
 def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_index_labelme_pair_appends_absolute_paths(tmp_path):
-    src_json, src_img = _write_labelme_pair(tmp_path / "session_a", stem="clip_000000000", labeled=True)
+    src_json, src_img = _write_labelme_pair(
+        tmp_path / "session_a", stem="clip_000000000", labeled=True
+    )
     index_file = tmp_path / "label_index.jsonl"
 
     record = index_labelme_pair(
@@ -64,7 +73,9 @@ def test_index_labelme_pair_appends_absolute_paths(tmp_path):
 
 
 def test_index_labelme_pair_skips_empty_shapes(tmp_path):
-    src_json, src_img = _write_labelme_pair(tmp_path / "session_b", stem="clip_000000001", labeled=False)
+    src_json, src_img = _write_labelme_pair(
+        tmp_path / "session_b", stem="clip_000000001", labeled=False
+    )
     index_file = tmp_path / "label_index.jsonl"
 
     record = index_labelme_pair(
@@ -89,4 +100,3 @@ def test_index_labelme_dataset_dedupes_by_image_path(tmp_path):
     summary2 = index_labelme_dataset([tmp_path], index_file=index_file, dedupe=True)
     assert summary2["appended"] == 0
     assert summary2["skipped"] >= 2
-

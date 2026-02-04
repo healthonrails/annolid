@@ -4,18 +4,16 @@ COCO dataset which returns image_id for evaluation.
 
 Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references/detection/coco_utils.py
 """
+
 if __name__ == "__main__":
     # for debug only
-    import os, sys
+    import os
+    import sys
 
     sys.path.append(os.path.dirname(sys.path[0]))
-from torchvision.datasets.vision import VisionDataset
 
-import json
-from pathlib import Path
 import random
 import os
-from typing import Any, Callable, List, Optional, Tuple
 
 from PIL import Image
 
@@ -487,12 +485,11 @@ class CocoDetection(torchvision.datasets.CocoDetection):
             - target: dict of multiple items
                 - boxes: Tensor[num_box, 4]. \
                     Init type: x0,y0,x1,y1. unnormalized data.
-                    Final type: cx,cy,w,h. normalized data. 
+                    Final type: cx,cy,w,h. normalized data.
         """
         try:
             img, target = super(CocoDetection, self).__getitem__(idx)
-
-        except:
+        except Exception:
             print("Error idx: {}".format(idx))
             idx += 1
             img, target = super(CocoDetection, self).__getitem__(idx)
@@ -635,13 +632,18 @@ def make_coco_transforms(image_set, fix_size=False, strong_aug=False, args=None)
         scales2_resize = [int(i * data_aug_scale_overlap) for i in scales2_resize]
         scales2_crop = [int(i * data_aug_scale_overlap) for i in scales2_crop]
 
-    datadict_for_print = {
-        "scales": scales,
-        "max_size": max_size,
-        "scales2_resize": scales2_resize,
-        "scales2_crop": scales2_crop,
-    }
-    # print("data_aug_params:", json.dumps(datadict_for_print, indent=2))
+    # print(
+    #     "data_aug_params:",
+    #     json.dumps(
+    #         {
+    #             "scales": scales,
+    #             "max_size": max_size,
+    #             "scales2_resize": scales2_resize,
+    #             "scales2_crop": scales2_crop,
+    #         },
+    #         indent=2,
+    #     ),
+    # )
 
     if image_set == "train":
         if fix_size:
@@ -799,10 +801,7 @@ def build(image_set, args, datasetinfo):
             dict(img_folder=img_folder, ann_file=ann_file), image_set, args
         )
 
-    try:
-        strong_aug = args.strong_aug
-    except:
-        strong_aug = False
+    strong_aug = getattr(args, "strong_aug", False)
     print(img_folder, ann_file)
     dataset = CocoDetection(
         img_folder,

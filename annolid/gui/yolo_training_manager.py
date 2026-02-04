@@ -31,8 +31,7 @@ class YOLOTrainingManager(QtCore.QObject):
         super().__init__(parent=window)
         self._window = window
         self._temp_configs: List[Path] = []
-        self._active_jobs: List[Tuple[QtCore.QThread,
-                                      FlexibleWorker, str]] = []
+        self._active_jobs: List[Tuple[QtCore.QThread, FlexibleWorker, str]] = []
         self._training_running = False
         self._start_dialog: Optional[QtWidgets.QMessageBox] = None
         atexit.register(self.cleanup)
@@ -55,8 +54,7 @@ class YOLOTrainingManager(QtCore.QObject):
             with config_path.open("r", encoding="utf-8") as stream:
                 data_cfg: Dict[str, Any] = yaml.safe_load(stream) or {}
         except Exception as exc:
-            logger.exception(
-                "Failed to load YOLO dataset config: %s", config_path)
+            logger.exception("Failed to load YOLO dataset config: %s", config_path)
             QtWidgets.QMessageBox.critical(
                 self._window,
                 "Dataset Error",
@@ -76,7 +74,9 @@ class YOLOTrainingManager(QtCore.QObject):
                 if is_remote(entry):
                     return entry
                 entry_path = Path(entry).expanduser()
-                resolved = entry_path if entry_path.is_absolute() else base_dir / entry_path
+                resolved = (
+                    entry_path if entry_path.is_absolute() else base_dir / entry_path
+                )
                 return str(resolved.resolve())
             if isinstance(entry, (list, tuple)):
                 return [resolve_entry(item) for item in entry]
@@ -240,8 +240,9 @@ class YOLOTrainingManager(QtCore.QObject):
         )
         self._show_start_notification()
 
-        runs_root = Path(out_dir).expanduser(
-        ).resolve() if out_dir else shared_runs_root()
+        runs_root = (
+            Path(out_dir).expanduser().resolve() if out_dir else shared_runs_root()
+        )
         run_dir = allocate_run_dir(
             task="yolo",
             model=Path(yolo_model_file).stem,
@@ -296,7 +297,8 @@ class YOLOTrainingManager(QtCore.QObject):
 
             try:
                 (run_dir / "command.txt").write_text(
-                    " ".join(cmd) + "\n", encoding="utf-8")
+                    " ".join(cmd) + "\n", encoding="utf-8"
+                )
             except Exception:
                 pass
 
@@ -421,8 +423,7 @@ class YOLOTrainingManager(QtCore.QObject):
         data_cfg: Dict[str, Any] = {}
         resolved_yaml = Path(data_config_path).expanduser()
         try:
-            data_cfg = yaml.safe_load(
-                resolved_yaml.read_text(encoding="utf-8")) or {}
+            data_cfg = yaml.safe_load(resolved_yaml.read_text(encoding="utf-8")) or {}
         except Exception:
             data_cfg = {}
 
@@ -499,8 +500,7 @@ class YOLOTrainingManager(QtCore.QObject):
         p = Path(path_str).expanduser()
         try:
             if p.is_dir():
-                exts = {".jpg", ".jpeg", ".png",
-                        ".bmp", ".tif", ".tiff", ".webp"}
+                exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
                 return sum(1 for f in p.rglob("*") if f.suffix.lower() in exts)
             if p.is_file() and p.suffix.lower() == ".txt":
                 count = 0
@@ -550,8 +550,7 @@ class YOLOTrainingManager(QtCore.QObject):
                     pass
                 thread.quit()
                 if not thread.wait(2000):
-                    logger.warning(
-                        "%s did not stop in time; terminating.", label)
+                    logger.warning("%s did not stop in time; terminating.", label)
                     thread.terminate()
                     thread.wait(2000)
         except RuntimeError:
@@ -568,9 +567,7 @@ class YOLOTrainingManager(QtCore.QObject):
         temp_config: str,
     ) -> None:
         self._training_running = False
-        self._active_jobs = [
-            job for job in self._active_jobs if job[0] is not thread
-        ]
+        self._active_jobs = [job for job in self._active_jobs if job[0] is not thread]
 
         try:
             self._stop_thread(thread, "YOLO training thread")
@@ -596,8 +593,7 @@ class YOLOTrainingManager(QtCore.QObject):
                 f"An error occurred during YOLO training:\n{outcome}",
             )
             self._window.statusBar().showMessage(
-                self._window.tr(
-                    "YOLO training failed. Check logs for details.")
+                self._window.tr("YOLO training failed. Check logs for details.")
             )
             return
 
@@ -645,9 +641,7 @@ class YOLOTrainingManager(QtCore.QObject):
     def _clear_start_dialog(self) -> None:
         self._start_dialog = None
 
-    def _write_temp_config(
-        self, data_cfg: Dict[str, Any], config_path: Path
-    ) -> str:
+    def _write_temp_config(self, data_cfg: Dict[str, Any], config_path: Path) -> str:
         fd, temp_path = tempfile.mkstemp(
             prefix=f"{config_path.stem}_resolved_",
             suffix=".yaml",
@@ -680,8 +674,7 @@ class YOLOTrainingManager(QtCore.QObject):
         except FileNotFoundError:
             return
         except Exception:
-            logger.debug(
-                "Could not remove temporary YOLO config: %s", path_obj)
+            logger.debug("Could not remove temporary YOLO config: %s", path_obj)
 
     def _cleanup_temp_configs(self) -> None:
         while self._temp_configs:
@@ -691,5 +684,4 @@ class YOLOTrainingManager(QtCore.QObject):
             except FileNotFoundError:
                 continue
             except Exception:
-                logger.debug(
-                    "Could not remove temporary YOLO config: %s", temp_path)
+                logger.debug("Could not remove temporary YOLO config: %s", temp_path)

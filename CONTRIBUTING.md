@@ -9,7 +9,7 @@ Thank you for your interest in contributing to Annolid! Before you begin writing
 
 ## Developing Annolid
 We use github to host code, to track issues and feature requests, as well as accept pull requests.
-Detailed instructions for installing Annolid is here https://annolid.com. 
+Detailed instructions for installing Annolid is here https://annolid.com.
 
 ## Updating the website / Jupyter Book
 The Annolid website + Jupyter Book is deployed from `https://github.com/healthonrails/healthonrails.github.io`. See `docs/updating_jupyter_book_and_github_pages.md` for the build + publish workflow.

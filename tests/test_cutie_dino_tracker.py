@@ -97,10 +97,8 @@ def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):
     produced = json.loads(Path(output_path).read_text())
     expected = json.loads(expected_fixture.read_text())
 
-    produced_shapes = sorted(
-        produced["shapes"], key=lambda shape: shape["label"])
-    expected_shapes = sorted(
-        expected["shapes"], key=lambda shape: shape["label"])
+    produced_shapes = sorted(produced["shapes"], key=lambda shape: shape["label"])
+    expected_shapes = sorted(expected["shapes"], key=lambda shape: shape["label"])
     assert produced_shapes == expected_shapes
 
     assert produced_shapes[0]["instance_label"] == produced_shapes[1]["instance_label"]
@@ -120,10 +118,8 @@ def test_annotation_adapter_uses_latest_manual_frame(tmp_path):
     base_time = time.time()
     # Mark frame 101 as the newest manual edit and keep others older.
     os.utime(source_dir / "clip_000000101.json", (base_time, base_time))
-    os.utime(source_dir / "clip_000000042.json",
-             (base_time - 60, base_time - 60))
-    os.utime(source_dir / "clip_000000000.json",
-             (base_time - 120, base_time - 120))
+    os.utime(source_dir / "clip_000000042.json", (base_time - 60, base_time - 60))
+    os.utime(source_dir / "clip_000000000.json", (base_time - 120, base_time - 120))
 
     adapter = AnnotationAdapter(image_height=100, image_width=120)
     frame_number, _ = adapter.load_initial_state(source_dir)
@@ -389,9 +385,7 @@ def test_mask_manager_applies_fallback(tmp_path):
     base_mask = np.zeros((10, 10), dtype=bool)
     base_mask[2:5, 2:5] = True
     polygon = manager._mask_to_polygon(base_mask)
-    manager._last_results = {
-        "animal": MaskResult("animal", base_mask, polygon)
-    }
+    manager._last_results = {"animal": MaskResult("animal", base_mask, polygon)}
     manager._mask_miss_counts = {"animal": 0}
 
     updated = manager._apply_fallbacks({}, ["animal"])
@@ -410,8 +404,9 @@ def test_cutie_mask_manager_reset_state(tmp_path):
     manager._label_to_value = {"animal": 1}
     manager._value_to_label = {1: "animal"}
     manager._initialized = True
-    manager._last_results = {"animal": MaskResult(
-        "animal", np.ones((2, 2), dtype=bool), [])}
+    manager._last_results = {
+        "animal": MaskResult("animal", np.ones((2, 2), dtype=bool), [])
+    }
     manager._mask_miss_counts = {"animal": 2}
 
     manager.reset_state()
@@ -430,8 +425,7 @@ def test_video_processor_resets_on_manual_resume(tmp_path, monkeypatch):
     class StubVideo:
         def __init__(self, _path):
             self.frames = [
-                np.full((4, 4, 3), fill_value=i, dtype=np.uint8)
-                for i in range(7)
+                np.full((4, 4, 3), fill_value=i, dtype=np.uint8) for i in range(7)
             ]
 
         def get_first_frame(self):
@@ -619,10 +613,10 @@ def test_mask_fallback_bonus_guides_assignment(monkeypatch):
 
     update_features = torch.zeros((2, 4, 4), dtype=torch.float32)
     update_features[:, 1, 1] = torch.tensor(
-        [0.6, math.sqrt(1.0 - 0.6 ** 2)], dtype=torch.float32
+        [0.6, math.sqrt(1.0 - 0.6**2)], dtype=torch.float32
     )
     update_features[:, 1, 2] = torch.tensor(
-        [0.95, math.sqrt(1.0 - 0.95 ** 2)], dtype=torch.float32
+        [0.95, math.sqrt(1.0 - 0.95**2)], dtype=torch.float32
     )
 
     extractor.set_queue([start_features, update_features])
@@ -678,10 +672,8 @@ def test_symmetry_pairs_prevent_swaps(monkeypatch):
     extractor = tracker.extractor
 
     start_features = torch.zeros((3, 4, 5), dtype=torch.float32)
-    start_features[:, 1, 1] = torch.tensor(
-        [1.0, 0.0, 0.0], dtype=torch.float32)
-    start_features[:, 1, 3] = torch.tensor(
-        [0.0, 1.0, 0.0], dtype=torch.float32)
+    start_features[:, 1, 1] = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+    start_features[:, 1, 3] = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32)
 
     update_features = torch.zeros((3, 4, 5), dtype=torch.float32)
     update_features[:, 1, 1] = torch.tensor([0.1, 0.995, 0.0])
@@ -838,7 +830,7 @@ def test_gaussian_refine_shifts_keypoint_towards_secondary_peak(monkeypatch):
     update_features = torch.zeros((2, 3, 4), dtype=torch.float32)
     update_features[:, 1, 2] = torch.tensor([1.0, 0.0], dtype=torch.float32)
     update_features[:, 1, 1] = torch.tensor(
-        [0.9, math.sqrt(1.0 - 0.9 ** 2)], dtype=torch.float32
+        [0.9, math.sqrt(1.0 - 0.9**2)], dtype=torch.float32
     )
 
     extractor.set_queue([start_features, update_features])
@@ -908,10 +900,10 @@ def test_motion_penalty_prefers_nearby_candidate_over_far_peak(monkeypatch):
 
     update_features = torch.zeros((2, 1, 9), dtype=torch.float32)
     update_features[:, 0, 2] = torch.tensor(
-        [0.9, math.sqrt(1.0 - 0.9 ** 2)], dtype=torch.float32
+        [0.9, math.sqrt(1.0 - 0.9**2)], dtype=torch.float32
     )
     update_features[:, 0, 7] = torch.tensor(
-        [0.95, math.sqrt(1.0 - 0.95 ** 2)], dtype=torch.float32
+        [0.95, math.sqrt(1.0 - 0.95**2)], dtype=torch.float32
     )
 
     extractor.set_queue([start_features, update_features])

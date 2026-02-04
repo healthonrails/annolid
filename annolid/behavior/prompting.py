@@ -4,7 +4,7 @@ Prompt builders and helper utilities for Qwen-style behavior descriptions.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 from pathlib import Path
 import textwrap
 
@@ -59,6 +59,7 @@ def reset_user_behavior_prompt_template() -> None:
 def get_effective_behavior_prompt_template() -> str:
     return load_user_behavior_prompt_template() or DEFAULT_BEHAVIOR_PROMPT_TEMPLATE
 
+
 def build_mouse_behavior_json_prompt(
     *,
     use_velocity_qualitative: bool = True,
@@ -112,9 +113,7 @@ def build_mouse_behavior_json_prompt(
     ]
 
     prompt = "\n".join(line for line in prompt_lines if line)
-    prompt += (
-        "\nReturn JSON with the fields in the order: Overall, Head, Limb, Torso, Others, Keywords."
-    )
+    prompt += "\nReturn JSON with the fields in the order: Overall, Head, Limb, Torso, Others, Keywords."
     return prompt
 
 
@@ -144,11 +143,6 @@ def build_behavior_narrative_prompt(
         else "Describe what the mouse is doing at this moment."
     )
 
-    lines = [
-        view_text,
-        roi_text,
-        segment_text,
-    ]
     facts_guidance = "Avoid referencing the arena, camera, or environment. Do not speculate about intent or emotion."
     length_guidance = "Write 2–4 sentences that are concise but detailed."
     context = {
@@ -164,9 +158,7 @@ def build_behavior_narrative_prompt(
         rendered = template.format_map(context)
     except KeyError:
         rendered = template
-    return "\n".join(
-        line for line in rendered.splitlines() if line.strip()
-    )
+    return "\n".join(line for line in rendered.splitlines() if line.strip())
 
 
 def qwen_messages(images: Sequence[str], text: str) -> List[dict]:

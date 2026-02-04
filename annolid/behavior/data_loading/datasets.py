@@ -18,9 +18,18 @@ FPS = 30
 
 
 class BehaviorDataset(Dataset):
-    def __init__(self, video_folder: str, num_frames: int = NUM_FRAMES, clip_len: float = CLIP_LEN,
-                 fps: int = FPS, transform: Optional[Callable] = None, video_ext: str = ".mpg",
-                 split: str = 'train', val_ratio: float = 0.2, random_seed: int = 42):
+    def __init__(
+        self,
+        video_folder: str,
+        num_frames: int = NUM_FRAMES,
+        clip_len: float = CLIP_LEN,
+        fps: int = FPS,
+        transform: Optional[Callable] = None,
+        video_ext: str = ".mpg",
+        split: str = "train",
+        val_ratio: float = 0.2,
+        random_seed: int = 42,
+    ):
         """
         Initializes the dataset with optional training/validation split.
 
@@ -46,35 +55,37 @@ class BehaviorDataset(Dataset):
 
         self.video_files, self.all_annotations = self.load_annotations()
         if not self.video_files or not self.all_annotations:
-            raise ValueError(
-                "No video/annotation files found. Check paths and data.")
+            raise ValueError("No video/annotation files found. Check paths and data.")
 
         self.label_mapping = self.create_label_mapping()
         self.indices = self.create_split_indices(split, val_ratio, random_seed)
 
         if len(self.indices) == 0:
-            raise ValueError(
-                "No samples after split. Check split ratio and data.")
+            raise ValueError("No samples after split. Check split ratio and data.")
 
-    def create_split_indices(self, split: str, val_ratio: float, random_seed: int) -> List[int]:
+    def create_split_indices(
+        self, split: str, val_ratio: float, random_seed: int
+    ) -> List[int]:
         """
         Splits dataset indices for training and validation using stratified sampling.
         """
         np.random.seed(random_seed)
-        all_indices = np.arange(sum(len(annotations)
-                                for annotations in self.all_annotations.values()))
+        all_indices = np.arange(
+            sum(len(annotations) for annotations in self.all_annotations.values())
+        )
         labels = []
         for video_file, annotations in self.all_annotations.items():
             for _, row in annotations.iterrows():
                 behavior = row.get("Behavior", "unlabeled")
-                labels.append(self.label_mapping.get(
-                    behavior, self.label_mapping["unlabeled"]))
+                labels.append(
+                    self.label_mapping.get(behavior, self.label_mapping["unlabeled"])
+                )
 
         train_indices, val_indices = train_test_split(
             all_indices, test_size=val_ratio, stratify=labels, random_state=random_seed
         )
 
-        return train_indices if split == 'train' else val_indices
+        return train_indices if split == "train" else val_indices
 
     def get_num_classes(self) -> int:
         return len(self.label_mapping)
@@ -88,19 +99,18 @@ class BehaviorDataset(Dataset):
         """
         index = self.indices[idx]
 
-        video_file, row_index, annotations = self.get_video_and_row_index(
-            index)
+        video_file, row_index, annotations = self.get_video_and_row_index(index)
 
         video_path = video_file  # Path is already complete
         behavior = annotations.iloc[row_index].get("Behavior", "unlabeled")
-        label = self.label_mapping.get(
-            behavior, self.label_mapping["unlabeled"])
+        label = self.label_mapping.get(behavior, self.label_mapping["unlabeled"])
         frames = self.load_video_frames(video_path, row_index, annotations)
 
         if frames is None:
             # Or handle differently
             raise ValueError(
-                f"Failed to load frames for video {video_path} at row {row_index}")
+                f"Failed to load frames for video {video_path} at row {row_index}"
+            )
 
         processed_frames = []
         for frame_tensor in frames:
@@ -115,14 +125,16 @@ class BehaviorDataset(Dataset):
 
     def fetch_data(self, index: int) -> Optional[Tuple[torch.Tensor, int, str]]:
         try:
-            video_file, row_index, annotations = self.get_video_and_row_index(
-                index)
+            video_file, row_index, annotations = self.get_video_and_row_index(index)
             video_path = os.path.join(self.video_folder, video_file)
 
             # Default to "unlabeled" if "Behavior" column is missing
-            behavior = annotations.iloc[row_index]["Behavior"] if "Behavior" in annotations.columns else "unlabeled"
-            label = self.label_mapping.get(
-                behavior, self.label_mapping["unlabeled"])
+            behavior = (
+                annotations.iloc[row_index]["Behavior"]
+                if "Behavior" in annotations.columns
+                else "unlabeled"
+            )
+            label = self.label_mapping.get(behavior, self.label_mapping["unlabeled"])
 
             frames = self.load_video_frames(video_path, row_index, annotations)
 
@@ -157,11 +169,9 @@ class BehaviorDataset(Dataset):
                     try:
                         all_annotations[video_path] = pd.read_csv(csv_path)
                     except FileNotFoundError:
-                        logger.warning(
-                            f"CSV not found for {video_path}. Skipping.")
+                        logger.warning(f"CSV not found for {video_path}. Skipping.")
                     except pd.errors.ParserError:
-                        logger.warning(
-                            f"Error parsing CSV for {video_path}. Skipping.")
+                        logger.warning(f"Error parsing CSV for {video_path}. Skipping.")
 
         return video_files, all_annotations
 
@@ -173,7 +183,9 @@ class BehaviorDataset(Dataset):
         label_mapping["unlabeled"] = len(label_mapping)
         return label_mapping
 
-    def load_video_frames(self, video_path: str, row_index: int, annotations: pd.DataFrame) -> Optional[torch.Tensor]:
+    def load_video_frames(
+        self, video_path: str, row_index: int, annotations: pd.DataFrame
+    ) -> Optional[torch.Tensor]:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error(f"Could not open video: {video_path}")
@@ -182,28 +194,27 @@ class BehaviorDataset(Dataset):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         try:
-            start_frame = int(
-                annotations.iloc[row_index]["Trial time"] * self.fps)
+            start_frame = int(annotations.iloc[row_index]["Trial time"] * self.fps)
         except KeyError as e:
-            logger.error(
-                f"Missing 'Trial time' column in CSV for {video_path}: {e}")
+            logger.error(f"Missing 'Trial time' column in CSV for {video_path}: {e}")
             return None
 
-        start_frame = max(0, min(start_frame, total_frames -
-                          int(self.clip_len * self.fps)))
+        start_frame = max(
+            0, min(start_frame, total_frames - int(self.clip_len * self.fps))
+        )
         end_frame = start_frame + int(self.clip_len * self.fps)
 
         frames = []
         frame_indices = torch.linspace(
-            start_frame, end_frame - 1, self.num_frames, dtype=torch.int).tolist()
+            start_frame, end_frame - 1, self.num_frames, dtype=torch.int
+        ).tolist()
 
         for i in frame_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = cap.read()
             if ret:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(torch.from_numpy(
-                    frame).permute(2, 0, 1).float() / 255.0)
+                frames.append(torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0)
             else:
                 logger.warning(f"Failed to read frame {i} from {video_path}")
                 cap.release()
@@ -212,7 +223,8 @@ class BehaviorDataset(Dataset):
         cap.release()
         if len(frames) != self.num_frames:
             logger.warning(
-                f"Expected {self.num_frames} frames, but got {len(frames)} from {video_path}")
+                f"Expected {self.num_frames} frames, but got {len(frames)} from {video_path}"
+            )
             return None
 
         return torch.stack(frames)

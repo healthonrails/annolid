@@ -5,7 +5,7 @@ import json
 from pycocotools.coco import COCO
 
 def dump_label_map(args):
-    coco = COCO(args.input) 
+    coco = COCO(args.input)
     cats = coco.loadCats(coco.getCatIds())
     nms = {cat['id']-1:cat['name'] for cat in cats}
     with open(args.output,"w") as f:
@@ -13,7 +13,7 @@ def dump_label_map(args):
 
 def coco_to_xyxy(bbox):
     x, y, width, height = bbox
-    x1 = round(x, 2) 
+    x1 = round(x, 2)
     y1 = round(y, 2)
     x2 = round(x + width, 2)
     y2 = round(y + height, 2)
@@ -21,7 +21,7 @@ def coco_to_xyxy(bbox):
 
 
 def coco2odvg(args):
-    coco = COCO(args.input) 
+    coco = COCO(args.input)
     cats = coco.loadCats(coco.getCatIds())
     nms = {cat['id']:cat['name'] for cat in cats}
     metas = []

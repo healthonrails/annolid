@@ -24,7 +24,7 @@ def check_caption(cap):
     # "The view is better from here 🦅 (Chouf" wtf??
     check_list = {"↙️", "-", ",", " ", "*", "/", "$", "[CLS]", "[SEP]", "?"}
     for ch in check_list:
-        if ch in check_anno: 
+        if ch in check_anno:
             return False
     if '.' in check_anno[:-1]:
         return False
@@ -80,7 +80,7 @@ def process_item(file, args):
         "filename": f'{file.split(".")[0]}.jpg',
         "height": anno["height"],
         "width": anno["width"],
-        "grounding": { 
+        "grounding": {
             "caption": clean_span(anno["caption"]),
             "regions": regions
         }
@@ -107,6 +107,6 @@ if __name__ == "__main__":
     with Pool(processes=args.process_num) as pool:
         for result in tqdm(pool.imap(func=func, iterable=metas), total=len(metas)):
             odvg_anno.append(result)
-    odvg_anno = list(filter(None, odvg_anno))  
+    odvg_anno = list(filter(None, odvg_anno))
     with jsonlines.open(args.output_file, mode="w") as fwriter:
         fwriter.write_all(odvg_anno)

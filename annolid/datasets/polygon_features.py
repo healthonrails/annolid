@@ -61,7 +61,9 @@ def resolve_motion_indices(
     required_columns = {"frame_number", "instance_name", "motion_index"}
     if not required_columns.issubset(df_track.columns):
         logger.warning(
-            "Tracking CSV for '%s' is missing expected columns %s", video_name, required_columns
+            "Tracking CSV for '%s' is missing expected columns %s",
+            video_name,
+            required_columns,
         )
         return 0.0, 0.0
 
@@ -112,12 +114,15 @@ def load_frame_polygons(
     return label, intruder_points, resident_points
 
 
-def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) -> pd.DataFrame:
+def create_dataset(
+    data_folder: Path, num_points: int, normalize: bool = False
+) -> pd.DataFrame:
     """Build a feature dataframe from polygon annotations and tracked motion indices."""
     records: List[Dict[str, object]] = []
     if not data_folder.is_dir():
         logger.error(
-            "Data folder '%s' does not exist or is not a directory.", data_folder)
+            "Data folder '%s' does not exist or is not a directory.", data_folder
+        )
         return pd.DataFrame(records)
 
     for video_folder in sorted([p for p in data_folder.iterdir() if p.is_dir()]):
@@ -142,9 +147,11 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
             resident_perimeter = polygon_perimeter(resident_points)
 
             intruder_resampled = resample_polygon(
-                intruder_points, num_points=num_points)
+                intruder_points, num_points=num_points
+            )
             resident_resampled = resample_polygon(
-                resident_points, num_points=num_points)
+                resident_points, num_points=num_points
+            )
 
             intruder_features = flatten_points(intruder_resampled)
             resident_features = flatten_points(resident_resampled)
@@ -160,10 +167,13 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
             inter_animal_distance = float(math.hypot(dx, dy))
 
             # Relative velocity: positive when animals are moving towards each other.
-            if prev_distance is not None and frame_number is not None and prev_frame_number is not None:
+            if (
+                prev_distance is not None
+                and frame_number is not None
+                and prev_frame_number is not None
+            ):
                 dt = max(1, frame_number - prev_frame_number)
-                relative_velocity = float(
-                    (prev_distance - inter_animal_distance) / dt)
+                relative_velocity = float((prev_distance - inter_animal_distance) / dt)
             else:
                 relative_velocity = 0.0
             prev_distance = inter_animal_distance
@@ -182,8 +192,10 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
                 head_idx = int(np.argmax(dists))
                 head_vec = offsets[head_idx]
                 to_resident = np.asarray(
-                    [resident_centroid[0] - intruder_centroid[0],
-                     resident_centroid[1] - intruder_centroid[1]],
+                    [
+                        resident_centroid[0] - intruder_centroid[0],
+                        resident_centroid[1] - intruder_centroid[1],
+                    ],
                     dtype=float,
                 )
                 head_norm = float(np.linalg.norm(head_vec))
@@ -191,8 +203,7 @@ def create_dataset(data_folder: Path, num_points: int, normalize: bool = False) 
                 if head_norm > 0.0 and to_res_norm > 0.0:
                     cos_angle = float(
                         np.clip(
-                            np.dot(head_vec, to_resident) /
-                            (head_norm * to_res_norm),
+                            np.dot(head_vec, to_resident) / (head_norm * to_res_norm),
                             -1.0,
                             1.0,
                         )
@@ -234,14 +245,24 @@ def _parse_args() -> argparse.Namespace:
             "and additional geometric + motion features."
         )
     )
-    parser.add_argument("--train_folder", type=str,
-                        required=True, help="Path to the train folder")
-    parser.add_argument("--test_folder", type=str,
-                        required=True, help="Path to the test folder")
-    parser.add_argument("--output_folder", type=str, default=".",
-                        help="Folder to save the output CSV files")
-    parser.add_argument("--num_points", type=int, default=10,
-                        help="Number of points to resample each polygon to")
+    parser.add_argument(
+        "--train_folder", type=str, required=True, help="Path to the train folder"
+    )
+    parser.add_argument(
+        "--test_folder", type=str, required=True, help="Path to the test folder"
+    )
+    parser.add_argument(
+        "--output_folder",
+        type=str,
+        default=".",
+        help="Folder to save the output CSV files",
+    )
+    parser.add_argument(
+        "--num_points",
+        type=int,
+        default=10,
+        help="Number of points to resample each polygon to",
+    )
     parser.add_argument(
         "--log_level",
         type=str,
@@ -263,10 +284,12 @@ def main() -> None:
 
     logger.info("Starting dataset creation with enhanced polygon features.")
 
-    train_df = create_dataset(Path(args.train_folder),
-                              args.num_points, normalize=args.normalize)
-    test_df = create_dataset(Path(args.test_folder),
-                             args.num_points, normalize=args.normalize)
+    train_df = create_dataset(
+        Path(args.train_folder), args.num_points, normalize=args.normalize
+    )
+    test_df = create_dataset(
+        Path(args.test_folder), args.num_points, normalize=args.normalize
+    )
 
     output_folder = Path(args.output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)

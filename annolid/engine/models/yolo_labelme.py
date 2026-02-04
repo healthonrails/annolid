@@ -27,8 +27,7 @@ def _looks_like_prompt_free_yoloe(weight: str) -> bool:
 def _load_visual_prompts_json(path: Path) -> Tuple[Dict[str, Any], Optional[List[str]]]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"Visual prompts file must contain a JSON object: {path}")
+        raise ValueError(f"Visual prompts file must contain a JSON object: {path}")
 
     prompts = raw.get("visual_prompts", raw)
     if not isinstance(prompts, dict):
@@ -48,9 +47,7 @@ def _load_visual_prompts_json(path: Path) -> Tuple[Dict[str, Any], Optional[List
     bboxes = prompts.get("bboxes", None)
     cls = prompts.get("cls", None)
     if bboxes is None or cls is None:
-        raise ValueError(
-            f"Visual prompts JSON must include 'bboxes' and 'cls': {path}"
-        )
+        raise ValueError(f"Visual prompts JSON must include 'bboxes' and 'cls': {path}")
     if not isinstance(bboxes, list) or not isinstance(cls, list):
         raise ValueError(
             f"Visual prompts 'bboxes' and 'cls' must be lists (will be converted to numpy arrays internally): {path}"
@@ -187,17 +184,16 @@ class YOLOLabelMePlugin(ModelPluginBase):
 
         if args.visual_prompts:
             prompts_path = Path(args.visual_prompts).expanduser().resolve()
-            visual_prompts, names_from_file = _load_visual_prompts_json(
-                prompts_path)
+            visual_prompts, names_from_file = _load_visual_prompts_json(prompts_path)
             if names_from_file:
                 prompt_class_names = list(names_from_file)
             yoloe_text_prompt = False
 
         if args.visual_prompts_labelme:
-            labelme_path = Path(
-                args.visual_prompts_labelme).expanduser().resolve()
+            labelme_path = Path(args.visual_prompts_labelme).expanduser().resolve()
             visual_prompts, label_names = _load_visual_prompts_from_labelme(
-                labelme_path)
+                labelme_path
+            )
             prompt_class_names = list(label_names)
             yoloe_text_prompt = False
 
@@ -221,15 +217,15 @@ class YOLOLabelMePlugin(ModelPluginBase):
             source=source,
             visual_prompts=visual_prompts,
             start_frame=int(args.start_frame),
-            end_frame=(int(args.end_frame)
-                       if args.end_frame is not None else None),
+            end_frame=(int(args.end_frame) if args.end_frame is not None else None),
             step=int(args.step),
             skip_existing=False,
             output_directory=output_dir,
             enable_tracking=not bool(args.no_tracking),
             tracker=(str(args.tracker).strip() if args.tracker else None),
-            save_pose_bbox=bool(args.save_pose_bbox) if bool(
-                args.save_pose_bbox) else None,
+            save_pose_bbox=bool(args.save_pose_bbox)
+            if bool(args.save_pose_bbox)
+            else None,
         )
         print(str(message))
         return 0

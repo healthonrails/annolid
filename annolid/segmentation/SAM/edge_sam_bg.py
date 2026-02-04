@@ -4,11 +4,10 @@ from pathlib import Path
 from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel
 from annolid.data.videos import CV2Video
 from annolid.utils.files import find_most_recent_file
-import json
 from annolid.gui.shape import Shape
 from annolid.annotation.keypoints import save_labels
 import numpy as np
-import labelme
+from annolid.utils import annotation_compat as labelme
 from annolid.annotation.masks import mask_to_polygons
 from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
@@ -27,12 +26,15 @@ def uniform_points_inside_polygon(polygon, num_points):
     min_x, min_y, max_x, max_y = polygon.bounds
 
     # Generate random points within the bounding box
-    random_points = np.column_stack((np.random.uniform(min_x, max_x, num_points),
-                                     np.random.uniform(min_y, max_y, num_points)))
+    random_points = np.column_stack(
+        (
+            np.random.uniform(min_x, max_x, num_points),
+            np.random.uniform(min_y, max_y, num_points),
+        )
+    )
 
     # Filter points that are inside the polygon
-    inside_points = [
-        point for point in random_points if Point(point).within(polygon)]
+    inside_points = [point for point in random_points if Point(point).within(polygon)]
 
     return np.array(inside_points)
 
@@ -154,6 +156,7 @@ class VideoProcessor:
     """
     A class for processing video frames using the Segment-Anything model.
     """
+
     sam_hq = None
     cutie_processor = None
 
@@ -166,16 +169,17 @@ class VideoProcessor:
         - num_center_points (int): number of center points for prompt.
         """
         self.video_path = video_path
-        results_folder = kwargs.pop('results_folder', None)
-        self.video_folder = Path(results_folder) if results_folder else Path(
-            video_path).with_suffix("")
+        results_folder = kwargs.pop("results_folder", None)
+        self.video_folder = (
+            Path(results_folder) if results_folder else Path(video_path).with_suffix("")
+        )
         self.results_folder = self.video_folder
         self.video_loader = CV2Video(video_path)
         self.first_frame = self.video_loader.get_first_frame()
         self.t_max_value = kwargs.get("t_max_value", 5)
         self.use_cpu_only = kwargs.get("use_cpu_only", False)
-        self.sam_name = kwargs.get('model_name', "Segment-Anything (Edge)")
-        if self.sam_name == 'sam_hq' and VideoProcessor.sam_hq is None:
+        self.sam_name = kwargs.get("model_name", "Segment-Anything (Edge)")
+        if self.sam_name == "sam_hq" and VideoProcessor.sam_hq is None:
             try:
                 VideoProcessor.sam_hq = SamHQSegmenter()
             except ModuleNotFoundError as exc:
@@ -186,36 +190,35 @@ class VideoProcessor:
             self.edge_sam = EfficientViTSAM()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
-        self.num_points_inside_edges = kwargs.get('num_center_points', 3)
+        self.num_points_inside_edges = kwargs.get("num_center_points", 3)
         self.num_center_points = self.num_points_inside_edges
         self.center_points_dict = defaultdict()
-        self.save_image_to_disk = kwargs.get('save_image_to_disk', True)
+        self.save_image_to_disk = kwargs.get("save_image_to_disk", True)
         self.pred_worker = None
-        self.epsilon_for_polygon = kwargs.get('epsilon_for_polygon', 2.0)
+        self.epsilon_for_polygon = kwargs.get("epsilon_for_polygon", 2.0)
         self.save_video_with_color_mask = kwargs.get(
-            'save_video_with_color_mask', False)
+            "save_video_with_color_mask", False
+        )
         self._optical_flow_settings = optical_flow_settings_from(kwargs)
         self.compute_optical_flow = bool(
             self._optical_flow_settings.get("compute_optical_flow", False)
         )
         self.optical_flow_backend = str(
-            self._optical_flow_settings.get(
-                "optical_flow_backend", "farneback")
+            self._optical_flow_settings.get("optical_flow_backend", "farneback")
         )
-        self._cotracker_grid_size = kwargs.get('cotracker_grid_size', 10)
+        self._cotracker_grid_size = kwargs.get("cotracker_grid_size", 10)
 
     def set_pred_worker(self, pred_worker):
         self.pred_worker = pred_worker
 
     def load_shapes(self, label_json_file):
         data = load_labelme_json(label_json_file)
-        shapes = data.get('shapes', [])
+        shapes = data.get("shapes", [])
         return shapes
 
     def reset_cutie_processor(self, mem_every=5):
         """Reset or create a new CutieVideoProcessor for the current video."""
-        logger.debug(
-            f"Resetting CutieVideoProcessor for video: {self.video_path}")
+        logger.debug(f"Resetting CutieVideoProcessor for video: {self.video_path}")
         self.cutie_processor = CutieVideoProcessor(
             self.video_path,
             mem_every=mem_every,
@@ -236,20 +239,22 @@ class VideoProcessor:
     def get_total_frames(self):
         return self.video_loader.total_frames()
 
-    def process_video_with_cutite(self, frames_to_propagate=100,
-                                  mem_every=5,
-                                  has_occlusion=False,
-                                  start_frame=0):
+    def process_video_with_cutite(
+        self, frames_to_propagate=100, mem_every=5, has_occlusion=False, start_frame=0
+    ):
         seed_frames = CutieVideoProcessor.discover_seed_frames(
-            self.video_path, self.results_folder)
+            self.video_path, self.results_folder
+        )
         if not seed_frames:
-            png_candidates = sorted(
-                p.name for p in self.results_folder.glob('*.png'))
+            png_candidates = sorted(p.name for p in self.results_folder.glob("*.png"))
             logger.info(
                 f"CUTIE seed discovery returned 0 seeds. Folder: {self.results_folder}."
-                f" PNG candidates: {png_candidates}")
-            message = ("No label frames found. Please label a frame click save  "
-                       "(PNG+JSON are saved together) before running CUTIE.")
+                f" PNG candidates: {png_candidates}"
+            )
+            message = (
+                "No label frames found. Please label a frame click save  "
+                "(PNG+JSON are saved together) before running CUTIE."
+            )
             logger.info(message)
             return message
 
@@ -283,16 +288,18 @@ class VideoProcessor:
 
     def __del__(self):
         """Clean up resources."""
-        if hasattr(self, 'cap') and self.cap is not None:
+        if hasattr(self, "cap") and self.cap is not None:
             self.cap.release()
         self.cutie_processor = None  # Clear processor on deletion
         import torch
+
         torch.cuda.empty_cache()
 
-    def get_model(self,
-                  encoder_path="edge_sam_3x_encoder.onnx",
-                  decoder_path="edge_sam_3x_decoder.onnx"
-                  ):
+    def get_model(
+        self,
+        encoder_path="edge_sam_3x_encoder.onnx",
+        decoder_path="edge_sam_3x_decoder.onnx",
+    ):
         """
         Load the Segment-Anything model.
 
@@ -327,16 +334,18 @@ class VideoProcessor:
         points_dict = {}
         point_labels_dict = {}
 
-        for shape in data.get('shapes', []):
-            label = shape.get('label')
-            points = shape.get('points', [])
-            mask = labelme.utils.img_b64_to_arr(
-                shape["mask"]) if shape.get("mask") else None
+        for shape in data.get("shapes", []):
+            label = shape.get("label")
+            points = shape.get("points", [])
+            mask = (
+                labelme.utils.img_b64_to_arr(shape["mask"])
+                if shape.get("mask")
+                else None
+            )
             if mask is not None:
                 polygons, has_holes = mask_to_polygons(mask)
                 polys = polygons[0]
-                points = np.array(
-                    list(zip(polys[0::2], polys[1::2])))
+                points = np.array(list(zip(polys[0::2], polys[1::2])))
 
             if label and points is not None:
                 points_dict[label] = points
@@ -356,12 +365,14 @@ class VideoProcessor:
         if self.sam_name == "Segment-Anything (Edge)":
             self.edge_sam.set_image(cur_frame)
         filename = self.video_folder / (
-            self.video_folder.name + f"_{frame_number:09d}.json")
+            self.video_folder.name + f"_{frame_number:09d}.json"
+        )
 
         height, width, _ = cur_frame.shape
         if frame_number > 0:
             annotation_source = self.video_folder / (
-                self.video_folder.name + f"_{frame_number-1:09d}.json")
+                self.video_folder.name + f"_{frame_number - 1:09d}.json"
+            )
         else:
             annotation_source = filename
 
@@ -373,24 +384,24 @@ class VideoProcessor:
             self.most_recent_file = filename
         label_list = []
 
-        if self.sam_name == 'sam_hq' or self.sam_name == "efficientvit_sam":
+        if self.sam_name == "sam_hq" or self.sam_name == "efficientvit_sam":
             bboxes = []
             for label, points in points_dict.items():
                 _bbox = find_bbox(points)
                 bboxes.append((_bbox, label))
 
             _bboxes = [list(box) for box, _ in bboxes]
-            if self.sam_name == 'sam_hq':
+            if self.sam_name == "sam_hq":
                 masks, scores, input_box = VideoProcessor.sam_hq.segment_objects(
-                    cur_frame, _bboxes)
+                    cur_frame, _bboxes
+                )
             elif self.sam_name == "efficientvit_sam":
                 masks = self.edge_sam.run_inference(cur_frame, _bboxes)
 
             for i, (box, label) in enumerate(bboxes):
-
-                current_shape = MaskShape(label=label,
-                                          flags={},
-                                          description='grounding_sam')
+                current_shape = MaskShape(
+                    label=label, flags={}, description="grounding_sam"
+                )
                 mask = masks[i]
                 if self.sam_name == "efficientvit_sam":
                     h, w = mask.shape[-2:]
@@ -409,21 +420,23 @@ class VideoProcessor:
                 if len(points) == 0:
                     continue
                 if len(points) < 4:
-                    orig_points = random_sample_near_center(
-                        Point(points[0]), 4, 3)
+                    orig_points = random_sample_near_center(Point(points[0]), 4, 3)
                 points = calculate_polygon_center(orig_points)
 
                 polygon = Polygon(orig_points)
                 # Randomly sample points inside the edges of the polygon
-                points_inside_edges = random_sample_inside_edges(polygon,
-                                                                 self.num_points_inside_edges)
-                points_outside_edges = random_sample_outside_edges(polygon,
-                                                                   self.num_points_inside_edges * 3
-                                                                   )
+                points_inside_edges = random_sample_inside_edges(
+                    polygon, self.num_points_inside_edges
+                )
+                points_outside_edges = random_sample_outside_edges(
+                    polygon, self.num_points_inside_edges * 3
+                )
                 points_uni = uniform_points_inside_polygon(
-                    polygon, self.num_points_inside_edges)
-                center_points = self.center_points_dict.get(label,
-                                                            MaxSizeQueue(max_size=self.num_center_points))
+                    polygon, self.num_points_inside_edges
+                )
+                center_points = self.center_points_dict.get(
+                    label, MaxSizeQueue(max_size=self.num_center_points)
+                )
 
                 center_points.enqueue(points[0])
                 points = center_points.to_numpy()
@@ -431,37 +444,37 @@ class VideoProcessor:
 
                 # use other instance's center points as negative point prompts
                 other_polygon_center_points = [
-                    value for k, v in self.center_points_dict.items() if k != label for value in v]
+                    value
+                    for k, v in self.center_points_dict.items()
+                    if k != label
+                    for value in v
+                ]
                 other_polygon_center_points = np.array(
-                    [(x[0], x[1]) for x in other_polygon_center_points])
+                    [(x[0], x[1]) for x in other_polygon_center_points]
+                )
 
                 if len(points_inside_edges.shape) > 1:
-                    points = np.concatenate(
-                        (points, points_inside_edges), axis=0)
+                    points = np.concatenate((points, points_inside_edges), axis=0)
                 if len(points_uni) > 1:
-                    points = np.concatenate(
-                        (points, points_uni), axis=0
-                    )
+                    points = np.concatenate((points, points_uni), axis=0)
 
                 point_labels = [1] * len(points)
                 if len(points_outside_edges) > 1:
-                    points = np.concatenate(
-                        (points, points_outside_edges), axis=0
-                    )
+                    points = np.concatenate((points, points_outside_edges), axis=0)
                     point_labels += [0] * len(points_outside_edges)
 
                 if len(other_polygon_center_points) > 1:
                     points = np.concatenate(
-                        (points, other_polygon_center_points),
-                        axis=0
+                        (points, other_polygon_center_points), axis=0
                     )
                     point_labels += [0] * len(other_polygon_center_points)
 
                 polygon = self.edge_sam.predict_polygon_from_points(
-                    points, point_labels)
+                    points, point_labels
+                )
 
                 # Save the LabelMe JSON to a file
-                p_shape = Shape(label, shape_type='polygon', flags={})
+                p_shape = Shape(label, shape_type="polygon", flags={})
                 for x, y in polygon:
                     # do not add 0,0 to the list
                     if x >= 1 and y >= 1:
@@ -471,13 +484,19 @@ class VideoProcessor:
         self.most_recent_file = filename
         img_filename = None
         if self.save_image_to_disk:
-            img_filename = str(filename.with_suffix('.png'))
+            img_filename = str(filename.with_suffix(".png"))
             if not Path(img_filename).exists():
                 cv2.imwrite(img_filename, cur_frame)
 
-        save_labels(filename=filename, imagePath=img_filename, label_list=label_list,
-                    height=height, width=width, save_image_to_json=False,
-                    persist_json=False)
+        save_labels(
+            filename=filename,
+            imagePath=img_filename,
+            label_list=label_list,
+            height=height,
+            width=width,
+            save_image_to_json=False,
+            persist_json=False,
+        )
 
     def process_video_frames(self, *args, **kwargs):
         """
@@ -492,15 +511,13 @@ class VideoProcessor:
         - point_tracking (bool): Whether to use point tracking.
         - has_occlusion (bool): Whether occlusion is present.
         """
-        start_frame = kwargs.get('start_frame', 0)
-        end_frame = kwargs.get('end_frame', None)
-        step = kwargs.get('step', 10)
-        is_cutie = kwargs.get('is_cutie', True)
-        mem_every = kwargs.get('mem_every', 5)
-        point_tracking = kwargs.get('point_tracking', False)
-        has_occlusion = kwargs.get('has_occlusion', False)
-        save_video_with_color_mask = kwargs.get(
-            'save_video_with_color_mask', False)
+        start_frame = kwargs.get("start_frame", 0)
+        end_frame = kwargs.get("end_frame", None)
+        step = kwargs.get("step", 10)
+        is_cutie = kwargs.get("is_cutie", True)
+        mem_every = kwargs.get("mem_every", 5)
+        point_tracking = kwargs.get("point_tracking", False)
+        has_occlusion = kwargs.get("has_occlusion", False)
 
         while not self.pred_worker.is_stopped():
             if is_cutie:
@@ -538,8 +555,9 @@ class VideoProcessor:
         _recent_file = find_most_recent_file(self.results_folder)
         return _recent_file
 
-    def _run_cotracker_tracking(self, start_frame=0, end_frame=-1,
-                                grid_size=10, grid_query_frame=0):
+    def _run_cotracker_tracking(
+        self, start_frame=0, end_frame=-1, grid_size=10, grid_query_frame=0
+    ):
         """Execute CoTracker point tracking with safety checks."""
         if self.pred_worker is None:
             logger.warning("CoTracker run requested without an active worker")
@@ -550,7 +568,8 @@ class VideoProcessor:
 
         if not self.most_recent_file:
             logger.warning(
-                "CoTracker requires at least one labeled frame before tracking")
+                "CoTracker requires at least one labeled frame before tracking"
+            )
             self.pred_worker.stop_signal.emit()
             return "Please label at least one frame before running CoTracker#-1"
 
@@ -578,7 +597,7 @@ class VideoProcessor:
             self.pred_worker.stop_signal.emit()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Usage
     video_path = "squirrel.mp4"
     video_processor = VideoProcessor(video_path)

@@ -2,8 +2,8 @@
 easydict>=1.9
 huggingface-hub>=0.22.0
 hydra-core
+imgviz>=1.7.5
 jsonschema>=4.20.0
-labelme==5.5.0
 omegaconf
 opencv-contrib-python>=4.1.2.30
 pandas>=1.1.3
@@ -11,6 +11,7 @@ pycocotools>=2.0.2
 pyyaml>=5.3
 pyzmq>=25.1.2
 qimage2ndarray>=1.8
+qtpy>=2.4.0
 scipy
 shapely>=2.0.2
 tensorboard

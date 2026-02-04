@@ -1,5 +1,4 @@
 from qtpy import QtWidgets
-from pathlib import Path
 
 
 class Sam3DSettingsDialog(QtWidgets.QDialog):
@@ -12,16 +11,12 @@ class Sam3DSettingsDialog(QtWidgets.QDialog):
         cfg = config or {}
         layout = QtWidgets.QFormLayout(self)
 
-        self.repo_edit = QtWidgets.QLineEdit(
-            cfg.get("repo_path", "sam-3d-objects"))
+        self.repo_edit = QtWidgets.QLineEdit(cfg.get("repo_path", "sam-3d-objects"))
         self.repo_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         self.repo_btn.clicked.connect(self._browse_repo)
-        layout.addRow(self.tr("SAM3D repo"), self._wrap(
-            self.repo_edit, self.repo_btn))
+        layout.addRow(self.tr("SAM3D repo"), self._wrap(self.repo_edit, self.repo_btn))
 
-        self.checkpoints_edit = QtWidgets.QLineEdit(
-            cfg.get("checkpoints_dir", "")
-        )
+        self.checkpoints_edit = QtWidgets.QLineEdit(cfg.get("checkpoints_dir", ""))
         self.checkpoints_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         self.checkpoints_btn.clicked.connect(self._browse_checkpoints)
         layout.addRow(
@@ -32,9 +27,7 @@ class Sam3DSettingsDialog(QtWidgets.QDialog):
         self.tag_edit = QtWidgets.QLineEdit(cfg.get("checkpoint_tag", "hf"))
         layout.addRow(self.tr("Checkpoint tag"), self.tag_edit)
 
-        self.python_edit = QtWidgets.QLineEdit(
-            cfg.get("python_executable", "")
-        )
+        self.python_edit = QtWidgets.QLineEdit(cfg.get("python_executable", ""))
         self.python_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         self.python_btn.clicked.connect(self._browse_python)
         layout.addRow(
@@ -52,8 +45,9 @@ class Sam3DSettingsDialog(QtWidgets.QDialog):
 
         self.seed_spin = QtWidgets.QSpinBox()
         self.seed_spin.setRange(-1, 2_147_483_647)
-        self.seed_spin.setValue(int(cfg.get("seed"))
-                                if cfg.get("seed") is not None else -1)
+        self.seed_spin.setValue(
+            int(cfg.get("seed")) if cfg.get("seed") is not None else -1
+        )
         layout.addRow(self.tr("Seed (-1 = random)"), self.seed_spin)
 
         self.compile_chk = QtWidgets.QCheckBox(self.tr("Enable torch.compile"))

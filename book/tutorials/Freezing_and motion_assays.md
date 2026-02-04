@@ -11,7 +11,7 @@ To run dense motion estimation:
 
 ![Visualizing and Dense Motion Estimation Dialog](../images/fish_motion_estimation.png)
 
-This will generate a CSV file named with the format `video_name_tracking_motion.csv`, for example, `fish_640x360_tracking_motion.csv`. 
+This will generate a CSV file named with the format `video_name_tracking_motion.csv`, for example, `fish_640x360_tracking_motion.csv`.
 
 Here are the first few rows of the `fish_640x360_tracking_motion.csv` file:
 

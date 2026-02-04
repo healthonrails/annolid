@@ -42,8 +42,7 @@ class SelectModelPage(QtWidgets.QWizardPage):
             ("yolo", "🚀 YOLO", "Ultralytics YOLO models (.pt files)"),
             ("dino_kpseg", "🦕 DINO KPSEG", "DINO keypoint/segmentation checkpoints"),
             ("detectron2", "🎭 Detectron2", "Detectron2 models (.pth files)"),
-            ("predictions", "📊 Predictions CSV",
-             "Apply existing prediction results"),
+            ("predictions", "📊 Predictions CSV", "Apply existing prediction results"),
         ]
 
         for i, (type_id, label, description) in enumerate(types):
@@ -87,12 +86,10 @@ class SelectModelPage(QtWidgets.QWizardPage):
         layout.addWidget(file_group)
 
         # Config file (for Detectron2)
-        self.config_group = QtWidgets.QGroupBox(
-            "Configuration File (Optional)")
+        self.config_group = QtWidgets.QGroupBox("Configuration File (Optional)")
         config_layout = QtWidgets.QHBoxLayout(self.config_group)
         self.config_edit = QtWidgets.QLineEdit()
-        self.config_edit.setPlaceholderText(
-            "Select config.yaml (for Detectron2)")
+        self.config_edit.setPlaceholderText("Select config.yaml (for Detectron2)")
         config_layout.addWidget(self.config_edit, 1)
         config_browse = QtWidgets.QPushButton("Browse…")
         config_browse.clicked.connect(self._browse_config)
@@ -139,8 +136,7 @@ class SelectModelPage(QtWidgets.QWizardPage):
 
     def _browse_config(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Config", "",
-            "Config Files (*.yaml *.yml);;All Files (*)"
+            self, "Select Config", "", "Config Files (*.yaml *.yml);;All Files (*)"
         )
         if path:
             self.config_edit.setText(path)
@@ -247,9 +243,7 @@ class SelectVideosPage(QtWidgets.QWizardPage):
         multi_layout.setContentsMargins(0, 0, 0, 0)
 
         self.video_list = QtWidgets.QListWidget()
-        self.video_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.ExtendedSelection
-        )
+        self.video_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         multi_layout.addWidget(self.video_list, 1)
 
         multi_btn_layout = QtWidgets.QHBoxLayout()
@@ -293,8 +287,7 @@ class SelectVideosPage(QtWidgets.QWizardPage):
 
         self.full_video_check = QtWidgets.QCheckBox("Process full video(s)")
         self.full_video_check.setChecked(True)
-        self.full_video_check.stateChanged.connect(
-            self._toggle_segment_options)
+        self.full_video_check.stateChanged.connect(self._toggle_segment_options)
         segment_layout.addWidget(self.full_video_check)
 
         self.segment_container = QtWidgets.QWidget()
@@ -329,21 +322,24 @@ class SelectVideosPage(QtWidgets.QWizardPage):
 
     def _browse_single_video(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Video", "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)"
+            self,
+            "Select Video",
+            "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)",
         )
         if path:
             self.single_video_edit.setText(path)
 
     def _add_videos(self) -> None:
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "Select Videos", "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)"
+            self,
+            "Select Videos",
+            "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)",
         )
         for f in files:
             existing = [
-                self.video_list.item(i).text()
-                for i in range(self.video_list.count())
+                self.video_list.item(i).text() for i in range(self.video_list.count())
             ]
             if f not in existing:
                 self.video_list.addItem(f)
@@ -355,9 +351,7 @@ class SelectVideosPage(QtWidgets.QWizardPage):
         self.completeChanged.emit()
 
     def _browse_folder(self) -> None:
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Video Folder"
-        )
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Video Folder")
         if folder:
             self.folder_edit.setText(folder)
 
@@ -366,8 +360,7 @@ class SelectVideosPage(QtWidgets.QWizardPage):
         if path and Path(path).is_dir():
             extensions = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
             count = sum(
-                1 for f in Path(path).iterdir()
-                if f.suffix.lower() in extensions
+                1 for f in Path(path).iterdir() if f.suffix.lower() in extensions
             )
             self.folder_info.setText(f"Found {count} video files")
         else:
@@ -392,8 +385,7 @@ class SelectVideosPage(QtWidgets.QWizardPage):
             return [path] if path else []
         elif mode == 1:  # Multiple
             return [
-                self.video_list.item(i).text()
-                for i in range(self.video_list.count())
+                self.video_list.item(i).text() for i in range(self.video_list.count())
             ]
         else:  # Folder
             path = self.folder_edit.text().strip()
@@ -401,8 +393,7 @@ class SelectVideosPage(QtWidgets.QWizardPage):
                 return []
             extensions = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
             return [
-                str(f) for f in Path(path).iterdir()
-                if f.suffix.lower() in extensions
+                str(f) for f in Path(path).iterdir() if f.suffix.lower() in extensions
             ]
 
     def is_full_video(self) -> bool:
@@ -442,8 +433,7 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         self.score_threshold_spin.setRange(0.01, 1.0)
         self.score_threshold_spin.setSingleStep(0.05)
         self.score_threshold_spin.setValue(0.25)
-        detect_layout.addRow("Confidence threshold:",
-                             self.score_threshold_spin)
+        detect_layout.addRow("Confidence threshold:", self.score_threshold_spin)
 
         self.top_k_spin = QtWidgets.QSpinBox()
         self.top_k_spin.setRange(1, 1000)
@@ -456,18 +446,19 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         track_group = QtWidgets.QGroupBox("Tracking Settings")
         track_layout = QtWidgets.QFormLayout(track_group)
 
-        self.enable_tracking_check = QtWidgets.QCheckBox(
-            "Enable object tracking")
+        self.enable_tracking_check = QtWidgets.QCheckBox("Enable object tracking")
         self.enable_tracking_check.setChecked(True)
         track_layout.addRow("", self.enable_tracking_check)
 
         self.tracker_combo = QtWidgets.QComboBox()
-        self.tracker_combo.addItems([
-            "ByteTrack",
-            "BoT-SORT",
-            "OC-SORT",
-            "CUTIE (Segmentation)",
-        ])
+        self.tracker_combo.addItems(
+            [
+                "ByteTrack",
+                "BoT-SORT",
+                "OC-SORT",
+                "CUTIE (Segmentation)",
+            ]
+        )
         track_layout.addRow("Tracker:", self.tracker_combo)
 
         layout.addWidget(track_group)
@@ -489,13 +480,11 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         self.save_video_check.setChecked(False)
         output_layout.addRow("", self.save_video_check)
 
-        self.save_csv_check = QtWidgets.QCheckBox(
-            "Save tracking results as CSV")
+        self.save_csv_check = QtWidgets.QCheckBox("Save tracking results as CSV")
         self.save_csv_check.setChecked(True)
         output_layout.addRow("", self.save_csv_check)
 
-        self.save_labelme_check = QtWidgets.QCheckBox(
-            "Save as LabelMe annotations")
+        self.save_labelme_check = QtWidgets.QCheckBox("Save as LabelMe annotations")
         self.save_labelme_check.setChecked(True)
         output_layout.addRow("", self.save_labelme_check)
 
@@ -505,21 +494,19 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         pose_layout = QtWidgets.QFormLayout(pose_group)
 
         self.save_pose_bbox_check = QtWidgets.QCheckBox(
-            "Save pose bounding boxes (YOLO pose)")
+            "Save pose bounding boxes (YOLO pose)"
+        )
         self.save_pose_bbox_check.setChecked(
             self._settings.value("pose/save_bbox", True, type=bool)
         )
-        self.save_pose_bbox_check.toggled.connect(
-            self._persist_pose_bbox_setting)
+        self.save_pose_bbox_check.toggled.connect(self._persist_pose_bbox_setting)
         pose_layout.addRow("", self.save_pose_bbox_check)
 
-        self.show_pose_edges_check = QtWidgets.QCheckBox(
-            "Show pose skeleton (edges)")
+        self.show_pose_edges_check = QtWidgets.QCheckBox("Show pose skeleton (edges)")
         self.show_pose_edges_check.setChecked(
             self._settings.value("pose/show_edges", True, type=bool)
         )
-        self.show_pose_edges_check.toggled.connect(
-            self._toggle_pose_edges_setting)
+        self.show_pose_edges_check.toggled.connect(self._toggle_pose_edges_setting)
         pose_layout.addRow("", self.show_pose_edges_check)
 
         layout.addWidget(pose_group)
@@ -611,7 +598,9 @@ class InferenceWorker(QtCore.QObject):
         "OC-SORT": "ocsort.yaml",
     }
 
-    def __init__(self, config: Dict[str, Any], parent: Optional[QtCore.QObject] = None) -> None:
+    def __init__(
+        self, config: Dict[str, Any], parent: Optional[QtCore.QObject] = None
+    ) -> None:
         super().__init__(parent)
         self._config = config
         self._stop_event = threading.Event()
@@ -642,9 +631,7 @@ class InferenceWorker(QtCore.QObject):
                 "LabelMe output is required for this workflow; ignoring the toggle."
             )
         if self._config.get("save_video"):
-            self.log.emit(
-                "Annotated video export is not available in this workflow."
-            )
+            self.log.emit("Annotated video export is not available in this workflow.")
 
         for idx, video in enumerate(videos, start=1):
             if self._stop_event.is_set():
@@ -705,7 +692,9 @@ class InferenceWorker(QtCore.QObject):
             return self._run_predictions(video_path, video_index, total_videos)
         raise ValueError(f"Unsupported model type: {model_type}")
 
-    def _resolve_output_dir(self, video_path: Path, *, suffix: Optional[str] = None) -> Path:
+    def _resolve_output_dir(
+        self, video_path: Path, *, suffix: Optional[str] = None
+    ) -> Path:
         output_root = self._config.get("output_dir")
         if output_root:
             output_root = Path(output_root)
@@ -755,8 +744,7 @@ class InferenceWorker(QtCore.QObject):
             if processed < total and now - last_emit["time"] < 0.2:
                 return
             last_emit["time"] = now
-            overall = ((video_index - 1) + (processed / total)) / \
-                max(total_videos, 1)
+            overall = ((video_index - 1) + (processed / total)) / max(total_videos, 1)
             self.progress.emit(int(overall * 100))
             self.frame_progress.emit(int(processed), int(total))
 
@@ -789,7 +777,10 @@ class InferenceWorker(QtCore.QObject):
         if not model_path:
             raise ValueError("Missing model path.")
 
-        if self._processor is None or getattr(self._processor, "model_type", "") != model_type:
+        if (
+            self._processor is None
+            or getattr(self._processor, "model_type", "") != model_type
+        ):
             resolved_type = "dinokpseg" if model_type == "dino_kpseg" else "yolo"
             self._processor = InferenceProcessor(
                 model_name=model_path,
@@ -799,17 +790,13 @@ class InferenceWorker(QtCore.QObject):
         total_frames = self._get_total_frames(video_path)
         start_frame, end_frame = self._resolve_segment(total_frames)
         output_dir = self._resolve_output_dir(video_path)
-        progress_callback = self._make_progress_callback(
-            video_index, total_videos
-        )
+        progress_callback = self._make_progress_callback(video_index, total_videos)
 
         self._output_dirs.append(output_dir)
         tracker_name = self._config.get("tracker")
         tracker = self._resolve_tracker()
         if tracker is None and tracker_name and tracker_name not in self._TRACKER_MAP:
-            self.log.emit(
-                f"Tracker '{tracker_name}' is not supported; using default."
-            )
+            self.log.emit(f"Tracker '{tracker_name}' is not supported; using default.")
         message = self._processor.run_inference(
             source=str(video_path),
             start_frame=start_frame,
@@ -855,8 +842,9 @@ class InferenceWorker(QtCore.QObject):
         if not model_path:
             raise ValueError("Missing Detectron2 model path.")
         config_path = self._config.get("config_path")
-        dataset_dir = Path(config_path).parent if config_path else Path(
-            model_path).parent
+        dataset_dir = (
+            Path(config_path).parent if config_path else Path(model_path).parent
+        )
         output_dir = self._resolve_output_dir(video_path)
         self._output_dirs.append(output_dir)
 
@@ -889,9 +877,7 @@ class InferenceWorker(QtCore.QObject):
         if not Path(csv_path).exists():
             raise ValueError(f"Predictions CSV not found: {csv_path}")
         if total_videos > 1 and video_index == 1:
-            self.log.emit(
-                "Using the same predictions CSV for multiple videos."
-            )
+            self.log.emit("Using the same predictions CSV for multiple videos.")
 
         output_dir = self._resolve_output_dir(
             video_path, suffix="_tracking_results_labelme"
@@ -903,8 +889,7 @@ class InferenceWorker(QtCore.QObject):
         for progress, message in generator:
             if self._stop_event.is_set():
                 break
-            overall = ((video_index - 1) + (progress / 100.0)) / \
-                max(total_videos, 1)
+            overall = ((video_index - 1) + (progress / 100.0)) / max(total_videos, 1)
             self.progress.emit(int(overall * 100))
             self.frame_progress.emit(int(progress), 100)
             if message:
@@ -1010,8 +995,9 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
         model_path = config.get("model_path")
         videos = config.get("videos", [])
 
-        self._output_path = Path(
-            config["output_dir"]) if config.get("output_dir") else None
+        self._output_path = (
+            Path(config["output_dir"]) if config.get("output_dir") else None
+        )
 
         if model_path:
             self._log(f"Model: {Path(model_path).name}")
@@ -1044,8 +1030,7 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
     def _on_complete(self, video_count: int) -> None:
         self._complete = True
         self.current_video_label.setText("✓ Inference complete!")
-        self.current_video_label.setStyleSheet(
-            "color: green; font-weight: bold;")
+        self.current_video_label.setStyleSheet("color: green; font-weight: bold;")
         self.progress_bar.setValue(100)
         self.frame_label.setText("")
 
@@ -1068,12 +1053,10 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
 
         if stopped:
             self.current_video_label.setText("Stopped")
-            self.current_video_label.setStyleSheet(
-                "color: #b36b00; font-weight: bold;")
+            self.current_video_label.setStyleSheet("color: #b36b00; font-weight: bold;")
         else:
             self.current_video_label.setText("✓ Inference complete!")
-            self.current_video_label.setStyleSheet(
-                "color: green; font-weight: bold;")
+            self.current_video_label.setStyleSheet("color: green; font-weight: bold;")
 
         self.progress_bar.setValue(100)
         self.frame_label.setText("")
@@ -1141,6 +1124,7 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
                 subprocess.run(["open", str(self._output_path)])
             elif sys.platform == "win32":
                 import os
+
                 os.startfile(str(self._output_path))
             else:
                 subprocess.run(["xdg-open", str(self._output_path)])

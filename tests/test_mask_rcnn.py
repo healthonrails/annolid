@@ -24,6 +24,3 @@ def test_predict_maskrcnn_model_structure():
     assert isinstance(prediction, list)
     assert len(prediction) == 1
     assert "masks" in prediction[0]
-        
-
-    

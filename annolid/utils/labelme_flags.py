@@ -41,7 +41,9 @@ def sanitize_labelme_flags(flags: Any) -> Dict[str, bool]:
     return sanitized
 
 
-def sanitize_labelme_flags_with_meta(flags: Any) -> Tuple[Dict[str, bool], Dict[str, Any]]:
+def sanitize_labelme_flags_with_meta(
+    flags: Any,
+) -> Tuple[Dict[str, bool], Dict[str, Any]]:
     """Return `(sanitized_flags, meta)` for LabelMe image-level flags.
 
     LabelMe expects `flags` to be boolean toggles. Any non-boolean values can

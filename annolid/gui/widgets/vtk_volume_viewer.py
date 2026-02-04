@@ -44,10 +44,8 @@ from vtkmodules.vtkCommonDataModel import (
     vtkPiecewiseFunction,
     vtkPlane,
 )
-from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonCore import vtkStringArray
-from vtkmodules.vtkCommonCore import vtkFloatArray
 from vtkmodules.vtkInteractionStyle import (
     vtkInteractorStyleTrackballCamera,
     vtkInteractorStyleUser,
@@ -55,12 +53,14 @@ from vtkmodules.vtkInteractionStyle import (
 from vtkmodules.util.numpy_support import numpy_to_vtk, get_vtk_array_type
 from vtkmodules.vtkIOImage import vtkPNGWriter, vtkImageReader2Factory
 from vtkmodules.vtkFiltersSources import vtkSphereSource
+
 try:
     from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLPolyDataMapper
 except Exception:  # pragma: no cover - optional renderer
     vtkOpenGLPolyDataMapper = None
 try:  # Prefer GDCM when available (more robust series handling)
     from vtkmodules.vtkIOImage import vtkGDCMImageReader  # type: ignore
+
     _HAS_GDCM = True
 except Exception:  # pragma: no cover
     _HAS_GDCM = False
@@ -76,8 +76,15 @@ _HAS_PLANE_WIDGET = vtkImagePlaneWidget is not None
 
 POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
 MESH_EXTS = (".stl", ".obj")
-VOLUME_FILE_EXTS = (".tif", ".tiff", ".nii", ".nii.gz",
-                    ".zarr", ".zarr.json", ".zgroup")
+VOLUME_FILE_EXTS = (
+    ".tif",
+    ".tiff",
+    ".nii",
+    ".nii.gz",
+    ".zarr",
+    ".zarr.json",
+    ".zgroup",
+)
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
 VOLUME_SOURCE_FILTERS = (
     "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff "
@@ -85,22 +92,19 @@ VOLUME_SOURCE_FILTERS = (
 )
 TIFF_SUFFIXES = (".tif", ".tiff")
 OME_TIFF_SUFFIXES = (".ome.tif", ".ome.tiff")
-_auto_ooc_raw = os.environ.get(
-    "ANNOLID_VTK_OUT_OF_CORE_THRESHOLD_MB", "2048") or ""
+_auto_ooc_raw = os.environ.get("ANNOLID_VTK_OUT_OF_CORE_THRESHOLD_MB", "2048") or ""
 try:
-    AUTO_OUT_OF_CORE_MB = float(
-        _auto_ooc_raw.strip()) if _auto_ooc_raw else 0.0
+    AUTO_OUT_OF_CORE_MB = float(_auto_ooc_raw.strip()) if _auto_ooc_raw else 0.0
 except Exception:
     AUTO_OUT_OF_CORE_MB = 0.0
-_max_voxels_raw = os.environ.get(
-    "ANNOLID_VTK_MAX_VOLUME_VOXELS", "134217728") or ""
+_max_voxels_raw = os.environ.get("ANNOLID_VTK_MAX_VOLUME_VOXELS", "134217728") or ""
 try:
     MAX_VOLUME_VOXELS = int(float(_max_voxels_raw.strip()))
 except Exception:
     MAX_VOLUME_VOXELS = 134217728
-_slice_mode_bytes_raw = os.environ.get(
-    "ANNOLID_VTK_SLICE_MODE_BYTES", "68719476736"
-) or ""
+_slice_mode_bytes_raw = (
+    os.environ.get("ANNOLID_VTK_SLICE_MODE_BYTES", "68719476736") or ""
+)
 try:
     SLICE_MODE_BYTES = float(_slice_mode_bytes_raw.strip())
 except Exception:
@@ -239,7 +243,8 @@ class _MemmapSliceLoader(_BaseSliceLoader):
     def read_slice(self, axis: int, index: int) -> np.ndarray:
         if axis != 0:
             raise NotImplementedError(
-                "Memmap loader currently supports axial slices only.")
+                "Memmap loader currently supports axial slices only."
+            )
         index = max(0, min(int(index), self.total_slices() - 1))
         return np.array(self._array[index], copy=True)
 
@@ -268,7 +273,8 @@ class _TiffSliceLoader(_BaseSliceLoader):
     def read_slice(self, axis: int, index: int) -> np.ndarray:
         if axis != 0:
             raise NotImplementedError(
-                "TIFF slice loader currently supports axial slices only.")
+                "TIFF slice loader currently supports axial slices only."
+            )
         idx = max(0, min(int(index), self.total_slices() - 1))
         return self._tif.pages[idx].asarray()
 
@@ -327,7 +333,7 @@ class _ZarrSliceLoader(_BaseSliceLoader):
         # and fetching the whole YX plane.
         z_dim, y_dim, x_dim = self._zyx_axes
 
-        slicer[z_dim] = idx         # The slice index
+        slicer[z_dim] = idx  # The slice index
         slicer[y_dim] = slice(None)  # Keep full Y
         slicer[x_dim] = slice(None)  # Keep full X
 
@@ -376,13 +382,10 @@ class _ZarrV3Array:
         else:
             self._chunk_shape = tuple(int(x) for x in chunk_conf)
         self._fill_value = metadata.get("fill_value", 0)
-        encoding_conf = metadata.get("chunk_key_encoding", {}).get(
-            "configuration", {}
-        )
+        encoding_conf = metadata.get("chunk_key_encoding", {}).get("configuration", {})
         self._chunk_separator = encoding_conf.get("separator", "/") or "/"
         self._codecs = list(metadata.get("codecs", []) or [])
-        self._chunk_cache: OrderedDict[tuple[int, ...],
-                                       np.ndarray] = OrderedDict()
+        self._chunk_cache: OrderedDict[tuple[int, ...], np.ndarray] = OrderedDict()
         # Cache a modest number of chunks to speed repeated slice access.
         self._cache_limit = 32
         self._chunk_root = self._path / "c"
@@ -409,11 +412,9 @@ class _ZarrV3Array:
                 start, stop, step = idx, idx + 1, 1
                 squeeze_axes.append(axis)
             else:
-                raise TypeError(
-                    f"Unsupported index type for Zarr data: {type(k)}")
+                raise TypeError(f"Unsupported index type for Zarr data: {type(k)}")
             if step not in (None, 1):
-                raise ValueError(
-                    "Zarr reader currently supports step=1 slices only.")
+                raise ValueError("Zarr reader currently supports step=1 slices only.")
             norm_slices.append(slice(start, stop, 1))
 
         out_shape = [sl.stop - sl.start for sl in norm_slices]
@@ -433,12 +434,10 @@ class _ZarrV3Array:
                 for axis in range(self.ndim)
             ]
             chunk_shape = [
-                min(self._chunk_shape[axis],
-                    self.shape[axis] - chunk_start[axis])
+                min(self._chunk_shape[axis], self.shape[axis] - chunk_start[axis])
                 for axis in range(self.ndim)
             ]
-            chunk_arr = self._read_chunk(
-                tuple(int(c) for c in chunk_idx), chunk_shape)
+            chunk_arr = self._read_chunk(tuple(int(c) for c in chunk_idx), chunk_shape)
             if chunk_arr is None:
                 continue
 
@@ -489,8 +488,7 @@ class _ZarrV3Array:
         try:
             with open(chunk_path, "rb") as f:
                 raw = f.read()
-            arr = self._decode_chunk_bytes(
-                raw, tuple(int(x) for x in expected_shape))
+            arr = self._decode_chunk_bytes(raw, tuple(int(x) for x in expected_shape))
         except Exception as exc:
             logger.error("Failed to read Zarr chunk %s: %s", chunk_path, exc)
             arr = np.full(expected_shape, self._fill_value, dtype=self.dtype)
@@ -500,14 +498,12 @@ class _ZarrV3Array:
     def _decode_chunk_bytes(
         self, raw: bytes, expected_shape: tuple[int, ...]
     ) -> np.ndarray:
-        expected_bytes = int(np.prod(expected_shape)) * \
-            max(1, self.dtype.itemsize)
+        expected_bytes = int(np.prod(expected_shape)) * max(1, self.dtype.itemsize)
         data: object = raw
         last_error: Optional[Exception] = None
         for codec in reversed(self._codecs):
             name = codec.get("name") if isinstance(codec, Mapping) else None
-            conf = codec.get("configuration", {}) if isinstance(
-                codec, Mapping) else {}
+            conf = codec.get("configuration", {}) if isinstance(codec, Mapping) else {}
             try:
                 if name == "zstd":
                     data = self._decode_zstd(data, expected_bytes)
@@ -516,7 +512,8 @@ class _ZarrV3Array:
                 elif name == "bytes":
                     endian = conf.get("endian", "<")
                     dt = self.dtype.newbyteorder(
-                        "<" if endian in ("little", "<") else ">")
+                        "<" if endian in ("little", "<") else ">"
+                    )
                     data = np.frombuffer(data, dtype=dt)
                 else:
                     raise RuntimeError(f"Unsupported Zarr codec: {name}")
@@ -526,7 +523,8 @@ class _ZarrV3Array:
 
         if last_error is not None:
             raise RuntimeError(
-                f"Zarr codec pipeline failed: {last_error}") from last_error
+                f"Zarr codec pipeline failed: {last_error}"
+            ) from last_error
 
         if isinstance(data, (bytes, bytearray)):
             arr = np.frombuffer(data, dtype=self.dtype)
@@ -592,8 +590,7 @@ class _ZarrV3Array:
 
     def first_nonempty_index(self, axis: int = 0) -> int:
         """Best-effort estimate of the first non-empty chunk along an axis."""
-        chunk_size = self._chunk_shape[axis] if axis < len(
-            self._chunk_shape) else 1
+        chunk_size = self._chunk_shape[axis] if axis < len(self._chunk_shape) else 1
         if axis != 0:
             return 0
         try:
@@ -641,7 +638,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     - Simple UI controls for opacity scaling and shading toggle
     """
 
-    def __init__(self, src_path: Optional[str | Path], parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(
+        self, src_path: Optional[str | Path], parent: Optional[QtWidgets.QWidget] = None
+    ):
         super().__init__(parent)
         self.setWindowTitle("3D Volume Renderer (VTK)")
         self.resize(1150, 820)
@@ -716,7 +715,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         controls_panel = QtWidgets.QWidget()
         controls_panel.setMinimumWidth(180)
         controls_panel.setSizePolicy(
-            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding
+        )
         controls_layout = QtWidgets.QVBoxLayout(controls_panel)
         controls_layout.setAlignment(QtCore.Qt.AlignTop)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -728,7 +728,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         scroll_area.setWidget(controls_panel)
         self._controls_dock.setWidget(scroll_area)
         self._controls_dock.setAllowedAreas(
-            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
         self._controls_dock.setFeatures(
             QtWidgets.QDockWidget.DockWidgetMovable
             | QtWidgets.QDockWidget.DockWidgetFloatable
@@ -788,8 +789,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             ),
         ]
         for idx, btn in enumerate(buttons):
-            btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                              QtWidgets.QSizePolicy.Preferred)
+            btn.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
             btn.setMinimumHeight(28)
             r, c = divmod(idx, 3)
             quick_grid.addWidget(btn, r, c)
@@ -812,18 +814,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         # Blend mode
         volume_layout.addWidget(QtWidgets.QLabel("Blend:"), 0, 0)
         self.blend_combo = QtWidgets.QComboBox()
-        self.blend_combo.addItems(
-            ["Composite", "MIP-Max", "MIP-Min", "Additive"])
+        self.blend_combo.addItems(["Composite", "MIP-Max", "MIP-Min", "Additive"])
         self.blend_combo.currentIndexChanged.connect(self._update_blend_mode)
         volume_layout.addWidget(self.blend_combo, 0, 1)
 
         # Colormap
         volume_layout.addWidget(QtWidgets.QLabel("Colormap:"), 0, 2)
         self.cmap_combo = QtWidgets.QComboBox()
-        self.cmap_combo.addItems(
-            ["Grayscale", "Invert Gray", "Hot", "Allen Atlas"])
-        self.cmap_combo.currentIndexChanged.connect(
-            self._update_transfer_functions)
+        self.cmap_combo.addItems(["Grayscale", "Invert Gray", "Hot", "Allen Atlas"])
+        self.cmap_combo.currentIndexChanged.connect(self._update_transfer_functions)
         volume_layout.addWidget(self.cmap_combo, 0, 3)
 
         # Intensity window (min/max)
@@ -857,8 +856,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         volume_layout.addWidget(QtWidgets.QLabel("Interpolation:"), 3, 0)
         self.interp_combo = QtWidgets.QComboBox()
         self.interp_combo.addItems(["Linear", "Nearest"])
-        self.interp_combo.currentIndexChanged.connect(
-            self._update_interpolation)
+        self.interp_combo.currentIndexChanged.connect(self._update_interpolation)
         volume_layout.addWidget(self.interp_combo, 3, 1)
 
         # Spacing (X, Y, Z)
@@ -920,8 +918,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.light_intensity_spin.setRange(0.0, 3.0)
         self.light_intensity_spin.setSingleStep(0.05)
         self.light_intensity_spin.setValue(self._light_intensity)
-        self.light_intensity_spin.valueChanged.connect(
-            self._update_light_intensity)
+        self.light_intensity_spin.valueChanged.connect(self._update_light_intensity)
         brightness_row.addWidget(self.light_intensity_spin)
         brightness_row.addStretch(1)
         point_detail_layout.addLayout(brightness_row)
@@ -934,8 +931,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.gaussian_scale_spin.setRange(0.05, 5.0)
         self.gaussian_scale_spin.setSingleStep(0.05)
         self.gaussian_scale_spin.setValue(self._gaussian_scale_mult)
-        self.gaussian_scale_spin.valueChanged.connect(
-            self._update_gaussian_scale)
+        self.gaussian_scale_spin.valueChanged.connect(self._update_gaussian_scale)
         g_layout.addWidget(self.gaussian_scale_spin, 0, 1)
 
         g_layout.addWidget(QtWidgets.QLabel("Opacity ×"), 1, 0)
@@ -943,16 +939,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.gaussian_opacity_spin.setRange(0.0, 3.0)
         self.gaussian_opacity_spin.setSingleStep(0.05)
         self.gaussian_opacity_spin.setValue(self._gaussian_opacity_mult)
-        self.gaussian_opacity_spin.valueChanged.connect(
-            self._update_gaussian_opacity)
+        self.gaussian_opacity_spin.valueChanged.connect(self._update_gaussian_opacity)
         g_layout.addWidget(self.gaussian_opacity_spin, 1, 1)
 
         g_layout.addWidget(QtWidgets.QLabel("Glyph resolution"), 2, 0)
         self.gaussian_res_spin = QtWidgets.QSpinBox()
         self.gaussian_res_spin.setRange(6, 48)
         self.gaussian_res_spin.setValue(self._gaussian_glyph_res)
-        self.gaussian_res_spin.valueChanged.connect(
-            self._update_gaussian_resolution)
+        self.gaussian_res_spin.valueChanged.connect(self._update_gaussian_resolution)
         g_layout.addWidget(self.gaussian_res_spin, 2, 1)
         self.gaussian_group.setLayout(g_layout)
         self.gaussian_group.setEnabled(False)
@@ -969,16 +963,19 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         region_btn_row.addStretch(1)
         region_layout.addLayout(region_btn_row)
         self.select_all_regions_btn.clicked.connect(
-            lambda: self._set_region_check_states(True))
+            lambda: self._set_region_check_states(True)
+        )
         self.deselect_all_regions_btn.clicked.connect(
-            lambda: self._set_region_check_states(False))
+            lambda: self._set_region_check_states(False)
+        )
         self.region_search = QtWidgets.QLineEdit()
         self.region_search.setPlaceholderText("Filter regions…")
         self.region_search.textChanged.connect(self._filter_region_items)
         region_layout.addWidget(self.region_search)
         self.region_list_widget = QtWidgets.QListWidget()
         self.region_list_widget.setSelectionMode(
-            QtWidgets.QAbstractItemView.NoSelection)
+            QtWidgets.QAbstractItemView.NoSelection
+        )
         self.region_list_widget.setFocusPolicy(QtCore.Qt.NoFocus)
         region_layout.addWidget(self.region_list_widget)
         self.region_group.setLayout(region_layout)
@@ -994,8 +991,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.load_mesh_btn.clicked.connect(self._load_mesh_dialog)
         self.clear_mesh_btn = QtWidgets.QPushButton("Clear Meshes")
         self.clear_mesh_btn.clicked.connect(self._clear_meshes)
-        self.load_diffuse_tex_btn = QtWidgets.QPushButton(
-            "Load Diffuse Texture…")
+        self.load_diffuse_tex_btn = QtWidgets.QPushButton("Load Diffuse Texture…")
         self.load_diffuse_tex_btn.clicked.connect(self._load_diffuse_texture)
         self.load_normal_tex_btn = QtWidgets.QPushButton("Load Normal Map…")
         self.load_normal_tex_btn.clicked.connect(self._load_normal_texture)
@@ -1042,7 +1038,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         wl_layout.addStretch(1)
         general_layout.addLayout(wl_layout)
         hint_label = QtWidgets.QLabel(
-            "Use Quick Actions above for load/reset/snapshot. Keep these toggles for visibility.")
+            "Use Quick Actions above for load/reset/snapshot. Keep these toggles for visibility."
+        )
         hint_label.setWordWrap(True)
         hint_label.setStyleSheet("color: #4a4a4a; font-size: 11px;")
         general_layout.addWidget(hint_label)
@@ -1050,13 +1047,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.show_volume_checkbox = QtWidgets.QCheckBox("Show Volume")
         self.show_volume_checkbox.setChecked(True)
         self.show_volume_checkbox.stateChanged.connect(
-            self._on_volume_visibility_changed)
+            self._on_volume_visibility_changed
+        )
         visibility_layout.addWidget(self.show_volume_checkbox)
-        self.show_point_cloud_checkbox = QtWidgets.QCheckBox(
-            "Show Point Cloud")
+        self.show_point_cloud_checkbox = QtWidgets.QCheckBox("Show Point Cloud")
         self.show_point_cloud_checkbox.setChecked(True)
         self.show_point_cloud_checkbox.stateChanged.connect(
-            self._on_point_cloud_visibility_changed)
+            self._on_point_cloud_visibility_changed
+        )
         visibility_layout.addWidget(self.show_point_cloud_checkbox)
         visibility_layout.addStretch(1)
         general_layout.addLayout(visibility_layout)
@@ -1069,13 +1067,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         overlay_layout.setSpacing(4)
         self.overlay_list = QtWidgets.QListWidget()
         self.overlay_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.ExtendedSelection)
+            QtWidgets.QAbstractItemView.ExtendedSelection
+        )
         self.overlay_list.itemChanged.connect(self._on_overlay_item_changed)
         overlay_layout.addWidget(self.overlay_list)
         overlay_btn_row = QtWidgets.QHBoxLayout()
         self.overlay_remove_btn = QtWidgets.QPushButton("Remove Selected")
-        self.overlay_remove_btn.clicked.connect(
-            self._remove_selected_overlays)
+        self.overlay_remove_btn.clicked.connect(self._remove_selected_overlays)
         self.overlay_clear_btn = QtWidgets.QPushButton("Clear Overlays")
         self.overlay_clear_btn.clicked.connect(self._clear_overlay_volumes)
         overlay_btn_row.addWidget(self.overlay_remove_btn)
@@ -1091,7 +1089,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         slice_view_layout.setContentsMargins(4, 4, 4, 4)
         slice_view_layout.setSpacing(4)
         self.slice_hint_label = QtWidgets.QLabel(
-            "Large TIFF detected. Showing on-demand axial slices.")
+            "Large TIFF detected. Showing on-demand axial slices."
+        )
         self.slice_hint_label.setWordWrap(True)
         slice_view_layout.addWidget(self.slice_hint_label)
         self.slice_status_label = QtWidgets.QLabel("Slice: -/-")
@@ -1105,9 +1104,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             spin.setRange(-1e9, 1e9)
             spin.setKeyboardTracking(False)
         self.slice_min_spin.valueChanged.connect(
-            lambda _: self._on_slice_window_changed())
+            lambda _: self._on_slice_window_changed()
+        )
         self.slice_max_spin.valueChanged.connect(
-            lambda _: self._on_slice_window_changed())
+            lambda _: self._on_slice_window_changed()
+        )
         contrast_row.addWidget(self.slice_min_spin)
         contrast_row.addWidget(self.slice_max_spin)
         self.slice_auto_btn = QtWidgets.QPushButton("Auto")
@@ -1119,16 +1120,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.slice_gamma_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slice_gamma_slider.setRange(10, 400)  # 0.1 - 4.0
         self.slice_gamma_slider.setValue(100)
-        self.slice_gamma_slider.valueChanged.connect(
-            self._on_slice_gamma_changed)
+        self.slice_gamma_slider.valueChanged.connect(self._on_slice_gamma_changed)
         gamma_row.addWidget(self.slice_gamma_label)
         gamma_row.addWidget(self.slice_gamma_slider)
         slice_view_layout.addLayout(gamma_row)
         self.slice_index_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slice_index_slider.setRange(0, 0)
         self.slice_index_slider.setEnabled(False)
-        self.slice_index_slider.valueChanged.connect(
-            self._on_slice_index_changed)
+        self.slice_index_slider.valueChanged.connect(self._on_slice_index_changed)
         slice_view_layout.addWidget(self.slice_index_slider)
         self.slice_view_group.setLayout(slice_view_layout)
         self.slice_view_group.setVisible(False)
@@ -1145,13 +1144,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             slider.setRange(0, 0)
             slider.setEnabled(False)
-            slider.valueChanged.connect(
-                partial(self._on_plane_slider_changed, axis))
+            slider.valueChanged.connect(partial(self._on_plane_slider_changed, axis))
             checkbox = QtWidgets.QCheckBox("Show")
             checkbox.setEnabled(False)
             checkbox.setToolTip(f"Show the {name} slice plane.")
             checkbox.stateChanged.connect(
-                partial(self._on_plane_checkbox_changed, axis))
+                partial(self._on_plane_checkbox_changed, axis)
+            )
             row.addWidget(label)
             row.addWidget(slider, 2)
             row.addWidget(checkbox)
@@ -1174,7 +1173,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.mode_status_label = QtWidgets.QLabel("Mode: waiting for data")
         self.mode_status_label.setWordWrap(True)
         self.counts_status_label = QtWidgets.QLabel(
-            "Overlays: 0 • Points: 0 • Meshes: 0")
+            "Overlays: 0 • Points: 0 • Meshes: 0"
+        )
         self.counts_status_label.setWordWrap(True)
         self.volume_io_label = QtWidgets.QLabel("Volume I/O: idle")
         self.mesh_status_label = QtWidgets.QLabel("Mesh: none loaded")
@@ -1253,12 +1253,16 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._active_mesh_actor: Optional[vtkActor] = None
 
         # If the provided path is a point cloud, add it now
-        if src_path and not _loaded_volume and self._is_point_cloud_candidate(self._path):
+        if (
+            src_path
+            and not _loaded_volume
+            and self._is_point_cloud_candidate(self._path)
+        ):
             try:
                 ext = self._path.suffix.lower()
-                if ext == '.ply':
+                if ext == ".ply":
                     self._add_point_cloud_ply(str(self._path))
-                elif ext in ('.csv', '.xyz'):
+                elif ext in (".csv", ".xyz"):
                     self._add_point_cloud_csv_or_xyz(str(self._path))
                 self._update_point_sizes()
                 self.renderer.ResetCamera()
@@ -1288,8 +1292,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         try:
             total_width = max(1, self.width())
             preferred = max(220, min(360, int(total_width * 0.3)))
-            self.resizeDocks([self._controls_dock], [
-                             preferred], QtCore.Qt.Horizontal)
+            self.resizeDocks([self._controls_dock], [preferred], QtCore.Qt.Horizontal)
         except Exception:
             pass
 
@@ -1355,10 +1358,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _install_interaction_bindings(self):
         # Mouse + key handlers
-        self.interactor.AddObserver(
-            "LeftButtonPressEvent", self._vtk_on_left_press)
-        self.interactor.AddObserver(
-            "LeftButtonReleaseEvent", self._vtk_on_left_release)
+        self.interactor.AddObserver("LeftButtonPressEvent", self._vtk_on_left_press)
+        self.interactor.AddObserver("LeftButtonReleaseEvent", self._vtk_on_left_release)
         self.interactor.AddObserver("MouseMoveEvent", self._vtk_on_mouse_move)
         self.interactor.AddObserver("KeyPressEvent", self._vtk_on_key_press)
 
@@ -1425,8 +1426,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             )
 
     def _load_volume_dialog(self):
-        start_dir = str(self._path.parent) if getattr(
-            self, "_path", None) and self._path.exists() else "."
+        start_dir = (
+            str(self._path.parent)
+            if getattr(self, "_path", None) and self._path.exists()
+            else "."
+        )
         dialog = QtWidgets.QFileDialog(self, "Open 3D Volume")
         dialog.setDirectory(start_dir)
         dialog.setNameFilter(VOLUME_SOURCE_FILTERS)
@@ -1509,12 +1513,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         prop = vtkVolumeProperty()
         prop.ShadeOn()
         prop.SetInterpolationTypeToLinear()
-        prop.SetScalarOpacityUnitDistance(
-            self.property.GetScalarOpacityUnitDistance())
+        prop.SetScalarOpacityUnitDistance(self.property.GetScalarOpacityUnitDistance())
         prop.SetScalarOpacity(
-            self._opacity_tf if self._opacity_tf else vtkPiecewiseFunction())
-        prop.SetColor(
-            self._color_tf if self._color_tf else vtkColorTransferFunction())
+            self._opacity_tf if self._opacity_tf else vtkPiecewiseFunction()
+        )
+        prop.SetColor(self._color_tf if self._color_tf else vtkColorTransferFunction())
         actor = vtkVolume()
         actor.SetMapper(mapper)
         actor.SetProperty(prop)
@@ -1540,8 +1543,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._out_of_core_backing_path = None
         self._label_volume_active = False
         volume_data = self._read_volume_any()
-        self._label_volume_active = bool(
-            getattr(volume_data, "is_label_map", False))
+        self._label_volume_active = bool(getattr(volume_data, "is_label_map", False))
         if volume_data.slice_mode:
             self._init_slice_mode(volume_data)
             self._cleanup_out_of_core_backing(old_array, old_path)
@@ -1620,7 +1622,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._refresh_status_summary()
         return True
 
-    def _prepare_vtk_image(self, volume_data: _VolumeData) -> tuple[vtkImageData, np.ndarray]:
+    def _prepare_vtk_image(
+        self, volume_data: _VolumeData
+    ) -> tuple[vtkImageData, np.ndarray]:
         volume = volume_data.array
         if volume is None:
             raise RuntimeError("Volume source returned no data.")
@@ -1640,8 +1644,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         vtk_img.SetDimensions(int(x), int(y), int(z))
         spacing = volume_data.spacing
         if spacing is not None and len(spacing) == 3:
-            vtk_img.SetSpacing(float(spacing[0]), float(
-                spacing[1]), float(spacing[2]))
+            vtk_img.SetSpacing(float(spacing[0]), float(spacing[1]), float(spacing[2]))
         else:
             vtk_img.SetSpacing(1.0, 1.0, 1.0)
         vtk_img.SetOrigin(0.0, 0.0, 0.0)
@@ -1655,8 +1658,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def _init_slice_mode(self, volume_data: _VolumeData):
         self._teardown_slice_mode()
         if volume_data.slice_loader is None:
-            raise RuntimeError(
-                "Slice loader is not available for this volume.")
+            raise RuntimeError("Slice loader is not available for this volume.")
         self._slice_mode = True
         self._slice_loader = volume_data.slice_loader
         self._slice_axis = volume_data.slice_axis or 0
@@ -1730,8 +1732,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return
         total = max(1, self._slice_loader.total_slices())
         sanitized = max(0, min(int(index), total - 1))
-        slice_array = self._slice_loader.read_slice(
-            self._slice_axis, sanitized)
+        slice_array = self._slice_loader.read_slice(self._slice_axis, sanitized)
         arr = np.asarray(slice_array)
         if arr.ndim == 3 and arr.shape[-1] in (3, 4):
             arr = self._convert_frame_to_plane(arr, arr.dtype)
@@ -1756,8 +1757,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 array_type = get_vtk_array_type(np.dtype(np.uint8))
             except Exception:
                 array_type = None
-            vtk_array = numpy_to_vtk(
-                flat, deep=True, array_type=array_type)  # type: ignore[arg-type]
+            vtk_array = numpy_to_vtk(flat, deep=True, array_type=array_type)  # type: ignore[arg-type]
             try:
                 vtk_array.SetNumberOfComponents(3)
             except Exception:
@@ -1846,10 +1846,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def _on_slice_window_changed(self):
         if not self._slice_mode:
             return
-        vmin = float(min(self.slice_min_spin.value(),
-                         self.slice_max_spin.value()))
-        vmax = float(max(self.slice_min_spin.value(),
-                         self.slice_max_spin.value()))
+        vmin = float(min(self.slice_min_spin.value(), self.slice_max_spin.value()))
+        vmax = float(max(self.slice_min_spin.value(), self.slice_max_spin.value()))
         if vmax <= vmin:
             vmax = vmin + 1e-3
         self.slice_min_spin.blockSignals(True)
@@ -1991,13 +1989,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
             suffix = path.suffix.lower()
             name_lower = path.name.lower()
-            if name_lower.endswith('.nii') or name_lower.endswith('.nii.gz'):
+            if name_lower.endswith(".nii") or name_lower.endswith(".nii.gz"):
                 # NIfTI via VTK reader
                 try:
                     from vtkmodules.vtkIOImage import vtkNIFTIImageReader
                 except Exception as exc:
                     raise RuntimeError(
-                        "VTK NIFTI reader is not available in this build.") from exc
+                        "VTK NIFTI reader is not available in this build."
+                    ) from exc
                 reader = vtkNIFTIImageReader()
                 reader.SetFileName(str(path))
                 reader.Update()
@@ -2015,7 +2014,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     is_out_of_core=False,
                     volume_shape=tuple(int(x) for x in vol.shape[:3]),
                 )
-            if suffix in ('.dcm', '.ima', '.dicom'):
+            if suffix in (".dcm", ".ima", ".dicom"):
                 # Treat as a DICOM series from the containing folder
                 volume, spacing = self._read_dicom_series(path.parent)
                 return _VolumeData(
@@ -2067,14 +2066,24 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 if name.endswith("zarr.json") or name.endswith(".zgroup"):
                     return True
                 parent = path.parent
-                if (parent / ".zarray").exists() or (parent / "zarr.json").exists() or (parent / ".zgroup").exists():
+                if (
+                    (parent / ".zarray").exists()
+                    or (parent / "zarr.json").exists()
+                    or (parent / ".zgroup").exists()
+                ):
                     return True
                 if (parent / "data" / ".zarray").exists():
                     return True
             if path.is_dir():
-                if (path / ".zarray").exists() or (path / "zarr.json").exists() or (path / ".zgroup").exists():
+                if (
+                    (path / ".zarray").exists()
+                    or (path / "zarr.json").exists()
+                    or (path / ".zgroup").exists()
+                ):
                     return True
-                if (path / "data" / ".zarray").exists() or (path / "data" / "zarr.json").exists():
+                if (path / "data" / ".zarray").exists() or (
+                    path / "data" / "zarr.json"
+                ).exists():
                     return True
         except Exception:
             return False
@@ -2202,8 +2211,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if first_plane.ndim != 2:
                 raise RuntimeError("Only grayscale TIFF stacks are supported.")
             plane_shape = first_plane.shape
-            fd, tmp_path = tempfile.mkstemp(
-                prefix="annolid_vtk_", suffix=".mmap")
+            fd, tmp_path = tempfile.mkstemp(prefix="annolid_vtk_", suffix=".mmap")
             os.close(fd)
             backing_path = Path(tmp_path)
             try:
@@ -2277,8 +2285,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                             try:
                                 logger.info(
                                     "VTK viewer: BFS picked array '%s' (shape=%s)",
-                                    getattr(arr, "path", None) or getattr(
-                                        arr, "name", None),
+                                    getattr(arr, "path", None)
+                                    or getattr(arr, "name", None),
                                     shp,
                                 )
                             except Exception:
@@ -2330,8 +2338,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if not np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.bool_):
             return False
         tokens = ("label", "mask", "annot", "seg")
-        name = str(getattr(arr_obj, "path", "")
-                   or getattr(arr_obj, "name", "")).lower()
+        name = str(getattr(arr_obj, "path", "") or getattr(arr_obj, "name", "")).lower()
         if any(tok in name for tok in tokens):
             return True
         if any(tok in source_path.name.lower() for tok in tokens):
@@ -2339,8 +2346,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         attrs = getattr(arr_obj, "attrs", None)
         if attrs:
             try:
-                keys = [str(k).lower()
-                        for k in getattr(attrs, "keys", lambda: [])()]
+                keys = [str(k).lower() for k in getattr(attrs, "keys", lambda: [])()]
                 if any(tok in k for k in keys for tok in tokens):
                     return True
                 for key in (
@@ -2682,7 +2688,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             is_label_map=is_label_map,
         )
 
-    def _initial_slice_index_for_loader(self, loader: Optional[_BaseSliceLoader]) -> int:
+    def _initial_slice_index_for_loader(
+        self, loader: Optional[_BaseSliceLoader]
+    ) -> int:
         """Estimate a non-empty starting slice for sparse label volumes."""
         if loader is None:
             return 0
@@ -2751,8 +2759,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 gray = (gray > 0.5).astype(dtype)
             elif np.issubdtype(dtype, np.integer):
                 info = np.iinfo(dtype)
-                gray = np.clip(np.round(gray), info.min,
-                               info.max).astype(dtype)
+                gray = np.clip(np.round(gray), info.min, info.max).astype(dtype)
             else:
                 gray = gray.astype(dtype)
             return gray
@@ -2775,16 +2782,16 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         if isinstance(obj, Group):
             # Priority 1: OME-NGFF (multiscales) - Pick level 0 (highest res)
-            if 'multiscales' in obj.attrs:
+            if "multiscales" in obj.attrs:
                 try:
-                    datasets = obj.attrs['multiscales'][0]['datasets']
-                    path = datasets[0]['path']
+                    datasets = obj.attrs["multiscales"][0]["datasets"]
+                    path = datasets[0]["path"]
                     return obj[path]
                 except (IndexError, KeyError):
                     pass
 
             # Priority 2: Common convention keys
-            for key in ['0', 'data', 'image', 'volume']:
+            for key in ["0", "data", "image", "volume"]:
                 if key in obj:
                     item = obj[key]
                     if isinstance(item, Array) and item.ndim >= 3:
@@ -2818,18 +2825,18 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             multiscales = getattr(obj, "attrs", {}).get("multiscales")
             if multiscales and isinstance(multiscales, (list, tuple)):
                 meta = multiscales[0]
-                axes = [a.get("name", "").lower() if isinstance(
-                    a, dict) else str(a).lower() for a in meta.get("axes", [])]
+                axes = [
+                    a.get("name", "").lower() if isinstance(a, dict) else str(a).lower()
+                    for a in meta.get("axes", [])
+                ]
                 datasets = meta.get("datasets", [])
                 if datasets:
-                    transforms = datasets[0].get(
-                        "coordinateTransformations", [])
+                    transforms = datasets[0].get("coordinateTransformations", [])
                     for tf in transforms:
                         if tf.get("type") == "scale":
                             scale = tf.get("scale", [])
                             if axes and scale and len(scale) == len(axes):
-                                axis_map = {ax: i for i,
-                                            ax in enumerate(axes)}
+                                axis_map = {ax: i for i, ax in enumerate(axes)}
                                 try:
                                     return (
                                         float(scale[axis_map.get("z", -1)]),
@@ -2857,14 +2864,23 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     return p.parent
                 if (p.parent / ".zarray").exists():
                     return p.parent
-                if (p.parent / "data" / ".zarray").exists() or (p.parent / "data" / "zarr.json").exists():
+                if (p.parent / "data" / ".zarray").exists() or (
+                    p.parent / "data" / "zarr.json"
+                ).exists():
                     return p.parent / "data"
             # Walk up a couple of levels to find a .zarr root
             cur = p
             for _ in range(3):
-                if cur.name.lower().endswith(".zarr") or (cur / ".zarray").exists() or (cur / "zarr.json").exists() or (cur / ".zgroup").exists():
+                if (
+                    cur.name.lower().endswith(".zarr")
+                    or (cur / ".zarray").exists()
+                    or (cur / "zarr.json").exists()
+                    or (cur / ".zgroup").exists()
+                ):
                     return cur
-                if (cur / "data" / ".zarray").exists() or (cur / "data" / "zarr.json").exists():
+                if (cur / "data" / ".zarray").exists() or (
+                    cur / "data" / "zarr.json"
+                ).exists():
                     return cur / "data"
                 cur = cur.parent
         except Exception:
@@ -2879,27 +2895,28 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             fixed_indices: dict {axis_index: default_value} for non-spatial axes (Time/Channel)
         """
         ndim = arr.ndim
-        shape = arr.shape
 
         # Default to last 3 dimensions as Z, Y, X
         z_ix, y_ix, x_ix = ndim - 3, ndim - 2, ndim - 1
 
         # Try to find OME-Zarr axis names
         axes_meta = None
-        if hasattr(arr, 'attrs') and 'multiscales' in arr.attrs:
+        if hasattr(arr, "attrs") and "multiscales" in arr.attrs:
             try:
-                axes_meta = arr.attrs['multiscales'][0].get('axes')
+                axes_meta = arr.attrs["multiscales"][0].get("axes")
             except Exception:
                 pass
 
         # If we found metadata names, map them
         if axes_meta and len(axes_meta) == ndim:
-            names = [x['name'].lower() if isinstance(x, dict) else x.lower()
-                     for x in axes_meta]
-            if 'z' in names and 'y' in names and 'x' in names:
-                z_ix = names.index('z')
-                y_ix = names.index('y')
-                x_ix = names.index('x')
+            names = [
+                x["name"].lower() if isinstance(x, dict) else x.lower()
+                for x in axes_meta
+            ]
+            if "z" in names and "y" in names and "x" in names:
+                z_ix = names.index("z")
+                y_ix = names.index("y")
+                x_ix = names.index("x")
 
         # Handle edge case: 2D array (treat as 1 slice Z)
         if ndim == 2:
@@ -2951,20 +2968,20 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         # Attempt 1: Consolidated (Optimized for OME-Zarr)
         try:
-            return zarr_mod.open_consolidated(path_str, mode='r')
+            return zarr_mod.open_consolidated(path_str, mode="r")
         except Exception:
             pass
 
         # Attempt 2: Standard Group/Array open
         try:
-            return zarr_mod.open(path_str, mode='r')
+            return zarr_mod.open(path_str, mode="r")
         except Exception:
             pass
 
         # Attempt 3: Check for nested 'data' folder (common in some exports)
         if (path / "data").exists():
             try:
-                return zarr_mod.open(str(path / "data"), mode='r')
+                return zarr_mod.open(str(path / "data"), mode="r")
             except Exception:
                 pass
 
@@ -2972,6 +2989,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _vtk_image_to_numpy(self, vtk_img) -> np.ndarray:
         from vtkmodules.util.numpy_support import vtk_to_numpy
+
         dims = vtk_img.GetDimensions()  # (x, y, z)
         scalars = vtk_img.GetPointData().GetScalars()
         if scalars is None:
@@ -2994,7 +3012,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             vol = np.clip(vol, 0.0, 1.0)
         return vol
 
-    def _read_dicom_series(self, directory: Path) -> tuple[np.ndarray, Optional[tuple[float, float, float]]]:
+    def _read_dicom_series(
+        self, directory: Path
+    ) -> tuple[np.ndarray, Optional[tuple[float, float, float]]]:
         # First try GDCM (if present), then fallback to VTK's basic reader
         reader = None
         if _HAS_GDCM:
@@ -3009,7 +3029,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 from vtkmodules.vtkIOImage import vtkDICOMImageReader
             except Exception as exc:
                 raise RuntimeError(
-                    "VTK DICOM reader is not available in this build.") from exc
+                    "VTK DICOM reader is not available in this build."
+                ) from exc
             reader = vtkDICOMImageReader()
             reader.SetDirectoryName(str(directory))
             reader.Update()
@@ -3309,7 +3330,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         point_id = self._picker.GetPointId()
 
         # Check if we successfully picked a point on a valid point cloud actor
-        if point_id > -1 and hasattr(self, "_point_actors") and actor in self._point_actors:
+        if (
+            point_id > -1
+            and hasattr(self, "_point_actors")
+            and actor in self._point_actors
+        ):
             # To prevent flickering, only update the tooltip if the picked point is new
             if point_id != self._last_picked_id or actor != self._last_picked_actor:
                 self._last_picked_id = point_id
@@ -3318,14 +3343,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 polydata = actor.GetMapper().GetInput()
 
                 # Attempt to retrieve the region label data array
-                label_array_abstract = polydata.GetPointData().GetAbstractArray("RegionLabel")
+                label_array_abstract = polydata.GetPointData().GetAbstractArray(
+                    "RegionLabel"
+                )
 
                 tooltip_parts = []
                 # If the array exists, get the string value for the picked point
                 if label_array_abstract:
                     # The array must be safely cast to a vtkStringArray to get its value
-                    label_array = vtkStringArray.SafeDownCast(
-                        label_array_abstract)
+                    label_array = vtkStringArray.SafeDownCast(label_array_abstract)
                     if label_array:
                         region_name = label_array.GetValue(point_id)
                         tooltip_parts.append(f"<b>Region:</b> {region_name}")
@@ -3334,7 +3360,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 coords = self._picker.GetPickPosition()
                 tooltip_parts.append(f"<b>Point ID:</b> {point_id}")
                 tooltip_parts.append(
-                    f"<b>Coords:</b> ({coords[0]:.2f}, {coords[1]:.2f}, {coords[2]:.2f})")
+                    f"<b>Coords:</b> ({coords[0]:.2f}, {coords[1]:.2f}, {coords[2]:.2f})"
+                )
 
                 tooltip_text = "<br>".join(tooltip_parts)
 
@@ -3352,19 +3379,16 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _vtk_on_key_press(self, obj, evt):
         key = self.interactor.GetKeySym().lower()
-        if key == 'r':
+        if key == "r":
             self._reset_camera()
-        elif key == 'w':
-            self.wl_mode_checkbox.setChecked(
-                not self.wl_mode_checkbox.isChecked())
-        elif key == 'c':
+        elif key == "w":
+            self.wl_mode_checkbox.setChecked(not self.wl_mode_checkbox.isChecked())
+        elif key == "c":
             self.shade_checkbox.setChecked(not self.shade_checkbox.isChecked())
-        elif key == '+':
-            self.opacity_slider.setValue(
-                min(100, self.opacity_slider.value() + 5))
-        elif key == '-':
-            self.opacity_slider.setValue(
-                max(1, self.opacity_slider.value() - 5))
+        elif key == "+":
+            self.opacity_slider.setValue(min(100, self.opacity_slider.value() + 5))
+        elif key == "-":
+            self.opacity_slider.setValue(max(1, self.opacity_slider.value() - 5))
 
     def _update_interpolation(self):
         if not getattr(self, "_has_volume", False):
@@ -3392,8 +3416,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _save_snapshot(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Snapshot", str(
-            self._path.with_suffix('.png')), "PNG Files (*.png)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Snapshot",
+            str(self._path.with_suffix(".png")),
+            "PNG Files (*.png)",
+        )
         if not path:
             return
         w2i = vtkWindowToImageFilter()
@@ -3403,8 +3431,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         writer.SetFileName(path)
         writer.SetInputConnection(w2i.GetOutputPort())
         writer.Write()
-        QtWidgets.QToolTip.showText(
-            QtGui.QCursor.pos(), f"Saved: {Path(path).name}")
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"Saved: {Path(path).name}")
 
     def _on_window_changed(self):
         # Ensure min <= max
@@ -3444,14 +3471,16 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def _update_transfer_functions(self):
         if self._slice_mode:
             return
-        if not getattr(self, "_has_volume", False) or self._opacity_tf is None or self._color_tf is None:
+        if (
+            not getattr(self, "_has_volume", False)
+            or self._opacity_tf is None
+            or self._color_tf is None
+        ):
             return
         is_label = getattr(self, "_label_volume_active", False)
         # Build opacity and color TF based on window and colormap
-        vmin = float(self.min_spin.value()) if hasattr(
-            self, 'min_spin') else self._vmin
-        vmax = float(self.max_spin.value()) if hasattr(
-            self, 'max_spin') else self._vmax
+        vmin = float(self.min_spin.value()) if hasattr(self, "min_spin") else self._vmin
+        vmax = float(self.max_spin.value()) if hasattr(self, "max_spin") else self._vmax
         if vmax <= vmin:
             vmax = vmin + 1e-3
 
@@ -3474,8 +3503,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._opacity_tf.AddPoint(vmax, 0.9)
 
         # Color map
-        cmap = self.cmap_combo.currentText() if hasattr(
-            self, 'cmap_combo') else "Grayscale"
+        cmap = (
+            self.cmap_combo.currentText()
+            if hasattr(self, "cmap_combo")
+            else "Grayscale"
+        )
         self._color_tf.RemoveAllPoints()
         if cmap == "Allen Atlas" and is_label:
             self._apply_allen_color_tf(label_values, vmin, vmax)
@@ -3488,15 +3520,16 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         elif cmap == "Hot":
             # Rough "hot" ramp: black -> red -> yellow -> white
             self._color_tf.AddRGBPoint(vmin, 0.0, 0.0, 0.0)
-            self._color_tf.AddRGBPoint(
-                vmin + (vmax - vmin) * 0.33, 1.0, 0.0, 0.0)
-            self._color_tf.AddRGBPoint(
-                vmin + (vmax - vmin) * 0.66, 1.0, 1.0, 0.0)
+            self._color_tf.AddRGBPoint(vmin + (vmax - vmin) * 0.33, 1.0, 0.0, 0.0)
+            self._color_tf.AddRGBPoint(vmin + (vmax - vmin) * 0.66, 1.0, 1.0, 0.0)
             self._color_tf.AddRGBPoint(vmax, 1.0, 1.0, 1.0)
 
     def _update_blend_mode(self):
-        mode = self.blend_combo.currentText() if hasattr(
-            self, 'blend_combo') else "Composite"
+        mode = (
+            self.blend_combo.currentText()
+            if hasattr(self, "blend_combo")
+            else "Composite"
+        )
         try:
             if mode == "MIP-Max":
                 self.mapper.SetBlendModeToMaximumIntensity()
@@ -3522,8 +3555,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if any(ax <= 0 for ax in self._volume_shape[:3]):
             return pts
 
-        spacing = np.array(
-            self._vtk_img.GetSpacing(), dtype=float) if getattr(self, "_vtk_img", None) else np.array([1.0, 1.0, 1.0])
+        spacing = (
+            np.array(self._vtk_img.GetSpacing(), dtype=float)
+            if getattr(self, "_vtk_img", None)
+            else np.array([1.0, 1.0, 1.0])
+        )
         if spacing.shape != (3,):
             spacing = np.array([1.0, 1.0, 1.0])
         expected_counts = np.array(
@@ -3539,10 +3575,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             span = perm_pts.max(axis=0) - perm_pts.min(axis=0)
             if not np.all(np.isfinite(span)):
                 continue
-            err_pix = np.mean(
-                np.abs(span - expected_counts) / (expected_counts + 1e-6))
-            err_world = np.mean(
-                np.abs(span - expected_world) / (expected_world + 1e-6))
+            err_pix = np.mean(np.abs(span - expected_counts) / (expected_counts + 1e-6))
+            err_world = np.mean(np.abs(span - expected_world) / (expected_world + 1e-6))
             err = min(err_pix, err_world)
             if best_err is None or err < best_err:
                 best_err = err
@@ -3552,8 +3586,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return pts
 
         aligned = np.array(pts[:, best_perm], copy=True)
-        origin = np.array(self._vtk_img.GetOrigin(), dtype=float) if getattr(
-            self, "_vtk_img", None) else np.zeros(3, dtype=float)
+        origin = (
+            np.array(self._vtk_img.GetOrigin(), dtype=float)
+            if getattr(self, "_vtk_img", None)
+            else np.zeros(3, dtype=float)
+        )
         mins = aligned.min(axis=0)
         offset = None
         if np.all(np.abs(mins - origin) <= spacing * 1.5):
@@ -3574,8 +3611,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     # -------------------- Point cloud support --------------------
     def _load_point_cloud_folder(self):
-        start_dir = str(self._path.parent) if getattr(
-            self, "_path", None) and self._path.exists() else "."
+        start_dir = (
+            str(self._path.parent)
+            if getattr(self, "_path", None) and self._path.exists()
+            else "."
+        )
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self,
             "Open Point Cloud Folder",
@@ -3595,8 +3635,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._load_point_cloud_files([str(path) for path in csv_files])
 
     def _load_point_cloud_dialog(self):
-        start_dir = str(self._path.parent) if getattr(
-            self, "_path", None) and self._path.exists() else "."
+        start_dir = (
+            str(self._path.parent)
+            if getattr(self, "_path", None) and self._path.exists()
+            else "."
+        )
         files = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             "Open Point Cloud Files",
@@ -3629,11 +3672,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             try:
                 if lowered.endswith(".ply"):
                     self._add_point_cloud_ply(path)
-                    bounds = self._point_actors[-1].GetBounds(
-                    ) if self._point_actors else None
+                    bounds = (
+                        self._point_actors[-1].GetBounds()
+                        if self._point_actors
+                        else None
+                    )
                 elif lowered.endswith(".csv") or lowered.endswith(".xyz"):
-                    bounds = self._add_point_cloud_csv_or_xyz(
-                        path, focus=False)
+                    bounds = self._add_point_cloud_csv_or_xyz(path, focus=False)
                 else:
                     QtWidgets.QMessageBox.warning(
                         self,
@@ -3643,8 +3688,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     continue
                 combined_bounds = self._union_bounds(combined_bounds, bounds)
             except Exception as exc:
-                logger.warning(
-                    "Failed to load point cloud '%s': %s", path, exc)
+                logger.warning("Failed to load point cloud '%s': %s", path, exc)
         if combined_bounds:
             self._focus_on_bounds(combined_bounds)
         self._update_point_sizes()
@@ -3681,16 +3725,23 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     return
             except Exception as exc:
                 logger.warning(
-                    "Falling back to point renderer for gaussian PLY '%s': %s", path, exc)
+                    "Falling back to point renderer for gaussian PLY '%s': %s",
+                    path,
+                    exc,
+                )
         # Ask user for scale factors (default to 1, or volume spacing if available)
         scale = self._prompt_point_scale()
         if scale is not None:
             poly = self._scale_poly_points(poly, scale)
         try:
-            pts_np = np.array([poly.GetPoint(
-                i) for i in range(poly.GetNumberOfPoints())], dtype=np.float32)
+            pts_np = np.array(
+                [poly.GetPoint(i) for i in range(poly.GetNumberOfPoints())],
+                dtype=np.float32,
+            )
             aligned_pts = self._maybe_align_point_cloud_to_volume(pts_np)
-            if aligned_pts.shape == pts_np.shape and not np.allclose(aligned_pts, pts_np):
+            if aligned_pts.shape == pts_np.shape and not np.allclose(
+                aligned_pts, pts_np
+            ):
                 vpts = vtkPoints()
                 vpts.SetNumberOfPoints(len(aligned_pts))
                 for i, (x, y, z) in enumerate(aligned_pts):
@@ -3747,8 +3798,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if scalars is not None and scalars.GetNumberOfComponents() >= 3:
             if scalars.GetNumberOfTuples() == poly.GetNumberOfPoints():
                 return
-        colors = self._decode_gaussian_ply_colors(
-            path, poly.GetNumberOfPoints())
+        colors = self._decode_gaussian_ply_colors(path, poly.GetNumberOfPoints())
         if colors is None:
             return
         vtk_colors = numpy_to_vtk(colors, deep=True)
@@ -3780,7 +3830,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         data = self._read_gaussian_ply_fields(path, required)
         return data is not None and all(k in data for k in required)
 
-    def _create_gaussian_splat_actor(self, path: str, poly: vtkPolyData) -> Optional[vtkActor]:
+    def _create_gaussian_splat_actor(
+        self, path: str, poly: vtkPolyData
+    ) -> Optional[vtkActor]:
         """Render gaussian-splat PLYs with oriented, scaled glyphs instead of flat points."""
         required = (
             "x",
@@ -3816,8 +3868,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return None
         # Apply optional auto-alignment to an active volume
         try:
-            aligned = self._maybe_align_point_cloud_to_volume(
-                np.array(pts, copy=True))
+            aligned = self._maybe_align_point_cloud_to_volume(np.array(pts, copy=True))
             if aligned.shape == pts.shape:
                 pts = aligned
         except Exception:
@@ -3863,25 +3914,31 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             colors = self._decode_gaussian_ply_colors(path, len(pts))
 
         vpoints = vtkPoints()
-        vpoints.SetData(numpy_to_vtk(
-            np.ascontiguousarray(pts, dtype=np.float32), deep=True))
+        vpoints.SetData(
+            numpy_to_vtk(np.ascontiguousarray(pts, dtype=np.float32), deep=True)
+        )
 
         out = vtkPolyData()
         out.SetPoints(vpoints)
         # Add dummy verts so bounds work even without glyphs
         out = self._ensure_vertices(out)
 
-        scale_arr = numpy_to_vtk(np.ascontiguousarray(
-            scales, dtype=np.float32), deep=True)
+        scale_arr = numpy_to_vtk(
+            np.ascontiguousarray(scales, dtype=np.float32), deep=True
+        )
         scale_arr.SetNumberOfComponents(3)
         scale_arr.SetName("Scale")
         out.GetPointData().AddArray(scale_arr)
 
-        orient_arr = numpy_to_vtk(np.ascontiguousarray(
-            orientation_deg if orientation_deg is not None else np.zeros(
-                (len(pts), 3), dtype=np.float32),
-            dtype=np.float32,
-        ), deep=True)
+        orient_arr = numpy_to_vtk(
+            np.ascontiguousarray(
+                orientation_deg
+                if orientation_deg is not None
+                else np.zeros((len(pts), 3), dtype=np.float32),
+                dtype=np.float32,
+            ),
+            deep=True,
+        )
         orient_arr.SetNumberOfComponents(3)
         orient_arr.SetName("Orientation")
         out.GetPointData().AddArray(orient_arr)
@@ -3896,7 +3953,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             vtk_colors.SetName("Colors")
             try:
                 vtk_colors.SetNumberOfComponents(
-                    colors.shape[1] if colors.ndim > 1 else 3)
+                    colors.shape[1] if colors.ndim > 1 else 3
+                )
             except Exception:
                 pass
             out.GetPointData().SetScalars(vtk_colors)
@@ -3962,8 +4020,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception:
             pass
         actor.SetVisibility(self._point_cloud_visible)
-        self._register_gaussian_actor(
-            actor, scales, colors, sphere, out, mapper)
+        self._register_gaussian_actor(actor, scales, colors, sphere, out, mapper)
         return actor
 
     def _register_gaussian_actor(
@@ -3980,7 +4037,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._gaussian_actor_data[id(actor)] = {
             "actor": actor,
             "base_scales": np.array(base_scales, copy=True),
-            "base_colors": None if base_colors is None else np.array(base_colors, copy=True),
+            "base_colors": None
+            if base_colors is None
+            else np.array(base_colors, copy=True),
             "sphere": sphere,
             "poly": poly,
             "mapper": mapper,
@@ -3995,7 +4054,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             has_gaussian = bool(getattr(self, "_gaussian_actor_data", {}))
             self.gaussian_group.setEnabled(has_gaussian)
 
-    def _apply_gaussian_scale_to_actor(self, actor: vtkActor, multiplier: Optional[float] = None) -> None:
+    def _apply_gaussian_scale_to_actor(
+        self, actor: vtkActor, multiplier: Optional[float] = None
+    ) -> None:
         if not getattr(self, "_gaussian_actor_data", None):
             return
         data = self._gaussian_actor_data.get(id(actor))
@@ -4028,7 +4089,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _apply_gaussian_opacity_to_actor(self, actor: vtkActor, multiplier: Optional[float] = None) -> None:
+    def _apply_gaussian_opacity_to_actor(
+        self, actor: vtkActor, multiplier: Optional[float] = None
+    ) -> None:
         if not getattr(self, "_gaussian_actor_data", None):
             return
         data = self._gaussian_actor_data.get(id(actor))
@@ -4045,14 +4108,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             alpha = np.clip(colors[:, 3].astype(np.float32) * m, 0.0, 255.0)
             colors[:, 3] = alpha.astype(np.uint8)
         else:
-            colors = np.clip(colors.astype(np.float32) * m,
-                             0.0, 255.0).astype(np.uint8)
+            colors = np.clip(colors.astype(np.float32) * m, 0.0, 255.0).astype(np.uint8)
         poly: vtkPolyData = data.get("poly")  # type: ignore[assignment]
         vtk_colors = numpy_to_vtk(np.ascontiguousarray(colors), deep=True)
         vtk_colors.SetName("Colors")
         try:
-            vtk_colors.SetNumberOfComponents(
-                colors.shape[1] if colors.ndim > 1 else 3)
+            vtk_colors.SetNumberOfComponents(colors.shape[1] if colors.ndim > 1 else 3)
         except Exception:
             pass
         pd = poly.GetPointData()
@@ -4069,7 +4130,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _apply_gaussian_resolution_to_actor(self, actor: vtkActor, res: Optional[int] = None) -> None:
+    def _apply_gaussian_resolution_to_actor(
+        self, actor: vtkActor, res: Optional[int] = None
+    ) -> None:
         if not getattr(self, "_gaussian_actor_data", None):
             return
         data = self._gaussian_actor_data.get(id(actor))
@@ -4096,8 +4159,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             actor = data.get("actor")
             if actor is None:
                 continue
-            self._apply_gaussian_scale_to_actor(
-                actor, self._gaussian_scale_mult)
+            self._apply_gaussian_scale_to_actor(actor, self._gaussian_scale_mult)
         self.vtk_widget.GetRenderWindow().Render()
 
     def _apply_gaussian_opacity_to_all(self) -> None:
@@ -4105,8 +4167,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             actor = data.get("actor")
             if actor is None:
                 continue
-            self._apply_gaussian_opacity_to_actor(
-                actor, self._gaussian_opacity_mult)
+            self._apply_gaussian_opacity_to_actor(actor, self._gaussian_opacity_mult)
         self.vtk_widget.GetRenderWindow().Render()
 
     def _apply_gaussian_resolution_to_all(self) -> None:
@@ -4114,11 +4175,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             actor = data.get("actor")
             if actor is None:
                 continue
-            self._apply_gaussian_resolution_to_actor(
-                actor, self._gaussian_glyph_res)
+            self._apply_gaussian_resolution_to_actor(actor, self._gaussian_glyph_res)
         self.vtk_widget.GetRenderWindow().Render()
 
-    def _decode_gaussian_ply_colors(self, path: str, expected_points: int) -> Optional[np.ndarray]:
+    def _decode_gaussian_ply_colors(
+        self, path: str, expected_points: int
+    ) -> Optional[np.ndarray]:
         """Decode gaussian-splat style color fields from a PLY file if RGB is missing."""
         cache = getattr(self, "_ply_color_cache", None)
         if cache:
@@ -4127,7 +4189,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 return cached
         required_fields = ("f_dc_0", "f_dc_1", "f_dc_2", "opacity")
         field_data = self._read_gaussian_ply_fields(path, required_fields)
-        if not field_data or not all(name in field_data for name in ("f_dc_0", "f_dc_1", "f_dc_2")):
+        if not field_data or not all(
+            name in field_data for name in ("f_dc_0", "f_dc_1", "f_dc_2")
+        ):
             return None
         try:
             coeffs = np.stack(
@@ -4154,15 +4218,16 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if "opacity" in field_data:
             alpha = self._gaussian_opacity_to_alpha(field_data["opacity"])
             if alpha is not None and alpha.shape[0] == rgb.shape[0]:
-                alpha_bytes = np.clip(alpha * 255.0, 0.0,
-                                      255.0).astype(np.uint8)
+                alpha_bytes = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
                 rgba = np.concatenate([rgb, alpha_bytes[:, None]], axis=1)
         colors = np.ascontiguousarray(rgba.astype(np.uint8))
         if cache is not None and len(colors) == expected_points:
             cache[path] = colors
         return colors
 
-    def _colors_from_gaussian_field_data(self, field_data: Mapping[str, np.ndarray], expected_points: int) -> Optional[np.ndarray]:
+    def _colors_from_gaussian_field_data(
+        self, field_data: Mapping[str, np.ndarray], expected_points: int
+    ) -> Optional[np.ndarray]:
         if not field_data:
             return None
         try:
@@ -4183,8 +4248,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if "opacity" in field_data:
             alpha = self._gaussian_opacity_to_alpha(field_data["opacity"])
             if alpha is not None and alpha.shape[0] == rgb.shape[0]:
-                alpha_bytes = np.clip(alpha * 255.0, 0.0,
-                                      255.0).astype(np.uint8)
+                alpha_bytes = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
                 rgba = np.concatenate([rgb, alpha_bytes[:, None]], axis=1)
         return np.ascontiguousarray(rgba.astype(np.uint8))
 
@@ -4216,7 +4280,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         alpha = 1.0 / (1.0 + np.exp(-clipped))
         return np.clip(alpha, 0.0, 1.0)
 
-    def _read_gaussian_ply_fields(self, path: str, required: Sequence[str]) -> Optional[dict[str, np.ndarray]]:
+    def _read_gaussian_ply_fields(
+        self, path: str, required: Sequence[str]
+    ) -> Optional[dict[str, np.ndarray]]:
         """Return requested vertex fields with a simple on-disk cache to avoid reparsing."""
         if not required:
             return {}
@@ -4228,7 +4294,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         entry = cache.get(path)
         if entry:
             cached_sig = entry.get("sig")
-            if cached_sig is not None and signature is not None and cached_sig != signature:
+            if (
+                cached_sig is not None
+                and signature is not None
+                and cached_sig != signature
+            ):
                 cache.pop(path, None)
                 entry = None
         if entry is None:
@@ -4322,7 +4392,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                             return None
                     elif decoded == "end_header":
                         break
-                if format_spec not in ("binary_little_endian", "binary_little_endian1.0", "binary_little_endian1"):
+                if format_spec not in (
+                    "binary_little_endian",
+                    "binary_little_endian1.0",
+                    "binary_little_endian1",
+                ):
                     logger.warning(
                         "PLY '%s' uses unsupported format '%s' for gaussian colors.",
                         path,
@@ -4375,12 +4449,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         yaw = np.degrees(np.arctan2(t3, t4))
         angles = np.stack([roll, pitch, yaw], axis=1).astype(np.float32)
         if not np.all(np.isfinite(angles)):
-            angles = np.nan_to_num(
-                angles, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+            angles = np.nan_to_num(angles, nan=0.0, posinf=0.0, neginf=0.0).astype(
+                np.float32
+            )
         return angles
 
     def _add_point_cloud_csv_or_xyz(self, path: str, focus: bool = True):
         import numpy as np
+
         pts = None
         colors = None
         intensity = None
@@ -4393,7 +4469,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if data.shape[1] >= 6:
                 col = data[:, 3:6]
                 if col.max() <= 1.0:
-                    col = (col * 255.0)
+                    col = col * 255.0
                 colors = np.clip(col, 0, 255).astype(np.uint8)
             # Ask for scale factors
             scale = self._prompt_point_scale()
@@ -4401,6 +4477,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 pts *= np.array(scale, dtype=np.float32)
         else:  # CSV with mapping dialog
             from .csv_mapping_dialog import CSVPointCloudMappingDialog
+
             df = pd.read_csv(path)
             parsed = self._auto_parse_point_cloud_csv(df)
             if parsed is not None:
@@ -4414,25 +4491,31 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 def get(name):
                     col = m.get(name)
                     return None if col is None else df[col]
+
                 try:
-                    pts = np.stack([get('x').to_numpy(), get('y').to_numpy(), get(
-                        'z').to_numpy()], axis=1).astype(np.float32)
+                    pts = np.stack(
+                        [get("x").to_numpy(), get("y").to_numpy(), get("z").to_numpy()],
+                        axis=1,
+                    ).astype(np.float32)
                 except Exception:
                     raise RuntimeError("Invalid X/Y/Z column mapping")
                 # Apply scale from dialog
                 try:
-                    sx, sy, sz = float(m.get('sx', 1.0)), float(
-                        m.get('sy', 1.0)), float(m.get('sz', 1.0))
+                    sx, sy, sz = (
+                        float(m.get("sx", 1.0)),
+                        float(m.get("sy", 1.0)),
+                        float(m.get("sz", 1.0)),
+                    )
                     pts *= np.array([sx, sy, sz], dtype=np.float32)
                 except Exception:
                     pass
 
                 # Build colors
-                color_by = m.get('color_by')
-                mode = m.get('color_mode')
+                color_by = m.get("color_by")
+                mode = m.get("color_mode")
                 if color_by:
-                    series = get('color_by')
-                    if mode == 'categorical' or (series.dtype == object):
+                    series = get("color_by")
+                    if mode == "categorical" or (series.dtype == object):
                         vals = series.astype(str).to_numpy()
                         colors = self._colors_for_categories(vals)
                     else:
@@ -4446,7 +4529,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                         norm = np.clip(norm, 0.0, 1.0)
                         colors = self._gradient_blue_red(norm)
                 else:
-                    inten_series = get('intensity')
+                    inten_series = get("intensity")
                     if inten_series is not None:
                         inten = inten_series.to_numpy(dtype=float)
                         imax = np.nanmax(inten) if inten.size else 1.0
@@ -4459,14 +4542,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
                 # Parse region labels if specified
                 region_labels = None
-                label_col = m.get('label_by')
+                label_col = m.get("label_by")
                 if label_col:
                     try:
                         # Ensure labels are strings for the tooltip
-                        region_labels = get('label_by').astype(str).to_numpy()
+                        region_labels = get("label_by").astype(str).to_numpy()
                     except Exception as e:
                         print(
-                            f"Warning: Could not parse region labels from column '{label_col}': {e}")
+                            f"Warning: Could not parse region labels from column '{label_col}': {e}"
+                        )
 
         if pts is None or len(pts) == 0:
             raise RuntimeError("No points parsed")
@@ -4514,14 +4598,14 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 subset_pts = safe_pts[indices]
                 subset_colors = colors[indices] if colors is not None else None
                 actor = self._create_point_actor(
-                    subset_pts, subset_colors, region_label=label)
+                    subset_pts, subset_colors, region_label=label
+                )
                 if actor is None:
                     continue
                 self.renderer.AddActor(actor)
                 self._point_actors.append(actor)
                 self._region_actors[label] = actor
-                region_default_colors[label] = self._infer_region_color(
-                    subset_colors)
+                region_default_colors[label] = self._infer_region_color(subset_colors)
         else:
             actor = self._create_point_actor(safe_pts, colors)
             if actor is not None:
@@ -4534,7 +4618,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     self._point_cloud_visible = True
 
         self._populate_region_selection(
-            list(self._region_actors.keys()), region_default_colors)
+            list(self._region_actors.keys()), region_default_colors
+        )
         self._update_point_controls_visibility()
         if focus:
             self._focus_on_bounds(bounds)
@@ -4610,16 +4695,27 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         norm = np.clip(norm, 0.0, 1.0)
         c0 = np.array([30, 70, 200], dtype=np.float32)
         c1 = np.array([200, 50, 50], dtype=np.float32)
-        rgb = (c0[None, :] * (1.0 - norm[:, None]) +
-               c1[None, :] * norm[:, None])
+        rgb = c0[None, :] * (1.0 - norm[:, None]) + c1[None, :] * norm[:, None]
         return np.clip(rgb, 0, 255).astype(np.uint8)
 
     def _colors_for_categories(self, vals: np.ndarray) -> np.ndarray:
-        palette = np.array([
-            [230, 25, 75], [60, 180, 75], [255, 225, 25], [0, 130, 200],
-            [245, 130, 48], [145, 30, 180], [70, 240, 240], [240, 50, 230],
-            [210, 245, 60], [250, 190, 190], [0, 128, 128], [230, 190, 255]
-        ], dtype=np.uint8)
+        palette = np.array(
+            [
+                [230, 25, 75],
+                [60, 180, 75],
+                [255, 225, 25],
+                [0, 130, 200],
+                [245, 130, 48],
+                [145, 30, 180],
+                [70, 240, 240],
+                [240, 50, 230],
+                [210, 245, 60],
+                [250, 190, 190],
+                [0, 128, 128],
+                [230, 190, 255],
+            ],
+            dtype=np.uint8,
+        )
         uniq = {}
         out = np.zeros((len(vals), 3), dtype=np.uint8)
         next_idx = 0
@@ -4663,7 +4759,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         w.setLayout(row)
         form.addRow("Scale X/Y/Z", w)
         buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg)
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dlg,
+        )
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addWidget(buttons)
@@ -4708,7 +4806,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             )
         return coords, colors, intensity.astype(np.float32), None
 
-    def _scale_poly_points(self, poly: vtkPolyData, scale: Tuple[float, float, float]) -> vtkPolyData:
+    def _scale_poly_points(
+        self, poly: vtkPolyData, scale: Tuple[float, float, float]
+    ) -> vtkPolyData:
         """Return a copy of poly with points multiplied by scale per axis."""
         pts = poly.GetPoints()
         if pts is None:
@@ -4728,7 +4828,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             pass
         return out
 
-    def _focus_on_bounds(self, bounds: Optional[Tuple[float, float, float, float, float, float]]) -> None:
+    def _focus_on_bounds(
+        self, bounds: Optional[Tuple[float, float, float, float, float, float]]
+    ) -> None:
         """Adjust the camera to frame the provided bounds."""
         if not bounds:
             return
@@ -4747,8 +4849,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         distance = radius * 2.5
         camera = self.renderer.GetActiveCamera()
         camera.SetFocalPoint(*center)
-        camera.SetPosition(center[0], center[1] -
-                           distance, center[2] + distance)
+        camera.SetPosition(center[0], center[1] - distance, center[2] + distance)
         camera.SetViewUp(0.0, 0.0, 1.0)
         self.renderer.ResetCameraClippingRange()
 
@@ -4791,8 +4892,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._light_intensity = float(value)
         self._ensure_scene_light()
         try:
-            self._scene_light.SetIntensity(
-                self._light_intensity)  # type: ignore[union-attr]
+            self._scene_light.SetIntensity(self._light_intensity)  # type: ignore[union-attr]
         except Exception:
             pass
         self.vtk_widget.GetRenderWindow().Render()
@@ -4843,7 +4943,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.show_point_cloud_checkbox.blockSignals(True)
             self.show_point_cloud_checkbox.setChecked(False)
             self.show_point_cloud_checkbox.blockSignals(False)
-        if not getattr(self, "_has_volume", False) and not getattr(self, "_mesh_actors", []):
+        if not getattr(self, "_has_volume", False) and not getattr(
+            self, "_mesh_actors", []
+        ):
             self._source_path = None
         self._refresh_status_summary()
 
@@ -4879,7 +4981,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         paren_match = re.search(r"\(([^)]+)\)\s*$", text)
         if paren_match:
             acronym = paren_match.group(1).strip()
-            name = text[:paren_match.start()].strip()
+            name = text[: paren_match.start()].strip()
             if not name:
                 name = text
             return acronym, name
@@ -4899,8 +5001,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return False
         if seg.isupper() and len(seg) <= 8:
             return True
-        upper_digit_count = sum(
-            1 for c in seg if c.isupper() or c.isdigit())
+        upper_digit_count = sum(1 for c in seg if c.isupper() or c.isdigit())
         if upper_digit_count >= 2 and len(seg) <= 6:
             return True
         return False
@@ -4956,7 +5057,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             item.setSizeHint(widget.sizeHint())
 
             entry = _RegionSelectionEntry(
-                item=item, checkbox=checkbox, color_button=color_button,
+                item=item,
+                checkbox=checkbox,
+                color_button=color_button,
                 display_text=display_text,
             )
             self._region_entries[label] = entry
@@ -5006,8 +5109,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _pick_region_color(self, label: str) -> None:
         current = self._region_colors.get(label, QtGui.QColor(255, 255, 255))
-        color = QtWidgets.QColorDialog.getColor(
-            current, self, "Pick region color")
+        color = QtWidgets.QColorDialog.getColor(current, self, "Pick region color")
         if not color.isValid():
             return
         self._region_colors[label] = color
@@ -5042,9 +5144,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             mapper.ScalarVisibilityOff()
         self.vtk_widget.GetRenderWindow().Render()
 
-    def _infer_region_color(
-        self, colors: Optional[np.ndarray]
-    ) -> QtGui.QColor:
+    def _infer_region_color(self, colors: Optional[np.ndarray]) -> QtGui.QColor:
         fallback = QtGui.QColor(255, 255, 255)
         if colors is None or len(colors) == 0:
             return fallback
@@ -5054,8 +5154,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if arr.size == 0:
             return fallback
         if arr.shape[1] < 3:
-            arr = np.pad(
-                arr, ((0, 0), (0, 3 - arr.shape[1])), constant_values=0.0)
+            arr = np.pad(arr, ((0, 0), (0, 3 - arr.shape[1])), constant_values=0.0)
         arr = arr[:, :3]
         if arr.size == 0:
             return fallback
@@ -5068,8 +5167,11 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         return QtGui.QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
     def _load_mesh_dialog(self):
-        start_dir = str(self._path.parent) if getattr(
-            self, "_path", None) and self._path.exists() else "."
+        start_dir = (
+            str(self._path.parent)
+            if getattr(self, "_path", None) and self._path.exists()
+            else "."
+        )
         filters = "Meshes (*.stl *.STL *.obj *.OBJ *.ply *.PLY);;All files (*.*)"
         res = QtWidgets.QFileDialog.getOpenFileName(
             self,
@@ -5086,8 +5188,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.renderer.ResetCamera()
             self.vtk_widget.GetRenderWindow().Render()
         except Exception as e:
-            QtWidgets.QMessageBox.warning(
-                self, "Mesh Viewer", f"Failed to load: {e}")
+            QtWidgets.QMessageBox.warning(self, "Mesh Viewer", f"Failed to load: {e}")
 
     def _load_diffuse_texture(self):
         self._load_texture_dialog("diffuse")
@@ -5112,8 +5213,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             raise RuntimeError(f"Unsupported mesh format: {ext}")
         actor = self._add_mesh_actor(poly, path_obj.name)
         if textures.get("diffuse"):
-            self._apply_texture_from_path(
-                actor, "diffuse", textures["diffuse"])
+            self._apply_texture_from_path(actor, "diffuse", textures["diffuse"])
         if textures.get("normal"):
             self._apply_texture_from_path(actor, "normal", textures["normal"])
 
@@ -5158,7 +5258,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                             continue
                         if key == "map_kd" and "diffuse" not in textures:
                             textures["diffuse"] = str(file_path)
-                        elif key in {"map_bump", "bump", "norm"} and "normal" not in textures:
+                        elif (
+                            key in {"map_bump", "bump", "norm"}
+                            and "normal" not in textures
+                        ):
                             textures["normal"] = str(file_path)
                         if "diffuse" in textures and "normal" in textures:
                             return textures
@@ -5194,7 +5297,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._active_mesh_actor = None
         self._update_mesh_controls_visibility()
         self.vtk_widget.GetRenderWindow().Render()
-        if not getattr(self, "_has_volume", False) and not getattr(self, "_point_actors", []):
+        if not getattr(self, "_has_volume", False) and not getattr(
+            self, "_point_actors", []
+        ):
             self._source_path = None
         self._update_mesh_status_label()
 
@@ -5356,13 +5461,17 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if base_actor is not None:
             try:
                 base_actor.SetVisibility(
-                    visible and getattr(self, "_has_volume", False) and not self._slice_mode)
+                    visible
+                    and getattr(self, "_has_volume", False)
+                    and not self._slice_mode
+                )
             except Exception:
                 pass
         for entry in getattr(self, "_overlay_volumes", []):
             try:
                 entry.actor.SetVisibility(
-                    visible and entry.visible and not self._slice_mode)
+                    visible and entry.visible and not self._slice_mode
+                )
             except Exception:
                 pass
         try:
@@ -5392,10 +5501,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return
         for idx, entry in enumerate(self._overlay_volumes):
             item = QtWidgets.QListWidgetItem(entry.label)
-            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable |
-                          QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            item.setFlags(
+                item.flags()
+                | QtCore.Qt.ItemIsUserCheckable
+                | QtCore.Qt.ItemIsSelectable
+                | QtCore.Qt.ItemIsEnabled
+            )
             item.setCheckState(
-                QtCore.Qt.Checked if entry.visible else QtCore.Qt.Unchecked)
+                QtCore.Qt.Checked if entry.visible else QtCore.Qt.Unchecked
+            )
             item.setData(QtCore.Qt.UserRole, idx)
             self.overlay_list.addItem(item)
         if hasattr(self, "overlay_group"):
@@ -5532,7 +5646,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             ) from exc
         return self._read_polydata_from_reader(vtkPLYReader, path)
 
-    def _read_polydata_from_reader(self, reader_cls: Callable[[], object], path: str) -> vtkPolyData:
+    def _read_polydata_from_reader(
+        self, reader_cls: Callable[[], object], path: str
+    ) -> vtkPolyData:
         reader = reader_cls()
         reader.SetFileName(path)
         reader.Update()
@@ -5599,12 +5715,12 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         return (
             ext in VOLUME_FILE_EXTS
             or ext in DICOM_EXTS
-            or name.endswith('.ome.tif')
-            or name.endswith('.nii')
-            or name.endswith('.nii.gz')
-            or name.endswith('.zarr')
-            or name.endswith('zarr.json')
-            or name.endswith('.zgroup')
+            or name.endswith(".ome.tif")
+            or name.endswith(".nii")
+            or name.endswith(".nii.gz")
+            or name.endswith(".zarr")
+            or name.endswith("zarr.json")
+            or name.endswith(".zgroup")
         )
 
     def _is_point_cloud_candidate(self, path: Path) -> bool:

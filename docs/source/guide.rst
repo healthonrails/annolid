@@ -51,15 +51,15 @@ This video shows self-supervised optical flow estimation in Annolid.
 Extract frames
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-In this video, we'll show you how to extract frames frome a video.
+In this video, we'll show you how to extract frames from a video.
 
 First, start the `Annolid` GUI. Click Extract frames in the toolbar list.
-When the dialog opens, click the and select the video file. 
-You can choose the start and end seconds if you want extract frames in the given time interval. 
+When the dialog opens, click the and select the video file.
+You can choose the start and end seconds if you want extract frames in the given time interval.
 Use random algorithm and select the desired number of frames.
-The waiting time depends on the video length, and the algorimth that were selected. It might take a while to finish. 
-When the process is done, it will load all the images into canvas for labeling. 
-You can check the extract frames by clicking the files in the file list. 
+The waiting time depends on the video length, and the algorimth that were selected. It might take a while to finish.
+When the process is done, it will load all the images into canvas for labeling.
+You can check the extract frames by clicking the files in the file list.
 
 .. raw:: html
 
@@ -68,7 +68,7 @@ You can check the extract frames by clicking the files in the file list.
 |
 |
 
-Label Zones 
+Label Zones
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 In this video, we'll show you how to label zones and non-moving objects in a video frame.

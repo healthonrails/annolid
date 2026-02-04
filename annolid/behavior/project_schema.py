@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 try:  # YAML is optional; fall back to JSON-only when unavailable.
     import yaml  # type: ignore
@@ -85,10 +85,10 @@ class ProjectSchema:
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
+
 def default_schema() -> ProjectSchema:
     """Return a minimal default schema."""
-    default_category = CategoryDefinition(
-        id="default", name="Default", color="#2E7D32")
+    default_category = CategoryDefinition(id="default", name="Default", color="#2E7D32")
     default_subject = SubjectDefinition(id="subject_1", name="Subject 1")
     return ProjectSchema(
         categories=[default_category],
@@ -133,9 +133,11 @@ def _dict_to_schema(payload: Dict[str, object]) -> ProjectSchema:
         subjects=_load_list("subjects", SubjectDefinition),
         behaviors=_load_list("behaviors", BehaviorDefinition),
         pose_schema_path=str(payload.get("pose_schema_path"))
-        if payload.get("pose_schema_path") else None,
+        if payload.get("pose_schema_path")
+        else None,
         pose_schema=dict(payload.get("pose_schema"))
-        if isinstance(payload.get("pose_schema"), dict) else None,
+        if isinstance(payload.get("pose_schema"), dict)
+        else None,
         version=str(payload.get("version", SchemaVersion)),
     )
     return schema
@@ -172,6 +174,7 @@ def save_schema(schema: ProjectSchema, path: Path) -> None:
 # Validation helpers
 # ---------------------------------------------------------------------------
 
+
 def validate_schema(schema: ProjectSchema) -> List[str]:
     """Return warnings for schema inconsistencies (non-fatal)."""
     warnings: List[str] = []
@@ -197,8 +200,7 @@ def validate_schema(schema: ProjectSchema) -> List[str]:
             warnings.append(
                 f"Behavior '{behavior.code}' references missing category '{behavior.category_id}'."
             )
-        missing_mods = [
-            mid for mid in behavior.modifier_ids if mid not in modifier_ids]
+        missing_mods = [mid for mid in behavior.modifier_ids if mid not in modifier_ids]
         if missing_mods:
             warnings.append(
                 f"Behavior '{behavior.code}' references missing modifiers {missing_mods}."

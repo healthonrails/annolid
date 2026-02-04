@@ -30,6 +30,7 @@ def _patch_protobuf_json_format() -> None:
 
     original_to_json = getattr(json_format, "MessageToJson", None)
     if callable(original_to_json):
+
         def _wrapped_message_to_json(message, *args, **kwargs):
             kwargs.pop("including_default_value_fields", None)
             return original_to_json(message, *args, **kwargs)
@@ -39,6 +40,7 @@ def _patch_protobuf_json_format() -> None:
 
     original_to_dict = getattr(json_format, "MessageToDict", None)
     if callable(original_to_dict):
+
         def _wrapped_message_to_dict(message, *args, **kwargs):
             kwargs.pop("including_default_value_fields", None)
             return original_to_dict(message, *args, **kwargs)

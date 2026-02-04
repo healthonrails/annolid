@@ -4,7 +4,6 @@ from annolid.tracker.bot_sort import BoTSORT
 
 
 class TestBuildTracker(unittest.TestCase):
-
     def test_botsort_tracker_type(self):
         tracker = build_BoT_SORT_tracker()
         self.assertTrue(isinstance(tracker, BoTSORT))
@@ -30,5 +29,5 @@ class TestBuildTracker(unittest.TestCase):
         self.assertAlmostEqual(tracker.lambda_, 0.9896143462366406)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

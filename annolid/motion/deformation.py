@@ -10,7 +10,7 @@ from torch.distributions.normal import Normal
 class ConvBlock(nn.Module):
     """
     Reference:
-    From here. 
+    From here.
     https://github.com/voxelmorph/voxelmorph/blob/master/voxelmorph/torch/networks.py
     Specific convolutional block followed by leakyrelu for unet.
     """
@@ -18,7 +18,7 @@ class ConvBlock(nn.Module):
     def __init__(self, ndims, in_channels, out_channels, stride=1):
         super().__init__()
 
-        Conv = getattr(nn, 'Conv%dd' % ndims)
+        Conv = getattr(nn, "Conv%dd" % ndims)
         self.main = Conv(in_channels, out_channels, 3, stride, 1)
         self.activation = nn.LeakyReLU(0.2)
 
@@ -31,7 +31,7 @@ class ConvBlock(nn.Module):
 class Unet(nn.Module):
     """
     Reference:
-    Modified from here. 
+    Modified from here.
     https://github.com/voxelmorph/voxelmorph/blob/master/voxelmorph/torch/networks.py
 
     A unet architecture. Layer features can be specified directly as a list of encoder and decoder
@@ -55,25 +55,27 @@ class Unet(nn.Module):
 
         # ensure correct dimensionality
         ndims = len(inshape)
-        assert ndims in [
-            1, 2, 3], 'ndims should be one of 1, 2, or 3. found: %d' % ndims
+        assert ndims in [1, 2, 3], (
+            "ndims should be one of 1, 2, or 3. found: %d" % ndims
+        )
 
         # build feature list automatically
         if isinstance(nb_features, int):
             if nb_levels is None:
                 raise ValueError(
-                    'must provide unet nb_levels if nb_features is an integer')
-            feats = np.round(nb_features * feat_mult **
-                             np.arange(nb_levels)).astype(int)
+                    "must provide unet nb_levels if nb_features is an integer"
+                )
+            feats = np.round(nb_features * feat_mult ** np.arange(nb_levels)).astype(
+                int
+            )
             self.enc_nf = feats[:-1]
             self.dec_nf = np.flip(feats)
         elif nb_levels is not None:
-            raise ValueError(
-                'cannot use nb_levels if nb_features is not an integer')
+            raise ValueError("cannot use nb_levels if nb_features is not an integer")
         else:
             self.enc_nf, self.dec_nf = nb_features
 
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+        self.upsample = nn.Upsample(scale_factor=2, mode="nearest")
 
         # configure encoder (down-sampling path)
         prev_nf = 2
@@ -85,7 +87,7 @@ class Unet(nn.Module):
         # configure decoder (up-sampling path)
         enc_history = list(reversed(self.enc_nf))
         self.uparm = nn.ModuleList()
-        for i, nf in enumerate(self.dec_nf[:len(self.enc_nf)]):
+        for i, nf in enumerate(self.dec_nf[: len(self.enc_nf)]):
             channels = prev_nf + enc_history[i] if i > 0 else prev_nf
             self.uparm.append(ConvBlock(ndims, channels, nf, stride=1))
             prev_nf = nf
@@ -93,12 +95,11 @@ class Unet(nn.Module):
         # configure extra decoder convolutions (no up-sampling)
         prev_nf += 2
         self.extras = nn.ModuleList()
-        for nf in self.dec_nf[len(self.enc_nf):]:
+        for nf in self.dec_nf[len(self.enc_nf) :]:
             self.extras.append(ConvBlock(ndims, prev_nf, nf, stride=1))
             prev_nf = nf
 
     def forward(self, x):
-
         # get encoder activations
         x_enc = [x]
         for layer in self.downarm:
@@ -112,15 +113,15 @@ class Unet(nn.Module):
             _x = x_enc.pop()
             try:
                 x = torch.cat([x, _x], dim=1)
-            except:
+            except RuntimeError:
                 x3d = list(x.shape)[2]
                 _x3d = list(_x.shape)[2]
                 if x3d > _x3d:
-                    pd = (0, 0, x3d-_x3d, 0)
-                    _x = F.pad(_x, pd, mode='constant', value=0)
+                    pd = (0, 0, x3d - _x3d, 0)
+                    _x = F.pad(_x, pd, mode="constant", value=0)
                 elif x3d < _x3d:
-                    pd = (0, 0, _x3d-x3d, 0)
-                    x = F.pad(x, pd, mode='constant', value=0)
+                    pd = (0, 0, _x3d - x3d, 0)
+                    x = F.pad(x, pd, mode="constant", value=0)
                 x = torch.cat([x, _x], dim=1)
         # extra convs at full resolution
         for layer in self.extras:
@@ -132,11 +133,11 @@ class Unet(nn.Module):
 class SpatialTransformer(nn.Module):
     """
     [SpatialTransformer] represesents a spatial transformation block
-    that uses the output from the UNet to preform an grid_sample
+    that uses the output from the UNet to perform a grid_sample
     https://pytorch.org/docs/stable/nn.functional.html#grid-sample
     """
 
-    def __init__(self, size, mode='bilinear'):
+    def __init__(self, size, mode="bilinear"):
         """
         Instiatiate the block
             :param size: size of input to the spatial transformer block
@@ -150,7 +151,7 @@ class SpatialTransformer(nn.Module):
         grid = torch.stack(grids)  # y, x, z
         grid = torch.unsqueeze(grid, 0)  # add batch
         grid = grid.type(torch.FloatTensor)
-        self.register_buffer('grid', grid)
+        self.register_buffer("grid", grid)
 
         self.mode = mode
 
@@ -162,13 +163,13 @@ class SpatialTransformer(nn.Module):
         """
         try:
             new_locs = self.grid + flow
-        except:
-            new_locs = self.grid[:, :, :list(flow.shape)[2], :]
+        except RuntimeError:
+            new_locs = self.grid[:, :, : list(flow.shape)[2], :]
         shape = flow.shape[2:]
 
         # Need to normalize grid values to [-1, 1] for resampler
         for i in range(len(shape)):
-            new_locs[:, i, ...] = 2*(new_locs[:, i, ...]/(shape[i]-1) - 0.5)
+            new_locs[:, i, ...] = 2 * (new_locs[:, i, ...] / (shape[i] - 1) - 0.5)
 
         if len(shape) == 2:
             new_locs = new_locs.permute(0, 2, 3, 1)
@@ -181,8 +182,7 @@ class SpatialTransformer(nn.Module):
 
 
 class FramePredNet(nn.Module):
-    """"" implementation of voxelmorph.
-    """
+    """ "" implementation of voxelmorph."""
 
     def __init__(self, vol_size, enc_nf, dec_nf, full_size=True):
         """
@@ -197,12 +197,12 @@ class FramePredNet(nn.Module):
         self.unet_model = Unet(vol_size, [enc_nf, dec_nf])
 
         # One conv to get the flow field
-        conv_fn = getattr(nn, 'Conv%dd' % dim)
+        conv_fn = getattr(nn, "Conv%dd" % dim)
         self.flow = conv_fn(dec_nf[-1], dim, kernel_size=3, padding=1)
 
         # Make flow weights + bias small. Not sure this is necessary.
-        nd = Normal(0, 1e-5)
-        self.flow.weight = nn.Parameter(nd.sample(self.flow.weight.shape))
+        normal_dist = Normal(0, 1e-5)
+        self.flow.weight = nn.Parameter(normal_dist.sample(self.flow.weight.shape))
         self.flow.bias = nn.Parameter(torch.zeros(self.flow.bias.shape))
 
         self.spatial_transform = SpatialTransformer(vol_size)
@@ -222,18 +222,16 @@ class FramePredNet(nn.Module):
 
 
 def build_model(
-        vol_shape=None,
-        pretrained_model=None,
-        nb_enc_features=None,
-        nb_dec_features=None
+    vol_shape=None, pretrained_model=None, nb_enc_features=None, nb_dec_features=None
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if vol_shape is None:
         # pretrained model with input volume shape
         vol_shape = (672, 1280)
     if pretrained_model is None and vol_shape == (672, 1280):
-        pretrained_model = str(Path(__file__).parent /
-                               'weights' / 'deformation_latest.pt')
+        pretrained_model = str(
+            Path(__file__).parent / "weights" / "deformation_latest.pt"
+        )
     if nb_enc_features is None:
         nb_enc_features = [32, 32, 32, 32]
     if nb_dec_features is None:
@@ -241,8 +239,7 @@ def build_model(
     fpnet = FramePredNet(vol_shape, nb_enc_features, nb_dec_features)
     fpnet.to(device)
     if pretrained_model is not None and os.path.exists(pretrained_model):
-        fpnet.load_state_dict(torch.load(
-            pretrained_model, map_location=device))
+        fpnet.load_state_dict(torch.load(pretrained_model, map_location=device))
         return fpnet
     else:
         return None

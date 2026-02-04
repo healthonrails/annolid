@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from tqdm import tqdm
 import argparse
-from labelme.utils import shape_to_mask
+from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
 from annolid.annotation.timestamps import convert_frame_number_to_time
@@ -41,7 +41,7 @@ def get_frame_number_from_filename(file_name):
     Returns:
     - int: Extracted frame number.
     """
-    return int(file_name.split('_')[-1].replace('.json', ''))
+    return int(file_name.split("_")[-1].replace(".json", ""))
 
 
 def _normalize_fps(value):
@@ -73,17 +73,20 @@ def convert_shape_to_mask(img_shape, points):
     Returns:
     - ndarray: Binary mask.
     """
-    mask = shape_to_mask(img_shape, points, shape_type=None,
-                         line_width=10, point_size=5)
+    mask = shape_to_mask(
+        img_shape, points, shape_type=None, line_width=10, point_size=5
+    )
     return mask
 
 
-def convert_json_to_csv(json_folder,
-                        csv_file=None,
-                        progress_callback=None,
-                        stop_event=None,
-                        tracked_csv_file=None,
-                        fps=None):
+def convert_json_to_csv(
+    json_folder,
+    csv_file=None,
+    progress_callback=None,
+    stop_event=None,
+    tracked_csv_file=None,
+    fps=None,
+):
     """
     Convert JSON files in a folder to annolid CSV format file.
 
@@ -97,11 +100,22 @@ def convert_json_to_csv(json_folder,
     Returns:
     - None
     """
-    csv_header = ["frame_number", "x1", "y1", "x2", "y2", "cx", "cy",
-                  "instance_name", "class_score", "segmentation", "tracking_id"]
+    csv_header = [
+        "frame_number",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "cx",
+        "cy",
+        "instance_name",
+        "class_score",
+        "segmentation",
+        "tracking_id",
+    ]
 
     if csv_file is None:
-        csv_file = json_folder + '_tracking.csv'
+        csv_file = json_folder + "_tracking.csv"
 
     def _normalize_tracking_id(value):
         if value is None:
@@ -124,11 +138,13 @@ def convert_json_to_csv(json_folder,
 
     def _shape_instance_name(shape, *, shape_type: str):
         label = shape.get("label")
-        instance_label = shape.get(
-            "instance_label") or shape.get("instance_name")
+        instance_label = shape.get("instance_label") or shape.get("instance_name")
         label_text = label.strip() if isinstance(label, str) and label.strip() else ""
-        instance_text = instance_label.strip() if isinstance(
-            instance_label, str) and instance_label.strip() else ""
+        instance_text = (
+            instance_label.strip()
+            if isinstance(instance_label, str) and instance_label.strip()
+            else ""
+        )
         if shape_type == "point":
             if instance_text and label_text:
                 return f"{instance_text}:{label_text}"
@@ -160,13 +176,19 @@ def convert_json_to_csv(json_folder,
 
     tracked_writer = None
     tracked_seen = set()
-    tracked_header = ["frame_number", "instance_name",
-                      "cx", "cy", "motion_index", "timestamps"]
+    tracked_header = [
+        "frame_number",
+        "instance_name",
+        "cx",
+        "cy",
+        "motion_index",
+        "timestamps",
+    ]
     fps_value = _normalize_fps(fps)
     video_fps_checked = False
     if tracked_csv_file:
         try:
-            tracked_output = open(tracked_csv_file, 'w', newline='')
+            tracked_output = open(tracked_csv_file, "w", newline="")
             tracked_writer = csv.writer(tracked_output)
             tracked_writer.writerow(tracked_header)
         except OSError:
@@ -179,16 +201,17 @@ def convert_json_to_csv(json_folder,
         video_path = _find_video_for_json_folder(json_folder_path)
 
     try:
-        with open(csv_file, 'w', newline='') as csv_output:
+        with open(csv_file, "w", newline="") as csv_output:
             csv_writer = csv.writer(csv_output)
             csv_writer.writerow(csv_header)
 
             json_files = sorted(
-                f for f in os.listdir(json_folder) if f.endswith('.json')
+                f for f in os.listdir(json_folder) if f.endswith(".json")
             )
 
             store = AnnotationStore.for_frame_path(
-                json_folder_path / f"{json_folder_path.name}_000000000.json")
+                json_folder_path / f"{json_folder_path.name}_000000000.json"
+            )
             if store.store_path.exists():
                 store_files = [
                     f"{json_folder_path.name}_{frame:09d}.json"
@@ -202,7 +225,9 @@ def convert_json_to_csv(json_folder,
             total_files = len(json_files)
             num_processed_files = 0
 
-            for json_file in tqdm(json_files, desc='Converting JSON files', unit='files'):
+            for json_file in tqdm(
+                json_files, desc="Converting JSON files", unit="files"
+            ):
                 if stop_event is not None and stop_event.is_set():
                     return "Stopped"
                 json_path = os.path.join(json_folder, json_file)
@@ -236,29 +261,32 @@ def convert_json_to_csv(json_folder,
                 if tracked_writer is not None:
                     if fps_value is None:
                         fps_value = _normalize_fps(
-                            data.get("fps") or data.get("video_fps") or (
-                                data.get("flags") or {}).get("fps")
+                            data.get("fps")
+                            or data.get("video_fps")
+                            or (data.get("flags") or {}).get("fps")
                         )
                     if fps_value is None and not video_fps_checked:
                         video_fps_checked = True
                         if video_path is not None:
                             try:
                                 from annolid.data.videos import get_video_fps
+
                                 fps_value = _normalize_fps(
-                                    get_video_fps(str(video_path)))
+                                    get_video_fps(str(video_path))
+                                )
                             except Exception:
                                 fps_value = None
                     if fps_value is None:
                         fps_value = 29.97
                     timestamp_value = convert_frame_number_to_time(
-                        frame_number, fps_value)
+                        frame_number, fps_value
+                    )
 
                 for shape in shapes:
                     if not isinstance(shape, dict):
                         continue
-                    shape_type = (shape.get('shape_type') or '').lower()
-                    instance_name = _shape_instance_name(
-                        shape, shape_type=shape_type)
+                    shape_type = (shape.get("shape_type") or "").lower()
+                    instance_name = _shape_instance_name(shape, shape_type=shape_type)
                     points = shape.get("points") or []
                     if shape_type == "rectangle":
                         if len(points) < 2:
@@ -278,79 +306,117 @@ def convert_json_to_csv(json_folder,
                         cx = (x1 + x2) / 2.0
                         cy = (y1 + y2) / 2.0
                         class_score = _shape_score(shape)
-                        tracking_id = _normalize_tracking_id(
-                            shape.get("group_id"))
+                        tracking_id = _normalize_tracking_id(shape.get("group_id"))
                         segmentation = ""
 
                         csv_writer.writerow(
-                            [frame_number, x1, y1, x2, y2, cx, cy,
-                             instance_name, class_score, segmentation, tracking_id]
+                            [
+                                frame_number,
+                                x1,
+                                y1,
+                                x2,
+                                y2,
+                                cx,
+                                cy,
+                                instance_name,
+                                class_score,
+                                segmentation,
+                                tracking_id,
+                            ]
                         )
                         if tracked_writer is not None and instance_name:
                             motion_index = shape.get("motion_index")
                             if motion_index is None:
                                 description = shape.get("description") or ""
                                 match = re.search(
-                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description)
+                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
+                                )
                                 if match:
                                     try:
                                         motion_index = float(match.group(1))
                                     except ValueError:
                                         motion_index = None
                             try:
-                                motion_index = float(
-                                    motion_index) if motion_index is not None else -1
+                                motion_index = (
+                                    float(motion_index)
+                                    if motion_index is not None
+                                    else -1
+                                )
                             except (TypeError, ValueError):
                                 motion_index = -1
                             key = (frame_number, instance_name)
                             if key not in tracked_seen:
                                 tracked_seen.add(key)
                                 tracked_writer.writerow(
-                                    [frame_number, instance_name, cx, cy, motion_index, timestamp_value])
+                                    [
+                                        frame_number,
+                                        instance_name,
+                                        cx,
+                                        cy,
+                                        motion_index,
+                                        timestamp_value,
+                                    ]
+                                )
                         continue
 
-                    if shape_type == 'point':
+                    if shape_type == "point":
                         if not points:
                             continue
                         point = points[0]
-                        if (
-                            not isinstance(point, (list, tuple))
-                            or len(point) < 2
-                        ):
+                        if not isinstance(point, (list, tuple)) or len(point) < 2:
                             continue
                         x = float(point[0])
                         y = float(point[1])
                         class_score = _shape_score(shape)
-                        tracking_id = _normalize_tracking_id(
-                            shape.get("group_id"))
+                        tracking_id = _normalize_tracking_id(shape.get("group_id"))
                         csv_writer.writerow(
-                            [frame_number, x, y, x, y, x, y,
-                                instance_name, class_score,
-                                "", tracking_id]
+                            [
+                                frame_number,
+                                x,
+                                y,
+                                x,
+                                y,
+                                x,
+                                y,
+                                instance_name,
+                                class_score,
+                                "",
+                                tracking_id,
+                            ]
                         )
                         if tracked_writer is not None and instance_name:
                             motion_index = shape.get("motion_index")
                             if motion_index is None:
-                                description = shape.get(
-                                    "description") or ""
+                                description = shape.get("description") or ""
                                 match = re.search(
-                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description)
+                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
+                                )
                                 if match:
                                     try:
-                                        motion_index = float(
-                                            match.group(1))
+                                        motion_index = float(match.group(1))
                                     except ValueError:
                                         motion_index = None
                             try:
-                                motion_index = float(
-                                    motion_index) if motion_index is not None else -1
+                                motion_index = (
+                                    float(motion_index)
+                                    if motion_index is not None
+                                    else -1
+                                )
                             except (TypeError, ValueError):
                                 motion_index = -1
                             key = (frame_number, instance_name)
                             if key not in tracked_seen:
                                 tracked_seen.add(key)
                                 tracked_writer.writerow(
-                                    [frame_number, instance_name, x, y, motion_index, timestamp_value])
+                                    [
+                                        frame_number,
+                                        instance_name,
+                                        x,
+                                        y,
+                                        motion_index,
+                                        timestamp_value,
+                                    ]
+                                )
                         continue
 
                     if len(points) > 2:
@@ -358,27 +424,37 @@ def convert_json_to_csv(json_folder,
                         bboxs = masks_to_bboxes(mask[None, :, :])
                         segmentation = binary_mask_to_coco_rle(mask)
                         class_score = _shape_score(shape)
-                        tracking_id = _normalize_tracking_id(
-                            shape.get("group_id"))
+                        tracking_id = _normalize_tracking_id(shape.get("group_id"))
 
                         if len(bboxs) > 0:
                             cx, cy = polygon_center(points)
                             x1, y1, x2, y2 = bboxs[0]
                             csv_writer.writerow(
-                                [frame_number, x1, y1, x2, y2, cx, cy,
-                                    instance_name, class_score,
-                                    segmentation, tracking_id])
+                                [
+                                    frame_number,
+                                    x1,
+                                    y1,
+                                    x2,
+                                    y2,
+                                    cx,
+                                    cy,
+                                    instance_name,
+                                    class_score,
+                                    segmentation,
+                                    tracking_id,
+                                ]
+                            )
                             if tracked_writer is not None and instance_name:
                                 motion_index = shape.get("motion_index")
                                 if motion_index is None:
-                                    description = shape.get(
-                                        "description") or ""
+                                    description = shape.get("description") or ""
                                     match = re.search(
-                                        r"motion_index\s*[:=]\s*([-0-9.eE]+)", description)
+                                        r"motion_index\s*[:=]\s*([-0-9.eE]+)",
+                                        description,
+                                    )
                                     if match:
                                         try:
-                                            motion_index = float(
-                                                match.group(1))
+                                            motion_index = float(match.group(1))
                                         except ValueError:
                                             motion_index = None
                                 try:
@@ -388,8 +464,11 @@ def convert_json_to_csv(json_folder,
                                     stored_cx = cx
                                     stored_cy = cy
                                 try:
-                                    motion_index = float(
-                                        motion_index) if motion_index is not None else -1
+                                    motion_index = (
+                                        float(motion_index)
+                                        if motion_index is not None
+                                        else -1
+                                    )
                                 except (TypeError, ValueError):
                                     motion_index = -1
                                 key = (frame_number, instance_name)
@@ -397,7 +476,15 @@ def convert_json_to_csv(json_folder,
                                     continue
                                 tracked_seen.add(key)
                                 tracked_writer.writerow(
-                                    [frame_number, instance_name, stored_cx, stored_cy, motion_index, timestamp_value])
+                                    [
+                                        frame_number,
+                                        instance_name,
+                                        stored_cx,
+                                        stored_cy,
+                                        motion_index,
+                                        timestamp_value,
+                                    ]
+                                )
                 num_processed_files += 1
                 progress = int((num_processed_files / total_files) * 100)
                 _report_progress(progress)
@@ -413,6 +500,7 @@ def convert_json_to_csv(json_folder,
             from annolid.postprocessing.video_timestamp_annotator import (
                 annotate_csv,
             )
+
             video_path = _find_video_for_json_folder(Path(json_folder))
             if video_path is not None and video_path.exists():
                 annotate_csv(Path(tracked_csv_file), video_path)
@@ -426,10 +514,10 @@ def main():
     """
     Main function to parse command-line arguments and execute the conversion.
     """
-    parser = argparse.ArgumentParser(
-        description="Convert JSON files to a CSV file.")
-    parser.add_argument("--json_folder", required=True,
-                        help="Path to the folder containing JSON files.")
+    parser = argparse.ArgumentParser(description="Convert JSON files to a CSV file.")
+    parser.add_argument(
+        "--json_folder", required=True, help="Path to the folder containing JSON files."
+    )
     parser.add_argument("--csv_file", required=False, help="Output CSV file.")
 
     args = parser.parse_args()

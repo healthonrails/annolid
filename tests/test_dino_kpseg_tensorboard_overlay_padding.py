@@ -16,4 +16,3 @@ def test_stack_chw_images_with_padding_preserves_content() -> None:
 
     # Padded region uses the pad value.
     assert torch.allclose(out[1, :, :, 9:], torch.full((3, 8, 3), 0.25))
-

@@ -12,7 +12,8 @@ from annolid.segmentation.dino_kpseg.model import (
 
 def test_hybrid_head_forward_shape() -> None:
     head = DinoKPSEGHybridHead(
-        in_dim=64, hidden_dim=128, num_parts=5, num_heads=4, num_layers=2)
+        in_dim=64, hidden_dim=128, num_parts=5, num_heads=4, num_layers=2
+    )
     x = torch.randn(2, 64, 7, 9)
     y = head(x)
     assert y.shape == (2, 5, 7, 9)

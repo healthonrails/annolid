@@ -26,8 +26,8 @@ class _OneEuroFilter:
     def _alpha(self, cutoff: float) -> float:
         cutoff = max(1e-6, float(cutoff))
         tau = 1.0 / (2.0 * math.pi * cutoff)
-        te = 1.0 / self.freq
-        return 1.0 / (1.0 + tau / te)
+        dt = 1.0 / self.freq
+        return 1.0 / (1.0 + tau / dt)
 
     def reset(self) -> None:
         self._x_prev = None
@@ -81,12 +81,10 @@ class KeypointSmoother:
         self.one_euro_beta = float(one_euro_beta)
         self.one_euro_d_cutoff = float(max(1e-6, one_euro_d_cutoff))
         self.kalman_process_noise = float(max(1e-8, kalman_process_noise))
-        self.kalman_measurement_noise = float(
-            max(1e-8, kalman_measurement_noise))
+        self.kalman_measurement_noise = float(max(1e-8, kalman_measurement_noise))
 
         self._ema_state: Dict[str, Tuple[float, float]] = {}
-        self._one_euro_state: Dict[str,
-                                   Tuple[_OneEuroFilter, _OneEuroFilter]] = {}
+        self._one_euro_state: Dict[str, Tuple[_OneEuroFilter, _OneEuroFilter]] = {}
         self._kalman_state: Dict[str, _KalmanState] = {}
 
     def reset(self) -> None:
@@ -143,10 +141,11 @@ class KeypointSmoother:
         state.cov = f @ state.cov @ f.T + q
         return float(state.state[0]), float(state.state[1])
 
-    def _kalman_update(self, state: _KalmanState, coord: Tuple[float, float]) -> Tuple[float, float]:
+    def _kalman_update(
+        self, state: _KalmanState, coord: Tuple[float, float]
+    ) -> Tuple[float, float]:
         z = np.array([float(coord[0]), float(coord[1])], dtype=np.float32)
-        h = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
-                     dtype=np.float32)
+        h = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
         r = self.kalman_measurement_noise * np.eye(2, dtype=np.float32)
         y = z - (h @ state.state)
         s = h @ state.cov @ h.T + r

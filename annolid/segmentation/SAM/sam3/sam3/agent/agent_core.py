@@ -88,8 +88,7 @@ def _prune_messages_for_next_round(
         if part2_start_idx is not None:
             break
 
-    part2 = messages_list[part2_start_idx:] if part2_start_idx is not None else [
-    ]
+    part2 = messages_list[part2_start_idx:] if part2_start_idx is not None else []
 
     # Part 3: decide whether to add warning text to the second message in part1
     previously_used = (
@@ -168,8 +167,7 @@ def agent_inference(
         debug_folder_path = os.path.join(
             debug_save_dir, f"{img_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]}"
         )
-        debug_jsonl_path = os.path.join(
-            debug_folder_path, "debug_history.json")
+        debug_jsonl_path = os.path.join(debug_folder_path, "debug_history.json")
         os.makedirs(debug_folder_path, exist_ok=True)
 
     # The helper functions are now defined outside the agent_inference function
@@ -199,11 +197,9 @@ def agent_inference(
     print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
     print("\n\n")
     generated_text = send_generate_request(messages)
-    print(
-        f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n")
+    print(f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n")
     while generated_text is not None:
-        save_debug_messages(
-            messages, debug, debug_folder_path, debug_jsonl_path)
+        save_debug_messages(messages, debug, debug_folder_path, debug_jsonl_path)
         assert "<tool>" in generated_text, (
             f"Generated text does not contain <tool> tag: {generated_text}"
         )
@@ -217,8 +213,7 @@ def agent_inference(
         try:
             tool_call = json.loads(tool_call_json_str)
         except json.JSONDecodeError:
-            raise ValueError(
-                f"Invalid JSON in tool call: {tool_call_json_str}")
+            raise ValueError(f"Invalid JSON in tool call: {tool_call_json_str}")
 
         if PATH_TO_LATEST_OUTPUT_JSON == "":
             # The first tool call must be segment_phrase or report_no_mask
@@ -291,17 +286,16 @@ def agent_inference(
                             ],
                         }
                     )
-                print("\n\n>>> sam3_output_text_message:\n",
-                      sam3_output_text_message)
+                print("\n\n>>> sam3_output_text_message:\n", sam3_output_text_message)
 
         elif tool_call["name"] == "examine_each_mask":
             print("🔍 Calling examine_each_mask tool...")
             assert LATEST_SAM3_TEXT_PROMPT != ""
 
             # Make sure that the last message is a image
-            assert (
-                messages[-1]["content"][1]["type"] == "image"
-            ), "Second content element should be an image"
+            assert messages[-1]["content"][1]["type"] == "image", (
+                "Second content element should be an image"
+            )
             messages.pop()  # Remove the last user message
             # Add simplified replacement message
             simplified_message = {
@@ -321,17 +315,14 @@ def agent_inference(
 
             # MLLM check the mask one by one
             for i in range(num_masks):
-                print(f"🔍 Checking mask {i+1}/{num_masks}...")
-                image_w_mask_i, image_w_zoomed_in_mask_i = visualize(
-                    current_outputs, i)
+                print(f"🔍 Checking mask {i + 1}/{num_masks}...")
+                image_w_mask_i, image_w_zoomed_in_mask_i = visualize(current_outputs, i)
 
                 image_w_zoomed_in_mask_i_path = os.path.join(
-                    sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace(
-                        "/", "_")
+                    sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace("/", "_")
                 ).replace(".png", f"_zoom_in_mask_{i + 1}.png")
                 image_w_mask_i_path = os.path.join(
-                    sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace(
-                        "/", "_")
+                    sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace("/", "_")
                 ).replace(".png", f"_selected_mask_{i + 1}.png")
                 image_w_zoomed_in_mask_i.save(image_w_zoomed_in_mask_i_path)
                 image_w_mask_i.save(image_w_mask_i_path)
@@ -341,7 +332,7 @@ def agent_inference(
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": f"The raw input image: "},
+                            {"type": "text", "text": "The raw input image: "},
                             {"type": "image", "image": img_path},
                             {
                                 "type": "text",
@@ -349,12 +340,12 @@ def agent_inference(
                             },
                             {
                                 "type": "text",
-                                "text": f"Image with the predicted segmentation mask rendered on it: ",
+                                "text": "Image with the predicted segmentation mask rendered on it: ",
                             },
                             {"type": "image", "image": image_w_mask_i_path},
                             {
                                 "type": "text",
-                                "text": f"Image with the zoomed-in mask: ",
+                                "text": "Image with the zoomed-in mask: ",
                             },
                             {"type": "image", "image": image_w_zoomed_in_mask_i_path},
                         ],
@@ -369,21 +360,19 @@ def agent_inference(
                     raise ValueError(
                         "Generated text is None, which is unexpected. Please check the Qwen server and the input parameters."
                     )
-                print(
-                    f"Generated text for mask {i+1}: {checking_generated_text}")
+                print(f"Generated text for mask {i + 1}: {checking_generated_text}")
                 verdict = (
                     checking_generated_text.split("<verdict>")[-1]
                     .split("</verdict>")[0]
                     .strip()
                 )
                 if "Accept" in verdict:
-                    assert not "Reject" in verdict
-                    print(f"Mask {i+1} accepted, keeping it in the outputs.")
+                    assert "Reject" not in verdict
+                    print(f"Mask {i + 1} accepted, keeping it in the outputs.")
                     masks_to_keep.append(i)
                 elif "Reject" in verdict:
-                    assert not "Accept" in verdict
-                    print(
-                        f"Mask {i+1} rejected, removing it from the outputs.")
+                    assert "Accept" not in verdict
+                    print(f"Mask {i + 1} rejected, removing it from the outputs.")
                 else:
                     raise ValueError(
                         f"Unexpected verdict in generated text: {checking_generated_text}. Expected 'Accept' or 'Reject'."
@@ -405,7 +394,7 @@ def agent_inference(
                 sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png"
             ).replace(
                 ".png",
-                f"_selected_masks_{'-'.join(map(str, [i+1 for i in masks_to_keep]))}.png".replace(
+                f"_selected_masks_{'-'.join(map(str, [i + 1 for i in masks_to_keep]))}.png".replace(
                     "/", "_"
                 ),
             )
@@ -457,22 +446,18 @@ def agent_inference(
                 PATH_TO_LATEST_OUTPUT_JSON = base_path.replace(
                     ".json", f"masks_{'_'.join(map(str, masks_to_keep))}.json"
                 )
-            json.dump(updated_outputs, open(
-                PATH_TO_LATEST_OUTPUT_JSON, "w"), indent=4)
+            json.dump(updated_outputs, open(PATH_TO_LATEST_OUTPUT_JSON, "w"), indent=4)
 
         elif tool_call["name"] == "select_masks_and_return":
             print("🔍 Calling select_masks_and_return tool...")
             current_outputs = json.load(open(PATH_TO_LATEST_OUTPUT_JSON, "r"))
 
-            assert list(tool_call["parameters"].keys()) == [
-                "final_answer_masks"]
+            assert list(tool_call["parameters"].keys()) == ["final_answer_masks"]
             masks_to_keep = tool_call["parameters"]["final_answer_masks"]
 
             # Keep only valid mask indices, remove duplicates, and preserve deterministic ascending order
-            available_masks = set(
-                range(1, len(current_outputs["pred_masks"]) + 1))
-            masks_to_keep = sorted(
-                {i for i in masks_to_keep if i in available_masks})
+            available_masks = set(range(1, len(current_outputs["pred_masks"]) + 1))
+            masks_to_keep = sorted({i for i in masks_to_keep if i in available_masks})
             # Change this to a update message telling the model to try again along with information about errors made.
 
             final_outputs = {
@@ -536,8 +521,7 @@ def agent_inference(
                         and "text" in content
                     ):
                         content["text"] = (
-                            content["text"].split(
-                                "</tool>", 1)[0] + "</tool>\n\n"
+                            content["text"].split("</tool>", 1)[0] + "</tool>\n\n"
                         )
         # Prune the messages history before the next MLLM generation round according to the 3-part rules.
         # This keeps history compact and ensures the model sees only the allowed parts.

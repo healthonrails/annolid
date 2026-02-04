@@ -77,9 +77,7 @@ class DepthSettingsDialog(QtWidgets.QDialog):
         self.grayscale_chk.setChecked(cfg.get("grayscale", False))
         self.save_video_chk.setChecked(cfg.get("save_depth_video", False))
         self.save_frames_chk.setChecked(cfg.get("save_depth_frames", False))
-        self.save_point_cloud_chk.setChecked(
-            cfg.get("save_point_clouds", False)
-        )
+        self.save_point_cloud_chk.setChecked(cfg.get("save_point_clouds", False))
         self.include_region_chk.setChecked(cfg.get("include_region_labels", False))
         self.streaming_chk.setChecked(cfg.get("streaming", True))
 

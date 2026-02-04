@@ -56,7 +56,9 @@ def _write_minimal_yolo_pose_example(root: Path) -> Path:
     return img_path
 
 
-def test_dino_kpseg_dataset_instance_mode_auto_selects_per_instance(tmp_path: Path) -> None:
+def test_dino_kpseg_dataset_instance_mode_auto_selects_per_instance(
+    tmp_path: Path,
+) -> None:
     img_path = _write_minimal_yolo_pose_example(tmp_path)
     extractor = _StubExtractor(patch_size=16)
 
@@ -73,7 +75,9 @@ def test_dino_kpseg_dataset_instance_mode_auto_selects_per_instance(tmp_path: Pa
     assert len(ds) == 2
 
 
-def test_dino_kpseg_dataset_per_instance_cache_avoids_collisions(tmp_path: Path) -> None:
+def test_dino_kpseg_dataset_per_instance_cache_avoids_collisions(
+    tmp_path: Path,
+) -> None:
     img_path = _write_minimal_yolo_pose_example(tmp_path)
     cache_dir = tmp_path / "cache"
     extractor = _StubExtractor(patch_size=16)

@@ -59,11 +59,12 @@ class ActionProcess:
             )
             # Wait a moment for the serial port to initialize
             time.sleep(2)
-            logger.info(
-                f"Successfully connected to hardware on {self.serial_port}")
+            logger.info(f"Successfully connected to hardware on {self.serial_port}")
         except serial.SerialException as e:
-            logger.critical(f"FATAL: Could not connect to hardware on '{self.serial_port}'. "
-                            f"Please check the port and permissions. Error: {e}")
+            logger.critical(
+                f"FATAL: Could not connect to hardware on '{self.serial_port}'. "
+                f"Please check the port and permissions. Error: {e}"
+            )
             # Setting this to None will prevent the run loop from starting.
             self.hardware_device = None
 
@@ -73,7 +74,8 @@ class ActionProcess:
 
         if not self.hardware_device:
             logger.error(
-                "Cannot start run loop because hardware is not connected. Shutting down.")
+                "Cannot start run loop because hardware is not connected. Shutting down."
+            )
             self._cleanup()
             return
 
@@ -90,8 +92,7 @@ class ActionProcess:
                 if handler:
                     handler(command_msg)
                 else:
-                    logger.warning(
-                        f"Received unknown command: '{action_name}'")
+                    logger.warning(f"Received unknown command: '{action_name}'")
 
             except json.JSONDecodeError:
                 logger.warning("Received invalid (non-JSON) message.")
@@ -100,7 +101,8 @@ class ActionProcess:
                 self.running = False
             except Exception as e:
                 logger.error(
-                    f"An error occurred in the action loop: {e}", exc_info=True)
+                    f"An error occurred in the action loop: {e}", exc_info=True
+                )
 
         self._cleanup()
 
@@ -115,9 +117,10 @@ class ActionProcess:
         """
         # Example: The Bpod protocol is set up so that receiving the byte 'A' (ASCII 65)
         # triggers the state transition that opens the reward valve.
-        reward_byte = b'A'
+        reward_byte = b"A"
         logger.info(
-            f"Sending command byte '{reward_byte.decode()}' to hardware for action: {command['action']}")
+            f"Sending command byte '{reward_byte.decode()}' to hardware for action: {command['action']}"
+        )
         self.hardware_device.write(reward_byte)
 
     def _cleanup(self):
@@ -135,7 +138,9 @@ class ActionProcess:
 def main():
     """Example of how to launch the ActionProcess."""
     logging.basicConfig(
-        level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - [%(name)s] - %(message)s",
+    )
 
     # This address must match the one the DecisionProcess pushes to.
     COMMAND_ADDRESS = "tcp://*:5556"
@@ -156,5 +161,5 @@ def main():
         action_process.running = False
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

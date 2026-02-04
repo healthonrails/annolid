@@ -13,7 +13,6 @@ class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
 
     def __init__(self, tlwh, score, feat=None, feat_history=50):
-
         # wait activate
         self._tlwh = np.asarray(tlwh, dtype=np.float)
         self.kalman_filter = None
@@ -36,8 +35,7 @@ class STrack(BaseTrack):
         if self.smooth_feat is None:
             self.smooth_feat = feat
         else:
-            self.smooth_feat = self.alpha * \
-                self.smooth_feat + (1 - self.alpha) * feat
+            self.smooth_feat = self.alpha * self.smooth_feat + (1 - self.alpha) * feat
         self.features.append(feat)
         self.smooth_feat /= np.linalg.norm(self.smooth_feat)
 
@@ -48,7 +46,8 @@ class STrack(BaseTrack):
             mean_state[7] = 0
 
         self.mean, self.covariance = self.kalman_filter.predict(
-            mean_state, self.covariance)
+            mean_state, self.covariance
+        )
 
     @staticmethod
     def multi_predict(stracks):
@@ -60,7 +59,8 @@ class STrack(BaseTrack):
                     multi_mean[i][6] = 0
                     multi_mean[i][7] = 0
             multi_mean, multi_covariance = STrack.shared_kalman.multi_predict(
-                multi_mean, multi_covariance)
+                multi_mean, multi_covariance
+            )
             for i, (mean, cov) in enumerate(zip(multi_mean, multi_covariance)):
                 stracks[i].mean = mean
                 stracks[i].covariance = cov
@@ -89,7 +89,8 @@ class STrack(BaseTrack):
         self.track_id = self.next_id()
 
         self.mean, self.covariance = self.kalman_filter.initiate(
-            self.tlwh_to_xywh(self._tlwh))
+            self.tlwh_to_xywh(self._tlwh)
+        )
 
         self.tracklet_len = 0
         self.state = TrackState.Tracked
@@ -99,9 +100,9 @@ class STrack(BaseTrack):
         self.start_frame = frame_id
 
     def re_activate(self, new_track, frame_id, new_id=False):
-
         self.mean, self.covariance = self.kalman_filter.update(
-            self.mean, self.covariance, self.tlwh_to_xywh(new_track.tlwh))
+            self.mean, self.covariance, self.tlwh_to_xywh(new_track.tlwh)
+        )
         if new_track.curr_feat is not None:
             self.update_features(new_track.curr_feat)
         self.tracklet_len = 0
@@ -126,7 +127,8 @@ class STrack(BaseTrack):
         new_tlwh = new_track.tlwh
 
         self.mean, self.covariance = self.kalman_filter.update(
-            self.mean, self.covariance, self.tlwh_to_xywh(new_tlwh))
+            self.mean, self.covariance, self.tlwh_to_xywh(new_tlwh)
+        )
 
         if new_track.curr_feat is not None:
             self.update_features(new_track.curr_feat)
@@ -139,7 +141,7 @@ class STrack(BaseTrack):
     @property
     def tlwh(self):
         """Get current position in bounding box format `(top left x, top left y,
-                width, height)`.
+        width, height)`.
         """
         if self.mean is None:
             return self._tlwh.copy()
@@ -200,23 +202,23 @@ class STrack(BaseTrack):
         return ret
 
     def __repr__(self):
-        return 'OT_{}_({}-{})'.format(self.track_id, self.start_frame, self.end_frame)
+        return "OT_{}_({}-{})".format(self.track_id, self.start_frame, self.end_frame)
 
 
 class BoTSORT(object):
-    def __init__(self,
-                 track_high_thresh: float = 0.45,
-                 track_low_thresh: float = 0.1,
-                 new_track_thresh: float = 0.6,
-                 track_buffer: int = 30,
-                 match_thresh: float = 0.3,
-                 proximity_thresh: float = 0.5,
-                 appearance_thresh: float = 0.25,
-                 cmc_method: str = 'sparseOptFlow',
-                 frame_rate=30,
-                 lambda_=0.985
-                 ):
-
+    def __init__(
+        self,
+        track_high_thresh: float = 0.45,
+        track_low_thresh: float = 0.1,
+        new_track_thresh: float = 0.6,
+        track_buffer: int = 30,
+        match_thresh: float = 0.3,
+        proximity_thresh: float = 0.5,
+        appearance_thresh: float = 0.25,
+        cmc_method: str = "sparseOptFlow",
+        frame_rate=30,
+        lambda_=0.985,
+    ):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
         self.removed_stracks = []  # type: list[STrack]
@@ -238,8 +240,7 @@ class BoTSORT(object):
         self.proximity_thresh = proximity_thresh
         self.appearance_thresh = appearance_thresh
 
-        self.gmc = GMC(method=cmc_method, verbose=[
-                       None, False])
+        self.gmc = GMC(method=cmc_method, verbose=[None, False])
 
     def update(self, output_results, img):
         self.frame_id += 1
@@ -268,24 +269,23 @@ class BoTSORT(object):
             remain_inds = scores > self.track_high_thresh
             dets = bboxes[remain_inds]
             scores_keep = scores[remain_inds]
-            classes_keep = classes[remain_inds]
 
         else:
             bboxes = []
             scores = []
-            classes = []
             dets = []
             scores_keep = []
-            classes_keep = []
 
         if len(dets) > 0:
-            '''Detections'''
-            detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
-                          (tlbr, s) in zip(dets, scores_keep)]
+            """Detections"""
+            detections = [
+                STrack(STrack.tlbr_to_tlwh(tlbr), s)
+                for (tlbr, s) in zip(dets, scores_keep)
+            ]
         else:
             detections = []
 
-        ''' Add newly detected tracklets to tracked_stracks'''
+        """ Add newly detected tracklets to tracked_stracks"""
         unconfirmed = []
         tracked_stracks = []  # type: list[STrack]
         for track in self.tracked_stracks:
@@ -294,7 +294,7 @@ class BoTSORT(object):
             else:
                 tracked_stracks.append(track)
 
-        ''' Step 2: First association, with high score detection boxes'''
+        """ Step 2: First association, with high score detection boxes"""
         strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
 
         # Predict the current location with KF
@@ -307,12 +307,12 @@ class BoTSORT(object):
 
         # Associate with high score detection boxes
         ious_dists = matching.iou_distance(strack_pool, detections)
-        ious_dists_mask = (ious_dists > self.proximity_thresh)
 
         dists = ious_dists
 
         matches, u_track, u_detection = matching.linear_assignment(
-            dists, thresh=self.match_thresh)
+            dists, thresh=self.match_thresh
+        )
 
         for itracked, idet in matches:
             track = strack_pool[itracked]
@@ -324,32 +324,36 @@ class BoTSORT(object):
                 track.re_activate(det, self.frame_id, new_id=False)
                 refind_stracks.append(track)
 
-        ''' Step 3: Second association, with low score detection boxes'''
+        """ Step 3: Second association, with low score detection boxes"""
         if len(scores):
             inds_high = scores < self.track_high_thresh
             inds_low = scores > self.track_low_thresh
             inds_second = np.logical_and(inds_low, inds_high)
             dets_second = bboxes[inds_second]
             scores_second = scores[inds_second]
-            classes_second = classes[inds_second]
         else:
             dets_second = []
             scores_second = []
-            classes_second = []
 
         # association the untrack to the low score detections
         if len(dets_second) > 0:
-            '''Detections'''
-            detections_second = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
-                                 (tlbr, s) in zip(dets_second, scores_second)]
+            """Detections"""
+            detections_second = [
+                STrack(STrack.tlbr_to_tlwh(tlbr), s)
+                for (tlbr, s) in zip(dets_second, scores_second)
+            ]
         else:
             detections_second = []
 
-        r_tracked_stracks = [strack_pool[i]
-                             for i in u_track if strack_pool[i].state == TrackState.Tracked]
+        r_tracked_stracks = [
+            strack_pool[i]
+            for i in u_track
+            if strack_pool[i].state == TrackState.Tracked
+        ]
         dists = matching.iou_distance(r_tracked_stracks, detections_second)
         matches, u_track, u_detection_second = matching.linear_assignment(
-            dists, thresh=0.5)
+            dists, thresh=0.5
+        )
         for itracked, idet in matches:
             track = r_tracked_stracks[itracked]
             det = detections_second[idet]
@@ -366,15 +370,15 @@ class BoTSORT(object):
                 track.mark_lost()
                 lost_stracks.append(track)
 
-        '''Deal with unconfirmed tracks, usually tracks with only one beginning frame'''
+        """Deal with unconfirmed tracks, usually tracks with only one beginning frame"""
         detections = [detections[i] for i in u_detection]
         ious_dists = matching.iou_distance(unconfirmed, detections)
-        ious_dists_mask = (ious_dists > self.proximity_thresh)
 
         dists = ious_dists
 
         matches, u_unconfirmed, u_detection = matching.linear_assignment(
-            dists, thresh=0.7)
+            dists, thresh=0.7
+        )
         for itracked, idet in matches:
             unconfirmed[itracked].update(detections[idet], self.frame_id)
             activated_starcks.append(unconfirmed[itracked])
@@ -400,19 +404,17 @@ class BoTSORT(object):
 
         """ Merge """
         self.tracked_stracks = [
-            t for t in self.tracked_stracks if t.state == TrackState.Tracked]
-        self.tracked_stracks = joint_stracks(
-            self.tracked_stracks, activated_starcks)
-        self.tracked_stracks = joint_stracks(
-            self.tracked_stracks, refind_stracks)
-        self.lost_stracks = sub_stracks(
-            self.lost_stracks, self.tracked_stracks)
+            t for t in self.tracked_stracks if t.state == TrackState.Tracked
+        ]
+        self.tracked_stracks = joint_stracks(self.tracked_stracks, activated_starcks)
+        self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
+        self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
-        self.lost_stracks = sub_stracks(
-            self.lost_stracks, self.removed_stracks)
+        self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
         self.removed_stracks.extend(removed_stracks)
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(
-            self.tracked_stracks, self.lost_stracks)
+            self.tracked_stracks, self.lost_stracks
+        )
 
         # output_stracks = [track for track in self.tracked_stracks if track.is_activated]
         output_stracks = [track for track in self.tracked_stracks]
@@ -456,6 +458,5 @@ def remove_duplicate_stracks(stracksa, stracksb):
             dupb.append(q)
         else:
             dupa.append(p)
-    resa = [t for i, t in enumerate(stracksa) if not i in dupa]
-    resb = [t for i, t in enumerate(stracksb) if not i in dupb]
-    return resa,
+    resa = [t for i, t in enumerate(stracksa) if i not in dupa]
+    return (resa,)

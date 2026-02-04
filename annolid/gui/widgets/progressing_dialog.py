@@ -1,5 +1,3 @@
-import sys
-import time
 from qtpy import QtWidgets as qtw
 from qtpy import QtCore as qtc
 
@@ -33,22 +31,18 @@ class ProgressingWindow(qtw.QDialog):
         layout = qtw.QFormLayout()
         form.setLayout(layout)
 
-        self.run_btn = qtw.QPushButton('Clear Contents',
-                                       clicked=self.clear_running
-                                       )
+        self.run_btn = qtw.QPushButton("Clear Contents", clicked=self.clear_running)
         self.run_btn.animateClick()
         self.progress_bar = qtw.QProgressBar(self)
 
         self.results = qtw.QTableWidget(0, 2)
-        self.results.setHorizontalHeaderLabels(['percentage', 'content'])
+        self.results.setHorizontalHeaderLabels(["percentage", "content"])
         self.results.horizontalHeader().setSectionResizeMode(qtw.QHeaderView.Stretch)
-        self.results.setSizePolicy(qtw.QSizePolicy.Expanding,
-                                   qtw.QSizePolicy.Expanding
-                                   )
+        self.results.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
 
         layout.addRow(qtw.QLabel("Job running status"))
         layout.addRow(self.progress_bar)
-        layout.addRow('Clear button', self.run_btn)
+        layout.addRow("Clear button", self.run_btn)
         layout.addRow(self.results)
         layout.addRow(self.buttonbox)
 
@@ -69,15 +63,12 @@ class ProgressingWindow(qtw.QDialog):
         while self.results.rowCount() > 0:
             self.results.removeRow(0)
 
-        self.running_submitted.emit('started')
+        self.running_submitted.emit("started")
 
     def add_job_to_table(self, percent, content):
         row = self.results.rowCount()
         self.results.insertRow(row)
-        self.results.setItem(row, 0,
-                             qtw.QTableWidgetItem(f"{str(percent)}%")
-                             )
-        self.results.setItem(row, 1,
-                             qtw.QTableWidgetItem(str(content)))
+        self.results.setItem(row, 0, qtw.QTableWidgetItem(f"{str(percent)}%"))
+        self.results.setItem(row, 1, qtw.QTableWidgetItem(str(content)))
         if self.results.rowCount() >= 100:
             self.clear_running()

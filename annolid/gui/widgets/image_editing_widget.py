@@ -4,7 +4,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -20,7 +20,7 @@ from annolid.image_editing.presets import list_stable_diffusion_cpp_presets
 from annolid.image_editing.types import ImageEditMode, ImageEditRequest, ImageEditResult
 
 try:
-    from labelme.utils.shape import shape_to_mask  # type: ignore
+    from annolid.utils.annotation_compat import shape_to_mask  # type: ignore
 except Exception:
     shape_to_mask = None  # type: ignore
 
@@ -62,20 +62,16 @@ class ImageEditingWidget(QtWidgets.QWidget):
     def _build_ui(self) -> None:
         self.backend_combo = QtWidgets.QComboBox()
         self.backend_combo.addItem("Diffusers (local)", userData="diffusers")
-        self.backend_combo.addItem(
-            "stable-diffusion.cpp (sd-cli)", userData="sdcpp")
+        self.backend_combo.addItem("stable-diffusion.cpp (sd-cli)", userData="sdcpp")
         self.backend_combo.addItem("Pillow (demo)", userData="pillow")
 
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItem("Text → Image", userData="text_to_image")
-        self.mode_combo.addItem(
-            "Frame → Image (img2img)", userData="image_to_image")
-        self.mode_combo.addItem(
-            "Inpaint Selected Shapes", userData="inpaint")
+        self.mode_combo.addItem("Frame → Image (img2img)", userData="image_to_image")
+        self.mode_combo.addItem("Inpaint Selected Shapes", userData="inpaint")
 
         self.model_id_edit = QtWidgets.QLineEdit("Qwen/Qwen-Image-2512")
-        self.model_id_edit.setPlaceholderText(
-            "Hugging Face model id (Diffusers)")
+        self.model_id_edit.setPlaceholderText("Hugging Face model id (Diffusers)")
 
         self.device_edit = QtWidgets.QLineEdit("auto")
         self.device_edit.setPlaceholderText("auto|cpu|cuda|mps")
@@ -84,8 +80,7 @@ class ImageEditingWidget(QtWidgets.QWidget):
         self.dtype_edit.setPlaceholderText("auto|float32|float16|bfloat16")
 
         self.sd_cli_edit = QtWidgets.QLineEdit()
-        self.sd_cli_edit.setPlaceholderText(
-            "Path to sd-cli (stable-diffusion.cpp)")
+        self.sd_cli_edit.setPlaceholderText("Path to sd-cli (stable-diffusion.cpp)")
 
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItem("(none)", userData=None)
@@ -99,12 +94,10 @@ class ImageEditingWidget(QtWidgets.QWidget):
         self.llm_quant_edit.setPlaceholderText("LLM quant (e.g. Q8_0)")
 
         self.extra_args_edit = QtWidgets.QLineEdit()
-        self.extra_args_edit.setPlaceholderText(
-            "Extra sd-cli args (space-separated)")
+        self.extra_args_edit.setPlaceholderText("Extra sd-cli args (space-separated)")
 
         self.prompt_edit = QtWidgets.QPlainTextEdit()
-        self.prompt_edit.setPlaceholderText(
-            "Prompt / edit instruction (required)")
+        self.prompt_edit.setPlaceholderText("Prompt / edit instruction (required)")
         self.prompt_edit.setMaximumHeight(90)
 
         self.negative_prompt_edit = QtWidgets.QLineEdit()
@@ -176,7 +169,8 @@ class ImageEditingWidget(QtWidgets.QWidget):
         prompt = self.prompt_edit.toPlainText().strip()
         if not prompt:
             QtWidgets.QMessageBox.warning(
-                self, "Missing prompt", "Please enter a prompt.")
+                self, "Missing prompt", "Please enter a prompt."
+            )
             return
 
         backend = self.backend_combo.currentData()
@@ -257,8 +251,7 @@ class ImageEditingDockWidget(QtWidgets.QDockWidget):
             QtWidgets.QMessageBox.information(
                 self.window,
                 self.window.tr("Busy"),
-                self.window.tr(
-                    "An image editing job is already running. Please wait."),
+                self.window.tr("An image editing job is already running. Please wait."),
             )
             return
 
@@ -348,7 +341,7 @@ class ImageEditingDockWidget(QtWidgets.QDockWidget):
             raise ValueError("No image available for mask generation.")
         if shape_to_mask is None:
             raise ValueError(
-                "Mask generation requires labelme to be installed (shape_to_mask missing)."
+                "Mask generation requires Annolid's annotation helpers (shape_to_mask missing)."
             )
         canvas = getattr(self.window, "canvas", None)
         shapes = getattr(canvas, "selectedShapes", []) if canvas is not None else []

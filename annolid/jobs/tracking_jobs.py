@@ -7,6 +7,7 @@ import os
 
 class JobType(Enum):
     """Defines the type of tracking job."""
+
     WHOLE_VIDEO = auto()
     VIDEO_SEGMENTS = auto()
 
@@ -17,21 +18,23 @@ class TrackingSegment:
     Represents a single segment to be tracked within a video.
     This is what the SegmentEditorDialog will primarily produce for a video.
     """
-    video_path: Path             # Path to the video file this segment belongs to
-    fps: float                   # Frames per second of the video
+
+    video_path: Path  # Path to the video file this segment belongs to
+    fps: float  # Frames per second of the video
     # The frame number that contains the user's initial annotation (mask)
     annotated_frame: int
     # The actual video frame number where tracking for this segment should begin
     segment_start_frame: int
     # The actual video frame number where tracking for this segment should end
     segment_end_frame: int
-    unique_id: str = field(default_factory=lambda: os.urandom(
-        4).hex())  # For UI or logging
+    unique_id: str = field(
+        default_factory=lambda: os.urandom(4).hex()
+    )  # For UI or logging
 
     @property
     def annotation_json_path(self) -> Path:
         """Constructs the expected path to the annotation JSON file for this segment."""
-        video_folder = self.video_path.with_suffix('')
+        video_folder = self.video_path.with_suffix("")
         return video_folder / f"{self.video_path.stem}_{self.annotated_frame:09d}.json"
 
     @property
@@ -51,9 +54,11 @@ class TrackingSegment:
         return self.annotation_json_path.exists()
 
     def __str__(self) -> str:
-        return (f"Segment(Video: {self.video_path.name}, AnnFrame: {self.annotated_frame}, "
-                f"TrackFrames: [{self.segment_start_frame}-{self.segment_end_frame}], "
-                f"Duration: {self.duration_sec:.2f}s, ValidAnn: {self.is_annotation_valid()})")
+        return (
+            f"Segment(Video: {self.video_path.name}, AnnFrame: {self.annotated_frame}, "
+            f"TrackFrames: [{self.segment_start_frame}-{self.segment_end_frame}], "
+            f"Duration: {self.duration_sec:.2f}s, ValidAnn: {self.is_annotation_valid()})"
+        )
 
     @staticmethod
     def _format_seconds(total_seconds: float) -> str:
@@ -86,11 +91,11 @@ class TrackingSegment:
             "annotated_frame": self.annotated_frame,
             "segment_start_frame": self.segment_start_frame,
             "segment_end_frame": self.segment_end_frame,
-            "unique_id": self.unique_id
+            "unique_id": self.unique_id,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict) -> 'TrackingSegment':
+    def from_dict(cls, data: Dict) -> "TrackingSegment":
         """Deserializes from a dictionary."""
         return cls(
             video_path=Path(data["video_path"]),
@@ -99,7 +104,7 @@ class TrackingSegment:
             segment_start_frame=data["segment_start_frame"],
             segment_end_frame=data["segment_end_frame"],
             # Handle older data without unique_id
-            unique_id=data.get("unique_id", os.urandom(4).hex())
+            unique_id=data.get("unique_id", os.urandom(4).hex()),
         )
 
 
@@ -110,6 +115,7 @@ class VideoProcessingJob:
     either tracking the whole video or a list of specific segments.
     This is what the TrackingWorker will primarily consume.
     """
+
     video_path: Path
     job_type: JobType
     # Optional: Frame number of the primary annotation if tracking the whole video.
@@ -127,14 +133,16 @@ class VideoProcessingJob:
         """Basic validation after initialization."""
         if self.job_type == JobType.VIDEO_SEGMENTS and not self.segments_data:
             raise ValueError(
-                "JobType.VIDEO_SEGMENTS requires a non-empty list of segments_data.")
+                "JobType.VIDEO_SEGMENTS requires a non-empty list of segments_data."
+            )
         if self.job_type == JobType.WHOLE_VIDEO and self.segments_data:
             # logger.warning("JobType.WHOLE_VIDEO should not have segments_data defined; ignoring.")
             # Or raise ValueError - for now, just a note.
             pass
         if not self.video_path.is_file():
             raise FileNotFoundError(
-                f"Video path does not exist or is not a file: {self.video_path}")
+                f"Video path does not exist or is not a file: {self.video_path}"
+            )
 
     def get_tracking_segments(self) -> List[TrackingSegment]:
         """
@@ -148,16 +156,18 @@ class VideoProcessingJob:
             # This is a good place for lazy FPS loading if needed by the worker.
             # For now, assume it should be set by the job creator (e.g., AnnolidWindow).
             raise ValueError(
-                "FPS must be set on VideoProcessingJob to convert segment data.")
+                "FPS must be set on VideoProcessingJob to convert segment data."
+            )
 
         return [
             TrackingSegment(
                 video_path=self.video_path,
                 fps=self.fps,
-                annotated_frame=s_data['annotated_frame'],
-                segment_start_frame=s_data['segment_start_frame'],
-                segment_end_frame=s_data['segment_end_frame']
-            ) for s_data in self.segments_data
+                annotated_frame=s_data["annotated_frame"],
+                segment_start_frame=s_data["segment_start_frame"],
+                segment_end_frame=s_data["segment_end_frame"],
+            )
+            for s_data in self.segments_data
         ]
 
 
@@ -172,18 +182,18 @@ if __name__ == "__main__":
     segment1_data = {
         "annotated_frame": 10,
         "segment_start_frame": 10,
-        "segment_end_frame": 100
+        "segment_end_frame": 100,
     }
     segment2_data = {
         "annotated_frame": 150,
         "segment_start_frame": 150,
-        "segment_end_frame": 250
+        "segment_end_frame": 250,
     }
     segmented_job = VideoProcessingJob(
         video_path=dummy_video_file,
         job_type=JobType.VIDEO_SEGMENTS,
         segments_data=[segment1_data, segment2_data],
-        fps=30.0  # FPS is crucial for TrackingSegment calculations
+        fps=30.0,  # FPS is crucial for TrackingSegment calculations
     )
     print("Segmented Job:")
     print(segmented_job)
@@ -198,7 +208,7 @@ if __name__ == "__main__":
     whole_video_job = VideoProcessingJob(
         video_path=dummy_video_file,
         job_type=JobType.WHOLE_VIDEO,
-        initial_annotated_frame_for_whole_video=5  # Example: user specified a start
+        initial_annotated_frame_for_whole_video=5,  # Example: user specified a start
     )
     print("\nWhole Video Job:")
     print(whole_video_job)
@@ -206,6 +216,7 @@ if __name__ == "__main__":
     # Clean up dummy file
     if dummy_video_file.exists():
         dummy_video_file.unlink()
-    if (dummy_video_file.with_suffix('')).exists():
+    if (dummy_video_file.with_suffix("")).exists():
         import shutil
-        shutil.rmtree(dummy_video_file.with_suffix(''))
+
+        shutil.rmtree(dummy_video_file.with_suffix(""))

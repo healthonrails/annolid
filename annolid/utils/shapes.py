@@ -1,4 +1,4 @@
-import labelme
+from annolid.utils import annotation_compat as labelme
 import numpy as np
 import uuid
 from shapely.geometry import Polygon, Point
@@ -8,7 +8,7 @@ import warnings
 
 def load_zone_json(zone_file):
     """Load zone information from the JSON file."""
-    with open(zone_file, 'r') as f:
+    with open(zone_file, "r") as f:
         zone_data = json.load(f)
     return zone_data
 
@@ -57,8 +57,7 @@ def shapes_to_label(img_shape, shapes, label_name_to_value):
         ins_id = instances.index(instance) + 1
         cls_id = label_name_to_value[cls_name]
 
-        mask = labelme.utils.shape.shape_to_mask(
-            img_shape[:2], points, shape_type)
+        mask = labelme.utils.shape_to_mask(img_shape[:2], points, shape_type)
         cls[mask] = cls_id
         ins[mask] = ins_id
 
@@ -67,8 +66,7 @@ def shapes_to_label(img_shape, shapes, label_name_to_value):
 
 def masks_to_bboxes(masks):
     if masks.ndim != 3:
-        raise ValueError(
-            "masks.ndim must be 3, but it is {}".format(masks.ndim))
+        raise ValueError("masks.ndim must be 3, but it is {}".format(masks.ndim))
     if masks.dtype != bool:
         raise ValueError(
             "masks.dtype must be bool type, but it is {}".format(masks.dtype)
@@ -97,9 +95,7 @@ def polygon_center(points):
     return centroid_x, centroid_y
 
 
-def extract_flow_points_in_mask(mask, flow,
-                                num_points=8,
-                                min_magnitude=1.0):
+def extract_flow_points_in_mask(mask, flow, num_points=8, min_magnitude=1.0):
     """
     Extract representative motion-aware points using KMeans on (x, y, dx, dy).
     Falls back to top-N motion points if sklearn is not installed.
@@ -137,16 +133,16 @@ def extract_flow_points_in_mask(mask, flow,
 
     try:
         from sklearn.cluster import KMeans
-        kmeans = KMeans(n_clusters=num_points, random_state=42, n_init='auto')
+
+        kmeans = KMeans(n_clusters=num_points, random_state=42, n_init="auto")
         kmeans.fit(features)
         return kmeans.cluster_centers_[:, :2].astype(np.float32)
     except ImportError:
         warnings.warn(
             "scikit-learn is not installed. Falling back to top-N motion-based points.",
-            category=ImportWarning
+            category=ImportWarning,
         )
-        top_idx = np.argsort(np.linalg.norm(
-            flow_vectors, axis=1))[-num_points:]
+        top_idx = np.argsort(np.linalg.norm(flow_vectors, axis=1))[-num_points:]
         return features[top_idx, :2].astype(np.float32)
 
 
@@ -160,7 +156,7 @@ def sample_grid_in_polygon(polygon_points, grid_size=None):
                                    to produce an 8x8 points grid. Default is None.
 
     Returns:
-        numpy.ndarray: An array of (x, y) pairs representing 
+        numpy.ndarray: An array of (x, y) pairs representing
         the grid points sampled inside the polygon's bounding box.
     """
     # Create a Shapely polygon from the given points
@@ -186,8 +182,7 @@ def sample_grid_in_polygon(polygon_points, grid_size=None):
     grid_points = np.array(np.meshgrid(x_points, y_points)).T.reshape(-1, 2)
 
     # Filter points that lie within the polygon
-    valid_points = [point for point in grid_points if Point(
-        point).within(polygon)]
+    valid_points = [point for point in grid_points if Point(point).within(polygon)]
 
     return np.array(valid_points)
 
@@ -206,6 +201,8 @@ def shape_to_dict(shape):
         "shape_type": shape.shape_type,
         "flags": shape.flags,
         "description": shape.description,
-        "mask": None if shape.mask is None else shape.mask,  # Adjust conversion as needed
+        "mask": None
+        if shape.mask is None
+        else shape.mask,  # Adjust conversion as needed
         "visible": shape.visible,
     }

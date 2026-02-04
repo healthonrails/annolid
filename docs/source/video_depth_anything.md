@@ -41,4 +41,3 @@ run_video_depth_anything(
 - `depth.ndjson` (always): one JSON record per processed frame, with a base64-encoded `uint16` PNG depth map and a per-frame min/max `scale`.
 - `<video_stem>_vis.mp4` (optional): saved when `save_depth_video=True`.
 - `depth_frames/` and `point_clouds/` (optional): saved when enabled in settings.
-

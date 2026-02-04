@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib
 import pkgutil
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Type
+from typing import Dict, Iterable, List, Type
 
 
 class ModelPluginBase(ABC):
@@ -32,7 +32,10 @@ class ModelPluginBase(ABC):
 
     @classmethod
     def supports_train(cls) -> bool:
-        return cls.add_train_args is not ModelPluginBase.add_train_args and cls.train is not ModelPluginBase.train
+        return (
+            cls.add_train_args is not ModelPluginBase.add_train_args
+            and cls.train is not ModelPluginBase.train
+        )
 
     @classmethod
     def supports_predict(cls) -> bool:
@@ -58,8 +61,7 @@ _LOAD_FAILURES: Dict[str, str] = {}
 def register_model(plugin_cls: Type[ModelPluginBase]) -> Type[ModelPluginBase]:
     name = str(getattr(plugin_cls, "name", "") or "").strip()
     if not name:
-        raise ValueError(
-            f"Plugin {plugin_cls!r} must define a non-empty .name")
+        raise ValueError(f"Plugin {plugin_cls!r} must define a non-empty .name")
     if name in _REGISTRY and _REGISTRY[name] is not plugin_cls:
         raise ValueError(f"Duplicate model plugin name: {name!r}")
     _REGISTRY[name] = plugin_cls

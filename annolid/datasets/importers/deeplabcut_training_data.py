@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import math
 from dataclasses import dataclass
@@ -8,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
-from labelme import __version__ as LABELME_VERSION
+from annolid.utils.annotation_compat import __version__ as LABELME_VERSION
 from PIL import Image, ImageOps
 
 from annolid.annotation.pose_schema import PoseSchema
@@ -30,13 +29,16 @@ def _detect_dlc_header_levels(csv_path: Path) -> int:
     if len(lines) < 3:
         return 3
     first = lines[0].split(",", 1)[0].strip().lower()
-    second = lines[1].split(",", 1)[0].strip(
-    ).lower() if len(lines) > 1 else ""
+    second = lines[1].split(",", 1)[0].strip().lower() if len(lines) > 1 else ""
     third = lines[2].split(",", 1)[0].strip().lower() if len(lines) > 2 else ""
-    fourth = lines[3].split(",", 1)[0].strip(
-    ).lower() if len(lines) > 3 else ""
+    fourth = lines[3].split(",", 1)[0].strip().lower() if len(lines) > 3 else ""
 
-    if first == "scorer" and second in ("individuals", "animals") and third == "bodyparts" and fourth == "coords":
+    if (
+        first == "scorer"
+        and second in ("individuals", "animals")
+        and third == "bodyparts"
+        and fourth == "coords"
+    ):
         return 4
     if first == "scorer" and second == "bodyparts" and third == "coords":
         return 3
@@ -53,7 +55,11 @@ def _iter_collected_data_csvs(root: Path, *, recursive: bool) -> Iterable[Path]:
 
 def _is_number(value: Any) -> bool:
     try:
-        return value is not None and not (isinstance(value, float) and math.isnan(value)) and float(value) == float(value)
+        return (
+            value is not None
+            and not (isinstance(value, float) and math.isnan(value))
+            and float(value) == float(value)
+        )
     except Exception:
         return False
 
@@ -104,8 +110,7 @@ def build_pose_schema_from_keypoints(
         keypoints=base_keypoints,
         edges=edges,
         symmetry_pairs=symmetry_pairs,
-        instances=[str(i).strip()
-                   for i in (instances or []) if str(i).strip()],
+        instances=[str(i).strip() for i in (instances or []) if str(i).strip()],
         instance_separator=str(instance_separator or "_"),
     )
 
@@ -154,7 +159,11 @@ def _dlc_keypoint_columns(columns: pd.MultiIndex) -> Tuple[List[Tuple[Any, ...]]
         if not bodypart or bodypart.lower().startswith("unnamed:"):
             continue
         scorer = str(col[0]).strip()
-        if not scorer or scorer.lower().startswith("unnamed:") or scorer.lower() == "scorer":
+        if (
+            not scorer
+            or scorer.lower().startswith("unnamed:")
+            or scorer.lower() == "scorer"
+        ):
             continue
         kp_cols.append(tuple(col))
     return kp_cols, (nlevels == 4)
@@ -229,13 +238,17 @@ def import_deeplabcut_training_data(
 ) -> Dict[str, Any]:
     source_dir = Path(cfg.source_dir).expanduser().resolve()
     labeled_root = Path(cfg.labeled_data_root)
-    labeled_root = labeled_root if labeled_root.is_absolute() else (source_dir /
-                                                                    labeled_root)
+    labeled_root = (
+        labeled_root if labeled_root.is_absolute() else (source_dir / labeled_root)
+    )
     if not labeled_root.exists():
         raise FileNotFoundError(f"labeled-data root not found: {labeled_root}")
 
-    collected_csvs = [p for p in _iter_collected_data_csvs(
-        labeled_root, recursive=cfg.recursive) if p.is_file()]
+    collected_csvs = [
+        p
+        for p in _iter_collected_data_csvs(labeled_root, recursive=cfg.recursive)
+        if p.is_file()
+    ]
     written = 0
     skipped_existing = 0
     missing_images = 0
@@ -262,8 +275,7 @@ def import_deeplabcut_training_data(
         # Identify path columns: those whose last level isn't a coordinate.
         coord_set = {"x", "y", "likelihood"}
         path_cols = [
-            col for col in df.columns
-            if str(col[-1]).strip().lower() not in coord_set
+            col for col in df.columns if str(col[-1]).strip().lower() not in coord_set
         ]
 
         for _, row in df.iterrows():
@@ -330,8 +342,7 @@ def import_deeplabcut_training_data(
                 if not multi_animal:
                     payload["instance_label"] = str(cfg.instance_label)
 
-                out_json.write_text(json.dumps(
-                    payload, indent=2), encoding="utf-8")
+                out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
                 written += 1
             except Exception:
                 errors += 1
@@ -349,7 +360,9 @@ def import_deeplabcut_training_data(
             preset=pose_schema_preset,
         )
         schema_out = pose_schema_out or (labeled_root / "pose_schema.json")
-        schema_out = schema_out if schema_out.is_absolute() else (source_dir / schema_out)
+        schema_out = (
+            schema_out if schema_out.is_absolute() else (source_dir / schema_out)
+        )
         schema.save(schema_out)
         schema_path = str(schema_out)
 

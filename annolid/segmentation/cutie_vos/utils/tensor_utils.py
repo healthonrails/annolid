@@ -1,4 +1,4 @@
-from typing import List, Iterable
+from typing import Iterable
 import torch
 import torch.nn.functional as F
 
@@ -25,19 +25,19 @@ def pad_divide_by(in_img: torch.Tensor, d: int) -> (torch.Tensor, Iterable[int])
 def unpad(img: torch.Tensor, pad: Iterable[int]) -> torch.Tensor:
     if len(img.shape) == 4:
         if pad[2] + pad[3] > 0:
-            img = img[:, :, pad[2]:-pad[3], :]
+            img = img[:, :, pad[2] : -pad[3], :]
         if pad[0] + pad[1] > 0:
-            img = img[:, :, :, pad[0]:-pad[1]]
+            img = img[:, :, :, pad[0] : -pad[1]]
     elif len(img.shape) == 3:
         if pad[2] + pad[3] > 0:
-            img = img[:, pad[2]:-pad[3], :]
+            img = img[:, pad[2] : -pad[3], :]
         if pad[0] + pad[1] > 0:
-            img = img[:, :, pad[0]:-pad[1]]
+            img = img[:, :, pad[0] : -pad[1]]
     elif len(img.shape) == 5:
         if pad[2] + pad[3] > 0:
-            img = img[:, :, :, pad[2]:-pad[3], :]
+            img = img[:, :, :, pad[2] : -pad[3], :]
         if pad[0] + pad[1] > 0:
-            img = img[:, :, :, :, pad[0]:-pad[1]]
+            img = img[:, :, :, :, pad[0] : -pad[1]]
     else:
         raise NotImplementedError
     return img
@@ -45,10 +45,11 @@ def unpad(img: torch.Tensor, pad: Iterable[int]) -> torch.Tensor:
 
 # @torch.jit.script
 def aggregate(prob: torch.Tensor, dim: int) -> torch.Tensor:
-    with torch.amp.autocast('cuda',enabled=False):
+    with torch.amp.autocast("cuda", enabled=False):
         prob = prob.float()
-        new_prob = torch.cat([torch.prod(1 - prob, dim=dim, keepdim=True), prob],
-                             dim).clamp(1e-7, 1 - 1e-7)
+        new_prob = torch.cat(
+            [torch.prod(1 - prob, dim=dim, keepdim=True), prob], dim
+        ).clamp(1e-7, 1 - 1e-7)
         logits = torch.log((new_prob / (1 - new_prob)))
 
         return logits
@@ -58,5 +59,7 @@ def aggregate(prob: torch.Tensor, dim: int) -> torch.Tensor:
 def cls_to_one_hot(cls_gt: torch.Tensor, num_objects: int) -> torch.Tensor:
     # cls_gt: B*1*H*W
     B, _, H, W = cls_gt.shape
-    one_hot = torch.zeros(B, num_objects + 1, H, W, device=cls_gt.device).scatter_(1, cls_gt, 1)
+    one_hot = torch.zeros(B, num_objects + 1, H, W, device=cls_gt.device).scatter_(
+        1, cls_gt, 1
+    )
     return one_hot

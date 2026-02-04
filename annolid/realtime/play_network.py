@@ -3,8 +3,9 @@ Client API for receiving images from a Filers server over the network (or locall
 To install::
     pip install tree_config ffpyplayer
 To use, see `RemoteVideoPlayer` and the sample script at the end.
-Soure: https://gist.github.com/matham/1e057fc5556ec946900369a79b11df8f
+Source: https://gist.github.com/matham/1e057fc5556ec946900369a79b11df8f
 """
+
 from itertools import accumulate
 import traceback
 import sys
@@ -15,8 +16,11 @@ from queue import Queue, Empty
 import select
 from threading import Thread
 
-from tree_config.utils import yaml_loads as orig_yaml_loads, \
-    get_yaml, yaml_dumps as orig_yaml_dumps
+from tree_config.utils import (
+    yaml_loads as orig_yaml_loads,
+    get_yaml,
+    yaml_dumps as orig_yaml_dumps,
+)
 from ffpyplayer.pic import Image, SWScale
 
 
@@ -24,9 +28,8 @@ def yaml_loads(value):
     # somehow in older versions, b'yuv420p' got encoded to
     # '!!binary |\neXV2NDIwcA==\n' instead of '!!binary |\n eXV2NDIwcA==\n'.
     # So now it can't be parsed. Hence add the space
-    if len(value) >= 12 and value.startswith('!!binary |\n') and \
-            value[11] != ' ':
-        value = value[:11] + ' ' + value[11:]
+    if len(value) >= 12 and value.startswith("!!binary |\n") and value[11] != " ":
+        value = value[:11] + " " + value[11:]
     return orig_yaml_loads(value, get_yaml_obj=get_yaml)
 
 
@@ -34,19 +37,17 @@ yaml_dumps = partial(orig_yaml_dumps, get_yaml_obj=get_yaml)
 
 
 class EndConnection(Exception):
-    """Raised when the socket connection is closed.
-    """
+    """Raised when the socket connection is closed."""
+
     pass
 
 
-connection_errors = (
-    EndConnection, ConnectionAbortedError, ConnectionResetError)
+connection_errors = (EndConnection, ConnectionAbortedError, ConnectionResetError)
 """Network connection exceptions we handle."""
 
 
 class RemoteData:
-    """Internal class that handles sending and receiving messages from a socket.
-    """
+    """Internal class that handles sending and receiving messages from a socket."""
 
     def send_msg(self, sock, msg, value):
         """Sends message to the server.
@@ -55,19 +56,28 @@ class RemoteData:
         :param value: The message value.
         :return:
         """
-        if msg == 'image':
+        if msg == "image":
             image, metadata = value
             bin_data = image.to_bytearray()
-            data = yaml_dumps((
-                'image', (list(map(len, bin_data)), image.get_pixel_format(),
-                          image.get_size(), image.get_linesizes(), metadata)))
-            data = data.encode('utf8')
+            data = yaml_dumps(
+                (
+                    "image",
+                    (
+                        list(map(len, bin_data)),
+                        image.get_pixel_format(),
+                        image.get_size(),
+                        image.get_linesizes(),
+                        metadata,
+                    ),
+                )
+            )
+            data = data.encode("utf8")
         else:
             data = yaml_dumps((msg, value))
-            data = data.encode('utf8')
+            data = data.encode("utf8")
             bin_data = []
 
-        sock.sendall(struct.pack('>II', len(data), sum(map(len, bin_data))))
+        sock.sendall(struct.pack(">II", len(data), sum(map(len, bin_data))))
         sock.sendall(data)
         for item in bin_data:
             sock.sendall(item)
@@ -82,10 +92,10 @@ class RemoteData:
         """
         n, bin_n = msg_len
         assert n + bin_n == len(msg_buff)
-        data = msg_buff[:n].decode('utf8')
+        data = msg_buff[:n].decode("utf8")
         msg, value = yaml_loads(data)
 
-        if msg == 'image':
+        if msg == "image":
             bin_data = msg_buff[n:]
             planes_sizes, pix_fmt, size, linesize, metadata = value
             starts = list(accumulate([0] + list(planes_sizes[:-1])))
@@ -115,25 +125,25 @@ class RemoteData:
             assert 8 - len(msg_buff)
             data = sock.recv(8 - len(msg_buff))
             if not data:
-                raise EndConnection('Remote client was closed')
+                raise EndConnection("Remote client was closed")
 
             msg_buff += data
             if len(msg_buff) == 8:
-                msg_len = struct.unpack('>II', msg_buff)
-                msg_buff = b''
+                msg_len = struct.unpack(">II", msg_buff)
+                msg_buff = b""
         else:
             total = sum(msg_len)
             assert total - len(msg_buff)
             data = sock.recv(total - len(msg_buff))
             if not data:
-                raise EndConnection('Remote client was closed')
+                raise EndConnection("Remote client was closed")
 
             msg_buff += data
             if len(msg_buff) == total:
                 msg, value = self.decode_data(msg_buff, msg_len)
 
                 msg_len = ()
-                msg_buff = b''
+                msg_buff = b""
         return msg_len, msg_buff, msg, value
 
 
@@ -166,7 +176,7 @@ class RemoteVideoPlayer(RemoteData):
     each image we get from the server.
     """
 
-    server: str = ''
+    server: str = ""
     """The server address that broadcasts the data.
     """
 
@@ -174,7 +184,7 @@ class RemoteVideoPlayer(RemoteData):
     """The server port that broadcasts the data.
     """
 
-    timeout: float = .01
+    timeout: float = 0.01
     """How long to wait before timing out when reading data before checking the
     queue for other requests.
     """
@@ -221,8 +231,7 @@ class RemoteVideoPlayer(RemoteData):
         raise NotImplementedError
 
     def _listener_run(self, _from_main_thread_queue, _to_main_thread_queue):
-        """Client method, that is executed in the internal client thread.
-        """
+        """Client method, that is executed in the internal client thread."""
         timeout = self.timeout
 
         # Create a TCP/IP socket
@@ -231,9 +240,9 @@ class RemoteVideoPlayer(RemoteData):
 
         # Connect the socket to the port where the server is listening
         server_address = (self.server, self.port)
-        print('RemoteVideoPlayer: connecting to {} port {}'.format(*server_address))
+        print("RemoteVideoPlayer: connecting to {} port {}".format(*server_address))
 
-        msg_len, msg_buff = (), b''
+        msg_len, msg_buff = (), b""
 
         try:
             sock.connect(server_address)
@@ -243,14 +252,15 @@ class RemoteVideoPlayer(RemoteData):
                 r, _, _ = select.select([sock], [], [], timeout)
                 if r:
                     msg_len, msg_buff, msg, value = self.read_msg(
-                        sock, msg_len, msg_buff)
+                        sock, msg_len, msg_buff
+                    )
                     if msg is not None:
                         _to_main_thread_queue.put((msg, value))
 
                 try:
                     while True:
                         msg, value = _from_main_thread_queue.get_nowait()
-                        if msg == 'eof':
+                        if msg == "eof":
                             done = True
                             break
                         else:
@@ -258,11 +268,10 @@ class RemoteVideoPlayer(RemoteData):
                 except Empty:
                     pass
         except Exception as e:
-            exc_info = ''.join(traceback.format_exception(*sys.exc_info()))
-            _to_main_thread_queue.put(
-                ('exception_exit', (str(e), exc_info)))
+            exc_info = "".join(traceback.format_exception(*sys.exc_info()))
+            _to_main_thread_queue.put(("exception_exit", (str(e), exc_info)))
         finally:
-            print('RemoteVideoPlayer: closing socket')
+            print("RemoteVideoPlayer: closing socket")
             sock.close()
 
     def _send_message_to_server(self, key, value):
@@ -283,27 +292,30 @@ class RemoteVideoPlayer(RemoteData):
             try:
                 msg, value = self._to_main_thread_queue.get(block=False)
 
-                if msg == 'exception':
+                if msg == "exception":
                     e, exec_info = value
                     self.process_exception(e, exec_info)
-                elif msg == 'exception_exit':
+                elif msg == "exception_exit":
                     e, exec_info = value
                     self.process_exception(e, exec_info, from_thread=True)
-                elif msg == 'started_recording':
+                elif msg == "started_recording":
                     self.process_recording_state(True)
-                elif msg == 'stopped_recording':
+                elif msg == "stopped_recording":
                     self.process_recording_state(False)
-                elif msg == 'stopped_playing':
+                elif msg == "stopped_playing":
                     pass
-                elif msg == 'image':
+                elif msg == "image":
                     plane_buffers, pix_fmt, size, linesize, metadata = value
                     sws = SWScale(*size, pix_fmt, ofmt=pix_fmt)
                     img = Image(
-                        plane_buffers=plane_buffers, pix_fmt=pix_fmt,
-                        size=size, linesize=linesize)
+                        plane_buffers=plane_buffers,
+                        pix_fmt=pix_fmt,
+                        size=size,
+                        linesize=linesize,
+                    )
                     self.process_image(sws.scale(img), metadata)
                 else:
-                    print('Got unknown RemoteVideoPlayer message', msg, value)
+                    print("Got unknown RemoteVideoPlayer message", msg, value)
             except Empty:
                 break
 
@@ -325,7 +337,9 @@ class RemoteVideoPlayer(RemoteData):
         _from_main_thread_queue = self._from_main_thread_queue = Queue()
         _to_main_thread_queue = self._to_main_thread_queue = Queue()
         thread = self._listener_thread = Thread(
-            target=self._listener_run, args=(_from_main_thread_queue, _to_main_thread_queue))
+            target=self._listener_run,
+            args=(_from_main_thread_queue, _to_main_thread_queue),
+        )
         thread.start()
 
     def stop_listener(self, join=True):
@@ -337,11 +351,13 @@ class RemoteVideoPlayer(RemoteData):
         if self._listener_thread is None:
             return
 
-        self._from_main_thread_queue.put(('eof', None))
+        self._from_main_thread_queue.put(("eof", None))
         if join:
             self._listener_thread.join()
 
-        self._listener_thread = self._to_main_thread_queue = self._from_main_thread_queue = None
+        self._listener_thread = self._to_main_thread_queue = (
+            self._from_main_thread_queue
+        ) = None
         self._client_active = False
 
     def play(self):
@@ -349,20 +365,19 @@ class RemoteVideoPlayer(RemoteData):
         know that we want the server to send us images from the camera.
         On the server side, the server will only send us images after play was called.
         """
-        self._send_message_to_server('started_playing', None)
+        self._send_message_to_server("started_playing", None)
 
     def stop(self):
         """Like `play`, but to let the server know that we stopped playing server images and for the server to stop
         sending us images. The server won't send us any further images until `play` is called again.
         """
-        self._send_message_to_server('stopped_playing', None)
+        self._send_message_to_server("stopped_playing", None)
 
 
 if __name__ == "__main__":
     import time
 
     class TestRemoteVideoPlayer(RemoteVideoPlayer):
-
         got_exception = False
 
         def process_exception(self, e, exec_info, from_thread: bool = False):
@@ -385,7 +400,7 @@ if __name__ == "__main__":
     ts = time.perf_counter()
     while time.perf_counter() - ts < 10 and not player.got_exception:
         player.process_in_main_thread()
-        time.sleep(.05)
+        time.sleep(0.05)
 
     player.stop()
     player.stop_listener()

@@ -56,8 +56,7 @@ class PdfReadingLogWidget(QtWidgets.QWidget):
         layout.addLayout(header)
 
         self.list_widget = QtWidgets.QListWidget(self)
-        self.list_widget.setSelectionMode(
-            QtWidgets.QAbstractItemView.SingleSelection)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.list_widget.setUniformItemSizes(True)
         self.list_widget.itemActivated.connect(self._on_item_activated)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
@@ -140,7 +139,10 @@ class PdfReadingLogWidget(QtWidgets.QWidget):
             entry_id = item.text()
         now = time.monotonic()
         # Avoid double-trigger when double-click causes both clicked + activated.
-        if entry_id == self._last_activation_id and (now - self._last_activation_time) < 0.35:
+        if (
+            entry_id == self._last_activation_id
+            and (now - self._last_activation_time) < 0.35
+        ):
             return False
         self._last_activation_id = entry_id
         self._last_activation_time = now

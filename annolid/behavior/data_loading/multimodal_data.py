@@ -13,7 +13,7 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
         List[Dict[str, Any]]: List of data entries as dictionaries.
     """
     try:
-        with open(file_path, 'r') as file:
+        with open(file_path, "r") as file:
             return [json.loads(line) for line in file]
     except FileNotFoundError:
         print(f"Error: File not found at {file_path}")
@@ -36,9 +36,9 @@ def transform_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "messages": [
             {"content": f"<video> {entry['query']}", "role": "user"},
-            {"content": entry["response"], "role": "assistant"}
+            {"content": entry["response"], "role": "assistant"},
         ],
-        "videos": entry["videos"]
+        "videos": entry["videos"],
     }
 
 
@@ -64,7 +64,7 @@ def save_json(data: List[Dict[str, Any]], file_path: str) -> None:
         file_path (str): Path to the output JSON file.
     """
     try:
-        with open(file_path, 'w') as outfile:
+        with open(file_path, "w") as outfile:
             json.dump(data, outfile, indent=2)
         print(f"Transformed dataset saved to {file_path}")
     except IOError:
@@ -91,10 +91,10 @@ def main(input_path: str, output_path: str) -> None:
     save_json(transformed_data, output_path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Paths to input and output files
-    input_path = 'train_video_annotations.jsonl'
-    output_path = 'transformed_train_video_annotations.json'
+    input_path = "train_video_annotations.jsonl"
+    output_path = "transformed_train_video_annotations.json"
 
     # Run the main process
     main(input_path, output_path)

@@ -3,11 +3,8 @@
 Misc functions, including distributed helpers.
 """
 
-import collections
-import re
-
-from dataclasses import dataclass, field as field_ptr_behaviour, fields, is_dataclass
-from typing import Any, get_args, get_origin, List, Mapping, Optional, Sequence, Union
+from dataclasses import dataclass, fields, is_dataclass
+from typing import Any, get_args, get_origin, List, Optional, Union
 
 import torch
 
@@ -27,9 +24,9 @@ def interpolate(
             input, size, scale_factor, mode, align_corners
         )
 
-    assert (
-        input.shape[0] != 0 or input.shape[1] != 0
-    ), "At least one of the two first dimensions must be non zero"
+    assert input.shape[0] != 0 or input.shape[1] != 0, (
+        "At least one of the two first dimensions must be non zero"
+    )
 
     if input.shape[1] == 0:
         # Pytorch doesn't support null dimension on the channel dimension, so we transpose to fake a null batch dim

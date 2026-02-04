@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 from random import Random
 from collections import OrderedDict, defaultdict
-from labelme.utils.image import img_b64_to_arr
+from annolid.utils.annotation_compat import img_b64_to_arr
 
 try:
     from sklearn.model_selection import train_test_split

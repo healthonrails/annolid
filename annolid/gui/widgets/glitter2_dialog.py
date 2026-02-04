@@ -24,12 +24,10 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.buttonbox.accepted.connect(self.accept)
         self.buttonbox.rejected.connect(self.reject)
 
-        self.groupBoxVideoFiles = QtWidgets.QGroupBox(
-            "Please choose a video file")
+        self.groupBoxVideoFiles = QtWidgets.QGroupBox("Please choose a video file")
         self.inputVideoFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputVideoFileButton = QtWidgets.QPushButton('Open', self)
-        self.inputVideoFileButton.clicked.connect(
-            self.onInputVideoFileButtonClicked)
+        self.inputVideoFileButton = QtWidgets.QPushButton("Open", self)
+        self.inputVideoFileButton.clicked.connect(self.onInputVideoFileButtonClicked)
         video_hboxLayOut = QtWidgets.QHBoxLayout()
 
         video_hboxLayOut.addWidget(self.inputVideoFileLineEdit)
@@ -39,31 +37,31 @@ class Glitter2Dialog(QtWidgets.QDialog):
         hboxLayOut = QtWidgets.QHBoxLayout()
 
         self.groupBoxFiles = QtWidgets.QGroupBox(
-            "Please choose tracking results CSV file")
+            "Please choose tracking results CSV file"
+        )
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputFileButton = QtWidgets.QPushButton('Open', self)
-        self.inputFileButton.clicked.connect(
-            self.onInputFileButtonClicked)
+        self.inputFileButton = QtWidgets.QPushButton("Open", self)
+        self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
         hboxLayOut.addWidget(self.inputFileLineEdit)
         hboxLayOut.addWidget(self.inputFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
 
         self.label1 = QtWidgets.QLabel(
-            f"Please select class score threshold (Optional default=0.15)")
+            "Please select class score threshold (Optional default=0.15)"
+        )
 
         self.label2 = QtWidgets.QLabel(
-            f"Please select motion threshold (Optional default=0)")
+            "Please select motion threshold (Optional default=0)"
+        )
 
         self.groupBoxZoneFiles = QtWidgets.QGroupBox(
             "Please select a zone info json format file (Optional)"
         )
 
         self.inputZoneInfoLineEdit = QtWidgets.QLineEdit(self)
-        self.inputZoneInfoButton = QtWidgets.QPushButton('Open', self)
+        self.inputZoneInfoButton = QtWidgets.QPushButton("Open", self)
 
-        self.inputZoneInfoButton.clicked.connect(
-            self.onInputZoneInfoButtonClicked
-        )
+        self.inputZoneInfoButton.clicked.connect(self.onInputZoneInfoButtonClicked)
 
         hboxZoneInfoLayout = QtWidgets.QHBoxLayout()
         hboxZoneInfoLayout.addWidget(self.inputZoneInfoLineEdit)
@@ -71,23 +69,25 @@ class Glitter2Dialog(QtWidgets.QDialog):
         self.groupBoxZoneFiles.setLayout(hboxZoneInfoLayout)
 
         self.groupSubjectNames = QtWidgets.QGroupBox(
-            "a comma seperated list of subject names (Optional) "
+            "a comma separated list of subject names (Optional) "
         )
         self.subjectNamesLineEdit = QtWidgets.QLineEdit(self)
         self.subjectNamesLineEdit.setPlaceholderText("mouse_01,mouse_02,...")
         self.subjectNamesLineEdit.editingFinished.connect(
-            self.onSubjectLineEditingFinished)
+            self.onSubjectLineEditingFinished
+        )
         hboxSubjectNamesLayout = QtWidgets.QHBoxLayout()
         hboxSubjectNamesLayout.addWidget(self.subjectNamesLineEdit)
         self.groupSubjectNames.setLayout(hboxSubjectNamesLayout)
 
         self.groupBehaviorNames = QtWidgets.QGroupBox(
-            "a comma seperated list of behavior names (Optional) "
+            "a comma separated list of behavior names (Optional) "
         )
         self.behaviorNamesLineEdit = QtWidgets.QLineEdit(self)
-        self.behaviorNamesLineEdit.setPlaceholderText('grooming,rearing,...')
+        self.behaviorNamesLineEdit.setPlaceholderText("grooming,rearing,...")
         self.behaviorNamesLineEdit.editingFinished.connect(
-            self.onBehaviorNamesFinishedEditing)
+            self.onBehaviorNamesFinishedEditing
+        )
         hboxBehaviorNamesLayout = QtWidgets.QHBoxLayout()
         hboxBehaviorNamesLayout.addWidget(self.behaviorNamesLineEdit)
         self.groupBehaviorNames.setLayout(hboxBehaviorNamesLayout)
@@ -96,11 +96,9 @@ class Glitter2Dialog(QtWidgets.QDialog):
             "Please select a pretrained model file (Optional)"
         )
         self.pretrainedModelLineEdit = QtWidgets.QLineEdit(self)
-        self.pretrainedModelButton = QtWidgets.QPushButton('Open', self)
+        self.pretrainedModelButton = QtWidgets.QPushButton("Open", self)
 
-        self.pretrainedModelButton.clicked.connect(
-            self.onPrtrainedModelButtonClicked
-        )
+        self.pretrainedModelButton.clicked.connect(self.onPrtrainedModelButtonClicked)
 
         hboxPretrainedModelLayout = QtWidgets.QHBoxLayout()
         hboxPretrainedModelLayout.addWidget(self.pretrainedModelLineEdit)
@@ -125,11 +123,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
 
     def onInputVideoFileButtonClicked(self):
         self.video_file, filter = QtWidgets.QFileDialog.getOpenFileName(
-            parent=self,
-            caption="Open video file",
-            directory=str(Path()),
-            filter='*'
-
+            parent=self, caption="Open video file", directory=str(Path()), filter="*"
         )
         if self.video_file is not None:
             self.inputVideoFileLineEdit.setText(self.video_file)
@@ -139,19 +133,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
             parent=self,
             caption="Open tracking results CSV file",
             directory=str(Path()),
-            filter='*'
-
-        )
-        if self.tracking_results is not None:
-            self.inputFileLineEdit.setText(self.tracking_results)
-
-    def onInputFileButtonClicked(self):
-        self.tracking_results, filter = QtWidgets.QFileDialog.getOpenFileName(
-            parent=self,
-            caption="Open tracking results CSV file",
-            directory=str(Path()),
-            filter='*'
-
+            filter="*",
         )
         if self.tracking_results is not None:
             self.inputFileLineEdit.setText(self.tracking_results)
@@ -161,8 +143,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
             parent=self,
             caption="Open zone info json file",
             directory=str(Path()),
-            filter='*'
-
+            filter="*",
         )
         if self.zone_info_json is not None:
             self.inputZoneInfoLineEdit.setText(self.zone_info_json)
@@ -178,7 +159,7 @@ class Glitter2Dialog(QtWidgets.QDialog):
             parent=self,
             caption="Open pretrained motion model file",
             directory=str(Path()),
-            filter="*"
+            filter="*",
         )
         if self.pretrained_model is not None:
             self.pretrainedModelLineEdit.setText(self.pretrained_model)
@@ -204,9 +185,11 @@ class Glitter2Dialog(QtWidgets.QDialog):
     def onSliderChange(self):
         self.score_threshold = self.slider.value() / 100
         self.label1.setText(
-            f"You selected {str(self.score_threshold)} as score threshold")
+            f"You selected {str(self.score_threshold)} as score threshold"
+        )
 
     def onMotionSliderChange(self):
         self.motion_threshold = self.motion_slider.value() / 100
         self.label2.setText(
-            f"You selected {str(self.motion_threshold)} as motion threshold")
+            f"You selected {str(self.motion_threshold)} as motion threshold"
+        )

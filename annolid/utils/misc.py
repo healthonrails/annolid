@@ -23,11 +23,16 @@ class AsyncVideoFrameLoaderFromVideo:
       loading a limited number of frames at a time.
     """
 
-    def __init__(self, video_path, image_size,
-                 offload_video_to_cpu,
-                 img_mean, img_std,
-                 compute_device,
-                 cache_size=10):
+    def __init__(
+        self,
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        img_mean,
+        img_std,
+        compute_device,
+        cache_size=10,
+    ):
         self.video_path = video_path
         self.image_size = image_size
         self.offload_video_to_cpu = offload_video_to_cpu
@@ -59,15 +64,13 @@ class AsyncVideoFrameLoaderFromVideo:
         if not ret:
             raise RuntimeError(f"Failed to read frame at index {index}")
 
-        img, video_height, video_width = _load_frame_as_tensor(
-            frame, self.image_size)
+        img, video_height, video_width = _load_frame_as_tensor(frame, self.image_size)
         self.video_height = video_height
         self.video_width = video_width
 
         # Normalize by mean and std
         img = (img - self.img_mean) / self.img_std
         if not self.offload_video_to_cpu:
-
             if img.dtype == torch.float64:
                 img = img.float()  # Convert to float32 if necessary
 
@@ -80,8 +83,7 @@ class AsyncVideoFrameLoaderFromVideo:
         Retrieve a frame. If not in the cache, load it and store it.
         """
         if self.exception is not None:
-            raise RuntimeError(
-                "Failure in frame loading thread") from self.exception
+            raise RuntimeError("Failure in frame loading thread") from self.exception
 
         # If frame is cached, return it
         if index in self.cache:
@@ -116,7 +118,7 @@ def load_video_frames_from_video(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
-    cache_size=10  # New parameter for cache size
+    cache_size=10,  # New parameter for cache size
 ):
     """
     Load frames directly from a video file asynchronously or synchronously with memory management.
@@ -136,22 +138,20 @@ def load_video_frames_from_video(
             img_mean,
             img_std,
             compute_device,
-            cache_size=cache_size  # Apply cache size for async loading
+            cache_size=cache_size,  # Apply cache size for async loading
         )
         return lazy_images, lazy_images.video_height, lazy_images.video_width
 
     # Synchronous loading
     cap = cv2.VideoCapture(video_path)
     num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    images = torch.zeros(num_frames, 3, image_size,
-                         image_size, dtype=torch.float32)
+    images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
 
     for n in tqdm(range(num_frames), desc="frame loading (video)"):
         ret, frame = cap.read()
         if not ret:
             raise RuntimeError(f"Failed to read frame {n}")
-        images[n], video_height, video_width = _load_frame_as_tensor(
-            frame, image_size)
+        images[n], video_height, video_width = _load_frame_as_tensor(frame, image_size)
 
     if not offload_video_to_cpu:
         images = images.to(compute_device)
@@ -171,8 +171,7 @@ def test_video_loader(video_path):
     img_mean = (0.485, 0.456, 0.406)
     img_std = (0.229, 0.224, 0.225)
     async_loading = True  # Set to False for synchronous testing
-    compute_device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu")
+    compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cache_size = 10  # Keep 10 frames in memory at a time
 
     # Load video frames asynchronously
@@ -184,7 +183,7 @@ def test_video_loader(video_path):
         img_std,
         async_loading,
         compute_device,
-        cache_size=cache_size  # Pass cache size for memory control
+        cache_size=cache_size,  # Pass cache size for memory control
     )
 
     # Check the dimensions of the first frame

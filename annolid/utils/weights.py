@@ -18,8 +18,7 @@ class WeightDownloader:
 
         # Download weights with gdown and display progress bar
         if not os.path.exists(weight_file_path):
-            gdown.cached_download(
-                weight_url, weight_file_path, md5=expected_checksum)
+            gdown.cached_download(weight_url, weight_file_path, md5=expected_checksum)
 
         # Check if the file exists and has been downloaded successfully
         if os.path.exists(weight_file_path):
@@ -36,14 +35,16 @@ if __name__ == "__main__":
     # Define weight URLs, expected checksums, and file names
     weight_urls = [
         "https://drive.google.com/uc?id=168MtudjTMLoq9YGTyoD2Rjl_d3Gy6c_L",
-        "https://drive.google.com/uc?id=1JJ2-QKTCk-G7sp5ddkqcifMxgnyOrXjx"
+        "https://drive.google.com/uc?id=1JJ2-QKTCk-G7sp5ddkqcifMxgnyOrXjx",
     ]
     expected_checksums = [
         "e0ccb052828a9f05e21b2143939583c5",
-        "a595336926767afdf1ffb1baffd5ab7f"
+        "a595336926767afdf1ffb1baffd5ab7f",
     ]
     weight_file_names = ["from_phase1.pth", "from_phase2.pth"]
 
     # Download weights for each URL
-    for url, checksum, file_name in zip(weight_urls, expected_checksums, weight_file_names):
+    for url, checksum, file_name in zip(
+        weight_urls, expected_checksums, weight_file_names
+    ):
         downloader.download_weights(url, checksum, file_name)

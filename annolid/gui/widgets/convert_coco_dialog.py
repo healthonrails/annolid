@@ -23,7 +23,8 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.buttonbox.rejected.connect(self.reject)
 
         self.label1 = QtWidgets.QLabel(
-            f"Please type or select number of frames for training default={self.num_train_frames}")
+            f"Please type or select number of frames for training default={self.num_train_frames}"
+        )
 
         self.trainFramesLineEdit = QtWidgets.QLineEdit(self)
         self.trainFramesLineEdit.setText(str(self.num_train_frames))
@@ -32,39 +33,33 @@ class ConvertCOODialog(QtWidgets.QDialog):
         hboxLayOut = QtWidgets.QHBoxLayout()
         vbox = QtWidgets.QVBoxLayout()
 
-        self.groupBoxFiles = QtWidgets.QGroupBox(
-            f"Please select annotation directory")
+        self.groupBoxFiles = QtWidgets.QGroupBox("Please select annotation directory")
         self.annoFileLineEdit = QtWidgets.QLineEdit(self)
 
         if self.annotation_dir is not None:
             self.annoFileLineEdit.setText(str(self.annotation_dir))
 
-        self.annoFileButton = QtWidgets.QPushButton(
-            'Open Annotation Directory', self)
-        self.annoFileButton.clicked.connect(
-            self.onOutAnnoDirButtonClicked)
+        self.annoFileButton = QtWidgets.QPushButton("Open Annotation Directory", self)
+        self.annoFileButton.clicked.connect(self.onOutAnnoDirButtonClicked)
         hboxLayOut.addWidget(self.annoFileLineEdit)
         hboxLayOut.addWidget(self.annoFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
 
         hboxLabelLayOut = QtWidgets.QVBoxLayout()
 
-        self.groupBoxLabelFiles = QtWidgets.QGroupBox(
-            "Please choose a label text file")
+        self.groupBoxLabelFiles = QtWidgets.QGroupBox("Please choose a label text file")
         self.inputLabelFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputLabelFileButton = QtWidgets.QPushButton(
-            'Open Labels File', self)
-        self.inputLabelFileButton.clicked.connect(
-            self.onInputFileButtonClicked)
+        self.inputLabelFileButton = QtWidgets.QPushButton("Open Labels File", self)
+        self.inputLabelFileButton.clicked.connect(self.onInputFileButtonClicked)
         hboxLabelLayOut.addWidget(self.inputLabelFileLineEdit)
         hboxLabelLayOut.addWidget(self.inputLabelFileButton)
         self.groupBoxLabelFiles.setLayout(hboxLabelLayOut)
 
         self.groupBoxOutDir = QtWidgets.QGroupBox(
-            "Please choose output directory (Optional)")
+            "Please choose output directory (Optional)"
+        )
         self.outFileDirEdit = QtWidgets.QLineEdit(self)
-        self.outDirButton = QtWidgets.QPushButton(
-            'Select Output Directory', self)
+        self.outDirButton = QtWidgets.QPushButton("Select Output Directory", self)
         self.outDirButton.clicked.connect(self.onOutDirButtonClicked)
         hboxLayOutDir = QtWidgets.QHBoxLayout()
         hboxLayOutDir.addWidget(self.outFileDirEdit)
@@ -87,36 +82,36 @@ class ConvertCOODialog(QtWidgets.QDialog):
             parent=self,
             caption="Open labels txt file",
             directory=str(Path()),
-            filter='*'
-
+            filter="*",
         )
         if self.label_list_text is not None:
             self.inputLabelFileLineEdit.setText(self.label_list_text)
 
     def onOutDirButtonClicked(self):
-        self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(self,
-                                                                  "Select Directory")
+        self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Directory"
+        )
         if self.out_dir is not None:
             self.outFileDirEdit.setText(self.out_dir)
 
     def onOutAnnoDirButtonClicked(self):
-        self.annotation_dir = QtWidgets.QFileDialog.getExistingDirectory(self,
-                                                                         "Select Directory")
+        self.annotation_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Directory"
+        )
         if self.annotation_dir is not None:
-
             self.num_train_frames = len(
-                glob.glob(osp.join(self.annotation_dir, '*.json')))
+                glob.glob(osp.join(self.annotation_dir, "*.json"))
+            )
             # try to merge folders in the current directory
             # assume the subdir contains png and json files for each video
             # merge them to a single folder
             if self.num_train_frames < 1:
-
-                dest_dir = self.annotation_dir + '_merged'
-                merge_annotation_folders(
-                    self.annotation_dir, '*/*.png', dest_dir)
+                dest_dir = self.annotation_dir + "_merged"
+                merge_annotation_folders(self.annotation_dir, "*/*.png", dest_dir)
                 self.annotation_dir = dest_dir
                 self.num_train_frames = len(
-                    glob.glob(osp.join(self.annotation_dir, '*.json')))
+                    glob.glob(osp.join(self.annotation_dir, "*.json"))
+                )
             self.annoFileLineEdit.setText(self.annotation_dir)
             self.trainFramesLineEdit.setText(str(self.num_train_frames))
 
@@ -130,8 +125,9 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.slider.valueChanged.connect(self.onSliderChange)
 
     def onSliderChange(self, position):
-        self.num_train_frames = int(position) if position and str(
-            position).isdigit() else 0
+        self.num_train_frames = (
+            int(position) if position and str(position).isdigit() else 0
+        )
 
         self.trainFramesLineEdit.setText(str(position))
         self.label1.setText(

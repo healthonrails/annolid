@@ -21,7 +21,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStackedWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -65,20 +64,19 @@ class _VoicePromptRecordWorker(QtCore.QObject):
     def run(self) -> None:
         try:
             if _audio_disabled_by_env():
-                raise RuntimeError(
-                    "Audio is disabled via ANNOLID_DISABLE_AUDIO.")
+                raise RuntimeError("Audio is disabled via ANNOLID_DISABLE_AUDIO.")
 
             try:
                 import sounddevice as sd  # type: ignore
             except Exception as exc:
-                raise RuntimeError(
-                    f"sounddevice is not available ({exc})") from exc
+                raise RuntimeError(f"sounddevice is not available ({exc})") from exc
 
             try:
                 devices = sd.query_devices()
             except Exception as exc:
                 raise RuntimeError(
-                    f"Could not enumerate audio devices ({exc})") from exc
+                    f"Could not enumerate audio devices ({exc})"
+                ) from exc
 
             if not any(d.get("max_input_channels", 0) > 0 for d in devices):
                 raise RuntimeError("No usable audio input device detected.")
@@ -320,17 +318,23 @@ class TtsControlsWidget(QWidget):
 
         # cached settings
         self._pocket_prompt_path = str(
-            self._settings.get("pocket_prompt_path", "")).strip()
+            self._settings.get("pocket_prompt_path", "")
+        ).strip()
         self._chatterbox_voice_path = str(
-            self._settings.get("chatterbox_voice_path", "")).strip()
-        self._chatterbox_dtype = str(self._settings.get(
-            "chatterbox_dtype", "fp32")).strip() or "fp32"
+            self._settings.get("chatterbox_voice_path", "")
+        ).strip()
+        self._chatterbox_dtype = (
+            str(self._settings.get("chatterbox_dtype", "fp32")).strip() or "fp32"
+        )
         self._chatterbox_max_new_tokens = int(
-            self._settings.get("chatterbox_max_new_tokens", 1024))
+            self._settings.get("chatterbox_max_new_tokens", 1024)
+        )
         self._chatterbox_repetition_penalty = float(
-            self._settings.get("chatterbox_repetition_penalty", 1.2))
+            self._settings.get("chatterbox_repetition_penalty", 1.2)
+        )
         self._chatterbox_apply_watermark = bool(
-            self._settings.get("chatterbox_apply_watermark", False))
+            self._settings.get("chatterbox_apply_watermark", False)
+        )
 
         self._build_ui()
         self._sync_engine_page()
@@ -353,8 +357,7 @@ class TtsControlsWidget(QWidget):
         self.engine_combo.addItem("gTTS", "gtts")
         self.engine_combo.setToolTip("Select the text-to-speech engine.")
 
-        current_engine = str(self._settings.get(
-            "engine", "kokoro")).strip().lower()
+        current_engine = str(self._settings.get("engine", "kokoro")).strip().lower()
         idx = self.engine_combo.findData(current_engine)
         if idx >= 0:
             self.engine_combo.setCurrentIndex(idx)
@@ -363,7 +366,8 @@ class TtsControlsWidget(QWidget):
 
         self.btn_reset = QPushButton("Reset", self)
         self.btn_reset.setToolTip(
-            "Reset to recommended defaults for the current engine")
+            "Reset to recommended defaults for the current engine"
+        )
         self.btn_reset.clicked.connect(self._reset_defaults_for_engine)
         top.addWidget(self.btn_reset)
 
@@ -406,10 +410,8 @@ class TtsControlsWidget(QWidget):
         voices = get_available_voices()
         if voices:
             self.voice_combo.addItems(voices)
-        self.voice_combo.setCurrentText(
-            str(self._settings.get("voice", DEFAULT_VOICE)))
-        self.voice_combo.setToolTip(
-            "Select a voice or type a custom voice ID.")
+        self.voice_combo.setCurrentText(str(self._settings.get("voice", DEFAULT_VOICE)))
+        self.voice_combo.setToolTip("Select a voice or type a custom voice ID.")
         form.addRow("Voice:", self.voice_combo)
 
         self.language_combo = QComboBox(self.page_kokoro)
@@ -419,17 +421,16 @@ class TtsControlsWidget(QWidget):
         if languages:
             self.language_combo.addItems(languages)
         self.language_combo.setCurrentText(
-            str(self._settings.get("lang", DEFAULT_LANG)))
-        self.language_combo.setToolTip(
-            "Language code passed to Kokoro (e.g., en-us).")
+            str(self._settings.get("lang", DEFAULT_LANG))
+        )
+        self.language_combo.setToolTip("Language code passed to Kokoro (e.g., en-us).")
         form.addRow("Language:", self.language_combo)
 
         self.speed_spin = QDoubleSpinBox(self.page_kokoro)
         self.speed_spin.setRange(0.5, 2.0)
         self.speed_spin.setSingleStep(0.05)
         self.speed_spin.setDecimals(2)
-        self.speed_spin.setValue(
-            float(self._settings.get("speed", DEFAULT_SPEED)))
+        self.speed_spin.setValue(float(self._settings.get("speed", DEFAULT_SPEED)))
         self.speed_spin.setToolTip("Speech rate multiplier.")
         form.addRow("Speed:", self.speed_spin)
 
@@ -457,18 +458,15 @@ class TtsControlsWidget(QWidget):
         self.pocket_voice_combo.setCurrentText(
             str(self._settings.get("pocket_voice", POCKET_DEFAULT_VOICE))
         )
-        self.pocket_voice_combo.setToolTip(
-            "Select a Pocket voice, or type one.")
+        self.pocket_voice_combo.setToolTip("Select a Pocket voice, or type one.")
         form.addRow("Voice:", self.pocket_voice_combo)
 
         self.pocket_speed_spin = QDoubleSpinBox(self.page_pocket)
         self.pocket_speed_spin.setRange(0.5, 2.0)
         self.pocket_speed_spin.setSingleStep(0.05)
         self.pocket_speed_spin.setDecimals(2)
-        self.pocket_speed_spin.setValue(
-            float(self._settings.get("pocket_speed", 1.0)))
-        self.pocket_speed_spin.setToolTip(
-            "Playback speed multiplier for Pocket TTS.")
+        self.pocket_speed_spin.setValue(float(self._settings.get("pocket_speed", 1.0)))
+        self.pocket_speed_spin.setToolTip("Playback speed multiplier for Pocket TTS.")
         form.addRow("Speed:", self.pocket_speed_spin)
 
         self.pocket_prompt_row = _PromptPathRow(
@@ -477,10 +475,8 @@ class TtsControlsWidget(QWidget):
             dialog_title="Select Pocket TTS Voice Prompt",
         )
         self.pocket_prompt_row.set_path(self._pocket_prompt_path)
-        self.pocket_prompt_row.pathChanged.connect(
-            self._on_pocket_prompt_changed)
-        self.pocket_prompt_row.recordRequested.connect(
-            self._record_pocket_prompt)
+        self.pocket_prompt_row.pathChanged.connect(self._on_pocket_prompt_changed)
+        self.pocket_prompt_row.recordRequested.connect(self._record_pocket_prompt)
         form.addRow("Prompt:", self.pocket_prompt_row)
 
         hint = QLabel(
@@ -493,8 +489,7 @@ class TtsControlsWidget(QWidget):
 
         layout.addStretch(1)
 
-        self.pocket_voice_combo.currentTextChanged.connect(
-            self._persist_settings)
+        self.pocket_voice_combo.currentTextChanged.connect(self._persist_settings)
         self.pocket_speed_spin.valueChanged.connect(self._persist_settings)
 
     def _build_chatterbox_page(self) -> None:
@@ -513,45 +508,38 @@ class TtsControlsWidget(QWidget):
         )
         self.chatterbox_prompt_row.set_path(self._chatterbox_voice_path)
         self.chatterbox_prompt_row.pathChanged.connect(
-            self._on_chatterbox_prompt_changed)
-        self.chatterbox_prompt_row.recordRequested.connect(
-            self._record_voice_prompt)
+            self._on_chatterbox_prompt_changed
+        )
+        self.chatterbox_prompt_row.recordRequested.connect(self._record_voice_prompt)
         form.addRow("Prompt:", self.chatterbox_prompt_row)
 
         self.chatterbox_dtype_combo = QComboBox(self.page_chatterbox)
-        self.chatterbox_dtype_combo.addItems(
-            ["fp32", "fp16", "q8", "q4", "q4f16"])
+        self.chatterbox_dtype_combo.addItems(["fp32", "fp16", "q8", "q4", "q4f16"])
         self.chatterbox_dtype_combo.setCurrentText(self._chatterbox_dtype)
         form.addRow("Dtype:", self.chatterbox_dtype_combo)
 
         self.chatterbox_max_tokens_spin = QSpinBox(self.page_chatterbox)
         self.chatterbox_max_tokens_spin.setRange(128, 4096)
         self.chatterbox_max_tokens_spin.setSingleStep(128)
-        self.chatterbox_max_tokens_spin.setValue(
-            self._chatterbox_max_new_tokens)
+        self.chatterbox_max_tokens_spin.setValue(self._chatterbox_max_new_tokens)
         form.addRow("Max tokens:", self.chatterbox_max_tokens_spin)
 
         self.chatterbox_rep_penalty_spin = QDoubleSpinBox(self.page_chatterbox)
         self.chatterbox_rep_penalty_spin.setRange(1.0, 3.0)
         self.chatterbox_rep_penalty_spin.setSingleStep(0.05)
         self.chatterbox_rep_penalty_spin.setDecimals(2)
-        self.chatterbox_rep_penalty_spin.setValue(
-            self._chatterbox_repetition_penalty)
+        self.chatterbox_rep_penalty_spin.setValue(self._chatterbox_repetition_penalty)
         form.addRow("Repetition:", self.chatterbox_rep_penalty_spin)
 
         self.chatterbox_watermark_check = QCheckBox(self.page_chatterbox)
-        self.chatterbox_watermark_check.setChecked(
-            self._chatterbox_apply_watermark)
+        self.chatterbox_watermark_check.setChecked(self._chatterbox_apply_watermark)
         form.addRow("Watermark:", self.chatterbox_watermark_check)
 
         layout.addStretch(1)
 
-        self.chatterbox_dtype_combo.currentTextChanged.connect(
-            self._persist_settings)
-        self.chatterbox_max_tokens_spin.valueChanged.connect(
-            self._persist_settings)
-        self.chatterbox_rep_penalty_spin.valueChanged.connect(
-            self._persist_settings)
+        self.chatterbox_dtype_combo.currentTextChanged.connect(self._persist_settings)
+        self.chatterbox_max_tokens_spin.valueChanged.connect(self._persist_settings)
+        self.chatterbox_rep_penalty_spin.valueChanged.connect(self._persist_settings)
         self.chatterbox_watermark_check.toggled.connect(self._persist_settings)
 
     def _build_gtts_page(self) -> None:
@@ -575,7 +563,9 @@ class TtsControlsWidget(QWidget):
         lang = self.language_combo.currentText().strip() or DEFAULT_LANG
         speed = float(self.speed_spin.value())
 
-        pocket_voice = self.pocket_voice_combo.currentText().strip() or POCKET_DEFAULT_VOICE
+        pocket_voice = (
+            self.pocket_voice_combo.currentText().strip() or POCKET_DEFAULT_VOICE
+        )
         pocket_speed = float(self.pocket_speed_spin.value())
         pocket_prompt_path = (self._pocket_prompt_path or "").strip()
 
@@ -588,10 +578,15 @@ class TtsControlsWidget(QWidget):
             "pocket_speed": pocket_speed,
             "pocket_prompt_path": pocket_prompt_path,
             "chatterbox_voice_path": (self._chatterbox_voice_path or "").strip(),
-            "chatterbox_dtype": self.chatterbox_dtype_combo.currentText().strip() or "fp32",
+            "chatterbox_dtype": self.chatterbox_dtype_combo.currentText().strip()
+            or "fp32",
             "chatterbox_max_new_tokens": int(self.chatterbox_max_tokens_spin.value()),
-            "chatterbox_repetition_penalty": float(self.chatterbox_rep_penalty_spin.value()),
-            "chatterbox_apply_watermark": bool(self.chatterbox_watermark_check.isChecked()),
+            "chatterbox_repetition_penalty": float(
+                self.chatterbox_rep_penalty_spin.value()
+            ),
+            "chatterbox_apply_watermark": bool(
+                self.chatterbox_watermark_check.isChecked()
+            ),
         }
 
     def set_language_and_voice(
@@ -621,8 +616,7 @@ class TtsControlsWidget(QWidget):
         self._persist_settings()
 
     def _sync_engine_page(self) -> None:
-        engine = str(self.engine_combo.currentData()
-                     or "kokoro").strip().lower()
+        engine = str(self.engine_combo.currentData() or "kokoro").strip().lower()
         page_map = {
             "kokoro": self.page_kokoro,
             "pocket": self.page_pocket,
@@ -642,8 +636,7 @@ class TtsControlsWidget(QWidget):
         self.settingsChanged.emit(settings)
 
     def _reset_defaults_for_engine(self) -> None:
-        engine = str(self.engine_combo.currentData()
-                     or "kokoro").strip().lower()
+        engine = str(self.engine_combo.currentData() or "kokoro").strip().lower()
         if engine == "kokoro":
             self.voice_combo.setCurrentText(DEFAULT_VOICE)
             self.language_combo.setCurrentText(DEFAULT_LANG)

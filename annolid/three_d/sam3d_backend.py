@@ -110,8 +110,7 @@ class Sam3DBackend:
         if extra_metadata:
             sidecar.update(extra_metadata)
         try:
-            sidecar_path.write_text(json.dumps(
-                sidecar, indent=2), encoding="utf-8")
+            sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
         except Exception as exc:  # pragma: no cover - filesystem
             logger.warning("Unable to write SAM3D sidecar: %s", exc)
 
@@ -130,9 +129,7 @@ class Sam3DBackend:
 
         pipeline = self.cfg.pipeline_path()
         if not pipeline.exists():
-            raise Sam3DBackendError(
-                f"SAM 3D pipeline config not found: {pipeline}"
-            )
+            raise Sam3DBackendError(f"SAM 3D pipeline config not found: {pipeline}")
 
         notebook_path = self.cfg.repo_path / "notebook"
         if not notebook_path.exists():
@@ -159,15 +156,22 @@ class Sam3DBackend:
         try:
             import sam3d_objects.pipeline.inference_pipeline_pointmap as _ipp  # type: ignore
 
-            if not hasattr(_ipp.InferencePipelinePointMap, "run_layout_model"):  # pragma: no cover - compat
+            if not hasattr(
+                _ipp.InferencePipelinePointMap, "run_layout_model"
+            ):  # pragma: no cover - compat
+
                 def _run_layout_model_stub(self, *_args, **_kwargs):
                     return {}
+
                 logger.warning(
                     "SAM 3D InferencePipelinePointMap missing run_layout_model; "
                     "install/upgrade SAM 3D to avoid degraded output."
                 )
-                setattr(_ipp.InferencePipelinePointMap,
-                        "run_layout_model", _run_layout_model_stub)
+                setattr(
+                    _ipp.InferencePipelinePointMap,
+                    "run_layout_model",
+                    _run_layout_model_stub,
+                )
         except Exception:
             # Non-fatal; continue and let initialization raise if needed
             pass
@@ -180,17 +184,19 @@ class Sam3DBackend:
             # Safety: ensure pipeline has run_layout_model
             try:
                 pipeline_obj = getattr(self._inference, "_pipeline", None)
-                if pipeline_obj and not hasattr(pipeline_obj, "run_layout_model"):  # pragma: no cover - compat
+                if pipeline_obj and not hasattr(
+                    pipeline_obj, "run_layout_model"
+                ):  # pragma: no cover - compat
+
                     def _run_layout_model_stub(*_args, **_kwargs):
                         return {}
+
                     logger.warning(
                         "SAM 3D pipeline missing run_layout_model; continuing without layout postprocess."
                     )
-                    setattr(pipeline_obj, "run_layout_model",
-                            _run_layout_model_stub)
+                    setattr(pipeline_obj, "run_layout_model", _run_layout_model_stub)
             except Exception:
                 pass
         except Exception as exc:  # pragma: no cover - external dependency
-            raise Sam3DBackendError(
-                f"Failed to initialize SAM 3D: {exc}") from exc
+            raise Sam3DBackendError(f"Failed to initialize SAM 3D: {exc}") from exc
         return self._inference

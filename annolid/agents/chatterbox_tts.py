@@ -54,8 +54,8 @@ def _select_providers() -> Optional[list[str]]:
 
     available = list(onnxruntime.get_available_providers())
     disable_coreml = (
-        os.getenv("ANNOLID_CHATTERBOX_DISABLE_COREML",
-                  "").strip().lower() in _FLAG_VALUES
+        os.getenv("ANNOLID_CHATTERBOX_DISABLE_COREML", "").strip().lower()
+        in _FLAG_VALUES
     )
     if disable_coreml and "CoreMLExecutionProvider" in available:
         available = [p for p in available if p != "CoreMLExecutionProvider"]
@@ -85,15 +85,16 @@ def _select_providers() -> Optional[list[str]]:
         providers.append("CPUExecutionProvider")
 
     if not providers:
-        providers = [
-            p for p in available if p != "TensorrtExecutionProvider"
-        ]
+        providers = [p for p in available if p != "TensorrtExecutionProvider"]
     return providers or None
 
 
 def _is_coreml_runtime_failure(exc: Exception) -> bool:
     msg = str(exc)
-    if "CoreMLExecutionProvider" not in msg and "coreml_execution_provider.cc" not in msg:
+    if (
+        "CoreMLExecutionProvider" not in msg
+        and "coreml_execution_provider.cc" not in msg
+    ):
         return False
     needles = (
         "dynamic shape",
@@ -151,15 +152,18 @@ def _inline_external_initializers(onnx_path: str) -> str:
 
     # Fast path: already created and up-to-date
     try:
-        if inline_path.exists() and inline_path.stat().st_mtime_ns >= p.stat().st_mtime_ns:
+        if (
+            inline_path.exists()
+            and inline_path.stat().st_mtime_ns >= p.stat().st_mtime_ns
+        ):
             return str(inline_path)
     except Exception:
         pass
 
     # Detect common external-data sidecar names
     sidecars = [
-        Path(str(p) + "_data"),           # e.g. "model.onnx_data"
-        p.with_suffix(p.suffix + "_data")  # same as above, just explicit
+        Path(str(p) + "_data"),  # e.g. "model.onnx_data"
+        p.with_suffix(p.suffix + "_data"),  # same as above, just explicit
     ]
     has_sidecar = any(s.exists() for s in sidecars)
 
@@ -169,7 +173,7 @@ def _inline_external_initializers(onnx_path: str) -> str:
 
     try:
         import onnx
-    except Exception as exc:
+    except Exception:
         logger.warning(
             "Model appears to use external data (*.onnx_data) but `onnx` is not installed; "
             "CoreML EP may crash. Install with: pip install onnx"
@@ -195,8 +199,7 @@ def _download_model(name: str, dtype: str) -> str:
 
     # Try to fetch external data sidecar (if present)
     try:
-        hf_hub_download(MODEL_ID, subfolder="onnx",
-                        filename=f"{filename}_data")
+        hf_hub_download(MODEL_ID, subfolder="onnx", filename=f"{filename}_data")
     except Exception:
         pass
 
@@ -228,18 +231,20 @@ def _get_sessions(dtype: str, providers_override: Tuple[str, ...] = ()):
     import onnxruntime
 
     dtype = (dtype or "fp32").strip().lower()
-    base_providers = list(
-        providers_override) if providers_override else _select_providers()
+    base_providers = (
+        list(providers_override) if providers_override else _select_providers()
+    )
     so = _make_session_options()
 
-    conditional_decoder_path = _download_model(
-        "conditional_decoder", dtype=dtype)
+    conditional_decoder_path = _download_model("conditional_decoder", dtype=dtype)
     speech_encoder_path = _download_model("speech_encoder", dtype=dtype)
     embed_tokens_path = _download_model("embed_tokens", dtype=dtype)
     language_model_path = _download_model("language_model", dtype=dtype)
 
     def make_session(path: str, providers_list: Optional[list[str]]):
-        return onnxruntime.InferenceSession(path, sess_options=so, providers=providers_list)
+        return onnxruntime.InferenceSession(
+            path, sess_options=so, providers=providers_list
+        )
 
     def cpu_only() -> Optional[list[str]]:
         avail = onnxruntime.get_available_providers()
@@ -278,15 +283,14 @@ def _get_sessions(dtype: str, providers_override: Tuple[str, ...] = ()):
     # Decoder providers: CoreML often fails on ISTFT output-shape inference.
     # Default: CPU-only ALWAYS. You can override this setting:
     #   ANNOLID_CHATTERBOX_DECODER_PROVIDERS="CoreMLExecutionProvider,CPUExecutionProvider"
-    decoder_override = os.getenv(
-        "ANNOLID_CHATTERBOX_DECODER_PROVIDERS", "").strip()
+    decoder_override = os.getenv("ANNOLID_CHATTERBOX_DECODER_PROVIDERS", "").strip()
     if decoder_override:
-        decoder_providers = [p.strip()
-                             for p in decoder_override.split(",") if p.strip()]
+        decoder_providers = [
+            p.strip() for p in decoder_override.split(",") if p.strip()
+        ]
         # Filter to available
         avail = set(onnxruntime.get_available_providers())
-        decoder_providers = [
-            p for p in decoder_providers if p in avail] or None
+        decoder_providers = [p for p in decoder_providers if p in avail] or None
     else:
         decoder_providers = cpu_only()
 
@@ -295,16 +299,14 @@ def _get_sessions(dtype: str, providers_override: Tuple[str, ...] = ()):
     for providers_list in provider_attempts():
         try:
             # Encoder / LM side: try fast providers first
-            speech_encoder_session = make_session(
-                speech_encoder_path, providers_list)
-            embed_tokens_session = make_session(
-                embed_tokens_path, providers_list)
-            language_model_session = make_session(
-                language_model_path, providers_list)
+            speech_encoder_session = make_session(speech_encoder_path, providers_list)
+            embed_tokens_session = make_session(embed_tokens_path, providers_list)
+            language_model_session = make_session(language_model_path, providers_list)
 
             # Decoder: CPU-only by default (avoids /istft/... shape failure on CoreML)
             cond_decoder_session = make_session(
-                conditional_decoder_path, decoder_providers)
+                conditional_decoder_path, decoder_providers
+            )
 
             last_exc = None
             break
@@ -312,7 +314,6 @@ def _get_sessions(dtype: str, providers_override: Tuple[str, ...] = ()):
         except Exception as exc:
             last_exc = exc
 
-            msg = str(exc)
             # If failure is specifically the ISTFT shape error, don't keep retrying the same provider set.
             # We'll just move on to the next provider attempt for encoder/LM.
             logger.warning(
@@ -350,15 +351,16 @@ def _encode_speaker(
         import librosa
     except Exception as exc:
         raise ImportError(
-            "librosa is required to load the voice prompt audio.") from exc
+            "librosa is required to load the voice prompt audio."
+        ) from exc
 
     audio_values, _ = librosa.load(resolved_path, sr=SAMPLE_RATE, mono=True)
     audio_values = audio_values[np.newaxis, :].astype(np.float32)
 
     encoder_input_name = speech_encoder_session.get_inputs()[0].name
     encoder_input = {encoder_input_name: audio_values}
-    cond_emb, prompt_token, speaker_embeddings, speaker_features = speech_encoder_session.run(
-        None, encoder_input
+    cond_emb, prompt_token, speaker_embeddings, speaker_features = (
+        speech_encoder_session.run(None, encoder_input)
     )
     return cond_emb, prompt_token, speaker_embeddings, speaker_features
 
@@ -367,7 +369,9 @@ def _init_past_key_values(
     language_model_session, batch_size: int
 ) -> Tuple[Dict[str, np.ndarray], list[str]]:
     past_inputs = [
-        inp for inp in language_model_session.get_inputs() if "past_key_values" in inp.name
+        inp
+        for inp in language_model_session.get_inputs()
+        if "past_key_values" in inp.name
     ]
     past_key_names = [inp.name for inp in past_inputs]
     past_key_values: Dict[str, np.ndarray] = {}
@@ -405,10 +409,11 @@ def _update_past_key_values(
     present_values: list[np.ndarray],
 ) -> Dict[str, np.ndarray]:
     outputs = language_model_session.get_outputs()
-    present_outputs = [
-        out.name for out in outputs if "present_key_values" in out.name]
+    present_outputs = [out.name for out in outputs if "present_key_values" in out.name]
 
-    if present_outputs and len(present_outputs) == len(past_key_names) == len(present_values):
+    if present_outputs and len(present_outputs) == len(past_key_names) == len(
+        present_values
+    ):
         return {key: value for key, value in zip(past_key_names, present_values)}
 
     if len(past_key_names) == len(present_values):
@@ -461,11 +466,9 @@ def text_to_speech(
             dtype_key, resolved_path, mtime_ns, providers_override
         )
 
-        input_ids = tokenizer(text, return_tensors="np")[
-            "input_ids"].astype(np.int64)
+        input_ids = tokenizer(text, return_tensors="np")["input_ids"].astype(np.int64)
         embed_input_name = embed_tokens_session.get_inputs()[0].name
-        prompt_embeds = embed_tokens_session.run(
-            None, {embed_input_name: input_ids})[0]
+        prompt_embeds = embed_tokens_session.run(None, {embed_input_name: input_ids})[0]
         inputs_embeds = np.concatenate((cond_emb, prompt_embeds), axis=1)
 
         batch_size, seq_len, _ = inputs_embeds.shape
@@ -474,8 +477,8 @@ def text_to_speech(
         )
 
         attention_mask = np.ones((batch_size, seq_len), dtype=np.int64)
-        position_ids = np.arange(seq_len, dtype=np.int64).reshape(1, -1).repeat(
-            batch_size, axis=0
+        position_ids = (
+            np.arange(seq_len, dtype=np.int64).reshape(1, -1).repeat(batch_size, axis=0)
         )
 
         repetition_penalty_processor = RepetitionPenaltyLogitsProcessor(
@@ -525,8 +528,7 @@ def text_to_speech(
 
         if use_coreml and not providers_override:
             try:
-                cpu_sessions = _get_sessions(
-                    dtype_key, ("CPUExecutionProvider",))
+                cpu_sessions = _get_sessions(dtype_key, ("CPUExecutionProvider",))
                 _cpu_speech, cpu_embed, cpu_lm, _cpu_decoder = cpu_sessions
                 cpu_past_key_values, cpu_past_key_names = _init_past_key_values(
                     cpu_lm, batch_size
@@ -545,9 +547,7 @@ def text_to_speech(
                 next_token = np.argmax(
                     next_token_logits, axis=-1, keepdims=True
                 ).astype(np.int64)
-                generate_tokens = np.concatenate(
-                    (generate_tokens, next_token), axis=-1
-                )
+                generate_tokens = np.concatenate((generate_tokens, next_token), axis=-1)
                 if not (next_token.flatten() == STOP_SPEECH_TOKEN).all():
                     past_key_values = _update_past_key_values(
                         cpu_lm, cpu_past_key_names, present_values
@@ -556,8 +556,7 @@ def text_to_speech(
                         past_key_values, language_model_session
                     )
                     attention_mask = np.concatenate(
-                        [attention_mask, np.ones(
-                            (batch_size, 1), dtype=np.int64)],
+                        [attention_mask, np.ones((batch_size, 1), dtype=np.int64)],
                         axis=1,
                     )
                     position_ids = position_ids[:, -1:] + 1
@@ -592,14 +591,12 @@ def text_to_speech(
             present_values = outputs[1:]
 
             logits = logits[:, -1, :]
-            next_token_logits = repetition_penalty_processor(
-                generate_tokens, logits)
+            next_token_logits = repetition_penalty_processor(generate_tokens, logits)
             next_token = np.argmax(next_token_logits, axis=-1, keepdims=True).astype(
                 np.int64
             )
 
-            generate_tokens = np.concatenate(
-                (generate_tokens, next_token), axis=-1)
+            generate_tokens = np.concatenate((generate_tokens, next_token), axis=-1)
             if (next_token.flatten() == STOP_SPEECH_TOKEN).all():
                 break
 
@@ -611,19 +608,21 @@ def text_to_speech(
                 [attention_mask, np.ones((batch_size, 1), dtype=np.int64)], axis=1
             )
             position_ids = position_ids[:, -1:] + 1
-            current_embeds = embed_tokens_session.run(None, {embed_input_name: next_token})[
-                0
-            ]
+            current_embeds = embed_tokens_session.run(
+                None, {embed_input_name: next_token}
+            )[0]
 
         speech_tokens = generate_tokens[:, 1:]
         if speech_tokens.shape[1] and (speech_tokens[:, -1] == STOP_SPEECH_TOKEN).all():
             speech_tokens = speech_tokens[:, :-1]
 
         silence_tokens = np.full(
-            (speech_tokens.shape[0], 3), SILENCE_TOKEN, dtype=np.int64)
+            (speech_tokens.shape[0], 3), SILENCE_TOKEN, dtype=np.int64
+        )
         prompt_token = np.asarray(prompt_token).astype(np.int64)
         speech_tokens = np.concatenate(
-            [prompt_token, speech_tokens, silence_tokens], axis=1)
+            [prompt_token, speech_tokens, silence_tokens], axis=1
+        )
 
         wav = cond_decoder_session.run(
             None,
@@ -652,9 +651,7 @@ def text_to_speech(
     dtype_key = (dtype or "fp32").strip().lower()
     try:
         sessions = _get_sessions(dtype_key, ())
-        return run_with_sessions(
-            sessions, dtype_key=dtype_key, providers_override=()
-        )
+        return run_with_sessions(sessions, dtype_key=dtype_key, providers_override=())
     except Exception as exc:
         # CoreML EP can fail at runtime for dynamic/empty shapes; retry with MPS then CPU.
         if _is_coreml_runtime_failure(exc):

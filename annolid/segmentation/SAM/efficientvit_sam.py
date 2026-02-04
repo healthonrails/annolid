@@ -14,11 +14,11 @@ from copy import deepcopy
 from typing import Any, Tuple, Union
 
 """
-References: 
+References:
 
 EfficientViT-SAM: Accelerated Segment Anything Model Without Performance Loss
 @article{cai2022efficientvit,
-  title={Efficientvit: Enhanced linear attention for high-resolution 
+  title={Efficientvit: Enhanced linear attention for high-resolution
   low-computation visual recognition},
   author={Cai, Han and Gan, Chuang and Han, Song},
   journal={arXiv preprint arXiv:2205.14756},

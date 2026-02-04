@@ -30,7 +30,8 @@ def test_import_deeplabcut_training_data_writes_labelme_json(tmp_path: Path) -> 
     Image.new("RGB", (100, 80), color=(10, 20, 30)).save(image)
 
     _write_collected_data_csv(
-        seg / "CollectedData_test.csv", folder="seg-1", image_name="img00001.png")
+        seg / "CollectedData_test.csv", folder="seg-1", image_name="img00001.png"
+    )
 
     summary = import_deeplabcut_training_data(
         DeepLabCutTrainingImportConfig(
@@ -60,7 +61,9 @@ def test_import_deeplabcut_training_data_writes_labelme_json(tmp_path: Path) -> 
     assert schema_path.exists()
 
 
-def test_import_deeplabcut_training_data_can_write_pose_schema_without_overwrite(tmp_path: Path) -> None:
+def test_import_deeplabcut_training_data_can_write_pose_schema_without_overwrite(
+    tmp_path: Path,
+) -> None:
     dataset = tmp_path / "dlc_dataset"
     labeled = dataset / "labeled-data"
     seg = labeled / "seg-1"
@@ -86,7 +89,8 @@ def test_import_deeplabcut_training_data_can_write_pose_schema_without_overwrite
     )
 
     _write_collected_data_csv(
-        seg / "CollectedData_test.csv", folder="seg-1", image_name="img00001.png")
+        seg / "CollectedData_test.csv", folder="seg-1", image_name="img00001.png"
+    )
 
     summary = import_deeplabcut_training_data(
         DeepLabCutTrainingImportConfig(

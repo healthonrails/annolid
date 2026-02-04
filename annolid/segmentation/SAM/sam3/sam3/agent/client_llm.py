@@ -111,7 +111,7 @@ def send_generate_request(
     """
     try:
         from openai import OpenAI
-    except ImportError as exc:
+    except ImportError:
         print(
             "OpenAI client is required for agent mode. "
             "Install it with `pip install openai`."
@@ -119,8 +119,7 @@ def send_generate_request(
         raise
 
     # Resolve defaults from Annolid LLM settings (Ollama/OpenAI-compatible/Gemini).
-    model, server_url, api_key = _resolve_llm_defaults(
-        model, server_url, api_key)
+    model, server_url, api_key = _resolve_llm_defaults(model, server_url, api_key)
     if server_url is None:
         # Final safety net: assume local Ollama.
         host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -168,12 +167,10 @@ def send_generate_request(
                         )
 
                     except FileNotFoundError:
-                        print(
-                            f"Warning: Image file not found: {new_image_path}")
+                        print(f"Warning: Image file not found: {new_image_path}")
                         continue
                     except Exception as e:
-                        print(
-                            f"Warning: Error processing image {new_image_path}: {e}")
+                        print(f"Warning: Error processing image {new_image_path}: {e}")
                         continue
                 else:
                     processed_content.append(c)

@@ -32,12 +32,23 @@ class CSVPointCloudMappingDialog(QtWidgets.QDialog):
         for key, cb in (("intensity", self.intensity_cb), ("i", self.intensity_cb)):
             if key in lower:
                 cb.setCurrentText(lower[key])
-        for key, cb in (("label", self.color_cb), ("class", self.color_cb), ("color", self.color_cb)):
+        for key, cb in (
+            ("label", self.color_cb),
+            ("class", self.color_cb),
+            ("color", self.color_cb),
+        ):
             if key in lower:
                 cb.setCurrentText(lower[key])
         # autopick for region labels
-        for key, cb in (("region", self.label_cb), ("name", self.label_cb), ("area", self.label_cb), ("label", self.label_cb)):
-             if key in lower and cb.currentText() == "<None>": # only if not already picked
+        for key, cb in (
+            ("region", self.label_cb),
+            ("name", self.label_cb),
+            ("area", self.label_cb),
+            ("label", self.label_cb),
+        ):
+            if (
+                key in lower and cb.currentText() == "<None>"
+            ):  # only if not already picked
                 cb.setCurrentText(lower[key])
 
         form.addRow("X column", self.x_cb)
@@ -85,6 +96,7 @@ class CSVPointCloudMappingDialog(QtWidgets.QDialog):
         def val(cb):
             t = cb.currentText()
             return None if t == "<None>" else t
+
         return {
             "x": self.x_cb.currentText(),
             "y": self.y_cb.currentText(),

@@ -121,7 +121,9 @@ def run_yolo_cli(
     merged_env.setdefault("MPLBACKEND", "Agg")
 
     if output_sink is None:
-        def output_sink(_line): return None
+
+        def output_sink(_line):
+            return None
 
     cmd_list = [str(part) for part in command]
     proc = subprocess.Popen(
@@ -144,7 +146,11 @@ def run_yolo_cli(
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
-            if stop_event is not None and getattr(stop_event, "is_set", None) and stop_event.is_set():
+            if (
+                stop_event is not None
+                and getattr(stop_event, "is_set", None)
+                and stop_event.is_set()
+            ):
                 _terminate_process_tree(proc)
                 raise RuntimeError("YOLO training cancelled.")
             output_sink(line)
@@ -158,7 +164,9 @@ def run_yolo_cli(
             pass
 
     returncode = proc.wait()
-    return YOLOCLICompleted(command=list(cmd_list), returncode=returncode, output_tail=tail)
+    return YOLOCLICompleted(
+        command=list(cmd_list), returncode=returncode, output_tail=tail
+    )
 
 
 def ensure_parent_dir(path_str: str) -> str:

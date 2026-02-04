@@ -32,4 +32,3 @@ def test_pose_schema_normalize_prefixed_keypoints_only_when_fully_expanded() -> 
     schema.normalize_prefixed_keypoints()
     assert schema.instances == ["intruder", "resident"]
     assert schema.keypoints == ["left_ear", "tail_base"]
-

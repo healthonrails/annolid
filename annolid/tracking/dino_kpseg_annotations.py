@@ -112,9 +112,7 @@ class DinoKPSEGAnnotationParser:
             if raw_label:
                 self._polygon_label_to_gid[raw_label] = int(gid)
             if polygon:
-                polygon_masks[gid] = self.adapter.mask_bitmap_from_polygon(
-                    polygon
-                )
+                polygon_masks[gid] = self.adapter.mask_bitmap_from_polygon(polygon)
 
         keypoints_by_instance: Dict[str, Dict[str, Tuple[float, float]]] = {}
         for shape in shapes:
@@ -135,9 +133,7 @@ class DinoKPSEGAnnotationParser:
             x, y = float(point[0]), float(point[1])
 
             if gid is None:
-                gid = self._assign_group_for_point(
-                    x, y, polygon_masks, polygons
-                )
+                gid = self._assign_group_for_point(x, y, polygon_masks, polygons)
             if gid is None:
                 continue
             inst_key = str(int(gid))
@@ -147,9 +143,7 @@ class DinoKPSEGAnnotationParser:
         for gid, _, polygon in polygons:
             inst_key = str(int(gid))
             mask = polygon_masks.get(int(gid))
-            registry.ensure_instance(inst_key).set_mask(
-                bitmap=mask, polygon=polygon
-            )
+            registry.ensure_instance(inst_key).set_mask(bitmap=mask, polygon=polygon)
 
         for inst_key, points in keypoints_by_instance.items():
             for kpt_label, (x, y) in points.items():
@@ -183,7 +177,12 @@ class DinoKPSEGAnnotationParser:
     ) -> Optional[int]:
         xi = int(round(float(x)))
         yi = int(round(float(y)))
-        if xi < 0 or yi < 0 or xi >= int(self.image_width) or yi >= int(self.image_height):
+        if (
+            xi < 0
+            or yi < 0
+            or xi >= int(self.image_width)
+            or yi >= int(self.image_height)
+        ):
             return None
 
         for gid, mask in polygon_masks.items():
@@ -210,4 +209,3 @@ class DinoKPSEGAnnotationParser:
                 best_dist = dist
                 best_gid = int(gid)
         return best_gid
-

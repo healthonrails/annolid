@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from annolid.utils.annotation_store import AnnotationStore
 
 

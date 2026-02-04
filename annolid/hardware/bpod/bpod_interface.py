@@ -8,6 +8,7 @@ from types import SimpleNamespace
 try:
     import serial  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
+
     class _MissingPySerial:
         def __init__(self, *_args, **_kwargs):
             raise ModuleNotFoundError(
@@ -15,19 +16,18 @@ except ModuleNotFoundError:  # pragma: no cover
                 "Install it with `pip install pyserial`."
             )
 
-    serial = SimpleNamespace(Serial=_MissingPySerial,
-                             SerialException=Exception)
+    serial = SimpleNamespace(Serial=_MissingPySerial, SerialException=Exception)
 
 
 class BpodStateMachine:
     """
     A Python class for communicating with a Bpod State Machine via its USB serial port.
 
-    This class provides methods to send commands to the Bpod and receive responses, 
+    This class provides methods to send commands to the Bpod and receive responses,
     allowing control and data acquisition during experiments.
 
     Example usage:
-        bpod = BpodStateMachine("/dev/tty.usbmodem1234567") 
+        bpod = BpodStateMachine("/dev/tty.usbmodem1234567")
         bpod.connect()
         # ... use Bpod commands ...
         bpod.disconnect()
@@ -57,8 +57,7 @@ class BpodStateMachine:
         """
         Establishes a serial connection to the Bpod State Machine.
         """
-        self.ser = serial.Serial(
-            self.port, self.baudrate, timeout=self.timeout)
+        self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
         time.sleep(0.15)  # Wait for discovery byte
 
     def disconnect(self):
@@ -66,7 +65,7 @@ class BpodStateMachine:
         Closes the serial connection to the Bpod State Machine.
         """
         if self.ser:
-            self.send_command('Z')  # Disconnect command
+            self.send_command("Z")  # Disconnect command
             self.ser.close()
             self.ser = None
 
@@ -113,7 +112,7 @@ class BpodStateMachine:
         Raises:
             Exception: If the handshake fails.
         """
-        self.send_command('6')  # Handshake
+        self.send_command("6")  # Handshake
         response = self.read_response()
         if response and response[0] != 53:  # ASCII '5'
             raise Exception("Handshake failed.")
@@ -127,16 +126,16 @@ class BpodStateMachine:
         Returns:
             tuple: A tuple containing the firmware version (int) and machine type (int).
         """
-        self.send_command('F')
+        self.send_command("F")
         firmware_bytes = self.read_response(2)
         machine_type_bytes = self.read_response(2)
-        self.firmware_version = struct.unpack('<H', firmware_bytes)[0]
-        self.machine_type = struct.unpack('<H', machine_type_bytes)[0]
+        self.firmware_version = struct.unpack("<H", firmware_bytes)[0]
+        self.machine_type = struct.unpack("<H", machine_type_bytes)[0]
         return self.firmware_version, self.machine_type
 
     def reset_session_clock(self):
         """Resets the session clock on the Bpod."""
-        self.send_command('*')
+        self.send_command("*")
         response = self.read_response()
         if response and response[0] != 1:
             raise Exception("Session clock reset failed")  # Add exception
@@ -148,7 +147,7 @@ class BpodStateMachine:
         Returns:
             int: The timestamp transmission scheme (0 for post-trial, 1 for live).
         """
-        self.send_command('G')
+        self.send_command("G")
         scheme_byte = self.read_response()
         self.timestamp_transmission_scheme = scheme_byte[0]
         return self.timestamp_transmission_scheme
@@ -160,9 +159,9 @@ class BpodStateMachine:
         Returns:
             dict: A dictionary containing the hardware configuration parameters.
         """
-        self.send_command('H')
-        max_states = struct.unpack('<H', self.read_response(2))[0]
-        timer_period = struct.unpack('<H', self.read_response(2))[0]
+        self.send_command("H")
+        max_states = struct.unpack("<H", self.read_response(2))[0]
+        timer_period = struct.unpack("<H", self.read_response(2))[0]
         max_serial_events = self.read_response()[0]
         n_global_timers = self.read_response()[0]
         n_global_counters = self.read_response()[0]
@@ -189,7 +188,8 @@ class BpodStateMachine:
 
         # Calculate n_modules:  Count instances of 'U' in the outputDescriptionArray
         self.n_modules = output_description_array.count(
-            b'U')  # Assuming 'U' is represented as bytes
+            b"U"
+        )  # Assuming 'U' is represented as bytes
 
         return self.hardware_config
 
@@ -198,9 +198,9 @@ class BpodStateMachine:
         Retrieves information about connected modules.
 
         Returns:
-             list: A list of dictionaries, each containing information about a module. 
+             list: A list of dictionaries, each containing information about a module.
         """
-        self.send_command('M')
+        self.send_command("M")
 
         module_info = []  # List to store info for each module.
         # Iterate through potential module connection points:
@@ -211,26 +211,27 @@ class BpodStateMachine:
             if module_connected == 1:
                 module_data = {}
                 module_data["moduleFirmwareVersion"] = struct.unpack(
-                    "<I", self.read_response(4))[0]
+                    "<I", self.read_response(4)
+                )[0]
                 module_name_length = self.read_response()[0]
                 module_data["moduleName"] = self.read_response(
-                    module_name_length).decode()  # Decode bytes to string
+                    module_name_length
+                ).decode()  # Decode bytes to string
                 more_info_follows = self.read_response()[0]
 
                 while more_info_follows == 1:
                     # Info type is a single ASCII character.
                     info_type = self.read_response().decode()
-                    if info_type == '#':
+                    if info_type == "#":
                         # Requested number of events.
                         module_data["nEvents"] = self.read_response()[0]
-                    elif info_type == 'E':
+                    elif info_type == "E":
                         n_event_names = self.read_response()[0]
                         module_data["eventNames"] = []
                         for _ in range(n_event_names):
                             event_name_length = self.read_response()[0]
                             # Decode to string.
-                            event_name = self.read_response(
-                                event_name_length).decode()
+                            event_name = self.read_response(event_name_length).decode()
                             module_data["eventNames"].append(event_name)
                     more_info_follows = self.read_response()[0]
                 module_info.append(module_data)  # append to list
@@ -243,21 +244,22 @@ class BpodStateMachine:
 
     def set_module_event_allocation(self, event_allocation):
         """
-       Sets the number of behavior events allocated to each module.
+        Sets the number of behavior events allocated to each module.
 
-       Args:
-           event_allocation (list): A list of integers, where each integer represents
-               the number of events allocated to the corresponding module.
+        Args:
+            event_allocation (list): A list of integers, where each integer represents
+                the number of events allocated to the corresponding module.
 
-       Raises:
-           Exception: If the number of allocations does not match the number of modules.
-       """
+        Raises:
+            Exception: If the number of allocations does not match the number of modules.
+        """
         if len(event_allocation) != self.n_modules:
             raise Exception(
-                "Number of event allocations must match the number of modules.")
+                "Number of event allocations must match the number of modules."
+            )
 
-        data = b'%' + bytes(event_allocation)  # % is the command code
-        self.send_command('', data=data)
+        data = b"%" + bytes(event_allocation)  # % is the command code
+        self.send_command("", data=data)
 
         response = self.read_response()  # Confirmation byte
         if response and response[0] != 1:
@@ -268,7 +270,7 @@ class BpodStateMachine:
         Sets the enabled/disabled state of each input channel.
 
         Args:
-            channel_states (list or bytes): A list/bytes of 0s and 1s, representing disabled or enabled, 
+            channel_states (list or bytes): A list/bytes of 0s and 1s, representing disabled or enabled,
             respectively, with each value corresponding to an input channel.
             The length must match the 'nInputs' value from the hardware config.
 
@@ -278,15 +280,17 @@ class BpodStateMachine:
 
         if self.hardware_config is None or "nInputs" not in self.hardware_config:
             raise Exception(
-                "Hardware configuration not retrieved. Call get_hardware_config() first.")
+                "Hardware configuration not retrieved. Call get_hardware_config() first."
+            )
 
-        n_inputs = self.hardware_config['nInputs']
+        n_inputs = self.hardware_config["nInputs"]
         if len(channel_states) != n_inputs:
             raise Exception(
-                f"Length of channel_states ({len(channel_states)}) does not match nInputs ({n_inputs})")
+                f"Length of channel_states ({len(channel_states)}) does not match nInputs ({n_inputs})"
+            )
 
-        data = b'E' + bytes(channel_states)  # Command code plus states
-        self.send_command('', data=data)
+        data = b"E" + bytes(channel_states)  # Command code plus states
+        self.send_command("", data=data)
         response = self.read_response()
         if response and response[0] != 1:
             raise Exception("Setting input channel states failed.")
@@ -307,8 +311,8 @@ class BpodStateMachine:
         if state not in [0, 1]:
             raise ValueError("Invalid relay state. Must be 0 or 1.")
 
-        data = b'J' + bytes([module_number, state])  # 'J' is the command code
-        self.send_command('', data=data)
+        data = b"J" + bytes([module_number, state])  # 'J' is the command code
+        self.send_command("", data=data)
 
     def set_state_sync_channel(self, output_channel, sync_mode):
         """
@@ -323,15 +327,20 @@ class BpodStateMachine:
         """
 
         # Correct index check
-        if not 0 <= output_channel < len(self.hardware_config["outputDescriptionArray"]):
+        if (
+            not 0
+            <= output_channel
+            < len(self.hardware_config["outputDescriptionArray"])
+        ):
             raise ValueError(
-                f"Invalid output channel. Must be between 0 and {len(self.hardware_config['outputDescriptionArray']) - 1}")
+                f"Invalid output channel. Must be between 0 and {len(self.hardware_config['outputDescriptionArray']) - 1}"
+            )
 
         if sync_mode not in [0, 1]:
             raise ValueError("Invalid sync mode. Must be 0 or 1.")
 
-        data = b'K' + bytes([output_channel, sync_mode])
-        self.send_command('', data=data)
+        data = b"K" + bytes([output_channel, sync_mode])
+        self.send_command("", data=data)
         response = self.read_response()
         if response and response[0] != 1:
             raise Exception("Setting state sync channel failed.")
@@ -345,14 +354,14 @@ class BpodStateMachine:
             new_state (int): The new state of the channel.
 
         Raises:
-            ValueError: If the channel index is out of range.  
+            ValueError: If the channel index is out of range.
         """
-        if not 0 <= channel_index < len(self.hardware_config['outputDescriptionArray']):
+        if not 0 <= channel_index < len(self.hardware_config["outputDescriptionArray"]):
             raise ValueError("Invalid output channel index.")
 
         # 'O' is the command code
-        data = b'O' + bytes([channel_index, new_state])
-        self.send_command('', data=data)
+        data = b"O" + bytes([channel_index, new_state])
+        self.send_command("", data=data)
 
     def read_digital_input(self, channel_index):
         """
@@ -370,8 +379,8 @@ class BpodStateMachine:
         if not 0 <= channel_index < len(self.hardware_config["inputDescriptionArray"]):
             raise ValueError("Invalid input channel index.")
 
-        data = b'I' + bytes([channel_index])  # Command code and channel index
-        self.send_command('', data=data)
+        data = b"I" + bytes([channel_index])  # Command code and channel index
+        self.send_command("", data=data)
 
         state = self.read_response()[0]
         return state
@@ -391,9 +400,10 @@ class BpodStateMachine:
         if not 0 <= module_index < self.n_modules:
             raise ValueError("Invalid module index.")
         n_bytes = len(message)
-        data = b'T' + bytes([module_index, n_bytes]) + \
-            message  # 'T' is the command code
-        self.send_command('', data=data)
+        data = (
+            b"T" + bytes([module_index, n_bytes]) + message
+        )  # 'T' is the command code
+        self.send_command("", data=data)
 
     def store_serial_messages(self, module_index, messages):
         """
@@ -412,7 +422,7 @@ class BpodStateMachine:
             raise ValueError("Invalid module index.")
 
         n_messages = len(messages)
-        data = b'L' + bytes([module_index, n_messages])
+        data = b"L" + bytes([module_index, n_messages])
 
         for message_index, message in messages:
             if not 1 <= message_index <= 255:
@@ -422,10 +432,9 @@ class BpodStateMachine:
             if not 1 <= message_length <= 3:
                 raise ValueError("Message length must be between 1 and 3.")
 
-            data += bytes([message_index, message_length]) + \
-                message  # Add each message
+            data += bytes([message_index, message_length]) + message  # Add each message
 
-        self.send_command('', data=data)
+        self.send_command("", data=data)
         response = self.read_response()
         if response and response[0] != 1:
             raise Exception("Storing serial messages failed.")
@@ -435,7 +444,7 @@ class BpodStateMachine:
         Clears all the serial message libraries of each module.
         Restores each message to default (a message of length 1, value=index).
         """
-        self.send_command('>')
+        self.send_command(">")
         response = self.read_response()
         if response and response[0] != 1:
             raise Exception("Clearing message libraries failed.")
@@ -455,9 +464,8 @@ class BpodStateMachine:
 
         if not 0 <= module_index < self.n_modules:  # Check if module index is valid
             raise ValueError("Invalid module index.")  # Clearer error message
-        data = b'U' + bytes([module_index, message_index]
-                            )  # 'U' is the command
-        self.send_command('', data=data)
+        data = b"U" + bytes([module_index, message_index])  # 'U' is the command
+        self.send_command("", data=data)
 
     def echo_soft_code(self, soft_code):
         """
@@ -470,8 +478,8 @@ class BpodStateMachine:
             int: The echoed soft code.
 
         """
-        data = b'S' + bytes([soft_code])  # 'S' is the command
-        self.send_command('', data=data)
+        data = b"S" + bytes([soft_code])  # 'S' is the command
+        self.send_command("", data=data)
         op_code = self.read_response()[0]  # Should be 2
         echoed_code = self.read_response()[0]
 
@@ -486,8 +494,8 @@ class BpodStateMachine:
         Args:
             soft_code (int): The soft code to send.
         """
-        data = b'~' + bytes([soft_code])  # '~' is the command
-        self.send_command('', data=data)
+        data = b"~" + bytes([soft_code])  # '~' is the command
+        self.send_command("", data=data)
 
     def override_input_channel(self, channel_index, new_value):
         """
@@ -498,8 +506,8 @@ class BpodStateMachine:
             new_value (int): The new value for the channel (0 = low, 1 = high).
         """
 
-        data = b'V' + bytes([channel_index, new_value])  # 'V' is the command
-        self.send_command('', data=data)
+        data = b"V" + bytes([channel_index, new_value])  # 'V' is the command
+        self.send_command("", data=data)
 
     def send_state_machine_description(self, state_machine_description):
         """
@@ -511,9 +519,9 @@ class BpodStateMachine:
         Args:
             state_machine_description (bytes): The byte string representing the state machine description.
         """
-        data = b'C' + state_machine_description  # 'C' is the command
+        data = b"C" + state_machine_description  # 'C' is the command
 
-        self.send_command('', data=data)  # No immediate confirmation for 'C'
+        self.send_command("", data=data)  # No immediate confirmation for 'C'
 
     def run_state_machine(self):
         """
@@ -526,7 +534,7 @@ class BpodStateMachine:
                     (if applicable).
 
         """
-        self.send_command('R')
+        self.send_command("R")
 
         # Get confirmation byte (if a new state machine was sent)
         confirmation = self.read_response()  # May need to adapt to handle both cases
@@ -535,8 +543,9 @@ class BpodStateMachine:
             # Handle failure appropriately
             raise Exception("Uploading of new state machine failed")
 
-        trial_start_timestamp = struct.unpack('<Q', self.read_response(8))[
-            0]  # 64-bit unsigned int
+        trial_start_timestamp = struct.unpack("<Q", self.read_response(8))[
+            0
+        ]  # 64-bit unsigned int
 
         trial_events = []
         while True:  # Main trial running loop
@@ -549,12 +558,12 @@ class BpodStateMachine:
                     event_code = self.read_response()[0]
                     event_codes.append(event_code)
                     if self.timestamp_transmission_scheme == 1:  # Live timestamps
-                        timestamp = struct.unpack('<I', self.read_response(4))[
-                            0]  # 32 bit int
+                        timestamp = struct.unpack("<I", self.read_response(4))[
+                            0
+                        ]  # 32 bit int
                         timestamps.append(timestamp)
 
-                trial_events.append(
-                    (event_codes, timestamps))  # Store as tuple
+                trial_events.append((event_codes, timestamps))  # Store as tuple
 
             elif op_code == 2:  # Soft code
                 soft_code = self.read_response()[0]  # Get soft code
@@ -562,21 +571,31 @@ class BpodStateMachine:
                 print(f"Soft code received: {soft_code}")
 
             if event_codes and event_codes[-1] == 255:  # Exit state
-                n_cycles_completed = struct.unpack(
-                    '<I', self.read_response(4))[0]  # 32-bit
-                trial_end_timestamp = struct.unpack(
-                    '<Q', self.read_response(8))[0]  # 64-bit
+                n_cycles_completed = struct.unpack("<I", self.read_response(4))[
+                    0
+                ]  # 32-bit
+                trial_end_timestamp = struct.unpack("<Q", self.read_response(8))[
+                    0
+                ]  # 64-bit
 
                 post_trial_timestamps = []
                 if self.timestamp_transmission_scheme == 0:  # Post trial
-                    n_timestamps = struct.unpack(
-                        '<H', self.read_response(2))[0]  # 16-bit
+                    n_timestamps = struct.unpack("<H", self.read_response(2))[
+                        0
+                    ]  # 16-bit
                     for _ in range(n_timestamps):
-                        timestamp = struct.unpack('<I', self.read_response(4))[
-                            0]  # 32 bit int
+                        timestamp = struct.unpack("<I", self.read_response(4))[
+                            0
+                        ]  # 32 bit int
                         post_trial_timestamps.append(timestamp)
 
-                return trial_start_timestamp, trial_events, n_cycles_completed, trial_end_timestamp, post_trial_timestamps
+                return (
+                    trial_start_timestamp,
+                    trial_events,
+                    n_cycles_completed,
+                    trial_end_timestamp,
+                    post_trial_timestamps,
+                )
 
     def force_exit_state_machine(self):
         """
@@ -584,8 +603,10 @@ class BpodStateMachine:
         The returned data format is the same as run_state_machine().
         """
 
-        self.send_command('X')
-        return self.run_state_machine()  # Data returned in the same format as regular run
+        self.send_command("X")
+        return (
+            self.run_state_machine()
+        )  # Data returned in the same format as regular run
 
 
 class BpodController:
@@ -608,8 +629,7 @@ class BpodController:
             self.serial_connection = conn
             return conn
         except Exception:
-            self._logger.exception(
-                "Failed to connect to Bpod on %s", self.port)
+            self._logger.exception("Failed to connect to Bpod on %s", self.port)
             raise
 
     def disconnect(self) -> None:
@@ -622,8 +642,7 @@ class BpodController:
             if getattr(conn, "is_open", False):
                 conn.close()
         except Exception:
-            self._logger.debug(
-                "Failed to close Bpod serial connection.", exc_info=True)
+            self._logger.debug("Failed to close Bpod serial connection.", exc_info=True)
 
     def send_event(self, event_code: int) -> None:
         """Send a single event byte to the Bpod."""

@@ -25,9 +25,9 @@ def build_BoT_SORT_tracker():
         match_thresh=0.22734550911325851,
         proximity_thresh=0.5945380911899254,
         appearance_thresh=0.4818211117541298,
-        cmc_method='sparseOptFlow',
+        cmc_method="sparseOptFlow",
         frame_rate=30,
-        lambda_=0.9896143462366406
+        lambda_=0.9896143462366406,
     )
 
     # Return the tracker instance

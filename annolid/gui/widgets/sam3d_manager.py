@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
 from annolid.gui.widgets.sam3d_settings_dialog import Sam3DSettingsDialog
@@ -16,7 +16,7 @@ from annolid.three_d import sam3d_client
 from annolid.three_d.sam3d_backend import Sam3DBackendError
 from annolid.utils.logger import logger
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
-from labelme import utils
+from annolid.gui.window_base import utils
 
 
 class Sam3DManager(QtCore.QObject):
@@ -32,8 +32,7 @@ class Sam3DManager(QtCore.QObject):
     def _sam3d_client_config(self) -> sam3d_client.Sam3DClientConfig:
         cfg_block = {}
         try:
-            cfg_block = dict(
-                (self.window._config or {}).get("sam3d", {}) or {})
+            cfg_block = dict((self.window._config or {}).get("sam3d", {}) or {})
         except Exception:
             cfg_block = {}
         try:
@@ -142,15 +141,18 @@ class Sam3DManager(QtCore.QObject):
             return
 
         video_path = Path(w.video_file)
-        out_dir_cfg = (self.window._config or {}).get(
-            "sam3d", {}).get("output_dir", None)
+        out_dir_cfg = (
+            (self.window._config or {}).get("sam3d", {}).get("output_dir", None)
+        )
         output_dir = (
             Path(out_dir_cfg).expanduser()
             if out_dir_cfg
             else video_path.parent / f"{video_path.stem}_sam3d"
         )
         output_dir.mkdir(parents=True, exist_ok=True)
-        basename = f"{video_path.stem}_f{w.frame_number:06d}_{shape.label or 'instance'}"
+        basename = (
+            f"{video_path.stem}_f{w.frame_number:06d}_{shape.label or 'instance'}"
+        )
         metadata = {
             "video": str(video_path),
             "frame_index": int(w.frame_number),
@@ -163,13 +165,16 @@ class Sam3DManager(QtCore.QObject):
             basename=basename,
             metadata=metadata,
         )
-        runner = sam3d_client.run_subprocess if cfg.python_executable else sam3d_client.run_inprocess
+        runner = (
+            sam3d_client.run_subprocess
+            if cfg.python_executable
+            else sam3d_client.run_inprocess
+        )
         worker = FlexibleWorker(runner, cfg, job)
         worker_thread = QtCore.QThread(w)
         worker.moveToThread(worker_thread)
         worker.finished_signal.connect(
-            functools.partial(self._handle_sam3d_finished,
-                              worker_thread=worker_thread)
+            functools.partial(self._handle_sam3d_finished, worker_thread=worker_thread)
         )
         worker.finished_signal.connect(worker_thread.quit)
         worker_thread.started.connect(worker.run)
@@ -225,18 +230,15 @@ class Sam3DManager(QtCore.QObject):
                     VTKVolumeViewerDialog,
                 )
 
-                dlg = VTKVolumeViewerDialog(
-                    str(result.ply_path), parent=self.window)
+                dlg = VTKVolumeViewerDialog(str(result.ply_path), parent=self.window)
                 dlg.setModal(False)
                 dlg.show()
                 dlg.raise_()
                 dlg.activateWindow()
             except Exception as exc:
-                logger.debug(
-                    "Unable to open VTK viewer for SAM3D result: %s", exc)
+                logger.debug("Unable to open VTK viewer for SAM3D result: %s", exc)
             self.window.statusBar().showMessage(
-                self.window.tr("SAM 3D complete: %s") % str(
-                    result.ply_path), 5000
+                self.window.tr("SAM 3D complete: %s") % str(result.ply_path), 5000
             )
             self._maybe_offer_gradio_model3d(str(result.ply_path))
             return
@@ -251,8 +253,7 @@ class Sam3DManager(QtCore.QObject):
         answer = QtWidgets.QMessageBox.question(
             self.window,
             self.window.tr("Open in Gradio?"),
-            self.window.tr(
-                "Open the reconstructed PLY in a Gradio Model3D viewer?"),
+            self.window.tr("Open the reconstructed PLY in a Gradio Model3D viewer?"),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:

@@ -43,8 +43,8 @@ class LabelMeProcessor:
         Returns:
             tuple: The shape of the image (height, width).
         """
-        image_height = self.data['imageHeight']
-        image_width = self.data['imageWidth']
+        image_height = self.data["imageHeight"]
+        image_width = self.data["imageWidth"]
         return (image_height, image_width)
 
     def _extract_polygons(self):
@@ -54,8 +54,11 @@ class LabelMeProcessor:
         Returns:
             list: List of tuples containing polygon points and their labels.
         """
-        polygons = [(shape['points'], shape['label']) for shape in self.data['shapes']
-                    if shape['shape_type'] == 'polygon']
+        polygons = [
+            (shape["points"], shape["label"])
+            for shape in self.data["shapes"]
+            if shape["shape_type"] == "polygon"
+        ]
         return polygons
 
     def create_binary_mask(self, polygon_points):
@@ -82,8 +85,10 @@ class LabelMeProcessor:
         Returns:
             list: List of tuples containing binary masks and their labels.
         """
-        masks = [(self.create_binary_mask(polygon_points), label)
-                 for polygon_points, label in self.polygons]
+        masks = [
+            (self.create_binary_mask(polygon_points), label)
+            for polygon_points, label in self.polygons
+        ]
         return masks
 
     def visualize_masks(self, masks):
@@ -95,14 +100,14 @@ class LabelMeProcessor:
         """
         for i, (mask, label) in enumerate(masks):
             plt.figure(figsize=(10, 5))
-            plt.imshow(mask, cmap='gray')
-            plt.title(f'Binary Mask {i + 1}: {label}')
+            plt.imshow(mask, cmap="gray")
+            plt.title(f"Binary Mask {i + 1}: {label}")
         plt.show()
 
 
 # Example usage:
 if __name__ == "__main__":
-    json_path = 'path/to/labelme.json'
+    json_path = "path/to/labelme.json"
 
     processor = LabelMeProcessor(json_path)
     masks = processor.get_all_masks()

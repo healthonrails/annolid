@@ -3,9 +3,9 @@ import subprocess
 
 def has_gpu():
     try:
-        output = subprocess.check_output(['nvidia-smi'])
+        subprocess.check_output(["nvidia-smi"])
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -16,9 +16,9 @@ def get_device():
         return "cpu"
     torch.set_grad_enabled(False)
     if torch.cuda.is_available():
-        device = 'cuda'
+        device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = 'mps'
+        device = "mps"
     else:
-        device = 'cpu'
+        device = "cpu"
     return device

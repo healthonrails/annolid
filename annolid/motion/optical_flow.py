@@ -52,59 +52,104 @@ def optical_flow_settings_from(source: Any) -> Dict[str, Any]:
     prediction/tracking code without duplicating per-key plumbing.
     """
     compute_enabled = bool(
-        _read_setting(source, "compute_optical_flow",
-                      _read_setting(source, "optical_flow/compute", False))
+        _read_setting(
+            source,
+            "compute_optical_flow",
+            _read_setting(source, "optical_flow/compute", False),
+        )
     )
-    backend = str(
-        _read_setting(source, "optical_flow_backend",
-                      _read_setting(source, "optical_flow/backend", "farneback"))
-    ).strip().lower()
-    raft_model = str(
-        _read_setting(source, "optical_flow_raft_model",
-                      _read_setting(source, "optical_flow/raft_model", "small"))
-    ).strip().lower()
+    backend = (
+        str(
+            _read_setting(
+                source,
+                "optical_flow_backend",
+                _read_setting(source, "optical_flow/backend", "farneback"),
+            )
+        )
+        .strip()
+        .lower()
+    )
+    raft_model = (
+        str(
+            _read_setting(
+                source,
+                "optical_flow_raft_model",
+                _read_setting(source, "optical_flow/raft_model", "small"),
+            )
+        )
+        .strip()
+        .lower()
+    )
     if raft_model not in {"small", "large"}:
         raft_model = "small"
 
     # Prefer the GUI-exposed names, fall back to internal names used elsewhere.
     farneback_pyr_scale = _coerce_float(
-        _read_setting(source, "flow_farneback_pyr_scale",
-                      _read_setting(source, "farneback_pyr_scale", 0.5)),
+        _read_setting(
+            source,
+            "flow_farneback_pyr_scale",
+            _read_setting(source, "farneback_pyr_scale", 0.5),
+        ),
         0.5,
     )
-    farneback_levels = max(1, _coerce_int(
-        _read_setting(source, "flow_farneback_levels",
-                      _read_setting(source, "farneback_levels", 1)),
+    farneback_levels = max(
         1,
-    ))
-    farneback_winsize = max(1, _coerce_int(
-        _read_setting(source, "flow_farneback_winsize",
-                      _read_setting(source, "farneback_winsize", 1)),
+        _coerce_int(
+            _read_setting(
+                source,
+                "flow_farneback_levels",
+                _read_setting(source, "farneback_levels", 1),
+            ),
+            1,
+        ),
+    )
+    farneback_winsize = max(
         1,
-    ))
-    farneback_iterations = max(1, _coerce_int(
-        _read_setting(source, "flow_farneback_iterations",
-                      _read_setting(source, "farneback_iterations", 3)),
+        _coerce_int(
+            _read_setting(
+                source,
+                "flow_farneback_winsize",
+                _read_setting(source, "farneback_winsize", 1),
+            ),
+            1,
+        ),
+    )
+    farneback_iterations = max(
+        1,
+        _coerce_int(
+            _read_setting(
+                source,
+                "flow_farneback_iterations",
+                _read_setting(source, "farneback_iterations", 3),
+            ),
+            3,
+        ),
+    )
+    farneback_poly_n = max(
         3,
-    ))
-    farneback_poly_n = max(3, _coerce_int(
-        _read_setting(source, "flow_farneback_poly_n",
-                      _read_setting(source, "farneback_poly_n", 3)),
-        3,
-    ))
+        _coerce_int(
+            _read_setting(
+                source,
+                "flow_farneback_poly_n",
+                _read_setting(source, "farneback_poly_n", 3),
+            ),
+            3,
+        ),
+    )
     farneback_poly_sigma = _coerce_float(
-        _read_setting(source, "flow_farneback_poly_sigma",
-                      _read_setting(source, "farneback_poly_sigma", 1.1)),
+        _read_setting(
+            source,
+            "flow_farneback_poly_sigma",
+            _read_setting(source, "farneback_poly_sigma", 1.1),
+        ),
         1.1,
     )
 
-    scale = _coerce_float(_read_setting(
-        source, "optical_flow_scale", 1.0), 1.0)
+    scale = _coerce_float(_read_setting(source, "optical_flow_scale", 1.0), 1.0)
     if scale <= 0:
         scale = 1.0
     scale = min(1.0, scale)
-    max_dim = _coerce_pos_int_or_none(
-        _read_setting(source, "optical_flow_max_dim"))
+    max_dim = _coerce_pos_int_or_none(_read_setting(source, "optical_flow_max_dim"))
 
     return {
         "compute_optical_flow": compute_enabled,
@@ -168,21 +213,23 @@ def _cuda_flow_available() -> bool:
     )
 
 
-def compute_optical_flow(prev_frame: np.ndarray,
-                         current_frame: np.ndarray,
-                         scale: float = 1.0,
-                         max_dim: Optional[int] = None,
-                         use_umat: Optional[bool] = None,
-                         prefer_cuda: Optional[bool] = None,
-                         use_raft: bool = False,
-                         raft_model: str = "small",
-                         use_torch_farneback: bool = False,
-                         farneback_pyr_scale: float = 0.5,
-                         farneback_levels: int = 1,
-                         farneback_winsize: int = 1,
-                         farneback_iterations: int = 3,
-                         farneback_poly_n: int = 3,
-                         farneback_poly_sigma: float = 1.1) -> Tuple[np.ndarray, np.ndarray]:
+def compute_optical_flow(
+    prev_frame: np.ndarray,
+    current_frame: np.ndarray,
+    scale: float = 1.0,
+    max_dim: Optional[int] = None,
+    use_umat: Optional[bool] = None,
+    prefer_cuda: Optional[bool] = None,
+    use_raft: bool = False,
+    raft_model: str = "small",
+    use_torch_farneback: bool = False,
+    farneback_pyr_scale: float = 0.5,
+    farneback_levels: int = 1,
+    farneback_winsize: int = 1,
+    farneback_iterations: int = 3,
+    farneback_poly_n: int = 3,
+    farneback_poly_sigma: float = 1.1,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute dense Farneback optical flow with automatic device selection.
 
@@ -193,8 +240,7 @@ def compute_optical_flow(prev_frame: np.ndarray,
     scaled so downstream consumers do not need to adjust.
     """
     if prev_frame is None or current_frame is None:
-        raise ValueError(
-            "prev_frame and current_frame must be non-None arrays.")
+        raise ValueError("prev_frame and current_frame must be non-None arrays.")
     if prev_frame.shape != current_frame.shape:
         raise ValueError(
             f"prev_frame and current_frame must share the same shape, "
@@ -229,7 +275,8 @@ def compute_optical_flow(prev_frame: np.ndarray,
     if use_raft:
         try:
             flow = compute_optical_flow_raft(
-                prev_frame, current_frame, model=raft_model, device=AVAILABLE_DEVICE)
+                prev_frame, current_frame, model=raft_model, device=AVAILABLE_DEVICE
+            )
         except Exception:
             flow = None  # fall back to Farneback paths
 
@@ -237,6 +284,7 @@ def compute_optical_flow(prev_frame: np.ndarray,
     if flow is None and use_torch_farneback:
         try:
             from annolid.motion.farneback_torch import calc_optical_flow_farneback_torch
+
             prev_gray = _to_gray(prev_frame)
             current_gray = _to_gray(current_frame)
             flow = calc_optical_flow_farneback_torch(
@@ -283,19 +331,19 @@ def compute_optical_flow(prev_frame: np.ndarray,
         used_umat = False
         if use_umat and opencl_available:
             try:
-                prev_gray = cv2.cvtColor(
-                    cv2.UMat(prev_frame), cv2.COLOR_BGR2GRAY)
-                current_gray = cv2.cvtColor(
-                    cv2.UMat(current_frame), cv2.COLOR_BGR2GRAY)
+                prev_gray = cv2.cvtColor(cv2.UMat(prev_frame), cv2.COLOR_BGR2GRAY)
+                current_gray = cv2.cvtColor(cv2.UMat(current_frame), cv2.COLOR_BGR2GRAY)
                 flow = cv2.calcOpticalFlowFarneback(
-                    prev_gray, current_gray, None,
+                    prev_gray,
+                    current_gray,
+                    None,
                     pyr_scale=float(farneback_pyr_scale),
                     levels=int(farneback_levels),
                     winsize=int(farneback_winsize),
                     iterations=int(farneback_iterations),
                     poly_n=int(farneback_poly_n),
                     poly_sigma=float(farneback_poly_sigma),
-                    flags=0
+                    flags=0,
                 )
                 used_umat = True
             except Exception:
@@ -305,14 +353,16 @@ def compute_optical_flow(prev_frame: np.ndarray,
             prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
             current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
             flow = cv2.calcOpticalFlowFarneback(
-                prev_gray, current_gray, None,
+                prev_gray,
+                current_gray,
+                None,
                 pyr_scale=float(farneback_pyr_scale),
                 levels=int(farneback_levels),
                 winsize=int(farneback_winsize),
                 iterations=int(farneback_iterations),
                 poly_n=int(farneback_poly_n),
                 poly_sigma=float(farneback_poly_sigma),
-                flags=0
+                flags=0,
             )
 
     # Ensure ndarray regardless of UMat path
@@ -321,8 +371,7 @@ def compute_optical_flow(prev_frame: np.ndarray,
 
     # Upscale flow to original resolution if downscaled
     if scale != 1.0:
-        flow = cv2.resize(flow, (orig_w, orig_h),
-                          interpolation=cv2.INTER_LINEAR)
+        flow = cv2.resize(flow, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
         flow /= scale  # compensate for downscaling
 
     magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
@@ -342,10 +391,12 @@ def compute_optical_flow(prev_frame: np.ndarray,
     return flow_hsv, flow
 
 
-def compute_optical_flow_raft(prev_frame: np.ndarray,
-                              current_frame: np.ndarray,
-                              model: str = "small",
-                              device: Optional[str] = None) -> np.ndarray:
+def compute_optical_flow_raft(
+    prev_frame: np.ndarray,
+    current_frame: np.ndarray,
+    model: str = "small",
+    device: Optional[str] = None,
+) -> np.ndarray:
     """
     Compute RAFT optical flow via torchvision and return (H, W, 2) numpy array.
     This is optional and requires torch + torchvision with optical_flow models.
@@ -357,7 +408,6 @@ def compute_optical_flow_raft(prev_frame: np.ndarray,
         raise ImportError("RAFT flow requires torch + torchvision") from exc
 
     prev_t = torch.from_numpy(prev_frame).permute(2, 0, 1).unsqueeze(0).float()
-    curr_t = torch.from_numpy(current_frame).permute(
-        2, 0, 1).unsqueeze(0).float()
+    curr_t = torch.from_numpy(current_frame).permute(2, 0, 1).unsqueeze(0).float()
     flow_t = compute_raft_flow(prev_t, curr_t, model_type=model, device=device)
     return flow_t.squeeze(0).permute(1, 2, 0).cpu().numpy()

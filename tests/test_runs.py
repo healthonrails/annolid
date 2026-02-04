@@ -18,8 +18,13 @@ def test_shared_runs_root_env_override(tmp_path, monkeypatch):
 
 
 def test_new_run_dir_is_under_root(tmp_path):
-    run_dir = new_run_dir(task="yolo", model="yolov8n", runs_root=tmp_path,
-                          run_name="exp1", timestamp="20250101_000000")
+    run_dir = new_run_dir(
+        task="yolo",
+        model="yolov8n",
+        runs_root=tmp_path,
+        run_name="exp1",
+        timestamp="20250101_000000",
+    )
     assert run_dir == (tmp_path / "yolo" / "yolov8n" / "exp1").resolve()
 
 

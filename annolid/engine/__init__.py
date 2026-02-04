@@ -6,7 +6,12 @@ This package provides a small plugin system so new models can be added with:
 3) (optionally) exposing CLI via `annolid-run`
 """
 
-from annolid.engine.registry import ModelPluginBase, get_model, list_models, register_model
+from annolid.engine.registry import (
+    ModelPluginBase,
+    get_model,
+    list_models,
+    register_model,
+)
 
 __all__ = [
     "ModelPluginBase",
@@ -14,4 +19,3 @@ __all__ = [
     "list_models",
     "register_model",
 ]
-

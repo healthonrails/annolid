@@ -4,7 +4,6 @@ import cv2
 import torch
 import pycocotools.mask as mask_util
 from PIL import Image
-from tqdm import tqdm
 
 
 def get_mask_features(image, mask, model, preprocess=None):
@@ -37,7 +36,9 @@ def get_mask_features(image, mask, model, preprocess=None):
     return image_features.detach().cpu().numpy()
 
 
-def generate_mask_id(mask_features, existing_masks, threshold=6.0, distance_metric="euclidean"):
+def generate_mask_id(
+    mask_features, existing_masks, threshold=6.0, distance_metric="euclidean"
+):
     """
     Generates an ID for the mask based on its features and compares it with existing masks.
 
@@ -61,11 +62,13 @@ def generate_mask_id(mask_features, existing_masks, threshold=6.0, distance_metr
         distance_function = cosine
     else:
         raise ValueError(
-            "Invalid distance metric. Choose either 'euclidean' or 'cosine'.")
+            "Invalid distance metric. Choose either 'euclidean' or 'cosine'."
+        )
 
     for idx, (existing_id, existing_features) in enumerate(existing_masks):
         similarity = distance_function(
-            mask_features.flatten(), existing_features.flatten())
+            mask_features.flatten(), existing_features.flatten()
+        )
 
         if similarity < threshold:
             mask_id = existing_id
@@ -79,14 +82,15 @@ def generate_mask_id(mask_features, existing_masks, threshold=6.0, distance_metr
     return mask_id
 
 
-def convert_to_annolid_format(frame_number,
-                              masks,
-                              frame=None,
-                              model=None,
-                              min_mask_area=float('-inf'),
-                              max_mask_area=float('inf'),
-                              existing_masks=None
-                              ):
+def convert_to_annolid_format(
+    frame_number,
+    masks,
+    frame=None,
+    model=None,
+    min_mask_area=float("-inf"),
+    max_mask_area=float("inf"),
+    existing_masks=None,
+):
     """Converts predicted SAM masks information to annolid format.
 
     Args:
@@ -120,34 +124,34 @@ def convert_to_annolid_format(frame_number,
             y1 = mask.get("bbox")[1]
             x2 = mask.get("bbox")[0] + mask.get("bbox")[2]
             y2 = mask.get("bbox")[1] + mask.get("bbox")[3]
-            score = mask.get("predicted_iou", '')
-            segmentation = mask.get("segmentation", '')
+            score = mask.get("predicted_iou", "")
+            segmentation = mask.get("segmentation", "")
             mask_features = get_mask_features(frame, segmentation, model)
             mask_id = generate_mask_id(mask_features, existing_masks)
-            instance_name = mask.get("instance_name", f'instance_{mask_id}')
+            instance_name = mask.get("instance_name", f"instance_{mask_id}")
             segmentation = mask_util.encode(segmentation)
             tracking_id = mask.get("tracking_id", "")
 
-            pred_rows.append({
-                "frame_number": frame_number,
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
-                "instance_name": instance_name,
-                "class_score": score,
-                "segmentation": segmentation,
-                "tracking_id": tracking_id
-            })
+            pred_rows.append(
+                {
+                    "frame_number": frame_number,
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "instance_name": instance_name,
+                    "class_score": score,
+                    "segmentation": segmentation,
+                    "tracking_id": tracking_id,
+                }
+            )
 
     return pred_rows
 
 
-def crop_image_with_masks(image,
-                          masks,
-                          max_area=8000,
-                          min_area=500,
-                          width_height_ratio=0.9):
+def crop_image_with_masks(
+    image, masks, max_area=8000, min_area=500, width_height_ratio=0.9
+):
     """
     Crop the image based on provided masks and apply the masks to each cropped region.
 
@@ -165,22 +169,23 @@ def crop_image_with_masks(image,
 
     for mask_data in masks:
         # Extract mask and bounding box data
-        bbox = mask_data['bbox']
-        seg = mask_data['segmentation']
+        bbox = mask_data["bbox"]
+        seg = mask_data["segmentation"]
         x, y, w, h = bbox
 
         # Crop the image based on the bounding box
-        cropped_image = image[y:y+h, x:x+w]
+        cropped_image = image[y : y + h, x : x + w]
 
         # Create an 8-bit mask from the segmentation data
-        mask = np.asarray(seg[y:y+h, x:x+w], dtype=np.uint8) * 255
+        mask = np.asarray(seg[y : y + h, x : x + w], dtype=np.uint8) * 255
         # Apply the mask to the cropped image
-        cropped_image = cv2.bitwise_and(
-            cropped_image, cropped_image, mask=mask)
+        cropped_image = cv2.bitwise_and(cropped_image, cropped_image, mask=mask)
         cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
-        if (mask_data['area'] >= min_area and
-            mask_data['area'] <= max_area and
-                w/h >= width_height_ratio):
+        if (
+            mask_data["area"] >= min_area
+            and mask_data["area"] <= max_area
+            and w / h >= width_height_ratio
+        ):
             cropped_images.append(cropped_image)
 
     return cropped_images
@@ -199,6 +204,7 @@ def process_video_and_save_tracking_results(video_file, mask_generator, model=No
         None
     """
     import pandas as pd
+
     cap = cv2.VideoCapture(video_file)
     if not cap.isOpened():
         raise RuntimeError(f"Unable to open video file: {video_file}")
@@ -222,7 +228,9 @@ def process_video_and_save_tracking_results(video_file, mask_generator, model=No
     cap.release()
 
     dataframe = pd.DataFrame(tracking_results)
-    output_file = f"{video_file.split('.')[0]}_mask_tracking_results_with_segmentation.csv"
+    output_file = (
+        f"{video_file.split('.')[0]}_mask_tracking_results_with_segmentation.csv"
+    )
     dataframe.to_csv(output_file)
 
 
@@ -264,8 +272,9 @@ def stream_video_frames(
                     break
                 frame = cv2.resize(frame, (image_size, image_size))
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = torch.tensor(
-                    frame, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                frame = (
+                    torch.tensor(frame, dtype=torch.float32).permute(2, 0, 1) / 255.0
+                )
                 batch.append((frame - img_mean) / img_std)
 
             # Yield the batch if it's not empty

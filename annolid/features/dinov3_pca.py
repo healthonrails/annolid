@@ -4,7 +4,7 @@ import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union, Sequence, List, Dict
+from typing import Literal, Optional, Tuple, Union, List
 
 import numpy as np
 import torch
@@ -86,8 +86,7 @@ def features_to_pca_rgb(
         mask_flat = torch.from_numpy(mask.astype(bool).reshape(-1))
         valid = int(mask_flat.sum().item())
         if valid < 2:
-            raise ValueError(
-                "PCA mask must cover at least two spatial positions")
+            raise ValueError("PCA mask must cover at least two spatial positions")
         mean_vec = flattened[mask_flat].mean(dim=0, keepdim=True)
 
     centered = flattened - mean_vec
@@ -212,9 +211,8 @@ class Dinov3PCAMapper:
 
         mask_patch = None
         if mask_bool is not None:
-            quantized = self.extractor.quantize_mask(
-                mask_bool.astype(np.uint8) * 255)
-            mask_patch = (quantized.numpy() >= 0.5)
+            quantized = self.extractor.quantize_mask(mask_bool.astype(np.uint8) * 255)
+            mask_patch = quantized.numpy() >= 0.5
 
         pca_feat = features_to_pca_rgb(
             feats,
@@ -239,17 +237,21 @@ class Dinov3PCAMapper:
         cluster_output_arr = None
         cluster_labels: List[str] = []
         if cluster_k is not None and cluster_k > 1:
-            cluster_rgb, cluster_output_arr, cluster_labels = self._cluster_pca_features(
-                pca_feat=pca_feat,
-                mask_patch=mask_patch,
-                cluster_k=cluster_k,
-                output_size=output_size,
-                custom_size=custom_size,
-                pil_size=pil.size,
-                resized_hw=resized_hw,
+            cluster_rgb, cluster_output_arr, cluster_labels = (
+                self._cluster_pca_features(
+                    pca_feat=pca_feat,
+                    mask_patch=mask_patch,
+                    cluster_k=cluster_k,
+                    output_size=output_size,
+                    custom_size=custom_size,
+                    pil_size=pil.size,
+                    resized_hw=resized_hw,
+                )
             )
 
-        output_arr = cluster_output_arr if cluster_output_arr is not None else pca_output_arr
+        output_arr = (
+            cluster_output_arr if cluster_output_arr is not None else pca_output_arr
+        )
 
         if return_type not in {"array", "pil"}:
             raise ValueError(f"Unsupported return_type '{return_type}'")
@@ -286,9 +288,7 @@ class Dinov3PCAMapper:
             )
         elif output_size == "input":
             target_size = custom_size or pil_size
-            output_img = feature_img.resize(
-                target_size, resample=self.feature_resample
-            )
+            output_img = feature_img.resize(target_size, resample=self.feature_resample)
         else:
             raise ValueError(f"Unsupported output_size '{output_size}'")
         return np.asarray(output_img).astype(np.float32) / 255.0
@@ -357,7 +357,8 @@ class Dinov3PCAMapper:
 
         for _ in range(iterations):
             distances = np.linalg.norm(
-                features[:, None, :] - centroids[None, :, :], axis=2)
+                features[:, None, :] - centroids[None, :, :], axis=2
+            )
             new_labels = distances.argmin(axis=1)
             if np.array_equal(new_labels, labels):
                 break
@@ -382,8 +383,7 @@ class Dinov3PCAMapper:
 
 
 def _build_argparser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(
-        description="Generate DINOv3 PCA feature maps")
+    ap = argparse.ArgumentParser(description="Generate DINOv3 PCA feature maps")
     ap.add_argument("--image", required=True, help="Path to an input image")
     ap.add_argument(
         "--model",
@@ -456,8 +456,7 @@ def main() -> None:
     img = Image.open(args.image).convert("RGB")
     logging.info("Generating PCA map for %s", args.image)
     cluster_k = args.cluster_k if args.cluster_k and args.cluster_k > 1 else None
-    result = mapper.map_image(
-        img, output_size=args.output_size, cluster_k=cluster_k)
+    result = mapper.map_image(img, output_size=args.output_size, cluster_k=cluster_k)
     result.save(args.output)
     logging.info("Saved PCA visualization to %s", args.output)
 

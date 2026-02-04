@@ -15,7 +15,6 @@
 from collections import OrderedDict, Counter, defaultdict
 import json
 import os
-from posixpath import join
 import sys
 
 
@@ -33,14 +32,13 @@ from functools import partial
 import time
 
 from util.slconfig import SLConfig
+from main import build_model_main, get_args_parser as get_main_args_parser
+from datasets import build_dataset
 
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, List, Union
 from numbers import Number
 
 Handle = Callable[[List[Any], List[Any]], Union[typing.Counter[str], Number]]
-
-from main import build_model_main, get_args_parser as get_main_args_parser
-from datasets import build_dataset
 
 
 def get_shape(val: object) -> typing.List[int]:
@@ -516,9 +514,9 @@ def flop_count(
     ):
         model = model.module  # pyre-ignore
 
-    assert set(whitelist_set).issubset(
-        flop_count_ops
-    ), "whitelist needs to be a subset of _SUPPORTED_OPS and customized_ops."
+    assert set(whitelist_set).issubset(flop_count_ops), (
+        "whitelist needs to be a subset of _SUPPORTED_OPS and customized_ops."
+    )
     assert isinstance(inputs, tuple), "Inputs need to be in a tuple."
 
     # Compatibility with torch.jit.
@@ -580,7 +578,7 @@ def get_dataset(coco_path):
 
 def warmup(model, inputs, N=10):
     for i in range(N):
-        out = model(inputs)
+        model(inputs)
     torch.cuda.synchronize()
 
 
@@ -588,7 +586,7 @@ def measure_time(model, inputs, N=10):
     warmup(model, inputs)
     s = time.time()
     for i in range(N):
-        out = model(inputs)
+        model(inputs)
     torch.cuda.synchronize()
     t = (time.time() - s) / N
     return t

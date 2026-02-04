@@ -8,11 +8,14 @@ from annolid.utils.logger import logger
 
 try:
     import cv2
+
     OPENCV_AVAILABLE = True
 except ImportError:
     OPENCV_AVAILABLE = False
-    logger.warning("OpenCV not found. Video metadata (frame count) cannot be read. "
-                   "Analysis will be based on existing JSON files only.")
+    logger.warning(
+        "OpenCV not found. Video metadata (frame count) cannot be read. "
+        "Analysis will be based on existing JSON files only."
+    )
 
 
 def find_tracking_gaps(video_path: str) -> dict:
@@ -31,10 +34,9 @@ def find_tracking_gaps(video_path: str) -> dict:
         return {}
 
     # Infer the JSON directory path from the video filename
-    json_directory = video_file.with_suffix('')
+    json_directory = video_file.with_suffix("")
     if not json_directory.is_dir():
-        logger.error(
-            f"Associated JSON directory not found at: {json_directory}")
+        logger.error(f"Associated JSON directory not found at: {json_directory}")
         return {}
 
     logger.info(f"Analyzing video: {video_file.name}")
@@ -46,8 +48,7 @@ def find_tracking_gaps(video_path: str) -> dict:
     if OPENCV_AVAILABLE:
         cap = cv2.VideoCapture(str(video_file))
         if not cap.isOpened():
-            logger.error(
-                f"Could not open video file {video_file} with OpenCV.")
+            logger.error(f"Could not open video file {video_file} with OpenCV.")
             return {}
         max_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
         cap.release()
@@ -55,38 +56,41 @@ def find_tracking_gaps(video_path: str) -> dict:
     else:
         # Fallback if OpenCV is not installed: infer range from JSON files.
         json_files_for_range = sorted(
-            [p for p in json_directory.glob('*.json')],
-            key=lambda p: int(re.search(r'(\d+)(?=\.json$)', p.name).group(1))
+            [p for p in json_directory.glob("*.json")],
+            key=lambda p: int(re.search(r"(\d+)(?=\.json$)", p.name).group(1)),
         )
         if not json_files_for_range:
             logger.warning("No JSON files found to infer frame range.")
             return {}
-        max_frame = int(re.search(r'(\d+)(?=\.json$)',
-                        json_files_for_range[-1].name).group(1))
+        max_frame = int(
+            re.search(r"(\d+)(?=\.json$)", json_files_for_range[-1].name).group(1)
+        )
         logger.warning(
-            f"OpenCV not found. Inferred max frame is {max_frame} from JSON files.")
+            f"OpenCV not found. Inferred max frame is {max_frame} from JSON files."
+        )
 
     master_frame_index = pd.RangeIndex(
-        start=min_frame, stop=max_frame + 1, name='frame_number')
+        start=min_frame, stop=max_frame + 1, name="frame_number"
+    )
 
     # --- 2. Scan and Parse Existing Files ---
     presence_data = []
     all_instance_labels = set()
-    for file_path in json_directory.glob('*.json'):
+    for file_path in json_directory.glob("*.json"):
         try:
             # Use robust regex to handle filenames like 'video_00001.json'
-            match = re.search(r'(\d+)(?=\.json$)', file_path.name)
+            match = re.search(r"(\d+)(?=\.json$)", file_path.name)
             if not match:
                 continue
 
             frame_number = int(match.group(1))
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 data = json.load(f)
 
-            labels_in_frame = {shape['label']
-                               for shape in data.get('shapes', [])}
+            labels_in_frame = {shape["label"] for shape in data.get("shapes", [])}
             presence_data.append(
-                {'frame_number': frame_number, 'labels': labels_in_frame})
+                {"frame_number": frame_number, "labels": labels_in_frame}
+            )
             all_instance_labels.update(labels_in_frame)
         except (ValueError, IndexError, json.JSONDecodeError) as e:
             logger.warning(f"Could not parse file {file_path.name}: {e}")
@@ -100,15 +104,16 @@ def find_tracking_gaps(video_path: str) -> dict:
     # --- 3. Build Presence DataFrame and Merge with Master Timeline ---
     if not presence_data:
         df_presence_sparse = pd.DataFrame(
-            columns=['frame_number'] + sorted_labels).set_index('frame_number')
+            columns=["frame_number"] + sorted_labels
+        ).set_index("frame_number")
     else:
         records = []
         for item in presence_data:
-            frame_record = {'frame_number': item['frame_number']}
+            frame_record = {"frame_number": item["frame_number"]}
             for label in sorted_labels:
-                frame_record[label] = label in item['labels']
+                frame_record[label] = label in item["labels"]
             records.append(frame_record)
-        df_presence_sparse = pd.DataFrame(records).set_index('frame_number')
+        df_presence_sparse = pd.DataFrame(records).set_index("frame_number")
 
     df_master = pd.DataFrame(index=master_frame_index)
     df_full = df_master.join(df_presence_sparse).fillna(False)
@@ -122,15 +127,21 @@ def find_tracking_gaps(video_path: str) -> dict:
 
         gaps = []
         # Find contiguous blocks by checking where the frame number difference is > 1
-        missing_frames['gap_block'] = (
-            missing_frames.index.to_series().diff() > 1).cumsum()
+        missing_frames["gap_block"] = (
+            missing_frames.index.to_series().diff() > 1
+        ).cumsum()
 
-        for _, group in missing_frames.groupby('gap_block'):
+        for _, group in missing_frames.groupby("gap_block"):
             start_frame = group.index.min()
             end_frame = group.index.max()
             duration = end_frame - start_frame + 1
-            gaps.append({'start_frame': start_frame,
-                        'end_frame': end_frame, 'duration_frames': duration})
+            gaps.append(
+                {
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "duration_frames": duration,
+                }
+            )
 
         if gaps:
             gap_report[label] = gaps
@@ -144,30 +155,29 @@ def generate_reports(gap_report: dict, video_path: str):
     (This function remains the same as the previous version)
     """
     video_file = Path(video_path)
-    output_path = video_file.with_suffix('')
+    output_path = video_file.with_suffix("")
 
     # --- 1. Generate Machine-Readable CSV Report ---
     csv_records = []
     for label, gaps in gap_report.items():
         for gap in gaps:
-            record = {'instance_label': label, **gap}
+            record = {"instance_label": label, **gap}
             csv_records.append(record)
 
     if csv_records:
         csv_df = pd.DataFrame(csv_records)
-        csv_filename = output_path.parent / \
-            f"{output_path.stem}_gaps_report.csv"
+        csv_filename = output_path.parent / f"{output_path.stem}_gaps_report.csv"
         csv_df.to_csv(csv_filename, index=False)
         logger.info(f"Machine-readable gap report saved to: {csv_filename}")
 
     # --- 2. Generate Human-Readable Markdown Report ---
-    md_filename = output_path.parent / \
-        f"{output_path.stem}_tracking_gaps_report.md"
-    with open(md_filename, 'w') as f:
-        f.write(f"# Tracking Gap Analysis Report\n\n")
+    md_filename = output_path.parent / f"{output_path.stem}_tracking_gaps_report.md"
+    with open(md_filename, "w") as f:
+        f.write("# Tracking Gap Analysis Report\n\n")
         f.write(f"**Analyzed Directory:** `{output_path}`\n")
         f.write(
-            f"**Report Generated On:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f"**Report Generated On:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        )
 
         if not gap_report:
             f.write("## Analysis Complete: No Tracking Gaps Found\n\n")
@@ -176,9 +186,11 @@ def generate_reports(gap_report: dict, video_path: str):
             return
 
         f.write("## Summary of Detected Gaps\n\n")
-        f.write("This report lists all time periods where a tracked instance was not found. "
-                "These 'gaps' may indicate that the animal left the frame, was occluded, "
-                "or that no JSON file was generated for that frame (no detections).\n\n")
+        f.write(
+            "This report lists all time periods where a tracked instance was not found. "
+            "These 'gaps' may indicate that the animal left the frame, was occluded, "
+            "or that no JSON file was generated for that frame (no detections).\n\n"
+        )
 
         for label, gaps in gap_report.items():
             f.write(f"### Instance: `{label}`\n")
@@ -188,19 +200,27 @@ def generate_reports(gap_report: dict, video_path: str):
             f.write("|:-----:|:-----------:|:---------:|:------------------|\n")
             for i, gap in enumerate(gaps, 1):
                 f.write(
-                    f"| {i} | {gap['start_frame']} | {gap['end_frame']} | {gap['duration_frames']} |\n")
+                    f"| {i} | {gap['start_frame']} | {gap['end_frame']} | {gap['duration_frames']} |\n"
+                )
             f.write("\n")
 
         f.write("## Actionable Recommendations\n\n")
         f.write(
-            "To fix these gaps, especially in cases where the animal was present but not tracked:\n\n")
+            "To fix these gaps, especially in cases where the animal was present but not tracked:\n\n"
+        )
         f.write("1.  **Navigate to the `Start Frame`** of a gap listed above.\n")
         f.write(
-            "2.  **Manually re-label** the animal with its correct instance label.\n")
+            "2.  **Manually re-label** the animal with its correct instance label.\n"
+        )
         f.write(
-            "3.  Open the **'Define Video Segments'** tool from the 'Video Tools' menu.\n")
-        f.write("4.  Create a new segment, setting its start to the `Start Frame` and its end to the `End Frame` of the gap.\n")
-        f.write("5.  **Run tracking for just that segment.** This will efficiently fill in the missing annotations without re-processing the entire video.\n\n")
+            "3.  Open the **'Define Video Segments'** tool from the 'Video Tools' menu.\n"
+        )
+        f.write(
+            "4.  Create a new segment, setting its start to the `Start Frame` and its end to the `End Frame` of the gap.\n"
+        )
+        f.write(
+            "5.  **Run tracking for just that segment.** This will efficiently fill in the missing annotations without re-processing the entire video.\n\n"
+        )
 
     logger.info(f"Human-readable report saved to: {md_filename}")
     return md_filename
@@ -214,13 +234,15 @@ def main():
         "video_path",
         type=str,
         help="Path to the video file. The script will look for JSON files in a directory "
-             "with the same name (e.g., 'my_video/' for 'my_video.mp4')."
+        "with the same name (e.g., 'my_video/' for 'my_video.mp4').",
     )
     args = parser.parse_args()
 
     if not OPENCV_AVAILABLE:
-        logger.error("OpenCV is required to read video metadata for accurate frame counts. "
-                     "Please install it using: pip install opencv-python")
+        logger.error(
+            "OpenCV is required to read video metadata for accurate frame counts. "
+            "Please install it using: pip install opencv-python"
+        )
         # Decide if you want to exit or allow the fallback
         return
 
@@ -228,5 +250,5 @@ def main():
     generate_reports(gaps, args.video_path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

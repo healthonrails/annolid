@@ -83,8 +83,9 @@ def save_pdf_state(pdf_path: Path, state: Dict[str, Any]) -> None:
 
     try:
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False,
-                       indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         os.replace(str(tmp), str(path))
     except Exception as exc:
         logger.debug("Failed to save PDF state %s: %s", path, exc)

@@ -52,9 +52,7 @@ def _run_from_spec(spec_path: Path) -> Dict[str, Any]:
     checkpoints_dir = spec.get("checkpoints_dir")
     cfg = Sam3DConfig(
         repo_path=repo_path,
-        checkpoints_dir=Path(checkpoints_dir)
-        if checkpoints_dir
-        else None,
+        checkpoints_dir=Path(checkpoints_dir) if checkpoints_dir else None,
         checkpoint_tag=spec.get("checkpoint_tag", "hf"),
         compile=bool(spec.get("compile", False)),
         seed=spec.get("seed"),

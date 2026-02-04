@@ -57,16 +57,23 @@ class DinoKPSEGVideoProcessor:
         self.video_height, self.video_width = first_frame.shape[:2]
         self.total_frames = self.video_loader.total_frames()
 
-        self.video_result_folder = Path(result_folder) if result_folder else Path(
-            self.video_path
-        ).with_suffix("")
+        self.video_result_folder = (
+            Path(result_folder)
+            if result_folder
+            else Path(self.video_path).with_suffix("")
+        )
         self.video_result_folder.mkdir(parents=True, exist_ok=True)
 
         self.config = runtime_config or CutieDinoTrackerConfig()
         # This processor is the "Cutie + DinoKPSEG" pipeline: ensure Cutie is on and
         # keypoints are produced for each tracked polygon.
         self.config.use_cutie_tracking = True
-        if str(getattr(self.config, "kpseg_apply_mode", "never") or "never").strip().lower() == "never":
+        if (
+            str(getattr(self.config, "kpseg_apply_mode", "never") or "never")
+            .strip()
+            .lower()
+            == "never"
+        ):
             self.config.kpseg_apply_mode = "always"
         self.config.normalize()
         self.adapter = AnnotationAdapter(
@@ -79,16 +86,14 @@ class DinoKPSEGVideoProcessor:
             adapter=self.adapter,
             config=self.config,
         )
-        self.predictor = DinoKPSEGPredictor(
-            kpseg_weights, device=device)
+        self.predictor = DinoKPSEGPredictor(kpseg_weights, device=device)
         self.keypoint_names = list(self.predictor.keypoint_names or [])
         tracker_name = (
             tracker_model_name
             if tracker_model_name
             else getattr(self.predictor.meta, "model_name", None)
         )
-        tracker_device = str(
-            self.predictor.device) if device is None else device
+        tracker_device = str(self.predictor.device) if device is None else device
         self._tracker_name = str(tracker_name)
         self._tracker_device = str(tracker_device)
         self._keypoint_tracker: Optional[DinoKeypointTracker] = None
@@ -112,8 +117,7 @@ class DinoKPSEGVideoProcessor:
             one_euro_beta=float(self.config.kpseg_one_euro_beta),
             one_euro_d_cutoff=float(self.config.kpseg_one_euro_d_cutoff),
             kalman_process_noise=float(self.config.kpseg_kalman_process_noise),
-            kalman_measurement_noise=float(
-                self.config.kpseg_kalman_measurement_noise),
+            kalman_measurement_noise=float(self.config.kpseg_kalman_measurement_noise),
         )
 
         self.pred_worker = None
@@ -171,8 +175,10 @@ class DinoKPSEGVideoProcessor:
         step: int,
     ) -> str:
         manual_seed = self._load_initial_state(self.video_result_folder)
-        start_frame = manual_seed.frame_number if start_frame is None else max(
-            manual_seed.frame_number, int(start_frame)
+        start_frame = (
+            manual_seed.frame_number
+            if start_frame is None
+            else max(manual_seed.frame_number, int(start_frame))
         )
         if end_frame is None or int(end_frame) < 0:
             end_frame = self.total_frames - 1
@@ -202,7 +208,8 @@ class DinoKPSEGVideoProcessor:
             )
         mask_lookup = self._mask_lookup_from_registry(manual_seed.registry)
         has_seed_keypoints = any(
-            bool(points) for points in (manual_seed.keypoints_by_instance or {}).values()
+            bool(points)
+            for points in (manual_seed.keypoints_by_instance or {}).values()
         )
         if has_seed_keypoints:
             tracker = self._ensure_keypoint_tracker()
@@ -236,20 +243,18 @@ class DinoKPSEGVideoProcessor:
 
             manual_path = manual_frames.get(frame_number)
             if manual_path is not None:
-                resume = self._resume_from_manual_annotation(
-                    frame_number, manual_path
-                )
+                resume = self._resume_from_manual_annotation(frame_number, manual_path)
                 manual_frames.pop(frame_number, None)
                 if resume is not None:
                     registry = resume.registry
                     self._instance_display_labels.update(resume.display_labels)
                     frame_rgb = self.video_loader.load_frame(frame_number)
                     if self.mask_manager.enabled:
-                        self.mask_manager.prime(
-                            frame_number, frame_rgb, registry)
+                        self.mask_manager.prime(frame_number, frame_rgb, registry)
                     mask_lookup = self._mask_lookup_from_registry(registry)
                     has_seed_keypoints = any(
-                        bool(points) for points in (resume.keypoints_by_instance or {}).values()
+                        bool(points)
+                        for points in (resume.keypoints_by_instance or {}).values()
                     )
                     self._keypoint_tracker_started = False
                     if has_seed_keypoints:
@@ -287,8 +292,7 @@ class DinoKPSEGVideoProcessor:
                     )
 
             frame_bgr = frame_rgb[:, :, ::-1]
-            self._maybe_apply_kpseg(
-                frame_bgr, registry, frame_number=frame_number)
+            self._maybe_apply_kpseg(frame_bgr, registry, frame_number=frame_number)
             self._write_annotation(frame_number, registry)
 
             processed += 1
@@ -318,9 +322,7 @@ class DinoKPSEGVideoProcessor:
         start_frame: int,
         end_frame: int,
     ) -> Dict[int, Path]:
-        manual_files = find_manual_labeled_json_files(
-            str(self.video_result_folder)
-        )
+        manual_files = find_manual_labeled_json_files(str(self.video_result_folder))
         mapping: Dict[int, Path] = {}
         for filename in manual_files:
             path = self.video_result_folder / filename
@@ -370,9 +372,7 @@ class DinoKPSEGVideoProcessor:
                     continue
                 polygon_copy: Optional[List[Tuple[float, float]]] = None
                 if result.polygon:
-                    polygon_copy = [
-                        (float(x), float(y)) for x, y in result.polygon
-                    ]
+                    polygon_copy = [(float(x), float(y)) for x, y in result.polygon]
                 previous_masks[label] = MaskResult(
                     instance_label=result.instance_label,
                     mask_bitmap=np.array(result.mask_bitmap, copy=True),
@@ -381,7 +381,8 @@ class DinoKPSEGVideoProcessor:
 
         try:
             manual = self.annotation_parser.read_manual_annotation(
-                frame_number, manual_path)
+                frame_number, manual_path
+            )
         except Exception as exc:
             logger.warning(
                 "Manual resume skipped for frame %s: failed to read %s (%s)",
@@ -393,9 +394,8 @@ class DinoKPSEGVideoProcessor:
 
         if previous_masks:
             for instance in manual.registry:
-                has_mask = (
-                    instance.mask_bitmap is not None
-                    and bool(np.any(instance.mask_bitmap))
+                has_mask = instance.mask_bitmap is not None and bool(
+                    np.any(instance.mask_bitmap)
                 )
                 if has_mask:
                     continue
@@ -559,8 +559,11 @@ class DinoKPSEGVideoProcessor:
         *,
         frame_number: int,
     ) -> None:
-        mode = str(getattr(self.config, "kpseg_apply_mode", "never")
-                   or "never").strip().lower()
+        mode = (
+            str(getattr(self.config, "kpseg_apply_mode", "never") or "never")
+            .strip()
+            .lower()
+        )
         if mode not in ("never", "auto", "always"):
             mode = "never"
         if mode == "never":
@@ -568,8 +571,7 @@ class DinoKPSEGVideoProcessor:
 
         if not self.keypoint_names:
             pred = self.predictor.predict(frame_bgr, stabilize_lr=False)
-            self.keypoint_names = [str(i)
-                                   for i in range(len(pred.keypoints_xy))]
+            self.keypoint_names = [str(i) for i in range(len(pred.keypoints_xy))]
             self.predictor.reset_state()
 
         corrections: Dict[str, Tuple[float, float]] = {}
@@ -608,7 +610,11 @@ class DinoKPSEGVideoProcessor:
 
         smoother_mode = "none"
         if self._kpseg_smoother is not None:
-            smoother_mode = str(getattr(self._kpseg_smoother, "mode", "none") or "none").strip().lower()
+            smoother_mode = (
+                str(getattr(self._kpseg_smoother, "mode", "none") or "none")
+                .strip()
+                .lower()
+            )
         use_temporal_correction = smoother_mode not in ("", "none")
 
         for gid, instance in instance_lookup.items():
@@ -616,8 +622,10 @@ class DinoKPSEGVideoProcessor:
             if pred is None:
                 continue
             instance_key = instance_key_lookup.get(int(gid), str(gid))
-            enabled = True if mode == "always" else bool(
-                self._kpseg_enabled_by_instance.get(instance_key, False)
+            enabled = (
+                True
+                if mode == "always"
+                else bool(self._kpseg_enabled_by_instance.get(instance_key, False))
             )
 
             coords = [(float(x), float(y)) for x, y in pred.keypoints_xy]
@@ -628,18 +636,17 @@ class DinoKPSEGVideoProcessor:
             )
 
             if mode == "auto":
-                target = float(
-                    getattr(self.config, "kpseg_reliable_ratio", 0.6))
-                min_frames = int(
-                    getattr(self.config, "kpseg_min_reliable_frames", 5))
+                target = float(getattr(self.config, "kpseg_reliable_ratio", 0.6))
+                min_frames = int(getattr(self.config, "kpseg_min_reliable_frames", 5))
                 disable_patience = int(
-                    getattr(self.config, "kpseg_disable_patience", 5))
+                    getattr(self.config, "kpseg_disable_patience", 5)
+                )
 
                 if not enabled:
                     if reliability_ratio >= target:
-                        self._kpseg_good_streak[instance_key] = int(
-                            self._kpseg_good_streak.get(instance_key, 0)
-                        ) + 1
+                        self._kpseg_good_streak[instance_key] = (
+                            int(self._kpseg_good_streak.get(instance_key, 0)) + 1
+                        )
                     else:
                         self._kpseg_good_streak[instance_key] = 0
                     if int(self._kpseg_good_streak[instance_key]) >= max(1, min_frames):
@@ -648,12 +655,14 @@ class DinoKPSEGVideoProcessor:
                         self._kpseg_bad_streak[instance_key] = 0
                 else:
                     if reliability_ratio < target:
-                        self._kpseg_bad_streak[instance_key] = int(
-                            self._kpseg_bad_streak.get(instance_key, 0)
-                        ) + 1
+                        self._kpseg_bad_streak[instance_key] = (
+                            int(self._kpseg_bad_streak.get(instance_key, 0)) + 1
+                        )
                     else:
                         self._kpseg_bad_streak[instance_key] = 0
-                    if int(self._kpseg_bad_streak[instance_key]) >= max(1, disable_patience):
+                    if int(self._kpseg_bad_streak[instance_key]) >= max(
+                        1, disable_patience
+                    ):
                         enabled = False
                         self._kpseg_enabled_by_instance[instance_key] = False
                         self._kpseg_good_streak[instance_key] = 0
@@ -684,8 +693,17 @@ class DinoKPSEGVideoProcessor:
                 if max_jump <= 0.0:
                     max_jump = self._resolve_max_jump_px(mask)
 
-                fallback_mode = str(getattr(self.config, "kpseg_fallback_mode", "per_keypoint") or "per_keypoint").strip().lower()
-                fallback_ratio = float(getattr(self.config, "kpseg_fallback_ratio", 0.5))
+                fallback_mode = (
+                    str(
+                        getattr(self.config, "kpseg_fallback_mode", "per_keypoint")
+                        or "per_keypoint"
+                    )
+                    .strip()
+                    .lower()
+                )
+                fallback_ratio = float(
+                    getattr(self.config, "kpseg_fallback_ratio", 0.5)
+                )
                 instance_fallback = (
                     fallback_mode == "instance"
                     and reliability_ratio is not None
@@ -695,7 +713,11 @@ class DinoKPSEGVideoProcessor:
                 final_coords = []
                 final_scores = []
                 for idx, (coord, score) in enumerate(zip(coords, pred.keypoint_scores)):
-                    label = self.keypoint_names[idx] if idx < len(self.keypoint_names) else str(idx)
+                    label = (
+                        self.keypoint_names[idx]
+                        if idx < len(self.keypoint_names)
+                        else str(idx)
+                    )
                     key = f"{instance.label}:{label}"
                     prev = instance.keypoints.get(key)
 
@@ -710,8 +732,12 @@ class DinoKPSEGVideoProcessor:
 
                     input_coord = coord
                     if ok and prev is not None and blend_alpha < 1.0:
-                        x = blend_alpha * float(coord[0]) + (1.0 - blend_alpha) * float(prev.x)
-                        y = blend_alpha * float(coord[1]) + (1.0 - blend_alpha) * float(prev.y)
+                        x = blend_alpha * float(coord[0]) + (1.0 - blend_alpha) * float(
+                            prev.x
+                        )
+                        y = blend_alpha * float(coord[1]) + (1.0 - blend_alpha) * float(
+                            prev.y
+                        )
                         input_coord = (float(x), float(y))
                     elif (not ok) and prev is not None:
                         input_coord = (float(prev.x), float(prev.y))
@@ -815,8 +841,10 @@ class DinoKPSEGVideoProcessor:
         return float(reliable) / float(total)
 
     def _write_annotation(self, frame_number: int, registry: InstanceRegistry) -> None:
-        json_path = self.video_result_folder / \
-            f"{self.video_result_folder.name}_{frame_number:09d}.json"
+        json_path = (
+            self.video_result_folder
+            / f"{self.video_result_folder.name}_{frame_number:09d}.json"
+        )
         shapes: List[Shape] = []
         for instance in registry:
             gid = self._normalize_group_id(instance.label)
@@ -834,9 +862,7 @@ class DinoKPSEGVideoProcessor:
                     description="Cutie",
                     visible=True,
                 )
-                mask_shape.points = [
-                    [float(x), float(y)] for x, y in instance.polygon
-                ]
+                mask_shape.points = [[float(x), float(y)] for x, y in instance.polygon]
                 shapes.append(mask_shape)
 
             for keypoint in instance.keypoints.values():
@@ -877,12 +903,15 @@ class DinoKPSEGVideoProcessor:
         use_mask_gate = bool(self.config.kpseg_use_mask_gate)
         fallback_to_track = bool(self.config.kpseg_fallback_to_track)
         max_jump = float(self.config.kpseg_max_jump_px)
-        fallback_mode = str(
-            getattr(self.config, "kpseg_fallback_mode",
-                    "per_keypoint") or "per_keypoint"
-        ).strip().lower()
-        fallback_ratio = float(
-            getattr(self.config, "kpseg_fallback_ratio", 0.5))
+        fallback_mode = (
+            str(
+                getattr(self.config, "kpseg_fallback_mode", "per_keypoint")
+                or "per_keypoint"
+            )
+            .strip()
+            .lower()
+        )
+        fallback_ratio = float(getattr(self.config, "kpseg_fallback_ratio", 0.5))
         instance_fallback = (
             fallback_mode == "instance"
             and reliability_ratio is not None
@@ -900,9 +929,7 @@ class DinoKPSEGVideoProcessor:
 
         for idx, (coord, score) in enumerate(zip(coords, scores)):
             label = (
-                self.keypoint_names[idx]
-                if idx < len(self.keypoint_names)
-                else str(idx)
+                self.keypoint_names[idx] if idx < len(self.keypoint_names) else str(idx)
             )
             key = f"{instance.label}:{label}"
             prev = instance.keypoints.get(key)
@@ -922,10 +949,8 @@ class DinoKPSEGVideoProcessor:
                 score = float(prev.confidence)
                 prev.misses += 1
             elif prev is not None and blend_alpha < 1.0:
-                x = blend_alpha * float(coord[0]) + \
-                    (1.0 - blend_alpha) * float(prev.x)
-                y = blend_alpha * float(coord[1]) + \
-                    (1.0 - blend_alpha) * float(prev.y)
+                x = blend_alpha * float(coord[0]) + (1.0 - blend_alpha) * float(prev.x)
+                y = blend_alpha * float(coord[1]) + (1.0 - blend_alpha) * float(prev.y)
                 coord = (float(x), float(y))
                 prev.misses = 0
             elif prev is not None:

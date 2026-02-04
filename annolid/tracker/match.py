@@ -3,11 +3,12 @@ Reference:
 https://github.com/nwojke/deep_sort/tree/master/deep_sort
 https://github.com/ZQPei/deep_sort_pytorch
 """
+
 from __future__ import absolute_import
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-INF_COST = 1e+6
+INF_COST = 1e6
 
 # Table for the 0.95 quantile of the chi-square distribution
 # Table for the 0.95 quantile of the chi-square distribution
@@ -20,7 +21,7 @@ CHI2INV95 = {
     6: 12.592,
     7: 14.067,
     8: 15.507,
-    9: 16.919
+    9: 16.919,
 }
 
 
@@ -35,22 +36,16 @@ def iou(bbox, candidates):
     candidates_top_left = candidates[:, :2]
     candidates_bottom_right = candidates[:, :2] + candidates[:, 2:]
 
-    tl = np.c_[np.maximum(top_left[0],
-                          candidates_top_left[:, 0]
-                          )[:, np.newaxis],
-               np.maximum(top_left[1],
-                          candidates_top_left[:, 1]
-                          )[:, np.newaxis],
-               ]
-    br = np.c_[np.maximum(bottom_right[0],
-                          candidates_bottom_right[:, 0]
-                          )[:, np.newaxis],
-               np.maximum(bottom_right[1],
-                          candidates_bottom_right[:, 1]
-                          )[:, np.newaxis],
-               ]
+    tl = np.c_[
+        np.maximum(top_left[0], candidates_top_left[:, 0])[:, np.newaxis],
+        np.maximum(top_left[1], candidates_top_left[:, 1])[:, np.newaxis],
+    ]
+    br = np.c_[
+        np.maximum(bottom_right[0], candidates_bottom_right[:, 0])[:, np.newaxis],
+        np.maximum(bottom_right[1], candidates_bottom_right[:, 1])[:, np.newaxis],
+    ]
 
-    wh = np.maximum(0., br - tl)
+    wh = np.maximum(0.0, br - tl)
 
     area_intersection = wh.prod(axis=1)
 
@@ -59,72 +54,59 @@ def iou(bbox, candidates):
     return area_intersection / (area_bbox + area_candidates - area_intersection)
 
 
-def iou_cost(tracks,
-             detections,
-             track_indices=None,
-             detection_indices=None
-             ):
+def iou_cost(tracks, detections, track_indices=None, detection_indices=None):
     if track_indices is None:
         track_indices = np.arange(len(tracks))
 
     if detection_indices is None:
         detection_indices = np.arange(len(detections))
 
-    cost_matrix = np.zeros((
-        len(track_indices),
-        len(detection_indices)
-    ))
+    cost_matrix = np.zeros((len(track_indices), len(detection_indices)))
 
     for row, track_idx in enumerate(track_indices):
         if tracks[track_idx].time_since_update > 1:
             cost_matrix[row, :] = INF_COST
             continue
         bbox = tracks[track_idx].to_tlwh()
-        candidates = np.asarray([
-            detections[i].tlwh for i in detection_indices])
-        cost_matrix[row, :] = 1. - iou(bbox, candidates)
+        candidates = np.asarray([detections[i].tlwh for i in detection_indices])
+        cost_matrix[row, :] = 1.0 - iou(bbox, candidates)
     return cost_matrix
 
 
-def gate_cost_matrix(kf,
-                     cost_matrix,
-                     tracks,
-                     detections,
-                     track_indices,
-                     detection_indices,
-                     gated_cost=INF_COST,
-                     only_position=False
-                     ):
-
+def gate_cost_matrix(
+    kf,
+    cost_matrix,
+    tracks,
+    detections,
+    track_indices,
+    detection_indices,
+    gated_cost=INF_COST,
+    only_position=False,
+):
     if only_position:
         gating_dim = 2
     else:
         gating_dim = 4
 
     gating_threshold = CHI2INV95[gating_dim]
-    measurements = np.asarray(
-        [detections[i].to_xyah() for i in detection_indices]
-    )
+    measurements = np.asarray([detections[i].to_xyah() for i in detection_indices])
     for row, track_idx in enumerate(track_indices):
         track = tracks[track_idx]
         gating_distance = kf.gating_distance(
-            track.mean,
-            track.covariance,
-            measurements,
-            only_position
+            track.mean, track.covariance, measurements, only_position
         )
-        cost_matrix[row, gating_distance >
-                    gating_threshold] = gated_cost
+        cost_matrix[row, gating_distance > gating_threshold] = gated_cost
     return cost_matrix
 
 
-def min_cost_matching(distance_metric,
-                      max_distance,
-                      tracks,
-                      detections,
-                      track_indices=None,
-                      detection_indices=None
-                      ):
+def min_cost_matching(
+    distance_metric,
+    max_distance,
+    tracks,
+    detections,
+    track_indices=None,
+    detection_indices=None,
+):
     """
     Linear assignment
     """
@@ -138,12 +120,7 @@ def min_cost_matching(distance_metric,
     if len(detection_indices) == 0 or len(track_indices) == 0:
         return [], track_indices, detection_indices
 
-    cost_matrix = distance_metric(
-        tracks,
-        detections,
-        track_indices,
-        detection_indices
-    )
+    cost_matrix = distance_metric(tracks, detections, track_indices, detection_indices)
 
     cost_matrix[cost_matrix > max_distance] = max_distance + 1e-5
     row_inices, col_indices = linear_sum_assignment(cost_matrix)
@@ -168,15 +145,15 @@ def min_cost_matching(distance_metric,
     return matches, unmatched_tracks, unmatched_detections
 
 
-def matching_cascade(distance_metric,
-                     max_distance,
-                     cascade_depth,
-                     tracks,
-                     detections,
-                     track_indices=None,
-                     detection_indices=None
-                     ):
-
+def matching_cascade(
+    distance_metric,
+    max_distance,
+    cascade_depth,
+    tracks,
+    detections,
+    track_indices=None,
+    detection_indices=None,
+):
     if track_indices is None:
         track_indices = list(range(len(tracks)))
 
@@ -191,31 +168,26 @@ def matching_cascade(distance_metric,
             break
 
         track_indices_l = [
-            k for k in track_indices
-            if tracks[k].time_since_update == 1 + level
+            k for k in track_indices if tracks[k].time_since_update == 1 + level
         ]
 
         if len(track_indices_l) == 0:
             continue
 
-        matches_l, _, unmatched_detections = \
-            min_cost_matching(
-                distance_metric,
-                max_distance,
-                tracks,
-                detections,
-                track_indices_l,
-                unmatched_detections
-            )
+        matches_l, _, unmatched_detections = min_cost_matching(
+            distance_metric,
+            max_distance,
+            tracks,
+            detections,
+            track_indices_l,
+            unmatched_detections,
+        )
         matches += matches_l
-    unmatched_tracks = list(set(track_indices) -
-                            set(k for k, _ in matches))
+    unmatched_tracks = list(set(track_indices) - set(k for k, _ in matches))
     return matches, unmatched_tracks, unmatched_detections
 
 
-def non_max_suppression(boxes,
-                        max_bbox_overlap,
-                        scores=None):
+def non_max_suppression(boxes, max_bbox_overlap, scores=None):
     """Suppress overlapping detections.
 
     Original code from [1]_ has been adapted to include confidence score.
@@ -279,8 +251,8 @@ def non_max_suppression(boxes,
         overlap = (w * h) / area[idxs[:last]]
 
         idxs = np.delete(
-            idxs, np.concatenate(
-                ([last], np.where(overlap > max_bbox_overlap)[0])))
+            idxs, np.concatenate(([last], np.where(overlap > max_bbox_overlap)[0]))
+        )
 
     return pick
 
@@ -292,23 +264,21 @@ def _pair_wise(a, b):
     a2 = np.square(a).sum(axis=1)
     b2 = np.square(b).sum(axis=1)
     r2 = -2 * np.dot(a, b.T) + a2[:, None] + b2[None, :]
-    r2 = np.clip(r2, 0., float(np.inf))
+    r2 = np.clip(r2, 0.0, float(np.inf))
     return r2
+
 
 def _cosine(a, b, normalized=False):
     if not normalized:
-        a = np.asarray(a) / np.linalg.norm(a,
-                                            axis=1,
-                                            keepdims=True)
-        b = np.asarray(b) / np.linalg.norm(b,
-                                            axis=1,
-                                            keepdims=True)
-    return 1. - np.dot(a, b.T)
+        a = np.asarray(a) / np.linalg.norm(a, axis=1, keepdims=True)
+        b = np.asarray(b) / np.linalg.norm(b, axis=1, keepdims=True)
+    return 1.0 - np.dot(a, b.T)
+
 
 def _nn_euclidean(x, y):
     distances = _pair_wise(x, y)
-    return np.maximum(0.0,
-                        distances.min(axis=0))
+    return np.maximum(0.0, distances.min(axis=0))
+
 
 def _nn_cosine(x, y):
     """
@@ -318,42 +288,28 @@ def _nn_cosine(x, y):
     return distances.min(axis=0)
 
 
-class NearestNeighborDistanceMetric():
-
-    def __init__(self,
-                 metric,
-                 matching_threshold,
-                 budget=None
-                 ):
-
+class NearestNeighborDistanceMetric:
+    def __init__(self, metric, matching_threshold, budget=None):
         if metric == "euclidean":
             self.metric = _nn_euclidean
         elif metric == "cosine":
             self.metric = _nn_cosine
         else:
-            raise ValueError(
-                "Invalid metric"
-            )
+            raise ValueError("Invalid metric")
         self.matching_threshold = matching_threshold
         self.budget = budget
         self.samples = {}
 
-    def partial_fit(self,
-                    features,
-                    targets,
-                    active_targets):
+    def partial_fit(self, features, targets, active_targets):
         for feature, target in zip(features, targets):
             self.samples.setdefault(target, []).append(feature)
             if self.budget is not None:
-                self.samples[target] = self.samples[target][-self.budget:]
+                self.samples[target] = self.samples[target][-self.budget :]
         self.samples = {k: self.samples[k] for k in active_targets}
 
     def distance(self, features, targets):
         cost_matrix = np.zeros((len(targets), len(features)))
 
         for i, target in enumerate(targets):
-            cost_matrix[i, :] = self.metric(
-                self.samples[target],
-                features
-            )
+            cost_matrix[i, :] = self.metric(self.samples[target], features)
         return cost_matrix

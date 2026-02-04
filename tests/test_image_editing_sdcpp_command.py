@@ -30,7 +30,14 @@ def test_sdcpp_build_command_includes_inpaint_flags() -> None:
     cmd = StableDiffusionCppBackend.build_command(
         req,
         sd_cli="/usr/bin/sd-cli",
-        ctx_args=["--diffusion-model", "/tmp/model.gguf", "--vae", "/tmp/vae.safetensors", "--llm", "/tmp/llm.gguf"],
+        ctx_args=[
+            "--diffusion-model",
+            "/tmp/model.gguf",
+            "--vae",
+            "/tmp/vae.safetensors",
+            "--llm",
+            "/tmp/llm.gguf",
+        ],
         output="/tmp/out_%03d.png",
         init_img="/tmp/init.png",
         mask_img="/tmp/mask.png",
@@ -44,4 +51,3 @@ def test_sdcpp_build_command_includes_inpaint_flags() -> None:
     assert "--mask" in cmd
     assert "--seed" in cmd
     assert cmd[cmd.index("--batch-count") + 1] == "2"
-

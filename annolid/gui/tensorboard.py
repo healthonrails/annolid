@@ -14,21 +14,20 @@ from annolid.utils.runs import shared_runs_root
 
 _STARTED_PROCESSES: list[subprocess.Popen] = []
 _LAST_URL: Optional[str] = None
-_PRIMARY: Optional[Tuple[subprocess.Popen, str, str]
-                   ] = None  # (proc, url, logdir)
+_PRIMARY: Optional[Tuple[subprocess.Popen, str, str]] = None  # (proc, url, logdir)
 
 
 def _tensorboard_env() -> dict:
     env = dict(os.environ)
     sitecustomize_dir = (
-        Path(__file__).resolve().parent.parent
-        / "utils"
-        / "tensorboard_sitecustomize"
+        Path(__file__).resolve().parent.parent / "utils" / "tensorboard_sitecustomize"
     )
     if sitecustomize_dir.exists():
         existing = env.get("PYTHONPATH", "")
         prefix = str(sitecustomize_dir)
-        env["PYTHONPATH"] = prefix if not existing else f"{prefix}{os.pathsep}{existing}"
+        env["PYTHONPATH"] = (
+            prefix if not existing else f"{prefix}{os.pathsep}{existing}"
+        )
     return env
 
 
@@ -40,7 +39,9 @@ def _can_connect(url: str, *, timeout: float = 0.5) -> bool:
         return False
 
 
-def _plugin_enabled(url: str, plugin_name: str, *, timeout: float = 0.5) -> Optional[bool]:
+def _plugin_enabled(
+    url: str, plugin_name: str, *, timeout: float = 0.5
+) -> Optional[bool]:
     base = url.rstrip("/")
     try:
         resp = requests.get(f"{base}/data/plugins_listing", timeout=timeout)
@@ -82,9 +83,7 @@ def _has_projector_config(log_dir: Path, *, max_depth: int = 9) -> bool:
                 dirnames[:] = []
                 continue
             # Prefer traversing likely folders first and skip hidden folders.
-            dirnames[:] = [
-                d for d in dirnames if d and not str(d).startswith(".")
-            ]
+            dirnames[:] = [d for d in dirnames if d and not str(d).startswith(".")]
             dirnames.sort(key=lambda d: (d != "tensorboard", d != "runs", d))
             if "projector_config.pbtxt" in filenames:
                 return True
@@ -157,7 +156,8 @@ def ensure_tensorboard(
             if _can_connect(url, timeout=0.5):
                 if _has_projector_config(Path(log_dir)):
                     _wait_for_projector(
-                        url, timeout_s=max(8.0, float(startup_timeout_s)))
+                        url, timeout_s=max(8.0, float(startup_timeout_s))
+                    )
                 return proc, url
 
     port = _pick_free_port(preferred=int(preferred_port), host=str(host))
@@ -177,20 +177,19 @@ def ensure_tensorboard(
     t0 = time.time()
     while time.time() - t0 < float(startup_timeout_s):
         if process.poll() is not None:
-            raise RuntimeError(
-                "TensorBoard exited unexpectedly while starting.")
+            raise RuntimeError("TensorBoard exited unexpectedly while starting.")
         if _can_connect(url, timeout=0.5):
             global _LAST_URL
             _LAST_URL = url
             _PRIMARY = (process, url, str(Path(log_dir)))
             if _has_projector_config(Path(log_dir)):
-                _wait_for_projector(
-                    url, timeout_s=max(8.0, float(startup_timeout_s)))
+                _wait_for_projector(url, timeout_s=max(8.0, float(startup_timeout_s)))
             return process, url
         time.sleep(0.25)
 
     raise TimeoutError(
-        f"TensorBoard did not respond at {url} within {startup_timeout_s}s")
+        f"TensorBoard did not respond at {url} within {startup_timeout_s}s"
+    )
 
 
 def start_tensorboard(
@@ -256,8 +255,9 @@ class VisualizationWindow(QtWidgets.QDialog):
         self.setWindowTitle("Visualization Tensorboard")
         self.process, self.tensorboard_url = ensure_tensorboard(
             log_dir=log_dir,
-            preferred_port=QtCore.QUrl(tensorboard_url).port() if QtCore.QUrl(
-                tensorboard_url).port() != -1 else 6006,
+            preferred_port=QtCore.QUrl(tensorboard_url).port()
+            if QtCore.QUrl(tensorboard_url).port() != -1
+            else 6006,
             host="127.0.0.1",
         )
         self.browser = QWebEngineView()

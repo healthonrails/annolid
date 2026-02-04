@@ -8,13 +8,23 @@ from typing import List, Optional, Tuple
 import warnings
 
 # Configure logger
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov',
-                    '.flv', '.mpeg', '.mpg', '.m4v', '.mts'}
-CSV_EXTENSION = '.csv'
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".flv",
+    ".mpeg",
+    ".mpg",
+    ".m4v",
+    ".mts",
+}
+CSV_EXTENSION = ".csv"
 
 
 def extract_frame_timestamps(video_path: Path) -> List[float]:
@@ -23,14 +33,21 @@ def extract_frame_timestamps(video_path: Path) -> List[float]:
     Supports both 'pts_time' (newer FFmpeg versions) and 'pkt_pts_time' (older versions).
     """
     cmd = [
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_frames',
-        '-show_entries', 'frame=pts_time,pkt_pts_time',
-        '-of', 'json', str(video_path)
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_frames",
+        "-show_entries",
+        "frame=pts_time,pkt_pts_time",
+        "-of",
+        "json",
+        str(video_path),
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe error: {result.stderr.strip()}")
 
@@ -50,10 +67,12 @@ def extract_frame_timestamps(video_path: Path) -> List[float]:
                 continue
         else:
             warnings.warn(
-                f"No valid timestamp (pts_time or pkt_pts_time) found in frame: {frame}")
+                f"No valid timestamp (pts_time or pkt_pts_time) found in frame: {frame}"
+            )
     if not timestamps:
         warnings.warn(
-            "No valid timestamps extracted. Check FFmpeg version or video input.")
+            "No valid timestamps extracted. Check FFmpeg version or video input."
+        )
     return timestamps
 
 
@@ -67,9 +86,8 @@ def find_assets(root: Path) -> Tuple[List[Path], List[Path]]:
     Returns:
         Tuple of (video_files, csv_files).
     """
-    video_files = [p for p in root.rglob(
-        '*') if p.suffix.lower() in VIDEO_EXTENSIONS]
-    csv_files = [p for p in root.rglob(f'*{CSV_EXTENSION}')]
+    video_files = [p for p in root.rglob("*") if p.suffix.lower() in VIDEO_EXTENSIONS]
+    csv_files = [p for p in root.rglob(f"*{CSV_EXTENSION}")]
     return video_files, csv_files
 
 
@@ -90,8 +108,8 @@ def find_frame_column(df: pd.DataFrame) -> Optional[str]:
     Returns the original column name if found, else None.
     """
     for col in df.columns:
-        normalized = col.strip().lower().replace(' ', '_')
-        if normalized == 'frame_number':
+        normalized = col.strip().lower().replace(" ", "_")
+        if normalized == "frame_number":
             return col
     return None
 
@@ -110,15 +128,13 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
 
     frame_col = find_frame_column(df)
     if not frame_col:
-        logger.warning(
-            f"Skipping {csv_path.name}: no frame_number column found.")
+        logger.warning(f"Skipping {csv_path.name}: no frame_number column found.")
         return
 
     try:
         timestamps = extract_frame_timestamps(video_path)
     except Exception as e:
-        logger.error(
-            f"Failed to extract timestamps for {video_path.name}: {e}")
+        logger.error(f"Failed to extract timestamps for {video_path.name}: {e}")
         return
 
     max_frame = int(df[frame_col].max())
@@ -138,9 +154,9 @@ def annotate_csv(csv_path: Path, video_path: Path) -> None:
         if 0 <= i < len(timestamps):
             return timestamps[i]
         else:
-            return float('nan')
+            return float("nan")
 
-    df['real_timestamp_sec'] = df[frame_col].astype(int).map(safe_lookup)
+    df["real_timestamp_sec"] = df[frame_col].astype(int).map(safe_lookup)
 
     try:
         df.to_csv(csv_path, index=False)
@@ -170,7 +186,11 @@ def run_gap_analysis_for_video(video_path: str) -> bool:
     Returns:
         bool: True if the reports were successfully generated, False otherwise.
     """
-    from annolid.postprocessing.tracking_reports import find_tracking_gaps, generate_reports
+    from annolid.postprocessing.tracking_reports import (
+        find_tracking_gaps,
+        generate_reports,
+    )
+
     try:
         # --- Core Logic: Find Gaps ---
         gaps = find_tracking_gaps(video_path)
@@ -182,7 +202,8 @@ def run_gap_analysis_for_video(video_path: str) -> bool:
         return True
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred during analysis: {e}", exc_info=True)
+            f"An unexpected error occurred during analysis: {e}", exc_info=True
+        )
         return False
 
 
@@ -206,9 +227,11 @@ def process_directory(root: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Annotate tracking CSVs with real frame timestamps.")
-    parser.add_argument('root_folder', type=Path,
-                        help='Root folder containing videos and CSVs')
+        description="Annotate tracking CSVs with real frame timestamps."
+    )
+    parser.add_argument(
+        "root_folder", type=Path, help="Root folder containing videos and CSVs"
+    )
     args = parser.parse_args()
 
     if not args.root_folder.is_dir():
@@ -218,5 +241,5 @@ def main():
     process_directory(args.root_folder)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

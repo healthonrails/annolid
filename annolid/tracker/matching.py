@@ -31,16 +31,18 @@ def merge_matches(m1, m2, shape):
         - unmatched_O : tuple of indices of items in the first sequence that were not matched
         - unmatched_Q : tuple of indices of items in the third sequence that were not matched
     """
-    O, P, Q = shape
+    num_o, num_p, num_q = shape
     # Convert the matches to numpy arrays for efficient processing
     m1 = np.asarray(m1)
     m2 = np.asarray(m2)
 
     # Create sparse matrices to represent the matches
     M1 = scipy.sparse.coo_matrix(
-        (np.ones(len(m1)), (m1[:, 0], m1[:, 1])), shape=(O, P))
+        (np.ones(len(m1)), (m1[:, 0], m1[:, 1])), shape=(num_o, num_p)
+    )
     M2 = scipy.sparse.coo_matrix(
-        (np.ones(len(m2)), (m2[:, 0], m2[:, 1])), shape=(P, Q))
+        (np.ones(len(m2)), (m2[:, 0], m2[:, 1])), shape=(num_p, num_q)
+    )
 
     # Compute the intersection of the matches
     mask = M1 * M2
@@ -48,8 +50,8 @@ def merge_matches(m1, m2, shape):
     match = list(zip(match[0], match[1]))
 
     # Compute the unmatched items in the first and third sequences
-    unmatched_O = tuple(set(range(O)) - set([i for i, j in match]))
-    unmatched_Q = tuple(set(range(Q)) - set([j for i, j in match]))
+    unmatched_O = tuple(set(range(num_o)) - set([i for i, j in match]))
+    unmatched_Q = tuple(set(range(num_q)) - set([j for i, j in match]))
 
     # Return the matches and unmatched items
     return match, unmatched_O, unmatched_Q
@@ -80,7 +82,7 @@ def _indices_to_matches(cost_matrix, indices, thresh):
     matched_cost = cost_matrix[tuple(zip(*indices))]
 
     # Create a mask of matched pairs below the threshold
-    matched_mask = (matched_cost <= thresh)
+    matched_mask = matched_cost <= thresh
 
     # Get the matched pairs and the indices of unmatched items
     matches = indices[matched_mask]
@@ -108,7 +110,11 @@ def linear_assignment(cost_matrix: np.ndarray, thresh: float) -> tuple:
     import lap
 
     if cost_matrix.size == 0:
-        return np.empty((0, 2), dtype=int), tuple(range(cost_matrix.shape[0])), tuple(range(cost_matrix.shape[1]))
+        return (
+            np.empty((0, 2), dtype=int),
+            tuple(range(cost_matrix.shape[0])),
+            tuple(range(cost_matrix.shape[1])),
+        )
 
     matches, unmatched_a, unmatched_b = [], [], []
     cost, x, y = lap.lapjv(cost_matrix, extend_cost=True, cost_limit=thresh)
@@ -133,13 +139,14 @@ def ious(atlbrs, btlbrs):
     :return: ious np.ndarray
     """
     from cython_bbox import bbox_overlaps as bbox_ious
+
     ious = np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float)
     if ious.size == 0:
         return ious
 
     ious = bbox_ious(
         np.ascontiguousarray(atlbrs, dtype=np.float),
-        np.ascontiguousarray(btlbrs, dtype=np.float)
+        np.ascontiguousarray(btlbrs, dtype=np.float),
     )
 
     return ious
@@ -172,7 +179,9 @@ def iou_distance(atracks, btracks):
     :param btracks: list[STrack]
     :return: cost_matrix np.ndarray
     """
-    if (len(atracks) > 0 and isinstance(atracks[0], np.ndarray)) or (len(btracks) > 0 and isinstance(btracks[0], np.ndarray)):
+    if (len(atracks) > 0 and isinstance(atracks[0], np.ndarray)) or (
+        len(btracks) > 0 and isinstance(btracks[0], np.ndarray)
+    ):
         atlbrs = atracks
         btlbrs = btracks
     else:
@@ -191,7 +200,9 @@ def v_iou_distance(atracks, btracks):
     :param btracks: list[STrack]
     :return: cost_matrix np.ndarray
     """
-    if (len(atracks) > 0 and isinstance(atracks[0], np.ndarray)) or (len(btracks) > 0 and isinstance(btracks[0], np.ndarray)):
+    if (len(atracks) > 0 and isinstance(atracks[0], np.ndarray)) or (
+        len(btracks) > 0 and isinstance(btracks[0], np.ndarray)
+    ):
         atlbrs = atracks
         btlbrs = btracks
     else:
@@ -203,7 +214,7 @@ def v_iou_distance(atracks, btracks):
     return cost_matrix
 
 
-def embedding_distance(tracks, detections, metric='cosine'):
+def embedding_distance(tracks, detections, metric="cosine"):
     """
     Calculates the cost matrix for the embeddings of the tracks and detections.
 
@@ -224,10 +235,8 @@ def embedding_distance(tracks, detections, metric='cosine'):
         return cost_matrix
 
     # Convert detection and track features to numpy arrays
-    det_features = np.asarray(
-        [track.curr_feat for track in detections], dtype=np.float)
-    track_features = np.asarray(
-        [track.smooth_feat for track in tracks], dtype=np.float)
+    det_features = np.asarray([track.curr_feat for track in detections], dtype=np.float)
+    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=np.float)
 
     # Calculate the distance matrix between track and detection embeddings
     # using the specified metric
@@ -268,7 +277,8 @@ def gate_cost_matrix(kf, cost_matrix, tracks, detections, only_position=False):
     # Apply gating to cost matrix
     for row, track in enumerate(tracks):
         gating_distance = kf.gating_distance(
-            track.mean, track.covariance, measurements, only_position)
+            track.mean, track.covariance, measurements, only_position
+        )
         cost_matrix[row, gating_distance > gating_threshold] = np.inf
 
     return cost_matrix
@@ -299,10 +309,10 @@ def fuse_motion(kf, cost_matrix, tracks, detections, only_position=False, lambda
     # For each track, gate detections and fuse costs
     for row, track in enumerate(tracks):
         gating_distance = kf.gating_distance(
-            track.mean, track.covariance, measurements, only_position, metric='maha')
+            track.mean, track.covariance, measurements, only_position, metric="maha"
+        )
         cost_matrix[row, gating_distance > gating_threshold] = np.inf
-        cost_matrix[row] = lambda_ * cost_matrix[row] + \
-            (1 - lambda_) * gating_distance
+        cost_matrix[row] = lambda_ * cost_matrix[row] + (1 - lambda_) * gating_distance
 
     return cost_matrix
 
@@ -329,9 +339,8 @@ def fuse_iou(cost_matrix, tracks, detections):
 
     # Apply detection scores to the fused similarities
     det_scores = np.array([det.score for det in detections])
-    det_scores = np.expand_dims(det_scores, axis=0).repeat(
-        cost_matrix.shape[0], axis=0)
-    #fuse_sim = fuse_sim * (1 + det_scores) / 2
+    det_scores = np.expand_dims(det_scores, axis=0).repeat(cost_matrix.shape[0], axis=0)
+    # fuse_sim = fuse_sim * (1 + det_scores) / 2
 
     # Convert fused similarities to a cost matrix
     fuse_cost = 1 - fuse_sim
@@ -355,8 +364,7 @@ def fuse_score(cost_matrix, detections):
 
     # Apply detection scores to the IOU similarities
     det_scores = np.array([det.score for det in detections])
-    det_scores = np.expand_dims(det_scores, axis=0).repeat(
-        cost_matrix.shape[0], axis=0)
+    det_scores = np.expand_dims(det_scores, axis=0).repeat(cost_matrix.shape[0], axis=0)
     fuse_sim = iou_sim * det_scores
 
     # Convert fused similarities to a cost matrix

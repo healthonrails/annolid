@@ -8,7 +8,9 @@ try:
     import clip
 except ImportError:
     # Handle the case where CLIP is not installed
-    print("CLIP library is not installed. Please install it to use CLIP-related functionality.")
+    print(
+        "CLIP library is not installed. Please install it to use CLIP-related functionality."
+    )
     # Perform fallback or error handling actions
     print("pip install git+https://github.com/openai/CLIP.git")
 
@@ -26,7 +28,8 @@ class CLIPModel:
         """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.clip_model, self.clip_preprocess = clip.load(
-            clip_version, device=self.device)
+            clip_version, device=self.device
+        )
 
     def encode_image(self, image):
         """
@@ -55,7 +58,7 @@ class CLIPModel:
         return text_features.cpu().detach().numpy()
 
 
-class Embedding():
+class Embedding:
     """
     Use the resnet18 pretrained weights on imagenet to extract features
     """
@@ -63,28 +66,29 @@ class Embedding():
     def __init__(self, layer_output_size=512):
         self.net = models.resnet18(pretrained=True)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.layer = self.net._modules.get('avgpool')
+        self.layer = self.net._modules.get("avgpool")
         self.net.eval()
         self.net.to(self.device)
         self.size = (224, 224)
         self.layer_output_size = layer_output_size
 
-        self.norm = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
-        ])
+        self.norm = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
 
     def resize(self, img):
-        img = cv2.resize(img.astype(np.float32)/255., self.size)
+        img = cv2.resize(img.astype(np.float32) / 255.0, self.size)
         return img
 
     def __call__(self, imgs):
-
-        img_batch = torch.cat([
-            self.norm(self.resize(im)).unsqueeze(0)
-            for im in imgs
-        ], dim=0).float()
+        img_batch = torch.cat(
+            [self.norm(self.resize(im)).unsqueeze(0) for im in imgs], dim=0
+        ).float()
         img_batch = img_batch.to(self.device)
         _embedding = torch.zeros(len(imgs), self.layer_output_size, 1, 1)
 

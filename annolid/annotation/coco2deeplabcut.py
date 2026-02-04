@@ -1,5 +1,4 @@
 import json
-import numpy as np
 
 
 def convert_coco_to_dlc(coco_file: str, dlc_file: str) -> None:
@@ -40,7 +39,14 @@ def convert_coco_to_dlc(coco_file: str, dlc_file: str) -> None:
 
         # Add the bounding box coordinates and label to the DLC format outputs
         dlc_outputs.append(
-            {"frame": annotation["image_id"], "x": cx, "y": cy, "likelihood": 1, "label": label})
+            {
+                "frame": annotation["image_id"],
+                "x": cx,
+                "y": cy,
+                "likelihood": 1,
+                "label": label,
+            }
+        )
 
     # Save the DLC format outputs to a file
     with open(dlc_file, "w") as f:

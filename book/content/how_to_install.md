@@ -117,13 +117,13 @@ Now if you want to access Annolid through the GUI, you will need to connect the 
 xhost +local:docker
 ```
 
-Finally, we will need the Image ID of your Annolid image. To get that use: 
+Finally, we will need the Image ID of your Annolid image. To get that use:
 
 ```
 docker image ls
 ```
 
-and write down the IMAGE ID associated with annolid repository. 
+and write down the IMAGE ID associated with annolid repository.
 
 Finally to launch annolid, run the following:
 

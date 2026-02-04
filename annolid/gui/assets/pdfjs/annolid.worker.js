@@ -69,4 +69,3 @@
   // Load the actual PDF.js worker implementation.
   importScripts("pdf.worker.min.js");
 })();
-

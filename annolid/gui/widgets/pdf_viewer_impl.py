@@ -121,8 +121,7 @@ if _WEBENGINE_AVAILABLE:
             sourceID: str,
         ) -> None:
             try:
-                logger.info(
-                    f"QtWebEngine js: {message} ({sourceID}:{lineNumber})")
+                logger.info(f"QtWebEngine js: {message} ({sourceID}:{lineNumber})")
             except Exception:
                 pass
 
@@ -149,9 +148,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._pdf_user_state_pending: Optional[dict[str, object]] = None
         self._pdf_user_state_timer = QtCore.QTimer(self)
         self._pdf_user_state_timer.setSingleShot(True)
-        self._pdf_user_state_timer.timeout.connect(
-            self._flush_pdf_user_state_to_disk
-        )
+        self._pdf_user_state_timer.timeout.connect(self._flush_pdf_user_state_to_disk)
         self._reading_log: list[dict[str, object]] = []
         self._current_page = 0
         self._zoom = 1.5
@@ -249,12 +246,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self.text_view = QtWidgets.QTextEdit(self)
         self.text_view.setReadOnly(True)
         self.text_view.setPlaceholderText(
-            "Select text on this page, then right-click to speak it.")
-        self.text_view.selectionChanged.connect(
-            self._on_text_selection_changed)
+            "Select text on this page, then right-click to speak it."
+        )
+        self.text_view.selectionChanged.connect(self._on_text_selection_changed)
         self.text_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.text_view.customContextMenuRequested.connect(
-            self._show_context_menu)
+        self.text_view.customContextMenuRequested.connect(self._show_context_menu)
         fallback_layout.addWidget(self.text_view, 1)
 
         self._stack.addWidget(fallback_container)
@@ -268,9 +264,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 pass
             if _WEBCHANNEL_AVAILABLE:
                 try:
-                    self._web_channel = QtWebChannel.QWebChannel(
-                        self._web_view.page()
-                    )
+                    self._web_channel = QtWebChannel.QWebChannel(self._web_view.page())
                     self._reader_bridge = _PdfReaderBridge(self)
                     self._web_channel.registerObject(
                         "annolidBridge", self._reader_bridge
@@ -287,9 +281,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
             try:
                 settings = self._web_view.settings()
                 pdf_attr = getattr(
-                    QtWebEngineWidgets.QWebEngineSettings, "PdfViewerEnabled", None)
+                    QtWebEngineWidgets.QWebEngineSettings, "PdfViewerEnabled", None
+                )
                 plugins_attr = getattr(
-                    QtWebEngineWidgets.QWebEngineSettings, "PluginsEnabled", None)
+                    QtWebEngineWidgets.QWebEngineSettings, "PluginsEnabled", None
+                )
                 local_remote_attr = getattr(
                     QtWebEngineWidgets.QWebEngineSettings,
                     "LocalContentCanAccessRemoteUrls",
@@ -324,8 +320,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             )
             try:
                 self._web_view.renderProcessTerminated.connect(
-                    lambda *_: logger.warning(
-                        "QtWebEngine render process terminated")
+                    lambda *_: logger.warning("QtWebEngine render process terminated")
                 )
             except Exception:
                 pass
@@ -339,8 +334,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         layout.addWidget(self._stack, 1)
         # Even when Chromium's built-in PDF plugin is unavailable, we can still
         # render PDFs via the bundled PDF.js viewer.
-        self._use_web_engine = bool(
-            _WEBENGINE_AVAILABLE and self._web_view is not None)
+        self._use_web_engine = bool(_WEBENGINE_AVAILABLE and self._web_view is not None)
         if _WEBENGINE_AVAILABLE and not self._web_pdf_capable:
             logger.info(
                 "QtWebEngine PDF plugin support appears disabled; PDF.js will be used instead."
@@ -371,9 +365,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 else None
             )
             if isinstance(existing_log, list):
-                self._reading_log = [
-                    e for e in existing_log if isinstance(e, dict)
-                ][:500]
+                self._reading_log = [e for e in existing_log if isinstance(e, dict)][
+                    :500
+                ]
         except Exception:
             self._reading_log = []
 
@@ -557,9 +551,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                         if isinstance(result, dict):
                             err = str(result.get("err", "") or "")
                             spans = int(result.get("spans", 0))
-                            rendered_pages = int(
-                                result.get("renderedPages", 0) or 0
-                            )
+                            rendered_pages = int(result.get("renderedPages", 0) or 0)
                             pdf_loaded = bool(result.get("pdfLoaded", False))
                             pdfjs_ready = bool(result.get("ready", False))
                             has_pdfjs = bool(result.get("hasPdfjs", False))
@@ -644,8 +636,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             except Exception:
                 ok_result = False
             if not ok_result:
-                self._fallback_from_web(
-                    path, "PDF mimeType not available in WebEngine")
+                self._fallback_from_web(path, "PDF mimeType not available in WebEngine")
                 return
             self._pdf_path = path
             self._web_loading_path = None
@@ -702,8 +693,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         pdf_b64 = ""
         pdf_key = self._pdf_key or ""
         initial_state = (
-            self._pdf_user_state if isinstance(
-                self._pdf_user_state, dict) else {}
+            self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
         )
         try:
             initial_state_js = json.dumps(initial_state, ensure_ascii=False)
@@ -868,13 +858,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
         except Exception:
             pix = page.get_pixmap()
 
-        fmt = (
-            QtGui.QImage.Format_RGBA8888
-            if pix.alpha
-            else QtGui.QImage.Format_RGB888
-        )
-        image = QtGui.QImage(pix.samples, pix.width,
-                             pix.height, pix.stride, fmt).copy()
+        fmt = QtGui.QImage.Format_RGBA8888 if pix.alpha else QtGui.QImage.Format_RGB888
+        image = QtGui.QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
         self.image_label.setPixmap(QtGui.QPixmap.fromImage(image))
 
         text = (page.get_text("text") or "").strip()
@@ -917,20 +902,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
         menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
         selected_text = self._selected_text()
         lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
-        lookup_action.setEnabled(
-            bool(self._extract_single_word(selected_text)))
+        lookup_action.setEnabled(bool(self._extract_single_word(selected_text)))
         lookup_action.triggered.connect(
             lambda: self._request_dictionary_lookup(
                 selected_text, global_pos=self.text_view.mapToGlobal(position)
             )
         )
-        menu.insertAction(
-            menu.actions()[0] if menu.actions() else None, lookup_action
-        )
-        lookup_save_action = QtWidgets.QAction(
-            "Look up and save to notes", self)
-        lookup_save_action.setEnabled(
-            bool(self._extract_single_word(selected_text)))
+        menu.insertAction(menu.actions()[0] if menu.actions() else None, lookup_action)
+        lookup_save_action = QtWidgets.QAction("Look up and save to notes", self)
+        lookup_save_action.setEnabled(bool(self._extract_single_word(selected_text)))
         lookup_save_action.triggered.connect(
             lambda: self._request_dictionary_lookup(
                 selected_text,
@@ -944,8 +924,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         speak_action = QtWidgets.QAction("Speak selection", self)
         speak_action.setEnabled(self._has_selection() and not self._speaking)
         speak_action.triggered.connect(self._request_speak_selection)
-        menu.insertAction(
-            menu.actions()[0] if menu.actions() else None, speak_action)
+        menu.insertAction(menu.actions()[0] if menu.actions() else None, speak_action)
         bookmark_action = QtWidgets.QAction("Bookmark this page", self)
         bookmark_action.triggered.connect(self._toggle_fallback_bookmark)
         menu.insertAction(
@@ -954,8 +933,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         note_action = QtWidgets.QAction("Add note…", self)
         note_action.setEnabled(True)
         note_action.triggered.connect(self._add_fallback_note)
-        menu.insertAction(
-            menu.actions()[0] if menu.actions() else None, note_action)
+        menu.insertAction(menu.actions()[0] if menu.actions() else None, note_action)
         menu.exec_(self.text_view.mapToGlobal(position))
 
     def _show_web_context_menu(self, position: QtCore.QPoint) -> None:
@@ -965,8 +943,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         global_pos = self._web_view.mapToGlobal(position)
 
         def show_menu(selection: object) -> None:
-            selected_text = (
-                str(selection) if selection is not None else "").strip()
+            selected_text = (str(selection) if selection is not None else "").strip()
             if not selected_text:
                 selected_text = (self._web_view.selectedText() or "").strip()
             if selected_text:
@@ -976,8 +953,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             menu = page.createStandardContextMenu()
             menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
             lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
-            lookup_action.setEnabled(
-                bool(self._extract_single_word(selected_text)))
+            lookup_action.setEnabled(bool(self._extract_single_word(selected_text)))
             lookup_action.triggered.connect(
                 lambda: self._request_dictionary_lookup(
                     selected_text, global_pos=global_pos
@@ -986,18 +962,17 @@ class PdfViewerWidget(QtWidgets.QWidget):
             menu.insertAction(
                 menu.actions()[0] if menu.actions() else None, lookup_action
             )
-            lookup_save_action = QtWidgets.QAction(
-                "Look up and save to notes", self)
+            lookup_save_action = QtWidgets.QAction("Look up and save to notes", self)
             lookup_save_action.setEnabled(
-                bool(self._extract_single_word(selected_text)))
+                bool(self._extract_single_word(selected_text))
+            )
             lookup_save_action.triggered.connect(
                 lambda: self._request_dictionary_lookup(
                     selected_text, global_pos=global_pos, save_to_notes=True
                 )
             )
             menu.insertAction(
-                menu.actions()[0] if menu.actions(
-                ) else None, lookup_save_action
+                menu.actions()[0] if menu.actions() else None, lookup_save_action
             )
             speak_action = QtWidgets.QAction("Speak selection", self)
             speak_action.setEnabled(not self._speaking)
@@ -1035,8 +1010,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 raw_texts = payload.get("texts") or []
                 raw_indices = payload.get("indices") or []
                 try:
-                    texts = [str(t).strip()
-                             for t in raw_texts if str(t).strip()]
+                    texts = [str(t).strip() for t in raw_texts if str(t).strip()]
                     indices = [int(i) for i in raw_indices]
                 except Exception:
                     texts = []
@@ -1045,9 +1019,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 self._web_selected_span_text = {
                     idx: text for text, idx in zip(texts, indices)
                 }
-                groups, sentences = self._group_web_spans_into_sentences(
-                    texts, indices
-                )
+                groups, sentences = self._group_web_spans_into_sentences(texts, indices)
                 if groups and sentences and len(groups) == len(sentences):
                     self._web_sentence_span_groups = groups
                     self._highlight_mode = "web-sentence"
@@ -1059,7 +1031,10 @@ class PdfViewerWidget(QtWidgets.QWidget):
             if cleaned:
                 self._speak_text(cleaned)
                 return
-            if self._selection_cache and (time.monotonic() - self._selection_cache_time) < 2.0:
+            if (
+                self._selection_cache
+                and (time.monotonic() - self._selection_cache_time) < 2.0
+            ):
                 self._speak_text(self._selection_cache)
                 return
             self._speak_from_clipboard()
@@ -1101,9 +1076,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
         original = clipboard.text()
         try:
-            self._web_view.page().triggerAction(
-                QtWebEngineWidgets.QWebEnginePage.Copy
-            )
+            self._web_view.page().triggerAction(QtWebEngineWidgets.QWebEnginePage.Copy)
         except Exception:
             return
 
@@ -1199,8 +1172,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if not self._reader_queue:
             return
         max_global = self._reader_queue_offset + len(self._reader_queue) - 1
-        clamped = max(self._reader_queue_offset,
-                      min(max_global, int(global_index)))
+        clamped = max(self._reader_queue_offset, min(max_global, int(global_index)))
         local_index = clamped - self._reader_queue_offset
         self._start_reader_from_local_index(local_index)
 
@@ -1210,8 +1182,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if not self._speaking:
             self._reader_state = "paused"
             self._reader_pause_requested = False
-            self._log_reader_stop_event(
-                kind="reader_pause", label="Reader paused")
+            self._log_reader_stop_event(kind="reader_pause", label="Reader paused")
             try:
                 self.reader_state_changed.emit(
                     self._reader_state,
@@ -1231,8 +1202,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._append_reading_log_event(
             {"type": "reader_resume", "label": "Reader resumed"}
         )
-        local_index = max(0, self._reader_current_index -
-                          self._reader_queue_offset)
+        local_index = max(0, self._reader_current_index - self._reader_queue_offset)
         self._start_reader_from_local_index(local_index)
 
     def _cancel_speaking(self) -> None:
@@ -1278,8 +1248,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if not isinstance(payload, dict):
             return
         raw_sentences = payload.get("sentences")
-        use_sentences = isinstance(
-            raw_sentences, list) and len(raw_sentences) > 0
+        use_sentences = isinstance(raw_sentences, list) and len(raw_sentences) > 0
         items = raw_sentences if use_sentences else payload.get("paragraphs")
         if not isinstance(items, list):
             return
@@ -1312,21 +1281,18 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
         try:
             start_index = int(
-                payload.get(
-                    "sentenceStartIndex" if use_sentences else "startIndex", 0)
+                payload.get("sentenceStartIndex" if use_sentences else "startIndex", 0)
             )
         except Exception:
             start_index = 0
         local_start_index = 0
         if use_sentences:
             try:
-                local_start_index = int(payload.get(
-                    "sentenceLocalStartIndex", 0) or 0)
+                local_start_index = int(payload.get("sentenceLocalStartIndex", 0) or 0)
             except Exception:
                 local_start_index = 0
         try:
-            total = int(payload.get(
-                "sentenceTotal" if use_sentences else "total", 0))
+            total = int(payload.get("sentenceTotal" if use_sentences else "total", 0))
         except Exception:
             total = 0
         if total <= 0:
@@ -1335,12 +1301,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_queue = texts
         self._reader_spans = spans_list
         self._reader_pages = pages
-        self._reader_queue_offset = max(
-            0, start_index) if not use_sentences else 0
-        self._reader_total = max(
-            total, self._reader_queue_offset + len(texts))
-        self._reader_current_index = self._reader_queue_offset + \
-            max(0, local_start_index)
+        self._reader_queue_offset = max(0, start_index) if not use_sentences else 0
+        self._reader_total = max(total, self._reader_queue_offset + len(texts))
+        self._reader_current_index = self._reader_queue_offset + max(
+            0, local_start_index
+        )
         self._reader_chunk_base = 0
         self._reader_pause_requested = False
         self._reader_stop_requested = False
@@ -1356,8 +1321,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._highlight_mode = "web-sentence" if use_sentences else "web-paragraph"
         start_local = 0
         if use_sentences:
-            start_local = max(
-                0, min(local_start_index, len(self._reader_queue) - 1))
+            start_local = max(0, min(local_start_index, len(self._reader_queue) - 1))
         self._start_reader_from_local_index(start_local)
 
     def _start_reader_from_local_index(self, local_index: int) -> None:
@@ -1481,8 +1445,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             end = base + match.end() - trailing
             if start >= end:
                 continue
-            cleaned = re.sub(
-                r"\s+", " ", segment.replace("\u2029", " ")).strip()
+            cleaned = re.sub(r"\s+", " ", segment.replace("\u2029", " ")).strip()
             if not cleaned:
                 continue
             spans.append((start, end))
@@ -1587,14 +1550,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 self._dictionary_popup_pos = global_pos
 
                 def handle(payload: object) -> None:
-                    anchor = {"pageNum": float(
-                        page_num), "offsetFrac": float(offset_frac)}
+                    anchor = {
+                        "pageNum": float(page_num),
+                        "offsetFrac": float(offset_frac),
+                    }
                     if isinstance(payload, dict):
                         try:
                             pn = int(payload.get("pageNum") or page_num)
                             frac = float(payload.get("offsetFrac") or 0.0)
-                            anchor = {"pageNum": float(
-                                pn), "offsetFrac": float(frac)}
+                            anchor = {"pageNum": float(pn), "offsetFrac": float(frac)}
                         except Exception:
                             pass
                     callback(anchor)
@@ -1687,11 +1651,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
         if not self._use_web_engine:
             return
-        state = self._pdf_user_state if isinstance(
-            self._pdf_user_state, dict) else {}
+        state = self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
         try:
-            state_js = json.dumps(
-                state, ensure_ascii=False).replace("</", "<\\/")
+            state_js = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
         except Exception:
             return
         try:
@@ -1749,10 +1711,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if len(note_text) > 6000:
             note_text = note_text[:5997] + "…"
 
-        state = self._pdf_user_state if isinstance(
-            self._pdf_user_state, dict) else {}
-        notes = state.get("notes") if isinstance(
-            state.get("notes"), list) else []
+        state = self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
+        notes = state.get("notes") if isinstance(state.get("notes"), list) else []
         notes.insert(
             0,
             {
@@ -1981,8 +1941,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                     return
                 self._scholar_index = max(
                     0,
-                    min(self._scholar_index + int(delta),
-                        len(self._scholar_items) - 1),
+                    min(self._scholar_index + int(delta), len(self._scholar_items) - 1),
                 )
                 self._update_scholar_dialog()
 
@@ -2020,8 +1979,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         try:
             if not self._scholar_items:
                 return ""
-            idx = max(0, min(int(self._scholar_index),
-                      len(self._scholar_items) - 1))
+            idx = max(0, min(int(self._scholar_index), len(self._scholar_items) - 1))
             return str(self._scholar_items[idx].get("url") or "")
         except Exception:
             return ""
@@ -2118,8 +2076,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             "lang": settings.get("lang", defaults["lang"]),
             "speed": settings.get("speed", defaults["speed"]),
             "chatterbox_voice_path": settings.get(
-                "chatterbox_voice_path", defaults.get(
-                    "chatterbox_voice_path", "")
+                "chatterbox_voice_path", defaults.get("chatterbox_voice_path", "")
             ),
             "chatterbox_dtype": settings.get(
                 "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
@@ -2137,8 +2094,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 defaults.get("chatterbox_apply_watermark", False),
             ),
         }
-        self._thread_pool.start(_SpeakTextTask(
-            self, cleaned, merged, chunks=chunks, token=token))
+        self._thread_pool.start(
+            _SpeakTextTask(self, cleaned, merged, chunks=chunks, token=token)
+        )
 
     @QtCore.Slot()
     def _on_speak_finished(self) -> None:
@@ -2295,8 +2253,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
             word_spans = self._split_text_range_into_words(start, end)
             if not word_spans:
                 return
-            weights = [max(1, word_end - word_start)
-                       for word_start, word_end in word_spans]
+            weights = [
+                max(1, word_end - word_start) for word_start, word_end in word_spans
+            ]
             units, durations = self._build_weighted_timing(
                 word_spans, weights, duration_ms
             )
@@ -2352,8 +2311,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
         cursor = self.text_view.textCursor()
         cursor.setPosition(self._selection_anchor_start)
-        cursor.setPosition(self._selection_anchor_end,
-                           QtGui.QTextCursor.KeepAnchor)
+        cursor.setPosition(self._selection_anchor_end, QtGui.QTextCursor.KeepAnchor)
         self.text_view.setTextCursor(cursor)
 
     def _apply_web_highlight(self) -> None:
@@ -2368,7 +2326,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
     def _clear_highlight(self) -> None:
         self._stop_word_highlight()
-        if self._web_view is not None and self._highlight_mode in {"web", "web-sentence", "web-paragraph"}:
+        if self._web_view is not None and self._highlight_mode in {
+            "web",
+            "web-sentence",
+            "web-paragraph",
+        }:
             try:
                 self._web_view.page().runJavaScript(
                     "window.__annolidClearHighlight && window.__annolidClearHighlight()"
@@ -2396,7 +2358,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
             self.text_view.setExtraSelections([])
         except Exception:
             pass
-        if self._web_view is not None and self._highlight_mode in {"web", "web-sentence", "web-paragraph"}:
+        if self._web_view is not None and self._highlight_mode in {
+            "web",
+            "web-sentence",
+            "web-paragraph",
+        }:
             try:
                 self._web_view.page().runJavaScript(
                     "window.__annolidClearWordHighlight && window.__annolidClearWordHighlight()"
@@ -2420,8 +2386,10 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._apply_word_highlight_unit(unit)
         if self._word_highlight_index < len(self._word_highlight_durations_ms):
             timer.setInterval(
-                max(1, int(
-                    self._word_highlight_durations_ms[self._word_highlight_index]))
+                max(
+                    1,
+                    int(self._word_highlight_durations_ms[self._word_highlight_index]),
+                )
             )
 
     def _apply_word_highlight_unit(self, unit: object) -> None:
@@ -2466,15 +2434,20 @@ class PdfViewerWidget(QtWidgets.QWidget):
             doc = self.text_view.document()
             selections: list[QtWidgets.QTextEdit.ExtraSelection] = []
             if sentence_span is not None:
-                selections.append(self._make_text_extra_selection(
-                    doc, sentence_span[0], sentence_span[1], QtGui.QColor(
-                        255, 210, 80, 90)
-                ))
+                selections.append(
+                    self._make_text_extra_selection(
+                        doc,
+                        sentence_span[0],
+                        sentence_span[1],
+                        QtGui.QColor(255, 210, 80, 90),
+                    )
+                )
             if word_span is not None:
-                selections.append(self._make_text_extra_selection(
-                    doc, word_span[0], word_span[1], QtGui.QColor(
-                        255, 160, 0, 160)
-                ))
+                selections.append(
+                    self._make_text_extra_selection(
+                        doc, word_span[0], word_span[1], QtGui.QColor(255, 160, 0, 160)
+                    )
+                )
             self.text_view.setExtraSelections(selections)
         except Exception:
             pass
@@ -2654,7 +2627,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def is_web_mode(self) -> bool:
         return bool(self._use_web_engine and self._web_mode_active)
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover - GUI cleanup
+    def closeEvent(
+        self, event: QtGui.QCloseEvent
+    ) -> None:  # pragma: no cover - GUI cleanup
         try:
             self._record_stop_event()
         except Exception:
@@ -2723,10 +2698,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
         Returns True if a specific zoom level was restored (so fit-to-width should be skipped).
         """
-        state = self._pdf_user_state if isinstance(
-            self._pdf_user_state, dict) else {}
-        reading = state.get("reading") if isinstance(
-            state.get("reading"), dict) else {}
+        state = self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
+        reading = state.get("reading") if isinstance(state.get("reading"), dict) else {}
         restored_zoom = False
 
         try:
@@ -2752,8 +2725,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
         if self._doc is not None:
             try:
-                page_index = max(
-                    0, min(page_index, int(self._doc.page_count) - 1))
+                page_index = max(0, min(page_index, int(self._doc.page_count) - 1))
             except Exception:
                 page_index = max(0, page_index)
         self._current_page = page_index
@@ -2764,7 +2736,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
         return restored_zoom
 
     @staticmethod
-    def _deep_merge_state(dst: dict[str, object], src: dict[str, object]) -> dict[str, object]:
+    def _deep_merge_state(
+        dst: dict[str, object], src: dict[str, object]
+    ) -> dict[str, object]:
         for key, value in (src or {}).items():
             if (
                 isinstance(value, dict)
@@ -2788,18 +2762,14 @@ class PdfViewerWidget(QtWidgets.QWidget):
             self._pdf_user_state = dict(update or {})
         else:
             base = (
-                self._pdf_user_state
-                if isinstance(self._pdf_user_state, dict)
-                else {}
+                self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
             )
             self._pdf_user_state = self._deep_merge_state(
                 dict(base), dict(update or {})
             )
         # Debounce writes to disk.
         self._pdf_user_state_pending = (
-            self._pdf_user_state
-            if isinstance(self._pdf_user_state, dict)
-            else {}
+            self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
         )
         try:
             self._pdf_user_state_timer.start(800)
@@ -2860,11 +2830,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
         page_num = int(self._current_page) + 1
         snippet = ""
         try:
-            local_index = int(self._reader_current_index -
-                              self._reader_queue_offset)
+            local_index = int(self._reader_current_index - self._reader_queue_offset)
             if 0 <= local_index < len(self._reader_queue):
-                snippet = str(
-                    self._reader_queue[local_index] or "").strip()[:160]
+                snippet = str(self._reader_queue[local_index] or "").strip()[:160]
             if 0 <= local_index < len(self._reader_pages):
                 maybe_page = int(self._reader_pages[local_index] or 0)
                 if maybe_page > 0:
@@ -2925,6 +2893,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def _record_stop_event(self) -> None:
         # Best-effort: ask PDF.js for current anchor; fallback to current page.
         if self._web_view is not None and self._pdfjs_active:
+
             def _after(payload: object) -> None:
                 event: dict[str, object] = {
                     "type": "stop",
@@ -2934,13 +2903,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
                     reading = payload.get("reading")
                     if isinstance(reading, dict):
                         try:
-                            event["pageNum"] = int(
-                                reading.get("pageNum", 0) or 0)
+                            event["pageNum"] = int(reading.get("pageNum", 0) or 0)
                         except Exception:
                             pass
                         try:
                             event["offsetFrac"] = float(
-                                reading.get("offsetFrac", 0.0) or 0.0)
+                                reading.get("offsetFrac", 0.0) or 0.0
+                            )
                         except Exception:
                             pass
                 self._append_reading_log_event(event)
@@ -3025,8 +2994,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
             page_num2 = page_num
             offset2 = offset
             try:
-                state = self._pdf_user_state if isinstance(
-                    self._pdf_user_state, dict) else {}
+                state = (
+                    self._pdf_user_state
+                    if isinstance(self._pdf_user_state, dict)
+                    else {}
+                )
                 stopped = state.get("readingStopped")
                 if isinstance(stopped, dict):
                     page_num2 = int(stopped.get("pageNum") or page_num2)
@@ -3071,14 +3043,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
             and isinstance(self._pdf_user_state, dict)
             and "readingStopped" in self._pdf_user_state
         ):
-            merged["readingStopped"] = self._pdf_user_state.get(
-                "readingStopped")
+            merged["readingStopped"] = self._pdf_user_state.get("readingStopped")
         try:
             incoming_log = merged.get("log")
             if isinstance(incoming_log, list):
-                self._reading_log = [
-                    e for e in incoming_log if isinstance(e, dict)
-                ][:600]
+                self._reading_log = [e for e in incoming_log if isinstance(e, dict)][
+                    :600
+                ]
         except Exception:
             pass
         self._schedule_pdf_user_state_save(dict(merged), replace=True)
@@ -3117,18 +3088,17 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if self._pdf_path is None:
             return
         page_num = int(self._current_page) + 1
-        state = self._pdf_user_state if isinstance(
-            self._pdf_user_state, dict) else {}
-        bookmarks = state.get("bookmarks") if isinstance(
-            state.get("bookmarks"), list) else []
+        state = self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
+        bookmarks = (
+            state.get("bookmarks") if isinstance(state.get("bookmarks"), list) else []
+        )
         try:
             existing = next(
                 (
                     i
                     for i, b in enumerate(bookmarks)
                     if isinstance(b, dict)
-                    and int(b.get("pageNum", b.get("page", -1) + 1) or 0)
-                    == page_num
+                    and int(b.get("pageNum", b.get("page", -1) + 1) or 0) == page_num
                 ),
                 -1,
             )
@@ -3161,13 +3131,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
             )
         if existing >= 0:
             self._append_reading_log_event(
-                {"type": "bookmark_remove",
-                    "label": "Bookmark removed", "pageNum": page_num}
+                {
+                    "type": "bookmark_remove",
+                    "label": "Bookmark removed",
+                    "pageNum": page_num,
+                }
             )
         try:
             bookmarks.sort(
-                key=lambda b: int(b.get("pageNum", 0)
-                                  ) if isinstance(b, dict) else 0
+                key=lambda b: int(b.get("pageNum", 0)) if isinstance(b, dict) else 0
             )
         except Exception:
             pass
@@ -3194,10 +3166,8 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if not comment and not snippet:
             return
 
-        state = self._pdf_user_state if isinstance(
-            self._pdf_user_state, dict) else {}
-        notes = state.get("notes") if isinstance(
-            state.get("notes"), list) else []
+        state = self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
+        notes = state.get("notes") if isinstance(state.get("notes"), list) else []
         now = float(time.time())
         note_id = "note:" + uuid.uuid4().hex
         notes.insert(
@@ -3471,8 +3441,11 @@ class _SpeakTextTask(QtCore.QRunnable):
             text = (self.text or "").strip()
             if not text:
                 return
-            engine = str(self.tts_settings.get("engine", "kokoro")
-                         or "kokoro").strip().lower()
+            engine = (
+                str(self.tts_settings.get("engine", "kokoro") or "kokoro")
+                .strip()
+                .lower()
+            )
             max_chars = 800 if engine == "chatterbox" else 420
             chunks = self.chunks or self._chunk_text(text, max_chars=max_chars)
             if not chunks:
@@ -3523,9 +3496,7 @@ class _SpeakTextTask(QtCore.QRunnable):
                         samples, sample_rate, duration_ms = current_future.result()
                         next_future = None
                         if idx + 1 < len(chunks):
-                            next_future = executor.submit(
-                                synthesize, chunks[idx + 1]
-                            )
+                            next_future = executor.submit(synthesize, chunks[idx + 1])
                         notify_chunk(idx, duration_ms)
                         if cancelled():
                             return
@@ -3618,7 +3589,7 @@ class _SpeakTextTask(QtCore.QRunnable):
                 chunks.append(sentence)
             else:
                 for i in range(0, len(sentence), max_chars):
-                    chunk = sentence[i:i + max_chars].strip()
+                    chunk = sentence[i : i + max_chars].strip()
                     if chunk:
                         chunks.append(chunk)
         return chunks

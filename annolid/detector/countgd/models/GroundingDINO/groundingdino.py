@@ -23,37 +23,24 @@ import torch.nn.functional as F
 from torch import nn
 from torchvision.ops.boxes import nms
 from torchvision.ops import roi_align
-from transformers import (
-    AutoTokenizer,
-    BertModel,
-    BertTokenizer,
-    RobertaModel,
-    RobertaTokenizerFast,
-)
 
 from ...groundingdino.util import box_ops, get_tokenlizer
 from ...groundingdino.util.misc import (
     NestedTensor,
-    accuracy,
     get_world_size,
-    interpolate,
     inverse_sigmoid,
     is_dist_avail_and_initialized,
     nested_tensor_from_tensor_list,
 )
-from ...groundingdino.util.utils import get_phrases_from_posmap
-from ...groundingdino.util.visualizer import COCOVisualizer
-from ...groundingdino.util.vl_utils import create_positive_map_from_span
 
 from ..registry import MODULE_BUILD_FUNCS
 from .backbone import build_backbone
 from .bertwarper import (
     BertModelWarper,
-    generate_masks_with_special_tokens,
     generate_masks_with_special_tokens_and_transfer_map,
 )
 from .transformer import build_transformer
-from .utils import MLP, ContrastiveEmbed, sigmoid_focal_loss
+from .utils import MLP, ContrastiveEmbed
 
 from .matcher import build_matcher
 import numpy as np
@@ -190,9 +177,9 @@ class GroundingDINO(nn.Module):
                 in_channels = hidden_dim
             self.input_proj = nn.ModuleList(input_proj_list)
         else:
-            assert (
-                two_stage_type == "no"
-            ), "two_stage_type should be no if num_feature_levels=1 !!!"
+            assert two_stage_type == "no", (
+                "two_stage_type should be no if num_feature_levels=1 !!!"
+            )
             self.input_proj = nn.ModuleList(
                 [
                     nn.Sequential(
@@ -204,7 +191,7 @@ class GroundingDINO(nn.Module):
 
         self.backbone = backbone
         self.aux_loss = aux_loss
-        self.box_pred_damping = box_pred_damping = None
+        self.box_pred_damping = None
 
         self.iter_update = iter_update
         assert iter_update, "Why not iter_update?"
@@ -274,7 +261,6 @@ class GroundingDINO(nn.Module):
         new_input_ids = []
         encoded_text = text_dict["encoded_text"]
         new_encoded_text = []
-        text_token_mask = text_dict["text_token_mask"]
         new_text_token_mask = []
         position_ids = text_dict["position_ids"]
         text_self_attention_masks = text_dict["text_self_attention_masks"]
@@ -345,9 +331,7 @@ class GroundingDINO(nn.Module):
         }
 
     def combine_features(self, features):
-        (bs, c, h, w) = (
-            features[0].decompose()[0].shape[-4],
-            features[0].decompose()[0].shape[-3],
+        h, w = (
             features[0].decompose()[0].shape[-2],
             features[0].decompose()[0].shape[-1],
         )
@@ -491,7 +475,6 @@ class GroundingDINO(nn.Module):
             else:
                 exemplar_tokens = None
 
-
         else:
             features, poss = self.backbone(samples)
             (h, w) = (
@@ -545,7 +528,8 @@ class GroundingDINO(nn.Module):
             features_exemp, _ = self.backbone(exemp_imgs)
             combined_features = self.combine_features(features_exemp)
             new_exemplars = [
-                torch.tensor(exemp).unsqueeze(0).to(samples.device) for exemp in new_exemplars
+                torch.tensor(exemp).unsqueeze(0).to(samples.device)
+                for exemp in new_exemplars
             ]
 
             # Get visual exemplar tokens.
@@ -571,18 +555,18 @@ class GroundingDINO(nn.Module):
 
         srcs = []
         masks = []
-        for l, feat in enumerate(features):
+        for level, feat in enumerate(features):
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
+            srcs.append(self.input_proj[level](src))
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
+            for level in range(_len_srcs, self.num_feature_levels):
+                if level == _len_srcs:
+                    src = self.input_proj[level](features[-1].tensors)
                 else:
-                    src = self.input_proj[l](srcs[-1])
+                    src = self.input_proj[level](srcs[-1])
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(
                     torch.bool
@@ -592,7 +576,7 @@ class GroundingDINO(nn.Module):
                 masks.append(mask)
                 poss.append(pos_l)
 
-        input_query_bbox = input_query_label = attn_mask = dn_meta = None
+        input_query_bbox = input_query_label = attn_mask = None
         hs, reference, hs_enc, ref_enc, init_box_proposal = self.transformer(
             srcs, masks, input_query_bbox, poss, input_query_label, attn_mask, text_dict
         )
@@ -624,7 +608,7 @@ class GroundingDINO(nn.Module):
         )
         for b in range(bs):
             for j in range(len_td):
-                if text_dict["text_token_mask"][b][j] == True:
+                if text_dict["text_token_mask"][b][j]:
                     out["text_mask"][b][j] = True
 
         # for intermediate outputs
@@ -943,7 +927,7 @@ class SetCriterion(nn.Module):
                 l_dict = self.get_loss(
                     loss, interm_outputs, targets, indices, num_boxes, **kwargs
                 )
-                l_dict = {k + f"_interm": v for k, v in l_dict.items()}
+                l_dict = {k + "_interm": v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
         if return_indices:
@@ -1123,24 +1107,24 @@ class PostProcess(nn.Module):
             ]
 
             results = [
-                {"scores": s[i], "labels": l[i], "boxes": b[i]}
-                for s, l, b, i in zip(scores, labels, boxes, item_indices)
+                {"scores": score[i], "labels": label[i], "boxes": box[i]}
+                for score, label, box, i in zip(scores, labels, boxes, item_indices)
             ]
         else:
             results = [
-                {"scores": s, "labels": l, "boxes": b}
-                for s, l, b in zip(scores, labels, boxes)
+                {"scores": score, "labels": label, "boxes": box}
+                for score, label, box in zip(scores, labels, boxes)
             ]
         results = [
-            {"scores": s, "labels": l, "boxes": b}
-            for s, l, b in zip(scores, labels, boxes)
+            {"scores": score, "labels": label, "boxes": box}
+            for score, label, box in zip(scores, labels, boxes)
         ]
         return results
 
 
 @MODULE_BUILD_FUNCS.registe_with_name(module_name="groundingdino")
 def build_groundingdino(args):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     backbone = build_backbone(args)
     transformer = build_transformer(args)
 
@@ -1191,22 +1175,16 @@ def build_groundingdino(args):
 
     if args.two_stage_type != "no":
         interm_weight_dict = {}
-        try:
-            no_interm_box_loss = args.no_interm_box_loss
-        except:
-            no_interm_box_loss = False
+        no_interm_box_loss = getattr(args, "no_interm_box_loss", False)
         _coeff_weight_dict = {
             "loss_ce": 1.0,
             "loss_bbox": 1.0 if not no_interm_box_loss else 0.0,
             "loss_giou": 1.0 if not no_interm_box_loss else 0.0,
         }
-        try:
-            interm_loss_coef = args.interm_loss_coef
-        except:
-            interm_loss_coef = 1.0
+        interm_loss_coef = getattr(args, "interm_loss_coef", 1.0)
         interm_weight_dict.update(
             {
-                k + f"_interm": v * interm_loss_coef * _coeff_weight_dict[k]
+                k + "_interm": v * interm_loss_coef * _coeff_weight_dict[k]
                 for k, v in clean_weight_dict_wo_dn.items()
             }
         )
@@ -1245,14 +1223,14 @@ def create_positive_map(tokenized, tokens_positive, cat_list, caption):
         beg_pos = tokenized.char_to_token(start_ind)
         try:
             end_pos = tokenized.char_to_token(end_ind)
-        except:
+        except Exception:
             end_pos = None
         if end_pos is None:
             try:
                 end_pos = tokenized.char_to_token(end_ind - 1)
                 if end_pos is None:
                     end_pos = tokenized.char_to_token(end_ind - 2)
-            except:
+            except Exception:
                 end_pos = None
         # except Exception as e:
         #     print("beg:", beg, "end:", end)

@@ -29,11 +29,12 @@ def _write_nested_annotation(root: Path, *, subdir: str, name: str) -> None:
             }
         ],
     }
-    (folder / f"{name}.json").write_text(json.dumps(annotation),
-                                         encoding="utf-8")
+    (folder / f"{name}.json").write_text(json.dumps(annotation), encoding="utf-8")
 
 
-def test_labelme2yolo_recurses_subdirs_and_avoids_name_collisions(tmp_path: Path) -> None:
+def test_labelme2yolo_recurses_subdirs_and_avoids_name_collisions(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "labeled-data"
     _write_nested_annotation(root, subdir="seg-1", name="img00001")
     _write_nested_annotation(root, subdir="seg-2", name="img00001")
@@ -41,10 +42,8 @@ def test_labelme2yolo_recurses_subdirs_and_avoids_name_collisions(tmp_path: Path
     converter = Labelme2YOLO(str(root), recursive=True)
     converter.convert(val_size=0.0, test_size=0.0)
 
-    labels_train = sorted(
-        (root / "YOLO_dataset" / "labels" / "train").glob("*.txt"))
-    images_train = sorted(
-        (root / "YOLO_dataset" / "images" / "train").glob("*.png"))
+    labels_train = sorted((root / "YOLO_dataset" / "labels" / "train").glob("*.txt"))
+    images_train = sorted((root / "YOLO_dataset" / "images" / "train").glob("*.png"))
 
     assert len(labels_train) == 2
     assert len(images_train) == 2

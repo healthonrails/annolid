@@ -27,4 +27,3 @@ def filter_kwargs(callable_obj: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
         return kwargs
     return {k: v for k, v in kwargs.items() if k in accepted}
-

@@ -4,6 +4,7 @@ ECCV 2020
 Zachary Teed and Jia Deng
 Modified from https://github.com/princeton-vl/RAFT/blob/master/demo.py
 """
+
 import argparse
 import cv2
 import numpy as np
@@ -31,9 +32,8 @@ class VideoFrameDataset(IterableDataset):
         self.cap = cv2.VideoCapture(self.video_file)
 
     def __iter__(self):
-
         ret, old_frame = self.cap.read()
-        num_frames = (int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         old_frame = cv2.cvtColor(old_frame, cv2.COLOR_BGR2RGB)
         for num in range(num_frames - 1):
             ret, frame = self.cap.read()
@@ -65,25 +65,29 @@ def viz(img, flo):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--video_path", default=None, help="video path")
     parser.add_argument(
-        '--video_path', default=None, help="video path"
+        "--model", default="weights/raft-things.pth", help="restore checkpoint"
     )
     parser.add_argument(
-        '--model', default="weights/raft-things.pth", help="restore checkpoint")
-    parser.add_argument('--path', default="/content/video",
-                        help="dataset for evaluation")
-    parser.add_argument('--small', action='store_true', help='use small model')
-    parser.add_argument('--mixed_precision', action='store_true',
-                        help='use mixed precision')
-    parser.add_argument('--alternate_corr', action='store_true', default=False,
-                        help='use efficent correlation implementation')
+        "--path", default="/content/video", help="dataset for evaluation"
+    )
+    parser.add_argument("--small", action="store_true", help="use small model")
+    parser.add_argument(
+        "--mixed_precision", action="store_true", help="use mixed precision"
+    )
+    parser.add_argument(
+        "--alternate_corr",
+        action="store_true",
+        default=False,
+        help="use efficient correlation implementation",
+    )
     args = parser.parse_args()
 
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = torch.nn.DataParallel(RAFT(args))
-    model.load_state_dict(torch.load(
-        args.model, map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load(args.model, map_location=torch.device("cpu")))
 
     model = model.module
     model.to(DEVICE)
@@ -108,5 +112,5 @@ def main():
             counter += 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

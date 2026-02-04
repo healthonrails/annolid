@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 # Based on https://github.com/IDEA-Research/GroundingDINO
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import nn, Tensor
@@ -320,9 +320,9 @@ class TransformerEncoder(nn.Module):
         return reference_points
 
     def _prepare_multilevel_features(self, srcs, masks, pos_embeds):
-        assert (
-            len(srcs) == self.num_feature_levels
-        ), "mismatch between expected and received # of feature levels"
+        assert len(srcs) == self.num_feature_levels, (
+            "mismatch between expected and received # of feature levels"
+        )
 
         src_flatten = []
         mask_flatten = []
@@ -404,9 +404,9 @@ class TransformerEncoder(nn.Module):
             - spatial_shapes: Spatial dimensions of each feature level
             - valid_ratios: Valid ratios for each feature level
         """
-        assert (
-            len(src) == self.num_feature_levels
-        ), "must be equal to num_feature_levels"
+        assert len(src) == self.num_feature_levels, (
+            "must be equal to num_feature_levels"
+        )
         if src_key_padding_masks is not None:
             assert len(src_key_padding_masks) == self.num_feature_levels
         if pos is not None:
@@ -420,10 +420,6 @@ class TransformerEncoder(nn.Module):
             valid_ratios,
             spatial_shapes,
         ) = self._prepare_multilevel_features(src, src_key_padding_masks, pos)
-
-        reference_points = self.get_reference_points(
-            spatial_shapes, valid_ratios, device=src_flatten.device
-        )
 
         output = src_flatten
         for layer in self.layers:
@@ -536,9 +532,9 @@ class TransformerEncoderFusion(TransformerEncoder):
                     else None
                 )
         else:
-            assert all(
-                x.dim == 4 for x in src
-            ), "expected list of (bs, c, h, w) tensors"
+            assert all(x.dim == 4 for x in src), (
+                "expected list of (bs, c, h, w) tensors"
+            )
 
         if self.add_pooled_text_to_img_feat:
             # Fusion: Add mean pooled text to image features

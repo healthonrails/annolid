@@ -157,8 +157,7 @@ class Sam3Manager:
         self.new_det_thresh = sam3_thresholds.get("new_det_thresh")
         sam3_runtime = dialog.get_sam3_runtime_settings()
         self.propagation_direction = sam3_runtime.get("propagation_direction")
-        self.max_frame_num_to_track = sam3_runtime.get(
-            "max_frame_num_to_track")
+        self.max_frame_num_to_track = sam3_runtime.get("max_frame_num_to_track")
         self.device_override = sam3_runtime.get("device")
         self.sliding_window_size = sam3_runtime.get("sliding_window_size")
         self.sliding_window_stride = sam3_runtime.get("sliding_window_stride")
@@ -278,8 +277,10 @@ class Sam3Manager:
                 boxes_abs.append([x1, y1, w, h])
                 box_labels.append(1)
             elif shape.shape_type in ["points", "point"]:
-                labels = shape.point_labels if shape.point_labels else [1] * len(
-                    shape.points
+                labels = (
+                    shape.point_labels
+                    if shape.point_labels
+                    else [1] * len(shape.points)
                 )
                 for pt, lbl in zip(shape.points, labels):
                     points_abs.append([pt.x(), pt.y()])
@@ -419,7 +420,9 @@ class Sam3Manager:
             False,
         )
         offload_video_to_cpu = _parse_bool(
-            self.offload_video_to_cpu if self.offload_video_to_cpu is not None else offload_video_to_cpu_cfg,
+            self.offload_video_to_cpu
+            if self.offload_video_to_cpu is not None
+            else offload_video_to_cpu_cfg,
             True,
         )
         if self.score_threshold_detection is not None:
@@ -526,8 +529,8 @@ class Sam3Manager:
                             self.sam3_session.add_prompt_boxes_abs(
                                 prompts["frame_idx"],
                                 prompts["boxes_abs"],
-                                prompts["box_labels"] or [1]
-                                * len(prompts["boxes_abs"]),
+                                prompts["box_labels"]
+                                or [1] * len(prompts["boxes_abs"]),
                                 text=text_prompt,
                             )
                             self._last_prompt_frame = prompts["frame_idx"]
@@ -535,15 +538,13 @@ class Sam3Manager:
                             self.sam3_session.add_prompt_points_abs(
                                 prompts["frame_idx"],
                                 prompts["points_abs"],
-                                prompts["point_labels"] or [1]
-                                * len(prompts["points_abs"]),
+                                prompts["point_labels"]
+                                or [1] * len(prompts["points_abs"]),
                                 text=text_prompt,
                             )
                             self._last_prompt_frame = prompts["frame_idx"]
                     except Exception as exc:
-                        logger.warning(
-                            "Failed to add SAM3 canvas prompts: %s", exc
-                        )
+                        logger.warning("Failed to add SAM3 canvas prompts: %s", exc)
                 return self.sam3_session.run()
 
             return _run_sam3_with_canvas_prompts

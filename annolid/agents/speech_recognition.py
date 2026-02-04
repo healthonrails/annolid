@@ -15,9 +15,9 @@ except ImportError:
     )
 
 
-def transcribe_audio(audio_input,
-                     model_name='moonshine/base',
-                     output_dir="audio_files"):
+def transcribe_audio(
+    audio_input, model_name="moonshine/base", output_dir="audio_files"
+):
     """
     Transcribes audio from either a WAV file path or raw WAV data (bytes)
     using the moonshine_onnx library.
@@ -68,7 +68,8 @@ def transcribe_audio(audio_input,
 
     else:
         raise TypeError(
-            "audio_input must be a WAV file path (str) or raw WAV data (bytes)")
+            "audio_input must be a WAV file path (str) or raw WAV data (bytes)"
+        )
 
     if wav_file_path:
         try:

@@ -5,6 +5,7 @@ Modified from
 https://github.com/wkentaro/labelme/blob/master
 /examples/instance_segmentation/labelme2coco.py
 """
+
 import collections
 import datetime
 import glob
@@ -17,7 +18,7 @@ import uuid
 import imgviz
 import numpy as np
 from pathlib import Path
-import labelme
+from annolid.utils import annotation_compat as labelme
 from annolid.gui.label_file import LabelFile
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,7 @@ logger = logging.getLogger(__name__)
 try:
     import pycocotools.mask
 except ImportError:
-    logger.warning(
-        "Please install pycocotools:\n\n    pip install pycocotools\n")
+    logger.warning("Please install pycocotools:\n\n    pip install pycocotools\n")
     sys.exit(1)
 
 
@@ -35,17 +35,16 @@ def _create_dirs(dir_path):
         os.makedirs(dir_path)
 
 
-def convert(input_annotated_dir,
-            output_annotated_dir,
-            labels_file='labels.txt',
-            vis=False,
-            save_mask=True,
-            train_valid_split=0.7,
-            radius_ratio=0.2
-            ):
-
-    assert os.path.isfile(
-        labels_file), "Please provide the correct label file."
+def convert(
+    input_annotated_dir,
+    output_annotated_dir,
+    labels_file="labels.txt",
+    vis=False,
+    save_mask=True,
+    train_valid_split=0.7,
+    radius_ratio=0.2,
+):
+    assert os.path.isfile(labels_file), "Please provide the correct label file."
 
     assert os.path.exists(input_annotated_dir), "Please check the input dir."
 
@@ -54,24 +53,18 @@ def convert(input_annotated_dir,
 
     if not osp.exists(output_annotated_dir):
         os.makedirs(output_annotated_dir)
-        os.makedirs(osp.join(output_annotated_dir,
-                             'train',
-                             "JPEGImages"))
-        os.makedirs(osp.join(output_annotated_dir,
-                             'valid',
-                             "JPEGImages"))
+        os.makedirs(osp.join(output_annotated_dir, "train", "JPEGImages"))
+        os.makedirs(osp.join(output_annotated_dir, "valid", "JPEGImages"))
     if vis:
-        train_vis_dir = osp.join(output_annotated_dir,
-                                 'train', 'Visualization')
+        train_vis_dir = osp.join(output_annotated_dir, "train", "Visualization")
         _create_dirs(train_vis_dir)
-        valid_vis_dir = osp.join(output_annotated_dir,
-                                 'valid', 'Visualization')
+        valid_vis_dir = osp.join(output_annotated_dir, "valid", "Visualization")
         _create_dirs(valid_vis_dir)
 
     if save_mask and vis:
-        train_mask_dir = osp.join(output_annotated_dir, 'train', 'Masks')
+        train_mask_dir = osp.join(output_annotated_dir, "train", "Masks")
         _create_dirs(train_mask_dir)
-        valid_mask_dir = osp.join(output_annotated_dir, 'valid', 'Masks')
+        valid_mask_dir = osp.join(output_annotated_dir, "valid", "Masks")
         _create_dirs(valid_mask_dir)
 
     logger.info(f"Creating dataset:  {output_annotated_dir}")
@@ -88,7 +81,13 @@ def convert(input_annotated_dir,
             contributor=None,
             date_created=now.strftime("%Y-%m-%d %H:%M:%S.%f"),
         ),
-        licenses=[dict(url=None, id=0, name=None,)],
+        licenses=[
+            dict(
+                url=None,
+                id=0,
+                name=None,
+            )
+        ],
         images=[
             # license, url, file_name, height, width, date_captured, id
         ],
@@ -109,7 +108,13 @@ def convert(input_annotated_dir,
             contributor=None,
             date_created=now.strftime("%Y-%m-%d %H:%M:%S.%f"),
         ),
-        licenses=[dict(url=None, id=0, name=None,)],
+        licenses=[
+            dict(
+                url=None,
+                id=0,
+                name=None,
+            )
+        ],
         images=[
             # license, url, file_name, height, width, date_captured, id
         ],
@@ -123,7 +128,7 @@ def convert(input_annotated_dir,
     )
 
     class_name_to_id = {}
-    with open(labels_file, 'r') as lf:
+    with open(labels_file, "r") as lf:
         for i, line in enumerate(lf.readlines()):
             class_id = i - 1  # starts with -1
             class_name = line.strip()
@@ -131,25 +136,32 @@ def convert(input_annotated_dir,
                 assert class_name == "__ignore__"
                 continue
 
-            if class_name != '_background_':
+            if class_name != "_background_":
                 class_instance_counter[class_name] = 0
                 train_class_instance_counter[class_name] = 0
             class_name_to_id[class_name] = class_id
             train_data["categories"].append(
-                dict(supercategory=None, id=class_id, name=class_name,)
+                dict(
+                    supercategory=None,
+                    id=class_id,
+                    name=class_name,
+                )
             )
             valid_data["categories"].append(
-                dict(supercategory=None, id=class_id, name=class_name,)
+                dict(
+                    supercategory=None,
+                    id=class_id,
+                    name=class_name,
+                )
             )
 
-    train_out_ann_file = osp.join(output_annotated_dir, 'train',
-                                  "annotations.json")
-    valid_out_ann_file = osp.join(output_annotated_dir, 'valid',
-                                  "annotations.json")
+    train_out_ann_file = osp.join(output_annotated_dir, "train", "annotations.json")
+    valid_out_ann_file = osp.join(output_annotated_dir, "valid", "annotations.json")
     label_files = glob.glob(osp.join(input_annotated_dir, "*.json"))
     # By default, only manually labeled frames have png files saved.
-    label_files = [_lf for _lf in label_files if osp.exists(
-        _lf.replace('.json', '.png'))]
+    label_files = [
+        _lf for _lf in label_files if osp.exists(_lf.replace(".json", ".png"))
+    ]
     num_label_files = len(label_files)
 
     # Calculate training_percentage based on the train_valid_split parameter
@@ -164,8 +176,33 @@ def convert(input_annotated_dir,
         # If train_valid_split is a fraction (<=1), it directly represents the training percentage.
         training_percentage = train_valid_split
 
-    _angles = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165,
-               180, 195, 210, 225, 240, 255, 270, 285, 300, 315, 330, 345, 360]
+    _angles = [
+        0,
+        15,
+        30,
+        45,
+        60,
+        75,
+        90,
+        105,
+        120,
+        135,
+        150,
+        165,
+        180,
+        195,
+        210,
+        225,
+        240,
+        255,
+        270,
+        285,
+        300,
+        315,
+        330,
+        345,
+        360,
+    ]
 
     for image_id, filename in enumerate(label_files):
         progress = (image_id + 1) / num_label_files * 100
@@ -174,10 +211,12 @@ def convert(input_annotated_dir,
         label_file = LabelFile(filename=filename)
 
         base = osp.splitext(osp.basename(filename))[0]
-        train_out_img_file = osp.join(output_annotated_dir, 'train',
-                                      "JPEGImages", base + ".jpg")
-        valid_out_img_file = osp.join(output_annotated_dir, 'valid',
-                                      "JPEGImages", base + ".jpg")
+        train_out_img_file = osp.join(
+            output_annotated_dir, "train", "JPEGImages", base + ".jpg"
+        )
+        valid_out_img_file = osp.join(
+            output_annotated_dir, "valid", "JPEGImages", base + ".jpg"
+        )
 
         if label_file.imageData is None or len(label_file.imageData) < 2:
             continue
@@ -202,12 +241,15 @@ def convert(input_annotated_dir,
 
             if train_valid_split > 1:
                 if training_examples_sofar < train_valid_split:
-                    train_class_instance_counter[label] = train_class_instance_counter.get(
-                        label, 0)
+                    train_class_instance_counter[label] = (
+                        train_class_instance_counter.get(label, 0)
+                    )
                     if train_class_instance_counter[label] == 0:
                         is_train = 1
-                    elif train_class_instance_counter[label] <= (
-                            train_valid_split / len(train_class_instance_counter)) + 1:
+                    elif (
+                        train_class_instance_counter[label]
+                        <= (train_valid_split / len(train_class_instance_counter)) + 1
+                    ):
                         is_train = 1
                     # make sure very instances in the class is covered
                     # before random sampling
@@ -215,12 +257,13 @@ def convert(input_annotated_dir,
                         is_train = 1
                     else:
                         is_train = np.random.choice(
-                            [0, 1], p=[1-training_percentage, training_percentage]
+                            [0, 1], p=[1 - training_percentage, training_percentage]
                         )
 
             elif train_valid_split < 1:
                 is_train = np.random.choice(
-                    [0, 1], p=[1-train_valid_split, train_valid_split])
+                    [0, 1], p=[1 - train_valid_split, train_valid_split]
+                )
             elif train_valid_split == 1:
                 is_train = 1
 
@@ -235,14 +278,15 @@ def convert(input_annotated_dir,
                 except KeyError:
                     train_class_instance_counter[label] = 1
 
-            if shape_type == 'point':
+            if shape_type == "point":
                 try:
                     min_dim = min(img.shape)
                     cx, cy = points[0]
-                    radius = min_dim * radius_ratio + \
-                        np.random.choice(np.arange(0, 1, 0.1))
-                    xs = cx + (radius * np.cos(np.array(_angles) * np.pi/180))
-                    ys = cy + (radius * np.sin(np.array(_angles) * np.pi/180))
+                    radius = min_dim * radius_ratio + np.random.choice(
+                        np.arange(0, 1, 0.1)
+                    )
+                    xs = cx + (radius * np.cos(np.array(_angles) * np.pi / 180))
+                    ys = cy + (radius * np.sin(np.array(_angles) * np.pi / 180))
                     points = np.asarray([list(p) for p in zip(xs, ys)])
                     shape_type = "polygon"
                 except IndexError:
@@ -250,10 +294,8 @@ def convert(input_annotated_dir,
                     continue
 
             try:
-                mask = labelme.utils.shape_to_mask(
-                    img.shape[:2], points, shape_type
-                )
-            except:
+                mask = labelme.utils.shape_to_mask(img.shape[:2], points, shape_type)
+            except Exception:
                 logger.warning("Polygon must have points more than 2")
                 continue
 
@@ -270,9 +312,9 @@ def convert(input_annotated_dir,
                 segmentations[instance].append(points.flatten().tolist())
             elif shape_type == "circle":
                 (x1, y1), (x2, y2) = points
-                radius = int(((x1-x2)**2 + (y1-y2)**2)**(1/2))
-                xs = x1 + (radius * np.cos(np.array(_angles) * np.pi/180))
-                ys = y1 + (radius * np.sin(np.array(_angles) * np.pi/180))
+                radius = int(((x1 - x2) ** 2 + (y1 - y2) ** 2) ** (1 / 2))
+                xs = x1 + (radius * np.cos(np.array(_angles) * np.pi / 180))
+                ys = y1 + (radius * np.sin(np.array(_angles) * np.pi / 180))
                 points = np.asarray([list(p) for p in zip(xs, ys)])
                 points = np.asarray(points).flatten().tolist()
                 shape_type = "polygon"
@@ -330,35 +372,38 @@ def convert(input_annotated_dir,
                     license=0,
                     url=None,
                     # handle windows backward slash issue
-                    file_name=osp.relpath(train_out_img_file,
-                                          osp.dirname(train_out_ann_file)
-                                          ).replace("\\", '/'),
+                    file_name=osp.relpath(
+                        train_out_img_file, osp.dirname(train_out_ann_file)
+                    ).replace("\\", "/"),
                     height=img.shape[0],
                     width=img.shape[1],
                     date_captured=None,
-                    id=image_id,))
+                    id=image_id,
+                )
+            )
         else:
             valid_data["images"].append(
                 dict(
                     license=0,
                     url=None,
-                    file_name=osp.relpath(valid_out_img_file,
-                                          osp.dirname(valid_out_ann_file)
-                                          ).replace("\\", '/'),
+                    file_name=osp.relpath(
+                        valid_out_img_file, osp.dirname(valid_out_ann_file)
+                    ).replace("\\", "/"),
                     height=img.shape[0],
                     width=img.shape[1],
                     date_captured=None,
-                    id=image_id,))
+                    id=image_id,
+                )
+            )
 
         if save_mask and vis:
             lbl, _ = labelme.utils.shapes_to_label(
-                img.shape, label_file.shapes, class_name_to_id)
+                img.shape, label_file.shapes, class_name_to_id
+            )
             if is_train == 1:
-                out_mask_file = osp.join(
-                    train_mask_dir, base + '_mask.png')
+                out_mask_file = osp.join(train_mask_dir, base + "_mask.png")
             else:
-                out_mask_file = osp.join(
-                    valid_mask_dir, base + '_mask.png')
+                out_mask_file = osp.join(valid_mask_dir, base + "_mask.png")
             labelme.utils.lblsave(out_mask_file, lbl)
 
         if vis:
@@ -395,32 +440,32 @@ def convert(input_annotated_dir,
     # create a data.yaml config file
     categories = []
     for c in train_data["categories"]:
-        # exclude backgroud with id 0
-        if not c['id'] == 0:
-            categories.append(c['name'])
+        # exclude background with id 0
+        if not c["id"] == 0:
+            categories.append(c["name"])
 
     data_yaml = Path(f"{output_annotated_dir}/data.yaml")
     names = list(categories)
     input_annotated_dir_name = os.path.basename(input_annotated_dir)
     output_annotated_dir_name = Path(os.path.basename(output_annotated_dir))
     # dataset folder is in same dir as the yolo folder
-    with open(data_yaml, 'w') as dy:
-        dy.write(f"DATASET:\n")
+    with open(data_yaml, "w") as dy:
+        dy.write("DATASET:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")
         dy.write(
-            f"""    train_info: '{output_annotated_dir_name /"train"/"annotations.json"}'\n""")
+            f"""    train_info: '{output_annotated_dir_name / "train" / "annotations.json"}'\n"""
+        )
+        dy.write(f"""    train_images: '{output_annotated_dir_name / "train"}'\n""")
         dy.write(
-            f"""    train_images: '{output_annotated_dir_name /"train"}'\n""")
-        dy.write(
-            f"""    valid_info: '{output_annotated_dir_name /"valid"/"annotations.json"}'\n""")
-        dy.write(
-            f"""    valid_images: '{output_annotated_dir_name /"valid"}'\n""")
+            f"""    valid_info: '{output_annotated_dir_name / "valid" / "annotations.json"}'\n"""
+        )
+        dy.write(f"""    valid_images: '{output_annotated_dir_name / "valid"}'\n""")
         dy.write(f"    class_names: {names}\n")
 
-        dy.write(f"YOLACT:\n")
+        dy.write("YOLACT:\n")
         dy.write(f"    name: '{input_annotated_dir_name}'\n")
         dy.write(f"    dataset: 'dataset_{input_annotated_dir_name}_coco'\n")
-        dy.write(f"    max_size: 512\n")
-    logger.info('Done.')
+        dy.write("    max_size: 512\n")
+    logger.info("Done.")
     logger.info(f"All: {class_instance_counter}")
     logger.info(f"Training set:  {train_class_instance_counter}")

@@ -54,7 +54,8 @@ class ImageEditRequest:
         if self.mode == "image_to_image":
             if self.init_image is None:
                 raise InvalidRequestError(
-                    "init_image is required for image_to_image mode")
+                    "init_image is required for image_to_image mode"
+                )
             return
 
         if self.mode == "inpaint":
@@ -67,7 +68,8 @@ class ImageEditRequest:
         if self.mode == "ref_image_edit":
             if not self.ref_images:
                 raise InvalidRequestError(
-                    "ref_images is required for ref_image_edit mode")
+                    "ref_images is required for ref_image_edit mode"
+                )
             return
 
         raise InvalidRequestError(f"Unknown mode: {self.mode!r}")
@@ -77,4 +79,3 @@ class ImageEditRequest:
 class ImageEditResult:
     images: List[Image.Image]
     meta: Dict[str, Any] = field(default_factory=dict)
-

@@ -66,13 +66,9 @@ class Sam2Manager:
         lower_name = weight_path.name.lower()
         fallback_names = []
         if "hiera_l" in lower_name:
-            fallback_names.extend(
-                ["sam2_hiera_large.pt", "sam2.1_hiera_large.pt"]
-            )
+            fallback_names.extend(["sam2_hiera_large.pt", "sam2.1_hiera_large.pt"])
         elif "hiera_s" in lower_name:
-            fallback_names.extend(
-                ["sam2_hiera_small.pt", "sam2.1_hiera_small.pt"]
-            )
+            fallback_names.extend(["sam2_hiera_small.pt", "sam2.1_hiera_small.pt"])
 
         for fallback_name in fallback_names:
             fallback_candidate = checkpoints_dir / fallback_name

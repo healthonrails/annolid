@@ -10,13 +10,12 @@ from typing import Any, Deque, Dict, Optional, Protocol, Tuple
 
 
 class ScalarWriter(Protocol):
-    def add_scalar(self, tag: str, scalar_value: float,
-                   global_step: int) -> None: ...
+    def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None: ...
 
-    def add_text(self, tag: str, text_string: str,
-                 global_step: int) -> None: ...
-    def add_image(self, tag: str, img_tensor: Any,
-                  global_step: int, dataformats: str = "HWC") -> None: ...
+    def add_text(self, tag: str, text_string: str, global_step: int) -> None: ...
+    def add_image(
+        self, tag: str, img_tensor: Any, global_step: int, dataformats: str = "HWC"
+    ) -> None: ...
 
     def flush(self) -> None: ...
     def close(self) -> None: ...
@@ -141,8 +140,7 @@ class YOLORunTensorBoardLogger:
         self._writer = writer
         self._config = config or YOLORunTBConfig()
         self._last_epoch_logged: Optional[int] = None
-        self._output_tail: Deque[str] = deque(
-            maxlen=int(self._config.log_tail_lines))
+        self._output_tail: Deque[str] = deque(maxlen=int(self._config.log_tail_lines))
         self._last_text_write_at: float = 0.0
         self._last_images_write_at: float = 0.0
         self._image_mtime_by_path: Dict[str, float] = {}
@@ -230,8 +228,7 @@ class YOLORunTensorBoardLogger:
             return 0
         self._last_images_write_at = now
 
-        step_i = int(step if step is not None else (
-            self._last_epoch_logged or 0))
+        step_i = int(step if step is not None else (self._last_epoch_logged or 0))
         written = 0
         for path in self._discover_plot_images():
             if written >= int(self._config.max_images_per_poll):
@@ -243,8 +240,7 @@ class YOLORunTensorBoardLogger:
             key = str(path.resolve())
             if self._image_mtime_by_path.get(key) == mtime:
                 continue
-            arr = _read_image_rgb(
-                path, max_edge_px=int(self._config.max_image_edge_px))
+            arr = _read_image_rgb(path, max_edge_px=int(self._config.max_image_edge_px))
             if arr is None:
                 continue
             try:
@@ -282,8 +278,9 @@ class YOLORunTensorBoardLogger:
         step = int(self._last_epoch_logged or 0)
         self._write_log_tail(step=step)
         self.poll_and_log_images(step=step)
-        w.add_text("annolid/run_tree",
-                   f"```\n{_summarize_run_tree(self.run_dir)}\n```", step)
+        w.add_text(
+            "annolid/run_tree", f"```\n{_summarize_run_tree(self.run_dir)}\n```", step
+        )
         w.add_text("annolid/status", "ok" if ok else "failed", step)
         if error:
             w.add_text("annolid/error", f"```\n{error}\n```", step)

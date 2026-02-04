@@ -5,9 +5,7 @@ import pytest
 from annolid.motion.farneback_torch import calc_optical_flow_farneback_torch
 
 
-def _synthetic_pair_translation(
-    H=128, W=160, dx=0.25, dy=-0.35, noise=0.0, seed=0
-):
+def _synthetic_pair_translation(H=128, W=160, dx=0.25, dy=-0.35, noise=0.0, seed=0):
     rng = np.random.default_rng(seed)
     base = np.zeros((H, W), np.float32)
     base[rng.integers(0, H, 400), rng.integers(0, W, 400)] = 255.0
@@ -45,7 +43,7 @@ def test_farneback_torch_matches_opencv(case):
     params = dict(
         pyr_scale=0.5,
         levels=1,
-        winsize=15,          # IMPORTANT: winsize=1 is ill-conditioned
+        winsize=15,  # IMPORTANT: winsize=1 is ill-conditioned
         iterations=3,
         poly_n=5,
         poly_sigma=1.1,
@@ -55,7 +53,9 @@ def test_farneback_torch_matches_opencv(case):
     prev, nxt = _synthetic_pair_translation(**case)
 
     flow_cv = cv2.calcOpticalFlowFarneback(
-        prev, nxt, None,
+        prev,
+        nxt,
+        None,
         pyr_scale=params["pyr_scale"],
         levels=params["levels"],
         winsize=params["winsize"],
@@ -69,7 +69,7 @@ def test_farneback_torch_matches_opencv(case):
         prev,
         nxt,
         device="cpu",
-        clip_percentile=None,   # disable post-processing
+        clip_percentile=None,  # disable post-processing
         max_magnitude=None,
         outlier_ksize=0,
         **params,

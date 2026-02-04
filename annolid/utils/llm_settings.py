@@ -34,8 +34,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
         ],
     },
     "gemini": {
-        "api_key": os.getenv("GEMINI_API_KEY")
-        or os.getenv("GOOGLE_API_KEY", ""),
+        "api_key": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", ""),
         "preferred_models": [
             "gemini-2.0-flash-thinking-exp-01-21",
             "gemini-1.5-flash",
@@ -129,8 +128,7 @@ def _inject_env_defaults(provider: str, params: Dict[str, Any]) -> Dict[str, Any
                 params["base_url"] = env_url
     elif provider == "gemini":
         if not params.get("api_key"):
-            env_key = os.getenv("GEMINI_API_KEY") or os.getenv(
-                "GOOGLE_API_KEY")
+            env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
             if env_key:
                 params["api_key"] = env_key
     return params
@@ -154,6 +152,7 @@ def load_llm_settings() -> Dict[str, Any]:
 
 def save_llm_settings(settings: Dict[str, Any]) -> None:
     """Persist LLM settings to disk."""
+
     def _scrub_api_keys(obj: Dict[str, Any]) -> Dict[str, Any]:
         """Return a copy with any provider api_key fields removed before writing to disk."""
         copy_obj = deepcopy(obj)
@@ -209,9 +208,7 @@ def resolve_llm_config(
 
     last_models = settings.get("last_models", {})
     resolved_model = (
-        model
-        or last_models.get(resolved_provider)
-        or profile_settings.get("model")
+        model or last_models.get(resolved_provider) or profile_settings.get("model")
     )
 
     if not resolved_model:
@@ -336,8 +333,7 @@ def fetch_available_models(provider: str) -> List[str]:
                 os.environ.pop("OLLAMA_HOST", None)
 
         models = []
-        payload = response.get("models") if isinstance(
-            response, dict) else None
+        payload = response.get("models") if isinstance(response, dict) else None
         if isinstance(payload, list):
             for item in payload:
                 if isinstance(item, dict) and item.get("name"):

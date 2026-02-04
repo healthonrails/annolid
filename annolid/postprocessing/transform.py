@@ -98,12 +98,10 @@ class Resize(object):
         y = (np.round(x / self.__multiple_of) * self.__multiple_of).astype(int)
 
         if max_val is not None and y > max_val:
-            y = (np.floor(x / self.__multiple_of)
-                 * self.__multiple_of).astype(int)
+            y = (np.floor(x / self.__multiple_of) * self.__multiple_of).astype(int)
 
         if y < min_val:
-            y = (np.ceil(x / self.__multiple_of)
-                 * self.__multiple_of).astype(int)
+            y = (np.ceil(x / self.__multiple_of) * self.__multiple_of).astype(int)
 
         return y
 
@@ -130,7 +128,7 @@ class Resize(object):
                     # fit height
                     scale_width = scale_height
             elif self.__resize_method == "minimal":
-                # scale as least as possbile
+                # scale as little as possible
                 if abs(1 - scale_width) < abs(1 - scale_height):
                     # fit width
                     scale_height = scale_width
@@ -160,8 +158,7 @@ class Resize(object):
             new_height = self.constrain_to_multiple_of(scale_height * height)
             new_width = self.constrain_to_multiple_of(scale_width * width)
         else:
-            raise ValueError(
-                f"resize_method {self.__resize_method} not implemented")
+            raise ValueError(f"resize_method {self.__resize_method} not implemented")
 
         return (new_width, new_height)
 
@@ -187,8 +184,7 @@ class Resize(object):
 
             if "depth" in sample:
                 sample["depth"] = cv2.resize(
-                    sample["depth"], (width,
-                                      height), interpolation=cv2.INTER_NEAREST
+                    sample["depth"], (width, height), interpolation=cv2.INTER_NEAREST
                 )
 
             if "semseg_mask" in sample:
@@ -196,8 +192,7 @@ class Resize(object):
                 #     sample["semseg_mask"], (width, height), interpolation=cv2.INTER_NEAREST
                 # )
                 sample["semseg_mask"] = F.interpolate(
-                    torch.from_numpy(sample["semseg_mask"]).float()[
-                        None, None, ...],
+                    torch.from_numpy(sample["semseg_mask"]).float()[None, None, ...],
                     (height, width),
                     mode="nearest",
                 ).numpy()[0, 0]
@@ -215,7 +210,7 @@ class Resize(object):
 
 
 class NormalizeImage(object):
-    """Normlize image by given mean and std."""
+    """Normalize image by given mean and std."""
 
     def __init__(self, mean, std):
         self.__mean = mean

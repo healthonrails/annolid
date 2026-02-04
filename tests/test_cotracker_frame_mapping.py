@@ -23,9 +23,7 @@ class TestCoTrackerFrameMapping(unittest.TestCase):
         tracks = torch.zeros((1, 3, 2, 2), dtype=torch.int64)
         visibility = torch.ones((1, 3, 2), dtype=torch.bool)
 
-        processor.extract_frame_points(
-            tracks, visibility, chunk_start_frame=10
-        )
+        processor.extract_frame_points(tracks, visibility, chunk_start_frame=10)
         self.assertEqual(saved, [10, 11, 12])
 
     def test_extract_frame_points_respects_local_indices(self):

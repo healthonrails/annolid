@@ -6,7 +6,7 @@ import numpy as np
 import yaml
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ultralytics import SAM, YOLO, YOLOE  # type: ignore
+    pass  # type: ignore
 
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.polygons import simplify_polygons
@@ -36,7 +36,7 @@ class InferenceProcessor:
         Args:
             model_name (str): Path or identifier for the model file.
             model_type (str): Type of model ('yolo', 'sam', or 'dinokpseg').
-            class_names (list, optional): List of class names for YOLO. 
+            class_names (list, optional): List of class names for YOLO.
                                           Only provided if the model doesn't have
                                           built-in classes.
         """
@@ -46,14 +46,12 @@ class InferenceProcessor:
         self.model_name = str(self.model_path)
         self._is_coreml = self._detect_coreml_export(self.model_name)
         self._yoloe_text_prompt: bool = bool(yoloe_text_prompt)
-        self.class_names: Optional[list] = (
-            [str(c).strip()
-             for c in (class_names or []) if str(c).strip()] or None
-        )
-        self.prompt_class_names: Optional[list] = (
-            [str(c).strip()
-             for c in (prompt_class_names or []) if str(c).strip()] or None
-        )
+        self.class_names: Optional[list] = [
+            str(c).strip() for c in (class_names or []) if str(c).strip()
+        ] or None
+        self.prompt_class_names: Optional[list] = [
+            str(c).strip() for c in (prompt_class_names or []) if str(c).strip()
+        ] or None
         self.model = self._load_model(class_names)
         self._apply_prompt_names_to_model()
         self.frame_count: int = 0
@@ -81,7 +79,10 @@ class InferenceProcessor:
             return
 
         mapping = {int(i): str(name) for i, name in enumerate(names)}
-        for target in (getattr(self, "model", None), getattr(getattr(self, "model", None), "model", None)):
+        for target in (
+            getattr(self, "model", None),
+            getattr(getattr(self, "model", None), "model", None),
+        ):
             if target is None:
                 continue
             try:
@@ -128,8 +129,11 @@ class InferenceProcessor:
         pose_schema_path: Optional[str],
     ) -> Optional[list]:
         if keypoint_names:
-            cleaned = [str(k).strip()
-                       for k in keypoint_names if isinstance(k, str) and k.strip()]
+            cleaned = [
+                str(k).strip()
+                for k in keypoint_names
+                if isinstance(k, str) and k.strip()
+            ]
             if cleaned:
                 return cleaned
 
@@ -176,9 +180,9 @@ class InferenceProcessor:
             from annolid.utils.config import get_config
 
             cfg_folder = Path(__file__).resolve().parent.parent
-            keypoint_config_file = cfg_folder / 'configs' / 'keypoints.yaml'
+            keypoint_config_file = cfg_folder / "configs" / "keypoints.yaml"
             keypoint_config = get_config(keypoint_config_file)
-            names = keypoint_config.get('KEYPOINTS')
+            names = keypoint_config.get("KEYPOINTS")
             if isinstance(names, str):
                 items = [k.strip() for k in names.split(" ") if k.strip()]
                 return items or None
@@ -192,14 +196,17 @@ class InferenceProcessor:
     def _infer_keypoint_names_from_training_artifacts(self) -> Optional[list]:
         model_path = Path(self.model_name)
         candidates = []
-        for parent in [model_path.parent, model_path.parent.parent, model_path.parent.parent.parent]:
+        for parent in [
+            model_path.parent,
+            model_path.parent.parent,
+            model_path.parent.parent.parent,
+        ]:
             args_path = parent / "args.yaml"
             if args_path.exists():
                 candidates.append(args_path)
         for args_path in candidates:
             try:
-                args = yaml.safe_load(
-                    args_path.read_text(encoding="utf-8")) or {}
+                args = yaml.safe_load(args_path.read_text(encoding="utf-8")) or {}
             except Exception:
                 continue
             if not isinstance(args, dict):
@@ -221,8 +228,7 @@ class InferenceProcessor:
     @staticmethod
     def _infer_keypoint_names_from_data_yaml(data_yaml: Path) -> Optional[list]:
         try:
-            payload = yaml.safe_load(
-                data_yaml.read_text(encoding="utf-8")) or {}
+            payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
         except Exception:
             return None
         if not isinstance(payload, dict):
@@ -269,7 +275,9 @@ class InferenceProcessor:
                     if attr == "kpt_labels":
                         items = []
                         try:
-                            for key, val in sorted(value.items(), key=lambda kv: int(kv[0])):
+                            for key, val in sorted(
+                                value.items(), key=lambda kv: int(kv[0])
+                            ):
                                 items.append(str(val).strip())
                         except Exception:
                             items = [str(v).strip() for v in value.values()]
@@ -283,8 +291,7 @@ class InferenceProcessor:
                     else:
                         names = next(iter(value.values()))
                     if isinstance(names, list):
-                        cleaned = [str(k).strip()
-                                   for k in names if str(k).strip()]
+                        cleaned = [str(k).strip() for k in names if str(k).strip()]
                         return cleaned or None
         return None
 
@@ -310,7 +317,8 @@ class InferenceProcessor:
         filtered_classes = []
         if class_names:
             filtered_classes = [
-                cls for cls in class_names if isinstance(cls, str) and cls.strip()]
+                cls for cls in class_names if isinstance(cls, str) and cls.strip()
+            ]
 
         model_ref = str(self.model_path)
         model_name_lower = model_ref.lower()
@@ -336,16 +344,22 @@ class InferenceProcessor:
 
                         ensure_ultralytics_asset_cached("mobileclip2_b.ts")
                     model.set_classes(
-                        filtered_classes, model.get_text_pe(filtered_classes))
+                        filtered_classes, model.get_text_pe(filtered_classes)
+                    )
             else:
                 model = YOLO(model_ref)
-                if filtered_classes and "pose" not in model_name_lower and "seg" not in model_name_lower:
+                if (
+                    filtered_classes
+                    and "pose" not in model_name_lower
+                    and "seg" not in model_name_lower
+                ):
                     if hasattr(model, "set_classes"):
                         model.set_classes(filtered_classes)
                     else:
                         logger.warning(
                             "Custom class assignment requested, but model '%s' does not support set_classes.",
-                            model_ref)
+                            model_ref,
+                        )
             return model
         if self.model_type == "sam":
             try:
@@ -363,26 +377,26 @@ class InferenceProcessor:
 
             return DinoKPSEGPredictor(model_ref)
 
-        raise ValueError(
-            "Unsupported model type. Use 'yolo', 'sam', or 'dinokpseg'.")
+        raise ValueError("Unsupported model type. Use 'yolo', 'sam', or 'dinokpseg'.")
 
     def _validate_visual_prompts(self, visual_prompts: dict) -> bool:
         required_keys = {"bboxes", "cls"}
         if not required_keys.issubset(visual_prompts.keys()):
-            logger.error(
-                "Visual prompts must contain keys: %s", required_keys)
+            logger.error("Visual prompts must contain keys: %s", required_keys)
             return False
 
         bboxes = visual_prompts["bboxes"]
         cls = visual_prompts["cls"]
         if not isinstance(bboxes, np.ndarray) or not isinstance(cls, np.ndarray):
             logger.error(
-                "Both 'bboxes' and 'cls' must be numpy arrays after normalization.")
+                "Both 'bboxes' and 'cls' must be numpy arrays after normalization."
+            )
             return False
 
         if bboxes.shape[0] != cls.shape[0]:
-            logger.error("Mismatch: %d bboxes vs %d classes.",
-                         bboxes.shape[0], cls.shape[0])
+            logger.error(
+                "Mismatch: %d bboxes vs %d classes.", bboxes.shape[0], cls.shape[0]
+            )
             return False
 
         return True
@@ -426,8 +440,9 @@ class InferenceProcessor:
         Returns:
             A string message indicating the completion and frame count.
         """
-        output_directory = Path(output_directory) if output_directory else Path(
-            source).with_suffix("")
+        output_directory = (
+            Path(output_directory) if output_directory else Path(source).with_suffix("")
+        )
         output_directory.mkdir(parents=True, exist_ok=True)
         start_frame = max(0, int(start_frame))
         end_frame = None if end_frame is None else int(end_frame)
@@ -443,7 +458,11 @@ class InferenceProcessor:
             except Exception:
                 pass
             try:
-                if pred_worker is not None and hasattr(pred_worker, "is_stopped") and pred_worker.is_stopped():
+                if (
+                    pred_worker is not None
+                    and hasattr(pred_worker, "is_stopped")
+                    and pred_worker.is_stopped()
+                ):
                     return True
             except Exception:
                 pass
@@ -459,16 +478,19 @@ class InferenceProcessor:
 
         if visual_prompts is not None:
             try:
-                bboxes = np.asarray(visual_prompts.get(
-                    "bboxes", []), dtype=float)
+                bboxes = np.asarray(visual_prompts.get("bboxes", []), dtype=float)
                 cls = np.asarray(visual_prompts.get("cls", []), dtype=int)
                 visual_prompts = {"bboxes": bboxes, "cls": cls}
             except Exception as exc:
                 logger.error(
-                    "Failed to normalize visual prompts; proceeding without them: %s", exc)
+                    "Failed to normalize visual prompts; proceeding without them: %s",
+                    exc,
+                )
                 visual_prompts = None
 
-        if visual_prompts is not None and not self._validate_visual_prompts(visual_prompts):
+        if visual_prompts is not None and not self._validate_visual_prompts(
+            visual_prompts
+        ):
             logger.error("Invalid visual prompts; proceeding without them.")
             visual_prompts = None
 
@@ -496,8 +518,10 @@ class InferenceProcessor:
             source_path = Path(source)
         except Exception:
             source_path = None
-        if source_path is not None and source_path.is_file() and (
-            start_frame != 0 or end_frame is not None or step != 1
+        if (
+            source_path is not None
+            and source_path.is_file()
+            and (start_frame != 0 or end_frame is not None or step != 1)
         ):
             return self._run_yolo_video_inference_cv2(
                 source,
@@ -516,9 +540,10 @@ class InferenceProcessor:
             )
 
         # Use visual prompts if supported by the model (YOLOE)
-        if visual_prompts is not None and 'yoloe' in self.model_name.lower():
+        if visual_prompts is not None and "yoloe" in self.model_name.lower():
             try:
                 from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
+
                 logger.info("Running prediction with visual prompts.")
                 results = self.model.predict(
                     source,
@@ -533,12 +558,11 @@ class InferenceProcessor:
         else:
             if self._is_coreml or "pose" in self.model_name.lower():
                 logger.info(
-                    "Detected CoreML/pose export; using predict() instead of track().")
-                results = self.model.predict(
-                    source, stream=True, verbose=False)
+                    "Detected CoreML/pose export; using predict() instead of track()."
+                )
+                results = self.model.predict(source, stream=True, verbose=False)
             elif not enable_tracking:
-                results = self.model.predict(
-                    source, stream=True, verbose=False)
+                results = self.model.predict(source, stream=True, verbose=False)
             else:
                 track_kwargs = {
                     "persist": True,
@@ -572,10 +596,10 @@ class InferenceProcessor:
                 annotations = self.extract_yolo_results(
                     result,
                     save_bbox=self._should_save_pose_bbox(
-                        has_keypoints, save_pose_bbox),
+                        has_keypoints, save_pose_bbox
+                    ),
                 )
-                self.save_yolo_to_labelme(
-                    annotations, frame_shape, output_directory)
+                self.save_yolo_to_labelme(annotations, frame_shape, output_directory)
                 self.frame_count += 1
         finally:
             try:
@@ -612,7 +636,11 @@ class InferenceProcessor:
             except Exception:
                 pass
             try:
-                if pred_worker is not None and hasattr(pred_worker, "is_stopped") and pred_worker.is_stopped():
+                if (
+                    pred_worker is not None
+                    and hasattr(pred_worker, "is_stopped")
+                    and pred_worker.is_stopped()
+                ):
                     return True
             except Exception:
                 pass
@@ -642,8 +670,7 @@ class InferenceProcessor:
         else:
             max_frames = 0
         step = max(1, abs(int(step)))
-        total_steps = max(1, (max_frames + step - 1) //
-                          step) if max_frames else 0
+        total_steps = max(1, (max_frames + step - 1) // step) if max_frames else 0
         processed_steps = 0
 
         stopped = False
@@ -686,8 +713,7 @@ class InferenceProcessor:
                     output_directory, frame_index=int(frame_index)
                 )
                 instance_masks = self._instance_masks_from_shapes(
-                    prompt_shapes, frame_hw=(
-                        int(frame_shape[0]), int(frame_shape[1]))
+                    prompt_shapes, frame_hw=(int(frame_shape[0]), int(frame_shape[1]))
                 )
                 annotations = self.extract_dino_kpseg_results(
                     frame, bboxes=bboxes, instance_masks=instance_masks
@@ -753,7 +779,11 @@ class InferenceProcessor:
             except Exception:
                 pass
             try:
-                if pred_worker is not None and hasattr(pred_worker, "is_stopped") and pred_worker.is_stopped():
+                if (
+                    pred_worker is not None
+                    and hasattr(pred_worker, "is_stopped")
+                    and pred_worker.is_stopped()
+                ):
                     return True
             except Exception:
                 pass
@@ -783,8 +813,7 @@ class InferenceProcessor:
         else:
             max_frames = 0
         step = max(1, abs(int(step)))
-        total_steps = max(1, (max_frames + step - 1) //
-                          step) if max_frames else 0
+        total_steps = max(1, (max_frames + step - 1) // step) if max_frames else 0
         processed_steps = 0
 
         stopped = False
@@ -823,9 +852,14 @@ class InferenceProcessor:
                 frame_shape = (frame.shape[0], frame.shape[1], 3)
                 annotations = []
                 try:
-                    if visual_prompts is not None and "yoloe" in self.model_name.lower():
+                    if (
+                        visual_prompts is not None
+                        and "yoloe" in self.model_name.lower()
+                    ):
                         try:
-                            from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
+                            from ultralytics.models.yolo.yoloe import (
+                                YOLOEVPSegPredictor,
+                            )
 
                             results = self.model.predict(
                                 frame,
@@ -845,8 +879,7 @@ class InferenceProcessor:
                             if tracker:
                                 track_kwargs["tracker"] = tracker
                             try:
-                                results = self.model.track(
-                                    frame, **track_kwargs)
+                                results = self.model.track(frame, **track_kwargs)
                             except Exception as exc:
                                 if tracker:
                                     logger.warning(
@@ -855,21 +888,26 @@ class InferenceProcessor:
                                         exc,
                                     )
                                     track_kwargs.pop("tracker", None)
-                                    results = self.model.track(
-                                        frame, **track_kwargs)
+                                    results = self.model.track(frame, **track_kwargs)
                                 else:
                                     raise
                     if isinstance(results, (list, tuple)) and results:
-                        has_keypoints = getattr(
-                            results[0], "keypoints", None) is not None
+                        has_keypoints = (
+                            getattr(results[0], "keypoints", None) is not None
+                        )
                         annotations = self.extract_yolo_results(
                             results[0],
                             save_bbox=self._should_save_pose_bbox(
-                                has_keypoints, save_pose_bbox),
+                                has_keypoints, save_pose_bbox
+                            ),
                         )
                 except Exception as exc:
-                    logger.error("YOLO inference failed at frame %s: %s",
-                                 frame_index, exc, exc_info=True)
+                    logger.error(
+                        "YOLO inference failed at frame %s: %s",
+                        frame_index,
+                        exc,
+                        exc_info=True,
+                    )
                     annotations = []
 
                 # Always write a store record (and optional JSON) to mark the frame as processed.
@@ -917,8 +955,7 @@ class InferenceProcessor:
         # Support both the current "<folder>_000000123.json" and the legacy "000000123.json".
         candidates = (
             cls._labelme_json_path(output_dir, frame_index=int(frame_index)),
-            cls._legacy_labelme_json_path(
-                output_dir, frame_index=int(frame_index)),
+            cls._legacy_labelme_json_path(output_dir, frame_index=int(frame_index)),
         )
         for path in candidates:
             try:
@@ -928,7 +965,9 @@ class InferenceProcessor:
                 continue
         return False
 
-    def _frame_has_existing_store_record(self, output_dir: Path, *, frame_index: int) -> bool:
+    def _frame_has_existing_store_record(
+        self, output_dir: Path, *, frame_index: int
+    ) -> bool:
         store = AnnotationStore.for_frame_path(
             self._labelme_json_path(output_dir, frame_index=int(frame_index))
         )
@@ -952,8 +991,7 @@ class InferenceProcessor:
         frame_index = int(frame_index)
         candidates = (
             self._labelme_json_path(output_directory, frame_index=frame_index),
-            self._legacy_labelme_json_path(
-                output_directory, frame_index=frame_index),
+            self._legacy_labelme_json_path(output_directory, frame_index=frame_index),
         )
         for path in candidates:
             try:
@@ -1007,8 +1045,7 @@ class InferenceProcessor:
             if not isinstance(points, list) or not points:
                 continue
 
-            flags = shape.get("flags") if isinstance(
-                shape.get("flags"), dict) else {}
+            flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else {}
             gid = self._normalize_group_id(shape.get("group_id"))
             if gid is None:
                 gid = self._normalize_group_id(shape.get("instance_id"))
@@ -1039,8 +1076,7 @@ class InferenceProcessor:
                     poly.append((float(pt[0]), float(pt[1])))
                 if len(poly) < 3:
                     continue
-                poly_arr = np.rint(np.array(poly, dtype=np.float32)
-                                   ).astype(np.int32)
+                poly_arr = np.rint(np.array(poly, dtype=np.float32)).astype(np.int32)
                 cv2.fillPoly(mask, [poly_arr], 1)
             elif shape_type == "rectangle":
                 if len(points) < 2:
@@ -1080,8 +1116,7 @@ class InferenceProcessor:
                 r = int(round(((cx - ex) ** 2 + (cy - ey) ** 2) ** 0.5))
                 if r <= 0:
                     continue
-                cv2.circle(mask, (int(round(cx)), int(round(cy))),
-                           r, 1, thickness=-1)
+                cv2.circle(mask, (int(round(cx)), int(round(cy))), r, 1, thickness=-1)
 
             if not np.any(mask):
                 continue
@@ -1133,25 +1168,28 @@ class InferenceProcessor:
                     topk=5,
                     nms_radius_px=12.0,
                 )
-                predictions = [(None, self.model.predict(
-                    frame_bgr, return_patch_masks=False, stabilize_lr=True))]
+                predictions = [
+                    (
+                        None,
+                        self.model.predict(
+                            frame_bgr, return_patch_masks=False, stabilize_lr=True
+                        ),
+                    )
+                ]
         except Exception as exc:
             logger.error("DinoKPSEG inference failed: %s", exc, exc_info=True)
             return annotations
 
-        kp_names = self.keypoint_names or getattr(
-            self.model, "keypoint_names", None)
+        kp_names = self.keypoint_names or getattr(self.model, "keypoint_names", None)
         if not kp_names and predictions:
             first_pred = predictions[0][1]
-            kp_names = [str(i)
-                        for i in range(len(first_pred.keypoints_xy))]
+            kp_names = [str(i) for i in range(len(first_pred.keypoints_xy))]
 
         # Emit multi-peak points only when no instance separation signals were present.
         if (bboxes is None or len(bboxes) == 0) and not instance_masks:
             if kp_names:
                 for kpt_id, channel_peaks in enumerate(peaks):
-                    label = kp_names[kpt_id] if kpt_id < len(
-                        kp_names) else str(kpt_id)
+                    label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
                     for rank, (x, y, score) in enumerate(channel_peaks):
                         point_shape = Shape(
                             label,
@@ -1172,8 +1210,7 @@ class InferenceProcessor:
             for kpt_id, (xy, score) in enumerate(
                 zip(prediction.keypoints_xy, prediction.keypoint_scores)
             ):
-                label = kp_names[kpt_id] if kpt_id < len(
-                    kp_names) else str(kpt_id)
+                label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
                 x, y = float(xy[0]), float(xy[1])
 
                 point_shape = Shape(
@@ -1191,7 +1228,9 @@ class InferenceProcessor:
 
         return annotations
 
-    def extract_yolo_results(self, detection_result, save_bbox: bool = False, save_track: bool = False) -> list:
+    def extract_yolo_results(
+        self, detection_result, save_bbox: bool = False, save_track: bool = False
+    ) -> list:
         """
         Extracts YOLO results from a single detection result, returning a list of Shape objects.
 
@@ -1212,15 +1251,18 @@ class InferenceProcessor:
                 if name:
                     return name
             if isinstance(names_obj, dict):
-                return str(names_obj.get(int(cls_id), names_obj.get(str(int(cls_id)), cls_id)))
-            if isinstance(names_obj, (list, tuple)) and 0 <= int(cls_id) < len(names_obj):
+                return str(
+                    names_obj.get(int(cls_id), names_obj.get(str(int(cls_id)), cls_id))
+                )
+            if isinstance(names_obj, (list, tuple)) and 0 <= int(cls_id) < len(
+                names_obj
+            ):
                 return str(names_obj[int(cls_id)])
             return str(cls_id)
 
         boxes_obj = getattr(detection_result, "boxes", None)
         boxes_xywh = boxes_obj.xywh.cpu() if boxes_obj is not None else []
-        boxes_conf = getattr(
-            boxes_obj, "conf", None) if boxes_obj is not None else None
+        boxes_conf = getattr(boxes_obj, "conf", None) if boxes_obj is not None else None
         boxes_conf_list = None
         if boxes_conf is not None:
             try:
@@ -1229,10 +1271,8 @@ class InferenceProcessor:
                 boxes_conf_list = None
 
         keypoints = getattr(detection_result, "keypoints", None)
-        kpts_xy = getattr(
-            keypoints, "xy", None) if keypoints is not None else None
-        kpts_conf = getattr(keypoints, "conf",
-                            None) if keypoints is not None else None
+        kpts_xy = getattr(keypoints, "xy", None) if keypoints is not None else None
+        kpts_conf = getattr(keypoints, "conf", None) if keypoints is not None else None
 
         num_instances = 0
         try:
@@ -1258,18 +1298,14 @@ class InferenceProcessor:
 
         masks = getattr(detection_result, "masks", None)
         names = getattr(detection_result, "names", {}) or {}
-        cls_ids = (
-            [int(box.cls)
-             for box in boxes_obj] if boxes_obj is not None else []
-        )
+        cls_ids = [int(box.cls) for box in boxes_obj] if boxes_obj is not None else []
         class_names: List[str] = []
         for idx in range(num_instances):
             name = ""
             if idx < len(cls_ids):
                 name = _resolve_class_name(cls_ids[idx], names)
             class_names.append(name)
-        class_name_counts = {k: class_names.count(
-            k) for k in set(class_names) if k}
+        class_name_counts = {k: class_names.count(k) for k in set(class_names) if k}
 
         # Process each detection instance (bbox/mask/keypoints share the same index).
         for idx in range(num_instances):
@@ -1307,8 +1343,7 @@ class InferenceProcessor:
                     )
                     keypoint_shape.points = [[float(kpt[0]), float(kpt[1])]]
                     if conf_row is not None and kpt_id < len(conf_row):
-                        keypoint_shape.other_data["score"] = float(
-                            conf_row[kpt_id])
+                        keypoint_shape.other_data["score"] = float(conf_row[kpt_id])
                     keypoint_shape.other_data["instance_id"] = int(group_id)
                     keypoint_shape.other_data["instance_label"] = instance_label
                     if class_name:
@@ -1326,13 +1361,11 @@ class InferenceProcessor:
                     flags={},
                     group_id=group_id,
                 )
-                bbox_shape.points = [[float(x1), float(y1)], [
-                    float(x2), float(y2)]]
+                bbox_shape.points = [[float(x1), float(y1)], [float(x2), float(y2)]]
                 bbox_shape.other_data["instance_id"] = int(group_id)
                 bbox_shape.other_data["instance_label"] = instance_label
                 if boxes_conf_list is not None and idx < len(boxes_conf_list):
-                    bbox_shape.other_data["score"] = float(
-                        boxes_conf_list[idx])
+                    bbox_shape.other_data["score"] = float(boxes_conf_list[idx])
                 annotations.append(bbox_shape)
 
             if save_track and idx < len(boxes_xywh):
@@ -1377,8 +1410,11 @@ class InferenceProcessor:
                                 )
                                 segmentation_shape.points = contour_points
                                 segmentation_shape.other_data["instance_id"] = int(
-                                    group_id)
-                                segmentation_shape.other_data["instance_label"] = instance_label
+                                    group_id
+                                )
+                                segmentation_shape.other_data["instance_label"] = (
+                                    instance_label
+                                )
                                 annotations.append(segmentation_shape)
                     except Exception as exc:
                         logger.error("Error processing mask: %s", exc)
@@ -1408,8 +1444,7 @@ class InferenceProcessor:
         height, width, _ = frame_shape
         if frame_index is None:
             frame_index = int(self.frame_count)
-        output_path = self._labelme_json_path(
-            output_dir, frame_index=int(frame_index))
+        output_path = self._labelme_json_path(output_dir, frame_index=int(frame_index))
         save_labels(
             filename=str(output_path),
             imagePath="",

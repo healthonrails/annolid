@@ -2,29 +2,30 @@
 Please install  boxsdk
 `pip install boxsdk`
 """
+
 import os
 import json
 from boxsdk import OAuth2, Client
 
 
-def get_box_client(config_file='../config/box_config.json'):
-    """authenticate with box.com return app client 
+def get_box_client(config_file="../config/box_config.json"):
+    """authenticate with box.com return app client
     to access and mananage box folder and files
 
     Args:
-        config_file (str, optional): this file can be downloaded 
+        config_file (str, optional): this file can be downloaded
         from https://your_org_name.app.box.com/developers/console/app/xxxxxxx/configuration
         Defaults to '../config/box_config.json'.
     Please copy developer token from the above url and and a row `"developer_token":"YOUR_TOKEN",`
     to the box_config.json file.
-    Returns: 
+    Returns:
        Client: box client object
     """
-    with open(config_file, 'r') as cfg:
+    with open(config_file, "r") as cfg:
         box_cfg = json.load(cfg)
-    client_id = box_cfg['boxAppSettings']['clientID']
-    client_secret = box_cfg['boxAppSettings']['clientSecret']
-    token = box_cfg['developer_token']
+    client_id = box_cfg["boxAppSettings"]["clientID"]
+    client_secret = box_cfg["boxAppSettings"]["clientSecret"]
+    token = box_cfg["developer_token"]
 
     oauth = OAuth2(
         client_id=client_id,
@@ -35,12 +36,12 @@ def get_box_client(config_file='../config/box_config.json'):
     return client
 
 
-def get_box_folder_items(client, folder_id='0'):
+def get_box_folder_items(client, folder_id="0"):
     """get box folder and items in side the folder with provide folder id
 
     Args:
         client (Client): box API client
-        folder_id (str, optional): folder 
+        folder_id (str, optional): folder
         ID, e.g. from app.box.com/folder/FOLDER_ID
         . Defaults to '0'.
 
@@ -68,14 +69,13 @@ def download_file(box_file, local_file_path):
         box_file (File): box file object
         local_file_path (str): local file path e.g. /data/video.mp4
     """
-    with open(local_file_path, 'wb') as lf:
+    with open(local_file_path, "wb") as lf:
         box_file.download_to(lf)
 
 
-def is_results_complete(box_folder,
-                        result_file_pattern='_motion.csv',
-                        num_expected_results=0
-                        ):
+def is_results_complete(
+    box_folder, result_file_pattern="_motion.csv", num_expected_results=0
+):
     """Check if a box folder contains all the expected result files
 
     Args:
@@ -83,7 +83,7 @@ def is_results_complete(box_folder,
         result_file_pattern (str, optional): pattern in the file. Defaults to '_motion.csv'.
 
     Returns:
-        bool: True if the folder contails the expected number of result files else False
+        bool: True if the folder contains the expected number of result files else False
     """
     num_of_results = 0
     for bf in box_folder.get_items():
@@ -92,9 +92,7 @@ def is_results_complete(box_folder,
     return num_of_results == num_expected_results
 
 
-def upload_results(box_folder,
-                   tracking_results,
-                   csv_pattern='motion.csv'):
+def upload_results(box_folder, tracking_results, csv_pattern="motion.csv"):
     """upload the annolid output results to a box folder
 
     Args:
@@ -114,5 +112,5 @@ def upload_results(box_folder,
         local_file = tracking_results[box_folder.name]
         if os.path.exists(local_file):
             upload_file(box_folder, local_file)
-            print('Upload file: ', local_file)
+            print("Upload file: ", local_file)
     return True

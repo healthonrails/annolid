@@ -172,8 +172,7 @@ def load_model_and_processor(
     # product attention. Default it to False when missing.
     _ensure_sdpa_flag(model)
 
-    processor = AutoProcessor.from_pretrained(
-        model_name, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     return model, processor
 
 
@@ -197,7 +196,9 @@ def _patch_generation_defaults() -> None:
         from transformers.models.florence2.modeling_florence2 import (
             Florence2ForConditionalGeneration,
         )
-    except Exception:  # pragma: no cover - if transformers version changes/remove symbol
+    except (
+        Exception
+    ):  # pragma: no cover - if transformers version changes/remove symbol
         Florence2ForConditionalGeneration = None  # type: ignore
 
     try:
@@ -257,7 +258,9 @@ def _normalize_image_input(image: Any) -> Tuple[Image.Image, np.ndarray]:
         raise TypeError(f"Unsupported image type for Florence-2: {type(image)}")
 
     if np_image.ndim != 3 or np_image.shape[2] != 3:
-        raise ValueError(f"Florence-2 expects 3-channel RGB images, got {np_image.shape}")
+        raise ValueError(
+            f"Florence-2 expects 3-channel RGB images, got {np_image.shape}"
+        )
 
     return pil_image, np_image
 
@@ -311,6 +314,7 @@ def _ensure_sdpa_flag(model: AutoModelForCausalLM) -> None:
     except Exception:
         pass
 
+
 def florence2(
     processor: AutoProcessor,
     model: AutoModelForCausalLM,
@@ -362,9 +366,7 @@ def florence2(
             num_beams=3,
             use_cache=False,
         )
-    generated_text = processor.batch_decode(
-        generated_ids, skip_special_tokens=False
-    )[0]
+    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
     parsed_answer = processor.post_process_generation(
         generated_text,
         task=task_prompt,
@@ -373,9 +375,7 @@ def florence2(
     return parsed_answer
 
 
-def _create_shape_points(
-    polygon: Sequence[Tuple[float, float]]
-) -> List[Any]:
+def _create_shape_points(polygon: Sequence[Tuple[float, float]]) -> List[Any]:
     """Convert polygon coordinates into Qt points when available."""
     if QtCore is None:
         return [[float(x), float(y)] for x, y in polygon]
@@ -439,8 +439,7 @@ def save_annotations(
         raise ValueError("Invalid frame shape provided to save_annotations")
     image_path = os.path.splitext(filename)[0] + ".png"
 
-    label_list = create_shapes_from_mask_dict(
-        mask_dict, description=description)
+    label_list = create_shapes_from_mask_dict(mask_dict, description=description)
     save_labels(
         filename=filename,
         imagePath=image_path,
@@ -547,7 +546,9 @@ class Florence2Predictor:
                 text_input=text_input,
             )
 
-        return Florence2Result(mask_dict=mask_dict, caption=caption, raw_outputs=raw_outputs)
+        return Florence2Result(
+            mask_dict=mask_dict, caption=caption, raw_outputs=raw_outputs
+        )
 
 
 def process_nth_frame_from_video(

@@ -14,7 +14,8 @@ class QualityControlDialog(QtWidgets.QDialog):
         self.slider()
 
         self.label1 = QtWidgets.QLabel(
-            f"Please type or select number of frames to skip default={self.skip_num_frames}")
+            f"Please type or select number of frames to skip default={self.skip_num_frames}"
+        )
 
         self.framesLineEdit = QtWidgets.QLineEdit(self)
         self.framesLineEdit.setText(str(self.skip_num_frames))
@@ -24,12 +25,10 @@ class QualityControlDialog(QtWidgets.QDialog):
         self.buttonbox.accepted.connect(self.accept)
         self.buttonbox.rejected.connect(self.reject)
 
-        self.groupBoxVideoFiles = QtWidgets.QGroupBox(
-            "Please choose a video file")
+        self.groupBoxVideoFiles = QtWidgets.QGroupBox("Please choose a video file")
         self.inputVideoFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputVideoFileButton = QtWidgets.QPushButton('Open', self)
-        self.inputVideoFileButton.clicked.connect(
-            self.onInputVideoFileButtonClicked)
+        self.inputVideoFileButton = QtWidgets.QPushButton("Open", self)
+        self.inputVideoFileButton.clicked.connect(self.onInputVideoFileButtonClicked)
         video_hboxLayOut = QtWidgets.QHBoxLayout()
 
         video_hboxLayOut.addWidget(self.inputVideoFileLineEdit)
@@ -39,11 +38,11 @@ class QualityControlDialog(QtWidgets.QDialog):
         hboxLayOut = QtWidgets.QHBoxLayout()
 
         self.groupBoxFiles = QtWidgets.QGroupBox(
-            "Please choose tracking results CSV file")
+            "Please choose tracking results CSV file"
+        )
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
-        self.inputFileButton = QtWidgets.QPushButton('Open', self)
-        self.inputFileButton.clicked.connect(
-            self.onInputFileButtonClicked)
+        self.inputFileButton = QtWidgets.QPushButton("Open", self)
+        self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
         hboxLayOut.addWidget(self.inputFileLineEdit)
         hboxLayOut.addWidget(self.inputFileButton)
         self.groupBoxFiles.setLayout(hboxLayOut)
@@ -61,11 +60,7 @@ class QualityControlDialog(QtWidgets.QDialog):
 
     def onInputVideoFileButtonClicked(self):
         self.video_file, filter = QtWidgets.QFileDialog.getOpenFileName(
-            parent=self,
-            caption="Open video file",
-            directory=str(Path()),
-            filter='*'
-
+            parent=self, caption="Open video file", directory=str(Path()), filter="*"
         )
         if self.video_file is not None:
             self.inputVideoFileLineEdit.setText(self.video_file)
@@ -75,19 +70,7 @@ class QualityControlDialog(QtWidgets.QDialog):
             parent=self,
             caption="Open tracking results CSV file",
             directory=str(Path()),
-            filter='*'
-
-        )
-        if self.tracking_results is not None:
-            self.inputFileLineEdit.setText(self.tracking_results)
-
-    def onInputFileButtonClicked(self):
-        self.tracking_results, filter = QtWidgets.QFileDialog.getOpenFileName(
-            parent=self,
-            caption="Open tracking results CSV file",
-            directory=str(Path()),
-            filter='*'
-
+            filter="*",
         )
         if self.tracking_results is not None:
             self.inputFileLineEdit.setText(self.tracking_results)
@@ -102,9 +85,11 @@ class QualityControlDialog(QtWidgets.QDialog):
         self.slider.valueChanged.connect(self.onSliderChange)
 
     def onSliderChange(self, position):
-        self.skip_num_frames = int(position) if position and str(
-            position).isdigit() else 1
+        self.skip_num_frames = (
+            int(position) if position and str(position).isdigit() else 1
+        )
         self.framesLineEdit.setText(str(position))
 
         self.label1.setText(
-            f"You have selected to skip {str(self.skip_num_frames)} frames each time.")
+            f"You have selected to skip {str(self.skip_num_frames)} frames each time."
+        )

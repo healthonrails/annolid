@@ -28,9 +28,7 @@ from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 # Type alias for callables that operate on a single torch.Tensor
-TorchTensorCallable = Callable[
-    [torch.Tensor], torch.Tensor
-]
+TorchTensorCallable = Callable[[torch.Tensor], torch.Tensor]
 
 
 @dataclass(frozen=True)
@@ -128,10 +126,9 @@ def add_dino_kpseg_projector_embeddings(
             continue
         if feats.ndim != 3 or masks.ndim != 3 or img.ndim != 3:
             continue
-        if (
-            int(img.shape[1]) != int(masks.shape[1] * patch_size)
-            or int(img.shape[2]) != int(masks.shape[2] * patch_size)
-        ):
+        if int(img.shape[1]) != int(masks.shape[1] * patch_size) or int(
+            img.shape[2]
+        ) != int(masks.shape[2] * patch_size):
             continue
 
         probs_patch = None
@@ -146,9 +143,7 @@ def add_dino_kpseg_projector_embeddings(
                 probs_patch = None
 
         union_gt = masks.max(dim=0).values.clamp(0.0, 1.0)
-        union_gt_px = _upsample_patch_map(
-            union_gt.to("cpu"), patch_size=patch_size
-        )
+        union_gt_px = _upsample_patch_map(union_gt.to("cpu"), patch_size=patch_size)
         overlay = _overlay_heatmap(
             img.to("cpu"),
             union_gt_px,
@@ -193,12 +188,9 @@ def add_dino_kpseg_projector_embeddings(
             if pos_idxs.size == 0:
                 continue
             scores = pos[pos_idxs[:, 0], pos_idxs[:, 1]]
-            chosen = _select_indices(
-                scores, max_count=per_img_per_kpt, rng=rng
-            )
+            chosen = _select_indices(scores, max_count=per_img_per_kpt, rng=rng)
             color = _hsv_color(k, total=kpt_count)
-            kpt_name = str(keypoint_names[k]) if k < len(
-                keypoint_names) else f"kpt_{k}"
+            kpt_name = str(keypoint_names[k]) if k < len(keypoint_names) else f"kpt_{k}"
 
             for j in chosen:
                 if len(embed_rows) >= max_patches:
@@ -214,9 +206,7 @@ def add_dino_kpseg_projector_embeddings(
                 cy = (float(rr) + 0.5) * float(patch_size)
                 x0 = int(math.floor(cx - float(crop_px) / 2.0))
                 y0 = int(math.floor(cy - float(crop_px) / 2.0))
-                thumb = _pad_crop(
-                    img.to("cpu"), y0=y0, x0=x0, h=crop_px, w=crop_px
-                )
+                thumb = _pad_crop(img.to("cpu"), y0=y0, x0=x0, h=crop_px, w=crop_px)
                 thumb = _draw_border(thumb, color=color, px=border_px)
                 thumbs.append(thumb)
 
@@ -230,10 +220,7 @@ def add_dino_kpseg_projector_embeddings(
 
                 pred_value = ""
                 pred_hit = ""
-                if (
-                    probs_patch is not None
-                    and int(k) < int(probs_patch.shape[0])
-                ):
+                if probs_patch is not None and int(k) < int(probs_patch.shape[0]):
                     pred_v = float(probs_patch[int(k), rr, cc].item())
                     pred_value = f"{pred_v:.4f}"
                     pred_hit = "1" if pred_v >= float(pos_threshold) else "0"
@@ -260,8 +247,9 @@ def add_dino_kpseg_projector_embeddings(
         neg_idxs = np.argwhere(union <= float(neg_threshold))
         if neg_idxs.size > 0:
             pick_n = min(
-                int(negatives_per_image), int(neg_idxs.shape[0]),
-                max_patches - len(embed_rows)
+                int(negatives_per_image),
+                int(neg_idxs.shape[0]),
+                max_patches - len(embed_rows),
             )
             chosen_rows = np_rng.choice(
                 int(neg_idxs.shape[0]), size=pick_n, replace=False
@@ -277,12 +265,8 @@ def add_dino_kpseg_projector_embeddings(
                 cy = (float(rr) + 0.5) * float(patch_size)
                 x0 = int(math.floor(cx - float(crop_px) / 2.0))
                 y0 = int(math.floor(cy - float(crop_px) / 2.0))
-                thumb = _pad_crop(
-                    img.to("cpu"), y0=y0, x0=x0, h=crop_px, w=crop_px
-                )
-                thumbs.append(
-                    _draw_border(thumb, color=(0.4, 0.4, 0.4), px=border_px)
-                )
+                thumb = _pad_crop(img.to("cpu"), y0=y0, x0=x0, h=crop_px, w=crop_px)
+                thumbs.append(_draw_border(thumb, color=(0.4, 0.4, 0.4), px=border_px))
                 image_path = ds.image_paths[int(ds_idx)]
                 pred_value = ""
                 pred_hit = ""
@@ -314,12 +298,10 @@ def add_dino_kpseg_projector_embeddings(
             "pos_threshold or increasing max_images."
         )
 
-    embeddings = torch.stack(embed_rows, dim=0).to(
-        "cpu", dtype=torch.float32
+    embeddings = torch.stack(embed_rows, dim=0).to("cpu", dtype=torch.float32)
+    label_img = (
+        torch.stack(thumbs, dim=0).to("cpu", dtype=torch.float32).clamp(0.0, 1.0)
     )
-    label_img = torch.stack(thumbs, dim=0).to(
-        "cpu", dtype=torch.float32
-    ).clamp(0.0, 1.0)
 
     md_header = [
         "split",
@@ -346,9 +328,7 @@ def add_dino_kpseg_projector_embeddings(
     )
 
     if overlay_images:
-        grid = torch.stack(
-            overlay_images[: min(16, len(overlay_images))], dim=0
-        )
+        grid = torch.stack(overlay_images[: min(16, len(overlay_images))], dim=0)
         tb_writer.add_images(
             f"dino_kpseg/overlays/{split_norm}/gt_green_pred_red",
             grid,
@@ -370,8 +350,7 @@ def add_dino_kpseg_projector_embeddings(
     if write_csv:
         log_dir.mkdir(parents=True, exist_ok=True)
         csv_path = (
-            Path(log_dir)
-            / f"dino_kpseg_patch_embeddings_metadata_{split_norm}.csv"
+            Path(log_dir) / f"dino_kpseg_patch_embeddings_metadata_{split_norm}.csv"
         )
         with csv_path.open("w", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh)
@@ -489,9 +468,8 @@ def _overlay_heatmap(
     if heat.ndim != 2:
         raise ValueError("Expected HW heatmap")
     heat = heat.clamp(0.0, 1.0)
-    if (
-        int(heat.shape[0]) != int(img.shape[1])
-        or int(heat.shape[1]) != int(img.shape[2])
+    if int(heat.shape[0]) != int(img.shape[1]) or int(heat.shape[1]) != int(
+        img.shape[2]
     ):
         heat = F.interpolate(
             heat[None, None, :, :],
@@ -500,9 +478,7 @@ def _overlay_heatmap(
             align_corners=False,
         )[0, 0]
         heat = heat.clamp(0.0, 1.0)
-    col = torch.tensor(
-        color, dtype=img.dtype, device=img.device
-    ).view(3, 1, 1)
+    col = torch.tensor(color, dtype=img.dtype, device=img.device).view(3, 1, 1)
     alpha_heat = alpha * heat[None, :, :]
     blended = img * (1.0 - alpha_heat) + col * alpha_heat
     return blended.clamp(0.0, 1.0)
@@ -518,9 +494,8 @@ def _upsample_patch_map(
     h_p, w_p = int(patch_map.shape[0]), int(patch_map.shape[1])
     out = patch_map.repeat_interleave(int(patch_size), dim=0)
     out = out.repeat_interleave(int(patch_size), dim=1)
-    if (
-        int(out.shape[0]) != int(h_p * patch_size)
-        or int(out.shape[1]) != int(w_p * patch_size)
+    if int(out.shape[0]) != int(h_p * patch_size) or int(out.shape[1]) != int(
+        w_p * patch_size
     ):
         out = out[: int(h_p * patch_size), : int(w_p * patch_size)]
     return out
@@ -598,17 +573,9 @@ def write_dino_kpseg_tensorboard_embeddings(
 
     cache_dir = None
     if bool(cfg.cache_features):
-        cache_root = (
-            Path.home()
-            / ".cache"
-            / "annolid"
-            / "dinokpseg"
-            / "features"
-        )
+        cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
         cache_fingerprint = f"{model_name}|{short_side}|{layers}"
-        digest = hashlib.sha1(
-            cache_fingerprint.encode("utf-8")
-        ).hexdigest()[:12]
+        digest = hashlib.sha1(cache_fingerprint.encode("utf-8")).hexdigest()[:12]
         cache_dir = cache_root / digest
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -618,8 +585,7 @@ def write_dino_kpseg_tensorboard_embeddings(
         kpt_dims=spec.kpt_dims,
         radius_px=float(cfg.radius_px),
         extractor=extractor,
-        flip_idx=spec.flip_idx if meta is None else (
-            meta.flip_idx or spec.flip_idx),
+        flip_idx=spec.flip_idx if meta is None else (meta.flip_idx or spec.flip_idx),
         augment=DinoKPSEGAugmentConfig(enabled=False),
         cache_dir=cache_dir,
         mask_type=str(cfg.mask_type),
@@ -654,11 +620,10 @@ def write_dino_kpseg_tensorboard_embeddings(
             writer.add_text("dino_kpseg/checkpoint", str(cfg.weights), 0)
         predict_fn = None
         if head is not None:
+
             def _predict_probs(feats: torch.Tensor) -> torch.Tensor:
                 with torch.inference_mode():
-                    x = feats.unsqueeze(0).to(
-                        device_str, dtype=torch.float32
-                    )
+                    x = feats.unsqueeze(0).to(device_str, dtype=torch.float32)
                     logits = head(x)[0].detach().to("cpu")
                     return torch.sigmoid(logits).clamp(0.0, 1.0)
 
@@ -684,8 +649,7 @@ def write_dino_kpseg_tensorboard_embeddings(
             predict_probs_patch=predict_fn,
             write_csv=True,
         )
-        writer.add_scalar("embeddings/num_points",
-                          int(summary["num_points"]), 0)
+        writer.add_scalar("embeddings/num_points", int(summary["num_points"]), 0)
         writer.add_scalar("embeddings/dim", int(summary["dim"]), 0)
     finally:
         writer.flush()
@@ -714,18 +678,14 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model-name",
         default="facebook/dinov3-vits16-pretrain-lvd1689m",
-        help=(
-            "Hugging Face model id or dinov3 alias "
-            "(ignored when --weights is set)."
-        ),
+        help=("Hugging Face model id or dinov3 alias (ignored when --weights is set)."),
     )
     p.add_argument(
         "--short-side",
         type=int,
         default=768,
         help=(
-            "Resize short side before patch snapping "
-            "(ignored when --weights is set)."
+            "Resize short side before patch snapping (ignored when --weights is set)."
         ),
     )
     p.add_argument(
@@ -733,39 +693,43 @@ def build_argparser() -> argparse.ArgumentParser:
         type=str,
         default="-1",
         help=(
-            "Comma-separated transformer block indices "
-            "(ignored when --weights is set)."
+            "Comma-separated transformer block indices (ignored when --weights is set)."
         ),
     )
-    p.add_argument("--device", default=None,
-                   help="cuda|mps|cpu (default: auto)")
+    p.add_argument("--device", default=None, help="cuda|mps|cpu (default: auto)")
     p.add_argument("--radius-px", type=float, default=6.0)
-    p.add_argument("--mask-type", choices=("disk",
-                   "gaussian"), default="gaussian")
+    p.add_argument("--mask-type", choices=("disk", "gaussian"), default="gaussian")
     p.add_argument("--heatmap-sigma", type=float, default=None)
-    p.add_argument("--instance-mode", choices=("auto", "union",
-                   "per_instance"), default="auto")
+    p.add_argument(
+        "--instance-mode", choices=("auto", "union", "per_instance"), default="auto"
+    )
     p.add_argument("--bbox-scale", type=float, default=1.25)
-    p.add_argument("--no-cache", action="store_true",
-                   help="Disable feature caching")
+    p.add_argument("--no-cache", action="store_true", help="Disable feature caching")
     p.add_argument("--max-images", type=int, default=64)
     p.add_argument("--max-patches", type=int, default=4000)
     p.add_argument("--per-image-per-keypoint", type=int, default=3)
     p.add_argument("--pos-threshold", type=float, default=0.35)
-    p.add_argument("--add-negatives", action="store_true",
-                   help="Sample some background patches too.")
+    p.add_argument(
+        "--add-negatives",
+        action="store_true",
+        help="Sample some background patches too.",
+    )
     p.add_argument("--neg-threshold", type=float, default=0.02)
     p.add_argument("--negatives-per-image", type=int, default=6)
-    p.add_argument("--crop-px", type=int, default=96,
-                   help="Thumbnail crop size in pixels (resized image space).")
+    p.add_argument(
+        "--crop-px",
+        type=int,
+        default=96,
+        help="Thumbnail crop size in pixels (resized image space).",
+    )
     p.add_argument("--sprite-border-px", type=int, default=3)
     p.add_argument("--seed", type=int, default=0)
 
-    p.add_argument("--output", default=None,
-                   help="Run output directory (optional)")
+    p.add_argument("--output", default=None, help="Run output directory (optional)")
     p.add_argument("--runs-root", default=None, help="Runs root (optional)")
-    p.add_argument("--run-name", default=None,
-                   help="Optional run name (default: timestamp)")
+    p.add_argument(
+        "--run-name", default=None, help="Optional run name (default: timestamp)"
+    )
     return p
 
 
@@ -775,8 +739,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.output:
         out_dir = Path(args.output).expanduser().resolve()
     else:
-        runs_root = Path(args.runs_root).expanduser(
-        ).resolve() if args.runs_root else shared_runs_root()
+        runs_root = (
+            Path(args.runs_root).expanduser().resolve()
+            if args.runs_root
+            else shared_runs_root()
+        )
         out_dir = allocate_run_dir(
             task="dino_kpseg",
             model="embeddings",
@@ -792,16 +759,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             data_yaml=Path(args.data).expanduser().resolve(),
             log_dir=tb_dir,
             split=str(args.split),
-            weights=(Path(args.weights).expanduser().resolve()
-                     if args.weights else None),
+            weights=(
+                Path(args.weights).expanduser().resolve() if args.weights else None
+            ),
             model_name=str(args.model_name),
             short_side=int(args.short_side),
             layers=layers,
             device=(str(args.device).strip() if args.device else None),
             radius_px=float(args.radius_px),
             mask_type=str(args.mask_type),
-            heatmap_sigma_px=(float(args.heatmap_sigma)
-                              if args.heatmap_sigma is not None else None),
+            heatmap_sigma_px=(
+                float(args.heatmap_sigma) if args.heatmap_sigma is not None else None
+            ),
             instance_mode=str(args.instance_mode),
             bbox_scale=float(args.bbox_scale),
             cache_features=not bool(args.no_cache),

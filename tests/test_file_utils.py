@@ -6,7 +6,6 @@ from annolid.utils.files import find_most_recent_file
 
 
 class TestFindMostRecentFile(unittest.TestCase):
-
     def setUp(self):
         # Create a temporary folder and some files for testing
         self.temp_folder = "temp_folder"
@@ -21,8 +20,10 @@ class TestFindMostRecentFile(unittest.TestCase):
 
             # Modify file times to create different timestamps
             modification_time = datetime.now() - timedelta(days=i)
-            os.utime(file_path, (modification_time.timestamp(),
-                     modification_time.timestamp()))
+            os.utime(
+                file_path,
+                (modification_time.timestamp(), modification_time.timestamp()),
+            )
 
             self.file_paths.append(file_path)
 
@@ -39,7 +40,7 @@ class TestFindMostRecentFile(unittest.TestCase):
             mock_datetime.now.return_value = mock_current_time
 
             # Call the function with the temporary folder
-            result = find_most_recent_file(self.temp_folder, file_ext='.txt')
+            result = find_most_recent_file(self.temp_folder, file_ext=".txt")
 
         # Expect the most recent file to be the first in the list (modified 1 day ago)
         expected_result = os.path.join(self.temp_folder, "test_file_1.txt")
@@ -56,5 +57,5 @@ class TestFindMostRecentFile(unittest.TestCase):
         os.rmdir(empty_folder)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

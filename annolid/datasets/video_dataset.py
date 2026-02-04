@@ -1,10 +1,8 @@
 from __future__ import print_function, division
-import os
 import cv2
 import torch
 
 from torch.utils.data import DataLoader, IterableDataset
-from torchvision import transforms, utils
 
 
 class VideoFrameDataset(IterableDataset):
@@ -32,28 +30,21 @@ class VideoFrameDataset(IterableDataset):
     def frame_height(self, cap):
         return round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    def save(self,
-             out_path,
-             fps,
-             frame_width,
-             frame_height
-             ):
-        out = cv2.VideoWriter(out_path,
-                              cv2.VideoWriter_fourcc(*"mp4v"),
-                              fps,
-                              (frame_width, frame_height))
+    def save(self, out_path, fps, frame_width, frame_height):
+        cv2.VideoWriter(
+            out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (frame_width, frame_height)
+        )
 
     def transform_frame(self, frames, transform):
         with torch.no_grad():
-            frames = [torch.from_numpy(frame).cuda().float()
-                      for frame in frames]
+            frames = [torch.from_numpy(frame).cuda().float() for frame in frames]
             return frames, transform(torch.stack(frames, 0))
 
     def __iter__(self):
         cap = self.cap
         ret, old_frame = cap.read()
 
-        num_frames = (int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         for num in range(num_frames - 1):
             ret, frame = cap.read()
             if self.transform:

@@ -3,7 +3,7 @@
 If you use Annolid in your research, please use the following BibTeX entry.
 ```
 @misc{yang2024annolid,
-      title={Annolid: Annotate, Segment, and Track Anything You Need}, 
+      title={Annolid: Annotate, Segment, and Track Anything You Need},
       author={Chen Yang and Thomas A. Cleland},
       year={2024},
       eprint={2403.18690},

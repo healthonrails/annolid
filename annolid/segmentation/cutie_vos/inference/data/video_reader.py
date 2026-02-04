@@ -36,11 +36,11 @@ class VideoReader(Dataset):
         mask_dir - points to a directory of png masks
         size_dir - points to a directory of jpg images that determine the size of the output
         size - resize min. side to size. Does nothing if <0.
-        to_save - optionally contains a list of file names without extensions 
+        to_save - optionally contains a list of file names without extensions
             where the segmentation mask is required
         use_all_mask - when true, read all available mask in mask_dir.
             Default false. Set to true for YouTubeVOS validation.
-        object_name - if none, read from all objects. if not none, read that object only. 
+        object_name - if none, read from all objects. if not none, read that object only.
                         only valid in soft mask mode
         """
         self.vid_name = vid_name

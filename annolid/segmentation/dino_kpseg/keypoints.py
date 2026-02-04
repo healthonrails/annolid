@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 
-def infer_flip_idx_from_names(names: Sequence[str], *, kpt_count: int) -> Optional[List[int]]:
+def infer_flip_idx_from_names(
+    names: Sequence[str], *, kpt_count: int
+) -> Optional[List[int]]:
     """Infer YOLO-style flip_idx from keypoint names.
 
     Returns a permutation list of length kpt_count mapping index -> its mirrored counterpart.
@@ -225,10 +227,18 @@ def stabilize_symmetric_keypoints_xy(
         pi, pj = prev_xy[i], prev_xy[j]
         ci, cj = out[i], out[j]
 
-        d_same = (ci[0] - pi[0]) ** 2 + (ci[1] - pi[1]) ** 2 + \
-            (cj[0] - pj[0]) ** 2 + (cj[1] - pj[1]) ** 2
-        d_swap = (cj[0] - pi[0]) ** 2 + (cj[1] - pi[1]) ** 2 + \
-            (ci[0] - pj[0]) ** 2 + (ci[1] - pj[1]) ** 2
+        d_same = (
+            (ci[0] - pi[0]) ** 2
+            + (ci[1] - pi[1]) ** 2
+            + (cj[0] - pj[0]) ** 2
+            + (cj[1] - pj[1]) ** 2
+        )
+        d_swap = (
+            (cj[0] - pi[0]) ** 2
+            + (cj[1] - pi[1]) ** 2
+            + (ci[0] - pj[0]) ** 2
+            + (ci[1] - pj[1]) ** 2
+        )
 
         if d_swap + float(config.min_improvement_px) ** 2 < d_same:
             out[i], out[j] = out[j], out[i]

@@ -54,7 +54,9 @@ class _DummyCutieMaskManager:
             if instance.polygon is not None:
                 self._last_polygon = [tuple(pt) for pt in instance.polygon]
 
-    def update_masks(self, _frame_number: int, _frame: np.ndarray, registry) -> Dict[str, MaskResult]:
+    def update_masks(
+        self, _frame_number: int, _frame: np.ndarray, registry
+    ) -> Dict[str, MaskResult]:
         results: Dict[str, MaskResult] = {}
         for instance in registry:
             if self._last_mask is None or self._last_polygon is None:
@@ -80,27 +82,42 @@ class _DummyKpsegPredictor:
         return None
 
     def predict(self, _frame_bgr, stabilize_lr=False):
-        return _DummyPred(keypoints_xy=[(1.0, 1.0), (2.0, 2.0)], keypoint_scores=[1.0, 1.0])
+        return _DummyPred(
+            keypoints_xy=[(1.0, 1.0), (2.0, 2.0)], keypoint_scores=[1.0, 1.0]
+        )
 
 
 def test_polygon_only_seed_tracks_masks_then_predicts_keypoints(tmp_path, monkeypatch):
     # Patch heavy components used by DinoKPSEGVideoProcessor.
     monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.CV2Video", _DummyVideo)
-    monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.CutieMaskManager", _DummyCutieMaskManager)
-    monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.DinoKPSEGPredictor", _DummyKpsegPredictor)
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.CutieMaskManager", _DummyCutieMaskManager
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.DinoKPSEGPredictor", _DummyKpsegPredictor
+    )
 
     def _build_instance_crops(_frame_bgr, instance_masks, pad_px, use_mask_gate):
         return list(instance_masks)
 
     def _predict_on_instance_crops(_predictor, crops, stabilize_lr):
         for gid, _mask in crops:
-            yield int(gid), _DummyPred(
-                keypoints_xy=[(10.0, 10.0), (20.0, 20.0)],
-                keypoint_scores=[0.9, 0.9],
+            yield (
+                int(gid),
+                _DummyPred(
+                    keypoints_xy=[(10.0, 10.0), (20.0, 20.0)],
+                    keypoint_scores=[0.9, 0.9],
+                ),
             )
 
-    monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.build_instance_crops", _build_instance_crops)
-    monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.predict_on_instance_crops", _predict_on_instance_crops)
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.build_instance_crops",
+        _build_instance_crops,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.predict_on_instance_crops",
+        _predict_on_instance_crops,
+    )
 
     out_dir = tmp_path / "video"
     out_dir.mkdir()
@@ -117,12 +134,16 @@ def test_polygon_only_seed_tracks_masks_then_predicts_keypoints(tmp_path, monkey
             }
         ]
     }
-    (out_dir / "video_000000000.json").write_text(json.dumps(seed_json), encoding="utf-8")
+    (out_dir / "video_000000000.json").write_text(
+        json.dumps(seed_json), encoding="utf-8"
+    )
     # `find_manual_labeled_json_files` considers a frame "manual" when the PNG exists
     # alongside its JSON (or via AnnotationStore). A zero-byte file is sufficient here.
     (out_dir / "video_000000000.png").write_bytes(b"")
 
-    cfg = CutieDinoTrackerConfig(kpseg_apply_mode="always", use_cutie_tracking=True, persist_labelme_json=True)
+    cfg = CutieDinoTrackerConfig(
+        kpseg_apply_mode="always", use_cutie_tracking=True, persist_labelme_json=True
+    )
     processor = DinoKPSEGVideoProcessor(
         video_path=str(tmp_path / "dummy.mp4"),
         result_folder=out_dir,

@@ -27,9 +27,7 @@ def test_crop_instance_updates_keypoints_visibility():
         ],
         dtype=np.float32,
     )
-    crop, out = _crop_instance(
-        pil, bbox=bbox, keypoints=keypoints, bbox_scale=1.0
-    )
+    crop, out = _crop_instance(pil, bbox=bbox, keypoints=keypoints, bbox_scale=1.0)
     assert crop.size[0] > 0 and crop.size[1] > 0
     assert np.isclose(out[0, 0], 0.5, atol=1e-6)
     assert np.isclose(out[0, 1], 0.5, atol=1e-6)

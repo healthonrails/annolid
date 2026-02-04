@@ -81,13 +81,9 @@ def _normalize_cli_collections(namespace: argparse.Namespace) -> None:
         source = namespace.labels
         if Path(source).is_file():
             with codecs.open(source, "r", encoding="utf-8") as file_obj:
-                namespace.labels = [
-                    line.strip() for line in file_obj if line.strip()
-                ]
+                namespace.labels = [line.strip() for line in file_obj if line.strip()]
         else:
-            namespace.labels = [
-                item for item in source.split(",") if item
-            ]
+            namespace.labels = [item for item in source.split(",") if item]
 
 
 def parse_cli(

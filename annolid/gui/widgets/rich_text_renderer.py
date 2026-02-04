@@ -9,6 +9,7 @@ from qtpy import QtGui
 
 try:
     from markdown_it import MarkdownIt  # type: ignore
+
     try:
         from markdown_it.extensions.tasklists import tasklists  # type: ignore
     except ImportError:  # pragma: no cover - optional dependency
@@ -61,7 +62,7 @@ class RichTextRenderer:
                     "text-align",
                     "margin",
                     "padding",
-                    "border", 
+                    "border",
                     "border-radius",
                     "line-height",
                     "border-collapse",
@@ -93,9 +94,7 @@ class RichTextRenderer:
 
         sanitized_text, literal_tokens = self._preprocess(text)
         sanitized_text, special_tokens = self._extract_special_tags(sanitized_text)
-        processed_text, placeholders = self._extract_math_placeholders(
-            sanitized_text
-        )
+        processed_text, placeholders = self._extract_math_placeholders(sanitized_text)
         html_content = self._convert_markdown_to_html(
             processed_text, raw_text=sanitized_text
         )
@@ -117,19 +116,15 @@ class RichTextRenderer:
 
         for token, value in literal_tokens.items():
             html_content = html_content.replace(token, value)
-            html_content = html_content.replace(
-                html.escape(token, quote=False), value
-            )
+            html_content = html_content.replace(html.escape(token, quote=False), value)
 
         for token, value in special_tokens.items():
             html_content = html_content.replace(token, value)
-            html_content = html_content.replace(
-                html.escape(token, quote=False), value
-            )
+            html_content = html_content.replace(html.escape(token, quote=False), value)
 
         return html_content
 
-    # --------------------------------------------------------------- statics
+    # ------------------------------------------------------------ helpers
     @staticmethod
     def escape_html(text: Optional[str]) -> str:
         if text is None:
@@ -172,6 +167,7 @@ class RichTextRenderer:
             }
         )
         base_attrs = dict(bleach.sanitizer.ALLOWED_ATTRIBUTES)
+
         def _extend(tag: str, attrs):
             base_attrs[tag] = sorted(set(base_attrs.get(tag, []) + attrs))
 
@@ -243,20 +239,20 @@ class RichTextRenderer:
             alt_text = self.escape_html(latex_string)
             if inline:
                 return (
-                    "<span class=\"math-inline\">"
-                    f"<img class=\"math-img\" alt=\"{alt_text}\" "
-                    f"src=\"data:image/png;base64,{base64_data}\"/>"
+                    '<span class="math-inline">'
+                    f'<img class="math-img" alt="{alt_text}" '
+                    f'src="data:image/png;base64,{base64_data}"/>'
                     "</span>"
                 )
             return (
-                "<div class=\"math-block\">"
-                f"<img class=\"math-img\" alt=\"{alt_text}\" "
-                f"src=\"data:image/png;base64,{base64_data}\"/>"
+                '<div class="math-block">'
+                f'<img class="math-img" alt="{alt_text}" '
+                f'src="data:image/png;base64,{base64_data}"/>'
                 "</div>"
             )
 
         return (
-            "<span class=\"math-error\">"
+            '<span class="math-error">'
             f"⚠ Unable to render LaTeX: {self.escape_html(latex_string)}"
             "</span>"
         )
@@ -338,7 +334,7 @@ class RichTextRenderer:
         def replace_image(match: Match[str]) -> str:
             alt = escape_segment(match.group(1))
             url = sanitize_url(match.group(2))
-            return add_token(f"<img alt=\"{alt}\" src=\"{url}\"/>", "IMG")
+            return add_token(f'<img alt="{alt}" src="{url}"/>', "IMG")
 
         protected = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_image, protected)
 
@@ -385,13 +381,13 @@ class RichTextRenderer:
         def replace_link(match: Match[str]) -> str:
             label = escape_segment(match.group(1))
             url = sanitize_url(match.group(2))
-            return f"<a href=\"{url}\">{label}</a>"
+            return f'<a href="{url}">{label}</a>'
 
         protected = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, protected)
 
         protected = re.sub(
             r"(?P<url>https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+)",
-            lambda m: f"<a href=\"{sanitize_url(m.group('url'))}\">"
+            lambda m: f'<a href="{sanitize_url(m.group("url"))}">'
             f"{escape_segment(m.group('url'))}</a>",
             protected,
         )
@@ -520,22 +516,22 @@ class RichTextRenderer:
     def _style_rich_html(self, html_content: str) -> str:
         html_content = re.sub(
             r"<pre(?![^>]*style=)([^>]*)>",
-            lambda match: f"<pre{match.group(1)} style=\"{self._pre_style}\">",
+            lambda match: f'<pre{match.group(1)} style="{self._pre_style}">',
             html_content,
         )
         html_content = re.sub(
             r"<code(?![^>]*style=)([^>]*)>",
-            lambda match: f"<code{match.group(1)} style=\"{self._code_style}\">",
+            lambda match: f'<code{match.group(1)} style="{self._code_style}">',
             html_content,
         )
         html_content = re.sub(
             r"<blockquote(?![^>]*style=)([^>]*)>",
-            lambda match: f"<blockquote{match.group(1)} style=\"{self._blockquote_style}\">",
+            lambda match: f'<blockquote{match.group(1)} style="{self._blockquote_style}">',
             html_content,
         )
         html_content = re.sub(
             r"<(ul|ol)(?![^>]*style=)([^>]*)>",
-            lambda match: f"<{match.group(1)}{match.group(2)} style=\"{self._list_style}\">",
+            lambda match: f'<{match.group(1)}{match.group(2)} style="{self._list_style}">',
             html_content,
         )
         return html_content
@@ -567,9 +563,7 @@ class RichTextRenderer:
             sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
 
         stripped = sanitized.strip()
-        multiline_group = re.match(
-            r"^\(\s*(.+?)\s*\)\s*$", stripped, flags=re.DOTALL
-        )
+        multiline_group = re.match(r"^\(\s*(.+?)\s*\)\s*$", stripped, flags=re.DOTALL)
         if multiline_group and "\n" in multiline_group.group(1):
             sanitized = multiline_group.group(1).strip()
 

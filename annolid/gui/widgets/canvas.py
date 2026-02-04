@@ -2,15 +2,16 @@ from qtpy import QtCore
 from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
-from labelme import QT5
+from annolid.gui.window_base import QT5
 import numpy as np
 from PIL import Image
 import cv2
 import os
 import imgviz
-import labelme.ai
+from pathlib import Path
+from annolid.utils.annotation_compat import AI_MODELS
 from annolid.utils.logger import logger
-import labelme.utils
+from annolid.utils.annotation_compat import utils
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
@@ -117,6 +118,7 @@ class Canvas(QtWidgets.QWidget):
         self._painter = QtGui.QPainter()
         self._cursor = CURSOR_DEFAULT
         self.mouse_xy_text = ""
+        self._icons_dir = Path(__file__).resolve().parents[1] / "icons"
         # Collect shapes that need prediction
         self.shapes_to_predict = []
 
@@ -148,6 +150,13 @@ class Canvas(QtWidgets.QWidget):
         # Patch similarity helpers
         self._patch_similarity_active = False
         self._patch_similarity_callback = None
+
+        # Keep internal selection state consistent with the selectionChanged signal.
+        # This mirrors LabelMe Canvas behavior and is relied on by delete/duplicate/etc.
+        try:
+            self.selectionChanged.connect(self._on_selection_changed)
+        except Exception:
+            pass
         self._patch_similarity_pixmap = None
         self._pca_map_pixmap = None
         self._depth_preview_pixmap = None
@@ -159,6 +168,21 @@ class Canvas(QtWidgets.QWidget):
         self._show_pose_bboxes: bool = True
         self._pose_edge_color = QtGui.QColor(0, 255, 255, 190)
         self._pose_edge_shadow = QtGui.QColor(0, 0, 0, 160)
+
+    def _on_selection_changed(self, shapes):
+        """Update internal selection state from a newly selected shapes list."""
+        selected = list(shapes or [])
+        selected_ids = {id(s) for s in selected}
+        # Only keep shapes that are still present on the canvas, and use identity.
+        self.selectedShapes = [s for s in self.shapes if id(s) in selected_ids]
+        for s in self.shapes:
+            try:
+                s.selected = id(s) in selected_ids
+            except Exception:
+                pass
+        if self.hShape not in self.selectedShapes:
+            self.hShapeIsSelected = False
+        self.update()
 
     def fillDrawing(self):
         return self._fill_drawing
@@ -499,7 +523,7 @@ class Canvas(QtWidgets.QWidget):
     def initializeAiModel(self, name, _custom_ai_models=None):
         # Find the model class based on name
         model_class = None
-        for m in labelme.ai.MODELS:
+        for m in AI_MODELS:
             if m.name == name:
                 model_class = m
                 break
@@ -514,28 +538,44 @@ class Canvas(QtWidgets.QWidget):
             else:
                 logger.warning("Unsupported ai model: %s" % name)
                 # Default to EfficientSam (speed)
-                model_class = labelme.ai.MODELS[3]
+                if len(AI_MODELS) > 3:
+                    model_class = AI_MODELS[3]
+                elif AI_MODELS:
+                    model_class = AI_MODELS[0]
+                else:
+                    logger.warning(
+                        "No AI segmentation models are available; skipping initialization."
+                    )
+                    return
 
         if self._ai_model is not None and self._ai_model.name == model_class.name:
             logger.debug("AI model is already initialized: %r" % model_class.name)
         else:
             logger.debug("Initializing AI model: %r" % model_class.name)
-            self._ai_model = model_class()
+            try:
+                self._ai_model = model_class()
+            except Exception as exc:
+                # Do not crash the GUI when optional model weights/deps are missing.
+                self._ai_model = None
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "AI Model Unavailable",
+                    f"Failed to initialize AI model '{getattr(model_class, 'name', name)}'.\n\n{exc}",
+                )
+                return
 
         # Check if self.pixmap is None before calling isNull()
         if self.pixmap is None or self.pixmap.isNull():
             logger.warning("Pixmap is not set yet")
             return
 
-        self._ai_model.set_image(
-            image=labelme.utils.img_qt_to_arr(self.pixmap.toImage())
-        )
+        self._ai_model.set_image(image=utils.img_qt_to_arr(self.pixmap.toImage()))
 
     def _ensure_ai_model_initialized(self) -> bool:
         if self._ai_model is not None:
             return True
         try:
-            default_model = labelme.ai.MODELS[3].name
+            default_model = AI_MODELS[3].name if len(AI_MODELS) > 3 else None
         except Exception:
             default_model = None
         if default_model:
@@ -864,7 +904,7 @@ class Canvas(QtWidgets.QWidget):
     def isVisible(self, shape):
         if not self._show_pose_bboxes and self._is_pose_bbox_shape(shape):
             return False
-        return self.visible.get(shape, True)
+        return self.visible.get(id(shape), True)
 
     def drawing(self):
         return self.mode == self.CREATE
@@ -1085,25 +1125,142 @@ class Canvas(QtWidgets.QWidget):
         self.prevhVertex = None
         self.movingShape = True  # Save changes
 
-    def contextMenuEvent(self, event):
-        # If there is at least one selected shape, show the custom context menu.
+    def _icon(self, filename: str) -> QtGui.QIcon:
+        path = self._icons_dir / filename
+        if path.exists():
+            return QtGui.QIcon(str(path))
+        return QtGui.QIcon()
+
+    def _ensure_action_icon(
+        self,
+        action: QtWidgets.QAction | None,
+        *,
+        icon_filename: str | None = None,
+        fallback_standard: QtWidgets.QStyle.StandardPixmap | None = None,
+    ) -> QtWidgets.QAction | None:
+        if action is None:
+            return None
+        if action.icon().isNull() and icon_filename:
+            icon = self._icon(icon_filename)
+            if not icon.isNull():
+                action.setIcon(icon)
+        if action.icon().isNull() and fallback_standard is not None:
+            action.setIcon(self.style().standardIcon(fallback_standard))
+        return action
+
+    def _build_context_menu(self, main_window) -> QtWidgets.QMenu:
+        """Build a flat, icon-first context menu for drawing and shape actions."""
+        menu = QtWidgets.QMenu(self)
+        menu.setToolTipsVisible(True)
+
+        def _add_existing_action(
+            act: QtWidgets.QAction | None,
+            *,
+            icon_filename: str | None = None,
+            fallback_standard: QtWidgets.QStyle.StandardPixmap | None = None,
+        ) -> bool:
+            if act is not None:
+                self._ensure_action_icon(
+                    act,
+                    icon_filename=icon_filename,
+                    fallback_standard=fallback_standard,
+                )
+                menu.addAction(act)
+                return True
+            return False
+
+        # Flat, user-friendly context menu: edit first, then draw modes, then AI.
+        actions = getattr(main_window, "actions", None)
+        if actions is not None:
+            _add_existing_action(
+                getattr(actions, "editMode", None), icon_filename="edit_polygons.svg"
+            )
+            menu.addSeparator()
+            _add_existing_action(
+                getattr(actions, "createMode", None),
+                icon_filename="create_polygons.svg",
+            )
+            _add_existing_action(
+                getattr(actions, "createRectangleMode", None),
+                fallback_standard=QtWidgets.QStyle.SP_FileDialogDetailedView,
+            )
+            _add_existing_action(
+                getattr(actions, "createCircleMode", None),
+                fallback_standard=QtWidgets.QStyle.SP_BrowserReload,
+            )
+            _add_existing_action(
+                getattr(actions, "createLineMode", None),
+                fallback_standard=QtWidgets.QStyle.SP_ArrowRight,
+            )
+            _add_existing_action(
+                getattr(actions, "createPointMode", None),
+                fallback_standard=QtWidgets.QStyle.SP_DialogApplyButton,
+            )
+            _add_existing_action(
+                getattr(actions, "createLineStripMode", None),
+                fallback_standard=QtWidgets.QStyle.SP_MediaSeekForward,
+            )
+            menu.addSeparator()
+            _add_existing_action(
+                getattr(main_window, "createPolygonSAMMode", None),
+                icon_filename="ai_polygons.svg",
+            )
+            _add_existing_action(
+                getattr(actions, "createAiPolygonMode", None),
+                icon_filename="ai_polygons.svg",
+            )
+            _add_existing_action(
+                getattr(actions, "createAiMaskMode", None),
+                icon_filename="ai_polygons.svg",
+            )
+            _add_existing_action(
+                getattr(actions, "createGroundingSAMMode", None),
+                fallback_standard=QtWidgets.QStyle.SP_ComputerIcon,
+            )
+
+        # ------------------------------------------------------------
+        # Shape operations (only when selection exists)
+        # ------------------------------------------------------------
         if self.selectedShapes:
-            menu = QtWidgets.QMenu(self)
-            propagate_action = menu.addAction("Propagate Selected Shape")
+            menu.addSeparator()
+            propagate_action = QtWidgets.QAction(
+                self._icon("next_frame.svg"),
+                "Propagate Selected Shape",
+                menu,
+            )
             propagate_action.triggered.connect(
                 lambda: self.propagateSelectedShapeFromCanvas()
             )
-            # Optional SAM 3D action if the main window exposes it
-            main_window = self.window()
+            menu.addAction(propagate_action)
+
+            if actions is not None:
+                duplicate_action = getattr(actions, "duplicateShapes", None)
+                _add_existing_action(
+                    duplicate_action, icon_filename="duplicate_polygons.svg"
+                )
+                delete_action = getattr(actions, "deleteShapes", None)
+                _add_existing_action(delete_action, icon_filename="delete_polygons.svg")
+
             if hasattr(main_window, "run_sam3d_reconstruction"):
-                sam3d_action = menu.addAction("Reconstruct 3D (SAM 3D)")
+                sam3d_action = QtWidgets.QAction(
+                    self._icon("reconstruct_3d.svg"),
+                    "Reconstruct 3D (SAM 3D)",
+                    menu,
+                )
+                if sam3d_action.icon().isNull():
+                    sam3d_action.setIcon(
+                        self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+                    )
                 sam3d_action.triggered.connect(
                     lambda: main_window.run_sam3d_reconstruction()
                 )
-            menu.exec_(event.globalPos())
-        else:
-            # Otherwise, call the base class implementation.
-            super(Canvas, self).contextMenuEvent(event)
+                menu.addAction(sam3d_action)
+        return menu
+
+    def contextMenuEvent(self, event):
+        main_window = self.window()
+        menu = self._build_context_menu(main_window)
+        menu.exec_(event.globalPos())
 
     def propagateSelectedShapeFromCanvas(self):
         # Since the canvas doesn't directly have frame data,
@@ -1234,8 +1391,9 @@ class Canvas(QtWidgets.QWidget):
                     self.update()
             elif self.editing():
                 group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+                selected_ids = {id(s) for s in (self.selectedShapes or [])}
                 if not self.selectedShapes or (
-                    self.hShape is not None and self.hShape not in self.selectedShapes
+                    self.hShape is not None and id(self.hShape) not in selected_ids
                 ):
                     self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                     self.repaint()
@@ -1261,7 +1419,11 @@ class Canvas(QtWidgets.QWidget):
                     and not self.movingShape
                 ):
                     self.selectionChanged.emit(
-                        [x for x in self.selectedShapes if x != self.hShape]
+                        [
+                            x
+                            for x in self.selectedShapes
+                            if self.hShape is None or id(x) != id(self.hShape)
+                        ]
                     )
 
         if self.movingShape and self.hShape:
@@ -1332,10 +1494,11 @@ class Canvas(QtWidgets.QWidget):
             index, shape = self.hVertex, self.hShape
             shape.highlightVertex(index, shape.MOVE_VERTEX)
         else:
+            selected_ids = {id(s) for s in (self.selectedShapes or [])}
             for shape in reversed(self.shapes):
                 if self.isVisible(shape) and shape.containsPoint(point):
                     self.setHiding()
-                    if shape not in self.selectedShapes:
+                    if id(shape) not in selected_ids:
                         if multiple_selection_mode:
                             self.selectionChanged.emit(self.selectedShapes + [shape])
                         else:
@@ -1418,19 +1581,37 @@ class Canvas(QtWidgets.QWidget):
         deleted_shapes = []
         if self.selectedShapes:
             for shape in self.selectedShapes:
-                self.shapes.remove(shape)
+                # Remove by identity (Shape implements fuzzy __eq__).
+                for idx, s in enumerate(list(self.shapes)):
+                    if s is shape:
+                        del self.shapes[idx]
+                        break
                 deleted_shapes.append(shape)
             self.storeShapes()
             self.selectedShapes = []
+            # Keep the rest of the UI in sync (toolbar actions, label list).
+            try:
+                self.selectionChanged.emit([])
+            except Exception:
+                pass
             self.update()
         return deleted_shapes
 
     def deleteShape(self, shape):
-        if shape in self.selectedShapes:
-            self.selectedShapes.remove(shape)
-        if shape in self.shapes:
-            self.shapes.remove(shape)
+        if self.selectedShapes:
+            shape_id = id(shape)
+            self.selectedShapes = [s for s in self.selectedShapes if id(s) != shape_id]
+        if self.shapes:
+            for idx, s in enumerate(list(self.shapes)):
+                if s is shape:
+                    del self.shapes[idx]
+                    break
         self.storeShapes()
+        if not self.selectedShapes:
+            try:
+                self.selectionChanged.emit([])
+            except Exception:
+                pass
         self.update()
 
     def duplicateSelectedShapes(self):
@@ -1842,7 +2023,7 @@ class Canvas(QtWidgets.QWidget):
         # m = (p1-p2).manhattanLength()
         # print "d %.2f, m %d, %.2f" % (d, m, d - m)
         # divide by scale to allow more precision when zoomed in
-        return labelme.utils.distance(p1 - p2) < (self.epsilon / self.scale)
+        return utils.distance(p1 - p2) < (self.epsilon / self.scale)
 
     def intersectionPoint(self, p1, p2):
         # Cycle through each image edge in clockwise fashion,
@@ -1896,7 +2077,7 @@ class Canvas(QtWidgets.QWidget):
                 x = x1 + ua * (x2 - x1)
                 y = y1 + ua * (y2 - y1)
                 m = QtCore.QPointF((x3 + x4) / 2, (y3 + y4) / 2)
-                d = labelme.utils.distance(m - QtCore.QPointF(x2, y2))
+                d = utils.distance(m - QtCore.QPointF(x2, y2))
                 yield d, i, (x, y)
 
     # These two, along with a call to adjustSize are required for the
@@ -2089,6 +2270,9 @@ class Canvas(QtWidgets.QWidget):
     def loadShapes(self, shapes, replace=True):
         if replace:
             self.shapes = list(shapes)
+            # Visibility is tracked per-shape identity; replacing shapes means
+            # prior entries are stale.
+            self.visible = {}
         else:
             self.shapes.extend(shapes)
         self.storeShapes()
@@ -2111,7 +2295,7 @@ class Canvas(QtWidgets.QWidget):
         self.update()
 
     def setShapeVisible(self, shape, value):
-        self.visible[shape] = value
+        self.visible[id(shape)] = value
         self.update()
 
     def overrideCursor(self, cursor):

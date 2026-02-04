@@ -18,8 +18,7 @@ class CanvasScreenshotWidget(QtWidgets.QWidget):
         self.canvas_pixmap = self.canvas.grab()
         if not self.canvas_pixmap:
             self._show_message_box(
-                "No Canvas Content",
-                "The canvas is empty. There is nothing to save."
+                "No Canvas Content", "The canvas is empty. There is nothing to save."
             )
             return
 
@@ -29,8 +28,7 @@ class CanvasScreenshotWidget(QtWidgets.QWidget):
         if file_path:
             self._save_pixmap_to_png(file_path)
             self._show_message_box(
-                "Canvas Saved",
-                f"Canvas image has been saved to: {file_path}"
+                "Canvas Saved", f"Canvas image has been saved to: {file_path}"
             )
 
     def _get_default_screenshot_filename(self):
@@ -39,15 +37,12 @@ class CanvasScreenshotWidget(QtWidgets.QWidget):
             file_path = Path(self.current_filename)
             return str(file_path.with_stem(f"{file_path.stem}_screenshot"))
         else:
-            return str(Path(self.here.parent / 'annotation') / 'annolid_canvas.png')
+            return str(Path(self.here.parent / "annotation") / "annolid_canvas.png")
 
     def _get_save_file_path(self, default_file_name):
         """Opens a file dialog for selecting the save location."""
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Canvas Image",
-            default_file_name,
-            "PNG files (*.png)"
+            self, "Save Canvas Image", default_file_name, "PNG files (*.png)"
         )
         return file_path
 
@@ -57,5 +52,4 @@ class CanvasScreenshotWidget(QtWidgets.QWidget):
 
     def _show_message_box(self, title, message):
         """Displays a message box."""
-        QtWidgets.QMessageBox.information(
-            self, title, message)
+        QtWidgets.QMessageBox.information(self, title, message)

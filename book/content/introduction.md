@@ -88,4 +88,4 @@ Video courtesy of Santiago Forero and Alex Ophir:
 
 
 ## Youtube playlist
-You can find these videos, tutorials on how to best use Annolid as well as exemples in Annolid's youtube playlist [here](https://www.youtube.com/playlist?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc).
+You can find these videos, tutorials on how to best use Annolid, as well as examples in Annolid's YouTube playlist [here](https://www.youtube.com/playlist?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc).

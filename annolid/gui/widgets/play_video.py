@@ -17,8 +17,7 @@ class VideoPlayerThread(QThread):
 
     pixmap_updated_signal = Signal(np.ndarray)
 
-    def __init__(self,
-                 video_url=None):
+    def __init__(self, video_url=None):
         super().__init__()
         self.video_url = video_url
         self.run_flag = True
@@ -115,10 +114,8 @@ class VideoPlayerWindow(QWidget):
         h, w, c = rgb_image.shape
         bytes_per_line = c * w
         img_qt = QtGui.QImage(
-            rgb_image.data,
-            w, h,
-            bytes_per_line,
-            QtGui.QImage.Format_RGB888)
+            rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888
+        )
         return QPixmap.fromImage(img_qt)
 
     @Slot(np.ndarray)

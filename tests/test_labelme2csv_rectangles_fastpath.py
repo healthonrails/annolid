@@ -6,7 +6,9 @@ from pathlib import Path
 from annolid.annotation.labelme2csv import convert_json_to_csv
 
 
-def test_convert_json_to_csv_emits_rectangle_instances_and_keypoints(tmp_path: Path) -> None:
+def test_convert_json_to_csv_emits_rectangle_instances_and_keypoints(
+    tmp_path: Path,
+) -> None:
     folder = tmp_path / "video"
     folder.mkdir()
 
@@ -21,7 +23,7 @@ def test_convert_json_to_csv_emits_rectangle_instances_and_keypoints(tmp_path: P
                 '  "imageWidth": 200,',
                 '  "shapes": [',
                 # Instance bbox
-                '    {',
+                "    {",
                 '      "label": "resident",',
                 '      "shape_type": "rectangle",',
                 '      "points": [[10, 10], [50, 30]],',
@@ -31,7 +33,7 @@ def test_convert_json_to_csv_emits_rectangle_instances_and_keypoints(tmp_path: P
                 '      "score": 0.9',
                 "    },",
                 # YOLO keypoint (emitted as a point row alongside rectangles)
-                '    {',
+                "    {",
                 '      "label": "nose",',
                 '      "shape_type": "point",',
                 '      "points": [[20, 20]],',

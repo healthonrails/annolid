@@ -1,7 +1,7 @@
 """ViTDet backbone adapted from Detectron2"""
 
 from functools import partial
-from typing import List, Tuple, Union
+from typing import List
 
 import torch
 import torch.nn as nn
@@ -58,8 +58,7 @@ class Attention(nn.Module):
         B, H, W, _ = x.shape
         # qkv with shape (3, B, nHead, H * W, C)
         qkv = (
-            self.qkv(x).reshape(
-                B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+            self.qkv(x).reshape(B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         )
         # q, k, v with shape (B * nHead, H * W, C)
         q, k, v = qkv.reshape(3, B * self.num_heads, H * W, -1).unbind(0)
@@ -124,15 +123,12 @@ class Block(nn.Module):
             qkv_bias=qkv_bias,
             use_rel_pos=use_rel_pos,
             rel_pos_zero_init=rel_pos_zero_init,
-            input_size=input_size if window_size == 0 else (
-                window_size, window_size),
+            input_size=input_size if window_size == 0 else (window_size, window_size),
         )
         self.ls1 = (
-            LayerScale(
-                dim, init_values=init_values) if init_values else nn.Identity()
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         )
-        self.drop_path = DropPath(
-            drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.norm2 = norm_layer(dim)
         self.mlp = MLP(
@@ -143,8 +139,7 @@ class Block(nn.Module):
             activation=act_layer,
         )
         self.ls2 = (
-            LayerScale(
-                dim, init_values=init_values) if init_values else nn.Identity()
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         )
         self.dropout = nn.Dropout(dropout)
         self.window_size = window_size
@@ -244,10 +239,8 @@ class ViT(nn.Module):
             num_patches = (pretrain_img_size // patch_size) * (
                 pretrain_img_size // patch_size
             )
-            num_positions = (
-                num_patches + 1) if pretrain_use_cls_token else num_patches
-            self.pos_embed = nn.Parameter(
-                torch.zeros(1, num_positions, embed_dim))
+            num_positions = (num_patches + 1) if pretrain_use_cls_token else num_patches
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, embed_dim))
         else:
             self.pos_embed = None
 
@@ -287,12 +280,10 @@ class ViT(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
-
         x = self.patch_embed(x)
         if self.pos_embed is not None:
             x = x + get_abs_pos(
-                self.pos_embed, self.pretrain_use_cls_token, (
-                    x.shape[1], x.shape[2])
+                self.pos_embed, self.pretrain_use_cls_token, (x.shape[1], x.shape[2])
             )
 
         outputs = []

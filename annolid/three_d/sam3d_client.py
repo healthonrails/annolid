@@ -121,10 +121,8 @@ def _probe_subprocess(cfg: Sam3DClientConfig) -> tuple[bool, Optional[str]]:
 def run_inprocess(cfg: Sam3DClientConfig, job: Sam3DJobSpec) -> Sam3DResult:
     """Run SAM 3D inside the current Python environment."""
     if job.image is None or job.mask is None:
-        raise Sam3DBackendError(
-            "image and mask arrays are required for in-process run")
-    output_dir = job.output_dir or Path(
-        tempfile.mkdtemp(prefix="annolid_sam3d_"))
+        raise Sam3DBackendError("image and mask arrays are required for in-process run")
+    output_dir = job.output_dir or Path(tempfile.mkdtemp(prefix="annolid_sam3d_"))
     backend = Sam3DBackend(cfg)
     return backend.run_single(
         image_rgb=job.image,
@@ -146,15 +144,14 @@ def run_subprocess(cfg: Sam3DClientConfig, job: Sam3DJobSpec) -> Sam3DResult:
         image_path = job.image_path or (tmpdir_path / "image.png")
         mask_path = job.mask_path or (tmpdir_path / "mask.png")
         if job.image is not None:
-            Image.fromarray(np.asarray(
-                job.image, dtype=np.uint8)).save(image_path)
+            Image.fromarray(np.asarray(job.image, dtype=np.uint8)).save(image_path)
         if job.mask is not None:
-            mask_u8 = (np.asarray(job.mask).astype(
-                np.uint8) * 255).clip(0, 255)
+            mask_u8 = (np.asarray(job.mask).astype(np.uint8) * 255).clip(0, 255)
             Image.fromarray(mask_u8).save(mask_path)
 
         output_dir = job.output_dir or Path(
-            tempfile.mkdtemp(prefix="annolid_sam3d_out_"))
+            tempfile.mkdtemp(prefix="annolid_sam3d_out_")
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
 
         spec_path = tmpdir_path / "spec.json"
@@ -162,7 +159,9 @@ def run_subprocess(cfg: Sam3DClientConfig, job: Sam3DJobSpec) -> Sam3DResult:
             "image": str(image_path),
             "mask": str(mask_path),
             "repo_path": str(cfg.repo_path),
-            "checkpoints_dir": str(cfg.checkpoints_dir or cfg.repo_path / "checkpoints"),
+            "checkpoints_dir": str(
+                cfg.checkpoints_dir or cfg.repo_path / "checkpoints"
+            ),
             "checkpoint_tag": cfg.checkpoint_tag,
             "compile": cfg.compile,
             "seed": cfg.seed,
@@ -172,8 +171,7 @@ def run_subprocess(cfg: Sam3DClientConfig, job: Sam3DJobSpec) -> Sam3DResult:
         }
         spec_path.write_text(json.dumps(spec_payload), encoding="utf-8")
 
-        cmd = [exe, "-m", "annolid.three_d.sam3d_runner_cli",
-               "--spec", str(spec_path)]
+        cmd = [exe, "-m", "annolid.three_d.sam3d_runner_cli", "--spec", str(spec_path)]
         env = _runner_env()
         logger.info("Launching SAM 3D subprocess: %s", " ".join(cmd))
         proc = subprocess.run(
@@ -196,8 +194,7 @@ def run_subprocess(cfg: Sam3DClientConfig, job: Sam3DJobSpec) -> Sam3DResult:
                 f"Failed to parse subprocess output: {exc}\nstdout: {stdout[:400]}\nstderr: {stderr[:400]}"
             ) from exc
         if not payload.get("ok"):
-            raise Sam3DBackendError(payload.get(
-                "error") or "Unknown SAM3D error")
+            raise Sam3DBackendError(payload.get("error") or "Unknown SAM3D error")
         result = payload.get("result") or {}
         return Sam3DResult(
             ply_path=Path(result["ply"]),

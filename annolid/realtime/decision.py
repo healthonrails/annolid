@@ -7,8 +7,10 @@ import asyncio
 
 from annolid.utils.logger import logger
 
+
 class TrialState(Enum):
     """Defines the possible states of an experimental trial."""
+
     INTER_TRIAL_INTERVAL = auto()
     AWAITING_BEHAVIOR = auto()
     REWARD_PENDING = auto()
@@ -27,9 +29,14 @@ class DecisionProcess:
     decoupled from the high-performance perception and hardware layers.
     """
 
-    def __init__(self, perception_address: str, action_address: str,
-                 trial_timeout_s: float = 10.0, iti_duration_s: float = 5.0,
-                 target_behavior: str = "freezing"):
+    def __init__(
+        self,
+        perception_address: str,
+        action_address: str,
+        trial_timeout_s: float = 10.0,
+        iti_duration_s: float = 5.0,
+        target_behavior: str = "freezing",
+    ):
         """
         Initializes the DecisionProcess.
 
@@ -69,8 +76,7 @@ class DecisionProcess:
     async def run(self):
         """Main execution loop for the decision process."""
         await self._setup()
-        logger.info(
-            f"Decision process started. Current state: {self.state.name}")
+        logger.info(f"Decision process started. Current state: {self.state.name}")
 
         while self.running:
             try:
@@ -89,7 +95,8 @@ class DecisionProcess:
                 self.running = False
             except Exception as e:
                 logger.error(
-                    f"An error occurred in the decision loop: {e}", exc_info=True)
+                    f"An error occurred in the decision loop: {e}", exc_info=True
+                )
                 await asyncio.sleep(1)  # Prevent rapid-fire errors
 
         await self._cleanup()
@@ -115,7 +122,10 @@ class DecisionProcess:
         behavior = detection.get("behavior")
 
         # We only act on a detection if we are in the correct state
-        if self.state == TrialState.AWAITING_BEHAVIOR and behavior == self.target_behavior:
+        if (
+            self.state == TrialState.AWAITING_BEHAVIOR
+            and behavior == self.target_behavior
+        ):
             logger.info(f"Target behavior '{self.target_behavior}' detected!")
 
             # Send command to the action module
@@ -141,7 +151,8 @@ class DecisionProcess:
         if new_state == TrialState.AWAITING_BEHAVIOR:
             self.trial_start_time = time.time()
             logger.info(
-                f"New trial started. Waiting for '{self.target_behavior}' for {self.trial_timeout_s}s.")
+                f"New trial started. Waiting for '{self.target_behavior}' for {self.trial_timeout_s}s."
+            )
         elif new_state == TrialState.INTER_TRIAL_INTERVAL:
             logger.info(f"Entering ITI for {self.iti_duration_s}s.")
 
@@ -160,7 +171,9 @@ class DecisionProcess:
 async def main():
     """Example of how to launch the DecisionProcess."""
     logging.basicConfig(
-        level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - [%(name)s] - %(message)s",
+    )
 
     # These addresses must match the other processes
     PERCEPTION_ADDR = "tcp://localhost:5555"
@@ -171,7 +184,7 @@ async def main():
         "action_address": ACTION_ADDR,
         "trial_timeout_s": 10.0,
         "iti_duration_s": 5.0,
-        "target_behavior": "freezing"  # Should match a class name from your model
+        "target_behavior": "freezing",  # Should match a class name from your model
     }
 
     decision_process = DecisionProcess(**config)
@@ -183,5 +196,6 @@ async def main():
     finally:
         decision_process.running = False
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     asyncio.run(main())

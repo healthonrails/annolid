@@ -147,14 +147,14 @@ class DinoKeypointTracker:
         self.momentum = float(np.clip(momentum, 0.0, 1.0))
         self.reference_weight = float(np.clip(reference_weight, 0.0, 1.0))
         self.reference_support_radius = max(0, int(reference_support_radius))
-        self.reference_center_weight = float(
-            np.clip(reference_center_weight, 0.0, 1.0))
+        self.reference_center_weight = float(np.clip(reference_center_weight, 0.0, 1.0))
         self.mask_descriptor_weight = float(
-            np.clip(self.runtime_config.mask_descriptor_weight, 0.0, 1.0))
-        self.restrict_to_mask = bool(
-            self.runtime_config.restrict_to_initial_mask)
+            np.clip(self.runtime_config.mask_descriptor_weight, 0.0, 1.0)
+        )
+        self.restrict_to_mask = bool(self.runtime_config.restrict_to_initial_mask)
         self.mask_enforce_position = bool(
-            getattr(self.runtime_config, "mask_enforce_position", True))
+            getattr(self.runtime_config, "mask_enforce_position", True)
+        )
         snap_radius = getattr(
             self.runtime_config,
             "mask_enforce_snap_radius",
@@ -171,8 +171,7 @@ class DinoKeypointTracker:
         self.prev_scale: Tuple[float, float] = (1.0, 1.0)
         self._last_patch_masks: Dict[str, np.ndarray] = {}
         self._mask_miss_counts: Dict[str, int] = {}
-        self.max_candidates = max(
-            1, int(self.runtime_config.max_candidate_tracks))
+        self.max_candidates = max(1, int(self.runtime_config.max_candidate_tracks))
         self._is_fresh_start = False
         self._roi_offset: Tuple[float, float] = (0.0, 0.0)
         self._roi_box: Tuple[int, int, int, int] = (0, 0, 0, 0)
@@ -187,8 +186,7 @@ class DinoKeypointTracker:
             0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
         )
         self.keypoint_refine_sigma = max(
-            1e-4, float(getattr(self.runtime_config,
-                        "keypoint_refine_sigma", 1.25))
+            1e-4, float(getattr(self.runtime_config, "keypoint_refine_sigma", 1.25))
         )
         self.keypoint_refine_temperature = max(
             1e-4,
@@ -228,9 +226,7 @@ class DinoKeypointTracker:
         polygons: List[List[Tuple[float, float]]] = []
         for instance in registry:
             if instance.polygon:
-                polygons.append(
-                    [(float(x), float(y)) for x, y in instance.polygon]
-                )
+                polygons.append([(float(x), float(y)) for x, y in instance.polygon])
 
         feats, scale_x, scale_y, grid_hw = self._prepare_roi_inputs(
             image=image,
@@ -257,14 +253,15 @@ class DinoKeypointTracker:
         for instance in registry:
             for keypoint in instance.keypoints.values():
                 patch_rc = self._pixel_to_patch(
-                    keypoint.x, keypoint.y, scale_x, scale_y, grid_hw)
+                    keypoint.x, keypoint.y, scale_x, scale_y, grid_hw
+                )
                 base_desc = self._normalize_descriptor(
                     feats[:, patch_rc[0], patch_rc[1]]
                 )
                 reference_desc = self._reference_descriptor(
-                    feats, patch_rc, grid_hw, base_desc)
-                self._update_manual_anchor_codebook(
-                    keypoint.key, reference_desc)
+                    feats, patch_rc, grid_hw, base_desc
+                )
+                self._update_manual_anchor_codebook(keypoint.key, reference_desc)
                 mask_descriptor = None
                 patch_mask = None
                 cache_entry = mask_cache.get(instance.label)
@@ -272,11 +269,13 @@ class DinoKeypointTracker:
                     mask_descriptor = cache_entry.get("descriptor")
                     patch_mask = cache_entry.get("patch_mask")
                 descriptor = self._apply_mask_descriptor(
-                    reference_desc.clone(), mask_descriptor)
+                    reference_desc.clone(), mask_descriptor
+                )
                 context_desc = None
                 if context_map is not None:
-                    context_desc = context_map[:, patch_rc[0],
-                                               patch_rc[1]].detach().clone()
+                    context_desc = (
+                        context_map[:, patch_rc[0], patch_rc[1]].detach().clone()
+                    )
 
                 # KeypointTrack always starts with zero velocity.
                 track = KeypointTrack(
@@ -288,16 +287,15 @@ class DinoKeypointTracker:
                     descriptor=descriptor,
                     reference_descriptor=reference_desc.clone(),
                     context_descriptor=context_desc,
-                    manual_codebook=self._manual_anchor_codebooks.get(
-                        keypoint.key),
+                    manual_codebook=self._manual_anchor_codebooks.get(keypoint.key),
                     last_position=(float(keypoint.x), float(keypoint.y)),
                 )
 
                 track.appearance_codebook = self._collect_appearance_codebook(
-                    feats, patch_rc)
+                    feats, patch_rc
+                )
                 if track.appearance_codebook is not None:
-                    baseline = torch.matmul(
-                        track.appearance_codebook, track.descriptor)
+                    baseline = torch.matmul(track.appearance_codebook, track.descriptor)
                     track.baseline_similarity = float(baseline.max().item())
                 track.support_probes = self._sample_support_probes(
                     track.key,
@@ -347,17 +345,11 @@ class DinoKeypointTracker:
         inv_scale_y = 1.0 / max(scale_y, 1e-6)
         patch_size = float(self.patch_size)
         patch_centers_x = (
-            (np.arange(grid_w, dtype=np.float32) + 0.5)
-            * patch_size
-            * inv_scale_x
-            + self._roi_offset[0]
-        )
+            np.arange(grid_w, dtype=np.float32) + 0.5
+        ) * patch_size * inv_scale_x + self._roi_offset[0]
         patch_centers_y = (
-            (np.arange(grid_h, dtype=np.float32) + 0.5)
-            * patch_size
-            * inv_scale_y
-            + self._roi_offset[1]
-        )
+            np.arange(grid_h, dtype=np.float32) + 0.5
+        ) * patch_size * inv_scale_y + self._roi_offset[1]
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
         mask_cache = self._build_mask_cache(
             feats,
@@ -414,10 +406,12 @@ class DinoKeypointTracker:
                 track.manual_codebook = manual_codebook
             manual_weight = self._manual_anchor_weight(track)
             shared_key, shared_descriptor = self._part_shared_descriptor(
-                track, feats.device)
+                track, feats.device
+            )
             shared_weight = self._part_shared_weight(track, shared_key)
             context_weight = float(
-                max(0.0, getattr(self.runtime_config, "context_weight", 0.0)))
+                max(0.0, getattr(self.runtime_config, "context_weight", 0.0))
+            )
             use_context = (
                 context_weight > 0.0
                 and context_map is not None
@@ -486,10 +480,10 @@ class DinoKeypointTracker:
 
             mask_entry = mask_cache.get(track.instance_label)
             patch_mask = mask_entry.get("patch_mask") if mask_entry else None
-            mask_descriptor = mask_entry.get(
-                "descriptor") if mask_entry else None
-            similarity_bonus = mask_entry.get(
-                "similarity_bonus", 0.0) if mask_entry else 0.0
+            mask_descriptor = mask_entry.get("descriptor") if mask_entry else None
+            similarity_bonus = (
+                mask_entry.get("similarity_bonus", 0.0) if mask_entry else 0.0
+            )
             mask_descriptors[track.key] = mask_descriptor
             mask_patches[track.key] = patch_mask
             base_positions[track.key] = (base_x, base_y)
@@ -497,12 +491,13 @@ class DinoKeypointTracker:
             mask_pixels_by_track[track.key] = mask_pixels
 
             appearance_weight = float(
-                max(0.0, self.runtime_config.appearance_bundle_weight))
+                max(0.0, self.runtime_config.appearance_bundle_weight)
+            )
             baseline_weight = float(
-                max(0.0, self.runtime_config.baseline_similarity_weight))
+                max(0.0, self.runtime_config.baseline_similarity_weight)
+            )
             use_appearance = (
-                appearance_weight > 0.0
-                and track.appearance_codebook is not None
+                appearance_weight > 0.0 and track.appearance_codebook is not None
             )
             if use_appearance:
                 codebook = track.appearance_codebook
@@ -511,59 +506,53 @@ class DinoKeypointTracker:
                     track.appearance_codebook = codebook
 
             struct_weight = float(
-                max(0.0, self.runtime_config.structural_consistency_weight))
+                max(0.0, self.runtime_config.structural_consistency_weight)
+            )
             use_struct_penalty = (
                 struct_weight > 0.0
                 and bool(track.struct_refs)
                 and not self._is_fresh_start
             )
             use_body_prior = struct_weight > 0.0
-            symmetry_weight = float(
-                max(0.0, self.runtime_config.symmetry_penalty))
+            symmetry_weight = float(max(0.0, self.runtime_config.symmetry_penalty))
             use_symmetry_penalty = symmetry_weight > 0.0
             motion_penalty_weight = float(
-                max(0.0, self.runtime_config.motion_prior_penalty_weight))
+                max(0.0, self.runtime_config.motion_prior_penalty_weight)
+            )
             use_motion_penalty = motion_penalty_weight > 0.0
-            support_weight = float(
-                max(0.0, self.runtime_config.support_probe_weight))
+            support_weight = float(max(0.0, self.runtime_config.support_probe_weight))
             use_support = support_weight > 0.0 and bool(track.support_probes)
             if use_context and track.context_descriptor is not None:
                 if track.context_descriptor.device != feats.device:
-                    track.context_descriptor = track.context_descriptor.to(
-                        feats.device)
+                    track.context_descriptor = track.context_descriptor.to(feats.device)
 
-            region_feats = feats[:, r_min:r_max + 1, c_min:c_max + 1]
+            region_feats = feats[:, r_min : r_max + 1, c_min : c_max + 1]
             region_h, region_w = region_feats.shape[1:]
-            region_flat = region_feats.reshape(
-                region_feats.shape[0], -1).transpose(0, 1)
+            region_flat = region_feats.reshape(region_feats.shape[0], -1).transpose(
+                0, 1
+            )
             sims_current = torch.matmul(region_flat, track.descriptor)
             sims = sims_current
             if shared_weight > 0.0 and shared_descriptor is not None:
                 sims_shared = torch.matmul(region_flat, shared_descriptor)
-                sims = (1.0 - shared_weight) * sims + \
-                    shared_weight * sims_shared
+                sims = (1.0 - shared_weight) * sims + shared_weight * sims_shared
             if manual_weight > 0.0 and manual_codebook is not None:
-                anchor_sims = torch.matmul(
-                    region_flat, manual_codebook.transpose(0, 1)
-                )
+                anchor_sims = torch.matmul(region_flat, manual_codebook.transpose(0, 1))
                 sims_manual = anchor_sims.max(dim=1).values
-                sims = (1.0 - manual_weight) * sims + \
-                    manual_weight * sims_manual
+                sims = (1.0 - manual_weight) * sims + manual_weight * sims_manual
 
             mask_region = None
             mask_flat = None
             if patch_mask is not None:
-                mask_region = patch_mask[r_min:r_max + 1, c_min:c_max + 1]
-                mask_flat = torch.from_numpy(
-                    mask_region.reshape(-1)).to(sims.device)
+                mask_region = patch_mask[r_min : r_max + 1, c_min : c_max + 1]
+                mask_flat = torch.from_numpy(mask_region.reshape(-1)).to(sims.device)
                 if self.restrict_to_mask:
                     sims = sims.masked_fill(~mask_flat, float("-inf"))
 
             region_size = int(sims.numel())
             preselect_k = self._candidate_preselect_count(track, region_size)
             if preselect_k >= region_size:
-                candidate_indices = torch.arange(
-                    region_size, device=sims.device)
+                candidate_indices = torch.arange(region_size, device=sims.device)
             else:
                 candidate_indices = torch.topk(sims, k=preselect_k).indices
 
@@ -572,30 +561,38 @@ class DinoKeypointTracker:
                     valid = mask_flat[candidate_indices]
                     candidate_indices = candidate_indices[valid]
 
-            sims_selected = sims[candidate_indices] if candidate_indices.numel(
-            ) > 0 else sims[:0]
-            sims_current_selected = sims_current[candidate_indices] if candidate_indices.numel(
-            ) > 0 else sims_current[:0]
+            sims_selected = (
+                sims[candidate_indices] if candidate_indices.numel() > 0 else sims[:0]
+            )
+            sims_current_selected = (
+                sims_current[candidate_indices]
+                if candidate_indices.numel() > 0
+                else sims_current[:0]
+            )
 
-            norm_region_flat = normalized_feats[:, r_min:r_max + 1,
-                                                c_min:c_max + 1].reshape(
-                normalized_feats.shape[0], -1)
-            candidate_descs = norm_region_flat[:,
-                                               candidate_indices] if candidate_indices.numel() > 0 else norm_region_flat[:, :0]
+            norm_region_flat = normalized_feats[
+                :, r_min : r_max + 1, c_min : c_max + 1
+            ].reshape(normalized_feats.shape[0], -1)
+            candidate_descs = (
+                norm_region_flat[:, candidate_indices]
+                if candidate_indices.numel() > 0
+                else norm_region_flat[:, :0]
+            )
             context_scores = None
             if use_context and candidate_indices.numel() > 0:
-                context_region_flat = context_map[:, r_min:r_max + 1,
-                                                  c_min:c_max + 1].reshape(
-                    context_map.shape[0], -1)
-                candidate_contexts = context_region_flat[:,
-                                                         candidate_indices]
+                context_region_flat = context_map[
+                    :, r_min : r_max + 1, c_min : c_max + 1
+                ].reshape(context_map.shape[0], -1)
+                candidate_contexts = context_region_flat[:, candidate_indices]
                 context_scores = torch.matmul(
-                    track.context_descriptor, candidate_contexts)
+                    track.context_descriptor, candidate_contexts
+                )
 
             appearance_scores = None
             if use_appearance and candidate_indices.numel() > 0:
-                appearance_scores = torch.matmul(
-                    codebook, candidate_descs).max(dim=0).values
+                appearance_scores = (
+                    torch.matmul(codebook, candidate_descs).max(dim=0).values
+                )
                 if appearance_weight != 1.0:
                     appearance_scores = appearance_scores * appearance_weight
 
@@ -612,8 +609,7 @@ class DinoKeypointTracker:
                 r = r_min + local_r
                 c = c_min + local_c
                 candidate_sim = float(sims_selected[idx].item())
-                candidate_sim_current = float(
-                    sims_current_selected[idx].item())
+                candidate_sim_current = float(sims_current_selected[idx].item())
                 candidate_score = candidate_sim
                 in_mask = False
                 if mask_region is not None:
@@ -629,10 +625,12 @@ class DinoKeypointTracker:
                     candidate_score += float(appearance_scores[idx].item())
                 if context_scores is not None:
                     candidate_score += context_weight * float(
-                        context_scores[idx].item())
+                        context_scores[idx].item()
+                    )
                 if use_struct_penalty:
                     candidate_score -= self._structural_penalty(
-                        track, candidate_xy, previous_positions)
+                        track, candidate_xy, previous_positions
+                    )
                 if use_body_prior:
                     candidate_score -= self._body_prior_penalty(
                         track,
@@ -640,8 +638,7 @@ class DinoKeypointTracker:
                         body_priors.get(track.instance_label),
                     )
                 if use_symmetry_penalty:
-                    candidate_score -= self._symmetry_penalty(
-                        track, candidate_xy)
+                    candidate_score -= self._symmetry_penalty(track, candidate_xy)
                 if baseline_weight > 0.0:
                     candidate_score -= baseline_weight * max(
                         0.0, track.baseline_similarity - candidate_sim_current
@@ -804,21 +801,20 @@ class DinoKeypointTracker:
                     )
                     rr, cc = track.patch_rc
                     new_desc = normalized_feats[:, rr, cc].detach().clone()
-                    combined_conf = max(
-                        similarity_conf, float(refine_confidence))
+                    combined_conf = max(similarity_conf, float(refine_confidence))
                     effective_momentum = self.momentum * combined_conf
 
-                    blended = (1.0 - effective_momentum) * track.descriptor + \
-                        effective_momentum * new_desc
+                    blended = (
+                        1.0 - effective_momentum
+                    ) * track.descriptor + effective_momentum * new_desc
                     if self.reference_weight > 0.0:
                         effective_reference = self.reference_weight + (
-                            (1.0 - self.reference_weight)
-                            * (1.0 - combined_conf)
+                            (1.0 - self.reference_weight) * (1.0 - combined_conf)
                         )
-                        blended = (1.0 - effective_reference) * blended + \
-                            effective_reference * track.reference_descriptor
-                    blended = self._apply_mask_descriptor(
-                        blended, mask_descriptor)
+                        blended = (
+                            1.0 - effective_reference
+                        ) * blended + effective_reference * track.reference_descriptor
+                    blended = self._apply_mask_descriptor(blended, mask_descriptor)
                     track.descriptor = blended / (blended.norm() + 1e-12)
                     if context_map is not None:
                         new_context = context_map[:, rr, cc].detach().clone()
@@ -826,8 +822,7 @@ class DinoKeypointTracker:
                             track.context_descriptor = new_context
                         else:
                             blended_context = (
-                                (1.0 - effective_momentum)
-                                * track.context_descriptor
+                                (1.0 - effective_momentum) * track.context_descriptor
                                 + effective_momentum * new_context
                             )
                             track.context_descriptor = blended_context / (
@@ -842,25 +837,24 @@ class DinoKeypointTracker:
                     body_prior = body_priors.get(track.instance_label)
                     if body_prior is not None:
                         current_body = body_prior.signature(
-                            (float(track.patch_rc[0]),
-                             float(track.patch_rc[1]))
+                            (float(track.patch_rc[0]), float(track.patch_rc[1]))
                         )
                         if track.body_coords is None:
                             track.body_coords = current_body
                         else:
-                            alpha = 0.1 * \
-                                float(np.clip(combined_conf, 0.0, 1.0))
+                            alpha = 0.1 * float(np.clip(combined_conf, 0.0, 1.0))
                             track.body_coords = (
-                                (1.0 - alpha) *
-                                track.body_coords[0] + alpha * current_body[0],
-                                (1.0 - alpha) *
-                                track.body_coords[1] + alpha * current_body[1],
-                                (1.0 - alpha) *
-                                track.body_coords[2] + alpha * current_body[2],
+                                (1.0 - alpha) * track.body_coords[0]
+                                + alpha * current_body[0],
+                                (1.0 - alpha) * track.body_coords[1]
+                                + alpha * current_body[1],
+                                (1.0 - alpha) * track.body_coords[2]
+                                + alpha * current_body[2],
                             )
                     if track.appearance_codebook is not None:
                         refreshed = torch.matmul(
-                            track.appearance_codebook, track.descriptor)
+                            track.appearance_codebook, track.descriptor
+                        )
                         track.baseline_similarity = min(
                             1.0,
                             max(
@@ -869,17 +863,17 @@ class DinoKeypointTracker:
                             ),
                         )
                     self._refresh_support_probes(
-                        track, feats, normalized_feats=normalized_feats)
+                        track, feats, normalized_feats=normalized_feats
+                    )
                     self._update_support_probe_mask_flags(track, patch_mask)
                     delta_x = x - base_x
                     delta_y = y - base_y
                     smoothing = float(
-                        np.clip(self.runtime_config.velocity_smoothing, 0.0, 1.0))
+                        np.clip(self.runtime_config.velocity_smoothing, 0.0, 1.0)
+                    )
                     track.velocity = (
-                        (1.0 - smoothing) *
-                        track.velocity[0] + smoothing * delta_x,
-                        (1.0 - smoothing) *
-                        track.velocity[1] + smoothing * delta_y,
+                        (1.0 - smoothing) * track.velocity[0] + smoothing * delta_x,
+                        (1.0 - smoothing) * track.velocity[1] + smoothing * delta_y,
                     )
 
             quality = max(0.0, quality)
@@ -998,9 +992,7 @@ class DinoKeypointTracker:
         for dr, dc, xy, similarity in selected:
             dist_sq = float(dr * dr + dc * dc)
             spatial = math.exp(-0.5 * dist_sq * inv_sigma_sq)
-            weight = math.exp(
-                (float(similarity) - float(max_similarity)) / temperature
-            )
+            weight = math.exp((float(similarity) - float(max_similarity)) / temperature)
             w = spatial * weight
             max_weight = max(max_weight, w)
             total += w
@@ -1025,7 +1017,7 @@ class DinoKeypointTracker:
         soft_radius_px = float(self.runtime_config.motion_prior_soft_radius_px)
         radius_factor = float(self.runtime_config.motion_prior_radius_factor)
         hard_limit = max(soft_radius_px, 1.0) * max(radius_factor, 1.0)
-        hard_limit *= (1.0 + 0.5 * max(0, int(track.misses)))
+        hard_limit *= 1.0 + 0.5 * max(0, int(track.misses))
 
         dx = float(candidate_xy[0] - prior.predicted_xy[0])
         dy = float(candidate_xy[1] - prior.predicted_xy[1])
@@ -1048,8 +1040,7 @@ class DinoKeypointTracker:
         candidate_rc: Tuple[int, int],
         body_prior: Optional[BodyPrior],
     ) -> bool:
-        weight = float(
-            max(0.0, self.runtime_config.structural_consistency_weight))
+        weight = float(max(0.0, self.runtime_config.structural_consistency_weight))
         if weight <= 0.0:
             return True
         if body_prior is None or track.body_coords is None:
@@ -1076,13 +1067,8 @@ class DinoKeypointTracker:
         candidate_rc: Tuple[int, int],
         body_prior: Optional[BodyPrior],
     ) -> float:
-        weight = float(
-            max(0.0, self.runtime_config.structural_consistency_weight))
-        if (
-            weight <= 0.0
-            or body_prior is None
-            or track.body_coords is None
-        ):
+        weight = float(max(0.0, self.runtime_config.structural_consistency_weight))
+        if weight <= 0.0 or body_prior is None or track.body_coords is None:
             return 0.0
 
         cand_t, cand_p, cand_th = body_prior.signature(
@@ -1112,8 +1098,7 @@ class DinoKeypointTracker:
             patch_mask = entry.get("patch_mask")
             if patch_mask is None:
                 continue
-            prior = self._compute_body_prior(
-                label=label, patch_mask=patch_mask)
+            prior = self._compute_body_prior(label=label, patch_mask=patch_mask)
             if prior is not None:
                 priors[label] = prior
         return priors
@@ -1130,7 +1115,7 @@ class DinoKeypointTracker:
         if xs.size < 16:
             return None
 
-        mask_u8 = (patch_mask.astype(np.uint8) * 255)
+        mask_u8 = patch_mask.astype(np.uint8) * 255
         thickness_map = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3)
         thickness_values = thickness_map[patch_mask]
         sigma_thickness = float(np.std(thickness_values))
@@ -1138,9 +1123,7 @@ class DinoKeypointTracker:
             sigma_thickness = float(np.median(thickness_values))
         sigma_thickness = max(1.0, float(sigma_thickness))
 
-        coords = np.stack(
-            [ys.astype(np.float32), xs.astype(np.float32)], axis=1
-        )
+        coords = np.stack([ys.astype(np.float32), xs.astype(np.float32)], axis=1)
         centroid = coords.mean(axis=0)
         centered = coords - centroid
         cov = (centered.T @ centered) / float(max(1, coords.shape[0] - 1))
@@ -1209,30 +1192,28 @@ class DinoKeypointTracker:
         self,
         normalized_feats: torch.Tensor,
     ) -> Optional[torch.Tensor]:
-        weight = float(max(0.0, getattr(
-            self.runtime_config, "context_weight", 0.0)))
+        weight = float(max(0.0, getattr(self.runtime_config, "context_weight", 0.0)))
         radius = int(getattr(self.runtime_config, "context_radius", 0))
         if weight <= 0.0 or radius <= 0:
             return None
         small = self._avg_pool_descriptor_map(normalized_feats, radius)
-        large_radius = int(
-            getattr(self.runtime_config, "context_radius_large", radius))
+        large_radius = int(getattr(self.runtime_config, "context_radius_large", radius))
         if large_radius > radius:
-            large = self._avg_pool_descriptor_map(
-                normalized_feats, large_radius)
-            blend = float(np.clip(
-                getattr(self.runtime_config, "context_large_weight", 0.0),
-                0.0,
-                1.0,
-            ))
+            large = self._avg_pool_descriptor_map(normalized_feats, large_radius)
+            blend = float(
+                np.clip(
+                    getattr(self.runtime_config, "context_large_weight", 0.0),
+                    0.0,
+                    1.0,
+                )
+            )
             combined = (1.0 - blend) * small + blend * large
         else:
             combined = small
         return self._normalize_feature_grid(combined)
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
-        feats = self.extractor.extract(
-            image, return_layer="all", normalize=True)
+        feats = self.extractor.extract(image, return_layer="all", normalize=True)
         if isinstance(feats, np.ndarray):
             feats = torch.from_numpy(feats)
         if feats.dim() == 4:  # [L, D, H, W]
@@ -1366,8 +1347,8 @@ class DinoKeypointTracker:
         grid_h, grid_w = grid_hw
         offset_x, offset_y = self._roi_offset
         roi_w, roi_h = self._roi_size
-        local_x = (x - offset_x)
-        local_y = (y - offset_y)
+        local_x = x - offset_x
+        local_y = y - offset_y
         if roi_w > 0:
             local_x = min(max(local_x, 0.0), float(roi_w - 1))
         if roi_h > 0:
@@ -1456,8 +1437,7 @@ class DinoKeypointTracker:
         candidate_xy: Tuple[float, float],
         previous_positions: Dict[str, Tuple[float, float]],
     ) -> float:
-        weight = float(
-            max(0.0, self.runtime_config.structural_consistency_weight))
+        weight = float(max(0.0, self.runtime_config.structural_consistency_weight))
         if weight <= 0.0 or not track.struct_refs:
             return 0.0
         if self._is_fresh_start:
@@ -1585,12 +1565,11 @@ class DinoKeypointTracker:
         scale_x: float,
         scale_y: float,
     ) -> MotionPrior:
-        min_radius = max(1.0, float(
-            self.runtime_config.motion_search_min_radius))
-        max_radius = max(min_radius, float(
-            self.runtime_config.motion_search_max_radius))
-        tighten = float(
-            np.clip(self.runtime_config.motion_search_tighten, 0.1, 2.0))
+        min_radius = max(1.0, float(self.runtime_config.motion_search_min_radius))
+        max_radius = max(
+            min_radius, float(self.runtime_config.motion_search_max_radius)
+        )
+        tighten = float(np.clip(self.runtime_config.motion_search_tighten, 0.1, 2.0))
         base_radius = max(min_radius, float(self.search_radius) * tighten)
 
         patch_px_x = self.patch_size / max(scale_x, 1e-6)
@@ -1601,15 +1580,13 @@ class DinoKeypointTracker:
         flow_dy = flow_vec[1] if flow_vec else 0.0
         flow_speed = math.hypot(flow_dx, flow_dy)
         velocity_speed = math.hypot(track.velocity[0], track.velocity[1])
-        flow_gain = max(0.0, float(
-            self.runtime_config.motion_search_flow_gain))
+        flow_gain = max(0.0, float(self.runtime_config.motion_search_flow_gain))
         velocity_gain = max(0.0, float(self.runtime_config.motion_search_gain))
         motion_px = (flow_speed * flow_gain) + (velocity_speed * velocity_gain)
         effective_patch_px = max(patch_px, 1e-6)
         radius_f = base_radius + (motion_px / effective_patch_px)
 
-        miss_boost = max(0.0, float(
-            self.runtime_config.motion_search_miss_boost))
+        miss_boost = max(0.0, float(self.runtime_config.motion_search_miss_boost))
         radius_f += miss_boost * track.misses
         radius_f = max(min_radius, min(max_radius, radius_f))
 
@@ -1642,16 +1619,14 @@ class DinoKeypointTracker:
         *,
         similarity: Optional[float] = None,
     ) -> float:
-        weight = float(
-            max(0.0, self.runtime_config.motion_prior_penalty_weight))
+        weight = float(max(0.0, self.runtime_config.motion_prior_penalty_weight))
         if weight <= 0.0 or prior is None:
             return 0.0
         soft_radius_px = max(
             1.0,
             float(self.runtime_config.motion_prior_soft_radius_px),
         )
-        radius_factor = max(1.0, float(
-            self.runtime_config.motion_prior_radius_factor))
+        radius_factor = max(1.0, float(self.runtime_config.motion_prior_radius_factor))
         soft_radius_px = max(soft_radius_px, prior.radius_px * radius_factor)
 
         dx = candidate_xy[0] - prior.predicted_xy[0]
@@ -1661,13 +1636,12 @@ class DinoKeypointTracker:
             return 0.0
 
         scaled = dist / soft_radius_px
-        distance_factor = (1.0 - math.exp(-scaled * scaled))
+        distance_factor = 1.0 - math.exp(-scaled * scaled)
 
         feature_factor = 1.0
         if similarity is not None:
             similarity_clamped = float(np.clip(similarity, -1.0, 1.0))
-            feature_distance = float(
-                np.clip(1.0 - similarity_clamped, 0.0, 2.0))
+            feature_distance = float(np.clip(1.0 - similarity_clamped, 0.0, 2.0))
             feature_factor = 0.5 + 0.25 * feature_distance
 
         penalty = weight * distance_factor * feature_factor
@@ -1680,8 +1654,7 @@ class DinoKeypointTracker:
         combined = 0.5 * (prior.confidence + miss_relief)
 
         flow_relief_gain = max(
-            0.0, float(getattr(self.runtime_config,
-                       "motion_prior_flow_relief", 0.0))
+            0.0, float(getattr(self.runtime_config, "motion_prior_flow_relief", 0.0))
         )
         if flow_relief_gain > 0.0:
             flow_speed = getattr(prior, "flow_speed", 0.0)
@@ -1693,8 +1666,7 @@ class DinoKeypointTracker:
         return penalty * combined
 
     def _baseline_penalty(self, track: KeypointTrack, similarity: float) -> float:
-        weight = float(
-            max(0.0, self.runtime_config.baseline_similarity_weight))
+        weight = float(max(0.0, self.runtime_config.baseline_similarity_weight))
         if weight <= 0.0:
             return 0.0
         delta = track.baseline_similarity - similarity
@@ -1727,7 +1699,7 @@ class DinoKeypointTracker:
             y_max = min(height - 1, cy + radius)
             x_min = max(0, cx - radius)
             x_max = min(width - 1, cx + radius)
-            region = mask[y_min:y_max + 1, x_min:x_max + 1]
+            region = mask[y_min : y_max + 1, x_min : x_max + 1]
             if not region.any():
                 continue
             ys, xs = np.nonzero(region)
@@ -1821,9 +1793,7 @@ class DinoKeypointTracker:
                 if patch_mask is not None and enforce_mask and not patch_mask[sr, sc]:
                     continue
                 descriptor = self._normalize_descriptor(feats[:, sr, sc])
-                distance_sq = (
-                    (dr / sigma) ** 2 + (dc / sigma) ** 2
-                )
+                distance_sq = (dr / sigma) ** 2 + (dc / sigma) ** 2
                 weight = math.exp(-0.5 * distance_sq)
                 in_mask = bool(patch_mask is not None and patch_mask[sr, sc])
                 probes.append(
@@ -1860,11 +1830,7 @@ class DinoKeypointTracker:
                     continue
                 if (dr, dc) in used:
                     continue
-                if (
-                    patch_mask is not None
-                    and mask_only
-                    and not patch_mask[sr, sc]
-                ):
+                if patch_mask is not None and mask_only and not patch_mask[sr, sc]:
                     continue
                 descriptor = self._normalize_descriptor(feats[:, sr, sc])
                 in_mask = bool(patch_mask is not None and patch_mask[sr, sc])
@@ -1894,11 +1860,9 @@ class DinoKeypointTracker:
             sc = track.patch_rc[1] + probe.offset_rc[1]
             if 0 <= sr < grid_h and 0 <= sc < grid_w:
                 if normalized_feats is None:
-                    probe.descriptor = self._normalize_descriptor(
-                        feats[:, sr, sc])
+                    probe.descriptor = self._normalize_descriptor(feats[:, sr, sc])
                 else:
-                    probe.descriptor = normalized_feats[:, sr, sc].detach(
-                    ).clone()
+                    probe.descriptor = normalized_feats[:, sr, sc].detach().clone()
 
     def _update_support_probe_mask_flags(
         self,
@@ -1983,8 +1947,7 @@ class DinoKeypointTracker:
         return key, descriptor
 
     def _part_shared_weight(self, track: KeypointTrack, key: Optional[str]) -> float:
-        base = float(max(0.0, getattr(
-            self.runtime_config, "part_shared_weight", 0.0)))
+        base = float(max(0.0, getattr(self.runtime_config, "part_shared_weight", 0.0)))
         if base <= 0.0 or key is None:
             return 0.0
         count = int(self._part_shared_counts.get(key, 0))
@@ -2007,8 +1970,9 @@ class DinoKeypointTracker:
         key = self._part_shared_key(track)
         if not key:
             return
-        momentum = float(max(0.0, getattr(
-            self.runtime_config, "part_shared_momentum", 0.0)))
+        momentum = float(
+            max(0.0, getattr(self.runtime_config, "part_shared_momentum", 0.0))
+        )
         if momentum <= 0.0:
             return
         conf = float(np.clip(confidence, 0.0, 1.0))
@@ -2025,18 +1989,20 @@ class DinoKeypointTracker:
         adaptive = momentum * (0.25 + 0.75 * conf)
         blended = (1.0 - adaptive) * existing + adaptive * desc
         self._part_shared_descriptors[key] = blended / (blended.norm() + 1e-12)
-        self._part_shared_counts[key] = self._part_shared_counts.get(
-            key, 1) + 1
+        self._part_shared_counts[key] = self._part_shared_counts.get(key, 1) + 1
 
-    def _candidate_preselect_count(
-        self, track: KeypointTrack, region_size: int
-    ) -> int:
+    def _candidate_preselect_count(self, track: KeypointTrack, region_size: int) -> int:
         if region_size <= 0:
             return 0
-        ratio = float(max(0.0, min(
-            1.0, getattr(self.runtime_config, "candidate_prune_ratio", 1.0))))
+        ratio = float(
+            max(
+                0.0,
+                min(1.0, getattr(self.runtime_config, "candidate_prune_ratio", 1.0)),
+            )
+        )
         min_candidates = max(
-            0, int(getattr(self.runtime_config, "candidate_prune_min", 0)))
+            0, int(getattr(self.runtime_config, "candidate_prune_min", 0))
+        )
         if ratio >= 1.0:
             return region_size
         if track.misses > 0:
@@ -2051,8 +2017,7 @@ class DinoKeypointTracker:
         self, track_candidates: Dict[str, List[Candidate]]
     ) -> Dict[str, Optional[Candidate]]:
         candidate_pool = {
-            key: list(candidates)
-            for key, candidates in track_candidates.items()
+            key: list(candidates) for key, candidates in track_candidates.items()
         }
         assignments: Dict[str, Optional[Candidate]] = {}
         rc_owner: Dict[Tuple[int, int], str] = {}
@@ -2116,9 +2081,10 @@ class DinoKeypointTracker:
                 continue
             axis_unit = (axis[0] / norm, axis[1] / norm)
             prev_axis = track.symmetry_axis
-            if prev_axis and (
-                axis_unit[0] * prev_axis[0] + axis_unit[1] * prev_axis[1]
-            ) < 0:
+            if (
+                prev_axis
+                and (axis_unit[0] * prev_axis[0] + axis_unit[1] * prev_axis[1]) < 0
+            ):
                 axis_unit = (-axis_unit[0], -axis_unit[1])
             midpoint = (
                 (track.last_position[0] + partner.last_position[0]) / 2.0,
@@ -2139,12 +2105,10 @@ class DinoKeypointTracker:
         reference_desc = base_desc
         if self.reference_support_radius > 0:
             r_min = max(0, patch_rc[0] - self.reference_support_radius)
-            r_max = min(grid_hw[0] - 1, patch_rc[0] +
-                        self.reference_support_radius)
+            r_max = min(grid_hw[0] - 1, patch_rc[0] + self.reference_support_radius)
             c_min = max(0, patch_rc[1] - self.reference_support_radius)
-            c_max = min(grid_hw[1] - 1, patch_rc[1] +
-                        self.reference_support_radius)
-            region = feats[:, r_min:r_max + 1, c_min:c_max + 1]
+            c_max = min(grid_hw[1] - 1, patch_rc[1] + self.reference_support_radius)
+            region = feats[:, r_min : r_max + 1, c_min : c_max + 1]
             region = region.reshape(region.shape[0], -1)
             region_mean = region.mean(dim=1).detach()
             region_mean = region_mean / (region_mean.norm() + 1e-12)
@@ -2178,7 +2142,8 @@ class DinoKeypointTracker:
                 continue
             if iterations > 0:
                 patch_mask = self._dilate_patch_mask(
-                    patch_mask, kernel_size, iterations)
+                    patch_mask, kernel_size, iterations
+                )
             descriptor = None
             if self.mask_descriptor_weight > 0.0:
                 descriptor = self._compute_mask_descriptor(feats, patch_mask)
@@ -2193,8 +2158,7 @@ class DinoKeypointTracker:
         if not allow_fallback:
             return cache
 
-        allowed_misses = max(
-            0, int(self.runtime_config.max_mask_fallback_frames))
+        allowed_misses = max(0, int(self.runtime_config.max_mask_fallback_frames))
         for label, stored_mask in list(self._last_patch_masks.items()):
             if label in cache:
                 continue
@@ -2205,11 +2169,11 @@ class DinoKeypointTracker:
             fallback_mask = stored_mask
             if iterations > 0:
                 fallback_mask = self._dilate_patch_mask(
-                    fallback_mask, kernel_size, iterations)
+                    fallback_mask, kernel_size, iterations
+                )
             descriptor = None
             if self.mask_descriptor_weight > 0.0:
-                descriptor = self._compute_mask_descriptor(
-                    feats, fallback_mask)
+                descriptor = self._compute_mask_descriptor(feats, fallback_mask)
             cache[label] = {
                 "patch_mask": fallback_mask,
                 "descriptor": descriptor,
@@ -2220,7 +2184,8 @@ class DinoKeypointTracker:
     def _mask_to_patch(self, mask: np.ndarray, grid_hw: Tuple[int, int]) -> np.ndarray:
         grid_h, grid_w = grid_hw
         resized = cv2.resize(
-            mask.astype(np.uint8), (grid_w, grid_h), interpolation=cv2.INTER_NEAREST)
+            mask.astype(np.uint8), (grid_w, grid_h), interpolation=cv2.INTER_NEAREST
+        )
         return resized.astype(bool)
 
     def _dilate_patch_mask(
@@ -2232,8 +2197,7 @@ class DinoKeypointTracker:
         if iterations <= 0:
             return patch_mask
         kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        dilated = cv2.dilate(patch_mask.astype(np.uint8),
-                             kernel, iterations=iterations)
+        dilated = cv2.dilate(patch_mask.astype(np.uint8), kernel, iterations=iterations)
         return dilated.astype(bool)
 
     def _compute_mask_descriptor(
@@ -2261,14 +2225,12 @@ class DinoKeypointTracker:
         if mask_descriptor is None or self.mask_descriptor_weight <= 0.0:
             return descriptor
         blended = (
-            (1.0 - self.mask_descriptor_weight) * descriptor
-            + self.mask_descriptor_weight * mask_descriptor
-        )
+            1.0 - self.mask_descriptor_weight
+        ) * descriptor + self.mask_descriptor_weight * mask_descriptor
         return blended / (blended.norm() + 1e-12)
 
     def _mask_similarity_bonus(self, misses: int) -> float:
-        base_bonus = float(
-            max(0.0, self.runtime_config.mask_similarity_bonus))
+        base_bonus = float(max(0.0, self.runtime_config.mask_similarity_bonus))
         if base_bonus <= 0.0:
             return 0.0
         if misses <= 0:
@@ -2298,8 +2260,11 @@ class DinoKeypointVideoProcessor:
         self.video_height, self.video_width = first_frame.shape[:2]
         self.total_frames = self.video_loader.total_frames()
 
-        self.video_result_folder = Path(result_folder) if result_folder else Path(
-            self.video_path).with_suffix("")
+        self.video_result_folder = (
+            Path(result_folder)
+            if result_folder
+            else Path(self.video_path).with_suffix("")
+        )
         self.video_result_folder.mkdir(parents=True, exist_ok=True)
 
         self.config = runtime_config or CutieDinoTrackerConfig()
@@ -2354,9 +2319,11 @@ class DinoKeypointVideoProcessor:
         step: int,
     ) -> str:
         initial_frame, registry = self.adapter.load_initial_state(
-            self.video_result_folder)
-        start_frame = initial_frame if start_frame is None else max(
-            initial_frame, start_frame)
+            self.video_result_folder
+        )
+        start_frame = (
+            initial_frame if start_frame is None else max(initial_frame, start_frame)
+        )
         if end_frame is None or end_frame < 0:
             end_frame = self.total_frames - 1
         end_frame = min(end_frame, self.total_frames - 1)
@@ -2375,13 +2342,11 @@ class DinoKeypointVideoProcessor:
 
         initial_frame_array = self.video_loader.load_frame(initial_frame)
         if initial_frame_array is None:
-            raise RuntimeError(
-                "Unable to load the initial frame for tracking.")
+            raise RuntimeError("Unable to load the initial frame for tracking.")
 
         initial_mask_lookup = self._mask_lookup_from_registry(registry)
         if self.mask_manager.enabled:
-            self.mask_manager.prime(
-                initial_frame, initial_frame_array, registry)
+            self.mask_manager.prime(initial_frame, initial_frame_array, registry)
         self.tracker.start(
             Image.fromarray(initial_frame_array),
             registry,
@@ -2394,9 +2359,7 @@ class DinoKeypointVideoProcessor:
         )
 
         frame_numbers = list(range(start_frame, end_frame + 1, step))
-        frames_to_process = [
-            frame for frame in frame_numbers if frame != initial_frame
-        ]
+        frames_to_process = [frame for frame in frame_numbers if frame != initial_frame]
         total_steps = max(1, len(frames_to_process))
         processed = 0
         stopped_early = False
@@ -2423,8 +2386,7 @@ class DinoKeypointVideoProcessor:
                         self.config.analytics_hook(
                             {
                                 "frame": frame_number,
-                                "keypoints": len(
-                                    registry.keypoint_payload()),
+                                "keypoints": len(registry.keypoint_payload()),
                                 "masks": len(manual_mask_lookup),
                             }
                         )
@@ -2435,8 +2397,7 @@ class DinoKeypointVideoProcessor:
                 logger.warning("Skipping missing frame %s", frame_number)
                 continue
 
-            mask_results = self.mask_manager.update_masks(
-                frame_number, frame, registry)
+            mask_results = self.mask_manager.update_masks(frame_number, frame, registry)
             if mask_results:
                 self._apply_mask_results(registry, mask_results)
             mask_lookup = self._mask_lookup_from_registry(registry)
@@ -2447,7 +2408,8 @@ class DinoKeypointVideoProcessor:
             )
             if tracker_results:
                 registry.apply_tracker_results(
-                    tracker_results, frame_number=frame_number)
+                    tracker_results, frame_number=frame_number
+                )
             self.adapter.write_annotation(
                 frame_number=frame_number,
                 registry=registry,
@@ -2477,8 +2439,7 @@ class DinoKeypointVideoProcessor:
         start_frame: int,
         end_frame: int,
     ) -> Dict[int, Path]:
-        manual_files = find_manual_labeled_json_files(
-            str(self.video_result_folder))
+        manual_files = find_manual_labeled_json_files(str(self.video_result_folder))
         mapping: Dict[int, Path] = {}
         for filename in manual_files:
             try:
@@ -2499,7 +2460,6 @@ class DinoKeypointVideoProcessor:
         frame_number: int,
         manual_path: Path,
     ) -> Optional[Tuple[InstanceRegistry, Dict[str, np.ndarray]]]:
-
         previous_masks: Dict[str, MaskResult] = {}
         last_results = getattr(self.mask_manager, "_last_results", None)
         if isinstance(last_results, dict) and last_results:
@@ -2508,9 +2468,7 @@ class DinoKeypointVideoProcessor:
                     continue
                 polygon_copy: Optional[List[Tuple[float, float]]] = None
                 if result.polygon:
-                    polygon_copy = [
-                        (float(x), float(y)) for x, y in result.polygon
-                    ]
+                    polygon_copy = [(float(x), float(y)) for x, y in result.polygon]
                 previous_masks[label] = MaskResult(
                     instance_label=result.instance_label,
                     mask_bitmap=np.array(result.mask_bitmap, copy=True),
@@ -2530,17 +2488,19 @@ class DinoKeypointVideoProcessor:
 
         if previous_masks:
             for instance in registry:
-                has_mask = (
-                    instance.mask_bitmap is not None
-                    and bool(np.any(instance.mask_bitmap))
+                has_mask = instance.mask_bitmap is not None and bool(
+                    np.any(instance.mask_bitmap)
                 )
                 if has_mask:
                     continue
                 fallback = previous_masks.get(instance.label)
                 if fallback is None:
                     continue
-                polygon = [
-                    tuple(point) for point in fallback.polygon] if fallback.polygon else None
+                polygon = (
+                    [tuple(point) for point in fallback.polygon]
+                    if fallback.polygon
+                    else None
+                )
                 instance.set_mask(
                     bitmap=np.array(fallback.mask_bitmap, copy=True),
                     polygon=polygon,
@@ -2601,7 +2561,8 @@ class DinoKeypointVideoProcessor:
             )
 
     def _mask_lookup_from_registry(
-            self, registry: InstanceRegistry) -> Dict[str, np.ndarray]:
+        self, registry: InstanceRegistry
+    ) -> Dict[str, np.ndarray]:
         lookup: Dict[str, np.ndarray] = {}
         for instance in registry:
             mask = instance.mask_bitmap

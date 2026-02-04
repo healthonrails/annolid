@@ -109,8 +109,8 @@ class SAMModel:
         predicted_iou_threshold (float): Threshold for the model's (SAM's) own prediction of quality.
 
         Here are several optional tunable parameters in automatic mask generation that control how densely points
-        are sampled and what the thresholds are for removing low-quality or duplicate masks. 
-        Additionally, generation can be automatically run on crops of the image to get improved 
+        are sampled and what the thresholds are for removing low-quality or duplicate masks.
+        Additionally, generation can be automatically run on crops of the image to get improved
         performance on smaller objects, and post-processing can remove stray pixels and holes.
 
         Example configuration:

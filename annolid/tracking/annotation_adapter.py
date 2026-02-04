@@ -40,7 +40,8 @@ class AnnotationAdapter:
         json_files = find_manual_labeled_json_files(str(annotation_dir))
         if not json_files:
             raise RuntimeError(
-                "No labeled JSON files found. Provide an initial annotation for the first frame.")
+                "No labeled JSON files found. Provide an initial annotation for the first frame."
+            )
         candidates: List[Tuple[float, int, Path]] = []
         for name in json_files:
             path = annotation_dir / name
@@ -52,16 +53,17 @@ class AnnotationAdapter:
             candidates.append((mtime, frame_idx, path))
         if not candidates:
             raise RuntimeError(
-                "No labeled JSON files found. Provide an initial annotation for the first frame.")
+                "No labeled JSON files found. Provide an initial annotation for the first frame."
+            )
         _, frame_number, latest_json = max(
-            candidates, key=lambda item: (item[0], item[1]))
+            candidates, key=lambda item: (item[0], item[1])
+        )
         registry = self.read_annotation(latest_json)
         return frame_number, registry
 
     def read_annotation(self, json_path: Path) -> InstanceRegistry:
         payload = load_labelme_json(json_path)
-        shapes: Sequence[Dict[str, object]] = payload.get(
-            "shapes", [])  # type: ignore[assignment]
+        shapes: Sequence[Dict[str, object]] = payload.get("shapes", [])  # type: ignore[assignment]
         registry = InstanceRegistry()
         for shape in shapes:
             label = str(shape.get("label", "")).strip()
@@ -69,7 +71,8 @@ class AnnotationAdapter:
 
             if shape_type == "point":
                 instance_label, keypoint_label = self._split_keypoint_label(
-                    label, shape)
+                    label, shape
+                )
                 point = (shape.get("points") or [[None, None]])[0]
                 if point[0] is None or point[1] is None:
                     continue
@@ -101,8 +104,9 @@ class AnnotationAdapter:
                 )
         return registry
 
-    def write_annotation(self, *, frame_number: int, registry: InstanceRegistry,
-                         output_dir: Path) -> Path:
+    def write_annotation(
+        self, *, frame_number: int, registry: InstanceRegistry, output_dir: Path
+    ) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         json_path = output_dir / f"{output_dir.name}_{frame_number:09d}.json"
         shapes: List[Shape] = []
@@ -135,7 +139,8 @@ class AnnotationAdapter:
                     description="Cutie",
                 )
                 mask_shape.points = [
-                    [float(x), float(y)] for x, y in self._sanitize_polygon(instance.polygon)
+                    [float(x), float(y)]
+                    for x, y in self._sanitize_polygon(instance.polygon)
                 ]
                 shapes.append(mask_shape)
 
@@ -150,7 +155,9 @@ class AnnotationAdapter:
         )
         return json_path
 
-    def _split_keypoint_label(self, label: str, shape: Dict[str, object]) -> Tuple[str, str]:
+    def _split_keypoint_label(
+        self, label: str, shape: Dict[str, object]
+    ) -> Tuple[str, str]:
         if MASK_SUFFIX and label.endswith(MASK_SUFFIX):
             label = label[: -len(MASK_SUFFIX)]
         display_label = self._flag_display_label(shape)
@@ -205,7 +212,9 @@ class AnnotationAdapter:
         value = flags.get("display_label")
         return str(value).strip() if value else ""
 
-    def _sanitize_polygon(self, polygon: Iterable[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    def _sanitize_polygon(
+        self, polygon: Iterable[Tuple[float, float]]
+    ) -> List[Tuple[float, float]]:
         points = [(float(x), float(y)) for x, y in polygon]
         if not points:
             return []
@@ -213,7 +222,9 @@ class AnnotationAdapter:
             points.append(points[0])
         return points
 
-    def mask_bitmap_from_polygon(self, polygon: Sequence[Tuple[float, float]]) -> np.ndarray:
+    def mask_bitmap_from_polygon(
+        self, polygon: Sequence[Tuple[float, float]]
+    ) -> np.ndarray:
         mask = np.zeros((self.image_height, self.image_width), dtype=np.uint8)
         if not polygon:
             return mask

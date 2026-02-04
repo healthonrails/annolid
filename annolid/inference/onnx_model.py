@@ -21,16 +21,18 @@ class ONNXBaseModel:
         - device_type (str, optional): Type of device to run inference on, 'cpu' (default) or 'gpu'.
         """
         if has_gpu():
-            device_type = 'gpu'
+            device_type = "gpu"
         self.sess_opts = ort.SessionOptions()
-        self.sess_opts.inter_op_num_threads = int(
-            os.environ.get("OMP_NUM_THREADS", 1))
+        self.sess_opts.inter_op_num_threads = int(os.environ.get("OMP_NUM_THREADS", 1))
 
         # Select the execution provider based on device_type
-        providers_dict = {"cpu": ["CPUExecutionProvider"], "gpu": [
-            "CUDAExecutionProvider"]}
+        providers_dict = {
+            "cpu": ["CPUExecutionProvider"],
+            "gpu": ["CUDAExecutionProvider"],
+        }
         self.providers = providers_dict.get(
-            device_type.lower(), ["CPUExecutionProvider"])
+            device_type.lower(), ["CPUExecutionProvider"]
+        )
 
         self.ort_session = ort.InferenceSession(
             model_path,

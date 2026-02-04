@@ -56,8 +56,9 @@ class DinoKPSEGHead(nn.Module):
                 num_groups=_groupnorm_groups(self.hidden_dim, max_groups=8),
                 num_channels=self.hidden_dim,
             ),
-            nn.Conv2d(self.hidden_dim, self.hidden_dim,
-                      kernel_size=3, padding=1, groups=1),
+            nn.Conv2d(
+                self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1, groups=1
+            ),
             nn.GELU(),
             nn.Conv2d(self.hidden_dim, self.num_parts, kernel_size=1),
         )
@@ -98,15 +99,16 @@ def _positional_encoding_2d_sincos(
     x_out = xx[:, None] * omega[None, :]  # [HW, quarter]
 
     pos = torch.cat(
-        [torch.sin(y_out), torch.cos(y_out),
-         torch.sin(x_out), torch.cos(x_out)],
+        [torch.sin(y_out), torch.cos(y_out), torch.sin(x_out), torch.cos(x_out)],
         dim=1,
     )
     return pos[None, :, :].to(dtype=dtype)
 
 
 class _FFN(nn.Module):
-    def __init__(self, dim: int, *, mlp_ratio: float = 4.0, dropout: float = 0.0) -> None:
+    def __init__(
+        self, dim: int, *, mlp_ratio: float = 4.0, dropout: float = 0.0
+    ) -> None:
         super().__init__()
         hidden = max(1, int(float(dim) * float(mlp_ratio)))
         self.net = nn.Sequential(
@@ -156,7 +158,8 @@ class DinoKPSEGAttentionHead(nn.Module):
             raise ValueError("hidden_dim must be divisible by num_heads")
         if self.hidden_dim % 4 != 0:
             raise ValueError(
-                "hidden_dim must be divisible by 4 for sin/cos positional encoding")
+                "hidden_dim must be divisible by 4 for sin/cos positional encoding"
+            )
 
         self.proj = nn.Conv2d(self.in_dim, self.hidden_dim, kernel_size=1)
         self.proj_act = nn.GELU()
@@ -165,13 +168,17 @@ class DinoKPSEGAttentionHead(nn.Module):
             num_channels=self.hidden_dim,
             affine=False,
         )
-        self.query_embed = nn.Parameter(torch.randn(
-            self.num_parts, self.hidden_dim) * 0.02)
+        self.query_embed = nn.Parameter(
+            torch.randn(self.num_parts, self.hidden_dim) * 0.02
+        )
 
         self.cross_attn = nn.ModuleList(
             [
                 nn.MultiheadAttention(
-                    self.hidden_dim, self.num_heads, dropout=float(dropout), batch_first=True
+                    self.hidden_dim,
+                    self.num_heads,
+                    dropout=float(dropout),
+                    batch_first=True,
                 )
                 for _ in range(self.num_layers)
             ]
@@ -179,19 +186,29 @@ class DinoKPSEGAttentionHead(nn.Module):
         self.self_attn = nn.ModuleList(
             [
                 nn.MultiheadAttention(
-                    self.hidden_dim, self.num_heads, dropout=float(dropout), batch_first=True
+                    self.hidden_dim,
+                    self.num_heads,
+                    dropout=float(dropout),
+                    batch_first=True,
                 )
                 for _ in range(self.num_layers)
             ]
         )
         self.norm_q1 = nn.ModuleList(
-            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)])
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
         self.norm_q2 = nn.ModuleList(
-            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)])
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
         self.norm_q3 = nn.ModuleList(
-            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)])
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
         self.ffn = nn.ModuleList(
-            [_FFN(self.hidden_dim, dropout=float(dropout)) for _ in range(self.num_layers)])
+            [
+                _FFN(self.hidden_dim, dropout=float(dropout))
+                for _ in range(self.num_layers)
+            ]
+        )
 
         self.logit_scale = nn.Parameter(torch.tensor(0.0))
 
@@ -209,16 +226,19 @@ class DinoKPSEGAttentionHead(nn.Module):
         self.anchor_attn = nn.ModuleList(
             [
                 nn.MultiheadAttention(
-                    self.hidden_dim, self.num_heads, dropout=float(dropout), batch_first=True
+                    self.hidden_dim,
+                    self.num_heads,
+                    dropout=float(dropout),
+                    batch_first=True,
                 )
                 for _ in range(self.num_layers)
             ]
         )
         self.norm_q_anchor = nn.ModuleList(
-            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)])
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
         self.anchor_gate = nn.Parameter(
-            torch.full((self.num_layers,), float(
-                anchor_gate_init), dtype=torch.float32)
+            torch.full((self.num_layers,), float(anchor_gate_init), dtype=torch.float32)
         )
 
     def forward(
@@ -234,7 +254,11 @@ class DinoKPSEGAttentionHead(nn.Module):
             if not isinstance(key_padding_mask, torch.Tensor):
                 raise ValueError("key_padding_mask must be a torch.Tensor")
             key_padding_mask = key_padding_mask.to(dtype=torch.bool)
-            if key_padding_mask.ndim != 2 or key_padding_mask.shape[0] != b or key_padding_mask.shape[1] != (h * w):
+            if (
+                key_padding_mask.ndim != 2
+                or key_padding_mask.shape[0] != b
+                or key_padding_mask.shape[1] != (h * w)
+            ):
                 raise ValueError("key_padding_mask must be shaped [B, H*W]")
 
         tokens = self.proj(feats_bchw)  # [B, D, H, W]
@@ -271,13 +295,15 @@ class DinoKPSEGAttentionHead(nn.Module):
                 else:
                     anchors = q[:, self.orientation_anchor_idx, :]  # [B, A, D]
                 anchor_out, _ = self.anchor_attn[layer](
-                    q_anchor, anchors, anchors, need_weights=False)
+                    q_anchor, anchors, anchors, need_weights=False
+                )
                 gate = torch.sigmoid(self.anchor_gate[layer]).to(dtype=q.dtype)
                 q = q + anchor_out * gate
 
             q_norm = self.norm_q2[layer](q)
             attn_out, _ = self.self_attn[layer](
-                q_norm, q_norm, q_norm, need_weights=False)
+                q_norm, q_norm, q_norm, need_weights=False
+            )
             q = q + attn_out
 
             q_norm = self.norm_q3[layer](q)
@@ -285,8 +311,9 @@ class DinoKPSEGAttentionHead(nn.Module):
 
         q = F.layer_norm(q, (self.hidden_dim,))
         scale = torch.clamp(self.logit_scale.exp(), 0.1, 10.0)
-        logits_flat = torch.matmul(q, tokens.transpose(
-            1, 2)) * (scale / (self.hidden_dim**0.5))
+        logits_flat = torch.matmul(q, tokens.transpose(1, 2)) * (
+            scale / (self.hidden_dim**0.5)
+        )
         logits = logits_flat.view(b, self.num_parts, h, w)
         if key_padding_mask is not None:
             mask_hw = key_padding_mask.view(b, h, w)
@@ -327,7 +354,8 @@ class DinoKPSEGHybridHead(nn.Module):
         self.num_layers = int(num_layers)
 
         self.conv = DinoKPSEGHead(
-            in_dim=self.in_dim, hidden_dim=self.hidden_dim, num_parts=self.num_parts)
+            in_dim=self.in_dim, hidden_dim=self.hidden_dim, num_parts=self.num_parts
+        )
         self.attn = DinoKPSEGAttentionHead(
             in_dim=self.in_dim,
             hidden_dim=self.hidden_dim,
@@ -341,8 +369,9 @@ class DinoKPSEGHybridHead(nn.Module):
             proj_norm=bool(proj_norm),
             anchor_kv_norm=bool(anchor_kv_norm),
         )
-        self.mix_logit = nn.Parameter(torch.full(
-            (self.num_parts,), float(mix_init), dtype=torch.float32))
+        self.mix_logit = nn.Parameter(
+            torch.full((self.num_parts,), float(mix_init), dtype=torch.float32)
+        )
 
     def forward(
         self,
@@ -352,8 +381,9 @@ class DinoKPSEGHybridHead(nn.Module):
     ) -> torch.Tensor:
         logits_conv = self.conv(feats_bchw)
         logits_attn = self.attn(feats_bchw, key_padding_mask=key_padding_mask)
-        mix = torch.sigmoid(self.mix_logit).to(
-            dtype=logits_conv.dtype)[None, :, None, None]
+        mix = torch.sigmoid(self.mix_logit).to(dtype=logits_conv.dtype)[
+            None, :, None, None
+        ]
         logits = logits_conv * (1.0 - mix) + logits_attn * mix
         if key_padding_mask is not None:
             if feats_bchw.ndim != 4:
@@ -396,7 +426,9 @@ def checkpoint_pack(
     }
 
 
-def checkpoint_unpack(payload: Dict[str, object]) -> tuple[nn.Module, DinoKPSEGCheckpointMeta]:
+def checkpoint_unpack(
+    payload: Dict[str, object],
+) -> tuple[nn.Module, DinoKPSEGCheckpointMeta]:
     fmt = payload.get("format")
     if fmt not in ("annolid.dino_kpseg.v1", "annolid.dino_kpseg.v2"):
         raise ValueError(f"Unsupported checkpoint format: {fmt!r}")
@@ -422,8 +454,14 @@ def checkpoint_unpack(payload: Dict[str, object]) -> tuple[nn.Module, DinoKPSEGC
             except Exception:
                 flip_idx = None
 
-    head_type = str(meta_raw.get("head_type") or (
-        "conv" if fmt == "annolid.dino_kpseg.v1" else "conv")).strip().lower()
+    head_type = (
+        str(
+            meta_raw.get("head_type")
+            or ("conv" if fmt == "annolid.dino_kpseg.v1" else "conv")
+        )
+        .strip()
+        .lower()
+    )
     if head_type not in ("conv", "attn", "hybrid"):
         head_type = "conv"
 
@@ -468,11 +506,11 @@ def checkpoint_unpack(payload: Dict[str, object]) -> tuple[nn.Module, DinoKPSEGC
 
     # Newer (v2+) optional attention head behavior flags; default to the legacy behavior
     # when missing to preserve old checkpoint outputs.
-    attn_token_norm = _parse_bool(
-        meta_raw.get("attn_token_norm"), default=False)
+    attn_token_norm = _parse_bool(meta_raw.get("attn_token_norm"), default=False)
     attn_proj_norm = _parse_bool(meta_raw.get("attn_proj_norm"), default=False)
     attn_anchor_kv_norm = _parse_bool(
-        meta_raw.get("attn_anchor_kv_norm"), default=False)
+        meta_raw.get("attn_anchor_kv_norm"), default=False
+    )
 
     orientation_anchor_idx = meta_raw.get("orientation_anchor_idx")
     if orientation_anchor_idx is not None:
@@ -480,8 +518,7 @@ def checkpoint_unpack(payload: Dict[str, object]) -> tuple[nn.Module, DinoKPSEGC
             orientation_anchor_idx = None
         else:
             try:
-                orientation_anchor_idx = [int(v)
-                                          for v in orientation_anchor_idx]
+                orientation_anchor_idx = [int(v) for v in orientation_anchor_idx]
             except Exception:
                 orientation_anchor_idx = None
 
@@ -537,7 +574,8 @@ def checkpoint_unpack(payload: Dict[str, object]) -> tuple[nn.Module, DinoKPSEGC
         )
     else:
         head = DinoKPSEGHead(
-            in_dim=meta.in_dim, hidden_dim=meta.hidden_dim, num_parts=meta.num_parts)
+            in_dim=meta.in_dim, hidden_dim=meta.hidden_dim, num_parts=meta.num_parts
+        )
 
     state = payload.get("state_dict") or {}
     if not isinstance(state, dict):

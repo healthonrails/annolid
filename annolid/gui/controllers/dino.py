@@ -12,7 +12,10 @@ from annolid.gui.dino_patch_service import (
     DinoPCAMapService,
     DinoPCARequest,
 )
-from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS, PATCH_SIMILARITY_DEFAULT_MODEL
+from annolid.gui.models_registry import (
+    PATCH_SIMILARITY_MODELS,
+    PATCH_SIMILARITY_DEFAULT_MODEL,
+)
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -27,15 +30,11 @@ class DinoController(QtCore.QObject):
         self._window = window
 
         self.patch_similarity_service = DinoPatchSimilarityService(window)
-        self.patch_similarity_service.started.connect(
-            self._on_patch_similarity_started
-        )
+        self.patch_similarity_service.started.connect(self._on_patch_similarity_started)
         self.patch_similarity_service.finished.connect(
             self._on_patch_similarity_finished
         )
-        self.patch_similarity_service.error.connect(
-            self._on_patch_similarity_error
-        )
+        self.patch_similarity_service.error.connect(self._on_patch_similarity_error)
 
         self.pca_map_service = DinoPCAMapService(window)
         self.pca_map_service.started.connect(self._on_pca_map_started)
@@ -50,8 +49,7 @@ class DinoController(QtCore.QObject):
         settings = window.settings
 
         window.patch_similarity_model = str(
-            settings.value("patch_similarity/model",
-                           PATCH_SIMILARITY_DEFAULT_MODEL)
+            settings.value("patch_similarity/model", PATCH_SIMILARITY_DEFAULT_MODEL)
         )
         window.patch_similarity_alpha = float(
             settings.value("patch_similarity/alpha", 0.55)
@@ -77,8 +75,11 @@ class DinoController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     def toggle_patch_similarity(self, checked: Optional[bool] = None) -> None:
         window = self._window
-        state = bool(checked) if isinstance(
-            checked, bool) else window.patch_similarity_action.isChecked()
+        state = (
+            bool(checked)
+            if isinstance(checked, bool)
+            else window.patch_similarity_action.isChecked()
+        )
         if not state:
             self.deactivate_patch_similarity()
             return
@@ -88,7 +89,8 @@ class DinoController(QtCore.QObject):
                 window,
                 window.tr("Patch Similarity"),
                 window.tr(
-                    "Load an image or video frame before starting patch similarity."),
+                    "Load an image or video frame before starting patch similarity."
+                ),
             )
             window.patch_similarity_action.setChecked(False)
             return
@@ -102,8 +104,7 @@ class DinoController(QtCore.QObject):
         self.deactivate_pca_map()
         window.canvas.enablePatchSimilarityMode(self.request_patch_similarity)
         window.statusBar().showMessage(
-            window.tr(
-                "Patch similarity active – click on the frame to query patches."),
+            window.tr("Patch similarity active – click on the frame to query patches."),
             5000,
         )
 
@@ -235,8 +236,7 @@ class DinoController(QtCore.QObject):
             window.pca_map_clusters = cluster_spin.value()
             window.settings.setValue("pca_map/model", window.pca_map_model)
             window.settings.setValue("pca_map/alpha", window.pca_map_alpha)
-            window.settings.setValue(
-                "pca_map/clusters", window.pca_map_clusters)
+            window.settings.setValue("pca_map/clusters", window.pca_map_clusters)
             window.statusBar().showMessage(
                 window.tr("PCA settings updated."),
                 3000,
@@ -247,8 +247,11 @@ class DinoController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     def toggle_pca_map(self, checked: Optional[bool] = None) -> None:
         window = self._window
-        state = bool(checked) if isinstance(
-            checked, bool) else window.pca_map_action.isChecked()
+        state = (
+            bool(checked)
+            if isinstance(checked, bool)
+            else window.pca_map_action.isChecked()
+        )
         if not state:
             self.deactivate_pca_map()
             return
@@ -257,8 +260,7 @@ class DinoController(QtCore.QObject):
             QtWidgets.QMessageBox.information(
                 window,
                 window.tr("PCA Feature Map"),
-                window.tr(
-                    "Load an image or video frame before generating a PCA map."),
+                window.tr("Load an image or video frame before generating a PCA map."),
             )
             window.pca_map_action.setChecked(False)
             return
@@ -310,8 +312,7 @@ class DinoController(QtCore.QObject):
             mask_img = Image.new("L", pil_image.size, 0)
             draw = ImageDraw.Draw(mask_img)
             for polygon in selected_polygons:
-                coords = [(float(pt.x()), float(pt.y()))
-                          for pt in polygon.points]
+                coords = [(float(pt.x()), float(pt.y())) for pt in polygon.points]
                 draw.polygon(coords, fill=255)
             mask_bool = np.array(mask_img) > 0
 
@@ -338,7 +339,8 @@ class DinoController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     def _on_patch_similarity_started(self):
         self._window.statusBar().showMessage(
-            self._window.tr("Computing patch similarity…"))
+            self._window.tr("Computing patch similarity…")
+        )
 
     def _on_patch_similarity_finished(self, payload: dict) -> None:
         overlay = payload.get("overlay_rgba")
@@ -359,7 +361,8 @@ class DinoController(QtCore.QObject):
 
     def _on_pca_map_started(self):
         self._window.statusBar().showMessage(
-            self._window.tr("Generating PCA feature map…"))
+            self._window.tr("Generating PCA feature map…")
+        )
 
     def _on_pca_map_finished(self, payload: dict) -> None:
         overlay = payload.get("overlay_rgba")
@@ -386,11 +389,13 @@ class DinoController(QtCore.QObject):
         if window.canvas.pixmap is None or window.canvas.pixmap.isNull():
             return None
         qimage = window.canvas.pixmap.toImage().convertToFormat(
-            QtGui.QImage.Format_RGBA8888)
+            QtGui.QImage.Format_RGBA8888
+        )
         ptr = qimage.constBits()
         ptr.setsize(qimage.sizeInBytes())
         array = np.frombuffer(ptr, dtype=np.uint8).reshape(
-            qimage.height(), qimage.width(), 4)
+            qimage.height(), qimage.width(), 4
+        )
         try:
             return Image.fromarray(array, mode="RGBA").convert("RGB")
         except Exception as exc:

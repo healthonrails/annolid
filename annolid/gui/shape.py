@@ -5,11 +5,10 @@ import cv2
 from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtGui
-from labelme.logger import logger
-import labelme.utils
+from annolid.utils.annotation_compat import logger
+from annolid.utils.annotation_compat import utils
 import skimage.measure
 from shapely.geometry import Polygon
-from shapely.validation import explain_validity
 
 from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
@@ -29,7 +28,6 @@ DEFAULT_NEG_VERTEX_FILL_COLOR = QtGui.QColor(255, 0, 0, 255)
 
 
 class Shape(object):
-
     # Render handles as squares
     P_SQUARE = 0
 
@@ -215,9 +213,7 @@ class Shape(object):
                 else self.fill_color.getRgb()
             )
             image_to_draw[self.mask] = fill_color
-            qimage = QtGui.QImage.fromData(
-                labelme.utils.img_arr_to_data(image_to_draw)
-            )
+            qimage = QtGui.QImage.fromData(utils.img_arr_to_data(image_to_draw))
             painter.drawImage(
                 int(round(self.points[0].x())),
                 int(round(self.points[0].y())),
@@ -225,9 +221,7 @@ class Shape(object):
             )
 
             line_path = QtGui.QPainterPath()
-            contours = skimage.measure.find_contours(
-                np.pad(self.mask, pad_width=1)
-            )
+            contours = skimage.measure.find_contours(np.pad(self.mask, pad_width=1))
             for contour in contours:
                 contour += [self.points[0].y(), self.points[0].x()]
                 line_path.moveTo(contour[0, 1], contour[0, 0])
@@ -239,7 +233,7 @@ class Shape(object):
             # reset the queue used to render per-vertex styling in this paint pass
             self._queued_vertices = []
             # Do not draw points if it is a mask shape
-            if self.shape_type == 'mask':
+            if self.shape_type == "mask":
                 return
             line_path = QtGui.QPainterPath()
             vrtx_path = QtGui.QPainterPath()
@@ -266,14 +260,13 @@ class Shape(object):
                     self.drawVertex(vrtx_path, i)
             elif self.shape_type == "points":
                 assert len(self.points) == len(self.point_labels)
-                for i, (p, l) in enumerate(
+                for i, (_point, point_label) in enumerate(
                     zip(self.points, self.point_labels)
                 ):
-                    if l == 1:
+                    if point_label == 1:
                         self.drawVertex(vrtx_path, i)
                     else:
-                        self.drawVertex(negative_vrtx_path,
-                                        i, is_negative=True)
+                        self.drawVertex(negative_vrtx_path, i, is_negative=True)
             else:
                 line_path.moveTo(self.points[0])
                 # Uncommenting the following line will draw 2 paths
@@ -298,18 +291,15 @@ class Shape(object):
 
             painter.drawPath(line_path)
             if self.fill and self.mask is None:
-                color = (
-                    self.select_fill_color
-                    if self.selected
-                    else self.fill_color
-                )
+                color = self.select_fill_color if self.selected else self.fill_color
                 painter.fillPath(line_path, color)
 
             self._render_queued_vertices(painter)
 
         # Draw the label near the shape
-        if self.label and (self.shape_type == "polygon"
-                           or self.shape_type == "rectangle"):
+        if self.label and (
+            self.shape_type == "polygon" or self.shape_type == "rectangle"
+        ):
             self._draw_label(painter, image_width, image_height)
 
     def _draw_label(self, painter, image_width, image_height):
@@ -317,8 +307,11 @@ class Shape(object):
         bounding_rect = self.boundingRect()
 
         # Check if bounding_rect is valid before using it
-        if bounding_rect is not None and bounding_rect.isValid() and \
-           self.should_draw_label(image_width, image_height):
+        if (
+            bounding_rect is not None
+            and bounding_rect.isValid()
+            and self.should_draw_label(image_width, image_height)
+        ):
             # Calculate label position (top-left corner of bounding box)
             label_pos = bounding_rect.topLeft()
 
@@ -328,7 +321,8 @@ class Shape(object):
 
             # Auto-adjust font size based on shape size
             font_size = int(
-                max(20, min(bounding_rect.width(), bounding_rect.height()) // 5))
+                max(20, min(bounding_rect.width(), bounding_rect.height()) // 5)
+            )
             painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
 
             # Draw label text without background box
@@ -432,9 +426,7 @@ class Shape(object):
                         side,
                     )
                     corner_radius = radius * 0.35
-                    painter.drawRoundedRect(
-                        rect, corner_radius, corner_radius
-                    )
+                    painter.drawRoundedRect(rect, corner_radius, corner_radius)
 
                 cross_pen = QtGui.QPen(outline_color, outline_width)
                 cross_pen.setCapStyle(QtCore.Qt.RoundCap)
@@ -497,8 +489,7 @@ class Shape(object):
                     side,
                     side,
                 )
-                painter.drawRoundedRect(
-                    rect, glow_radius * 0.35, glow_radius * 0.35)
+                painter.drawRoundedRect(rect, glow_radius * 0.35, glow_radius * 0.35)
 
             accent = QtGui.QRadialGradient(center, radius)
             accent.setColorAt(0.0, fill_color.lighter(160))
@@ -540,12 +531,10 @@ class Shape(object):
                     side,
                     side,
                 )
-                painter.drawRoundedRect(
-                    rect, inner_radius * 0.35, inner_radius * 0.35)
+                painter.drawRoundedRect(rect, inner_radius * 0.35, inner_radius * 0.35)
 
             if vertex["highlighted"]:
-                halo_pen = QtGui.QPen(QtGui.QColor(
-                    255, 255, 255, 180), outline_width)
+                halo_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 180), outline_width)
                 halo_pen.setCapStyle(QtCore.Qt.RoundCap)
                 halo_pen.setJoinStyle(QtCore.Qt.RoundJoin)
                 halo_pen.setStyle(QtCore.Qt.DotLine)
@@ -563,7 +552,8 @@ class Shape(object):
                         side,
                     )
                     painter.drawRoundedRect(
-                        rect, halo_radius * 0.35, halo_radius * 0.35)
+                        rect, halo_radius * 0.35, halo_radius * 0.35
+                    )
 
         painter.setPen(original_pen)
         painter.setBrush(original_brush)
@@ -573,7 +563,7 @@ class Shape(object):
         min_distance = float("inf")
         min_i = None
         for i, p in enumerate(self.points):
-            dist = labelme.utils.distance(p - point)
+            dist = utils.distance(p - point)
             if dist <= epsilon and dist < min_distance:
                 min_distance = dist
                 min_i = i
@@ -584,7 +574,7 @@ class Shape(object):
         post_i = None
         for i in range(len(self.points)):
             line = [self.points[i - 1], self.points[i]]
-            dist = labelme.utils.distancetoline(point, line)
+            dist = utils.distancetoline(point, line)
             if dist <= epsilon and dist < min_distance:
                 min_distance = dist
                 post_i = i
@@ -674,8 +664,9 @@ class Shape(object):
 
     def __hash__(self):
         # Hash based on label, shape_type, and points
-        return hash((self.label, self.shape_type,
-                     tuple((p.x(), p.y()) for p in self.points)))
+        return hash(
+            (self.label, self.shape_type, tuple((p.x(), p.y()) for p in self.points))
+        )
 
     def calculate_iou(self, other):
         """
@@ -688,7 +679,7 @@ class Shape(object):
             float: IoU value between the two polygons.
         """
         # Check if the shapes are polygons
-        if self.shape_type != 'polygon' or other.shape_type != 'polygon':
+        if self.shape_type != "polygon" or other.shape_type != "polygon":
             raise ValueError("Both shapes must be polygons to calculate IoU.")
 
         # Convert the vertices to Shapely Polygon objects
@@ -715,8 +706,7 @@ class Shape(object):
 
         return iou
 
-    def __eq__(self, other, epsilon=1e-1,
-               iou_threshold=0.90):
+    def __eq__(self, other, epsilon=1e-1, iou_threshold=0.90):
         """
         Test if two shapes are equal or similar.
 
@@ -752,7 +742,7 @@ class Shape(object):
             return False
 
         # Check if other properties such as label, fill, etc. are equal
-        if (self.label != other.label or self._closed != other._closed):
+        if self.label != other.label or self._closed != other._closed:
             return False
 
         # Check if each pair of points are similar within the epsilon tolerance
@@ -762,8 +752,7 @@ class Shape(object):
             x_other, y_other = point_other.x(), point_other.y()
 
             # Calculate distance between points
-            distance = ((x_self - x_other) ** 2 +
-                        (y_self - y_other) ** 2) ** 0.5
+            distance = ((x_self - x_other) ** 2 + (y_self - y_other) ** 2) ** 0.5
 
             # Check if distance is within epsilon tolerance
             if distance > epsilon:
@@ -787,7 +776,7 @@ class MultipoinstShape(Shape):
     ):
         super(MultipoinstShape, self).__init__()
         self.labels = []
-        self.shape_type = 'multipoints'
+        self.shape_type = "multipoints"
 
     def addPoint(self, point, is_positive=True):
         if not self.points or point != self.points[0]:
@@ -804,7 +793,6 @@ class MultipoinstShape(Shape):
         return None
 
     def removePoint(self, i):
-
         if len(self.points) <= 1:
             logger.warning(
                 "Cannot remove point from: shape_type=%r, len(points)=%d",
@@ -824,12 +812,14 @@ class MultipoinstShape(Shape):
             for i, is_positive in enumerate(self.labels):
                 if is_positive:
                     self.vertex_fill_color = QtGui.QColor(
-                        self.positive_vertex_fill_color)
+                        self.positive_vertex_fill_color
+                    )
                     self.drawVertex(dummy_path, i, is_negative=False)
                 else:
                     # keep the current vertex color for glow, but mark as negative
                     self.vertex_fill_color = QtGui.QColor(
-                        self.negative_vertex_fill_color)
+                        self.negative_vertex_fill_color
+                    )
                     self.drawVertex(dummy_path, i, is_negative=True)
 
             self.vertex_fill_color = original_vertex_color
@@ -850,11 +840,7 @@ class MaskShape(MultipoinstShape):
     mask_color = np.array([0, 0, 255, 64], np.uint8)
     boundary_color = np.array([0, 0, 255, 128], np.uint8)
 
-    def __init__(self,
-                 label=None,
-                 group_id=None,
-                 flags=None,
-                 description=None):
+    def __init__(self, label=None, group_id=None, flags=None, description=None):
         super().__init__()
         self.label = label
         self.group_id = group_id
@@ -874,23 +860,37 @@ class MaskShape(MultipoinstShape):
         self.scale = scale
         self.mask = mask
 
-    def getQImageMask(self,):
+    def getQImageMask(
+        self,
+    ):
         if self.mask is None:
             return None
         mask = (self.mask * 255).astype(np.uint8)
-        mask = cv2.resize(mask, None, fx=1/self.scale, fy=1 /
-                          self.scale, interpolation=cv2.INTER_NEAREST)
-        if self.rgba_mask is not None and mask.shape[0] == self.rgba_mask.shape[0] and mask.shape[1] == self.rgba_mask.shape[1]:
+        mask = cv2.resize(
+            mask,
+            None,
+            fx=1 / self.scale,
+            fy=1 / self.scale,
+            interpolation=cv2.INTER_NEAREST,
+        )
+        if (
+            self.rgba_mask is not None
+            and mask.shape[0] == self.rgba_mask.shape[0]
+            and mask.shape[1] == self.rgba_mask.shape[1]
+        ):
             self.rgba_mask[:] = 0
         else:
-            self.rgba_mask = np.zeros(
-                [mask.shape[0], mask.shape[1], 4], dtype=np.uint8)
+            self.rgba_mask = np.zeros([mask.shape[0], mask.shape[1], 4], dtype=np.uint8)
         self.rgba_mask[mask > 128] = self.mask_color
         kernel = np.ones([5, 5], dtype=np.uint8)
         bound = mask - cv2.erode(mask, kernel, iterations=1)
         self.rgba_mask[bound > 128] = self.boundary_color
         qimage = QtGui.QImage(
-            self.rgba_mask.data, self.rgba_mask.shape[1], self.rgba_mask.shape[0], QtGui.QImage.Format_RGBA8888)
+            self.rgba_mask.data,
+            self.rgba_mask.shape[1],
+            self.rgba_mask.shape[0],
+            QtGui.QImage.Format_RGBA8888,
+        )
         return qimage
 
     def paint(self, painter, image_width=None, image_height=None):
@@ -905,7 +905,7 @@ class MaskShape(MultipoinstShape):
         mask = np.asarray(self.mask)
         if mask.ndim != 2:
             mask = mask[..., 0]
-        mask_uint8 = (mask.astype(bool).astype(np.uint8) * 255)
+        mask_uint8 = mask.astype(bool).astype(np.uint8) * 255
         if not mask_uint8.any():
             return []
 
@@ -929,7 +929,8 @@ class MaskShape(MultipoinstShape):
 
         # Find the contours of the filled mask.
         contours, _ = cv2.findContours(
-            filled_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            filled_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         shapes = []
         if len(contours) == 0:
             return shapes
@@ -944,8 +945,7 @@ class MaskShape(MultipoinstShape):
             largest_contour = max(contours, key=cv2.contourArea)
 
             # Approximate the largest contour using Douglas-Peucker algorithm
-            approximated_contour = cv2.approxPolyDP(
-                largest_contour, epsilon, True)
+            approximated_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
 
             merged_contour = approximated_contour[:, 0, :].astype(np.float32)
 
@@ -956,15 +956,16 @@ class MaskShape(MultipoinstShape):
         merged_contour = merged_contour / scale
 
         # Close the contour by duplicating its first point at the end.
-        merged_contour = np.concatenate(
-            [merged_contour, merged_contour[:1, :]], axis=0)
+        merged_contour = np.concatenate([merged_contour, merged_contour[:1, :]], axis=0)
 
         # Create a Shape object from the merged contour
-        shape = Shape(shape_type="polygon",
-                      label=self.label,
-                      group_id=self.group_id,
-                      flags=self.flags,
-                      description=self.description)
+        shape = Shape(
+            shape_type="polygon",
+            label=self.label,
+            group_id=self.group_id,
+            flags=self.flags,
+            description=self.description,
+        )
         # Preserve any metadata stored on the mask (e.g., detection scores, track ids).
         shape.other_data = dict(self.other_data)
         for x, y in merged_contour:

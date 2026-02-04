@@ -108,17 +108,17 @@ class Resize(object):
 
     def __call__(self, sample):
         width, height = self.get_size(sample["image"].shape[1], sample["image"].shape[0])
-        
+
         # resize sample
         sample["image"] = cv2.resize(sample["image"], (width, height), interpolation=self.__image_interpolation_method)
 
         if self.__resize_target:
             if "depth" in sample:
                 sample["depth"] = cv2.resize(sample["depth"], (width, height), interpolation=cv2.INTER_NEAREST)
-                
+
             if "mask" in sample:
                 sample["mask"] = cv2.resize(sample["mask"].astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
-        
+
         return sample
 
 
@@ -150,9 +150,9 @@ class PrepareForNet(object):
         if "depth" in sample:
             depth = sample["depth"].astype(np.float32)
             sample["depth"] = np.ascontiguousarray(depth)
-        
+
         if "mask" in sample:
             sample["mask"] = sample["mask"].astype(np.float32)
             sample["mask"] = np.ascontiguousarray(sample["mask"])
-        
+
         return sample

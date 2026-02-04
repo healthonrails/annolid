@@ -53,7 +53,7 @@ Depending on your behavioral apparatus and overall configuration, Annolid might 
 To link instances across frames, we treat each instance as its own class across frames.
 So if you want
 - **to track multiple animals** : you need to label each animal as a separate instance (Vole_1, Vole_2 ...).
-- **to generalize recognition across animals or videos** : you need to label multiple animals as examples of the same instance (Vole).  
+- **to generalize recognition across animals or videos** : you need to label multiple animals as examples of the same instance (Vole).
 
 
 Video example courtesy of Lindsay Sailer and Alex Ophir:

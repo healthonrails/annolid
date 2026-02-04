@@ -77,8 +77,7 @@ class FlagsController(QtCore.QObject):
         if not flag_name:
             return
         if self._window.project_schema:
-            behavior_def = self._window.project_schema.behavior_map().get(
-                flag_name)
+            behavior_def = self._window.project_schema.behavior_map().get(flag_name)
             if behavior_def and behavior_def.exclusive_with:
                 active_conflicts = [
                     name
@@ -119,8 +118,7 @@ class FlagsController(QtCore.QObject):
             )
         if self._window.event_type == flag_name:
             self._window.event_type = None
-        self._window._update_modifier_controls_for_behavior(
-            self._window.event_type)
+        self._window._update_modifier_controls_for_behavior(self._window.event_type)
         self.pinned_flags.setdefault(flag_name, False)
         self.pinned_flags[flag_name] = False
         existing = self._widget._get_existing_flag_names()

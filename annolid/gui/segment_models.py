@@ -1,7 +1,7 @@
 import os
 from qtpy.QtGui import QColor
 from qtpy.QtCore import QAbstractTableModel, Qt, Signal, QModelIndex, QObject
-from typing import List, Any, Optional, Union, Dict
+from typing import List, Any, Optional, Dict
 from pathlib import Path
 from annolid.utils.logger import logger
 from annolid.jobs.tracking_jobs import TrackingSegment
@@ -12,6 +12,7 @@ class SegmentTableModel(QAbstractTableModel):
     A QAbstractTableModel to manage and display TrackingSegment objects
     for a QTableView in the SegmentEditorDialog.
     """
+
     # Columns for the table view
     COL_ANNOTATED_FRAME = 0
     COL_START_TIME = 1
@@ -25,12 +26,19 @@ class SegmentTableModel(QAbstractTableModel):
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._segments: List[TrackingSegment] = []
-        self._headers = ["Ann. Frame", "Start Time",
-                         "End Time", "Duration (s)", "Annotation Valid"]
+        self._headers = [
+            "Ann. Frame",
+            "Start Time",
+            "End Time",
+            "Duration (s)",
+            "Annotation Valid",
+        ]
         self._active_video_path: Optional[Path] = None
         self._active_video_fps: Optional[float] = None
 
-    def set_active_video_context(self, video_path: Optional[Path], fps: Optional[float]):
+    def set_active_video_context(
+        self, video_path: Optional[Path], fps: Optional[float]
+    ):
         """
         Sets the context of the video for which segments are being managed.
         Clears existing segments if the video context changes.
@@ -53,7 +61,9 @@ class SegmentTableModel(QAbstractTableModel):
             return 0
         return self.COLUMN_COUNT
 
-    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole) -> Any:
+    def headerData(
+        self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole
+    ) -> Any:
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
             if 0 <= section < len(self._headers):
                 return self._headers[section]
@@ -83,10 +93,17 @@ class SegmentTableModel(QAbstractTableModel):
 
         elif role == Qt.ForegroundRole:
             if column == self.COL_ANNOTATION_VALID:
-                return QColor(Qt.darkGreen) if segment.is_annotation_valid() else QColor(Qt.red)
+                return (
+                    QColor(Qt.darkGreen)
+                    if segment.is_annotation_valid()
+                    else QColor(Qt.red)
+                )
 
         elif role == Qt.ToolTipRole:
-            if column == self.COL_ANNOTATION_VALID and not segment.is_annotation_valid():
+            if (
+                column == self.COL_ANNOTATION_VALID
+                and not segment.is_annotation_valid()
+            ):
                 return f"Annotation JSON not found: {segment.annotation_json_path.name}"
             return f"Segment tracking from frame {segment.segment_start_frame} to {segment.segment_end_frame}"
 
@@ -98,11 +115,16 @@ class SegmentTableModel(QAbstractTableModel):
         """Adds a new segment to the model."""
         if not isinstance(segment, TrackingSegment):
             logger.error(
-                "SegmentTableModel: Attempted to add non-TrackingSegment object.")
+                "SegmentTableModel: Attempted to add non-TrackingSegment object."
+            )
             return False
-        if segment.video_path != self._active_video_path or segment.fps != self._active_video_fps:
+        if (
+            segment.video_path != self._active_video_path
+            or segment.fps != self._active_video_fps
+        ):
             logger.error(
-                "SegmentTableModel: Segment video/fps mismatch with model context.")
+                "SegmentTableModel: Segment video/fps mismatch with model context."
+            )
             # This check ensures segments added are for the current video context.
             # return False # Or auto-update segment's path/fps if that's desired behavior
 
@@ -117,26 +139,30 @@ class SegmentTableModel(QAbstractTableModel):
         self.beginInsertRows(QModelIndex(), row_to_insert, row_to_insert)
         self._segments.append(segment)
         # Keep segments sorted, e.g., by start frame
-        self._segments.sort(key=lambda s: (
-            s.segment_start_frame, s.annotated_frame))
+        self._segments.sort(key=lambda s: (s.segment_start_frame, s.annotated_frame))
         self.endInsertRows()
         self.model_data_changed.emit()
         return True
 
-    def update_segment_at_row(self, row_index: int, updated_segment: TrackingSegment) -> bool:
+    def update_segment_at_row(
+        self, row_index: int, updated_segment: TrackingSegment
+    ) -> bool:
         """Updates an existing segment at a given row index."""
         if 0 <= row_index < len(self._segments):
             if not isinstance(updated_segment, TrackingSegment):
                 return False
-            if updated_segment.video_path != self._active_video_path or updated_segment.fps != self._active_video_fps:
-                logger.error(
-                    "SegmentTableModel: Updated segment video/fps mismatch.")
+            if (
+                updated_segment.video_path != self._active_video_path
+                or updated_segment.fps != self._active_video_fps
+            ):
+                logger.error("SegmentTableModel: Updated segment video/fps mismatch.")
                 return False
 
             self._segments[row_index] = updated_segment
             # Re-sort if necessary (if start_frame could change on update)
-            self._segments.sort(key=lambda s: (
-                s.segment_start_frame, s.annotated_frame))
+            self._segments.sort(
+                key=lambda s: (s.segment_start_frame, s.annotated_frame)
+            )
             # The row_index might change after sorting. Emit layoutChanged for simplicity,
             # or find new index and emit dataChanged for specific rows.
             self.layoutChanged.emit()  # Simpler than finding new index after sort
@@ -181,7 +207,8 @@ class SegmentTableModel(QAbstractTableModel):
         """
         if self._active_video_path is None or self._active_video_fps is None:
             logger.error(
-                "SegmentTableModel: Cannot load segments, active video context not set.")
+                "SegmentTableModel: Cannot load segments, active video context not set."
+            )
             return
 
         self.beginResetModel()
@@ -190,22 +217,21 @@ class SegmentTableModel(QAbstractTableModel):
             try:
                 segment = TrackingSegment(
                     video_path=self._active_video_path,  # Use current context
-                    fps=self._active_video_fps,         # Use current context
-                    annotated_frame=data_dict['annotated_frame'],
-                    segment_start_frame=data_dict['segment_start_frame'],
-                    segment_end_frame=data_dict['segment_end_frame'],
+                    fps=self._active_video_fps,  # Use current context
+                    annotated_frame=data_dict["annotated_frame"],
+                    segment_start_frame=data_dict["segment_start_frame"],
+                    segment_end_frame=data_dict["segment_end_frame"],
                     # unique_id can be loaded if present in data_dict
-                    unique_id=data_dict.get('unique_id', os.urandom(4).hex())
+                    unique_id=data_dict.get("unique_id", os.urandom(4).hex()),
                 )
                 self._segments.append(segment)
             except KeyError as e:
-                logger.error(
-                    f"Missing key {e} in segment data dict: {data_dict}")
+                logger.error(f"Missing key {e} in segment data dict: {data_dict}")
             except Exception as e:
                 logger.error(
-                    f"Error creating TrackingSegment from dict: {data_dict}, error: {e}")
+                    f"Error creating TrackingSegment from dict: {data_dict}, error: {e}"
+                )
 
-        self._segments.sort(key=lambda s: (
-            s.segment_start_frame, s.annotated_frame))
+        self._segments.sort(key=lambda s: (s.segment_start_frame, s.annotated_frame))
         self.endResetModel()
         self.model_data_changed.emit()

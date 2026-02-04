@@ -25,10 +25,13 @@ class ResizeCenterCropNormalize(transforms.Compose):
     """
 
     def __init__(self, size: int = IMG_SIZE):
-        super().__init__([
-            # Resize with a buffer for better quality
-            transforms.Resize(int(size * 1.14)),
-            transforms.CenterCrop(size),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
-                                 0.229, 0.224, 0.225]),  # ImageNet normalization
-        ])
+        super().__init__(
+            [
+                # Resize with a buffer for better quality
+                transforms.Resize(int(size * 1.14)),
+                transforms.CenterCrop(size),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),  # ImageNet normalization
+            ]
+        )

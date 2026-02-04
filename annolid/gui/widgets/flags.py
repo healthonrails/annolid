@@ -11,7 +11,7 @@ from qtpy.QtWidgets import (
     QUndoStack,
 )
 from qtpy.QtCore import QPropertyAnimation
-from typing import Dict, List
+from typing import Dict
 import re
 
 
@@ -134,7 +134,8 @@ class FlagTable(QTableWidget):
         checkbox = QCheckBox()
         checkbox.setChecked(value)
         checkbox.stateChanged.connect(
-            lambda state: self._update_checkbox_icon(checkbox, state == Qt.Checked))
+            lambda state: self._update_checkbox_icon(checkbox, state == Qt.Checked)
+        )
         self.setCellWidget(row, self.COLUMN_ACTIVE, checkbox)
 
         start_button = QtWidgets.QPushButton("Start")
@@ -199,13 +200,11 @@ class FlagTable(QTableWidget):
 
     def _update_checkbox_icon(self, checkbox, state):
         if state:
-            checkbox.setIcon(self.style().standardIcon(
-                QStyle.SP_DialogApplyButton))
+            checkbox.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
             checkbox.setStyleSheet("QCheckBox { background-color: #e8f5e9; }")
             checkbox.setToolTip("Flag is active (Click to deactivate)")
         else:
-            checkbox.setIcon(self.style().standardIcon(
-                QStyle.SP_DialogCancelButton))
+            checkbox.setIcon(self.style().standardIcon(QStyle.SP_DialogCancelButton))
             checkbox.setStyleSheet("QCheckBox { background-color: #ffebee; }")
             checkbox.setToolTip("Flag is inactive (Click to activate)")
         self._animate_checkbox(checkbox, state)
@@ -248,16 +247,12 @@ class FlagTableWidget(QtWidgets.QWidget):
         self._flags: Dict[str, bool] = {}
         self.last_selected_row: int | None = None
         self._table = FlagTable()
-        self._table.setHorizontalHeaderLabels(
-            ["Behavior", "Active", "Start", "End"]
-        )
+        self._table.setHorizontalHeaderLabels(["Behavior", "Active", "Start", "End"])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QtWidgets.QTableWidget.AllEditTriggers)
-        self._table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectRows)
-        self._table.setSelectionMode(
-            QtWidgets.QAbstractItemView.SingleSelection)
+        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._table.clicked.connect(self._handle_table_clicked)
         buttons_layout = QtWidgets.QHBoxLayout()
         self.add_flag_button = QtWidgets.QPushButton("Add")
@@ -283,11 +278,11 @@ class FlagTableWidget(QtWidgets.QWidget):
             # “E” calls handle_end_button on the focused row.
             ("E", lambda: self._trigger_end_on_current_row()),
             # “Ctrl+S” saves all flags.
-            ("Ctrl+S", self.save_all_flags),      # save flags
+            ("Ctrl+S", self.save_all_flags),  # save flags
             # “Ctrl+D” deletes the selected row.
             ("Ctrl+D", self.remove_selected_row),  # delete selected
             # “Ctrl+L” clears the entire table after confirmation.
-            ("Ctrl+L", self.clear_all_rows),      # clear all
+            ("Ctrl+L", self.clear_all_rows),  # clear all
         ]
         for seq, handler in shortcuts:
             sc = QShortcut(QKeySequence(seq), self)
@@ -350,11 +345,12 @@ class FlagTableWidget(QtWidgets.QWidget):
         self._update_checkbox_icon(flag_checkbox, value)  # Set initial icon
         # Change icon when the checkbox toggles
         flag_checkbox.stateChanged.connect(
-            lambda state: self._update_checkbox_icon(flag_checkbox, state == Qt.Checked))
+            lambda state: self._update_checkbox_icon(flag_checkbox, state == Qt.Checked)
+        )
         flag_checkbox.stateChanged.connect(
             lambda state, row=row: self.flagToggled.emit(
                 self._table.cellWidget(row, self.COLUMN_NAME).text().strip(),
-                state == Qt.Checked
+                state == Qt.Checked,
             )
         )
         self._table.setCellWidget(row, self.COLUMN_ACTIVE, flag_checkbox)
@@ -374,14 +370,12 @@ class FlagTableWidget(QtWidgets.QWidget):
 
     def _update_checkbox_icon(self, checkbox, state):
         if state:
-            checkbox.setIcon(self.style().standardIcon(
-                QStyle.SP_DialogApplyButton))
+            checkbox.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
             checkbox.setStyleSheet("QCheckBox { background-color: #e8f5e9; }")
             checkbox.setToolTip("Behavior is active (Click to deactivate)")
             self._animate_checkbox(checkbox, True)
         else:
-            checkbox.setIcon(self.style().standardIcon(
-                QStyle.SP_DialogCancelButton))
+            checkbox.setIcon(self.style().standardIcon(QStyle.SP_DialogCancelButton))
             checkbox.setStyleSheet("QCheckBox { background-color: #ffebee; }")
             checkbox.setToolTip("Behavior is inactive (Click to activate)")
             self._animate_checkbox(checkbox, False)
@@ -427,8 +421,7 @@ class FlagTableWidget(QtWidgets.QWidget):
             for index in sorted(selected_items, reverse=True):
                 self._table.removeRow(index.row())
         else:
-            QtWidgets.QMessageBox.warning(
-                self, "Error", "No row selected to remove.")
+            QtWidgets.QMessageBox.warning(self, "Error", "No row selected to remove.")
         self._table._row_order = list(range(self._table.rowCount()))
         self._table._update_row_order()
 
@@ -479,7 +472,9 @@ class FlagTableWidget(QtWidgets.QWidget):
         for row in range(self._table.rowCount()):
             name_widget = self._table.cellWidget(row, self.COLUMN_NAME)
             value_widget = self._table.cellWidget(row, self.COLUMN_ACTIVE)
-            if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(value_widget, QCheckBox):
+            if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(
+                value_widget, QCheckBox
+            ):
                 flag_name = name_widget.text().strip()
                 flag_value = value_widget.isChecked()
                 if flag_name:
@@ -489,16 +484,14 @@ class FlagTableWidget(QtWidgets.QWidget):
                     return
         self._flags = flags
         self.flagsSaved.emit(self._flags)
-        QtWidgets.QMessageBox.information(
-            self, "Success", "All flags have been saved!")
+        QtWidgets.QMessageBox.information(self, "Success", "All flags have been saved!")
 
     def show_error(self, message: str):
         """Show an error message."""
         QtWidgets.QMessageBox.warning(self, "Error", message)
 
     def clear(self):
-        """ Clears the table """
+        """Clears the table"""
         self._table.clear()
         self._table.setRowCount(0)
-        self._table.setHorizontalHeaderLabels(
-            ["Behavior", "Active", "Start", "End"])
+        self._table.setHorizontalHeaderLabels(["Behavior", "Active", "Start", "End"])

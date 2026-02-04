@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -28,7 +27,17 @@ TENSORBOARD_LOG_DIR = "runs"  # Directory for TensorBoard logs
 logger = logging.getLogger(__name__)
 
 
-def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, criterion, checkpoint_dir, writer):
+def train_model(
+    model,
+    train_loader,
+    val_loader,
+    num_epochs,
+    device,
+    optimizer,
+    criterion,
+    checkpoint_dir,
+    writer,
+):
     """Trains the model and evaluates it on a validation set, logging to TensorBoard."""
 
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -55,7 +64,7 @@ def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, 
             print(progress_info)
 
             # Log training loss to TensorBoard
-            writer.add_scalar('Loss/train', loss.item(), global_step)
+            writer.add_scalar("Loss/train", loss.item(), global_step)
 
             if (i + 1) % 10 == 0:  # Log every 10 steps
                 logger.info(progress_info)
@@ -63,20 +72,21 @@ def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, 
             global_step += 1
 
         # Validation after each epoch
-        val_loss, val_accuracy = validate_model(
-            model, val_loader, criterion, device)
+        val_loss, val_accuracy = validate_model(model, val_loader, criterion, device)
         logger.info(
-            f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
+            f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%"
+        )
 
         # Log validation loss and accuracy to TensorBoard
-        writer.add_scalar('Loss/validation', val_loss, epoch)
-        writer.add_scalar('Accuracy/validation',
-                          val_accuracy / 100.0, epoch)  # Scale to 0-1
+        writer.add_scalar("Loss/validation", val_loss, epoch)
+        writer.add_scalar(
+            "Accuracy/validation", val_accuracy / 100.0, epoch
+        )  # Scale to 0-1
 
         # Save checkpoint if validation loss improves
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            checkpoint_path = os.path.join(checkpoint_dir, f"best_model.pth")
+            checkpoint_path = os.path.join(checkpoint_dir, "best_model.pth")
             torch.save(model.state_dict(), checkpoint_path)
             logger.info(f"New best model saved at {checkpoint_path}")
 
@@ -106,36 +116,70 @@ def validate_model(model, val_loader, criterion, device):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Train animal behavior classifier.")
-    parser.add_argument("--video_folder", type=str,
-                        default=VIDEO_FOLDER, help="Path to the video folder.")
-    parser.add_argument("--batch_size", type=int,
-                        default=BATCH_SIZE, help="Batch size.")
-    parser.add_argument("--num_epochs", type=int,
-                        default=NUM_EPOCHS, help="Number of training epochs.")
-    parser.add_argument("--learning_rate", type=float,
-                        default=LEARNING_RATE, help="Learning rate.")
-    parser.add_argument("--checkpoint_dir", type=str,
-                        default=CHECKPOINT_DIR, help="Checkpoint directory.")
-    parser.add_argument("--tensorboard_log_dir", type=str,
-                        default=TENSORBOARD_LOG_DIR, help="Directory for TensorBoard logs.")
-    parser.add_argument("--feature_backbone", type=str, choices=BACKBONE_CHOICES,
-                        default="dinov3", help="Feature extraction backbone.")
-    parser.add_argument("--dinov3_model_name", type=str, default=DEFAULT_DINOV3_MODEL,
-                        help="DINOv3 checkpoint to use when --feature_backbone=dinov3.")
-    parser.add_argument("--unfreeze_dinov3", action="store_true",
-                        help="Unfreeze DINOv3 weights for fine-tuning.")
-    parser.add_argument("--feature_dim", type=int, default=None,
-                        help="Optional feature dimension override for the backbone projection.")
-    parser.add_argument("--transformer_dim", type=int, default=768,
-                        help="Transformer embedding dimension (d_model).")
+    parser = argparse.ArgumentParser(description="Train animal behavior classifier.")
+    parser.add_argument(
+        "--video_folder",
+        type=str,
+        default=VIDEO_FOLDER,
+        help="Path to the video folder.",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=BATCH_SIZE, help="Batch size."
+    )
+    parser.add_argument(
+        "--num_epochs", type=int, default=NUM_EPOCHS, help="Number of training epochs."
+    )
+    parser.add_argument(
+        "--learning_rate", type=float, default=LEARNING_RATE, help="Learning rate."
+    )
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=str,
+        default=CHECKPOINT_DIR,
+        help="Checkpoint directory.",
+    )
+    parser.add_argument(
+        "--tensorboard_log_dir",
+        type=str,
+        default=TENSORBOARD_LOG_DIR,
+        help="Directory for TensorBoard logs.",
+    )
+    parser.add_argument(
+        "--feature_backbone",
+        type=str,
+        choices=BACKBONE_CHOICES,
+        default="dinov3",
+        help="Feature extraction backbone.",
+    )
+    parser.add_argument(
+        "--dinov3_model_name",
+        type=str,
+        default=DEFAULT_DINOV3_MODEL,
+        help="DINOv3 checkpoint to use when --feature_backbone=dinov3.",
+    )
+    parser.add_argument(
+        "--unfreeze_dinov3",
+        action="store_true",
+        help="Unfreeze DINOv3 weights for fine-tuning.",
+    )
+    parser.add_argument(
+        "--feature_dim",
+        type=int,
+        default=None,
+        help="Optional feature dimension override for the backbone projection.",
+    )
+    parser.add_argument(
+        "--transformer_dim",
+        type=int,
+        default=768,
+        help="Transformer embedding dimension (d_model).",
+    )
 
     args = parser.parse_args()
 
     console_handler = logging.StreamHandler()
-    file_handler = logging.FileHandler("training.log", mode='w')
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler = logging.FileHandler("training.log", mode="w")
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     console_handler.setFormatter(formatter)
     file_handler.setFormatter(formatter)
 
@@ -161,9 +205,11 @@ def main():
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4
+    )
     val_loader = DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+        val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
+    )
 
     model = build_classifier(
         num_classes=num_of_classes,
@@ -191,16 +237,27 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to add graph to TensorBoard: {e}")
 
-    train_model(model, train_loader, val_loader, args.num_epochs,
-                device, optimizer, criterion, args.checkpoint_dir, writer)
+    train_model(
+        model,
+        train_loader,
+        val_loader,
+        args.num_epochs,
+        device,
+        optimizer,
+        criterion,
+        args.checkpoint_dir,
+        writer,
+    )
 
     # Load best model for final evaluation
     best_model_path = os.path.join(args.checkpoint_dir, "best_model.pth")
     model.load_state_dict(torch.load(best_model_path))
     final_val_loss, final_val_accuracy = validate_model(
-        model, val_loader, criterion, device)
+        model, val_loader, criterion, device
+    )
     logger.info(
-        f"Final Validation Loss: {final_val_loss:.4f}, Final Validation Accuracy: {final_val_accuracy:.2f}%")
+        f"Final Validation Loss: {final_val_loss:.4f}, Final Validation Accuracy: {final_val_accuracy:.2f}%"
+    )
 
     logger.info("Training and validation completed.")
     writer.close()  # Close the TensorBoard writer

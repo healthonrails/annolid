@@ -12,7 +12,7 @@ def get_sentence_data(fn):
 
     input:
       fn - full file path to the sentence file to parse
-    
+
     output:
       a list of dictionaries for each sentence with the following fields:
           sentence - the original sentence
@@ -22,7 +22,7 @@ def get_sentence_data(fn):
                       first_word_index - the position of the first word of
                                          the phrase in the sentence
                       phrase_id - an identifier for this phrase
-                      phrase_type - a list of the coarse categories this 
+                      phrase_type - a list of the coarse categories this
                                     phrase belongs to
 
     """
@@ -88,7 +88,7 @@ def get_annotations(fn):
           nobox - list of identifiers which were annotated as
                   not being visible in the image
           boxes - a dictionary where the fields are identifiers
-                  and the values are its list of boxes in the 
+                  and the values are its list of boxes in the
                   [xmin ymin xmax ymax] format
     """
     tree = ET.parse(fn)
@@ -167,7 +167,7 @@ if __name__ == "__main__":
         sds = get_sentence_data(sentence_list[idx])
         an = get_annotations(annotation_list[idx])
         if args.osoi:
-            sd = sds[random.randint(0, len(sds)-1)] 
+            sd = sds[random.randint(0, len(sds)-1)]
             x = gen_record(sd, an)
             if x:
                 odvg_anno.append(x)

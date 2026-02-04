@@ -138,4 +138,3 @@ curl -I https://annolid.com/_static/styles/theme.css
 ```
 
 If this returns `404`, the most common issue is that `.nojekyll` is missing from the published root (`gh-pages`).
-

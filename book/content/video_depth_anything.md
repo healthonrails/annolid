@@ -109,4 +109,3 @@ video_depth_anything:
   save_point_clouds: false
   output_dir: /path/to/depth_outputs
 ```
-

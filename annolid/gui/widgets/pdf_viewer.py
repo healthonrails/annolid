@@ -10,4 +10,3 @@ from __future__ import annotations
 from annolid.gui.widgets.pdf_viewer_impl import PdfViewerWidget
 
 __all__ = ["PdfViewerWidget"]
-

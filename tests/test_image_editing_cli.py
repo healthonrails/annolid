@@ -31,4 +31,3 @@ def test_annolid_run_image_edit_pillow_backend(tmp_path: Path) -> None:
     assert out_path.exists()
     img = Image.open(out_path)
     assert img.size == (64, 48)
-

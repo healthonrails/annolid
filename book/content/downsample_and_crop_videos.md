@@ -90,4 +90,3 @@ ffmpeg -i /path/to/input/my_video.mp4 -vf "crop=640:480:120:200,scale=iw0.5:ih0.
 - **duration**: 60.5
 - **fps**: 30.0
 - **codec_name**: h264
-

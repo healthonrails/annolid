@@ -13,7 +13,8 @@ from annolid.segmentation.dino_kpseg.keypoints import infer_orientation_anchor_i
 
 def test_attention_head_forward_shape() -> None:
     head = DinoKPSEGAttentionHead(
-        in_dim=64, hidden_dim=128, num_parts=5, num_heads=4, num_layers=2)
+        in_dim=64, hidden_dim=128, num_parts=5, num_heads=4, num_layers=2
+    )
     x = torch.randn(2, 64, 7, 9)
     y = head(x)
     assert y.shape == (2, 5, 7, 9)
@@ -21,7 +22,8 @@ def test_attention_head_forward_shape() -> None:
 
 def test_attention_checkpoint_roundtrip() -> None:
     head = DinoKPSEGAttentionHead(
-        in_dim=32, hidden_dim=64, num_parts=3, num_heads=4, num_layers=1)
+        in_dim=32, hidden_dim=64, num_parts=3, num_heads=4, num_layers=1
+    )
     meta = DinoKPSEGCheckpointMeta(
         model_name="dummy",
         short_side=128,

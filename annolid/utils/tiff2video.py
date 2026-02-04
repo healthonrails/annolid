@@ -6,7 +6,7 @@ import argparse
 def find_tiff_files(folder):
     tiff_files = []
     for filename in os.listdir(folder):
-        if filename.lower().endswith('.tif') or filename.lower().endswith('.tiff'):
+        if filename.lower().endswith(".tif") or filename.lower().endswith(".tiff"):
             tiff_files.append(os.path.join(folder, filename))
     return sorted(tiff_files)
 
@@ -37,7 +37,7 @@ def main(input_folder, output_video):
     height, width = first_image.shape[:2]
 
     # Define the codec and create VideoWriter object
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_video, fourcc, 24.0, (width, height))
 
     # Process each TIFF file and write to video
@@ -53,15 +53,18 @@ def main(input_folder, output_video):
     out.release()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     """ python tiff2video.py /Fluo-N2DL-HeLa/01 /Fluo-N2DL-HeLa/01.mp4
     """
     parser = argparse.ArgumentParser(
-        description='Convert TIFF files to a video with contrast enhancement')
-    parser.add_argument('input_folder', type=str,
-                        help='Path to the folder containing TIFF files')
-    parser.add_argument('output_video', type=str,
-                        help='Path to the output video file (MP4)')
+        description="Convert TIFF files to a video with contrast enhancement"
+    )
+    parser.add_argument(
+        "input_folder", type=str, help="Path to the folder containing TIFF files"
+    )
+    parser.add_argument(
+        "output_video", type=str, help="Path to the output video file (MP4)"
+    )
     args = parser.parse_args()
 
     main(args.input_folder, args.output_video)

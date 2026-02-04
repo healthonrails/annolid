@@ -6,13 +6,16 @@ from typing import Dict, List, Optional
 from qtpy import QtCore, QtWidgets
 
 from annolid.utils.llm_settings import default_settings
-from annolid.utils.tts_settings import default_tts_settings, load_tts_settings, save_tts_settings
+from annolid.utils.tts_settings import (
+    default_tts_settings,
+    load_tts_settings,
+    save_tts_settings,
+)
 from annolid.agents.kokoro_tts import (
     get_available_voices as get_kokoro_voices,
     get_suggested_languages,
 )
 from annolid.agents.pocket_tts import (
-    DEFAULT_VOICE as POCKET_DEFAULT_VOICE,
     get_available_voices as get_pocket_voices,
 )
 
@@ -117,8 +120,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Reveal key:", toggle_button)
 
         self.openai_base_url_edit = QtWidgets.QLineEdit(
-            self._settings["openai"].get(
-                "base_url", "https://api.openai.com/v1")
+            self._settings["openai"].get("base_url", "https://api.openai.com/v1")
         )
         layout.addRow("Base URL:", self.openai_base_url_edit)
 
@@ -127,7 +129,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             _list_to_text(self._settings["openai"].get("preferred_models", []))
         )
         self.openai_models_edit.setPlaceholderText(
-            "One model per line, e.g. gpt-4o-mini")
+            "One model per line, e.g. gpt-4o-mini"
+        )
         layout.addRow("Preferred models:", self.openai_models_edit)
 
         self._tabs.addTab(widget, "OpenAI GPT")
@@ -178,12 +181,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         self.tts_engine_combo.addItem("Kokoro (local voices)", "kokoro")
         self.tts_engine_combo.addItem("Pocket (Kyutai)", "pocket")
-        self.tts_engine_combo.addItem(
-            "Chatterbox Turbo (voice cloning)", "chatterbox")
+        self.tts_engine_combo.addItem("Chatterbox Turbo (voice cloning)", "chatterbox")
         self.tts_engine_combo.addItem("gTTS (online)", "gtts")
         current_engine = str(
-            self._tts_settings.get(
-                "engine", self._tts_defaults.get("engine", "auto"))
+            self._tts_settings.get("engine", self._tts_defaults.get("engine", "auto"))
         ).strip()
         idx = self.tts_engine_combo.findData(current_engine)
         if idx >= 0:
@@ -203,9 +204,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
         self.tts_pocket_voice_combo = QtWidgets.QComboBox()
         self.tts_pocket_voice_combo.setEditable(True)
-        self.tts_pocket_voice_combo.setInsertPolicy(
-            QtWidgets.QComboBox.NoInsert
-        )
+        self.tts_pocket_voice_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
         pocket_voices = get_pocket_voices()
         if pocket_voices:
             self.tts_pocket_voice_combo.addItems(pocket_voices)
@@ -223,14 +222,16 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.tts_pocket_speed_spin.setSingleStep(0.05)
         self.tts_pocket_speed_spin.setDecimals(2)
         self.tts_pocket_speed_spin.setValue(
-            float(self._tts_settings.get("pocket_speed", self._tts_defaults["pocket_speed"]))
+            float(
+                self._tts_settings.get(
+                    "pocket_speed", self._tts_defaults["pocket_speed"]
+                )
+            )
         )
         layout.addRow("Pocket speed:", self.tts_pocket_speed_spin)
 
         self.tts_pocket_prompt_edit = QtWidgets.QLineEdit()
-        self.tts_pocket_prompt_edit.setPlaceholderText(
-            "Optional voice prompt WAV"
-        )
+        self.tts_pocket_prompt_edit.setPlaceholderText("Optional voice prompt WAV")
         self.tts_pocket_prompt_edit.setText(
             str(self._tts_settings.get("pocket_prompt_path", ""))
         )
@@ -251,7 +252,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         voice_prompt_layout.setContentsMargins(0, 0, 0, 0)
         self.tts_chatterbox_voice_edit = QtWidgets.QLineEdit()
         self.tts_chatterbox_voice_edit.setPlaceholderText(
-            "Path to a short voice prompt WAV")
+            "Path to a short voice prompt WAV"
+        )
         self.tts_chatterbox_voice_edit.setText(
             str(self._tts_settings.get("chatterbox_voice_path", ""))
         )
@@ -262,8 +264,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Chatterbox voice:", voice_prompt_row)
 
         self.tts_chatterbox_dtype_combo = QtWidgets.QComboBox()
-        self.tts_chatterbox_dtype_combo.addItems(
-            ["fp32", "fp16", "q8", "q4", "q4f16"])
+        self.tts_chatterbox_dtype_combo.addItems(["fp32", "fp16", "q8", "q4", "q4f16"])
         self.tts_chatterbox_dtype_combo.setCurrentText(
             str(self._tts_settings.get("chatterbox_dtype", "fp32"))
         )
@@ -275,8 +276,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.tts_chatterbox_max_tokens_spin.setValue(
             int(self._tts_settings.get("chatterbox_max_new_tokens", 1024))
         )
-        layout.addRow("Chatterbox max tokens:",
-                      self.tts_chatterbox_max_tokens_spin)
+        layout.addRow("Chatterbox max tokens:", self.tts_chatterbox_max_tokens_spin)
 
         self.tts_chatterbox_rep_penalty_spin = QtWidgets.QDoubleSpinBox()
         self.tts_chatterbox_rep_penalty_spin.setRange(1.0, 3.0)
@@ -285,15 +285,13 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.tts_chatterbox_rep_penalty_spin.setValue(
             float(self._tts_settings.get("chatterbox_repetition_penalty", 1.2))
         )
-        layout.addRow("Chatterbox repetition:",
-                      self.tts_chatterbox_rep_penalty_spin)
+        layout.addRow("Chatterbox repetition:", self.tts_chatterbox_rep_penalty_spin)
 
         self.tts_chatterbox_watermark_check = QtWidgets.QCheckBox()
         self.tts_chatterbox_watermark_check.setChecked(
             bool(self._tts_settings.get("chatterbox_apply_watermark", False))
         )
-        layout.addRow("Chatterbox watermark:",
-                      self.tts_chatterbox_watermark_check)
+        layout.addRow("Chatterbox watermark:", self.tts_chatterbox_watermark_check)
 
         self.tts_lang_combo = QtWidgets.QComboBox()
         self.tts_lang_combo.setEditable(True)
@@ -433,7 +431,9 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             "chatterbox_voice_path": self.tts_chatterbox_voice_edit.text().strip(),
             "chatterbox_dtype": self.tts_chatterbox_dtype_combo.currentText().strip()
             or "fp32",
-            "chatterbox_max_new_tokens": int(self.tts_chatterbox_max_tokens_spin.value()),
+            "chatterbox_max_new_tokens": int(
+                self.tts_chatterbox_max_tokens_spin.value()
+            ),
             "chatterbox_repetition_penalty": float(
                 self.tts_chatterbox_rep_penalty_spin.value()
             ),

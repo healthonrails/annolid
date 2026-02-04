@@ -2,12 +2,12 @@ import cv2
 import numpy as np
 import torch
 import sys
-import os
 import pickle
+
 """
 Image Embeddings Generation for All Slices of a Tiff Stack Data
 
-This script provides functions to load, preprocess, and create embeddings for 
+This script provides functions to load, preprocess, and create embeddings for
 input 3d stack tiff images along three Cartesian directions (X, Y, Z) using a Segment Anything Model (SAM).
  The generated embeddings are saved to a pickle file for further analysis and processing.
 
@@ -74,7 +74,7 @@ title={TomoSAM: a 3D Slicer extension using SAM for tomography segmentation},
 author={Semeraro, Federico and Quintart, Alexandre and Izquierdo, Sergio Fraile and Ferguson, Joseph C},
 journal={arXiv preprint arXiv:2306.08609},
 year={2023}
-} 
+}
 
 """
 
@@ -102,9 +102,9 @@ def create_embeddings(img, output_filepath, sam_checkpoint_path):
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "Optional dependency 'segment_anything' is required to create SAM embeddings. "
-            "Install it with: pip install \"segment-anything @ git+https://github.com/SysCV/sam-hq.git\""
+            'Install it with: pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"'
         ) from exc
-    slice_directions = ['x', 'y', 'z']
+    slice_directions = ["x", "y", "z"]
 
     sam = sam_model_registry["vit_h"](checkpoint=sam_checkpoint_path)
     if torch.cuda.is_available():
@@ -117,20 +117,20 @@ def create_embeddings(img, output_filepath, sam_checkpoint_path):
         print(f"\nSlicing along {direction} direction")
         for k in range(img.shape[i]):
             img_slice = get_image_slice(img, i, k)
-            sys.stdout.write(
-                f"\rCreating embedding for {k + 1}/{img.shape[i]} image")
+            sys.stdout.write(f"\rCreating embedding for {k + 1}/{img.shape[i]} image")
 
             predictor.reset_image()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            predictor.set_image(
-                np.repeat(img_slice[:, :, np.newaxis], 3, axis=2))
+            predictor.set_image(np.repeat(img_slice[:, :, np.newaxis], 3, axis=2))
 
-            embeddings[i].append({
-                'original_size': predictor.original_size,
-                'input_size': predictor.input_size,
-                'features': predictor.features.to('cpu')
-            })
+            embeddings[i].append(
+                {
+                    "original_size": predictor.original_size,
+                    "input_size": predictor.input_size,
+                    "features": predictor.features.to("cpu"),
+                }
+            )
 
     save_embeddings(output_filepath, embeddings)
     print(f"\nSaved {output_filepath}.pkl")
@@ -148,5 +148,5 @@ def get_image_slice(img, dimension, index):
 
 def save_embeddings(output_filepath, embeddings):
     """Save embeddings to a pickle file."""
-    with open(output_filepath + ".pkl", 'wb') as f:
+    with open(output_filepath + ".pkl", "wb") as f:
         pickle.dump(embeddings, f)

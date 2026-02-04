@@ -11,9 +11,10 @@ Notes:
 - Pads inputs to multiples of 8 (as RAFT expects), then unpads outputs.
 - Accepts grayscale or RGB; grayscale is repeated to 3 channels.
 """
+
 from __future__ import annotations
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -39,27 +40,35 @@ class RAFTOpticalFlow(torch.nn.Module):
     or 'large' (higher accuracy). Returns flow as (B, 2, H, W) torch Tensor.
     """
 
-    def __init__(self, model_type: str = "small", device: Optional[Union[str, torch.device]] = None):
+    def __init__(
+        self,
+        model_type: str = "small",
+        device: Optional[Union[str, torch.device]] = None,
+    ):
         super().__init__()
         if raft_small is None or Raft_Small_Weights is None:
             raise ImportError(
                 f"torchvision optical_flow models not available: {_import_error}"
             )
 
-        self.device = torch.device(device) if device is not None else (
-            torch.device("cuda") if torch.cuda.is_available()
-            else torch.device("mps") if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-            else torch.device("cpu")
+        self.device = (
+            torch.device(device)
+            if device is not None
+            else (
+                torch.device("cuda")
+                if torch.cuda.is_available()
+                else torch.device("mps")
+                if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+                else torch.device("cpu")
+            )
         )
 
         if model_type == "large":
             weights = Raft_Large_Weights.DEFAULT
-            self.model = raft_large(
-                weights=weights, progress=False).to(self.device)
+            self.model = raft_large(weights=weights, progress=False).to(self.device)
         else:
             weights = Raft_Small_Weights.DEFAULT
-            self.model = raft_small(
-                weights=weights, progress=False).to(self.device)
+            self.model = raft_small(weights=weights, progress=False).to(self.device)
 
         self.transforms = weights.transforms()
         self.model.eval()

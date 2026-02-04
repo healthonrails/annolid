@@ -18,11 +18,13 @@ def create_figure_from_images(folder, rows=2, cols=3, output_file=None, dpi=300)
         dpi (int): Dots per inch (DPI) for the saved figure.
     """
     # Get and sort all PNG files in the folder (case insensitive)
-    image_files = sorted([
-        os.path.join(folder, f)
-        for f in os.listdir(folder)
-        if f.lower().endswith('.png')
-    ])
+    image_files = sorted(
+        [
+            os.path.join(folder, f)
+            for f in os.listdir(folder)
+            if f.lower().endswith(".png")
+        ]
+    )
 
     total_files = len(image_files)
     if total_files == 0:
@@ -41,8 +43,7 @@ def create_figure_from_images(folder, rows=2, cols=3, output_file=None, dpi=300)
     images = [Image.open(img) for img in sampled_files]
 
     # Create figure and subplots using constrained_layout for a clean, professional look
-    fig, axes = plt.subplots(rows, cols, figsize=(
-        15, 10), constrained_layout=True)
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 10), constrained_layout=True)
     axes = axes.flatten()
 
     # Annotate each subplot with a panel label (either frame number or alphabetical)
@@ -52,7 +53,7 @@ def create_figure_from_images(folder, rows=2, cols=3, output_file=None, dpi=300)
 
         base = os.path.basename(fname)
         # Extract all digit groups from the filename
-        digit_groups = re.findall(r'(\d+)', base)
+        digit_groups = re.findall(r"(\d+)", base)
         if digit_groups:
             # Use the last group and convert to int to remove leading zeros
             frame_number = str(int(digit_groups[-1]))
@@ -62,12 +63,20 @@ def create_figure_from_images(folder, rows=2, cols=3, output_file=None, dpi=300)
             panel_label = f"({chr(97 + idx)})"
 
         # Place the panel label in the top-left corner with a background for readability
-        ax.text(0.02, 0.98, panel_label, transform=ax.transAxes,
-                fontsize=12, fontweight='bold', color='white', verticalalignment='top',
-                bbox=dict(facecolor='black', edgecolor='none', pad=3))
+        ax.text(
+            0.02,
+            0.98,
+            panel_label,
+            transform=ax.transAxes,
+            fontsize=12,
+            fontweight="bold",
+            color="white",
+            verticalalignment="top",
+            bbox=dict(facecolor="black", edgecolor="none", pad=3),
+        )
 
     # Hide any remaining unused axes
-    for ax in axes[len(images):]:
+    for ax in axes[len(images) :]:
         ax.axis("off")
 
     # Set default output file name if not provided
@@ -87,15 +96,21 @@ if __name__ == "__main__":
         description="Create a figure from evenly sampled PNG images in a folder."
     )
     parser.add_argument("folder", help="Folder containing PNG images.")
-    parser.add_argument("--rows", type=int, default=2,
-                        help="Number of rows in the grid (default: 2).")
-    parser.add_argument("--cols", type=int, default=3,
-                        help="Number of columns in the grid (default: 3).")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Output filename for the figure.")
-    parser.add_argument("--dpi", type=int, default=300,
-                        help="DPI for the output figure (default: 300).")
+    parser.add_argument(
+        "--rows", type=int, default=2, help="Number of rows in the grid (default: 2)."
+    )
+    parser.add_argument(
+        "--cols",
+        type=int,
+        default=3,
+        help="Number of columns in the grid (default: 3).",
+    )
+    parser.add_argument(
+        "--output", type=str, default=None, help="Output filename for the figure."
+    )
+    parser.add_argument(
+        "--dpi", type=int, default=300, help="DPI for the output figure (default: 300)."
+    )
 
     args = parser.parse_args()
-    create_figure_from_images(args.folder, args.rows,
-                              args.cols, args.output, args.dpi)
+    create_figure_from_images(args.folder, args.rows, args.cols, args.output, args.dpi)

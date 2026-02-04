@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from PIL import Image
 
@@ -68,7 +68,9 @@ class DiffusersBackend(ImageEditingBackend):
     name: str = "diffusers"
 
     _pipe: Any = field(default=None, init=False, repr=False)
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
 
     def run(self, request: ImageEditRequest) -> ImageEditResult:
         pipe = self._get_pipe()
@@ -82,7 +84,9 @@ class DiffusersBackend(ImageEditingBackend):
             if request.seed is not None:
                 if device.startswith("cuda"):
                     generator = [
-                        torch.Generator(device=device).manual_seed(int(request.seed) + i)
+                        torch.Generator(device=device).manual_seed(
+                            int(request.seed) + i
+                        )
                         for i in range(int(request.num_images))
                     ]
                 else:
@@ -101,7 +105,9 @@ class DiffusersBackend(ImageEditingBackend):
             "width": int(request.width),
             "num_inference_steps": int(request.steps),
             "guidance_scale": float(request.cfg_scale),
-            "generator": generator[0] if isinstance(generator, list) and len(generator) == 1 else generator,
+            "generator": generator[0]
+            if isinstance(generator, list) and len(generator) == 1
+            else generator,
             "num_images_per_prompt": int(request.num_images),
         }
 
@@ -137,7 +143,9 @@ class DiffusersBackend(ImageEditingBackend):
                 "backend": self.name,
                 "model_id": self.model_id,
                 "device": _resolve_device(self.device),
-                "dtype": _resolve_dtype(self.dtype, device=_resolve_device(self.device)),
+                "dtype": _resolve_dtype(
+                    self.dtype, device=_resolve_device(self.device)
+                ),
             },
         )
 
@@ -154,7 +162,7 @@ class DiffusersBackend(ImageEditingBackend):
                 ) from exc
 
             try:
-                import torch
+                pass
             except Exception as exc:
                 raise BackendNotAvailableError(
                     "Diffusers backend requires 'torch' to run inference."
@@ -185,4 +193,3 @@ class DiffusersBackend(ImageEditingBackend):
 
             self._pipe = pipe
             return pipe
-

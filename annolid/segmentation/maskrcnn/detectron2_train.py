@@ -13,17 +13,18 @@ from detectron2.evaluation import COCOEvaluator, inference_on_dataset
 from detectron2.data import build_detection_test_loader
 
 
-class Segmentor():
-    def __init__(self,
-                 dataset_dir=None,
-                 out_put_dir=None,
-                 score_threshold=0.15,
-                 overlap_threshold=0.7,
-                 max_iterations=3000,
-                 batch_size=8,
-                 model_pth_path=None,
-                 model_config=None
-                 ) -> None:
+class Segmentor:
+    def __init__(
+        self,
+        dataset_dir=None,
+        out_put_dir=None,
+        score_threshold=0.15,
+        overlap_threshold=0.7,
+        max_iterations=3000,
+        batch_size=8,
+        model_pth_path=None,
+        model_config=None,
+    ) -> None:
         self.dataset_dir = dataset_dir
         self.batch_size = batch_size
 
@@ -33,7 +34,8 @@ class Segmentor():
 
         if out_put_dir is None:
             self.out_put_dir = str(
-                Path(self.dataset_dir).parent / 'Annolid_training_outputs')
+                Path(self.dataset_dir).parent / "Annolid_training_outputs"
+            )
         else:
             self.out_put_dir = out_put_dir
 
@@ -43,19 +45,27 @@ class Segmentor():
         self.dataset_name = Path(self.dataset_dir).stem
 
         try:
-            register_coco_instances(f"{self.dataset_name}_train", {
-            }, f"{self.dataset_dir}/train/annotations.json", f"{self.dataset_dir}/train/")
-            register_coco_instances(f"{self.dataset_name}_valid", {
-            }, f"{self.dataset_dir}/valid/annotations.json", f"{self.dataset_dir}/valid/")
+            register_coco_instances(
+                f"{self.dataset_name}_train",
+                {},
+                f"{self.dataset_dir}/train/annotations.json",
+                f"{self.dataset_dir}/train/",
+            )
+            register_coco_instances(
+                f"{self.dataset_name}_valid",
+                {},
+                f"{self.dataset_dir}/valid/annotations.json",
+                f"{self.dataset_dir}/valid/",
+            )
         except AssertionError as e:
             self.logger.info(e)
 
-        dataset_dicts = get_detection_dataset_dicts(
-            [f"{self.dataset_name}_train"])
+        get_detection_dataset_dicts([f"{self.dataset_name}_train"])
 
         _dataset_metadata = MetadataCatalog.get(f"{self.dataset_name}_train")
-        _dataset_metadata.thing_colors = [cc['color']
-                                          for cc in builtin_meta.COCO_CATEGORIES]
+        _dataset_metadata.thing_colors = [
+            cc["color"] for cc in builtin_meta.COCO_CATEGORIES
+        ]
         num_classes = len(_dataset_metadata.thing_classes)
         self.class_names = _dataset_metadata.thing_classes
 
@@ -64,7 +74,7 @@ class Segmentor():
         self.cfg.merge_from_file(model_zoo.get_config_file(model_config))
         self.cfg.DATASETS.TRAIN = (f"{self.dataset_name}_train",)
         self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
-        self.cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.cfg.MODEL.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
         self.cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = self.overlap_threshold
 
@@ -80,7 +90,8 @@ class Segmentor():
             self.cfg.MODEL.WEIGHTS = model_pth_path
         else:
             self.cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
-                model_config)  # Let training initialize from model zoo
+                model_config
+            )  # Let training initialize from model zoo
         self.cfg.SOLVER.IMS_PER_BATCH = self.batch_size  # @param
         self.cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
         self.logger.info(f"Max iterations {max_iterations}")
@@ -105,26 +116,23 @@ class Segmentor():
     def train(self):
         self.trainer.train()
         try:
-            self.evalulate()
+            self.evaluate_model()
         except AssertionError as ae:
             # skip evaluation in case the valid dataset is empty
             self.logger.info(ae)
 
-    def evalulate(self):
+    def evaluate_model(self):
         evaluator = COCOEvaluator(
             f"{self.dataset_name}_valid",
             self.cfg,
             False,
-            output_dir=self.cfg.OUTPUT_DIR)
+            output_dir=self.cfg.OUTPUT_DIR,
+        )
 
-        val_loader = build_detection_test_loader(self.cfg,
-                                                 f"{self.dataset_name}_valid")
-        val_res = inference_on_dataset(self.trainer.model,
-                                       val_loader,
-                                       evaluator)
+        val_loader = build_detection_test_loader(self.cfg, f"{self.dataset_name}_valid")
+        val_res = inference_on_dataset(self.trainer.model, val_loader, evaluator)
         self.logger.info(val_res)
-        out_val_res_file = str(
-            Path(self.cfg.OUTPUT_DIR) / "evalulation_results.txt")
+        out_val_res_file = str(Path(self.cfg.OUTPUT_DIR) / "evalulation_results.txt")
         with open(out_val_res_file, "w") as text_file:
             text_file.write(str(val_res))
         return val_res

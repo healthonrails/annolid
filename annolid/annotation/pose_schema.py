@@ -128,7 +128,7 @@ class PoseSchema:
             for inst in self.instances:
                 prefix = self.instance_prefix(inst)
                 if prefix and text.lower().startswith(prefix.lower()):
-                    return inst, text[len(prefix):].lstrip(sep).strip()
+                    return inst, text[len(prefix) :].lstrip(sep).strip()
             # Instances are configured but no known prefix matched: treat as base label.
             return None, text
         return None, text
@@ -144,7 +144,8 @@ class PoseSchema:
                 import yaml  # type: ignore
             except Exception as exc:  # pragma: no cover
                 raise RuntimeError(
-                    "PyYAML is required to load pose schema YAML files.") from exc
+                    "PyYAML is required to load pose schema YAML files."
+                ) from exc
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
             if not isinstance(data, dict):
                 raise ValueError(f"Invalid pose schema in {p}")
@@ -164,14 +165,18 @@ class PoseSchema:
                 import yaml  # type: ignore
             except Exception as exc:  # pragma: no cover
                 raise RuntimeError(
-                    "PyYAML is required to save pose schema YAML files.") from exc
-            p.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False),
-                         encoding="utf-8")
+                    "PyYAML is required to save pose schema YAML files."
+                ) from exc
+            p.write_text(
+                yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8"
+            )
             return p
         p.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return p
 
-    def compute_flip_idx(self, keypoint_order: Optional[Sequence[str]] = None) -> Optional[List[int]]:
+    def compute_flip_idx(
+        self, keypoint_order: Optional[Sequence[str]] = None
+    ) -> Optional[List[int]]:
         order = list(keypoint_order or self.keypoints)
         if not order:
             return None
@@ -254,7 +259,11 @@ class PoseSchema:
 
         # Preserve a usable flip_idx when the original was provided for an expanded order.
         if original_flip and len(original_flip) == len(original_keypoints):
-            if inst_count > 0 and base_count > 0 and inst_count * base_count == len(original_keypoints):
+            if (
+                inst_count > 0
+                and base_count > 0
+                and inst_count * base_count == len(original_keypoints)
+            ):
                 segments: List[List[int]] = []
                 valid = True
                 for seg_idx in range(inst_count):
@@ -277,7 +286,11 @@ class PoseSchema:
                     if not valid:
                         break
                     segments.append(rel)
-                if valid and segments and all(seg == segments[0] for seg in segments[1:]):
+                if (
+                    valid
+                    and segments
+                    and all(seg == segments[0] for seg in segments[1:])
+                ):
                     self.flip_idx = segments[0]
                 else:
                     # Drop inconsistent flip indices so compute_flip_idx can fall back to symmetry_pairs.

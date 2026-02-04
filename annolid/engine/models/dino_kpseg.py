@@ -18,22 +18,26 @@ class DinoKPSEGPlugin(ModelPluginBase):
     description = "DINOv3 feature + small conv head for keypoint mask segmentation."
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--data", required=True,
-                            help="Path to YOLO pose data.yaml")
-        parser.add_argument("--output", default=None,
-                            help="Run output directory (optional)")
-        parser.add_argument("--runs-root", default=None,
-                            help="Runs root (optional)")
-        parser.add_argument("--run-name", default=None,
-                            help="Optional run name (default: timestamp)")
+        parser.add_argument("--data", required=True, help="Path to YOLO pose data.yaml")
+        parser.add_argument(
+            "--output", default=None, help="Run output directory (optional)"
+        )
+        parser.add_argument("--runs-root", default=None, help="Runs root (optional)")
+        parser.add_argument(
+            "--run-name", default=None, help="Optional run name (default: timestamp)"
+        )
         parser.add_argument(
             "--model-name",
             default="facebook/dinov3-vits16-pretrain-lvd1689m",
             help="Hugging Face model id or dinov3 alias",
         )
         parser.add_argument("--short-side", type=int, default=768)
-        parser.add_argument("--layers", type=str, default="-1",
-                            help="Comma-separated transformer block indices")
+        parser.add_argument(
+            "--layers",
+            type=str,
+            default="-1",
+            help="Comma-separated transformer block indices",
+        )
         parser.add_argument("--radius-px", type=float, default=6.0)
         parser.add_argument(
             "--mask-type",
@@ -64,14 +68,24 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--epochs", type=int, default=50)
         parser.add_argument("--threshold", type=float, default=0.4)
         parser.add_argument("--device", default=None)
-        parser.add_argument("--no-cache", action="store_true",
-                            help="Disable feature caching")
-        parser.add_argument("--head-type", choices=("conv", "attn", "hybrid"),
-                            default="conv", help="Head architecture")
-        parser.add_argument("--attn-heads", type=int, default=4,
-                            help="Attention heads (attn head only)")
-        parser.add_argument("--attn-layers", type=int, default=1,
-                            help="Attention layers (attn head only)")
+        parser.add_argument(
+            "--no-cache", action="store_true", help="Disable feature caching"
+        )
+        parser.add_argument(
+            "--head-type",
+            choices=("conv", "attn", "hybrid"),
+            default="conv",
+            help="Head architecture",
+        )
+        parser.add_argument(
+            "--attn-heads", type=int, default=4, help="Attention heads (attn head only)"
+        )
+        parser.add_argument(
+            "--attn-layers",
+            type=int,
+            default=1,
+            help="Attention layers (attn head only)",
+        )
         parser.add_argument(
             "--lr-pair-loss-weight",
             type=float,
@@ -120,10 +134,12 @@ class DinoKPSEGPlugin(ModelPluginBase):
             default="bce",
             help="Loss type for mask supervision (default: bce).",
         )
-        parser.add_argument("--focal-alpha", type=float,
-                            default=0.25, help="Alpha for focal BCE.")
-        parser.add_argument("--focal-gamma", type=float,
-                            default=2.0, help="Gamma for focal BCE.")
+        parser.add_argument(
+            "--focal-alpha", type=float, default=0.25, help="Alpha for focal BCE."
+        )
+        parser.add_argument(
+            "--focal-gamma", type=float, default=2.0, help="Gamma for focal BCE."
+        )
         parser.add_argument(
             "--coord-warmup-epochs",
             type=int,
@@ -144,14 +160,29 @@ class DinoKPSEGPlugin(ModelPluginBase):
             default=0,
             help="Overfit mode: train/val on N images (0=off).",
         )
-        parser.add_argument("--early-stop-patience", type=int,
-                            default=0, help="Early stop patience (0=off)")
-        parser.add_argument("--early-stop-min-delta", type=float,
-                            default=0.0, help="Min metric improvement to reset patience")
-        parser.add_argument("--early-stop-min-epochs", type=int,
-                            default=0, help="Do not early-stop before this epoch")
-        parser.add_argument("--tb-add-graph", action="store_true",
-                            help="Export model graph to TensorBoard (can be slow)")
+        parser.add_argument(
+            "--early-stop-patience",
+            type=int,
+            default=0,
+            help="Early stop patience (0=off)",
+        )
+        parser.add_argument(
+            "--early-stop-min-delta",
+            type=float,
+            default=0.0,
+            help="Min metric improvement to reset patience",
+        )
+        parser.add_argument(
+            "--early-stop-min-epochs",
+            type=int,
+            default=0,
+            help="Do not early-stop before this epoch",
+        )
+        parser.add_argument(
+            "--tb-add-graph",
+            action="store_true",
+            help="Export model graph to TensorBoard (can be slow)",
+        )
         parser.add_argument(
             "--tb-projector",
             action="store_true",
@@ -164,39 +195,49 @@ class DinoKPSEGPlugin(ModelPluginBase):
             help="Which dataset split(s) to sample for the projector (default: val).",
         )
         parser.add_argument("--tb-projector-max-images", type=int, default=64)
-        parser.add_argument("--tb-projector-max-patches",
-                            type=int, default=4000)
+        parser.add_argument("--tb-projector-max-patches", type=int, default=4000)
         parser.add_argument(
-            "--tb-projector-per-image-per-keypoint", type=int, default=3)
-        parser.add_argument("--tb-projector-pos-threshold",
-                            type=float, default=0.35)
+            "--tb-projector-per-image-per-keypoint", type=int, default=3
+        )
+        parser.add_argument("--tb-projector-pos-threshold", type=float, default=0.35)
         parser.add_argument("--tb-projector-crop-px", type=int, default=96)
+        parser.add_argument("--tb-projector-sprite-border-px", type=int, default=3)
+        parser.add_argument("--tb-projector-add-negatives", action="store_true")
+        parser.add_argument("--tb-projector-neg-threshold", type=float, default=0.02)
+        parser.add_argument("--tb-projector-negatives-per-image", type=int, default=6)
         parser.add_argument(
-            "--tb-projector-sprite-border-px", type=int, default=3)
-        parser.add_argument("--tb-projector-add-negatives",
-                            action="store_true")
-        parser.add_argument("--tb-projector-neg-threshold",
-                            type=float, default=0.02)
+            "--augment", action="store_true", help="Enable YOLO-like pose augmentations"
+        )
         parser.add_argument(
-            "--tb-projector-negatives-per-image", type=int, default=6)
-        parser.add_argument("--augment", action="store_true",
-                            help="Enable YOLO-like pose augmentations")
-        parser.add_argument("--hflip", type=float, default=0.5,
-                            help="Horizontal flip probability")
-        parser.add_argument("--degrees", type=float, default=0.0,
-                            help="Random rotation degrees (+/-)")
-        parser.add_argument("--translate", type=float,
-                            default=0.0, help="Random translate fraction (+/-)")
-        parser.add_argument("--scale", type=float, default=0.0,
-                            help="Random scale fraction (+/-)")
-        parser.add_argument("--brightness", type=float,
-                            default=0.0, help="Brightness jitter (+/-)")
-        parser.add_argument("--contrast", type=float,
-                            default=0.0, help="Contrast jitter (+/-)")
-        parser.add_argument("--saturation", type=float,
-                            default=0.0, help="Saturation jitter (+/-)")
-        parser.add_argument("--seed", type=int, default=None,
-                            help="Optional RNG seed (also used for augmentations)")
+            "--hflip", type=float, default=0.5, help="Horizontal flip probability"
+        )
+        parser.add_argument(
+            "--degrees", type=float, default=0.0, help="Random rotation degrees (+/-)"
+        )
+        parser.add_argument(
+            "--translate",
+            type=float,
+            default=0.0,
+            help="Random translate fraction (+/-)",
+        )
+        parser.add_argument(
+            "--scale", type=float, default=0.0, help="Random scale fraction (+/-)"
+        )
+        parser.add_argument(
+            "--brightness", type=float, default=0.0, help="Brightness jitter (+/-)"
+        )
+        parser.add_argument(
+            "--contrast", type=float, default=0.0, help="Contrast jitter (+/-)"
+        )
+        parser.add_argument(
+            "--saturation", type=float, default=0.0, help="Saturation jitter (+/-)"
+        )
+        parser.add_argument(
+            "--seed",
+            type=int,
+            default=None,
+            help="Optional RNG seed (also used for augmentations)",
+        )
 
     def train(self, args: argparse.Namespace) -> int:
         from annolid.segmentation.dino_kpseg.train import train as train_kpseg
@@ -212,7 +253,11 @@ class DinoKPSEGPlugin(ModelPluginBase):
                 else shared_runs_root()
             )
             out_dir = allocate_run_dir(
-                task="dino_kpseg", model="train", runs_root=runs_root, run_name=args.run_name)
+                task="dino_kpseg",
+                model="train",
+                runs_root=runs_root,
+                run_name=args.run_name,
+            )
         best = train_kpseg(
             data_yaml=Path(args.data).expanduser().resolve(),
             output_dir=out_dir,
@@ -265,24 +310,29 @@ class DinoKPSEGPlugin(ModelPluginBase):
             tb_add_graph=bool(args.tb_add_graph),
             tb_projector=bool(getattr(args, "tb_projector", False)),
             tb_projector_split=str(getattr(args, "tb_projector_split", "val")),
-            tb_projector_max_images=int(
-                getattr(args, "tb_projector_max_images", 64)),
+            tb_projector_max_images=int(getattr(args, "tb_projector_max_images", 64)),
             tb_projector_max_patches=int(
-                getattr(args, "tb_projector_max_patches", 4000)),
+                getattr(args, "tb_projector_max_patches", 4000)
+            ),
             tb_projector_per_image_per_keypoint=int(
-                getattr(args, "tb_projector_per_image_per_keypoint", 3)),
+                getattr(args, "tb_projector_per_image_per_keypoint", 3)
+            ),
             tb_projector_pos_threshold=float(
-                getattr(args, "tb_projector_pos_threshold", 0.35)),
-            tb_projector_crop_px=int(
-                getattr(args, "tb_projector_crop_px", 96)),
+                getattr(args, "tb_projector_pos_threshold", 0.35)
+            ),
+            tb_projector_crop_px=int(getattr(args, "tb_projector_crop_px", 96)),
             tb_projector_sprite_border_px=int(
-                getattr(args, "tb_projector_sprite_border_px", 3)),
+                getattr(args, "tb_projector_sprite_border_px", 3)
+            ),
             tb_projector_add_negatives=bool(
-                getattr(args, "tb_projector_add_negatives", False)),
+                getattr(args, "tb_projector_add_negatives", False)
+            ),
             tb_projector_neg_threshold=float(
-                getattr(args, "tb_projector_neg_threshold", 0.02)),
+                getattr(args, "tb_projector_neg_threshold", 0.02)
+            ),
             tb_projector_negatives_per_image=int(
-                getattr(args, "tb_projector_negatives_per_image", 6)),
+                getattr(args, "tb_projector_negatives_per_image", 6)
+            ),
             augment=DinoKPSEGAugmentConfig(
                 enabled=bool(args.augment),
                 hflip_prob=float(args.hflip),
@@ -299,13 +349,15 @@ class DinoKPSEGPlugin(ModelPluginBase):
         return 0
 
     def add_predict_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--weights", required=True,
-                            help="Path to DinoKPSEG checkpoint (.pt)")
+        parser.add_argument(
+            "--weights", required=True, help="Path to DinoKPSEG checkpoint (.pt)"
+        )
         parser.add_argument("--image", required=True, help="Input image path")
         parser.add_argument("--device", default=None)
         parser.add_argument("--threshold", type=float, default=None)
-        parser.add_argument("--out", default=None,
-                            help="Optional JSON output path (default: stdout)")
+        parser.add_argument(
+            "--out", default=None, help="Optional JSON output path (default: stdout)"
+        )
         parser.add_argument(
             "--return-patch-masks",
             action="store_true",
@@ -316,8 +368,7 @@ class DinoKPSEGPlugin(ModelPluginBase):
         try:
             import cv2  # type: ignore
         except Exception as exc:
-            raise RuntimeError(
-                "DinoKPSEG predict requires opencv-python.") from exc
+            raise RuntimeError("DinoKPSEG predict requires opencv-python.") from exc
 
         from annolid.segmentation.dino_kpseg.predictor import DinoKPSEGPredictor
 
@@ -327,7 +378,8 @@ class DinoKPSEGPlugin(ModelPluginBase):
             raise FileNotFoundError(f"Failed to read image: {img_path}")
 
         predictor = DinoKPSEGPredictor(
-            Path(args.weights).expanduser().resolve(), device=args.device)
+            Path(args.weights).expanduser().resolve(), device=args.device
+        )
         pred = predictor.predict(
             frame_bgr,
             threshold=args.threshold,
@@ -343,14 +395,15 @@ class DinoKPSEGPlugin(ModelPluginBase):
             "keypoint_names": predictor.keypoint_names,
             "resized_hw": [int(pred.resized_hw[0]), int(pred.resized_hw[1])],
             "patch_size": int(pred.patch_size),
-            "masks_patch": pred.masks_patch.tolist() if pred.masks_patch is not None else None,
+            "masks_patch": pred.masks_patch.tolist()
+            if pred.masks_patch is not None
+            else None,
         }
 
         out_path: Optional[str] = args.out
         text = json.dumps(payload, indent=2)
         if out_path:
-            Path(out_path).expanduser().resolve(
-            ).write_text(text, encoding="utf-8")
+            Path(out_path).expanduser().resolve().write_text(text, encoding="utf-8")
         else:
             print(text)
         return 0

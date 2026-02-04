@@ -106,8 +106,8 @@ class DepthManager(QtCore.QObject):
             save_depth_video=save_depth_video,
             save_depth_frames=save_depth_frames,
         )
-        worker._kwargs["progress_callback"] = lambda percent: worker.progress_signal.emit(
-            percent
+        worker._kwargs["progress_callback"] = (
+            lambda percent: worker.progress_signal.emit(percent)
         )
         worker.progress_signal.connect(
             lambda percent: w.statusBar().showMessage(
@@ -136,9 +136,7 @@ class DepthManager(QtCore.QObject):
         self._video_depth_worker = worker
         self._video_depth_worker_thread = worker_thread
 
-        w.statusBar().showMessage(
-            w.tr("Video Depth Anything running..."), 5000
-        )
+        w.statusBar().showMessage(w.tr("Video Depth Anything running..."), 5000)
 
     def configure_video_depth_settings(self) -> None:
         dialog = DepthSettingsDialog(
@@ -148,8 +146,7 @@ class DepthManager(QtCore.QObject):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         values = dialog.values()
-        self.window._config.setdefault(
-            "video_depth_anything", {}).update(values)
+        self.window._config.setdefault("video_depth_anything", {}).update(values)
         if isinstance(self.window.settings, QtCore.QSettings):
             self.window.settings.setValue("video_depth_anything", values)
 
@@ -194,8 +191,9 @@ class DepthManager(QtCore.QObject):
             if isinstance(payload, dict):
                 overlay_image = payload.get("overlay")
                 frame_index = payload.get("frame_index")
-            depth_stats = payload.get("depth_stats") if isinstance(
-                payload, dict) else None
+            depth_stats = (
+                payload.get("depth_stats") if isinstance(payload, dict) else None
+            )
             if self.window.canvas and overlay_image is not None:
                 qimage = QtGui.QImage(
                     overlay_image.data,
@@ -209,8 +207,7 @@ class DepthManager(QtCore.QObject):
             if frame_index is not None:
                 self._set_depth_preview_frame(int(frame_index))
                 self.window.statusBar().showMessage(
-                    self.window.tr("Video Depth Anything frame %d") % int(
-                        frame_index),
+                    self.window.tr("Video Depth Anything frame %d") % int(frame_index),
                     1000,
                 )
             if depth_stats is not None and frame_index is not None:
@@ -240,7 +237,9 @@ class DepthManager(QtCore.QObject):
         video_path = Path(self.window.video_file)
         return video_path.parent / video_path.stem / "depth.ndjson"
 
-    def _build_depth_overlay(self, frame_rgb: np.ndarray, depth_map: np.ndarray) -> np.ndarray:
+    def _build_depth_overlay(
+        self, frame_rgb: np.ndarray, depth_map: np.ndarray
+    ) -> np.ndarray:
         depth = depth_map.astype(np.float32)
         finite = depth[np.isfinite(depth)]
         if finite.size == 0:
@@ -259,8 +258,7 @@ class DepthManager(QtCore.QObject):
         color = cv2.applyColorMap(vis_u8, cv2.COLORMAP_INFERNO)
         color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
         overlay = color.astype(np.uint8)
-        alpha = np.full(
-            (overlay.shape[0], overlay.shape[1], 1), 200, dtype=np.uint8)
+        alpha = np.full((overlay.shape[0], overlay.shape[1], 1), 200, dtype=np.uint8)
         return np.concatenate([overlay, alpha], axis=2)
 
     def _load_depth_overlay_from_record(
@@ -292,8 +290,7 @@ class DepthManager(QtCore.QObject):
             return None
         height, width = frame_rgb.shape[:2]
         if depth.shape != (height, width):
-            depth = cv2.resize(depth, (width, height),
-                               interpolation=cv2.INTER_LINEAR)
+            depth = cv2.resize(depth, (width, height), interpolation=cv2.INTER_LINEAR)
         return self._build_depth_overlay(frame_rgb, depth)
 
     def _current_frame_rgb(self) -> Optional[np.ndarray]:
@@ -312,13 +309,11 @@ class DepthManager(QtCore.QObject):
         qimg = QtGui.QImage(self.window.filename)
         if qimg.isNull():
             return
-        self.window.canvas.loadPixmap(
-            QtGui.QPixmap.fromImage(qimg), clear_shapes=False)
+        self.window.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimg), clear_shapes=False)
         if self.window.video_loader:
             with contextlib.suppress(Exception):
                 self.window.video_loader.load_frame(self.window.frame_number)
-        self.window.loadPredictShapes(self.window.frame_number,
-                                      self.window.filename)
+        self.window.loadPredictShapes(self.window.frame_number, self.window.filename)
 
     def _handle_video_depth_finished(
         self,
@@ -339,8 +334,7 @@ class DepthManager(QtCore.QObject):
             QtWidgets.QMessageBox.critical(
                 self.window,
                 self.window.tr("Video Depth Anything"),
-                self.window.tr(
-                    "Video Depth Anything failed:\n%s") % str(result),
+                self.window.tr("Video Depth Anything failed:\n%s") % str(result),
             )
             self.window.statusBar().showMessage(
                 self.window.tr("Video Depth Anything failed."), 5000

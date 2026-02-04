@@ -25,4 +25,3 @@ def test_sanitize_labelme_payload_moves_non_bool_flags() -> None:
     assert shape0["flags"] == {"keep": True}
     assert shape0["instance_label"] == "animal"
     assert shape0["score"] == 0.9
-

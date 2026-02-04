@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Callable, List, Optional, Set
 
-from labelme.ai import MODELS
+from annolid.utils.annotation_compat import AI_MODELS as MODELS
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.models_registry import MODEL_REGISTRY, ModelConfig

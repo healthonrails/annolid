@@ -53,8 +53,7 @@ def _maybe_cache_asset_weight(resolved_path: Path) -> Path:
         logger.info("Cached YOLO weight %s -> %s", resolved_path, cache_target)
         return cache_target
     except OSError as exc:
-        logger.debug("Failed to cache YOLO weight '%s': %s",
-                     resolved_path, exc)
+        logger.debug("Failed to cache YOLO weight '%s': %s", resolved_path, exc)
         return resolved_path
 
 
@@ -87,8 +86,7 @@ def configure_ultralytics_cache(weights_dir: Optional[Path] = None) -> Path:
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        logger.debug(
-            "Unable to create Ultralytics cache dir '%s': %s", target, exc)
+        logger.debug("Unable to create Ultralytics cache dir '%s': %s", target, exc)
         return target
 
     try:
@@ -126,8 +124,7 @@ def ensure_ultralytics_asset_cached(asset_name: str) -> Path:
     try:
         from ultralytics.utils.downloads import attempt_download_asset  # type: ignore
     except Exception as exc:
-        raise RuntimeError(
-            "Ultralytics is required to download YOLO assets.") from exc
+        raise RuntimeError("Ultralytics is required to download YOLO assets.") from exc
 
     downloaded = Path(attempt_download_asset(str(target))).expanduser()
     return downloaded
@@ -157,8 +154,9 @@ class YOLOModelSpec:
     backend: str
 
 
-def _candidate_weight_paths(weight_name: str,
-                            search_roots: Optional[Iterable[Path]] = None) -> Iterable[Path]:
+def _candidate_weight_paths(
+    weight_name: str, search_roots: Optional[Iterable[Path]] = None
+) -> Iterable[Path]:
     """
     Yield candidate weight paths for a given model name.
 
@@ -172,9 +170,9 @@ def _candidate_weight_paths(weight_name: str,
     if search_roots:
         roots.extend(Path(root) for root in search_roots)
 
-    module_root = Path(__file__).resolve().parent           # annolid/yolo
-    annolid_root = module_root.parent                       # annolid/
-    project_root = annolid_root.parent                      # repo root
+    module_root = Path(__file__).resolve().parent  # annolid/yolo
+    annolid_root = module_root.parent  # annolid/
+    project_root = annolid_root.parent  # repo root
 
     default_roots = [
         module_root,
@@ -228,8 +226,9 @@ def _candidate_weight_paths(weight_name: str,
                 yield downloads_candidate
 
 
-def resolve_weight_path(weight_name: str,
-                        search_roots: Optional[Iterable[Path]] = None) -> Path:
+def resolve_weight_path(
+    weight_name: str, search_roots: Optional[Iterable[Path]] = None
+) -> Path:
     """
     Resolve a YOLO weight reference to an existing file path if possible.
 
@@ -284,8 +283,9 @@ def resolve_weight_path(weight_name: str,
     return Path(weight_name)
 
 
-def select_backend(weight_name: str,
-                   search_roots: Optional[Iterable[Path]] = None) -> YOLOModelSpec:
+def select_backend(
+    weight_name: str, search_roots: Optional[Iterable[Path]] = None
+) -> YOLOModelSpec:
     """
     Detect available hardware and return the best backend for the provided model.
 
@@ -296,12 +296,11 @@ def select_backend(weight_name: str,
     # CoreML packages are tied to Apple devices and should bypass CUDA/TensorRT selection.
     if resolved.suffix.lower() == ".mlpackage":
         if not resolved.exists():
-            raise FileNotFoundError(
-                f"CoreML package '{resolved}' not found on disk.")
+            raise FileNotFoundError(f"CoreML package '{resolved}' not found on disk.")
         logger.info("Using CoreML package for %s", resolved)
-        return YOLOModelSpec(weight_path=resolved,
-                             device=torch.device("cpu"),
-                             backend="CoreML (CPU)")
+        return YOLOModelSpec(
+            weight_path=resolved, device=torch.device("cpu"), backend="CoreML (CPU)"
+        )
 
     # TensorRT takes precedence when available and an engine exists alongside the weight.
     if torch.cuda.is_available():
@@ -309,16 +308,16 @@ def select_backend(weight_name: str,
         engine_path = resolved.with_suffix(".engine")
         if engine_path.is_file():
             logger.info("Using TensorRT engine for %s", engine_path)
-            return YOLOModelSpec(weight_path=engine_path,
-                                 device=device,
-                                 backend="TensorRT (GPU)")
+            return YOLOModelSpec(
+                weight_path=engine_path, device=device, backend="TensorRT (GPU)"
+            )
 
         # Fall back to the resolved weight on GPU.
         if resolved.suffix == ".pt" or resolved.exists():
             logger.info("Using PyTorch backend on CUDA for %s", resolved)
-            return YOLOModelSpec(weight_path=resolved,
-                                 device=device,
-                                 backend="PyTorch (GPU)")
+            return YOLOModelSpec(
+                weight_path=resolved, device=device, backend="PyTorch (GPU)"
+            )
         raise FileNotFoundError(
             f"CUDA available but weight '{resolved}' could not be located."
         )
@@ -330,17 +329,16 @@ def select_backend(weight_name: str,
             "No compatible GPU detected; running %s on CPU. Expect reduced performance.",
             resolved,
         )
-        return YOLOModelSpec(weight_path=resolved,
-                             device=device,
-                             backend="PyTorch (CPU)")
+        return YOLOModelSpec(
+            weight_path=resolved, device=device, backend="PyTorch (CPU)"
+        )
 
     raise FileNotFoundError(
         f"Unable to locate model weights for '{weight_name}'. Provide a valid path."
     )
 
 
-def load_yolo_model(weight_name: str,
-                    search_roots: Optional[Iterable[Path]] = None):
+def load_yolo_model(weight_name: str, search_roots: Optional[Iterable[Path]] = None):
     """
     Load a YOLO model with automatic backend selection.
 
@@ -352,6 +350,9 @@ def load_yolo_model(weight_name: str,
     from ultralytics import YOLO  # Imported lazily to avoid heavy import cost.
 
     model = YOLO(str(spec.weight_path))
-    if "TensorRT" not in spec.backend and spec.weight_path.suffix.lower() != ".mlpackage":
+    if (
+        "TensorRT" not in spec.backend
+        and spec.weight_path.suffix.lower() != ".mlpackage"
+    ):
         model.to(spec.device)
     return model, spec

@@ -26,7 +26,9 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        args: [--skip=*.ipynb]
+        args:
+          - --skip=*.ipynb,*.svg,*.json,*.min.js,annolid/detector/countgd/**,annolid/segmentation/SAM/**,annolid/segmentation/cutie_vos/**,annolid/depth/video_depth_anything/**,annolid/gui/assets/pdfjs/**,annolid/hardware/**,annolid/tracker/cotracker/**
+          - --ignore-words=.codespell-ignore-words.txt
 
   # Optional: prevent committing secrets
   - repo: https://github.com/gitleaks/gitleaks

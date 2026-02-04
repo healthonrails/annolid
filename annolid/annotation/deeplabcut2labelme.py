@@ -19,11 +19,11 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
                                           Defaults to False (single-animal).
     """
 
-    csv_path = Path(video_path).with_suffix(
-        '.csv')  # Infer CSV path from video path
+    csv_path = Path(video_path).with_suffix(".csv")  # Infer CSV path from video path
     if not csv_path.exists():
         print(
-            f"CSV file not found: {csv_path}. Please ensure a CSV file with the same name as the video exists.")
+            f"CSV file not found: {csv_path}. Please ensure a CSV file with the same name as the video exists."
+        )
         return
 
     # Read multi-index header, frame index as index
@@ -32,11 +32,11 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
     scorer = df.columns.get_level_values(0)[0]  # Get the scorer name
 
     if is_multi_animal:
-        animal_ids = df.columns.get_level_values('animal').unique().tolist()
-        bodyparts = df.columns.get_level_values('bodyparts').unique().tolist()
+        animal_ids = df.columns.get_level_values("animal").unique().tolist()
+        bodyparts = df.columns.get_level_values("bodyparts").unique().tolist()
     else:
         animal_ids = [None]
-        bodyparts = df.columns.get_level_values('bodyparts').unique().tolist()
+        bodyparts = df.columns.get_level_values("bodyparts").unique().tolist()
 
     # Extract image height and width from the first frame of the video
     cap = cv2.VideoCapture(video_path)
@@ -44,13 +44,12 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
         raise Exception(f"Error opening video file: {video_path}")
     ret, frame = cap.read()
     if not ret:
-        raise Exception(
-            f"Could not read the first frame from video: {video_path}")
+        raise Exception(f"Could not read the first frame from video: {video_path}")
     image_height, image_width, _ = frame.shape
     cap.release()
 
     if output_dir is None:
-        output_dir = csv_path.with_suffix('')
+        output_dir = csv_path.with_suffix("")
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -62,14 +61,14 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
                 try:
                     if is_multi_animal:
                         # Keep multi-animal as is
-                        x_col = (scorer, animal_id, bodypart, 'x')
-                        y_col = (scorer, animal_id, bodypart, 'y')
+                        x_col = (scorer, animal_id, bodypart, "x")
+                        y_col = (scorer, animal_id, bodypart, "y")
                     else:
                         # Corrected x_col and y_col for single-animal based on KeyError
                         # Try removing 'coords' level
-                        x_col = (scorer, bodypart, 'x')
+                        x_col = (scorer, bodypart, "x")
                         # Try removing 'coords' level
-                        y_col = (scorer, bodypart, 'y')
+                        y_col = (scorer, bodypart, "y")
 
                     x = row[x_col]
                     y = row[y_col]
@@ -91,15 +90,17 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
                 except KeyError as e:  # Capture the exception for debugging
                     # Print full KeyError
                     print(
-                        f"KeyError for frame {index}, bodypart {bodypart}, animal {animal_id}: {e}")
+                        f"KeyError for frame {index}, bodypart {bodypart}, animal {animal_id}: {e}"
+                    )
                     # Print the keys being tried
                     print(
-                        f"  Trying to access column keys: x_col={x_col}, y_col={y_col}")
+                        f"  Trying to access column keys: x_col={x_col}, y_col={y_col}"
+                    )
                     # Print available columns for the row
                     print(f"  Available columns for this row: {row.index}")
                     continue
 
-        image_filename = f""  # 9-digit zero-padded frame number
+        image_filename = ""  # 9-digit zero-padded frame number
         labelme_json = {
             "version": "5.0.1",
             "flags": {},
@@ -113,7 +114,7 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
 
         # 9-digit zero-padded json filename
         output_json_path = os.path.join(output_dir, f"{index:09d}.json")
-        with open(output_json_path, 'w') as f:
+        with open(output_json_path, "w") as f:
             json.dump(labelme_json, f, indent=2)
 
         print(f"Converted frame {index} to LabelMe JSON: {output_json_path}")
@@ -121,7 +122,7 @@ def deeplabcut_to_labelme_json(video_path, output_dir=None, is_multi_animal=Fals
     print(f"Conversion complete. LabelMe JSON files saved in '{output_dir}'")
 
 
-if __name__ == '__main__':
-    video_path_single = os.path.expanduser('~/Downloads/92-mouse-2.mp4')
+if __name__ == "__main__":
+    video_path_single = os.path.expanduser("~/Downloads/92-mouse-2.mp4")
     deeplabcut_to_labelme_json(video_path_single)
     print("Example conversion complete.")

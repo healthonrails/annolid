@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: Thanks for filing a bug report! Please provide the detailed information about the bug.
-   - type: textarea
+  - type: textarea
     attributes:
-      label: Please provie environment packages
+      label: Please provide environment packages
       description: In the root directory of your project, please run `which python; python --version; python -m pip list | grep annolid` and paste the outputs.
     validations:
       required: true
@@ -27,4 +27,3 @@ body:
     attributes:
       label: Expected Behavior
       description: A clear and concise description of what you thought would happen.
-  

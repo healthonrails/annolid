@@ -20,7 +20,7 @@ class CLIPFeatureExtractor(nn.Module):
         model_name (str): The name of the pre-trained CLIP model (e.g., 'openai/clip-vit-base-patch32').
     """
 
-    def __init__(self, model_name: str = 'openai/clip-vit-base-patch32'):
+    def __init__(self, model_name: str = "openai/clip-vit-base-patch32"):
         super().__init__()
         self.clip_model = CLIPModel.from_pretrained(model_name)
         self.vision_encoder = self.clip_model.vision_model
@@ -28,7 +28,8 @@ class CLIPFeatureExtractor(nn.Module):
         hidden_size = getattr(self.vision_encoder.config, "hidden_size", None)
         if hidden_size is None:
             raise RuntimeError(
-                "Could not determine CLIP vision hidden size from configuration.")
+                "Could not determine CLIP vision hidden size from configuration."
+            )
         self.feature_dim = int(hidden_size)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
@@ -42,7 +43,9 @@ class CLIPFeatureExtractor(nn.Module):
             torch.Tensor: Extracted features of shape (batch_size, feature_dim).
         """
         # Process the images using CLIP's vision encoder
-        with torch.no_grad():  # Optional: Avoid backpropagation during feature extraction
+        with (
+            torch.no_grad()
+        ):  # Optional: Avoid backpropagation during feature extraction
             features = self.vision_encoder(pixel_values=images).pooler_output
 
         return features  # Output shape: (batch_size, feature_dim)
@@ -58,8 +61,7 @@ class ResNetFeatureExtractor(nn.Module):
         # Use torchvision.models directly for easier weight handling
         if pretrained:
             # or .IMAGENET1K_V1 if you specifically need that
-            self.resnet = models.resnet18(
-                weights=models.ResNet18_Weights.DEFAULT)
+            self.resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
         else:
             # Explicitly set weights to None if not pretrained
             self.resnet = models.resnet18(weights=None)
@@ -67,9 +69,14 @@ class ResNetFeatureExtractor(nn.Module):
         self.resnet_in_features = self.resnet.fc.in_features
         self.resnet.fc = nn.Identity()  # Remove the classification head
 
-        self.project_layer = nn.Linear(
-            self.resnet_in_features, feature_dim) if feature_dim != self.resnet_in_features else None
-        self.feature_dim = feature_dim if self.project_layer else self.resnet_in_features
+        self.project_layer = (
+            nn.Linear(self.resnet_in_features, feature_dim)
+            if feature_dim != self.resnet_in_features
+            else None
+        )
+        self.feature_dim = (
+            feature_dim if self.project_layer else self.resnet_in_features
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
@@ -98,19 +105,19 @@ class Dinov3BehaviorFeatureExtractor(nn.Module):
         device: Optional[str] = None,
     ):
         super().__init__()
-        cfg = Dinov3Config(model_name=model_name,
-                           device=device, return_layer="last")
+        cfg = Dinov3Config(model_name=model_name, device=device, return_layer="last")
         self.extractor = Dinov3FeatureExtractor(cfg)
         hidden_size = getattr(self.extractor.model.config, "hidden_size", None)
-        embed_dim = getattr(self.extractor.model.config,
-                            "embed_dim", hidden_size)
+        embed_dim = getattr(self.extractor.model.config, "embed_dim", hidden_size)
         if embed_dim is None:
             raise RuntimeError(
-                "Could not determine DINOv3 embedding dimension from model config.")
+                "Could not determine DINOv3 embedding dimension from model config."
+            )
         self.backbone_dim = int(embed_dim)
         self.project_layer = (
-            nn.Linear(
-                self.backbone_dim, feature_dim) if feature_dim != self.backbone_dim else nn.Identity()
+            nn.Linear(self.backbone_dim, feature_dim)
+            if feature_dim != self.backbone_dim
+            else nn.Identity()
         )
         if freeze:
             for param in self.extractor.model.parameters():
@@ -129,7 +136,8 @@ class Dinov3BehaviorFeatureExtractor(nn.Module):
         """
         if x.dim() != 4:
             raise ValueError(
-                f"Expected 4D tensor (B, C, H, W), got shape {tuple(x.shape)}")
+                f"Expected 4D tensor (B, C, H, W), got shape {tuple(x.shape)}"
+            )
 
         device = x.device
         batch_features = []
@@ -138,7 +146,8 @@ class Dinov3BehaviorFeatureExtractor(nn.Module):
             frame_np = frame.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
             frame_uint8 = (frame_np * 255.0).astype(np.uint8)
             feat_grid = self.extractor.extract(
-                frame_uint8, return_type="torch", normalize=True)
+                frame_uint8, return_type="torch", normalize=True
+            )
             # Global average pooling over patch grid.
             pooled = feat_grid.mean(dim=(-2, -1))
             batch_features.append(pooled)

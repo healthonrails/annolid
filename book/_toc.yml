@@ -27,7 +27,7 @@ parts:
       - file: tutorials/Behavior_classification.md
       - file: tutorials/Freezing_and motion_assays.md
       - file: tutorials/DINOv3_keypoint_tracking.md
-      
+
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_2_Train_a_Model
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_3_Evaluate_our_model
@@ -37,7 +37,7 @@ parts:
   - caption: Post hoc analysis methods
     chapters:
       - file: tutorials/Calculate_distances_between_instances.md
-  
+
   - caption: Annolid libraries
     chapters:
     - file: content/annolid_zoo
@@ -46,7 +46,7 @@ parts:
     chapters:
     - url: https://www.youtube.com/@annolid/videos
 
-  
+
   - caption: Community
     chapters:
     - file: content/get_in_touch
@@ -54,4 +54,3 @@ parts:
     - file: content/work_based_on_annolid
     - file: content/contributing
     - file: content/licence
-    

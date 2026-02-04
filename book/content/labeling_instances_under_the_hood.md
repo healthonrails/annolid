@@ -3,7 +3,7 @@
 
 ## Labeling with Point Prompt
 
-When you select the "AI Polygons" option, you can click points in the video frame or image. Annolid will then use efficientSAM by default to produce a polygon around the instance. 
+When you select the "AI Polygons" option, you can click points in the video frame or image. Annolid will then use efficientSAM by default to produce a polygon around the instance.
 
 Please refer to this [video](https://youtu.be/YOnUnpwkLFc?si=bbmKXpPiGe2_G5h7) for a step-by-step guide.
 

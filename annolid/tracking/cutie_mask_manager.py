@@ -64,10 +64,11 @@ class CutieMaskManager:
         self._last_results = {}
         self._mask_miss_counts = {}
 
-    def prime(self, frame_number: int, frame: np.ndarray, registry: InstanceRegistry) -> None:
+    def prime(
+        self, frame_number: int, frame: np.ndarray, registry: InstanceRegistry
+    ) -> None:
         if not self.enabled:
-            logger.debug(
-                "CutieMaskManager prime skipped because Cutie is disabled.")
+            logger.debug("CutieMaskManager prime skipped because Cutie is disabled.")
             return
         try:
             self._ensure_core()
@@ -84,8 +85,9 @@ class CutieMaskManager:
         mapping = mask_values["mapping"]
 
         frame_tensor = image_to_torch(frame, device=self._device)
-        mask_tensor = index_numpy_to_one_hot_torch(
-            composed_mask, len(mapping) + 1).to(self._device)
+        mask_tensor = index_numpy_to_one_hot_torch(composed_mask, len(mapping) + 1).to(
+            self._device
+        )
         try:
             self._core.step(
                 frame_tensor,
@@ -98,15 +100,14 @@ class CutieMaskManager:
             return
 
         self._label_to_value = mapping
-        self._value_to_label = {
-            value: label for label, value in mapping.items()}
+        self._value_to_label = {value: label for label, value in mapping.items()}
         self._initialized = True
         self._seed_last_results(registry)
-        logger.debug("CutieMaskManager primed with instances: %s",
-                     list(mapping.keys()))
+        logger.debug("CutieMaskManager primed with instances: %s", list(mapping.keys()))
 
-    def update_masks(self, frame_number: int, frame: np.ndarray,
-                     registry: InstanceRegistry) -> Dict[str, MaskResult]:
+    def update_masks(
+        self, frame_number: int, frame: np.ndarray, registry: InstanceRegistry
+    ) -> Dict[str, MaskResult]:
         if not self.ready():
             return {}
         frame_tensor = image_to_torch(frame, device=self._device)
@@ -163,7 +164,8 @@ class CutieMaskManager:
             fallback_bitmap = previous.mask_bitmap
             if iterations > 0:
                 fallback_bitmap = self._dilate_bitmap(
-                    fallback_bitmap, kernel_size, iterations)
+                    fallback_bitmap, kernel_size, iterations
+                )
             polygon = self._mask_to_polygon(fallback_bitmap)
             updated[label] = MaskResult(
                 instance_label=label,
@@ -205,7 +207,8 @@ class CutieMaskManager:
 
     def _build_initial_mask(self, registry: InstanceRegistry) -> Dict[str, object]:
         composed_mask = np.zeros(
-            (self.adapter.image_height, self.adapter.image_width), dtype=np.uint8)
+            (self.adapter.image_height, self.adapter.image_width), dtype=np.uint8
+        )
         mapping: Dict[str, int] = {}
         value = 1
         for instance in registry:
@@ -242,13 +245,12 @@ class CutieMaskManager:
             return bitmap
         cv2 = self._lazy_cv2()
         kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        dilated = cv2.dilate(bitmap.astype(np.uint8),
-                             kernel, iterations=iterations)
+        dilated = cv2.dilate(bitmap.astype(np.uint8), kernel, iterations=iterations)
         return dilated.astype(bool)
 
     def _mask_to_polygon(self, mask: np.ndarray) -> List[Tuple[float, float]]:
         cv2 = self._lazy_cv2()
-        mask_uint8 = (mask.astype(bool).astype(np.uint8) * 255)
+        mask_uint8 = mask.astype(bool).astype(np.uint8) * 255
         if not mask_uint8.any():
             return []
 
@@ -265,16 +267,14 @@ class CutieMaskManager:
 
         cropped = mask_uint8[y0:y1, x0:x1]
         contours, _ = cv2.findContours(
-            cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         if not contours:
             return []
         largest = max(contours, key=cv2.contourArea)
         epsilon = 0.003 * cv2.arcLength(largest, True)
         approx = cv2.approxPolyDP(largest, epsilon, True)
-        points = [
-            (float(pt[0][0] + x0), float(pt[0][1] + y0))
-            for pt in approx
-        ]
+        points = [(float(pt[0][0] + x0), float(pt[0][1] + y0)) for pt in approx]
         if points and points[0] != points[-1]:
             points.append(points[0])
         return points
