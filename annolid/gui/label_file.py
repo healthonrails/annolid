@@ -9,7 +9,7 @@ import PIL.Image
 from annolid.utils.annotation_compat import PY2
 from annolid.utils.annotation_compat import QT4
 from annolid.utils.annotation_compat import __version__
-from annolid.utils.annotation_compat import logger
+from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
 
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json

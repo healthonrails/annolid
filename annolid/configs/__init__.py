@@ -3,7 +3,7 @@ import shutil
 
 import yaml
 
-from annolid.utils.annotation_compat import logger
+from annolid.utils.logger import logger
 
 
 here = osp.dirname(osp.abspath(__file__))

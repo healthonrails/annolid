@@ -8,7 +8,7 @@ import numpy as np
 import onnxruntime
 import skimage.measure
 import cv2
-from annolid.utils.annotation_compat import logger
+from annolid.utils.logger import logger
 
 
 class SegmentAnythingModel:

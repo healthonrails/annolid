@@ -16,10 +16,10 @@ from annolid.utils.annotation_compat import (
     QT5,
     __version__,
     addActions,
-    logger,
     newAction,
     utils,
 )
+from annolid.utils.logger import logger
 
 
 def format_tool_button_text(text: str) -> str:

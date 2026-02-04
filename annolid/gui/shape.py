@@ -5,7 +5,7 @@ import cv2
 from qtpy import QtCore
 from qtpy.QtCore import Qt
 from qtpy import QtGui
-from annolid.utils.annotation_compat import logger
+from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
 import skimage.measure
 from shapely.geometry import Polygon

@@ -1202,10 +1202,6 @@ class Canvas(QtWidgets.QWidget):
             )
             menu.addSeparator()
             _add_existing_action(
-                getattr(main_window, "createPolygonSAMMode", None),
-                icon_filename="ai_polygons.svg",
-            )
-            _add_existing_action(
                 getattr(actions, "createAiPolygonMode", None),
                 icon_filename="ai_polygons.svg",
             )
