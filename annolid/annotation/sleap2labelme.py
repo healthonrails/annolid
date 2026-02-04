@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -12,23 +13,16 @@ import numpy as np
 
 try:
     import h5py
-except ImportError as e:
-    raise SystemExit("Missing dependency: h5py. Install with: pip install h5py") from e
+except ImportError:  # optional dependency
+    h5py = None  # type: ignore[assignment]
 
 try:
     from PIL import Image
-except ImportError as e:
-    raise SystemExit(
-        "Missing dependency: pillow. Install with: pip install pillow"
-    ) from e
+except ImportError:  # optional dependency
+    Image = None  # type: ignore[assignment]
 
-try:
-    # ✅ Use Annolid's PoseSchema implementation
-    from annolid.annotation.pose_schema import PoseSchema  # type: ignore
-except Exception as e:
-    raise SystemExit(
-        "Missing dependency: annolid (for PoseSchema). Install with: pip install annolid"
-    ) from e
+# ✅ Use Annolid's PoseSchema implementation
+from annolid.annotation.pose_schema import PoseSchema  # type: ignore
 
 
 HDF5_MAGIC = b"\x89HDF\r\n\x1a\n"
@@ -37,6 +31,22 @@ ZIP_MAGIC = b"PK\x03\x04"
 # Matches sleap-io InstanceType
 INSTANCE_TYPE_USER = 0
 INSTANCE_TYPE_PREDICTED = 1
+
+
+def _require_h5py() -> Any:
+    if h5py is None:
+        raise ImportError(
+            "Missing optional dependency: h5py. Install with: pip install h5py"
+        )
+    return h5py
+
+
+def _require_pillow_image() -> Any:
+    if Image is None:
+        raise ImportError(
+            "Missing optional dependency: pillow. Install with: pip install pillow"
+        )
+    return Image
 
 
 def _read_magic(p: Path, n: int = 8) -> bytes:
@@ -102,7 +112,8 @@ class SleapH5Reader:
 
     def __init__(self, h5_path: Path):
         self.h5_path = h5_path
-        self._h5 = h5py.File(h5_path, "r")
+        self._h5py = _require_h5py()
+        self._h5 = self._h5py.File(h5_path, "r")
 
     def close(self) -> None:
         try:
@@ -113,23 +124,23 @@ class SleapH5Reader:
     def root_keys(self) -> List[str]:
         return list(self._h5.keys())
 
-    def _require_ds(self, key: str) -> h5py.Dataset:
+    def _require_ds(self, key: str) -> Any:
         if key not in self._h5:
             raise KeyError(
                 f"Missing dataset/group: {key}. Root keys: {self.root_keys()}"
             )
         obj = self._h5[key]
-        if not isinstance(obj, h5py.Dataset):
+        if not isinstance(obj, self._h5py.Dataset):
             raise TypeError(f"{key} is not a dataset (found {type(obj)}).")
         return obj
 
-    def _maybe_ds(self, key: str) -> Optional[h5py.Dataset]:
+    def _maybe_ds(self, key: str) -> Optional[Any]:
         obj = self._h5.get(key, None)
-        return obj if isinstance(obj, h5py.Dataset) else None
+        return obj if isinstance(obj, self._h5py.Dataset) else None
 
-    def _maybe_grp(self, key: str) -> Optional[h5py.Group]:
+    def _maybe_grp(self, key: str) -> Optional[Any]:
         obj = self._h5.get(key, None)
-        return obj if isinstance(obj, h5py.Group) else None
+        return obj if isinstance(obj, self._h5py.Group) else None
 
     # --------------------------
     # Metadata / skeleton parsing
@@ -547,6 +558,8 @@ class SleapH5Reader:
 
     @staticmethod
     def _decode_embedded_frame(obj: object) -> Image.Image:
+        _require_pillow_image()
+
         def try_decode_bytes(b: bytes) -> Optional[Image.Image]:
             if not b:
                 return None
@@ -688,7 +701,7 @@ def convert_sleap_h5_to_labelme(
 
     kind = detect_sleap_container(sleap_path)
     if kind != "h5":
-        raise SystemExit(
+        raise ValueError(
             "Currently this converter expects HDF5 .slp/.pkg.slp. "
             f"Your file looks like: {kind}."
         )
@@ -761,6 +774,7 @@ def convert_sleap_h5_to_labelme(
         frame_to_wh: Dict[Tuple[int, int], Tuple[int, int]] = {}
 
         if save_frames:
+            _require_pillow_image()
             for vid in selected_videos:
                 mapping = reader.save_embedded_frames(
                     out_dir,
@@ -868,15 +882,19 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    convert_sleap_h5_to_labelme(
-        args.sleap,
-        args.out,
-        save_frames=not args.no_save_frames,
-        video_index=args.video_index,
-        print_every=args.print_every,
-        pose_schema_path=args.pose_schema,
-    )
-    return 0
+    try:
+        convert_sleap_h5_to_labelme(
+            args.sleap,
+            args.out,
+            save_frames=not args.no_save_frames,
+            video_index=args.video_index,
+            print_every=args.print_every,
+            pose_schema_path=args.pose_schema,
+        )
+        return 0
+    except Exception as e:
+        print(f"[sleap2labelme] ERROR: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
