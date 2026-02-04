@@ -180,27 +180,56 @@ function Test-FFmpeg {
 function Test-Uv {
     Write-Step "Checking for uv (fast package installer)..."
 
+    $script:UvCmd = $null
+
     try {
-        $uvVersion = & uv --version 2>&1
-        Write-Host "  Found: $uvVersion"
-        $script:UseUv = $true
-    } catch {
+        $uvCmdResolved = (Get-Command uv -ErrorAction Stop).Path
+        $script:UvCmd = $uvCmdResolved
+    } catch { }
+
+    if (-not $script:UvCmd) {
         Write-Warning-Msg "uv not found. Installing via official installer..."
 
         try {
             # Official installer from Astral: https://docs.astral.sh/uv/getting-started/installation/#powershell
             irm https://astral.sh/uv/install.ps1 | iex
-
-            $uvVersion = & uv --version 2>&1
-            Write-Success "uv installed: $uvVersion"
-            $script:UseUv = $true
         } catch {
             Write-Error-Msg "Failed to install uv automatically."
             Write-Host "  Please install manually with:"
             Write-Host "    irm https://astral.sh/uv/install.ps1 | iex"
             exit 1
         }
+
+        # Common install locations we can use immediately without a new shell
+        $uvCandidates = @(
+            "$env:LOCALAPPDATA\\Programs\\uv\\uv.exe",
+            "$env:USERPROFILE\\.local\\bin\\uv.exe",
+            "$env:USERPROFILE\\.local\\bin\\uv",
+            "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\uv.exe"
+        )
+
+        foreach ($candidate in $uvCandidates) {
+            if (Test-Path $candidate) {
+                $script:UvCmd = $candidate
+                $env:PATH = "$(Split-Path $candidate);$env:PATH"
+                break
+            }
+        }
+
+        if (-not $script:UvCmd) {
+            try {
+                $script:UvCmd = (Get-Command uv -ErrorAction Stop).Path
+            } catch {
+                Write-Error-Msg "uv installation completed but command still not found."
+                Write-Host "  Please restart the shell or ensure uv is in PATH."
+                exit 1
+            }
+        }
     }
+
+    $uvVersion = & $script:UvCmd --version 2>&1
+    Write-Host "  Found: $uvVersion"
+    $script:UseUv = $true
 }
 
 # =============================================================================
@@ -279,7 +308,7 @@ function New-Venv {
     $script:VenvPath = Join-Path $InstallDir $VenvDir
 
     if ($script:UseUv) {
-        & uv venv $script:VenvPath
+        & $script:UvCmd venv $script:VenvPath
     } else {
         & $script:PythonCmd -m venv $script:VenvPath
     }
@@ -296,7 +325,7 @@ function Install-Annolid {
 
     . $script:ActivateCmd
 
-    $pipCmd = if ($script:UseUv) { @("uv", "pip") } else { @("pip") }
+    $pipCmd = if ($script:UseUv) { @($script:UvCmd, "pip") } else { @("pip") }
 
     Write-Host "  Upgrading pip..."
     & @pipCmd install --upgrade pip
