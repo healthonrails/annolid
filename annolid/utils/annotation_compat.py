@@ -60,11 +60,20 @@ def get_ai_models() -> list[Any]:
                     f"Missing SAM ONNX weights for '{self.name}': "
                     f"{self._encoder_path.name}, {self._decoder_path.name}"
                 )
-            from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel
+            try:
+                from annolid.segmentation.SAM.segment_anything import (
+                    SegmentAnythingModel,
+                )
 
-            self._model = SegmentAnythingModel(
-                self.name, str(self._encoder_path), str(self._decoder_path)
-            )
+                self._model = SegmentAnythingModel(
+                    self.name, str(self._encoder_path), str(self._decoder_path)
+                )
+            except ModuleNotFoundError as exc:
+                # Keep draw-mode UX/testability when optional ONNX runtime is missing.
+                if getattr(exc, "name", "") == "onnxruntime":
+                    self._model = _PointPromptFallbackModel(self.name)
+                else:
+                    raise
 
         def set_image(self, image: np.ndarray):
             self._ensure_model()
@@ -77,6 +86,48 @@ def get_ai_models() -> list[Any]:
         def predict_mask_from_points(self, points, point_labels):
             self._ensure_model()
             return self._model.predict_mask_from_points(points, point_labels)
+
+    class _PointPromptFallbackModel:
+        """Lightweight point-prompt model used when onnxruntime is unavailable."""
+
+        def __init__(self, name: str):
+            self.name = name
+            self._image: np.ndarray | None = None
+
+        def set_image(self, image: np.ndarray):
+            self._image = np.asarray(image)
+
+        def predict_mask_from_points(self, points, point_labels):
+            if self._image is None:
+                raise RuntimeError("Image must be set before prediction.")
+            height, width = self._image.shape[:2]
+            mask = np.zeros((height, width), dtype=bool)
+            if points is None or point_labels is None:
+                return mask
+
+            radius = max(2, int(round(min(height, width) * 0.08)))
+            yy, xx = np.ogrid[:height, :width]
+            for (x, y), label in zip(points, point_labels):
+                px = int(round(float(x)))
+                py = int(round(float(y)))
+                disk = (xx - px) ** 2 + (yy - py) ** 2 <= radius * radius
+                if int(label) > 0:
+                    mask |= disk
+                else:
+                    mask &= ~disk
+            return mask
+
+        def predict_polygon_from_points(self, points, point_labels):
+            mask = self.predict_mask_from_points(points, point_labels)
+            ys, xs = np.where(mask)
+            if ys.size == 0:
+                return np.empty((0, 2), dtype=np.float32)
+            x1, x2 = int(xs.min()), int(xs.max())
+            y1, y2 = int(ys.min()), int(ys.max())
+            return np.array(
+                [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+                dtype=np.float32,
+            )
 
     def _make_model_class(display_name: str):
         class _Model(_AnnolidSegmentAnythingONNX):

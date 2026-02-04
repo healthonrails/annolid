@@ -20,7 +20,6 @@ from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
     set_keypoint_visibility_on_shape_object,
 )
-from annolid.detector.grounding_dino import GroundingDINO
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
@@ -706,7 +705,17 @@ class Canvas(QtWidgets.QWidget):
                 )
             # Initialize AI model if not already initialized
             if self._ai_model_rect is None:
-                self._ai_model_rect = GroundingDINO()
+                try:
+                    from annolid.detector.grounding_dino import GroundingDINO
+
+                    self._ai_model_rect = GroundingDINO()
+                except ModuleNotFoundError as exc:
+                    QtWidgets.QMessageBox.about(
+                        self,
+                        "Missing GroundingDINO dependency",
+                        str(exc),
+                    )
+                    return
 
             # Predict bounding boxes using the GroundingDINO model
             bboxes = self._ai_model_rect.predict_bboxes(image_data, prompt)
