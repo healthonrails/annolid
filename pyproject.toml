@@ -32,6 +32,7 @@ dependencies = [
     'scikit-image>=0.20.0',
     'scikit-learn>=1.7.2',
     'easydict>=1.9',
+    'einops>=0.6.0',
     'opencv-contrib-python>=4.1.2.30',
     'PyYAML>=5.3',
     'sounddevice>=0.4.6',
