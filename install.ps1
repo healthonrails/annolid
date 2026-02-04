@@ -382,8 +382,10 @@ function Install-Annolid {
     Write-Host "  Upgrading pip..."
     if ($script:UseUv) {
         & $script:UvCmd pip install --upgrade pip
+        & $script:UvCmd pip install --upgrade msvc-runtime
     } else {
         & pip install --upgrade pip
+        & pip install --upgrade msvc-runtime
     }
 
     if ($script:HasNvidiaGpu) {
@@ -430,6 +432,47 @@ function Install-Annolid {
     }
 
     Write-Success "Annolid installed"
+}
+
+# =============================================================================
+# Repair ONNX Runtime (Windows DLL dependencies)
+# =============================================================================
+function Repair-OnnxRuntime {
+    Write-Step "Checking ONNX Runtime import..."
+
+    . $script:ActivateCmd
+
+    $ortImportOk = $true
+    try {
+        & python -c "import onnxruntime as ort; print(f'  ONNX Runtime: {ort.__version__}')"
+    } catch {
+        $ortImportOk = $false
+    }
+
+    if ($ortImportOk) {
+        Write-Success "ONNX Runtime import OK"
+        return
+    }
+
+    Write-Warning-Msg "ONNX Runtime failed to import. Repairing runtime dependencies..."
+
+    if ($script:UseUv) {
+        & $script:UvCmd pip uninstall -y onnxruntime-gpu onnxruntime-directml
+        & $script:UvCmd pip install --upgrade --force-reinstall msvc-runtime onnxruntime
+    } else {
+        & pip uninstall -y onnxruntime-gpu onnxruntime-directml
+        & pip install --upgrade --force-reinstall msvc-runtime onnxruntime
+    }
+
+    try {
+        & python -c "import onnxruntime as ort; print(f'  ONNX Runtime repaired: {ort.__version__}')"
+        Write-Success "ONNX Runtime repaired successfully"
+    } catch {
+        Write-Error-Msg "ONNX Runtime still fails to import."
+        Write-Host "  Please install Microsoft Visual C++ Redistributable (x64), then rerun the installer."
+        Write-Host "  Download: https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        exit 1
+    }
 }
 
 # =============================================================================
@@ -511,5 +554,6 @@ Get-InteractiveConfig
 Clone-Repo
 New-Venv
 Install-Annolid
+Repair-OnnxRuntime
 Test-Installation
 Write-Summary
