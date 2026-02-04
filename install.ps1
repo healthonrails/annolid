@@ -25,6 +25,10 @@ param(
 $ErrorActionPreference = "Stop"
 $PythonMinVersion = [version]"3.10"
 $AnnolidRepo = "https://github.com/healthonrails/annolid.git"
+$script:UseUvPython = $false
+$script:UvPythonVersion = $null
+$script:HasNvidiaGpu = $false
+$script:PytorchCudaIndexUrl = "https://download.pytorch.org/whl/cu124"
 
 # =============================================================================
 # Helper Functions
@@ -142,6 +146,25 @@ function Test-Python {
         exit 1
     }
 
+    # PyTorch on Windows is currently most reliable with Python 3.11/3.12.
+    if ($script:PythonVersion -match "^(\d+)\.(\d+)$") {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+
+        if ($major -eq 3 -and $minor -ge 13) {
+            Write-Warning-Msg "Python $script:PythonVersion detected. Annolid/PyTorch on Windows is more stable on Python 3.12."
+            if ($script:UseUv) {
+                $script:UseUvPython = $true
+                $script:UvPythonVersion = "3.12"
+                Write-Info "Will create the environment with uv-managed Python $script:UvPythonVersion"
+            } else {
+                Write-Error-Msg "uv is required to provision a compatible Python version automatically."
+                Write-Host "  Please install Python 3.12 manually, or install uv and rerun."
+                exit 1
+            }
+        }
+    }
+
     Write-Success "Python version OK"
     return $script:PythonCmd
 }
@@ -172,6 +195,33 @@ function Test-FFmpeg {
             }
         }
     }
+}
+
+# =============================================================================
+# Check GPU
+# =============================================================================
+function Test-GPU {
+    if ($NoGpu) {
+        Write-Info "GPU detection skipped (--NoGpu)."
+        $script:HasNvidiaGpu = $false
+        return
+    }
+
+    Write-Step "Checking for NVIDIA GPU..."
+
+    try {
+        $null = Get-Command nvidia-smi -ErrorAction Stop
+        $gpuList = & nvidia-smi -L 2>$null
+        if (-not [string]::IsNullOrWhiteSpace($gpuList)) {
+            $script:HasNvidiaGpu = $true
+            Write-Success "NVIDIA GPU detected"
+            Write-Host "  $($gpuList -split "`n" | Select-Object -First 1)"
+            return
+        }
+    } catch { }
+
+    $script:HasNvidiaGpu = $false
+    Write-Info "No NVIDIA GPU detected. Using default PyTorch build."
 }
 
 # =============================================================================
@@ -308,7 +358,11 @@ function New-Venv {
     $script:VenvPath = Join-Path $InstallDir $VenvDir
 
     if ($script:UseUv) {
-        & $script:UvCmd venv $script:VenvPath
+        if ($script:UseUvPython -and $script:UvPythonVersion) {
+            & $script:UvCmd venv $script:VenvPath --python $script:UvPythonVersion
+        } else {
+            & $script:UvCmd venv $script:VenvPath
+        }
     } else {
         & $script:PythonCmd -m venv $script:VenvPath
     }
@@ -330,6 +384,25 @@ function Install-Annolid {
         & $script:UvCmd pip install --upgrade pip
     } else {
         & pip install --upgrade pip
+    }
+
+    if ($script:HasNvidiaGpu) {
+        Write-Host "  Installing CUDA-enabled PyTorch..."
+        try {
+            if ($script:UseUv) {
+                & $script:UvCmd pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
+            } else {
+                & pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
+            }
+            Write-Success "CUDA-enabled PyTorch installed"
+        } catch {
+            Write-Warning-Msg "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
+            if ($script:UseUv) {
+                & $script:UvCmd pip install torch torchvision
+            } else {
+                & pip install torch torchvision
+            }
+        }
     }
 
     $installTarget = "-e ."
@@ -430,9 +503,10 @@ if ($Help) { Show-Help }
 
 Write-Header
 Test-Git
+Test-Uv
 $pythonCmd = Test-Python
 Test-FFmpeg
-Test-Uv
+Test-GPU
 Get-InteractiveConfig
 Clone-Repo
 New-Venv

@@ -31,6 +31,8 @@ PYTHON_MIN_VERSION="3.10"
 ANNOLID_REPO="https://github.com/healthonrails/annolid.git"
 USE_UV_PYTHON=false
 USE_UV=false
+HAS_NVIDIA_GPU=false
+PYTORCH_CUDA_INDEX_URL="https://download.pytorch.org/whl/cu124"
 
 # Colors for output
 RED='\033[0;31m'
@@ -398,6 +400,32 @@ check_ffmpeg() {
 }
 
 # =============================================================================
+# Check GPU
+# =============================================================================
+check_gpu() {
+    if [[ "$NO_GPU" == true ]]; then
+        print_info "GPU detection skipped (--no-gpu)."
+        HAS_NVIDIA_GPU=false
+        return
+    fi
+
+    print_step "Checking for NVIDIA GPU..."
+
+    if command -v nvidia-smi &> /dev/null; then
+        GPU_LINE=$(nvidia-smi -L 2>/dev/null | head -1 || true)
+        if [[ -n "$GPU_LINE" ]]; then
+            HAS_NVIDIA_GPU=true
+            print_success "NVIDIA GPU detected"
+            echo "  $GPU_LINE"
+            return
+        fi
+    fi
+
+    HAS_NVIDIA_GPU=false
+    print_info "No NVIDIA GPU detected. Using default PyTorch build."
+}
+
+# =============================================================================
 # Check uv
 # =============================================================================
 check_uv() {
@@ -575,6 +603,16 @@ install_annolid() {
     echo "  Upgrading pip..."
     $PIP_CMD install --upgrade pip
 
+    if [[ "$HAS_NVIDIA_GPU" == true ]]; then
+        echo "  Installing CUDA-enabled PyTorch..."
+        if $PIP_CMD install --index-url "$PYTORCH_CUDA_INDEX_URL" torch torchvision; then
+            print_success "CUDA-enabled PyTorch installed"
+        else
+            print_warning "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
+            $PIP_CMD install torch torchvision
+        fi
+    fi
+
     INSTALL_TARGET="-e ."
 
     if [[ -n "$EXTRAS" ]]; then
@@ -683,6 +721,7 @@ main() {
     check_git
     check_python
     check_ffmpeg
+    check_gpu
     check_uv
     interactive_config
     clone_repo
