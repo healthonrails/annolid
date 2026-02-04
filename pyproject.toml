@@ -67,6 +67,7 @@ dependencies = [
     'huggingface-hub>=0.22.0',
     'tensorboard',
     'jsonschema>=4.20.0',
+    'onnxruntime>=1.23.2',
     # Optional dependency: install SAM / SAM-HQ separately (see README.md).
 ]
 

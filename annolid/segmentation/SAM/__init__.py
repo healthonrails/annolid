@@ -4,7 +4,21 @@ import numpy as np
 import torch
 import collections
 
-from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel  # NOQA
+try:
+    # Optional: ONNX runtime-backed SAM (used by AI polygon mode). Keep import
+    # lazy/guarded so Annolid remains importable in headless/CI environments.
+    from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel  # type: ignore # NOQA
+except ModuleNotFoundError as exc:
+    if getattr(exc, "name", "") == "onnxruntime":
+        class SegmentAnythingModel:  # type: ignore
+            def __init__(self, *args, **kwargs):
+                raise ModuleNotFoundError(
+                    "Optional dependency 'onnxruntime' is required for ONNX SAM models. "
+                    "Install it with: pip install onnxruntime"
+                ) from exc
+
+    else:
+        raise
 """Labelme segment anything encoder and decorder in onnx format
 https://github.com/wkentaro/labelme/blob/main/labelme/ai/__init__.py"""
 
