@@ -10,12 +10,14 @@ try:
     from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel  # type: ignore # NOQA
 except ModuleNotFoundError as exc:
     if getattr(exc, "name", "") == "onnxruntime":
+        _ONNXRUNTIME_IMPORT_ERROR = exc
+
         class SegmentAnythingModel:  # type: ignore
             def __init__(self, *args, **kwargs):
                 raise ModuleNotFoundError(
                     "Optional dependency 'onnxruntime' is required for ONNX SAM models. "
                     "Install it with: pip install onnxruntime"
-                ) from exc
+                ) from _ONNXRUNTIME_IMPORT_ERROR
 
     else:
         raise
