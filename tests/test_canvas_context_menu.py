@@ -59,7 +59,8 @@ def test_canvas_context_menu_is_flat_with_no_nested_submenus():
         texts = [a.text() for a in actions]
         assert "Edit Polygons" in texts
         assert "Create Polygons" in texts
-        assert "AI Polygons" in texts
+        assert "AI Polygon" in texts
+        assert "AI Polygons" not in texts
     finally:
         w.close()
 
