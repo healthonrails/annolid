@@ -185,9 +185,21 @@ function Test-Uv {
         Write-Host "  Found: $uvVersion"
         $script:UseUv = $true
     } catch {
-        Write-Warning-Msg "uv not found. Using pip (slower but works)."
-        Write-Host "  Install uv: irm https://astral.sh/uv/install.ps1 | iex"
-        $script:UseUv = $false
+        Write-Warning-Msg "uv not found. Installing via official installer..."
+
+        try {
+            # Official installer from Astral: https://docs.astral.sh/uv/getting-started/installation/#powershell
+            irm https://astral.sh/uv/install.ps1 | iex
+
+            $uvVersion = & uv --version 2>&1
+            Write-Success "uv installed: $uvVersion"
+            $script:UseUv = $true
+        } catch {
+            Write-Error-Msg "Failed to install uv automatically."
+            Write-Host "  Please install manually with:"
+            Write-Host "    irm https://astral.sh/uv/install.ps1 | iex"
+            exit 1
+        }
     }
 }
 

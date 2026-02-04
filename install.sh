@@ -30,6 +30,7 @@ NO_INTERACTIVE=false
 PYTHON_MIN_VERSION="3.10"
 ANNOLID_REPO="https://github.com/healthonrails/annolid.git"
 USE_UV_PYTHON=false
+USE_UV=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -410,10 +411,25 @@ check_uv() {
         UV_VERSION=$(uv --version)
         echo "  Found: $UV_VERSION"
         USE_UV=true
+        return
+    fi
+
+    print_warning "uv not found. Installing via official installer..."
+    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+        if command -v uv &> /dev/null; then
+            UV_VERSION=$(uv --version)
+            print_success "uv installed: $UV_VERSION"
+            USE_UV=true
+        else
+            print_error "uv installation completed but command not found in PATH."
+            echo "  Please ensure your shell profile sources ~/.local/bin or the installer path."
+            exit 1
+        fi
     else
-        print_warning "uv not found. Using pip (slower but works)."
-        echo "  Install uv for faster installs: curl -LsSf https://astral.sh/uv/install.sh | sh"
-        USE_UV=false
+        print_error "Failed to install uv automatically."
+        echo "  Please install manually:"
+        echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
+        exit 1
     fi
 }
 
