@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import shutil
 import subprocess
 from typing import Optional, Tuple
+import warnings
 
 import numpy as np
 
@@ -94,14 +96,38 @@ class AudioBuffer:
         data: np.ndarray
         sr: int
 
+        # Video containers are best handled by ffmpeg to avoid librosa's
+        # deprecated audioread fallback path.
+        video_suffixes = {
+            ".mp4",
+            ".m4v",
+            ".mov",
+            ".avi",
+            ".mkv",
+            ".webm",
+            ".wmv",
+            ".flv",
+            ".mpg",
+            ".mpeg",
+            ".ts",
+            ".m2ts",
+        }
+        looks_like_video = Path(file_path).suffix.lower() in video_suffixes
+
         try:
             import librosa  # type: ignore
         except Exception:
             librosa = None  # type: ignore
 
-        if librosa is not None:
+        if librosa is not None and not looks_like_video:
             try:
-                data, sr = librosa.load(file_path, sr=sample_rate)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r".*librosa\.core\.audio\.__audioread_load.*",
+                        category=FutureWarning,
+                    )
+                    data, sr = librosa.load(file_path, sr=sample_rate)
                 return cls(
                     audio_data=np.asarray(data),
                     sample_rate=int(sr),

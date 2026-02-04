@@ -1,6 +1,7 @@
 """modified from https://github.com/wkentaro/labelme/blob/main/labelme/ai/models/segment_anything.py"""
 
 import collections
+import inspect
 import threading
 
 import imgviz
@@ -206,9 +207,18 @@ def _compute_mask_from_points(
     mask = mask > 0.0
 
     MIN_SIZE_RATIO = 0.05
-    skimage.morphology.remove_small_objects(
-        mask, min_size=mask.sum() * MIN_SIZE_RATIO, out=mask
-    )
+    min_size = int(mask.sum() * MIN_SIZE_RATIO)
+    if min_size > 0:
+        remove_small_objects_params = inspect.signature(
+            skimage.morphology.remove_small_objects
+        ).parameters
+        if "max_size" in remove_small_objects_params:
+            # New API removes components <= max_size.
+            skimage.morphology.remove_small_objects(
+                mask, max_size=max(min_size - 1, 0), out=mask
+            )
+        else:
+            skimage.morphology.remove_small_objects(mask, min_size=min_size, out=mask)
 
     if 0:
         imgviz.io.imsave("mask.jpg", imgviz.label2rgb(mask, imgviz.rgb2gray(image)))
