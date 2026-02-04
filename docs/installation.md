@@ -106,6 +106,8 @@ Replace `<IMAGE_ID>` with the identifier printed by `docker build`.
 
 - **Video playback errors** (`OpenCV: FFMPEG: tag ...` or missing codecs):
   Install FFmpeg via your package manager or `conda install -c conda-forge ffmpeg`.
+- **Windows: ONNX Runtime import error on launch** (`ImportError: DLL load failed while importing onnxruntime_pybind11_state`):
+  This can be triggered by an OpenMP runtime conflict between PyTorch and ONNX Runtime. Set `KMP_DUPLICATE_LIB_OK=TRUE` in your environment and retry launching. Newer Annolid versions set this automatically when launching the GUI.
 - **macOS Qt warning** (`Class QCocoaPageLayoutDelegate is implemented in both ...`):
   `conda install qtpy` normally resolves the conflict between OpenCV and PyQt.
 - **Launch failures**:

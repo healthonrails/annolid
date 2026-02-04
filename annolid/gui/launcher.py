@@ -6,6 +6,7 @@ heavy Qt/torch/OpenCV imports until the GUI actually launches.
 """
 
 from importlib import metadata
+import os
 from typing import Any, Optional, Sequence
 
 from annolid.gui.cli import parse_cli
@@ -26,6 +27,11 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
     if version_requested:
         _print_version()
         return 0
+
+    # Windows: avoid OpenMP runtime conflicts between PyTorch and ONNX Runtime
+    # (labelme's AI helpers import onnxruntime; annolid imports torch).
+    if os.name == "nt":
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
     configure_logging()
 

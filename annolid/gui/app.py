@@ -4,6 +4,9 @@ from __future__ import annotations
 import os  # noqa
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # noqa
+# Windows: mitigate OpenMP runtime conflicts (e.g. PyTorch + ONNX Runtime).
+if os.name == "nt":  # noqa
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # noqa
 
 import csv
 import re

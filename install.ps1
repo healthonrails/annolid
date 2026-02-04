@@ -444,7 +444,7 @@ function Repair-OnnxRuntime {
 
     $ortImportOk = $true
     try {
-        & python -c "import onnxruntime as ort; print(f'  ONNX Runtime: {ort.__version__}')"
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import torch; import onnxruntime as ort; print(f'  ONNX Runtime: {ort.__version__}')"
     } catch {
         $ortImportOk = $false
     }
@@ -465,7 +465,7 @@ function Repair-OnnxRuntime {
     }
 
     try {
-        & python -c "import onnxruntime as ort; print(f'  ONNX Runtime repaired: {ort.__version__}')"
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import torch; import onnxruntime as ort; print(f'  ONNX Runtime repaired: {ort.__version__}')"
         Write-Success "ONNX Runtime repaired successfully"
     } catch {
         Write-Error-Msg "ONNX Runtime still fails to import."
@@ -535,6 +535,7 @@ function Write-Summary {
 
         # We need to activate environment and run annolid
         . $script:ActivateCmd
+        $env:KMP_DUPLICATE_LIB_OK = "TRUE"
         annolid
     }
 }
