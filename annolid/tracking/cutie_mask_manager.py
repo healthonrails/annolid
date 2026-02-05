@@ -123,6 +123,24 @@ class CutieMaskManager:
             binary_mask = mask == value
             if not binary_mask.any():
                 continue
+            binary_mask, corrected = self._sanitize_full_frame_artifact(
+                label, binary_mask
+            )
+            if corrected:
+                logger.warning(
+                    "Cutie full-frame mask corrected for '%s' at frame %s.",
+                    label,
+                    frame_number,
+                )
+            if bool(
+                getattr(self.config, "reject_suspicious_mask_jumps", False)
+            ) and self._is_suspicious_mask_jump(label, binary_mask):
+                logger.warning(
+                    "Cutie mask jump rejected for '%s' at frame %s (possible full-frame artifact).",
+                    label,
+                    frame_number,
+                )
+                continue
             polygon = self._mask_to_polygon(binary_mask)
             results[label] = MaskResult(
                 instance_label=label,
@@ -285,6 +303,116 @@ class CutieMaskManager:
         self._initialized = False
         if self.config.error_hook:
             self.config.error_hook(exc)
+
+    def _sanitize_full_frame_artifact(
+        self, label: str, mask: np.ndarray
+    ) -> tuple[np.ndarray, bool]:
+        frame_area = float(self.adapter.image_height * self.adapter.image_width)
+        if frame_area <= 0:
+            return mask, False
+        current_area = float(np.count_nonzero(mask))
+        if current_area <= 0:
+            return mask, False
+        if (current_area / frame_area) < 0.98:
+            return mask, False
+
+        previous = self._last_results.get(label)
+        if previous is None or previous.mask_bitmap is None:
+            return mask, False
+
+        ys, xs = np.where(previous.mask_bitmap)
+        if xs.size == 0 or ys.size == 0:
+            return mask, False
+        x1 = float(xs.min())
+        y1 = float(ys.min())
+        x2 = float(xs.max())
+        y2 = float(ys.max())
+        bbox_area = max(0.0, float(x2 - x1) * float(y2 - y1))
+        bbox_ratio = bbox_area / frame_area
+        if bbox_ratio <= 0.0 or bbox_ratio >= 0.85:
+            return mask, False
+
+        cv2 = self._lazy_cv2()
+        mask_u8 = mask.astype(np.uint8)
+        num_labels, components, stats, _ = cv2.connectedComponentsWithStats(
+            mask_u8, connectivity=8
+        )
+        if num_labels <= 1:
+            return mask, False
+
+        h, w = mask.shape[:2]
+        bw = max(1.0, float(x2 - x1))
+        bh = max(1.0, float(y2 - y1))
+        pad_x = max(8, int(bw))
+        pad_y = max(8, int(bh))
+        rx1 = max(0, int(np.floor(x1)) - pad_x)
+        ry1 = max(0, int(np.floor(y1)) - pad_y)
+        rx2 = min(w, int(np.ceil(x2)) + pad_x)
+        ry2 = min(h, int(np.ceil(y2)) + pad_y)
+        if rx2 <= rx1 or ry2 <= ry1:
+            return mask, False
+
+        best_id = 0
+        best_overlap = 0
+        best_area = 0
+        for comp_id in range(1, num_labels):
+            area = int(stats[comp_id, cv2.CC_STAT_AREA])
+            if area <= 0:
+                continue
+            overlap = int(np.count_nonzero(components[ry1:ry2, rx1:rx2] == comp_id))
+            if overlap <= 0:
+                continue
+            if overlap > best_overlap or (overlap == best_overlap and area > best_area):
+                best_id = comp_id
+                best_overlap = overlap
+                best_area = area
+
+        if best_id == 0:
+            return mask, False
+
+        cleaned = components == best_id
+        cleaned_area = float(np.count_nonzero(cleaned))
+        if cleaned_area <= 0:
+            return mask, False
+        cleaned_ratio = cleaned_area / frame_area
+        current_ratio = current_area / frame_area
+        if cleaned_ratio >= current_ratio or cleaned_ratio >= 0.98:
+            return mask, False
+        return cleaned, True
+
+    def _is_suspicious_mask_jump(self, label: str, mask: np.ndarray) -> bool:
+        """Detect implausible mask expansions that often become full-frame polygons."""
+        frame_area = float(self.adapter.image_height * self.adapter.image_width)
+        if frame_area <= 0:
+            return False
+
+        current_area = float(np.count_nonzero(mask))
+        if current_area <= 0:
+            return False
+        current_ratio = current_area / frame_area
+        if current_ratio < 0.998:
+            return False
+
+        touches_all_borders = bool(
+            mask[0, :].any()
+            and mask[-1, :].any()
+            and mask[:, 0].any()
+            and mask[:, -1].any()
+        )
+        if not touches_all_borders:
+            return False
+
+        previous = self._last_results.get(label)
+        if previous is None or previous.mask_bitmap is None:
+            return current_ratio >= 0.9995
+
+        previous_area = float(np.count_nonzero(previous.mask_bitmap))
+        previous_ratio = previous_area / frame_area if previous_area > 0 else 0.0
+        if previous_ratio >= 0.80:
+            return False
+
+        growth_ratio = current_ratio / max(previous_ratio, 1.0 / frame_area)
+        return growth_ratio >= 1.4
 
     def _lazy_cv2(self):  # pragma: no cover - isolated import
         import cv2

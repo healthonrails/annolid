@@ -141,6 +141,7 @@ def convert_json_to_csv(
     stop_event=None,
     tracked_csv_file=None,
     fps=None,
+    force_rewrite_tracking_csv=False,
 ):
     """
     Convert JSON files in a folder to annolid CSV format file.
@@ -229,9 +230,10 @@ def convert_json_to_csv(
         except Exception:
             return
 
-    tracked_output = None
-    tracked_writer = None
     tracked_seen = set()
+    tracked_seen_frames = set()
+    tracked_rows_to_append = []
+    wrote_new_tracked_rows = False
     tracked_header = [
         "frame_number",
         "instance_name",
@@ -243,13 +245,42 @@ def convert_json_to_csv(
     fps_value = _normalize_fps(fps)
     video_fps_checked = False
     if tracked_csv_file:
-        try:
-            tracked_output = open(tracked_csv_file, "w", newline="")
-            tracked_writer = csv.writer(tracked_output)
-            tracked_writer.writerow(tracked_header)
-        except OSError:
-            tracked_output = None
-            tracked_writer = None
+        tracked_path = Path(tracked_csv_file)
+        if tracked_path.exists():
+            try:
+                with tracked_path.open(
+                    "r", newline="", encoding="utf-8"
+                ) as existing_fh:
+                    reader = csv.reader(existing_fh)
+                    header = next(reader, [])
+                    frame_idx = (
+                        header.index("frame_number") if "frame_number" in header else -1
+                    )
+                    name_idx = (
+                        header.index("instance_name")
+                        if "instance_name" in header
+                        else -1
+                    )
+                    if frame_idx >= 0:
+                        for row in reader:
+                            if frame_idx >= len(row):
+                                continue
+                            raw_frame = str(row[frame_idx]).strip()
+                            if not raw_frame:
+                                continue
+                            try:
+                                parsed_frame = int(float(raw_frame))
+                            except ValueError:
+                                continue
+                            tracked_seen_frames.add(parsed_frame)
+                            if name_idx < 0 or name_idx >= len(row):
+                                continue
+                            raw_name = str(row[name_idx]).strip()
+                            if not raw_name:
+                                continue
+                            tracked_seen.add((parsed_frame, raw_name))
+            except OSError:
+                pass
 
     json_folder_path = Path(json_folder)
     json_files = _collect_annotation_files(json_folder_path)
@@ -262,111 +293,125 @@ def convert_json_to_csv(
         if frame is not None
     }
     csv_path = Path(csv_file)
-    if _existing_csv_covers_all_frames(csv_path, required_frames):
-        if tracked_output is not None:
-            try:
-                tracked_output.close()
-            except Exception:
-                pass
+    csv_already_complete = _existing_csv_covers_all_frames(csv_path, required_frames)
+    missing_tracked_frames = set()
+    should_collect_tracked_rows = False
+    if tracked_csv_file:
+        missing_tracked_frames = required_frames - tracked_seen_frames
+        should_collect_tracked_rows = bool(missing_tracked_frames)
+    should_write_tracking_csv = bool(force_rewrite_tracking_csv) or (
+        not csv_already_complete
+    )
+    if not should_write_tracking_csv and not tracked_csv_file:
+        _report_progress(100)
+        return str(csv_path)
+    if (
+        not should_write_tracking_csv
+        and tracked_csv_file
+        and not should_collect_tracked_rows
+    ):
         _report_progress(100)
         return str(csv_path)
 
     video_path = None
-    if tracked_writer is not None:
+    if should_collect_tracked_rows:
         video_path = _find_video_for_json_folder(json_folder_path)
 
+    csv_output = None
+    csv_writer = None
     try:
-        with open(csv_file, "w", newline="") as csv_output:
+        if should_write_tracking_csv:
+            csv_output = open(csv_file, "w", newline="")
             csv_writer = csv.writer(csv_output)
             csv_writer.writerow(csv_header)
 
-            total_files = len(json_files)
-            num_processed_files = 0
+        total_files = len(json_files)
+        num_processed_files = 0
+        stopped = False
 
-            for json_file in tqdm(
-                json_files, desc="Converting JSON files", unit="files"
-            ):
-                if stop_event is not None and stop_event.is_set():
-                    return "Stopped"
-                json_path = os.path.join(json_folder, json_file)
-                data = read_json_file(json_path)
-                if not data:
-                    num_processed_files += 1
-                    progress = int((num_processed_files / total_files) * 100)
-                    _report_progress(progress)
-                    continue
+        for json_file in tqdm(json_files, desc="Converting JSON files", unit="files"):
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                break
+            json_path = os.path.join(json_folder, json_file)
+            data = read_json_file(json_path)
+            if not data:
+                num_processed_files += 1
+                progress = int((num_processed_files / total_files) * 100)
+                _report_progress(progress)
+                continue
 
-                try:
-                    frame_number = get_frame_number_from_filename(json_file)
-                except ValueError:
-                    # Skip metadata files that do not follow the frame naming scheme
-                    num_processed_files += 1
-                    progress = int((num_processed_files / total_files) * 100)
-                    _report_progress(progress)
-                    continue
-                img_height = data.get("imageHeight")
-                img_width = data.get("imageWidth")
-                shapes = data.get("shapes") or []
+            try:
+                frame_number = get_frame_number_from_filename(json_file)
+            except ValueError:
+                # Skip metadata files that do not follow the frame naming scheme
+                num_processed_files += 1
+                progress = int((num_processed_files / total_files) * 100)
+                _report_progress(progress)
+                continue
+            img_height = data.get("imageHeight")
+            img_width = data.get("imageWidth")
+            shapes = data.get("shapes") or []
+            should_track_frame = (
+                should_collect_tracked_rows and frame_number in missing_tracked_frames
+            )
 
-                if img_height is None or img_width is None:
-                    num_processed_files += 1
-                    progress = int((num_processed_files / total_files) * 100)
-                    _report_progress(progress)
-                    continue
+            if img_height is None or img_width is None:
+                num_processed_files += 1
+                progress = int((num_processed_files / total_files) * 100)
+                _report_progress(progress)
+                continue
 
-                img_shape = (img_height, img_width)
-                timestamp_value = ""
-                if tracked_writer is not None:
-                    if fps_value is None:
-                        fps_value = _normalize_fps(
-                            data.get("fps")
-                            or data.get("video_fps")
-                            or (data.get("flags") or {}).get("fps")
-                        )
-                    if fps_value is None and not video_fps_checked:
-                        video_fps_checked = True
-                        if video_path is not None:
-                            try:
-                                from annolid.data.videos import get_video_fps
-
-                                fps_value = _normalize_fps(
-                                    get_video_fps(str(video_path))
-                                )
-                            except Exception:
-                                fps_value = None
-                    if fps_value is None:
-                        fps_value = 29.97
-                    timestamp_value = convert_frame_number_to_time(
-                        frame_number, fps_value
+            img_shape = (img_height, img_width)
+            timestamp_value = ""
+            if should_track_frame:
+                if fps_value is None:
+                    fps_value = _normalize_fps(
+                        data.get("fps")
+                        or data.get("video_fps")
+                        or (data.get("flags") or {}).get("fps")
                     )
+                if fps_value is None and not video_fps_checked:
+                    video_fps_checked = True
+                    if video_path is not None:
+                        try:
+                            from annolid.data.videos import get_video_fps
 
-                for shape in shapes:
-                    if not isinstance(shape, dict):
+                            fps_value = _normalize_fps(get_video_fps(str(video_path)))
+                        except Exception:
+                            fps_value = None
+                if fps_value is None:
+                    fps_value = 29.97
+                timestamp_value = convert_frame_number_to_time(frame_number, fps_value)
+
+            for shape in shapes:
+                if not isinstance(shape, dict):
+                    continue
+                shape_type = (shape.get("shape_type") or "").lower()
+                instance_name = _shape_instance_name(shape, shape_type=shape_type)
+                points = shape.get("points") or []
+                if shape_type == "rectangle":
+                    if len(points) < 2:
                         continue
-                    shape_type = (shape.get("shape_type") or "").lower()
-                    instance_name = _shape_instance_name(shape, shape_type=shape_type)
-                    points = shape.get("points") or []
-                    if shape_type == "rectangle":
-                        if len(points) < 2:
-                            continue
-                        a, b = points[0], points[1]
-                        if (
-                            not isinstance(a, (list, tuple))
-                            or not isinstance(b, (list, tuple))
-                            or len(a) < 2
-                            or len(b) < 2
-                        ):
-                            continue
-                        x1 = min(float(a[0]), float(b[0]))
-                        y1 = min(float(a[1]), float(b[1]))
-                        x2 = max(float(a[0]), float(b[0]))
-                        y2 = max(float(a[1]), float(b[1]))
-                        cx = (x1 + x2) / 2.0
-                        cy = (y1 + y2) / 2.0
-                        class_score = _shape_score(shape)
-                        tracking_id = _normalize_tracking_id(shape.get("group_id"))
-                        segmentation = ""
+                    a, b = points[0], points[1]
+                    if (
+                        not isinstance(a, (list, tuple))
+                        or not isinstance(b, (list, tuple))
+                        or len(a) < 2
+                        or len(b) < 2
+                    ):
+                        continue
+                    x1 = min(float(a[0]), float(b[0]))
+                    y1 = min(float(a[1]), float(b[1]))
+                    x2 = max(float(a[0]), float(b[0]))
+                    y2 = max(float(a[1]), float(b[1]))
+                    cx = (x1 + x2) / 2.0
+                    cy = (y1 + y2) / 2.0
+                    class_score = _shape_score(shape)
+                    tracking_id = _normalize_tracking_id(shape.get("group_id"))
+                    segmentation = ""
 
+                    if csv_writer is not None:
                         csv_writer.writerow(
                             [
                                 frame_number,
@@ -382,51 +427,50 @@ def convert_json_to_csv(
                                 tracking_id,
                             ]
                         )
-                        if tracked_writer is not None and instance_name:
-                            motion_index = shape.get("motion_index")
-                            if motion_index is None:
-                                description = shape.get("description") or ""
-                                match = re.search(
-                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
-                                )
-                                if match:
-                                    try:
-                                        motion_index = float(match.group(1))
-                                    except ValueError:
-                                        motion_index = None
-                            try:
-                                motion_index = (
-                                    float(motion_index)
-                                    if motion_index is not None
-                                    else -1
-                                )
-                            except (TypeError, ValueError):
-                                motion_index = -1
-                            key = (frame_number, instance_name)
-                            if key not in tracked_seen:
-                                tracked_seen.add(key)
-                                tracked_writer.writerow(
-                                    [
-                                        frame_number,
-                                        instance_name,
-                                        cx,
-                                        cy,
-                                        motion_index,
-                                        timestamp_value,
-                                    ]
-                                )
+                    if should_track_frame and instance_name:
+                        motion_index = shape.get("motion_index")
+                        if motion_index is None:
+                            description = shape.get("description") or ""
+                            match = re.search(
+                                r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
+                            )
+                            if match:
+                                try:
+                                    motion_index = float(match.group(1))
+                                except ValueError:
+                                    motion_index = None
+                        try:
+                            motion_index = (
+                                float(motion_index) if motion_index is not None else -1
+                            )
+                        except (TypeError, ValueError):
+                            motion_index = -1
+                        key = (frame_number, instance_name)
+                        if key not in tracked_seen:
+                            tracked_seen.add(key)
+                            tracked_rows_to_append.append(
+                                [
+                                    frame_number,
+                                    instance_name,
+                                    cx,
+                                    cy,
+                                    motion_index,
+                                    timestamp_value,
+                                ]
+                            )
                         continue
 
-                    if shape_type == "point":
-                        if not points:
-                            continue
-                        point = points[0]
-                        if not isinstance(point, (list, tuple)) or len(point) < 2:
-                            continue
-                        x = float(point[0])
-                        y = float(point[1])
-                        class_score = _shape_score(shape)
-                        tracking_id = _normalize_tracking_id(shape.get("group_id"))
+                if shape_type == "point":
+                    if not points:
+                        continue
+                    point = points[0]
+                    if not isinstance(point, (list, tuple)) or len(point) < 2:
+                        continue
+                    x = float(point[0])
+                    y = float(point[1])
+                    class_score = _shape_score(shape)
+                    tracking_id = _normalize_tracking_id(shape.get("group_id"))
+                    if csv_writer is not None:
                         csv_writer.writerow(
                             [
                                 frame_number,
@@ -442,51 +486,50 @@ def convert_json_to_csv(
                                 tracking_id,
                             ]
                         )
-                        if tracked_writer is not None and instance_name:
-                            motion_index = shape.get("motion_index")
-                            if motion_index is None:
-                                description = shape.get("description") or ""
-                                match = re.search(
-                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
-                                )
-                                if match:
-                                    try:
-                                        motion_index = float(match.group(1))
-                                    except ValueError:
-                                        motion_index = None
-                            try:
-                                motion_index = (
-                                    float(motion_index)
-                                    if motion_index is not None
-                                    else -1
-                                )
-                            except (TypeError, ValueError):
-                                motion_index = -1
-                            key = (frame_number, instance_name)
-                            if key not in tracked_seen:
-                                tracked_seen.add(key)
-                                tracked_writer.writerow(
-                                    [
-                                        frame_number,
-                                        instance_name,
-                                        x,
-                                        y,
-                                        motion_index,
-                                        timestamp_value,
-                                    ]
-                                )
+                    if should_track_frame and instance_name:
+                        motion_index = shape.get("motion_index")
+                        if motion_index is None:
+                            description = shape.get("description") or ""
+                            match = re.search(
+                                r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
+                            )
+                            if match:
+                                try:
+                                    motion_index = float(match.group(1))
+                                except ValueError:
+                                    motion_index = None
+                        try:
+                            motion_index = (
+                                float(motion_index) if motion_index is not None else -1
+                            )
+                        except (TypeError, ValueError):
+                            motion_index = -1
+                        key = (frame_number, instance_name)
+                        if key not in tracked_seen:
+                            tracked_seen.add(key)
+                            tracked_rows_to_append.append(
+                                [
+                                    frame_number,
+                                    instance_name,
+                                    x,
+                                    y,
+                                    motion_index,
+                                    timestamp_value,
+                                ]
+                            )
                         continue
 
-                    if len(points) > 2:
-                        mask = convert_shape_to_mask(img_shape, points)
-                        bboxs = masks_to_bboxes(mask[None, :, :])
-                        segmentation = binary_mask_to_coco_rle(mask)
-                        class_score = _shape_score(shape)
-                        tracking_id = _normalize_tracking_id(shape.get("group_id"))
+                if len(points) > 2:
+                    mask = convert_shape_to_mask(img_shape, points)
+                    bboxs = masks_to_bboxes(mask[None, :, :])
+                    segmentation = binary_mask_to_coco_rle(mask)
+                    class_score = _shape_score(shape)
+                    tracking_id = _normalize_tracking_id(shape.get("group_id"))
 
-                        if len(bboxs) > 0:
-                            cx, cy = polygon_center(points)
-                            x1, y1, x2, y2 = bboxs[0]
+                    if len(bboxs) > 0:
+                        cx, cy = polygon_center(points)
+                        x1, y1, x2, y2 = bboxs[0]
+                        if csv_writer is not None:
                             csv_writer.writerow(
                                 [
                                     frame_number,
@@ -502,58 +545,74 @@ def convert_json_to_csv(
                                     tracking_id,
                                 ]
                             )
-                            if tracked_writer is not None and instance_name:
-                                motion_index = shape.get("motion_index")
-                                if motion_index is None:
-                                    description = shape.get("description") or ""
-                                    match = re.search(
-                                        r"motion_index\s*[:=]\s*([-0-9.eE]+)",
-                                        description,
-                                    )
-                                    if match:
-                                        try:
-                                            motion_index = float(match.group(1))
-                                        except ValueError:
-                                            motion_index = None
-                                try:
-                                    stored_cx = float(shape.get("cx"))
-                                    stored_cy = float(shape.get("cy"))
-                                except (TypeError, ValueError):
-                                    stored_cx = cx
-                                    stored_cy = cy
-                                try:
-                                    motion_index = (
-                                        float(motion_index)
-                                        if motion_index is not None
-                                        else -1
-                                    )
-                                except (TypeError, ValueError):
-                                    motion_index = -1
-                                key = (frame_number, instance_name)
-                                if key in tracked_seen:
-                                    continue
-                                tracked_seen.add(key)
-                                tracked_writer.writerow(
-                                    [
-                                        frame_number,
-                                        instance_name,
-                                        stored_cx,
-                                        stored_cy,
-                                        motion_index,
-                                        timestamp_value,
-                                    ]
+                        if should_track_frame and instance_name:
+                            motion_index = shape.get("motion_index")
+                            if motion_index is None:
+                                description = shape.get("description") or ""
+                                match = re.search(
+                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)",
+                                    description,
                                 )
-                num_processed_files += 1
-                progress = int((num_processed_files / total_files) * 100)
-                _report_progress(progress)
+                                if match:
+                                    try:
+                                        motion_index = float(match.group(1))
+                                    except ValueError:
+                                        motion_index = None
+                            try:
+                                stored_cx = float(shape.get("cx"))
+                                stored_cy = float(shape.get("cy"))
+                            except (TypeError, ValueError):
+                                stored_cx = cx
+                                stored_cy = cy
+                            try:
+                                motion_index = (
+                                    float(motion_index)
+                                    if motion_index is not None
+                                    else -1
+                                )
+                            except (TypeError, ValueError):
+                                motion_index = -1
+                            key = (frame_number, instance_name)
+                            if key in tracked_seen:
+                                continue
+                            tracked_seen.add(key)
+                            tracked_rows_to_append.append(
+                                [
+                                    frame_number,
+                                    instance_name,
+                                    stored_cx,
+                                    stored_cy,
+                                    motion_index,
+                                    timestamp_value,
+                                ]
+                            )
+            num_processed_files += 1
+            progress = int((num_processed_files / total_files) * 100)
+            _report_progress(progress)
     finally:
-        if tracked_writer is not None:
+        if csv_output is not None:
             try:
-                tracked_output.close()
+                csv_output.close()
             except Exception:
                 pass
 
-    if tracked_csv_file:
+    if tracked_csv_file and tracked_rows_to_append:
+        tracked_path = Path(tracked_csv_file)
+        file_exists = tracked_path.exists() and tracked_path.stat().st_size > 0
+        try:
+            with tracked_path.open(
+                "a" if file_exists else "w", newline="", encoding="utf-8"
+            ) as tracked_output:
+                tracked_writer = csv.writer(tracked_output)
+                if not file_exists:
+                    tracked_writer.writerow(tracked_header)
+                for row in tracked_rows_to_append:
+                    tracked_writer.writerow(row)
+            wrote_new_tracked_rows = True
+        except OSError:
+            wrote_new_tracked_rows = False
+
+    if tracked_csv_file and wrote_new_tracked_rows:
         try:
             from annolid.postprocessing.video_timestamp_annotator import (
                 annotate_csv,
@@ -564,6 +623,9 @@ def convert_json_to_csv(
                 annotate_csv(Path(tracked_csv_file), video_path)
         except Exception:
             pass
+
+    if stopped:
+        return "Stopped"
 
     return str(csv_file)
 

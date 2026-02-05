@@ -65,6 +65,11 @@ class PredictionExecutionMixin:
         _ = model_config
         model_name = model_identifier or model_weight
         text_prompt = self._current_text_prompt()
+        self._active_prediction_model_name = str(model_name or "")
+        self._skip_tracking_csv_overwrite_for_keypoint_round = bool(
+            self._is_dino_keypoint_model(model_name, model_weight)
+            or self._is_dino_kpseg_model(model_name, model_weight)
+        )
         if self.pred_worker and self.stop_prediction_flag:
             self.stop_prediction()
             return
@@ -328,6 +333,7 @@ class PredictionExecutionMixin:
             inference_step = 1
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)
             inference_end_frame = None
+            inference_skip_existing = True
             if self.video_results_folder:
                 try:
                     results_folder = Path(self.video_results_folder)
@@ -384,13 +390,25 @@ class PredictionExecutionMixin:
                 )
                 watch_start_frame = int(self.frame_number or 0)
             elif self._is_dino_kpseg_model(model_name, model_weight):
+                # Second-pass keypoint enrichment should update existing polygon-only
+                # annotations instead of skipping already-labeled frames.
+                try:
+                    if self.video_results_folder:
+                        existing_max = self._max_predicted_frame_index(
+                            Path(self.video_results_folder)
+                        )
+                        if int(existing_max) >= 0:
+                            inference_start_frame = 0
+                            inference_skip_existing = False
+                except Exception:
+                    pass
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.run_inference,
                     source=self.video_file,
                     start_frame=int(inference_start_frame),
                     end_frame=inference_end_frame,
                     step=int(inference_step),
-                    skip_existing=True,
+                    skip_existing=bool(inference_skip_existing),
                     save_pose_bbox=self._save_pose_bbox,
                 )
                 watch_start_frame = int(inference_start_frame)
@@ -539,7 +557,23 @@ class PredictionExecutionMixin:
                         and int(max_predicted) >= int(self.num_frames) - 1
                         and int(max_predicted) >= 0
                     ):
-                        self.convert_json_to_tracked_csv()
+                        skip_csv = bool(
+                            getattr(
+                                self,
+                                "_skip_tracking_csv_overwrite_for_keypoint_round",
+                                False,
+                            )
+                        )
+                        if skip_csv:
+                            logger.info(
+                                "Keypoint round completed; refreshing tracking CSV only (skip tracked CSV write)."
+                            )
+                            self.convert_json_to_tracked_csv(
+                                include_tracked_output=False,
+                                force_rewrite_tracking_csv=True,
+                            )
+                        else:
+                            self.convert_json_to_tracked_csv()
                     else:
                         logger.info(
                             "Prediction did not reach the last frame; skipping tracking CSV conversion."
@@ -549,6 +583,7 @@ class PredictionExecutionMixin:
         self.reset_predict_button()
         self._finalize_prediction_progress("Manual prediction worker finished.")
         self._prediction_stop_requested = False
+        self._skip_tracking_csv_overwrite_for_keypoint_round = False
 
     def reset_predict_button(self):
         self.stepSizeWidget.predict_button.setText("Pred")

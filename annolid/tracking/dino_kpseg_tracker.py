@@ -174,7 +174,7 @@ class DinoKPSEGVideoProcessor:
         end_frame: Optional[int],
         step: int,
     ) -> str:
-        manual_seed = self._load_initial_state(self.video_result_folder)
+        manual_seed = self._resolve_initial_seed(start_frame=start_frame)
         start_frame = (
             manual_seed.frame_number
             if start_frame is None
@@ -334,6 +334,66 @@ class DinoKPSEGVideoProcessor:
                 continue
             mapping[int(frame)] = path
         return mapping
+
+    def _resolve_initial_seed(self, *, start_frame: Optional[int]) -> ManualAnnotation:
+        manual_seed = self._load_initial_state(self.video_result_folder)
+        if start_frame is None:
+            return manual_seed
+
+        try:
+            requested = int(start_frame)
+        except Exception:
+            return manual_seed
+        requested = max(0, min(int(requested), int(self.total_frames) - 1))
+        requested_path = (
+            self.video_result_folder
+            / f"{self.video_result_folder.name}_{requested:09d}.json"
+        )
+
+        try:
+            resolved = self.annotation_parser.read_manual_annotation(
+                requested, requested_path
+            )
+            logger.info(
+                "Using requested seed frame %s for DinoKPSEG tracking.", requested
+            )
+            return resolved
+        except Exception:
+            pass
+
+        available_frames: List[int] = []
+        for filename in find_manual_labeled_json_files(str(self.video_result_folder)):
+            try:
+                available_frames.append(int(get_frame_number_from_json(filename)))
+            except Exception:
+                continue
+        if available_frames:
+            lower_or_equal = [frame for frame in available_frames if frame <= requested]
+            candidate = max(lower_or_equal) if lower_or_equal else min(available_frames)
+            if int(candidate) != int(manual_seed.frame_number):
+                candidate_path = (
+                    self.video_result_folder
+                    / f"{self.video_result_folder.name}_{int(candidate):09d}.json"
+                )
+                try:
+                    resolved = self.annotation_parser.read_manual_annotation(
+                        int(candidate), candidate_path
+                    )
+                    logger.info(
+                        "Requested seed frame %s unavailable; using nearest annotated frame %s.",
+                        requested,
+                        int(candidate),
+                    )
+                    return resolved
+                except Exception:
+                    pass
+
+        logger.info(
+            "Requested seed frame %s unavailable; using latest available frame %s.",
+            requested,
+            int(manual_seed.frame_number),
+        )
+        return manual_seed
 
     def _load_initial_state(self, annotation_dir: Path) -> ManualAnnotation:
         json_files = find_manual_labeled_json_files(str(annotation_dir))

@@ -138,6 +138,9 @@ class CoreInteractionMixin:
         else:
             backend_idx = 0
         advanced_params_dialog.optical_flow_backend_combo.setCurrentIndex(backend_idx)
+        advanced_params_dialog.follow_prediction_progress_checkbox.setChecked(
+            bool(getattr(self, "_follow_prediction_progress", True))
+        )
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 
@@ -158,6 +161,9 @@ class CoreInteractionMixin:
                 advanced_params_dialog.is_compute_optiocal_flow_enabled()
             )
             of_manager.set_backend(advanced_params_dialog.get_optical_flow_backend())
+        self._follow_prediction_progress = (
+            advanced_params_dialog.is_follow_prediction_progress_enabled()
+        )
 
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():

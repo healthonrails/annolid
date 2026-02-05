@@ -152,6 +152,10 @@ class CutieVideoProcessor:
         self._seed_segment_lookup: Dict[int, SeedSegment] = {}
         self._committed_seed_frames: Set[int] = set()
         self._cached_labeled_frames: Optional[Set[int]] = None
+        self._last_mask_area_ratio: Dict[str, float] = {}
+        self.reject_suspicious_mask_jumps = bool(
+            kwargs.get("reject_suspicious_mask_jumps", False)
+        )
         self._seed_object_counts: Dict[int, int] = {}
         self._global_object_ids: List[int] = []
         self._global_label_names: Dict[int, str] = {}
@@ -717,6 +721,24 @@ class CutieVideoProcessor:
         label_list = []
         for label_id, mask in mask_dict.items():
             label = str(label_id)
+            mask, corrected = self._sanitize_full_frame_artifact(
+                label, mask, float(frame_area)
+            )
+            if corrected:
+                logger.warning(
+                    "CUTIE full-frame mask corrected for '%s' at frame %s.",
+                    label,
+                    self._frame_number,
+                )
+            if self.reject_suspicious_mask_jumps and self._is_suspicious_mask_jump(
+                label, mask, float(frame_area)
+            ):
+                logger.warning(
+                    "CUTIE mask jump rejected for '%s' at frame %s (possible full-frame artifact).",
+                    label,
+                    self._frame_number,
+                )
+                continue
 
             metrics = self._save_results(label, mask)
             if metrics is None:
@@ -743,6 +765,10 @@ class CutieVideoProcessor:
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
             label_list.append(current_shape)
+            if self.reject_suspicious_mask_jumps:
+                self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
+                    float(frame_area), 1.0
+                )
         save_labels(
             filename=filename,
             imagePath=None,
@@ -753,6 +779,118 @@ class CutieVideoProcessor:
             persist_json=False,
         )
         return label_list
+
+    def _sanitize_full_frame_artifact(
+        self, label: str, mask: np.ndarray, frame_area: float
+    ) -> tuple[np.ndarray, bool]:
+        """Keep component near cached bbox when mask expands to near full frame."""
+        if frame_area <= 0:
+            return mask, False
+        current_area = float(np.count_nonzero(mask))
+        if current_area <= 0:
+            return mask, False
+        if (current_area / frame_area) < 0.98:
+            return mask, False
+
+        recent_bbox = self.cache.get_most_recent_bbox(label)
+        if recent_bbox is None:
+            return mask, False
+        x1, y1, x2, y2 = recent_bbox
+        bbox_area = max(0.0, float(x2 - x1) * float(y2 - y1))
+        bbox_ratio = bbox_area / frame_area
+        if bbox_ratio <= 0.0 or bbox_ratio >= 0.85:
+            return mask, False
+
+        mask_u8 = mask.astype(np.uint8)
+        num_labels, components, stats, _ = cv2.connectedComponentsWithStats(
+            mask_u8, connectivity=8
+        )
+        if num_labels <= 1:
+            return mask, False
+
+        h, w = mask.shape[:2]
+        bw = max(1.0, float(x2 - x1))
+        bh = max(1.0, float(y2 - y1))
+        pad_x = max(8, int(bw))
+        pad_y = max(8, int(bh))
+        rx1 = max(0, int(np.floor(x1)) - pad_x)
+        ry1 = max(0, int(np.floor(y1)) - pad_y)
+        rx2 = min(w, int(np.ceil(x2)) + pad_x)
+        ry2 = min(h, int(np.ceil(y2)) + pad_y)
+        if rx2 <= rx1 or ry2 <= ry1:
+            return mask, False
+
+        best_id = 0
+        best_overlap = 0
+        best_area = 0
+        for comp_id in range(1, num_labels):
+            area = int(stats[comp_id, cv2.CC_STAT_AREA])
+            if area <= 0:
+                continue
+            overlap = int(np.count_nonzero(components[ry1:ry2, rx1:rx2] == comp_id))
+            if overlap <= 0:
+                continue
+            if overlap > best_overlap or (overlap == best_overlap and area > best_area):
+                best_id = comp_id
+                best_overlap = overlap
+                best_area = area
+
+        if best_id == 0:
+            return mask, False
+
+        cleaned = components == best_id
+        cleaned_area = float(np.count_nonzero(cleaned))
+        if cleaned_area <= 0:
+            return mask, False
+        cleaned_ratio = cleaned_area / frame_area
+        current_ratio = current_area / frame_area
+        if cleaned_ratio >= current_ratio or cleaned_ratio >= 0.98:
+            return mask, False
+        return cleaned, True
+
+    def _is_suspicious_mask_jump(
+        self, label: str, mask: np.ndarray, frame_area: float
+    ) -> bool:
+        if frame_area <= 0:
+            return False
+        current_area = float(np.count_nonzero(mask))
+        if current_area <= 0:
+            return False
+        current_ratio = current_area / frame_area
+        if current_ratio < 0.998:
+            return False
+
+        # Only treat as suspicious when the mask spans the full frame borders.
+        touches_all_borders = bool(
+            mask[0, :].any()
+            and mask[-1, :].any()
+            and mask[:, 0].any()
+            and mask[:, -1].any()
+        )
+        if not touches_all_borders:
+            return False
+
+        previous_ratio = self._last_mask_area_ratio.get(label)
+        if previous_ratio is None:
+            return current_ratio >= 0.9995
+
+        # If the object was already large, do not block it.
+        if previous_ratio >= 0.80:
+            return False
+
+        growth_ratio = current_ratio / max(previous_ratio, 1.0 / frame_area)
+        if growth_ratio < 1.4:
+            return False
+
+        recent_bbox = self.cache.get_most_recent_bbox(label)
+        if recent_bbox is not None:
+            x1, y1, x2, y2 = recent_bbox
+            bbox_area = max(0.0, float(x2 - x1) * float(y2 - y1))
+            bbox_ratio = bbox_area / frame_area
+            if bbox_ratio > 0.60:
+                return False
+
+        return True
 
     def save_KMedoids_in_mask(self, label_list, mask):
         if self._flow is not None and self.showing_KMedoids_in_mask:
@@ -905,7 +1043,7 @@ class CutieVideoProcessor:
         remapped_mask = self._remap_mask_to_global(mask, label_map, global_label_map)
         active_labels = self._extract_active_labels(remapped_mask, global_label_map)
 
-        return SeedSegment(
+        segment = SeedSegment(
             seed=seed,
             start_frame=seed.frame_index,
             end_frame=None,
@@ -913,6 +1051,32 @@ class CutieVideoProcessor:
             labels_map=global_label_map,
             active_labels=active_labels,
         )
+        self._seed_bbox_cache_from_segment(segment)
+        return segment
+
+    def _seed_bbox_cache_from_segment(self, segment: SeedSegment) -> None:
+        """Prime bbox cache from seed masks so early-frame correction has context."""
+        try:
+            frame_area = float(segment.mask.shape[0] * segment.mask.shape[1])
+            if frame_area <= 0:
+                return
+            for label in segment.active_labels:
+                value = segment.labels_map.get(label)
+                if value is None or int(value) == 0:
+                    continue
+                ys, xs = np.where(segment.mask == int(value))
+                if xs.size == 0 or ys.size == 0:
+                    continue
+                x1 = float(xs.min())
+                y1 = float(ys.min())
+                x2 = float(xs.max())
+                y2 = float(ys.max())
+                bbox_area = max(0.0, (x2 - x1) * (y2 - y1))
+                if bbox_area <= 0.0 or bbox_area >= frame_area * 0.95:
+                    continue
+                self.cache.add_bbox(label, (x1, y1, x2, y2))
+        except Exception:
+            logger.debug("Failed to seed CUTIE bbox cache.", exc_info=True)
 
     def _build_seed_segments(
         self, seeds: List[SeedFrame], requested_end: Optional[int]
@@ -1076,6 +1240,8 @@ class CutieVideoProcessor:
     ) -> str:
         if not segments:
             return "No valid segments found for CUTIE processing."
+        if self.reject_suspicious_mask_jumps:
+            self._last_mask_area_ratio = {}
 
         # Refresh cached labeled frames so resume logic sees the latest edits
         self._cached_labeled_frames = None

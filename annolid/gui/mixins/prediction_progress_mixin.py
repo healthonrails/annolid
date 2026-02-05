@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import os.path as osp
 import re
@@ -137,6 +138,32 @@ class PredictionProgressMixin:
         """Update the progress bar's value."""
         self.progress_bar.setValue(progress)
 
+    def _sync_prediction_progress_frame(self, frame_number: int) -> None:
+        """Move playback/frame state to progress frame regardless of timeline dock visibility."""
+        if self.num_frames is None:
+            return
+        frame = int(frame_number)
+        if frame < 0 or frame >= int(self.num_frames):
+            return
+
+        try:
+            if self.frame_number != frame:
+                self.set_frame_number(frame)
+        except Exception:
+            logger.debug("Failed to set frame number from prediction progress.")
+
+        if self.seekbar is None:
+            return
+        try:
+            blocker = QtCore.QSignalBlocker(self.seekbar)
+            self.seekbar.setValue(frame)
+            del blocker
+        except Exception:
+            try:
+                self.seekbar.setValue(frame)
+            except Exception:
+                logger.debug("Failed to move seekbar from prediction progress.")
+
     def _finalize_prediction_progress(self, message=""):
         logger.info(f"Prediction finalization: {message}")
         if getattr(self, "_progress_bar_owner", None) in (
@@ -208,8 +235,19 @@ class PredictionProgressMixin:
                 )
                 if store.store_path.exists():
                     self._prediction_existing_store_frames = set(store.iter_frames())
+                self._prediction_store_path = store.store_path
+                try:
+                    self._prediction_store_baseline_size = int(
+                        store.store_path.stat().st_size
+                    )
+                except OSError:
+                    self._prediction_store_baseline_size = 0
+                self._prediction_appended_frames = set()
             except Exception:
                 self._prediction_existing_store_frames = set()
+                self._prediction_store_path = None
+                self._prediction_store_baseline_size = 0
+                self._prediction_appended_frames = set()
             self.prediction_progress_watcher.start(1000)
             logger.info(
                 f"Prediction progress watcher started for: {folder_path_to_watch}"
@@ -217,6 +255,52 @@ class PredictionProgressMixin:
             self._scan_prediction_folder(folder_path_to_watch)
         else:
             logger.warning(f"Cannot watch non-existent folder: {folder_path_to_watch}")
+
+    def _scan_prediction_store_updates(self) -> set[int]:
+        """Return frame indices appended to the annotation store since watcher start."""
+        existing: set[int] = set(
+            int(frame)
+            for frame in getattr(self, "_prediction_appended_frames", set()) or set()
+        )
+        store_path = getattr(self, "_prediction_store_path", None)
+        if not store_path:
+            return existing
+        path = Path(store_path)
+        if not path.exists():
+            return existing
+
+        baseline_size = int(getattr(self, "_prediction_store_baseline_size", 0) or 0)
+        try:
+            current_size = int(path.stat().st_size)
+        except OSError:
+            return existing
+        if current_size <= baseline_size:
+            return existing
+        if baseline_size < 0 or baseline_size > current_size:
+            baseline_size = 0
+
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                fh.seek(baseline_size)
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    frame = payload.get("frame")
+                    try:
+                        existing.add(int(frame))
+                    except (TypeError, ValueError):
+                        continue
+        except OSError:
+            return existing
+
+        self._prediction_store_baseline_size = int(current_size)
+        self._prediction_appended_frames = set(existing)
+        return existing
 
     def _scan_prediction_folder(self, folder_path):
         if not self.video_loader or self.num_frames is None or self.num_frames == 0:
@@ -253,6 +337,9 @@ class PredictionProgressMixin:
                     all_frame_nums_set.add(frame_num)
                 except (ValueError, IndexError):
                     continue
+
+            if prediction_active:
+                all_frame_nums_set.update(self._scan_prediction_store_updates())
 
             all_frame_nums: list[int] = []
             if not all_frame_nums_set:
@@ -294,6 +381,9 @@ class PredictionProgressMixin:
 
             frames_to_mark = decimate_frames(all_frame_nums)
             existing_frames_to_mark = decimate_frames(existing_frame_nums)
+            if prediction_active:
+                # During an active run, emphasize new progress marks only.
+                existing_frames_to_mark = []
 
             if not frames_to_mark and not existing_frames_to_mark:
                 if prediction_active and self._prediction_start_frame is not None:
@@ -305,9 +395,8 @@ class PredictionProgressMixin:
                         )
                         self.seekbar.addMark(progress_mark)
                         self._prediction_progress_mark = progress_mark
-                        if self.frame_number != start_frame:
-                            self.set_frame_number(start_frame)
-                        self.seekbar.setValue(start_frame)
+                        if bool(getattr(self, "_follow_prediction_progress", False)):
+                            self._sync_prediction_progress_frame(start_frame)
                         self._update_progress_bar(0)
                 return
 
@@ -378,9 +467,8 @@ class PredictionProgressMixin:
                     )
                     self.seekbar.addMark(progress_mark)
                     self._prediction_progress_mark = progress_mark
-                    if self.frame_number != latest_frame:
-                        self.set_frame_number(latest_frame)
-                    self.seekbar.setValue(latest_frame)
+                    if bool(getattr(self, "_follow_prediction_progress", False)):
+                        self._sync_prediction_progress_frame(latest_frame)
             elif prediction_active and self._prediction_start_frame is not None:
                 start_frame = self._prediction_start_frame
                 if 0 <= start_frame < self.num_frames:
@@ -390,9 +478,8 @@ class PredictionProgressMixin:
                     )
                     self.seekbar.addMark(progress_mark)
                     self._prediction_progress_mark = progress_mark
-                    if self.frame_number != start_frame:
-                        self.set_frame_number(start_frame)
-                    self.seekbar.setValue(start_frame)
+                    if bool(getattr(self, "_follow_prediction_progress", False)):
+                        self._sync_prediction_progress_frame(start_frame)
                     self._update_progress_bar(0)
 
         except Exception as e:
@@ -417,6 +504,9 @@ class PredictionProgressMixin:
         self._prediction_start_frame = None
         self._prediction_existing_store_frames = set()
         self._prediction_existing_json_frames = set()
+        self._prediction_store_path = None
+        self._prediction_store_baseline_size = 0
+        self._prediction_appended_frames = set()
         if self.seekbar:
             self.seekbar.removeMarksByType("prediction_progress")
         self._prediction_progress_mark = None

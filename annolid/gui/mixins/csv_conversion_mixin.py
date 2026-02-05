@@ -12,7 +12,12 @@ from annolid.utils.logger import logger
 class CsvConversionMixin:
     """Background CSV conversion workflow and worker lifecycle."""
 
-    def convert_json_to_tracked_csv(self):
+    def convert_json_to_tracked_csv(
+        self,
+        *,
+        include_tracked_output=True,
+        force_rewrite_tracking_csv=False,
+    ):
         out_folder = self.video_results_folder
         if not out_folder or not Path(out_folder).exists():
             QtWidgets.QMessageBox.warning(
@@ -29,15 +34,32 @@ class CsvConversionMixin:
             and self.csv_thread
             and self.csv_thread.isRunning()
         ):
-            job = (out_folder, csv_output_path)
+            job = (
+                out_folder,
+                csv_output_path,
+                bool(include_tracked_output),
+                bool(force_rewrite_tracking_csv),
+            )
             if job not in self._csv_conversion_queue:
                 self._csv_conversion_queue.append(job)
                 self.statusBar().showMessage("Queued tracking CSV conversion...", 3000)
             return
 
-        self._start_csv_conversion(out_folder, csv_output_path)
+        self._start_csv_conversion(
+            out_folder,
+            csv_output_path,
+            include_tracked_output=bool(include_tracked_output),
+            force_rewrite_tracking_csv=bool(force_rewrite_tracking_csv),
+        )
 
-    def _start_csv_conversion(self, out_folder: Path, csv_output_path: Path):
+    def _start_csv_conversion(
+        self,
+        out_folder: Path,
+        csv_output_path: Path,
+        *,
+        include_tracked_output=True,
+        force_rewrite_tracking_csv=False,
+    ):
         """Kick off a background CSV conversion job for the given folder."""
         self._initialize_progress_bar(owner="csv_conversion")
         self._last_tracking_csv_path = str(csv_output_path)
@@ -51,8 +73,11 @@ class CsvConversionMixin:
                 task_function=labelme2csv.convert_json_to_csv,
                 json_folder=str(out_folder),
                 csv_file=str(csv_output_path),
-                tracked_csv_file=str(tracked_csv_path),
+                tracked_csv_file=(
+                    str(tracked_csv_path) if include_tracked_output else None
+                ),
                 fps=self.fps,
+                force_rewrite_tracking_csv=bool(force_rewrite_tracking_csv),
                 progress_callback=self._csv_worker_progress_proxy,
             )
             self.csv_thread = QtCore.QThread()
@@ -77,8 +102,15 @@ class CsvConversionMixin:
             self._last_tracking_csv_path = None
 
             if self._csv_conversion_queue:
-                next_out, next_csv = self._csv_conversion_queue.pop(0)
-                self._start_csv_conversion(next_out, next_csv)
+                next_out, next_csv, next_include_tracked, next_force_rewrite = (
+                    self._csv_conversion_queue.pop(0)
+                )
+                self._start_csv_conversion(
+                    next_out,
+                    next_csv,
+                    include_tracked_output=next_include_tracked,
+                    force_rewrite_tracking_csv=next_force_rewrite,
+                )
 
     def _on_csv_conversion_finished(self, result=None):
         """Handle cleanup and user feedback after CSV conversion completes."""
@@ -156,8 +188,15 @@ class CsvConversionMixin:
         self.csv_worker = None
 
         if self._csv_conversion_queue:
-            next_out, next_csv = self._csv_conversion_queue.pop(0)
-            self._start_csv_conversion(next_out, next_csv)
+            next_out, next_csv, next_include_tracked, next_force_rewrite = (
+                self._csv_conversion_queue.pop(0)
+            )
+            self._start_csv_conversion(
+                next_out,
+                next_csv,
+                include_tracked_output=next_include_tracked,
+                force_rewrite_tracking_csv=next_force_rewrite,
+            )
 
     def _stop_csv_worker(self):
         """Request a graceful stop of any active CSV conversion."""

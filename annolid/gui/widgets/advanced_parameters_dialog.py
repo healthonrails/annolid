@@ -45,6 +45,7 @@ class AdvancedParametersDialog(QDialog):
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
         self.compute_optical_flow = True
+        self.follow_prediction_progress = True
         self.optical_flow_backend = "farneback"
         self.sam3_score_threshold_detection = float(
             sam3_runtime.get("score_threshold_detection") or 0.35
@@ -201,6 +202,16 @@ class AdvancedParametersDialog(QDialog):
             "Toggle motion index calculation using optical flow across instance masks."
         )
 
+        self.follow_prediction_progress_checkbox = QCheckBox(
+            "Follow Prediction Progress on Timeline"
+        )
+        self.follow_prediction_progress_checkbox.setChecked(
+            self.follow_prediction_progress
+        )
+        self.follow_prediction_progress_checkbox.setToolTip(
+            "Auto-jump the playhead to the latest predicted frame while prediction is running."
+        )
+
         form.addRow(
             "Polygon epsilon",
             self._wrap_with_hint(
@@ -250,6 +261,12 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_checkbox(
                 self.compute_optical_flow_checkbox,
                 "If disabled, motion index will not be computed from optical flow.",
+            )
+        )
+        form.addRow(
+            self._wrap_checkbox(
+                self.follow_prediction_progress_checkbox,
+                "If enabled, timeline view follows prediction progress automatically.",
             )
         )
 
@@ -831,6 +848,9 @@ class AdvancedParametersDialog(QDialog):
             self.auto_recovery_missing_instances_checkbox.isChecked()
         )
         self.compute_optical_flow = self.compute_optical_flow_checkbox.isChecked()
+        self.follow_prediction_progress = (
+            self.follow_prediction_progress_checkbox.isChecked()
+        )
         self.optical_flow_backend = self.get_optical_flow_backend()
 
         snap_radius = self.mask_enforce_radius_spinbox.value()
@@ -910,6 +930,9 @@ class AdvancedParametersDialog(QDialog):
 
     def is_compute_optiocal_flow_enabled(self) -> bool:
         return self.compute_optical_flow
+
+    def is_follow_prediction_progress_enabled(self) -> bool:
+        return self.follow_prediction_progress
 
     def get_optical_flow_backend(self) -> str:
         text = self.optical_flow_backend_combo.currentText().lower()

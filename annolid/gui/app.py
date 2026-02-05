@@ -243,6 +243,10 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._prediction_start_frame = None
         self._prediction_existing_store_frames = set()
         self._prediction_existing_json_frames = set()
+        self._prediction_store_path = None
+        self._prediction_store_baseline_size = 0
+        self._prediction_appended_frames = set()
+        self._follow_prediction_progress = True
 
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],

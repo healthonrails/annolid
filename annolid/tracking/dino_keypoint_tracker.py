@@ -2318,9 +2318,7 @@ class DinoKeypointVideoProcessor:
         end_frame: Optional[int],
         step: int,
     ) -> str:
-        initial_frame, registry = self.adapter.load_initial_state(
-            self.video_result_folder
-        )
+        initial_frame, registry = self._resolve_initial_state(start_frame=start_frame)
         start_frame = (
             initial_frame if start_frame is None else max(initial_frame, start_frame)
         )
@@ -2432,6 +2430,69 @@ class DinoKeypointVideoProcessor:
             message = "Cutie + DINO tracking stopped early."
         logger.info(message)
         return message
+
+    def _resolve_initial_state(
+        self,
+        *,
+        start_frame: Optional[int],
+    ) -> Tuple[int, InstanceRegistry]:
+        initial_frame, registry = self.adapter.load_initial_state(
+            self.video_result_folder
+        )
+        if start_frame is None:
+            return int(initial_frame), registry
+
+        try:
+            requested = int(start_frame)
+        except Exception:
+            return int(initial_frame), registry
+        requested = max(0, min(int(requested), int(self.total_frames) - 1))
+
+        requested_path = (
+            self.video_result_folder
+            / f"{self.video_result_folder.name}_{requested:09d}.json"
+        )
+        try:
+            requested_registry = self.adapter.read_annotation(requested_path)
+            logger.info(
+                "Using requested seed frame %s for keypoint tracking.", requested
+            )
+            return int(requested), requested_registry
+        except Exception:
+            pass
+
+        # Fall back to the nearest annotated frame at or before the requested frame.
+        available_frames: List[int] = []
+        for filename in find_manual_labeled_json_files(str(self.video_result_folder)):
+            try:
+                available_frames.append(int(get_frame_number_from_json(filename)))
+            except Exception:
+                continue
+        if available_frames:
+            lower_or_equal = [frame for frame in available_frames if frame <= requested]
+            candidate = max(lower_or_equal) if lower_or_equal else min(available_frames)
+            if int(candidate) != int(initial_frame):
+                candidate_path = (
+                    self.video_result_folder
+                    / f"{self.video_result_folder.name}_{int(candidate):09d}.json"
+                )
+                try:
+                    candidate_registry = self.adapter.read_annotation(candidate_path)
+                    logger.info(
+                        "Requested seed frame %s unavailable; using nearest annotated frame %s.",
+                        requested,
+                        int(candidate),
+                    )
+                    return int(candidate), candidate_registry
+                except Exception:
+                    pass
+
+        logger.info(
+            "Requested seed frame %s unavailable; using latest available frame %s.",
+            requested,
+            int(initial_frame),
+        )
+        return int(initial_frame), registry
 
     def _manual_annotation_frames(
         self,
