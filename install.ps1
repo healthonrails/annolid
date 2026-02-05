@@ -28,7 +28,10 @@ $AnnolidRepo = "https://github.com/healthonrails/annolid.git"
 $script:UseUvPython = $false
 $script:UvPythonVersion = $null
 $script:HasNvidiaGpu = $false
+$script:HasCuda12 = $false
+$script:CudaVersion = $null
 $script:PytorchCudaIndexUrl = "https://download.pytorch.org/whl/cu124"
+$script:OnnxRuntimeCuda12ExtraIndexUrl = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 
 # =============================================================================
 # Helper Functions
@@ -204,6 +207,8 @@ function Test-GPU {
     if ($NoGpu) {
         Write-Info "GPU detection skipped (--NoGpu)."
         $script:HasNvidiaGpu = $false
+        $script:HasCuda12 = $false
+        $script:CudaVersion = $null
         return
     }
 
@@ -216,12 +221,65 @@ function Test-GPU {
             $script:HasNvidiaGpu = $true
             Write-Success "NVIDIA GPU detected"
             Write-Host "  $($gpuList -split "`n" | Select-Object -First 1)"
+
+            try {
+                $smiHeader = & nvidia-smi 2>$null | Select-String -Pattern "CUDA Version:\s*([0-9]+\.[0-9]+)" | Select-Object -First 1
+                if ($smiHeader -and $smiHeader.Matches.Count -gt 0) {
+                    $script:CudaVersion = $smiHeader.Matches[0].Groups[1].Value
+                    $script:HasCuda12 = $script:CudaVersion.StartsWith("12.")
+                    Write-Info "Detected CUDA runtime version: $script:CudaVersion"
+                    if ($script:HasCuda12) {
+                        Write-Success "CUDA 12.x detected; ONNX Runtime GPU (CUDA 12 feed) will be used."
+                    } else {
+                        Write-Warning-Msg "CUDA $script:CudaVersion detected (not 12.x). ONNX Runtime CPU wheel will be used for compatibility."
+                    }
+                } else {
+                    Write-Warning-Msg "Unable to parse CUDA version from nvidia-smi output."
+                }
+            } catch {
+                Write-Warning-Msg "Could not detect CUDA runtime version."
+            }
             return
         }
     } catch { }
 
     $script:HasNvidiaGpu = $false
+    $script:HasCuda12 = $false
+    $script:CudaVersion = $null
     Write-Info "No NVIDIA GPU detected. Using default PyTorch build."
+}
+
+# =============================================================================
+# Install ONNX Runtime (Windows, CUDA-aware)
+# =============================================================================
+function Install-OnnxRuntime {
+    Write-Step "Installing ONNX Runtime..."
+
+    . $script:ActivateCmd
+
+    if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
+        Write-Host "  Installing onnxruntime-gpu from CUDA 12 feed..."
+        try {
+            if ($script:UseUv) {
+                & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+            } else {
+                & pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+            }
+            Write-Success "onnxruntime-gpu (CUDA 12.x) installed"
+            return
+        } catch {
+            Write-Warning-Msg "onnxruntime-gpu install failed. Falling back to CPU onnxruntime."
+        }
+    } elseif ($script:HasNvidiaGpu -and -not $NoGpu) {
+        Write-Info "Skipping onnxruntime-gpu because CUDA 12.x was not detected."
+    }
+
+    if ($script:UseUv) {
+        & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime
+    } else {
+        & pip install --upgrade --force-reinstall onnxruntime
+    }
+    Write-Success "onnxruntime (CPU) installed"
 }
 
 # =============================================================================
@@ -431,6 +489,8 @@ function Install-Annolid {
         Write-Warning-Msg "SAM-HQ installation failed."
     }
 
+    Install-OnnxRuntime
+
     Write-Success "Annolid installed"
 }
 
@@ -457,15 +517,31 @@ function Repair-OnnxRuntime {
     Write-Warning-Msg "ONNX Runtime failed to import. Repairing runtime dependencies..."
 
     if ($script:UseUv) {
-        & $script:UvCmd pip uninstall -y onnxruntime-gpu onnxruntime-directml
-        & $script:UvCmd pip install --upgrade --force-reinstall msvc-runtime onnxruntime
+        & $script:UvCmd pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
+        & $script:UvCmd pip install --upgrade --force-reinstall msvc-runtime
     } else {
-        & pip uninstall -y onnxruntime-gpu onnxruntime-directml
-        & pip install --upgrade --force-reinstall msvc-runtime onnxruntime
+        & pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
+        & pip install --upgrade --force-reinstall msvc-runtime
+    }
+
+    if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
+        Write-Info "Attempting onnxruntime-gpu repair for CUDA 12.x..."
+        if ($script:UseUv) {
+            & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+        } else {
+            & pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+        }
+    } else {
+        Write-Info "Using CPU onnxruntime for repair."
+        if ($script:UseUv) {
+            & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime
+        } else {
+            & pip install --upgrade --force-reinstall onnxruntime
+        }
     }
 
     try {
-        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import torch; import onnxruntime as ort; print(f'  ONNX Runtime repaired: {ort.__version__}')"
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import torch; import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX Runtime repaired: {ort.__version__}'); print(f'  Providers: {providers}')"
         Write-Success "ONNX Runtime repaired successfully"
     } catch {
         Write-Error-Msg "ONNX Runtime still fails to import."
@@ -500,6 +576,25 @@ function Test-Installation {
     if (-not $NoGpu) {
         & python -c "import torch; cuda = torch.cuda.is_available(); print(f'  CUDA available: {cuda}')"
     }
+
+    Write-Host "  Checking ONNX Runtime providers..."
+    & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')"
+
+    if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
+        Write-Host "  Verifying CUDAExecutionProvider..."
+        try {
+            & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"
+            Write-Success "CUDAExecutionProvider available"
+        } catch {
+            Write-Error-Msg "CUDAExecutionProvider is missing despite CUDA 12.x detection."
+            Write-Host "  Run this in the venv and retry:"
+            Write-Host "    uv pip install onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl"
+            exit 1
+        }
+    }
+
+    Write-Host "  Checking AI polygon model path..."
+    & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import numpy as np; from annolid.utils.annotation_compat import get_ai_models; Model = get_ai_models()[0]; m = Model(); m.set_image(np.zeros((64, 64, 3), dtype=np.uint8)); pts = np.array([[16,16],[48,48]], dtype=np.float32); labels = np.array([1,1], dtype=np.int32); poly = m.predict_polygon_from_points(pts, labels); print(f'  AI polygon check OK (points={len(poly)})')"
 
     Write-Success "Installation validated"
 }

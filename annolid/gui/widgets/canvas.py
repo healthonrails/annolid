@@ -1188,6 +1188,37 @@ class Canvas(QtWidgets.QWidget):
                 return True
             return False
 
+        def _add_ai_fallback_action(
+            text: str,
+            mode: str,
+            *,
+            icon_filename: str = "ai_polygons.svg",
+        ) -> None:
+            action = QtWidgets.QAction(self._icon(icon_filename), text, menu)
+            if action.icon().isNull():
+                action.setIcon(
+                    self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+                )
+
+            def _trigger():
+                try:
+                    model_name = ""
+                    if hasattr(main_window, "_selectAiModelComboBox"):
+                        model_name = main_window._selectAiModelComboBox.currentText()
+                    custom_models = None
+                    if hasattr(main_window, "ai_model_manager"):
+                        custom_models = getattr(
+                            main_window.ai_model_manager, "custom_model_names", None
+                        )
+                    self.initializeAiModel(model_name, _custom_ai_models=custom_models)
+                except Exception:
+                    logger.debug("Failed to initialize AI model from context menu.")
+                if hasattr(main_window, "toggleDrawMode"):
+                    main_window.toggleDrawMode(False, createMode=mode)
+
+            action.triggered.connect(_trigger)
+            menu.addAction(action)
+
         # Flat, user-friendly context menu: edit first, then draw modes, then AI.
         actions = getattr(main_window, "actions", None)
         if actions is not None:
@@ -1220,14 +1251,18 @@ class Canvas(QtWidgets.QWidget):
                 fallback_standard=QtWidgets.QStyle.SP_MediaSeekForward,
             )
             menu.addSeparator()
-            _add_existing_action(
+            ai_polygon_added = _add_existing_action(
                 getattr(actions, "createAiPolygonMode", None),
                 icon_filename="ai_polygons.svg",
             )
-            _add_existing_action(
+            if not ai_polygon_added:
+                _add_ai_fallback_action("AI Polygon", "ai_polygon")
+            ai_mask_added = _add_existing_action(
                 getattr(actions, "createAiMaskMode", None),
                 icon_filename="ai_polygons.svg",
             )
+            if not ai_mask_added:
+                _add_ai_fallback_action("AI Mask", "ai_mask")
             _add_existing_action(
                 getattr(actions, "createGroundingSAMMode", None),
                 fallback_standard=QtWidgets.QStyle.SP_ComputerIcon,

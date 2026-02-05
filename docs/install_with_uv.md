@@ -72,6 +72,9 @@ If you need behavior logging or segmentation models, drop your trained weights u
 - **`ModuleNotFoundError: No module named 'zmq'`:** Ensure you are installing with the updated `pyproject.toml` that depends on `pyzmq`. If you already have an environment, run `uv pip install pyzmq` inside it and retry `annolid`.
 - **`ModuleNotFoundError: No module named 'ffpyplayer'`:** The GUI’s real-time widgets use ffpyplayer’s video frame utils. Install it with `uv pip install ffpyplayer` or recreate the environment after pulling the updated dependency list.
 - **`ModuleNotFoundError: No module named 'tree_config'`:** Realtime configs rely on `tree-config`. Install it with `uv pip install tree-config` or rebuild the environment after syncing the latest dependencies.
+- **Windows + CUDA 12.x ONNX Runtime DLL/import errors:** In the activated environment, run:
+  `uv pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/`
+  If CUDA is not 12.x, install CPU ONNX Runtime instead: `uv pip install onnxruntime`.
 - **Polygon edges look noisy:** The mask-to-polygon conversion now uses OpenCV’s Douglas–Peucker simplifier. Adjust `approxpoly_epsilon` in `configs/default_config.yaml` if you need smoother (higher value) or more detailed (lower value) outlines.
 
 You're now ready to track behaviors using the Annolid GUI or the CLI tools (`annolid-track`, `annolid-train`) from the activated `uv` environment.
