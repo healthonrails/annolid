@@ -56,7 +56,7 @@
 <li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">FAQs</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#threshold-based-object-segmenation">Threshold based object segmenation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#threshold-based-object-segmentation">Threshold based object segmentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#convert-wmv-format-to-mp4-format-using-ffmpeg">Convert WMV format to mp4 format using ffmpeg</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#save-the-extracted-frames-to-a-user-selected-output-directory">Save the extracted frames to a user selected output directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#how-to-track-multiple-objects-in-the-video">How to track multiple objects in the video?</a></li>
@@ -93,8 +93,8 @@
              
   <section id="faqs">
 <h1>FAQs<a class="headerlink" href="#faqs" title="Link to this heading"></a></h1>
-<section id="threshold-based-object-segmenation">
-<h2>Threshold based object segmenation<a class="headerlink" href="#threshold-based-object-segmenation" title="Link to this heading"></a></h2>
+<section id="threshold-based-object-segmentation">
+<h2>Threshold based object segmentation<a class="headerlink" href="#threshold-based-object-segmentation" title="Link to this heading"></a></h2>
 <p>Added track bars for users to select HSV values to
 segment ROIs in the provided video.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>annolid/main.py<span class="w"> </span>-v<span class="w"> </span>/path/to/my_video.mp4<span class="w"> </span>--segmentation<span class="o">=</span>threshold
@@ -157,7 +157,7 @@ The dataset is structured as follows.</p>
 <section id="convert-the-keypoint-annotations-to-labelme-format">
 <h2>Convert the keypoint annotations to labelme format<a class="headerlink" href="#convert-the-keypoint-annotations-to-labelme-format" title="Link to this heading"></a></h2>
 <p>e.g. <a class="reference external" href="https://github.com/DeepLabCut/Primer-MotionCapture/tree/master/mouse_m7s3">DeepLabCut Mouse dataset</a></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>annolid/main.py<span class="w"> </span>--keypoints2labelme<span class="w"> </span>/path/to/mouse_m7s3/<span class="w">  </span>--keypoints<span class="w"> </span>/path/to/mouse_m7s3/CollectedData_xxxx.h5<span class="w"> </span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>annolid/main.py<span class="w"> </span>--keypoints2labelme<span class="w"> </span>/path/to/mouse_m7s3/<span class="w">  </span>--keypoints<span class="w"> </span>/path/to/mouse_m7s3/CollectedData_xxxx.h5
 </pre></div>
 </div>
 <p><img alt="Example" src="_images/mouse_keypoints.png" /></p>

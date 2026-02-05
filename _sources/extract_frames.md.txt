@@ -5,7 +5,7 @@
 ```bash
 python annolid/main.py -v /path/to/my_video.mp4 --extract_frames=100
 ```
-The above command will extract 100 frames from the provided video and save them to a default folder called extracted_frames in the current annolid repo folder. 
+The above command will extract 100 frames from the provided video and save them to a default folder called extracted_frames in the current annolid repo folder.
 
 Or you can use the GUI as follows.
 
@@ -26,7 +26,7 @@ python annolid/main.py  -v /path/to/my_video.mp4 --extract_frames=100 --algo=ran
 ```
 
 ## Extract all the key frames from a video used by the compression methods
-:warning: This method may not work for some videos with certain compression methods. 
+:warning: This method may not work for some videos with certain compression methods.
 ```bash
 python main.py -v /path/to/my_video.mp4 --algo=keyframes --extract_frames=-1
 ```

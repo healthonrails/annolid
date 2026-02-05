@@ -129,7 +129,7 @@
 <h2>Install Annolid<a class="headerlink" href="#id1" title="Link to this heading"></a></h2>
 <p>Clone the code repo from Github, change into the new directory, and install</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--recurse-submodules<span class="w"> </span>https://github.com/healthonrails/annolid.git
-<span class="nb">cd</span><span class="w"> </span>annolid<span class="w"> </span>
+<span class="nb">cd</span><span class="w"> </span>annolid
 
 <span class="c1"># install the package (be sure to include the space and the period after the -e)</span>
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
@@ -158,7 +158,7 @@ conda<span class="w"> </span>activate<span class="w"> </span>annolid-env
 annolid
 
 <span class="c1"># Optionally, you can use a predefined label.txt file as follows.</span>
-annolid<span class="w"> </span>--labels<span class="o">=</span>/path/to/labels_custom.txt<span class="w"> </span>
+annolid<span class="w"> </span>--labels<span class="o">=</span>/path/to/labels_custom.txt
 </pre></div>
 </div>
 </section>
@@ -170,14 +170,14 @@ annolid<span class="w"> </span>--labels<span class="o">=</span>/path/to/labels_c
 <ul class="simple">
 <li><p>Windows, Linux or macOS with Python ≥ 3.10</p></li>
 <li><p>PyTorch ≥ 1.5 and <a class="reference external" href="https://github.com/pytorch/vision/">torchvision</a> that matches the PyTorch installation.
-Install them together at <a class="reference external" href="https://pytorch.org">pytorch.org</a> to make sure of this.<br />
-Presently, the combination of torch 1.8 and torchvision 0.9.1 works well, along with pyyaml 5.3, as shown below.<br />
+Install them together at <a class="reference external" href="https://pytorch.org">pytorch.org</a> to make sure of this.
+Presently, the combination of torch 1.8 and torchvision 0.9.1 works well, along with pyyaml 5.3, as shown below.
 For purposes of using Annolid, it is OK to downgrade pyyaml from its current version to 5.3.</p></li>
 </ul>
 </section>
 <section id="install-detectron2-dependencies">
 <h3>Install Detectron2 dependencies:<a class="headerlink" href="#install-detectron2-dependencies" title="Link to this heading"></a></h3>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pip</span> <span class="n">install</span> <span class="n">pyyaml</span><span class="o">==</span><span class="mf">5.3</span> 
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">pip</span> <span class="n">install</span> <span class="n">pyyaml</span><span class="o">==</span><span class="mf">5.3</span>
 <span class="n">pip</span> <span class="n">install</span> <span class="n">pycocotools</span><span class="o">&gt;=</span><span class="mf">2.0.1</span>
 <span class="n">pip</span> <span class="n">install</span> <span class="n">torch</span><span class="o">==</span><span class="mf">1.9.0</span><span class="o">+</span><span class="n">cu102</span> <span class="n">torchvision</span><span class="o">==</span><span class="mf">0.10.0</span><span class="o">+</span><span class="n">cu102</span> <span class="o">-</span><span class="n">f</span> <span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">download</span><span class="o">.</span><span class="n">pytorch</span><span class="o">.</span><span class="n">org</span><span class="o">/</span><span class="n">whl</span><span class="o">/</span><span class="n">torch_stable</span><span class="o">.</span><span class="n">html</span>
 
@@ -188,7 +188,7 @@ For purposes of using Annolid, it is OK to downgrade pyyaml from its current ver
 <h3>Install Detectron2:<a class="headerlink" href="#install-detectron2" title="Link to this heading"></a></h3>
 <p>See <a class="reference external" href="https://detectron2.readthedocs.io/tutorials/install.html">https://detectron2.readthedocs.io/tutorials/install.html</a> for further information.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>import torch
-assert torch.__version__.startswith(&quot;1.9&quot;)    
+assert torch.__version__.startswith(&quot;1.9&quot;)
 pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.9/index.html
 
 ### Install Detectron2 on Windows 10
@@ -210,7 +210,7 @@ After restart, you can cd to detectron2 folder and run the following command.
 </section>
 <section id="install-detectron2-on-google-colab">
 <h2>Install Detectron2 on Google Colab<a class="headerlink" href="#install-detectron2-on-google-colab" title="Link to this heading"></a></h2>
-<p>Instructions will be posted here presently.  (Colab uses CUDA 10.2 + torch 1.9.0).<br />
+<p>Instructions will be posted here presently.  (Colab uses CUDA 10.2 + torch 1.9.0).
 <a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a></p>
 </section>
 <section id="optional-install-older-version-of-pytorch-for-yolact">
