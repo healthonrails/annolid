@@ -662,6 +662,9 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
             self.actions.createLineMode,
             self.actions.createPointMode,
             self.actions.createLineStripMode,
+            None,
+            self.actions.createAiPolygonMode,
+            self.actions.createAiMaskMode,
         )
         self.actions.editMenu = (
             self.actions.undo,
