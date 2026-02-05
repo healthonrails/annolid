@@ -474,7 +474,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         # Callbacks:
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
 
-        self.ai_model_manager.initialize()
+        # Prefer Cutie as the GUI default for the AI model dropdown.
+        # This is a UX default only; users can pick a different model at runtime.
+        self.ai_model_manager.initialize(default_selection="Cutie")
 
         self.canvas_screenshot_widget = CanvasScreenshotWidget(
             canvas=self.canvas, here=Path(__file__).resolve().parent

@@ -1,26 +1,10 @@
 import os
+import collections
+from typing import TYPE_CHECKING
+
 from PIL import Image
 import numpy as np
 import torch
-import collections
-
-try:
-    # Optional: ONNX runtime-backed SAM (used by AI polygon mode). Keep import
-    # lazy/guarded so Annolid remains importable in headless/CI environments.
-    from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel  # type: ignore # NOQA
-except ModuleNotFoundError as exc:
-    if getattr(exc, "name", "") == "onnxruntime":
-        _ONNXRUNTIME_IMPORT_ERROR = exc
-
-        class SegmentAnythingModel:  # type: ignore
-            def __init__(self, *args, **kwargs):
-                raise ModuleNotFoundError(
-                    "Optional dependency 'onnxruntime' is required for ONNX SAM models. "
-                    "Install it with: pip install onnxruntime"
-                ) from _ONNXRUNTIME_IMPORT_ERROR
-
-    else:
-        raise
 """Labelme segment anything encoder and decorder in onnx format
 https://github.com/wkentaro/labelme/blob/main/labelme/ai/__init__.py"""
 
@@ -76,6 +60,20 @@ MODELS = [
         ),
     ),
 ]
+
+
+if TYPE_CHECKING:  # pragma: no cover
+    from annolid.segmentation.SAM.segment_anything import SegmentAnythingModel as SegmentAnythingModel
+
+
+def __getattr__(name: str):
+    if name == "SegmentAnythingModel":
+        from annolid.segmentation.SAM.segment_anything import (
+            SegmentAnythingModel as _SegmentAnythingModel,
+        )
+
+        return _SegmentAnythingModel
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _require_segment_anything():

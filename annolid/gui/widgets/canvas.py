@@ -534,18 +534,20 @@ class Canvas(QtWidgets.QWidget):
                     "Custom model selected: %s, skipping SAM initialization" % name
                 )
                 return
-            else:
-                logger.warning("Unsupported ai model: %s" % name)
-                # Default to EfficientSam (speed)
-                if len(AI_MODELS) > 3:
-                    model_class = AI_MODELS[3]
-                elif AI_MODELS:
-                    model_class = AI_MODELS[0]
-                else:
-                    logger.warning(
-                        "No AI segmentation models are available; skipping initialization."
-                    )
-                    return
+            # The dropdown can include non point-prompt models (e.g. Cutie). For
+            # AI polygon/mask we require a point-prompt segmentation model, so
+            # silently fall back to a known-good option.
+            for m in AI_MODELS:
+                if getattr(m, "name", None) == "EfficientSam (speed)":
+                    model_class = m
+                    break
+            if model_class is None and AI_MODELS:
+                model_class = AI_MODELS[0]
+            if model_class is None:
+                logger.warning(
+                    "No AI segmentation models are available; skipping initialization."
+                )
+                return
 
         if self._ai_model is not None and self._ai_model.name == model_class.name:
             logger.debug("AI model is already initialized: %r" % model_class.name)
@@ -573,12 +575,18 @@ class Canvas(QtWidgets.QWidget):
     def _ensure_ai_model_initialized(self) -> bool:
         if self._ai_model is not None:
             return True
+        default_name = None
         try:
-            default_model = AI_MODELS[3].name if len(AI_MODELS) > 3 else None
+            for m in AI_MODELS:
+                if getattr(m, "name", None) == "EfficientSam (speed)":
+                    default_name = m.name
+                    break
+            if default_name is None and AI_MODELS:
+                default_name = AI_MODELS[0].name
         except Exception:
-            default_model = None
-        if default_model:
-            self.initializeAiModel(default_model)
+            default_name = None
+        if default_name:
+            self.initializeAiModel(default_name)
         return self._ai_model is not None
 
     def auto_mask_generator(

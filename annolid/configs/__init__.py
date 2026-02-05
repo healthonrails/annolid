@@ -59,12 +59,20 @@ def _coerce_ai_default_if_unknown(config):
     causes noisy warnings like \"Default AI model is not found\" during startup.
     We silently fall back to a valid model name if available.
     """
-    LABELME_MODELS = []
+    labelme_models = []
+    registry_names = []
     try:
-        from annolid.utils.annotation_compat import AI_MODELS as LABELME_MODELS
+        from annolid.utils.annotation_compat import AI_MODELS as labelme_models
     except Exception:
         # If model registry is unavailable, we cannot validate; keep config as-is.
         pass
+
+    try:
+        from annolid.gui.models_registry import MODEL_REGISTRY
+
+        registry_names = [cfg.display_name for cfg in MODEL_REGISTRY]
+    except Exception:
+        registry_names = []
 
     if not isinstance(config, dict):
         return config
@@ -74,12 +82,14 @@ def _coerce_ai_default_if_unknown(config):
     if not default_name:
         return config
 
-    available_names = {getattr(m, "name", str(m)) for m in LABELME_MODELS}
+    available_names = {getattr(m, "name", str(m)) for m in labelme_models}
+    available_names.update(registry_names)
     if default_name in available_names:
         return config
 
     # Prefer a stable, widely-available default; fall back to the first model.
     preferred_order = [
+        "Cutie",
         "EfficientSam (speed)",
         "SegmentAnything (balanced)",
         "SegmentAnything (speed)",
@@ -98,6 +108,39 @@ def _coerce_ai_default_if_unknown(config):
         ai_section["default"] = fallback_name
         config["ai"] = ai_section
 
+    return config
+
+
+def _migrate_ai_default(config, config_from_yaml=None, config_from_args=None):
+    """Migrate legacy AI defaults to the new preferred default.
+
+    If a user config file was created with the old default, update it in-memory
+    so the GUI reflects the new default on launch. CLI overrides still win.
+    """
+    if not isinstance(config, dict):
+        return config
+
+    # Respect explicit CLI overrides.
+    if isinstance(config_from_args, dict):
+        ai_args = config_from_args.get("ai") or {}
+        if isinstance(ai_args, dict) and ai_args.get("default"):
+            return config
+
+    legacy_defaults = {
+        # Older releases shipped different defaults; migrate them to Cutie.
+        "EfficientSam (speed)",
+        "Sam2 (balanced)",
+        "SAM2 (balanced)",
+    }
+    new_default = "Cutie"
+
+    ai_section = config.get("ai") or {}
+    current_default = ai_section.get("default")
+
+    # Only migrate when the user config still has a legacy default value.
+    if current_default in legacy_defaults:
+        ai_section["default"] = new_default
+        config["ai"] = ai_section
     return config
 
 
@@ -138,6 +181,7 @@ def validate_config_item(key, value):
 def get_config(config_file_or_yaml=None, config_from_args=None):
     # 1. default config
     config = get_default_config()
+    config_from_yaml = None
 
     # 2. specified as file or yaml
     if config_file_or_yaml is not None:
@@ -155,5 +199,6 @@ def get_config(config_file_or_yaml=None, config_from_args=None):
         config_from_args = _normalize_legacy_top_level_keys(config_from_args)
         update_dict(config, config_from_args, validate_item=validate_config_item)
 
+    config = _migrate_ai_default(config, config_from_yaml, config_from_args)
     config = _coerce_ai_default_if_unknown(config)
     return config

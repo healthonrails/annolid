@@ -6,10 +6,27 @@ import threading
 
 import imgviz
 import numpy as np
-import onnxruntime
 import skimage.measure
 import cv2
 from annolid.utils.logger import logger
+
+
+def _require_onnxruntime():
+    try:
+        import onnxruntime  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Optional dependency 'onnxruntime' is required for ONNX SAM models. "
+            "Install it with: pip install onnxruntime"
+        ) from exc
+    except ImportError as exc:
+        raise ImportError(
+            "Failed to import 'onnxruntime'. This usually indicates a broken install "
+            "or missing system DLLs. Reinstall onnxruntime (or onnxruntime-gpu) and "
+            "ensure the Microsoft Visual C++ Redistributable is installed on Windows. "
+            f"Original error: {exc}"
+        ) from exc
+    return onnxruntime
 
 
 class SegmentAnythingModel:
@@ -18,8 +35,9 @@ class SegmentAnythingModel:
 
         self._image_size = 1024
 
-        self._encoder_session = onnxruntime.InferenceSession(encoder_path)
-        self._decoder_session = onnxruntime.InferenceSession(decoder_path)
+        ort = _require_onnxruntime()
+        self._encoder_session = ort.InferenceSession(encoder_path)
+        self._decoder_session = ort.InferenceSession(decoder_path)
 
         self._lock = threading.Lock()
         self._image_embedding_cache = collections.OrderedDict()

@@ -68,9 +68,10 @@ def get_ai_models() -> list[Any]:
                 self._model = SegmentAnythingModel(
                     self.name, str(self._encoder_path), str(self._decoder_path)
                 )
-            except ModuleNotFoundError as exc:
+            except (ModuleNotFoundError, ImportError) as exc:
                 # Keep draw-mode UX/testability when optional ONNX runtime is missing.
-                if getattr(exc, "name", "") == "onnxruntime":
+                exc_name = getattr(exc, "name", "") or ""
+                if exc_name == "onnxruntime" or "onnxruntime" in str(exc).lower():
                     self._model = _PointPromptFallbackModel(self.name)
                 else:
                     raise
