@@ -87,7 +87,63 @@ class TimelineModel(QtCore.QObject):
         return list(self._events)
 
 
-class TimelineEventItem(QtWidgets.QGraphicsRectItem):
+class TimelineSegmentItem(QtWidgets.QGraphicsRectItem):
+    """A timeline segment with rounded corners and a subtle border."""
+
+    def __init__(self, rect: QtCore.QRectF) -> None:
+        super().__init__(rect)
+        self._border_color = QtGui.QColor(0, 0, 0, 55)
+        self._border_width = 1.0
+        self.setPen(QtGui.QPen(QtCore.Qt.NoPen))
+
+    def set_border_color(self, color: QtGui.QColor) -> None:
+        self._border_color = QtGui.QColor(color)
+        self.update()
+
+    def set_border_width(self, width: float) -> None:
+        self._border_width = max(0.0, float(width))
+        self.update()
+
+    def shape(self) -> QtGui.QPainterPath:
+        rect = self.rect()
+        radius = max(1.0, min(6.0, rect.height() * 0.45))
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        return path
+
+    def paint(
+        self,
+        painter: QtGui.QPainter,
+        option: QtWidgets.QStyleOptionGraphicsItem,
+        widget: Optional[QtWidgets.QWidget] = None,
+    ) -> None:
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = max(1.0, min(6.0, rect.height() * 0.45))
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+
+        painter.fillPath(path, self.brush())
+
+        if option.state & QtWidgets.QStyle.State_Selected:
+            outline = QtGui.QPen(QtGui.QColor(255, 255, 255, 210), 1.5)
+            outline.setCosmetic(True)
+            painter.setPen(outline)
+            painter.drawPath(path)
+            glow = QtGui.QPen(QtGui.QColor(60, 120, 220, 160), 2.5)
+            glow.setCosmetic(True)
+            painter.setPen(glow)
+            painter.drawPath(path)
+            return
+
+        if self._border_width > 0:
+            border = QtGui.QPen(self._border_color, self._border_width)
+            border.setCosmetic(True)
+            painter.setPen(border)
+            painter.drawPath(path)
+
+
+class TimelineEventItem(TimelineSegmentItem):
     HANDLE_WIDTH = 5.0
 
     def __init__(
@@ -488,14 +544,21 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
         self._scene.setSceneRect(0, 0, scene_width, scene_height)
 
         header_rect = QtCore.QRectF(0, 0, scene_width, self._header_height)
+        header_gradient = QtGui.QLinearGradient(
+            header_rect.topLeft(), header_rect.bottomLeft()
+        )
+        header_gradient.setColorAt(0.0, QtGui.QColor(250, 251, 253))
+        header_gradient.setColorAt(1.0, QtGui.QColor(238, 241, 245))
         self._scene.addRect(
             header_rect,
             QtGui.QPen(QtCore.Qt.NoPen),
-            QtGui.QBrush(QtGui.QColor(245, 245, 245)),
+            QtGui.QBrush(header_gradient),
         )
 
-        tick_pen = QtGui.QPen(QtGui.QColor(160, 160, 160))
+        tick_pen = QtGui.QPen(QtGui.QColor(170, 176, 186))
         tick_pen.setCosmetic(True)
+        tick_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
+        tick_font.setPointSize(max(8, self.font().pointSize() - 1))
         major_ticks = self._tick_frames()
         for tick_frame in major_ticks:
             x = self._frame_to_x(tick_frame, pixels_per_frame)
@@ -507,10 +570,11 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                     label_text = _format_timecode(value)
             label = self._scene.addText(label_text)
             label.setPos(x + 2, 1)
-            label.setDefaultTextColor(QtGui.QColor(90, 90, 90))
+            label.setFont(tick_font)
+            label.setDefaultTextColor(QtGui.QColor(70, 75, 82))
 
         # Minor ticks: 4 subdivisions between major ticks.
-        minor_pen = QtGui.QPen(QtGui.QColor(210, 210, 210))
+        minor_pen = QtGui.QPen(QtGui.QColor(215, 220, 227))
         minor_pen.setCosmetic(True)
         if len(major_ticks) >= 2:
             for a, b in zip(major_ticks[:-1], major_ticks[1:]):
@@ -525,7 +589,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
             base_color = (
                 QtGui.QColor(255, 255, 255)
                 if idx % 2 == 0
-                else QtGui.QColor(250, 250, 250)
+                else QtGui.QColor(248, 249, 251)
             )
             self._scene.addRect(
                 row_rect, QtGui.QPen(QtCore.Qt.NoPen), QtGui.QBrush(base_color)
@@ -560,8 +624,9 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                 and event.kind == "behavior"
                 and bool(event.behavior)
             )
+            segment_item: TimelineSegmentItem
             if is_editable_event:
-                item = TimelineEventItem(
+                segment_item = TimelineEventItem(
                     rect,
                     context,
                     pixels_per_frame,
@@ -569,20 +634,35 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                     self._max_frame,
                     self._edit_callback,
                 )
-                item.setPen(QtGui.QPen(QtCore.Qt.NoPen))
-                item.setBrush(brush)
-                self._scene.addItem(item)
+                segment_item.setBrush(brush)
+                self._scene.addItem(segment_item)
             else:
-                self._scene.addRect(rect, QtGui.QPen(QtCore.Qt.NoPen), brush)
-            if width > 60:
-                if is_editable_event:
-                    text_item = QtWidgets.QGraphicsSimpleTextItem(event.label, item)
-                    text_item.setPos(4, 1)
-                    text_item.setBrush(QtGui.QBrush(QtGui.QColor(20, 20, 20)))
-                else:
-                    text_item = self._scene.addText(event.label)
-                    text_item.setPos(x0 + 4, y + 1)
-                    text_item.setDefaultTextColor(QtGui.QColor(20, 20, 20))
+                segment_item = TimelineSegmentItem(rect)
+                segment_item.setBrush(brush)
+                self._scene.addItem(segment_item)
+
+            # Subtle border that follows the fill color.
+            border_color = QtGui.QColor(0, 0, 0, 70)
+            if color.isValid():
+                border_color = QtGui.QColor(color)
+                border_color.setAlpha(90)
+            segment_item.set_border_color(border_color)
+
+            label_padding = 6
+            if width > 34:
+                label_font = QtGui.QFont(self.font())
+                label_font.setPointSize(max(8, self.font().pointSize() - 1))
+                metrics = QtGui.QFontMetrics(label_font)
+                elided = metrics.elidedText(
+                    event.label,
+                    QtCore.Qt.ElideRight,
+                    int(max(0.0, width - 2 * label_padding)),
+                )
+                if elided:
+                    text_item = QtWidgets.QGraphicsSimpleTextItem(elided, segment_item)
+                    text_item.setFont(label_font)
+                    text_item.setPos(label_padding, 1)
+                    text_item.setBrush(QtGui.QBrush(_ideal_text_color(brush.color())))
 
         self._create_or_update_playhead(playhead_frame=self._current_frame)
 
@@ -701,85 +781,131 @@ class TimelinePanel(QtWidgets.QWidget):
         self._catalog_behaviors: List[str] = []
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(10, 10, 10, 10)
 
-        body = QtWidgets.QHBoxLayout()
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(8)
 
-        left = QtWidgets.QVBoxLayout()
-        left_top = QtWidgets.QHBoxLayout()
+        left_widget = QtWidgets.QFrame()
+        left_widget.setObjectName("TimelineSidebar")
+        left_widget.setFrameShape(QtWidgets.QFrame.NoFrame)
+        left_layout = QtWidgets.QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(10)
+
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setSpacing(8)
         self._row_mode_combo = QtWidgets.QComboBox()
         self._row_mode_combo.addItems(["Behavior", "Custom"])
         self._row_mode_combo.currentTextChanged.connect(self._on_row_mode_changed)
-        left_top.addWidget(self._row_mode_combo, 1)
+        header_row.addWidget(self._row_mode_combo, 1)
+
         self._edit_rows_button = QtWidgets.QToolButton()
-        self._edit_rows_button.setText("⋯")
+        try:
+            self._edit_rows_button.setIcon(
+                self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView)
+            )
+        except Exception:
+            pass
         self._edit_rows_button.setToolTip("Configure rows")
         self._edit_rows_button.clicked.connect(self._open_row_config_dialog)
-        left_top.addWidget(self._edit_rows_button)
-        left.addLayout(left_top)
+        header_row.addWidget(self._edit_rows_button)
+        left_layout.addLayout(header_row)
 
         self._track_list = QtWidgets.QListWidget()
+        self._track_list.setObjectName("TimelineTrackList")
         self._track_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._track_list.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         self._track_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._track_list.currentRowChanged.connect(self._on_track_selected)
-        left.addWidget(self._track_list, 1)
+        left_layout.addWidget(self._track_list, 1)
 
-        add_row = QtWidgets.QHBoxLayout()
+        manage_row = QtWidgets.QHBoxLayout()
+        manage_row.setSpacing(8)
         self._behavior_combo = RefreshingComboBox()
         self._behavior_combo.setEditable(True)
         self._behavior_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
-        self._behavior_combo.setMinimumWidth(140)
+        self._behavior_combo.setMinimumWidth(150)
         self._behavior_combo.currentTextChanged.connect(self._on_behavior_selected)
         self._behavior_combo.popupAboutToShow.connect(self.refresh_behavior_catalog)
-        add_row.addWidget(self._behavior_combo, 1)
-        self._add_behavior_button = QtWidgets.QPushButton("Add")
+        manage_row.addWidget(self._behavior_combo, 1)
+
+        self._add_behavior_button = QtWidgets.QToolButton()
+        self._add_behavior_button.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
+        )
+        self._add_behavior_button.setToolTip("Add behavior to catalog")
         self._add_behavior_button.clicked.connect(self._define_behavior)
-        add_row.addWidget(self._add_behavior_button)
-        self._hide_behavior_button = QtWidgets.QPushButton("Del")
+        manage_row.addWidget(self._add_behavior_button)
+
+        self._hide_behavior_button = QtWidgets.QToolButton()
+        trash_icon = None
+        try:
+            trash_icon = self.style().standardIcon(QtWidgets.QStyle.SP_TrashIcon)
+        except Exception:
+            trash_icon = None
+        self._hide_behavior_button.setIcon(
+            trash_icon
+            if trash_icon is not None and not trash_icon.isNull()
+            else self.style().standardIcon(QtWidgets.QStyle.SP_DialogCancelButton)
+        )
+        self._hide_behavior_button.setToolTip("Hide selected behavior")
         self._hide_behavior_button.clicked.connect(self._hide_selected_behavior)
-        add_row.addWidget(self._hide_behavior_button)
+        manage_row.addWidget(self._hide_behavior_button)
+
         self._reset_hidden_button = QtWidgets.QToolButton()
-        self._reset_hidden_button.setText("Reset")
+        try:
+            self._reset_hidden_button.setIcon(
+                self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
+            )
+        except Exception:
+            self._reset_hidden_button.setIcon(
+                self.style().standardIcon(QtWidgets.QStyle.SP_DialogResetButton)
+            )
         self._reset_hidden_button.setToolTip("Restore hidden behaviors")
         self._reset_hidden_button.clicked.connect(self._reset_hidden_behaviors)
-        add_row.addWidget(self._reset_hidden_button)
-        left.addLayout(add_row)
+        manage_row.addWidget(self._reset_hidden_button)
+
+        left_layout.addLayout(manage_row)
 
         tools_row = QtWidgets.QHBoxLayout()
+        tools_row.setSpacing(10)
         self._edit_toggle = QtWidgets.QToolButton()
         self._edit_toggle.setText("Edit")
         self._edit_toggle.setCheckable(True)
         self._edit_toggle.toggled.connect(self._on_edit_toggled)
         tools_row.addWidget(self._edit_toggle)
+
         zoom_label = QtWidgets.QLabel("Zoom")
+        zoom_label.setObjectName("TimelineZoomLabel")
         tools_row.addWidget(zoom_label)
         self._zoom_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._zoom_slider.setRange(1, 20)
         self._zoom_slider.setValue(3)
         self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
         tools_row.addWidget(self._zoom_slider, 1)
-        left.addLayout(tools_row)
+        left_layout.addLayout(tools_row)
 
-        left_widget = QtWidgets.QWidget()
-        left_widget.setLayout(left)
-        left_widget.setFixedWidth(220)
-        body.addWidget(left_widget)
+        splitter.addWidget(left_widget)
 
         self._view = TimelineGraphicsView()
+        self._view.setObjectName("TimelineView")
         self._view.set_model(self._model)
         self._view.frameSelected.connect(self.frameSelected.emit)
         self._view.set_edit_callback(self._handle_event_edit)
-        body.addWidget(self._view, 1)
+        self._view.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._view.setBackgroundBrush(QtGui.QBrush(QtGui.QColor(246, 247, 249)))
+        splitter.addWidget(self._view)
 
-        layout.addLayout(body, 1)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
-        # Make the timeline look readable regardless of app theme.
-        self._track_list.setStyleSheet(
-            "QListWidget { background: #1f1f1f; color: #f0f0f0; border: 1px solid #3a3a3a; }"
-            "QListWidget::item:selected { background: #2d4f7a; }"
-        )
-        self._view.setBackgroundBrush(QtGui.QBrush(QtGui.QColor(245, 245, 245)))
+        layout.addWidget(splitter, 1)
+        self.setMinimumSize(0, 0)
+
+        self.setObjectName("TimelinePanel")
+        self.setStyleSheet(_timeline_panel_stylesheet())
 
         self._view.verticalScrollBar().valueChanged.connect(
             self._track_list.verticalScrollBar().setValue
@@ -904,7 +1030,7 @@ class TimelinePanel(QtWidgets.QWidget):
 
         self._model.set_tracks(tracks)
         self._model.set_events(events)
-        self._refresh_track_list_from_catalog()
+        self._refresh_track_list(tracks)
 
     def clear(self) -> None:
         self._model.clear()
@@ -912,8 +1038,43 @@ class TimelinePanel(QtWidgets.QWidget):
         self._behavior_combo.clear()
 
     def _refresh_track_list(self, tracks: List[TimelineTrack]) -> None:
-        # Track list is driven by the behavior catalog for VIA-like UX.
-        self._refresh_track_list_from_catalog()
+        self._track_list.blockSignals(True)
+        self._track_list.clear()
+
+        row_height = self._view._row_height + self._view._row_gap
+        if not tracks:
+            placeholder = QtWidgets.QListWidgetItem("No rows.")
+            placeholder.setFlags(QtCore.Qt.NoItemFlags)
+            placeholder.setSizeHint(QtCore.QSize(self._track_list.width(), row_height))
+            self._track_list.addItem(placeholder)
+            self._track_list.blockSignals(False)
+            return
+
+        for idx, track in enumerate(tracks, start=1):
+            display = (
+                f"{idx}. {track.label}" if track.kind == "behavior" else track.label
+            )
+            item = QtWidgets.QListWidgetItem(display)
+            item.setData(QtCore.Qt.UserRole, track.track_id)
+            item.setSizeHint(QtCore.QSize(self._track_list.width(), row_height))
+
+            swatch_color = track.color
+            if swatch_color is None and track.behaviors:
+                swatch_color = _color_from_getter(
+                    self._color_getter, track.behaviors[0]
+                )
+            if swatch_color is not None:
+                pix = QtGui.QPixmap(12, 12)
+                pix.fill(QtGui.QColor(swatch_color))
+                item.setIcon(QtGui.QIcon(pix))
+
+            self._track_list.addItem(item)
+
+        self._track_list.blockSignals(False)
+
+        # Keep the selection aligned with the active behavior when possible.
+        if self._active_behavior and self._row_mode == "Behavior":
+            self._select_behavior_in_track_list(self._active_behavior)
 
     def _on_zoom_changed(self, value: int) -> None:
         self._view.set_zoom_factor(max(0.1, float(value)))
@@ -1113,11 +1274,17 @@ class TimelinePanel(QtWidgets.QWidget):
                 label = row.get("label") or f"Row {idx + 1}"
                 behaviors_for_row = tuple(row.get("behaviors") or [])
                 subject = row.get("subject")
+                row_color = (
+                    _color_from_getter(self._color_getter, behaviors_for_row[0])
+                    if behaviors_for_row
+                    else None
+                )
                 tracks.append(
                     TimelineTrack(
                         track_id=row.get("id") or f"custom_{idx}",
                         label=label,
                         kind="custom",
+                        color=row_color,
                         behaviors=behaviors_for_row,
                         subject=subject,
                     )
@@ -1126,6 +1293,8 @@ class TimelinePanel(QtWidgets.QWidget):
             ranges = _build_ranges(events, group_by=("behavior",))
             timeline_events = []
             for behavior, _subject, start, end in ranges:
+                if behavior in self._hidden_behaviors:
+                    continue
                 for track in tracks:
                     if track.behaviors and behavior not in track.behaviors:
                         continue
@@ -1283,7 +1452,6 @@ class TimelinePanel(QtWidgets.QWidget):
             self._behavior_combo.setCurrentIndex(0)
             self._active_behavior = self._behavior_combo.currentText()
         self._behavior_combo.blockSignals(False)
-        self._refresh_track_list_from_catalog()
         self._reset_hidden_button.setVisible(bool(self._hidden_behaviors))
 
     def _define_behavior(self) -> None:
@@ -1348,49 +1516,29 @@ class TimelinePanel(QtWidgets.QWidget):
         item = self._track_list.item(row) if row >= 0 else None
         if item is None:
             return
-        behavior = item.data(QtCore.Qt.UserRole)
-        if isinstance(behavior, str) and behavior:
-            self._behavior_combo.setCurrentText(behavior)
-
-    def _refresh_track_list_from_catalog(self) -> None:
-        self._track_list.blockSignals(True)
-        self._track_list.clear()
-        row_height = self._view._row_height + self._view._row_gap
-        if not self._catalog_behaviors:
-            placeholder = QtWidgets.QListWidgetItem(
-                "No behaviors.\nAdd one here or in Flags."
-            )
-            placeholder.setFlags(QtCore.Qt.NoItemFlags)
-            placeholder.setSizeHint(
-                QtCore.QSize(self._track_list.width(), row_height * 2)
-            )
-            placeholder.setForeground(QtGui.QBrush(QtGui.QColor(200, 200, 200)))
-            self._track_list.addItem(placeholder)
-            self._track_list.blockSignals(False)
+        track_id = item.data(QtCore.Qt.UserRole)
+        if not isinstance(track_id, str) or not track_id:
             return
-
-        for idx, behavior in enumerate(self._catalog_behaviors, start=1):
-            display = f"{idx}. {behavior}"
-            item = QtWidgets.QListWidgetItem(display)
-            item.setData(QtCore.Qt.UserRole, behavior)
-            item.setSizeHint(QtCore.QSize(self._track_list.width(), row_height))
-            # Use an icon swatch rather than coloring the whole label (better for dark themes).
-            color = _color_from_getter(self._color_getter, behavior)
-            pix = QtGui.QPixmap(12, 12)
-            pix.fill(color)
-            item.setIcon(QtGui.QIcon(pix))
-            item.setForeground(QtGui.QBrush(QtGui.QColor(240, 240, 240)))
-            self._track_list.addItem(item)
-        self._track_list.blockSignals(False)
-        if self._active_behavior:
-            self._select_behavior_in_track_list(self._active_behavior)
+        if self._row_mode == "Behavior":
+            self._behavior_combo.setCurrentText(track_id)
+            return
+        track = next((t for t in self._model.tracks if t.track_id == track_id), None)
+        if track is None:
+            return
+        if len(track.behaviors) == 1:
+            self._behavior_combo.setCurrentText(track.behaviors[0])
 
     def _hide_selected_behavior(self) -> None:
-        item = self._track_list.currentItem()
-        if item is None:
-            return
-        behavior = item.data(QtCore.Qt.UserRole)
-        if not isinstance(behavior, str) or not behavior:
+        behavior: Optional[str] = None
+        if self._row_mode == "Behavior":
+            item = self._track_list.currentItem()
+            if item is not None:
+                raw = item.data(QtCore.Qt.UserRole)
+                if isinstance(raw, str) and raw:
+                    behavior = raw
+        if not behavior:
+            behavior = self._active_behavior
+        if not behavior:
             return
         self._hidden_behaviors.add(behavior)
         if behavior in self._defined_behaviors:
@@ -1466,6 +1614,82 @@ def _build_ranges(
         for start_frame in open_starts:
             ranges.append((behavior, subject, start_frame, start_frame))
     return ranges
+
+
+def _ideal_text_color(background: QtGui.QColor) -> QtGui.QColor:
+    """Choose a readable text color over a (possibly translucent) background."""
+    if not isinstance(background, QtGui.QColor) or not background.isValid():
+        return QtGui.QColor(20, 20, 20)
+    r, g, b, a = (
+        background.red(),
+        background.green(),
+        background.blue(),
+        background.alpha(),
+    )
+    if a < 120:
+        return QtGui.QColor(20, 20, 20)
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return QtGui.QColor(18, 18, 18) if luminance > 165 else QtGui.QColor(250, 250, 250)
+
+
+def _timeline_panel_stylesheet() -> str:
+    # Intentionally scoped via objectNames to avoid bleeding into the rest of the app.
+    return """
+QFrame#TimelineSidebar {
+  background: #1d1f23;
+  border: 1px solid #2a2d33;
+  border-radius: 10px;
+}
+QFrame#TimelineSidebar QLabel {
+  color: #cfd3da;
+}
+QFrame#TimelineSidebar QComboBox,
+QFrame#TimelineSidebar QLineEdit {
+  background: #15171a;
+  color: #e8eaed;
+  border: 1px solid #2a2d33;
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+QFrame#TimelineSidebar QComboBox::drop-down {
+  border: 0px;
+  width: 22px;
+}
+QFrame#TimelineSidebar QToolButton {
+  background: transparent;
+  color: #e8eaed;
+  border: 1px solid #2a2d33;
+  border-radius: 8px;
+  padding: 6px;
+}
+QFrame#TimelineSidebar QToolButton:hover {
+  background: #24262b;
+}
+QFrame#TimelineSidebar QToolButton:checked {
+  background: #2d4f7a;
+  border-color: #3d6aa1;
+}
+QListWidget#TimelineTrackList {
+  background: #15171a;
+  border: 1px solid #2a2d33;
+  border-radius: 8px;
+  padding: 4px;
+  outline: none;
+}
+QListWidget#TimelineTrackList::item {
+  padding: 6px 6px;
+  border-radius: 6px;
+  color: #eef1f5;
+}
+QListWidget#TimelineTrackList::item:selected {
+  background: #2d4f7a;
+}
+QGraphicsView#TimelineView {
+  border: 1px solid #d8dde6;
+  border-radius: 10px;
+  background: #f6f7f9;
+}
+"""
 
 
 class TimelineRowConfigDialog(QtWidgets.QDialog):

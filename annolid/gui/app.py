@@ -534,6 +534,7 @@ class AnnolidWindow(AnnolidWindowBase):
         self._setup_timeline_view_toggle()
         # Only show the timeline when a video is opened and the user enables it.
         self._apply_timeline_dock_visibility(video_open=False)
+        self._apply_fixed_dock_sizes()
 
         self.setCentralWidget(scrollArea)
 
@@ -543,7 +544,20 @@ class AnnolidWindow(AnnolidWindowBase):
         # Restore application settings.
         self.recentFiles = self.settings.value("recentFiles", []) or []
         position = self.settings.value("window/position", QtCore.QPoint(0, 0))
-        self.move(position)
+        size = self.settings.value("window/size", QtCore.QSize(1600, 900))
+        if isinstance(position, QtCore.QPoint):
+            self.move(position)
+        if (
+            isinstance(size, QtCore.QSize)
+            and size.width() > 200
+            and size.height() > 200
+        ):
+            self.resize(size)
+        self._window_state_save_timer = QtCore.QTimer(self)
+        self._window_state_save_timer.setSingleShot(True)
+        self._window_state_save_timer.setInterval(300)
+        self._window_state_save_timer.timeout.connect(self._persist_window_geometry)
+        self._fit_window_applied_video_key: Optional[str] = None
 
         self.video_results_folder = None
         self.seekbar = None
@@ -590,9 +604,15 @@ class AnnolidWindow(AnnolidWindowBase):
         self.canvas.updateGeometry()
         if getattr(self, "_viewer_stack", None) is not None:
             self._viewer_stack.updateGeometry()
-            self._viewer_stack.adjustSize()
+            # During playback, avoid repeatedly forcing size hints/adjustSize, which can
+            # make the main window appear to "jitter" as layouts react to content.
+            # The scroll area is already widget-resizable; keeping the stack stable
+            # prevents window-level size churn.
+            if not getattr(self, "isPlaying", False):
+                self._viewer_stack.adjustSize()
         else:
-            self.canvas.adjustSize()
+            if not getattr(self, "isPlaying", False):
+                self.canvas.adjustSize()
         self.canvas.update()
 
     def _timeline_user_enabled(self) -> bool:
@@ -635,6 +655,8 @@ class AnnolidWindow(AnnolidWindowBase):
         """Apply timeline dock visibility based on video state and user preference."""
         if getattr(self, "timeline_dock", None) is None:
             return
+        was_normal = bool(self.windowState() == QtCore.Qt.WindowNoState)
+        previous_size = self.size() if was_normal else None
         action = getattr(self, "_toggle_timeline_action", None)
         user_enabled = self._timeline_user_enabled()
         should_show = bool(video_open and user_enabled)
@@ -658,6 +680,87 @@ class AnnolidWindow(AnnolidWindowBase):
                 self.timeline_dock.hide()
         finally:
             del blocker
+
+        if was_normal and previous_size is not None:
+            QtCore.QTimer.singleShot(
+                0,
+                lambda sz=QtCore.QSize(previous_size): self.resize(sz),
+            )
+        QtCore.QTimer.singleShot(0, self._apply_fixed_dock_sizes)
+
+    def _apply_fixed_dock_sizes(self) -> None:
+        """Set sensible initial dock sizes while keeping docks user-resizable."""
+        right_docks = [
+            getattr(self, "file_dock", None),
+            getattr(self, "label_dock", None),
+            getattr(self, "shape_dock", None),
+            getattr(self, "flag_dock", None),
+            getattr(self, "video_dock", None),
+            getattr(self, "behavior_log_dock", None),
+            getattr(self, "behavior_controls_dock", None),
+            getattr(self, "embedding_search_dock", None),
+        ]
+        bottom_docks = [
+            getattr(self, "timeline_dock", None),
+            getattr(self, "audio_dock", None),
+            getattr(self, "caption_dock", None),
+        ]
+
+        def _tight_hint(
+            dock: QtWidgets.QDockWidget, *, vertical: bool
+        ) -> Optional[int]:
+            widget = dock.widget()
+            hint = widget.sizeHint() if widget is not None else dock.sizeHint()
+            if not hint.isValid():
+                return None
+            if vertical:
+                return int(max(220, min(380, hint.width() + 18)))
+            return int(max(130, min(340, hint.height() + 18)))
+
+        # Keep right-side docks consistent: all get the same width as the widest one.
+        width_candidates: List[int] = []
+        for dock in right_docks:
+            if dock is None:
+                continue
+            width = _tight_hint(dock, vertical=True)
+            if width is not None:
+                width_candidates.append(width)
+        target_width = max(width_candidates) if width_candidates else None
+        if target_width is not None:
+            visible_right_docks: List[QtWidgets.QDockWidget] = []
+            for dock in right_docks:
+                if dock is None:
+                    continue
+                dock.setMinimumWidth(160)
+                dock.setMaximumWidth(16777215)
+                if dock.isVisible():
+                    visible_right_docks.append(dock)
+            if visible_right_docks:
+                self.resizeDocks(
+                    visible_right_docks,
+                    [target_width] * len(visible_right_docks),
+                    QtCore.Qt.Horizontal,
+                )
+
+        visible_bottom_docks: List[QtWidgets.QDockWidget] = []
+        bottom_sizes: List[int] = []
+        for dock in bottom_docks:
+            if dock is None:
+                continue
+            height = _tight_hint(dock, vertical=False)
+            if height is None:
+                continue
+            dock.setMinimumHeight(90)
+            dock.setMaximumHeight(16777215)
+            if dock.isVisible():
+                visible_bottom_docks.append(dock)
+                bottom_sizes.append(height)
+        if visible_bottom_docks and bottom_sizes:
+            self.resizeDocks(
+                visible_bottom_docks,
+                bottom_sizes,
+                QtCore.Qt.Vertical,
+            )
 
     def _on_toggle_timeline_requested(self, checked: bool) -> None:
         try:
@@ -1193,6 +1296,7 @@ class AnnolidWindow(AnnolidWindowBase):
             self.audio_dock.visibilityChanged.connect(
                 self._on_audio_dock_visibility_changed
             )
+            self._apply_fixed_dock_sizes()
             return
 
         if self.audio_dock:
@@ -1223,6 +1327,7 @@ class AnnolidWindow(AnnolidWindowBase):
         self.audio_dock.visibilityChanged.connect(
             self._on_audio_dock_visibility_changed
         )
+        self._apply_fixed_dock_sizes()
 
     def _on_audio_dock_visibility_changed(self, visible: bool) -> None:
         if visible:
@@ -1325,6 +1430,7 @@ class AnnolidWindow(AnnolidWindowBase):
         self.caption_dock.setWidget(self.caption_widget)
         self.caption_dock.installEventFilter(self.caption_widget)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.caption_dock)
+        self._apply_fixed_dock_sizes()
 
         self.caption_widget.charInserted.connect(self.setDirty)  # Mark as dirty
         self.caption_widget.charDeleted.connect(self.setDirty)  # Mark as dirty
@@ -1785,6 +1891,7 @@ class AnnolidWindow(AnnolidWindowBase):
         self.video_loader = None
         self.num_frames = None
         self.video_file = None
+        self._fit_window_applied_video_key = None
         try:
             if hasattr(self, "embedding_search_widget"):
                 self.embedding_search_widget.set_video_path(None)
@@ -1947,11 +2054,36 @@ class AnnolidWindow(AnnolidWindowBase):
                 "Error stopping realtime inference on exit: %s", exc, exc_info=True
             )
         try:
+            self._persist_window_geometry(force=True)
+        except Exception:
+            pass
+        try:
             if getattr(self, "sam3_manager", None):
                 self.sam3_manager.close_session()
         except Exception as exc:  # pragma: no cover - shutdown best effort
             logger.warning("Error closing SAM3 session on exit: %s", exc)
         super().closeEvent(event)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        timer = getattr(self, "_window_state_save_timer", None)
+        if timer is not None and self.windowState() == QtCore.Qt.WindowNoState:
+            timer.start()
+
+    def moveEvent(self, event: QtGui.QMoveEvent) -> None:
+        super().moveEvent(event)
+        timer = getattr(self, "_window_state_save_timer", None)
+        if timer is not None and self.windowState() == QtCore.Qt.WindowNoState:
+            timer.start()
+
+    def _persist_window_geometry(self, force: bool = False) -> None:
+        if self.windowState() != QtCore.Qt.WindowNoState:
+            return
+        try:
+            self.settings.setValue("window/position", self.pos())
+            self.settings.setValue("window/size", self.size())
+        except Exception:
+            pass
 
     def toolbar(self, title, actions=None):
         toolbar = AnnolidToolBar(title)
@@ -7540,8 +7672,16 @@ class AnnolidWindow(AnnolidWindowBase):
             str(self.video_file) if self.video_file else str(self.filename)
         )
         if not self._config["keep_prev_scale"]:
-            # If "Keep Previous Scale" is OFF, always try to fit the new frame.
-            self.adjustScale(initial=True)
+            if self.video_loader is not None and self.video_file:
+                # For video playback: fit once on the first rendered frame, then keep
+                # user scale stable while scrubbing/playing subsequent frames.
+                if self._fit_window_applied_video_key != video_file_key_for_zoom:
+                    self.setFitWindow(True)
+                    self.adjustScale(initial=True)
+                    self._fit_window_applied_video_key = video_file_key_for_zoom
+            else:
+                # For non-video images, preserve previous behavior.
+                self.adjustScale(initial=True)
         elif video_file_key_for_zoom in self.zoom_values:
             # If "Keep Previous Scale" is ON and we have a saved zoom state for this video, restore it.
             self.zoomMode = self.zoom_values[video_file_key_for_zoom][0]
@@ -7749,7 +7889,7 @@ class AnnolidWindow(AnnolidWindowBase):
         # self.brightnessContrast_values[self.filename] = (brightness, contrast)
         # if brightness is not None or contrast is not None:
         #     dialog.onNewValue(None)
-        self.paintCanvas()
+        # `super().adjustScale` already calls `paintCanvas` via AnnolidWindowBase.
         self.addRecentFile(self.filename)
         self.toggleActions(True)
         if self._df_deeplabcut is not None:
