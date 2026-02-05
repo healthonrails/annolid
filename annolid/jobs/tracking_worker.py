@@ -2,7 +2,7 @@ import gc
 import torch
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, TYPE_CHECKING
+from typing import List, Dict, Optional
 
 from qtpy.QtCore import QThread, Signal, Slot, QObject
 
@@ -10,6 +10,10 @@ from .tracking_jobs import VideoProcessingJob, JobType
 
 from annolid.segmentation.cutie_vos.processor import SegmentedCutieExecutor
 from annolid.segmentation.cutie_vos.engine import CutieEngine
+from annolid.segmentation.cutie_vos.runtime import (
+    is_cutie_model_name,
+    resolve_tracking_video_processor_class,
+)
 
 # Utilities
 from annolid.utils.files import (
@@ -19,9 +23,6 @@ from annolid.utils.files import (
 from annolid.annotation.labelme2csv import convert_json_to_csv
 
 from annolid.gui.label_file import LabelFile
-
-if TYPE_CHECKING:
-    from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 
 
 class TrackingWorker(QThread):
@@ -122,6 +123,11 @@ class TrackingWorker(QThread):
     # Helper for VideoProcessor instances
     def _cleanup_general_processor(self, processor, device):
         if processor is not None:
+            if hasattr(processor, "cleanup"):
+                try:
+                    processor.cleanup()
+                except Exception:
+                    pass
             # If VideoProcessor has specific cleanup for Cutie, it should handle it.
             # This generic cleanup is for the VideoProcessor object itself.
             if (
@@ -273,7 +279,7 @@ class TrackingWorker(QThread):
         segments_processed_successfully_count = 0
 
         shared_cutie_engine: Optional[CutieEngine] = None
-        if "cutie" in model_name:
+        if is_cutie_model_name(model_name):
             cutie_engine_config_overrides = {
                 "mem_every": job_config.get("mem_every", 5),
                 "max_mem_frames": job_config.get("t_max_value", 5),
@@ -322,7 +328,7 @@ class TrackingWorker(QThread):
                     continue
 
                 # Handle "Cutie" or "cutie-base" etc.
-                if "cutie" in model_name:
+                if is_cutie_model_name(model_name):
                     # Create executor with combined config for this segment
                     # Allow video config to override job_config for this segment
                     segment_config = {**job_config, **job.video_specific_config}
@@ -419,10 +425,11 @@ class TrackingWorker(QThread):
         )
         self._log_gpu_memory(f"WholeVideo {video_name}", "Before")
 
-        vp_instance: Optional["VideoProcessor"] = None
+        vp_instance = None
         try:
-            # Import lazily to avoid importing optional ONNX dependencies at GUI startup.
-            from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+            use_cutie_backend = is_cutie_model_name(model_name)
+            # Import lazily to avoid optional backend dependencies at startup.
+            _VideoProcessorClass = resolve_tracking_video_processor_class(model_name)
 
             annotated_frame_for_vp = job.initial_annotated_frame_for_whole_video
             if annotated_frame_for_vp is None:  # Try to find the "main" annotation
@@ -468,7 +475,7 @@ class TrackingWorker(QThread):
                 )
 
             # Create VideoProcessor instance
-            vp_instance = VideoProcessor(
+            vp_instance = _VideoProcessorClass(
                 video_path=str(job.video_path),
                 # This tells VP which internal logic to use (Cutie, EdgeSAM, etc.)
                 model_name=model_name,
@@ -483,15 +490,11 @@ class TrackingWorker(QThread):
             # The existing VideoProcessor.process_video_frames, when is_cutie=True,
             # calls process_video_with_cutite, which should ideally use a fresh Cutie processor
             # or one reset via is_new_segment.
-            if "cutie" in model_name.lower() and hasattr(
-                vp_instance, "reset_cutie_processor"
-            ):
+            if use_cutie_backend and hasattr(vp_instance, "reset_cutie_processor"):
                 vp_instance.reset_cutie_processor(
                     mem_every=job_config.get("mem_every", 5)
                 )
-                self.logger.info(
-                    f"Reset Cutie processor within VideoProcessor for WHOLE video {video_name}"
-                )
+                self.logger.info(f"Reset Cutie processor for WHOLE video {video_name}")
 
             # Call existing VideoProcessor.process_video_frames
             # Its `start_frame` must be the actual annotated frame.
@@ -499,7 +502,7 @@ class TrackingWorker(QThread):
             message = vp_instance.process_video_frames(
                 start_frame=annotated_frame_for_vp,
                 end_frame=total_video_frames - 1,
-                is_cutie=("cutie" in model_name.lower()),
+                is_cutie=use_cutie_backend,
                 is_new_segment=True,  # Treat as a new processing task for VP's internal state mgt
                 **job_config,  # Pass other relevant parameters from job_config
             )

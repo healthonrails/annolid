@@ -334,6 +334,11 @@ class TrackAllWorker(QThread):
     def cleanup_processor(self, processor, device):
         """Clean up the processor and free device memory."""
         if processor is not None:
+            if hasattr(processor, "cleanup"):
+                try:
+                    processor.cleanup()
+                except Exception:
+                    pass
             if processor.cutie_processor is not None:
                 processor.cutie_processor = None
             del processor
@@ -521,19 +526,21 @@ class TrackAllWorker(QThread):
                 return False
 
             try:
-                from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+                from annolid.segmentation.cutie_vos.runtime import (
+                    build_tracking_video_processor,
+                )
             except Exception as exc:
                 self.error.emit(
-                    f"Failed to load tracking backend for {video_name}: {exc}"
+                    f"Failed to load Cutie tracking backend for {video_name}: {exc}"
                 )
                 self.logger.error(
-                    f"Tracking backend import error for {video_name}: {exc}",
+                    f"Cutie tracking backend import error for {video_name}: {exc}",
                     exc_info=True,
                 )
                 return False
 
             try:
-                processor = VideoProcessor(
+                processor = build_tracking_video_processor(
                     video_path=str(video_path),
                     model_name="Cutie",
                     save_image_to_disk=False,
@@ -542,11 +549,11 @@ class TrackAllWorker(QThread):
                     **self.config,
                 )
                 self.logger.info(
-                    f"Initialized VideoProcessor for {video_name} with video_path: {video_path}"
+                    f"Initialized Cutie tracking processor for {video_name} with video_path: {video_path}"
                 )
             except Exception as exc:
                 self.error.emit(
-                    f"Failed to initialize VideoProcessor for {video_name}: {exc}"
+                    f"Failed to initialize Cutie tracking processor for {video_name}: {exc}"
                 )
                 self.logger.error(
                     f"Initialization error for {video_name}: {exc}", exc_info=True

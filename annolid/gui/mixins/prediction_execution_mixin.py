@@ -283,12 +283,12 @@ class PredictionExecutionMixin:
                     return
             else:
                 from annolid.motion.optical_flow import optical_flow_settings_from
-                from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+                from annolid.segmentation.cutie_vos.runtime import (
+                    build_tracking_video_processor,
+                )
 
                 flow_settings = optical_flow_settings_from(self.optical_flow_manager)
-                self.video_processor = VideoProcessor(
-                    self.video_file,
-                    model_name=model_name,
+                processor_kwargs = dict(
                     save_image_to_disk=False,
                     epsilon_for_polygon=self.epsilon_for_polygon,
                     t_max_value=self.t_max_value,
@@ -299,6 +299,11 @@ class PredictionExecutionMixin:
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder
                     else None,
+                )
+                self.video_processor = build_tracking_video_processor(
+                    video_path=self.video_file,
+                    model_name=model_name,
+                    **processor_kwargs,
                 )
             if getattr(self, "seg_pred_thread", None) is not None:
                 try:

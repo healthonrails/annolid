@@ -80,7 +80,7 @@ class SeedSegment:
     active_labels: List[str]
 
 
-class CutieVideoProcessor:
+class CutieCoreVideoProcessor:
     _REMOTE_MODEL_URL = (
         "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
     )
@@ -1663,39 +1663,38 @@ class CutieVideoProcessor:
                 "(PNG+JSON are saved together) before running CUTIE."
             )
             logger.info(message)
-            if pred_worker is not None:
-                pred_worker.stop_signal.emit()
+            self._emit_stop_signal(pred_worker)
             return message
 
         self._ensure_seed_cache(self._seed_frames)
         if not self._seed_segment_lookup:
             message = "No valid seed masks were parsed for this video."
             logger.info(message)
-            if pred_worker is not None:
-                pred_worker.stop_signal.emit()
+            self._emit_stop_signal(pred_worker)
             return message
 
-        self._seed_frames = [
-            seed
-            for seed in self._seed_frames
-            if seed.frame_index in self._seed_segment_lookup
-            and seed.frame_index >= start_frame
-        ]
+        try:
+            normalized_start_frame = max(0, int(start_frame))
+        except (TypeError, ValueError):
+            normalized_start_frame = 0
+        self._seed_frames = self._select_seed_frames_for_start(
+            start_frame=normalized_start_frame
+        )
         if not self._seed_frames:
             message = "No seed frames available at or after the requested start frame."
             logger.info(message)
-            if pred_worker is not None:
-                pred_worker.stop_signal.emit()
+            self._emit_stop_signal(pred_worker)
             return message
 
-        self.num_tracking_instances = len(self._video_active_object_ids)
+        self.num_tracking_instances = self._count_tracking_instances(
+            self._seed_frames
+        )
 
         segments = self._build_seed_segments(self._seed_frames, end_frame)
         if not segments:
             message = "No valid seed segments were generated for CUTIE processing."
             logger.info(message)
-            if pred_worker is not None:
-                pred_worker.stop_signal.emit()
+            self._emit_stop_signal(pred_worker)
             return message
 
         return self._run_segments(
@@ -1708,6 +1707,52 @@ class CutieVideoProcessor:
             seed_segment_lookup=self._seed_segment_lookup,
             visualize_every=visualize_every,
         )
+
+    @staticmethod
+    def _emit_stop_signal(pred_worker) -> None:
+        if pred_worker is None:
+            return
+        try:
+            pred_worker.stop_signal.emit()
+        except Exception:
+            pass
+
+    def _select_seed_frames_for_start(self, start_frame: int) -> List[SeedFrame]:
+        valid_seed_frames = [
+            seed
+            for seed in self._seed_frames
+            if seed.frame_index in self._seed_segment_lookup
+        ]
+        selected = [
+            seed for seed in valid_seed_frames if seed.frame_index >= start_frame
+        ]
+        if selected:
+            return selected
+
+        prior_seeds = [
+            seed for seed in valid_seed_frames if seed.frame_index < start_frame
+        ]
+        if prior_seeds:
+            fallback_seed = prior_seeds[-1]
+            logger.info(
+                "No seed >= start_frame (%s); reusing nearest earlier seed at frame %s.",
+                start_frame,
+                fallback_seed.frame_index,
+            )
+            return [fallback_seed]
+        return []
+
+    def _count_tracking_instances(self, seeds: List[SeedFrame]) -> int:
+        object_ids: Set[int] = set()
+        for seed in seeds:
+            segment = self._seed_segment_lookup.get(seed.frame_index)
+            if segment is None:
+                continue
+            for label, value in segment.labels_map.items():
+                if label == "_background_":
+                    continue
+                object_ids.add(int(value))
+        return len(object_ids)
 
     def save_color_id_mask(self, frame, prediction, filename):
         _id_mask = color_id_mask(prediction)
@@ -1736,7 +1781,7 @@ if __name__ == "__main__":
         "object_2": 2,
         "object_3": 3,
     }  # Example labels dictionary
-    processor = CutieVideoProcessor(video_name, debug=True)
+    processor = CutieCoreVideoProcessor(video_name, debug=True)
     processor.process_video_with_mask(
         mask=mask, visualize_every=30, frames_to_propagate=30, labels_dict=labels_dict
     )

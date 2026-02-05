@@ -13,7 +13,7 @@ from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
-from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
+from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
 from annolid.utils.logger import logger
 from annolid.tracker.cotracker.track import CoTrackerProcessor
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
@@ -223,9 +223,9 @@ class VideoProcessor:
         return shapes
 
     def reset_cutie_processor(self, mem_every=5):
-        """Reset or create a new CutieVideoProcessor for the current video."""
-        logger.debug(f"Resetting CutieVideoProcessor for video: {self.video_path}")
-        self.cutie_processor = CutieVideoProcessor(
+        """Reset or create a new Cutie core processor for the current video."""
+        logger.debug(f"Resetting Cutie core processor for video: {self.video_path}")
+        self.cutie_processor = CutieCoreVideoProcessor(
             self.video_path,
             mem_every=mem_every,
             debug=False,
@@ -248,7 +248,7 @@ class VideoProcessor:
     def process_video_with_cutite(
         self, frames_to_propagate=100, mem_every=5, has_occlusion=False, start_frame=0
     ):
-        seed_frames = CutieVideoProcessor.discover_seed_frames(
+        seed_frames = CutieCoreVideoProcessor.discover_seed_frames(
             self.video_path, self.results_folder
         )
         if not seed_frames:

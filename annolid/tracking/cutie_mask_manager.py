@@ -14,7 +14,7 @@ from annolid.segmentation.cutie_vos.interactive_utils import (
     torch_prob_to_numpy_mask,
 )
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
-from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
+from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.domain import InstanceRegistry, InstanceState
@@ -41,7 +41,7 @@ class CutieMaskManager:
         self.adapter = adapter
         self.config = config
         self.enabled = bool(config.use_cutie_tracking)
-        self._processor: Optional[CutieVideoProcessor] = None
+        self._processor: Optional[CutieCoreVideoProcessor] = None
         self._core: Optional[InferenceCore] = None
         self._device: Optional[str] = None
         self._label_to_value: Dict[str, int] = {}
@@ -212,7 +212,7 @@ class CutieMaskManager:
         if self._core is not None:
             return
         use_cpu_only = self.config.cutie_device == "cpu"
-        processor = CutieVideoProcessor(
+        processor = CutieCoreVideoProcessor(
             str(self.video_path),
             mem_every=self.config.cutie_mem_every,
             t_max_value=self.config.cutie_max_mem_frames,
