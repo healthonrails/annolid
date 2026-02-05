@@ -1,0 +1,557 @@
+from __future__ import annotations
+
+import copy
+import functools
+import os
+import re
+from pathlib import Path
+
+from qtpy import QtCore, QtWidgets
+
+from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.gui.workers import FlexibleWorker
+from annolid.utils.annotation_store import AnnotationStore
+from annolid.utils.files import should_start_predictions_from_frame0
+from annolid.utils.logger import logger
+
+PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
+
+
+class PredictionExecutionMixin:
+    """Prediction worker setup and completion handling."""
+
+    def _max_predicted_frame_index(self, folder: Path) -> int:
+        """Return the maximum frame index present in the prediction folder."""
+        folder = Path(folder)
+        prefixed_pattern = re.compile(r"_(\d{9,})\.json$")
+        bare_pattern = re.compile(r"^(\d{9,})\.json$")
+
+        max_frame = -1
+        try:
+            for name in os.listdir(folder):
+                if not name.endswith(".json"):
+                    continue
+                match = None
+                if folder.name in name:
+                    match = prefixed_pattern.search(name)
+                if match is None:
+                    match = bare_pattern.match(name)
+                if match is None:
+                    continue
+                try:
+                    idx = int(float(match.group(1)))
+                except Exception:
+                    continue
+                if idx > max_frame:
+                    max_frame = idx
+        except Exception:
+            pass
+
+        try:
+            store = AnnotationStore.for_frame_path(
+                folder / f"{folder.name}_000000000.json"
+            )
+            if store.store_path.exists():
+                for idx in store.iter_frames():
+                    if int(idx) > max_frame:
+                        max_frame = int(idx)
+        except Exception:
+            pass
+
+        return int(max_frame)
+
+    def predict_from_next_frame(self, to_frame=60):
+        model_config, model_identifier, model_weight = self._resolve_model_identity()
+        _ = model_config
+        model_name = model_identifier or model_weight
+        text_prompt = self._current_text_prompt()
+        if self.pred_worker and self.stop_prediction_flag:
+            self.stop_prediction()
+            return
+        elif len(self.canvas.shapes) <= 0 and not (
+            self._is_yolo_model(model_name, model_weight)
+            or self._is_dino_kpseg_tracker_model(model_name, model_weight)
+            or self._is_dino_kpseg_model(model_name, model_weight)
+            or (
+                self.sam3_manager.is_sam3_model(model_name, model_weight)
+                and text_prompt
+            )
+        ):
+            QtWidgets.QMessageBox.about(
+                self, "No Shapes or Labeled Frames", "Please label this frame"
+            )
+            return
+
+        if self.video_file:
+            self._prediction_stop_requested = False
+
+            if self._is_dino_kpseg_tracker_model(model_name, model_weight):
+                from annolid.tracking.dino_kpseg_tracker import DinoKPSEGVideoProcessor
+
+                resolved = self._resolve_dino_kpseg_weight(model_weight)
+                if resolved is None:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("Cutie + DINO Keypoint Segmentation"),
+                        self.tr(
+                            "No DinoKPSEG checkpoint found. Train a model first or select a valid checkpoint."
+                        ),
+                    )
+                    return
+                fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                self.video_processor = DinoKPSEGVideoProcessor(
+                    video_path=self.video_file,
+                    result_folder=self.video_results_folder,
+                    kpseg_weights=resolved,
+                    device=None,
+                    runtime_config=fresh_tracker_config,
+                )
+            elif self._is_dino_keypoint_model(model_name, model_weight):
+                from annolid.tracking.dino_keypoint_tracker import (
+                    DinoKeypointVideoProcessor,
+                )
+
+                dino_model = (
+                    self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
+                )
+                fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                self.video_processor = DinoKeypointVideoProcessor(
+                    video_path=self.video_file,
+                    result_folder=self.video_results_folder,
+                    model_name=dino_model,
+                    short_side=768,
+                    device=None,
+                    runtime_config=fresh_tracker_config,
+                )
+            elif self._is_efficienttam_model(model_name, model_weight):
+                from annolid.segmentation.SAM.sam_v2 import process_video_efficienttam
+
+                model_key = (
+                    Path(model_weight).stem if model_weight else "efficienttam_s"
+                )
+                logger.info(
+                    "Using EfficientTAM model '%s' for video '%s'",
+                    model_key,
+                    self.video_file,
+                )
+                self.video_processor = functools.partial(
+                    process_video_efficienttam,
+                    video_path=self.video_file,
+                    model_key=model_key,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
+                )
+            elif self.sam2_manager.is_sam2_model(model_name, model_weight):
+                processor = self.sam2_manager.build_video_processor(
+                    model_name=model_name,
+                    model_weight=model_weight,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
+                )
+                if processor is None:
+                    return
+                self.video_processor = processor
+            elif self.sam3_manager.is_sam3_model(model_name, model_weight):
+                processor = self.sam3_manager.build_video_processor(
+                    model_name=model_name,
+                    model_weight=model_weight,
+                    text_prompt=text_prompt,
+                )
+                if processor is None:
+                    return
+                self.video_processor = processor
+            elif self._is_yolo_model(model_name, model_weight):
+                from annolid.segmentation.yolos import InferenceProcessor
+
+                weight_lower = (model_weight or "").lower()
+                is_prompt_free_yoloe = "yoloe" in weight_lower and (
+                    "-pf." in weight_lower
+                    or weight_lower.endswith("-pf")
+                    or "-pf_" in weight_lower
+                )
+
+                visual_prompts = {}
+                class_names = None
+                prompt_class_names = None
+                yoloe_text_prompt = True
+                if not is_prompt_free_yoloe:
+                    visual_prompts = self.extract_visual_prompts_from_canvas()
+                    if visual_prompts:
+                        logger.info(
+                            "Extracted visual prompts for YOLOE: %s", visual_prompts
+                        )
+
+                    if visual_prompts and "yoloe" in weight_lower:
+                        prompt_class_names = (
+                            list(self.class_mapping.keys())
+                            if hasattr(self, "class_mapping")
+                            else None
+                        )
+                        yoloe_text_prompt = False
+                    else:
+                        text_prompt = self.aiRectangle._aiRectanglePrompt.text()
+                        class_names = [
+                            p.strip() for p in text_prompt.split(",") if p.strip()
+                        ]
+                        if class_names:
+                            logger.info(
+                                "Extracted class names from text prompt: %s",
+                                class_names,
+                            )
+                else:
+                    visual_prompts = {}
+                    class_names = None
+                    prompt_class_names = None
+                    yoloe_text_prompt = True
+                pose_keypoint_names = None
+                pose_schema_path = None
+                if getattr(self, "_pose_schema", None) is not None and getattr(
+                    self._pose_schema, "keypoints", None
+                ):
+                    pose_keypoint_names = list(self._pose_schema.keypoints)
+                if getattr(self, "_pose_schema_path", None):
+                    pose_schema_path = self._pose_schema_path
+                self.video_processor = InferenceProcessor(
+                    model_name=model_weight,
+                    model_type="yolo",
+                    class_names=class_names,
+                    keypoint_names=pose_keypoint_names,
+                    pose_schema_path=pose_schema_path,
+                    yoloe_text_prompt=bool(yoloe_text_prompt),
+                    prompt_class_names=prompt_class_names,
+                )
+            elif self._is_dino_kpseg_model(model_name, model_weight):
+                from annolid.segmentation.yolos import InferenceProcessor
+
+                pose_keypoint_names = None
+                pose_schema_path = None
+                if getattr(self, "_pose_schema", None) is not None and getattr(
+                    self._pose_schema, "keypoints", None
+                ):
+                    pose_keypoint_names = list(self._pose_schema.keypoints)
+                if getattr(self, "_pose_schema_path", None):
+                    pose_schema_path = self._pose_schema_path
+
+                resolved = self._resolve_dino_kpseg_weight(model_weight)
+                if not resolved:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("DINO Keypoint Segmentation"),
+                        self.tr(
+                            "No DinoKPSEG checkpoint found.\n\n"
+                            "Train a DinoKPSEG model first (Train Models → DINO KPSEG), "
+                            "or ensure the best checkpoint exists under your runs folder."
+                        ),
+                    )
+                    return
+
+                try:
+                    resolved_path = str(Path(resolved).expanduser().resolve())
+                    cached = getattr(self, "_dinokpseg_inference_processor", None)
+                    if (
+                        cached is not None
+                        and getattr(cached, "model_type", "").lower() == "dinokpseg"
+                        and str(getattr(cached, "model_name", "")) == resolved_path
+                    ):
+                        cached.keypoint_names = pose_keypoint_names or getattr(
+                            cached, "keypoint_names", None
+                        )
+                        self.video_processor = cached
+                    else:
+                        self.video_processor = InferenceProcessor(
+                            model_name=resolved_path,
+                            model_type="dinokpseg",
+                            keypoint_names=pose_keypoint_names,
+                            pose_schema_path=pose_schema_path,
+                        )
+                        self._dinokpseg_inference_processor = self.video_processor
+                except Exception as exc:
+                    logger.error(
+                        "Failed to load DINO keypoint segmentation model '%s': %s",
+                        model_weight,
+                        exc,
+                        exc_info=True,
+                    )
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("DINO Keypoint Segmentation"),
+                        self.tr(f"Failed to load model:\n{exc}"),
+                    )
+                    return
+            else:
+                from annolid.motion.optical_flow import optical_flow_settings_from
+                from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+
+                flow_settings = optical_flow_settings_from(self.optical_flow_manager)
+                self.video_processor = VideoProcessor(
+                    self.video_file,
+                    model_name=model_name,
+                    save_image_to_disk=False,
+                    epsilon_for_polygon=self.epsilon_for_polygon,
+                    t_max_value=self.t_max_value,
+                    use_cpu_only=self.use_cpu_only,
+                    auto_recovery_missing_instances=self.auto_recovery_missing_instances,
+                    save_video_with_color_mask=self.save_video_with_color_mask,
+                    **flow_settings,
+                    results_folder=str(self.video_results_folder)
+                    if self.video_results_folder
+                    else None,
+                )
+            if getattr(self, "seg_pred_thread", None) is not None:
+                try:
+                    if self.seg_pred_thread.isRunning():
+                        logger.warning(
+                            "Prediction thread already running; stop it before starting a new run."
+                        )
+                        self.stop_prediction()
+                        return
+                except RuntimeError:
+                    self.seg_pred_thread = None
+
+            old_thread = getattr(self, "seg_pred_thread", None)
+            if isinstance(old_thread, QtCore.QThread):
+                try:
+                    if not old_thread.isRunning():
+                        old_thread.deleteLater()
+                except RuntimeError:
+                    pass
+
+            self.seg_pred_thread = QtCore.QThread(self)
+            if self.step_size < 0:
+                end_frame = self.num_frames + self.step_size
+            else:
+                end_frame = self.frame_number + to_frame * self.step_size
+            if end_frame >= self.num_frames:
+                end_frame = self.num_frames - 1
+            stop_when_lost_tracking_instance = (
+                self.stepSizeWidget.occclusion_checkbox.isChecked()
+                or self.automatic_pause_enabled
+            )
+            inference_step = 1
+            inference_start_frame = max(0, int(self.frame_number or 0) + 1)
+            inference_end_frame = None
+            if self.video_results_folder:
+                try:
+                    results_folder = Path(self.video_results_folder)
+                    if should_start_predictions_from_frame0(results_folder):
+                        inference_start_frame = 0
+                    else:
+                        max_existing = self._max_predicted_frame_index(results_folder)
+                        if max_existing >= int(inference_start_frame):
+                            inference_start_frame = int(max_existing) + 1
+                except Exception:
+                    pass
+            watch_start_frame = int(self.frame_number or 0)
+            if self._is_dino_kpseg_tracker_model(model_name, model_weight):
+                end_frame = self.num_frames - 1
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video,
+                    start_frame=self.frame_number,
+                    end_frame=end_frame,
+                    step=1,
+                    pred_worker=None,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+                watch_start_frame = int(self.frame_number or 0)
+            elif self._is_dino_keypoint_model(model_name, model_weight):
+                end_frame = self.num_frames - 1
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video,
+                    start_frame=self.frame_number,
+                    end_frame=end_frame,
+                    step=1,
+                    pred_worker=None,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+                watch_start_frame = int(self.frame_number or 0)
+            elif self._is_efficienttam_model(model_name, model_weight):
+                frame_idx = max(self.frame_number, 0)
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor,
+                    frame_idx=frame_idx,
+                )
+                watch_start_frame = int(frame_idx)
+            elif self.sam2_manager.is_sam2_model(model_name, model_weight):
+                frame_idx = max(self.frame_number, 0)
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor,
+                    frame_idx=frame_idx,
+                )
+                watch_start_frame = int(frame_idx)
+            elif self.sam3_manager.is_sam3_model(model_name, model_weight):
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor,
+                )
+                watch_start_frame = int(self.frame_number or 0)
+            elif self._is_dino_kpseg_model(model_name, model_weight):
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.run_inference,
+                    source=self.video_file,
+                    start_frame=int(inference_start_frame),
+                    end_frame=inference_end_frame,
+                    step=int(inference_step),
+                    skip_existing=True,
+                    save_pose_bbox=self._save_pose_bbox,
+                )
+                watch_start_frame = int(inference_start_frame)
+            elif self._is_yolo_model(model_name, model_weight):
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.run_inference,
+                    source=self.video_file,
+                    visual_prompts=visual_prompts if visual_prompts else None,
+                    start_frame=int(inference_start_frame),
+                    end_frame=inference_end_frame,
+                    step=int(inference_step),
+                    skip_existing=True,
+                    save_pose_bbox=self._save_pose_bbox,
+                )
+                watch_start_frame = int(inference_start_frame)
+            else:
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video_frames,
+                    start_frame=self.frame_number + 1,
+                    end_frame=end_frame,
+                    step=self.step_size,
+                    is_cutie=False
+                    if self._is_cotracker_model(model_name, model_weight)
+                    else True,
+                    mem_every=self.step_size,
+                    point_tracking=self._is_cotracker_model(model_name, model_weight),
+                    has_occlusion=stop_when_lost_tracking_instance,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                watch_start_frame = int(self.frame_number + 1)
+
+            if self.video_results_folder:
+                try:
+                    self._setup_prediction_folder_watcher(
+                        str(self.video_results_folder),
+                        start_frame=int(watch_start_frame),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to start prediction progress watcher.", exc_info=True
+                    )
+            try:
+                self.frame_number = int(watch_start_frame)
+            except Exception:
+                pass
+            logger.info("Prediction started from frame: %s", int(watch_start_frame))
+            self.stepSizeWidget.predict_button.setText("Stop")
+            self.stepSizeWidget.predict_button.setStyleSheet(
+                "background-color: red; color: white;"
+            )
+            self.stop_prediction_flag = True
+            self.pred_worker.moveToThread(self.seg_pred_thread)
+            self.seg_pred_thread.started.connect(
+                self.pred_worker.run, QtCore.Qt.QueuedConnection
+            )
+            self.pred_worker.result_signal.connect(
+                self.lost_tracking_instance, QtCore.Qt.QueuedConnection
+            )
+            self.pred_worker.finished_signal.connect(
+                self.predict_is_ready, QtCore.Qt.QueuedConnection
+            )
+            self.pred_worker.finished_signal.connect(
+                self.seg_pred_thread.quit, QtCore.Qt.QueuedConnection
+            )
+            self.pred_worker.finished_signal.connect(
+                self.pred_worker.deleteLater, QtCore.Qt.QueuedConnection
+            )
+            self.seg_pred_thread.finished.connect(
+                self._cleanup_prediction_worker, QtCore.Qt.QueuedConnection
+            )
+            self.seg_pred_thread.finished.connect(
+                self.seg_pred_thread.deleteLater, QtCore.Qt.QueuedConnection
+            )
+            self.seg_pred_thread.start()
+
+    def lost_tracking_instance(self, message):
+        if message is None or "#" not in str(message):
+            return
+        message, current_frame_index = message.split("#")
+        _ = current_frame_index
+        if "missing instance(s)" in message:
+            QtWidgets.QMessageBox.information(self, "Stop early", message)
+        self.stepSizeWidget.predict_button.setText("Pred")
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;"
+        )
+        self.stepSizeWidget.predict_button.setEnabled(True)
+        self.stop_prediction_flag = False
+
+    def predict_is_ready(self, message):
+        self.stepSizeWidget.predict_button.setText("Pred")
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;"
+        )
+        self.stepSizeWidget.predict_button.setEnabled(True)
+        self.stop_prediction_flag = False
+        try:
+            if isinstance(message, Exception):
+                logger.exception("Prediction worker failed", exc_info=message)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Prediction failed",
+                    f"Prediction failed with error:\n{message}",
+                )
+                return
+            message_text = ""
+            stop_from_message = False
+            if isinstance(message, tuple):
+                if message:
+                    message_text = str(message[0])
+                if len(message) > 1 and isinstance(message[1], bool):
+                    stop_from_message = message[1]
+            elif message is not None:
+                message_text = str(message)
+
+            if (
+                message_text.startswith("Stopped")
+                or "missing instance(s)" in message_text
+            ):
+                stop_from_message = True
+
+            if message_text and "last frame" in message_text:
+                stop_from_message = True
+                QtWidgets.QMessageBox.information(self, "Stop early", message_text)
+            if self._prediction_stop_requested or stop_from_message:
+                logger.info(
+                    "Prediction stopped early; skipping tracking CSV conversion."
+                )
+            else:
+                if self.video_loader is not None:
+                    max_predicted = -1
+                    try:
+                        if self.video_results_folder:
+                            max_predicted = self._max_predicted_frame_index(
+                                Path(self.video_results_folder)
+                            )
+                    except Exception:
+                        max_predicted = -1
+                    logger.info(
+                        "Predicted frames available: max_frame=%s of %s",
+                        int(max_predicted),
+                        int(self.num_frames or 0),
+                    )
+                    if (
+                        self.num_frames
+                        and int(max_predicted) >= int(self.num_frames) - 1
+                        and int(max_predicted) >= 0
+                    ):
+                        self.convert_json_to_tracked_csv()
+                    else:
+                        logger.info(
+                            "Prediction did not reach the last frame; skipping tracking CSV conversion."
+                        )
+        except RuntimeError as e:
+            print(f"RuntimeError occurred: {e}")
+        self.reset_predict_button()
+        self._finalize_prediction_progress("Manual prediction worker finished.")
+        self._prediction_stop_requested = False
+
+    def reset_predict_button(self):
+        self.stepSizeWidget.predict_button.setText("Pred")
+        self.stepSizeWidget.predict_button.setStyleSheet(
+            "background-color: green; color: white;"
+        )
