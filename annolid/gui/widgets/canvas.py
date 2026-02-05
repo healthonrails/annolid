@@ -134,6 +134,7 @@ class Canvas(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.WheelFocus)
         self._ai_model = None
+        self._ai_model_pixmap_key = None
         self._ai_model_rect = None
         self.sam_predictor = None
         self.sam_hq_model = None
@@ -570,11 +571,27 @@ class Canvas(QtWidgets.QWidget):
             logger.warning("Pixmap is not set yet")
             return
 
-        self._ai_model.set_image(image=utils.img_qt_to_arr(self.pixmap.toImage()))
+        self._sync_ai_model_image(force=True)
+
+    def _sync_ai_model_image(self, *, force: bool = False) -> bool:
+        if self._ai_model is None:
+            return False
+        if self.pixmap is None or self.pixmap.isNull():
+            return False
+        pixmap_key = int(self.pixmap.cacheKey())
+        if not force and self._ai_model_pixmap_key == pixmap_key:
+            return True
+        try:
+            self._ai_model.set_image(image=utils.img_qt_to_arr(self.pixmap.toImage()))
+            self._ai_model_pixmap_key = pixmap_key
+            return True
+        except Exception:
+            logger.debug("Failed to sync AI model image.", exc_info=True)
+            return False
 
     def _ensure_ai_model_initialized(self) -> bool:
         if self._ai_model is not None:
-            return True
+            return self._sync_ai_model_image()
         default_name = None
         try:
             for m in AI_MODELS:
@@ -587,7 +604,7 @@ class Canvas(QtWidgets.QWidget):
             default_name = None
         if default_name:
             self.initializeAiModel(default_name)
-        return self._ai_model is not None
+        return self._ai_model is not None and self._sync_ai_model_image()
 
     def auto_mask_generator(
         self, image_data, label, points_per_side=32, is_polygon_output=True
@@ -2257,6 +2274,8 @@ class Canvas(QtWidgets.QWidget):
 
     def loadPixmap(self, pixmap, clear_shapes=True):
         self.pixmap = pixmap
+        self._ai_model_pixmap_key = None
+        self._sync_ai_model_image(force=True)
         if clear_shapes:
             self.shapes = []
             self.sam_mask = MaskShape()

@@ -81,3 +81,38 @@ def test_annotation_compat_provides_ai_models_without_labelme(monkeypatch):
     model.set_image(image)
     mask = model.predict_mask_from_points(points=[[32, 32]], point_labels=[1])
     assert getattr(mask, "shape", None) == (64, 64)
+
+
+def test_ai_model_image_refreshes_after_pixmap_switch():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        first = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        first.fill(QtGui.QColor(10, 20, 30))
+        w.image_to_canvas(first, "first.png", 0)
+
+        class FakeAiModel:
+            name = "fake"
+
+            def __init__(self):
+                self.images = []
+
+            def set_image(self, image):
+                self.images.append(np.asarray(image).copy())
+
+        fake_model = FakeAiModel()
+        w.canvas._ai_model = fake_model
+        w.canvas._ai_model_pixmap_key = None
+        w.canvas._sync_ai_model_image(force=True)
+        assert len(fake_model.images) == 1
+
+        second = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        second.fill(QtGui.QColor(200, 100, 50))
+        w.canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
+        assert len(fake_model.images) == 2
+        assert not np.array_equal(fake_model.images[0], fake_model.images[1])
+    finally:
+        w.close()
