@@ -73,10 +73,10 @@ from annolid.gui.mixins import (
     AnnolidWindowMixinBundle,
 )
 from annolid.gui.theme import apply_modern_theme, apply_light_theme, apply_dark_theme
+from annolid.version import __version__
 
 
 __appname__ = "Annolid"
-__version__ = "1.4.0"
 
 
 class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):

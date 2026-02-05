@@ -14,11 +14,11 @@ from annolid.utils.annotation_compat import (
     PY2,
     QT4,
     QT5,
-    __version__,
     addActions,
     newAction,
     utils,
 )
+from annolid.version import __version__
 from annolid.utils.logger import logger
 
 

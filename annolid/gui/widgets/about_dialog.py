@@ -1,9 +1,9 @@
 import sys
 import psutil
 import subprocess
-from importlib import metadata
 from qtpy.QtWidgets import QApplication, QDialog, QVBoxLayout, QLabel, QPushButton
 from annolid.utils.devices import get_device
+from annolid.version import get_version
 
 try:
     import torch
@@ -12,15 +12,7 @@ except ImportError:
 
 
 def get_annolid_version():
-    try:
-        return metadata.version("annolid")
-    except Exception:
-        try:
-            from annolid.gui import app
-
-            return app.__version__
-        except Exception:
-            return "unknown"
+    return get_version()
 
 
 def get_conda_version():
