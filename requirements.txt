@@ -28,4 +28,5 @@ tensorboard
 tokenizers
 torch>=2.5.0
 torchvision>=0.20.0
+tree-config>=0.6.0
 ultralytics>=8.4.0

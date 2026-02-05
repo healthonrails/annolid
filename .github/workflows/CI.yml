@@ -35,30 +35,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         python -m pip install --no-cache-dir flake8 pytest
-        if [ -f requirements.txt ]; then
-          # Avoid pulling huge CUDA runtime wheels in CI: install CPU-only PyTorch explicitly,
-          # then install the remaining dependencies from requirements.txt (excluding torch*).
-        python - <<'PY'
-        import re
-        from pathlib import Path
-
-        src = Path('requirements.txt').read_text(encoding='utf-8').splitlines(True)
-        skip = {'torch', 'torchvision', 'torchaudio'}
-        out_lines = []
-        for line in src:
-          stripped = line.strip()
-          if not stripped or stripped.startswith('#'):
-            out_lines.append(line)
-            continue
-          name = re.split(r'[\s;=<>!~]+', stripped, maxsplit=1)[0]
-          if name in skip:
-            continue
-          out_lines.append(line)
-        Path('/tmp/requirements-ci.txt').write_text(''.join(out_lines), encoding='utf-8')
-        PY
-          python -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --no-cache-dir -r /tmp/requirements-ci.txt
-        fi
+        # Avoid pulling huge CUDA runtime wheels in CI: install CPU-only PyTorch explicitly,
+        # then install Annolid (and its declared dependencies) from pyproject.toml.
+        python -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        python -m pip install --no-cache-dir ".[gui]"
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names

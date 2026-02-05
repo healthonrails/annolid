@@ -33,6 +33,7 @@ dependencies = [
     'scikit-learn>=1.7.2',
     'easydict>=1.9',
     'einops>=0.6.0',
+    'gdown',
     'opencv-contrib-python>=4.1.2.30',
     'PyYAML>=5.3',
     'sounddevice>=0.4.6',
@@ -50,11 +51,10 @@ dependencies = [
     'qimage2ndarray>=1.8',
     'qtpy>=2.4.0',
     'tokenizers',
-    'einops>=0.6',
     'omegaconf>=2.3.0',
     'hydra-core>=1.3.2',
     'timm>=0.9.7',
-    'h5py>=3.10.0',
+    'h5py>=3.15.1',
     'psutil>=5.9.8',
     'pyserial>=3.5',
     'pyzmq>=25.1.2',
@@ -67,10 +67,8 @@ dependencies = [
     'ultralytics>=8.4.0',
     'lap',
     'huggingface-hub>=0.22.0',
-    'tensorboard',
     'jsonschema>=4.20.0',
     'onnxruntime>=1.23.2',
-    'h5py>=3.15.1',
     # Optional dependency: install SAM / SAM-HQ separately (see README.md).
 ]
 
