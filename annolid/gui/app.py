@@ -394,6 +394,7 @@ class AnnolidWindow(AnnolidWindowBase):
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
         self._setup_label_list_connections()
+        self._setup_file_list_connections()
 
         # Ensure all drawing/edit mode actions work without relying on LabelMe.
         self._setup_drawing_mode_actions()
@@ -1986,17 +1987,29 @@ class AnnolidWindow(AnnolidWindowBase):
 
     def _addItem(self, filename, label_file):
         item = QtWidgets.QListWidgetItem(filename)
-        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        is_checked = False
+        # Make the checkbox user-toggleable (Qt does not guarantee that a
+        # checkState alone implies interactive checkboxes).
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+        has_label = False
         if QtCore.QFile.exists(label_file):
             if LabelFile.is_label_file(label_file):
-                is_checked = True
+                has_label = True
         elif self._annotation_store_has_frame(label_file):
-            is_checked = True
+            has_label = True
 
-        item.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
+        # Checkbox is treated as "visible/active in navigation" for the file dock.
+        item.setCheckState(Qt.Checked)
+        item.setData(Qt.UserRole, bool(has_label))
+        if not has_label:
+            # Subtle hint that this file has no associated labels yet.
+            item.setForeground(QtGui.QBrush(QtGui.QColor(160, 160, 160)))
         if not self.fileListWidget.findItems(filename, Qt.MatchExactly):
             self.fileListWidget.addItem(item)
+            # Keep search filter (if present) applied to newly added items.
+            try:
+                self._apply_file_search_filter()
+            except Exception:
+                pass
 
     def _getLabelFile(self, filename):
         label_file = osp.splitext(filename)[0] + ".json"
@@ -2030,14 +2043,20 @@ class AnnolidWindow(AnnolidWindowBase):
         self.lastOpenDir = dirpath
         self.annotation_dir = dirpath
         self.filename = None
-        self.fileListWidget.clear()
-        for filename in self.scanAllImages(dirpath):
-            if pattern and pattern not in filename:
-                continue
-            label_file = self._getLabelFile(filename)
+        self.imageList = []
+        blocker = QtCore.QSignalBlocker(self.fileListWidget)
+        try:
+            self.fileListWidget.clear()
+            for filename in self.scanAllImages(dirpath):
+                if pattern and pattern not in filename:
+                    continue
+                label_file = self._getLabelFile(filename)
 
-            if not filename.endswith(".json") or self.only_json_files:
-                self._addItem(filename, label_file)
+                if not filename.endswith(".json") or self.only_json_files:
+                    self.imageList.append(filename)
+                    self._addItem(filename, label_file)
+        finally:
+            del blocker
         self.openNextImg(load=load)
 
     def _get_rgb_by_label(self, label):
@@ -2211,6 +2230,145 @@ class AnnolidWindow(AnnolidWindowBase):
         except Exception:
             pass
         self.labelList.itemDoubleClicked.connect(self.editLabel)
+
+    def _setup_file_list_connections(self) -> None:
+        """Keep file dock list selection/check state in sync with canvas display."""
+        if getattr(self, "_file_list_connections_setup", False):
+            return
+        self._file_list_connections_setup = True
+
+        try:
+            self.fileListWidget.currentItemChanged.disconnect()
+        except Exception:
+            pass
+        self.fileListWidget.currentItemChanged.connect(
+            self._on_file_list_current_item_changed
+        )
+
+        try:
+            self.fileListWidget.itemChanged.disconnect()
+        except Exception:
+            pass
+        self.fileListWidget.itemChanged.connect(self._on_file_list_item_changed)
+
+    def _checked_file_paths(self) -> list[str]:
+        checked: list[str] = []
+        for idx in range(self.fileListWidget.count()):
+            item = self.fileListWidget.item(idx)
+            if item is None:
+                continue
+            if item.isHidden():
+                continue
+            if item.checkState() != Qt.Unchecked:
+                checked.append(item.text())
+        return checked
+
+    def _set_current_file_item(self, path: str) -> None:
+        if not path:
+            return
+        matches = self.fileListWidget.findItems(path, Qt.MatchExactly)
+        if not matches:
+            return
+        current = self.fileListWidget.currentItem()
+        if current is matches[0]:
+            return
+        blocker = QtCore.QSignalBlocker(self.fileListWidget)
+        try:
+            self.fileListWidget.setCurrentItem(matches[0])
+        finally:
+            del blocker
+
+    def _nearest_checked_file_path(self, row: int) -> str | None:
+        """Return a nearby checked file path in the dock list (for fallback display)."""
+        count = self.fileListWidget.count()
+        if count <= 0:
+            return None
+
+        # Prefer forward rows, then backward rows, to keep list scrolling natural.
+        for idx in range(max(0, row), count):
+            it = self.fileListWidget.item(idx)
+            if it is not None and not it.isHidden() and it.checkState() != Qt.Unchecked:
+                return it.text()
+        for idx in range(min(row - 1, count - 1), -1, -1):
+            it = self.fileListWidget.item(idx)
+            if it is not None and not it.isHidden() and it.checkState() != Qt.Unchecked:
+                return it.text()
+        return None
+
+    def _on_file_list_current_item_changed(self, current, previous) -> None:
+        if current is None:
+            return
+        if self.video_loader is not None:
+            return
+
+        path = current.text()
+        if not path:
+            return
+        if current.checkState() == Qt.Unchecked:
+            # Selecting an unchecked row should hide that file from the canvas.
+            if self.filename is not None and not self.mayContinue():
+                blocker = QtCore.QSignalBlocker(self.fileListWidget)
+                try:
+                    self.fileListWidget.setCurrentItem(previous)
+                finally:
+                    del blocker
+                return
+            self.resetState()
+            self.setWindowTitle(__appname__)
+            return
+        if self.filename == path:
+            return
+
+        if not self.mayContinue():
+            blocker = QtCore.QSignalBlocker(self.fileListWidget)
+            try:
+                self.fileListWidget.setCurrentItem(previous)
+            finally:
+                del blocker
+            return
+
+        self.loadFile(path)
+        if self.caption_widget is not None:
+            self.caption_widget.set_image_path(self.filename)
+        self._update_frame_display_and_emit_update()
+
+    def _on_file_list_item_changed(self, item) -> None:
+        if item is None:
+            return
+        if self.video_loader is not None:
+            return
+        path = item.text()
+        if not path:
+            return
+
+        # Unchecking removes the item from the "active" set.
+        if item.checkState() == Qt.Unchecked:
+            if self.filename == path:
+                fallback_path = self._nearest_checked_file_path(
+                    self.fileListWidget.row(item)
+                )
+                if fallback_path:
+                    self._set_current_file_item(fallback_path)
+                    self.loadFile(fallback_path)
+                    if self.caption_widget is not None:
+                        self.caption_widget.set_image_path(self.filename)
+                    self._update_frame_display_and_emit_update()
+                else:
+                    self.resetState()
+                    self.setWindowTitle(__appname__)
+            return
+
+        # If user re-checks the currently selected row, display it.
+        if (
+            item.checkState() != Qt.Unchecked
+            and self.fileListWidget.currentItem() is item
+        ):
+            if not self.mayContinue():
+                return
+            self.loadFile(path)
+            if self.caption_widget is not None:
+                self.caption_widget.set_image_path(self.filename)
+            self._update_frame_display_and_emit_update()
 
     def _set_label_list_item_text(
         self,
@@ -3581,6 +3739,9 @@ class AnnolidWindow(AnnolidWindowBase):
                 if len(items) != 1:
                     raise RuntimeError("There are duplicate files.")
                 items[0].setCheckState(Qt.Checked)
+                items[0].setData(Qt.UserRole, True)
+                # Restore default styling now that this file has labels.
+                items[0].setForeground(QtGui.QBrush())
             # disable allows next and previous image to proceed
             # self.filename = filename
             # Emit VideoManagerWidget's json_saved signal if shapes are present and video_file is set
@@ -4009,7 +4170,8 @@ class AnnolidWindow(AnnolidWindowBase):
 
                 item = self.fileListWidget.currentItem()
                 if item:
-                    item.setCheckState(Qt.Unchecked)
+                    item.setData(Qt.UserRole, False)
+                    item.setForeground(QtGui.QBrush(QtGui.QColor(160, 160, 160)))
 
                 self.resetState()
 
@@ -8296,22 +8458,27 @@ class AnnolidWindow(AnnolidWindowBase):
                 self.handle_uniq_label_list_selection_change
             )
 
-        elif len(self.imageList) <= 0:
-            return
         else:
+            visible_files = self._checked_file_paths()
+            if len(visible_files) <= 0:
+                self._config["keep_prev"] = keep_prev
+                self._update_frame_display_and_emit_update()
+                return
+
             filename = None
-            if self.filename is None:
-                filename = self.imageList[0]
+            if self.filename is None or self.filename not in visible_files:
+                filename = visible_files[0]
             else:
-                currIndex = self.imageList.index(self.filename)
-                if currIndex + 1 < len(self.imageList):
-                    filename = self.imageList[currIndex + 1]
+                currIndex = visible_files.index(self.filename)
+                if currIndex + 1 < len(visible_files):
+                    filename = visible_files[currIndex + 1]
                 else:
-                    filename = self.imageList[-1]
+                    filename = visible_files[-1]
             self.filename = filename
 
             if self.filename and load:
                 self.loadFile(self.filename)
+                self._set_current_file_item(self.filename)
                 if self.caption_widget is not None:
                     self.caption_widget.set_image_path(self.filename)
 
@@ -8340,16 +8507,26 @@ class AnnolidWindow(AnnolidWindowBase):
             # update the seekbar value
             self.seekbar.setValue(self.frame_number)
 
-        elif len(self.imageList) <= 0:
-            return
         else:
-            if self.filename is None:
+            visible_files = self._checked_file_paths()
+            if len(visible_files) <= 0:
                 return
-            currIndex = self.imageList.index(self.filename)
+            if self.filename is None or self.filename not in visible_files:
+                filename = visible_files[0]
+                self.loadFile(filename)
+                self._set_current_file_item(filename)
+                if self.caption_widget is not None:
+                    self.caption_widget.set_image_path(self.filename)
+                self._config["keep_prev"] = keep_prev
+                self._update_frame_display_and_emit_update()
+                return
+
+            currIndex = visible_files.index(self.filename)
             if currIndex - 1 >= 0:
-                filename = self.imageList[currIndex - 1]
+                filename = visible_files[currIndex - 1]
                 if filename:
                     self.loadFile(filename)
+                    self._set_current_file_item(filename)
                     if self.caption_widget is not None:
                         self.caption_widget.set_image_path(self.filename)
 

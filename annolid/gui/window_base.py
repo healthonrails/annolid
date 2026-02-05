@@ -248,6 +248,12 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         self.labelList = AnnolidLabelListWidget()
         self.uniqLabelList = AnnolidUniqLabelListWidget()
         self.fileListWidget = QtWidgets.QListWidget()
+        self.fileSearchWidget = QtWidgets.QLineEdit()
+        self.fileSearchWidget.setClearButtonEnabled(True)
+        self.fileSearchWidget.setPlaceholderText(self.tr("Search files..."))
+        self.fileSearchWidget.textChanged.connect(
+            lambda _text: self._apply_file_search_filter()
+        )
 
         self.tools = AnnolidToolBar(self.tr("Tools"))
         self.tools.setObjectName("mainTools")
@@ -278,7 +284,13 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
 
         self.file_dock = QtWidgets.QDockWidget(self.tr("Files"), self)
         self.file_dock.setObjectName("fileDock")
-        self.file_dock.setWidget(self.fileListWidget)
+        file_container = QtWidgets.QWidget(self.file_dock)
+        file_layout = QtWidgets.QVBoxLayout(file_container)
+        file_layout.setContentsMargins(6, 6, 6, 6)
+        file_layout.setSpacing(4)
+        file_layout.addWidget(self.fileSearchWidget)
+        file_layout.addWidget(self.fileListWidget)
+        self.file_dock.setWidget(file_container)
 
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.file_dock)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.label_dock)
@@ -302,6 +314,25 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         self.actions = SimpleNamespace()
         self._init_actions()
         self.toggleActions(False)
+
+    def _apply_file_search_filter(self) -> None:
+        """Filter file dock list items based on the current search text."""
+        try:
+            query = str(self.fileSearchWidget.text() or "").strip().lower()
+        except Exception:
+            query = ""
+        for idx in range(self.fileListWidget.count()):
+            item = self.fileListWidget.item(idx)
+            if item is None:
+                continue
+            if not query:
+                item.setHidden(False)
+                continue
+            try:
+                hay = str(item.text() or "").lower()
+            except Exception:
+                hay = ""
+            item.setHidden(query not in hay)
 
     def _mk_action(
         self,
@@ -336,8 +367,17 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
             shortcut=self._shortcut("open_dir"),
         )
         self.actions.openDir.setIcon(self._icon("open_folder.svg"))
+        self.actions.close = self._mk_action(
+            self.tr("Close"),
+            getattr(self, "closeFile", None),
+            shortcut=self._shortcut("close"),
+        )
+        self.actions.close.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_DialogCloseButton)
+        )
         self.actions.openVideo = self._mk_action(
-            self.tr("Open Video"), shortcut=self._shortcut("open")
+            self.tr("Open Video"),
+            shortcut=self._shortcut("open_video"),
         )
         self.actions.openVideo.setIcon(self._icon("open_video.png"))
         self.actions.openNextImg = self._mk_action(
@@ -727,9 +767,7 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
     def toggleActions(self, value: bool) -> None:
         enabled = bool(value)
         names = (
-            "open",
-            "openDir",
-            "openVideo",
+            "close",
             "openNextImg",
             "openPrevImg",
             "save",
@@ -886,12 +924,33 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         self.imageData = None
 
         if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.setEnabled(True)
             pixmap = QtGui.QPixmap.fromImage(image)
             self.canvas.loadPixmap(pixmap, clear_shapes=True)
-            if hasattr(self, "loadShapes"):
+            # AnnolidWindow.loadLabels expects LabelFile JSON dict payloads and
+            # materializes Shape objects before forwarding to loadShapes.
+            if shapes and isinstance(shapes[0], dict) and hasattr(self, "loadLabels"):
+                self.loadLabels(shapes)
+            elif hasattr(self, "loadShapes"):
                 self.loadShapes(shapes, replace=True)
 
+        # Ensure image workflows (Open / Open Dir) activate toolbar actions.
+        if hasattr(self, "toggleActions"):
+            self.toggleActions(True)
+
         self.setWindowTitle(f"Annolid - {osp.basename(self.filename)}")
+        try:
+            matches = self.fileListWidget.findItems(
+                self.filename, QtCore.Qt.MatchExactly
+            )
+            if matches:
+                blocker = QtCore.QSignalBlocker(self.fileListWidget)
+                try:
+                    self.fileListWidget.setCurrentItem(matches[0])
+                finally:
+                    del blocker
+        except Exception:
+            pass
 
     def closeFile(self, _value=False):
         return None

@@ -684,6 +684,9 @@ class MenuController:
         file_sections = [
             (
                 actions["new_project_wizard"],
+                w.actions.open,
+                w.actions.openDir,
+                w.actions.close,
                 actions["open_video"],
                 actions["open_youtube_video"],
             ),
