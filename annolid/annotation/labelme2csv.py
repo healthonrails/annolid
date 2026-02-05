@@ -79,6 +79,61 @@ def convert_shape_to_mask(img_shape, points):
     return mask
 
 
+def _extract_frame_number_from_json_name(file_name: str) -> int | None:
+    match = re.search(r"(\d+)(?=\.json$)", file_name)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_annotation_files(json_folder_path: Path) -> list[str]:
+    json_files = sorted(f for f in os.listdir(json_folder_path) if f.endswith(".json"))
+    store = AnnotationStore.for_frame_path(
+        json_folder_path / f"{json_folder_path.name}_000000000.json"
+    )
+    if store.store_path.exists():
+        store_files = [
+            f"{json_folder_path.name}_{frame:09d}.json"
+            for frame in sorted(store.iter_frames())
+        ]
+        json_files = sorted(set(json_files) | set(store_files))
+    return json_files
+
+
+def _existing_csv_covers_all_frames(csv_path: Path, required_frames: set[int]) -> bool:
+    if not csv_path.exists() or not required_frames:
+        return False
+
+    try:
+        with csv_path.open("r", newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+            if not header:
+                return False
+            try:
+                frame_idx = header.index("frame_number")
+            except ValueError:
+                return False
+            seen_frames = set()
+            for row in reader:
+                if frame_idx >= len(row):
+                    continue
+                raw = str(row[frame_idx]).strip()
+                if not raw:
+                    continue
+                try:
+                    seen_frames.add(int(float(raw)))
+                except ValueError:
+                    continue
+    except OSError:
+        return False
+
+    return required_frames.issubset(seen_frames)
+
+
 def convert_json_to_csv(
     json_folder,
     csv_file=None,
@@ -174,6 +229,7 @@ def convert_json_to_csv(
         except Exception:
             return
 
+    tracked_output = None
     tracked_writer = None
     tracked_seen = set()
     tracked_header = [
@@ -196,6 +252,25 @@ def convert_json_to_csv(
             tracked_writer = None
 
     json_folder_path = Path(json_folder)
+    json_files = _collect_annotation_files(json_folder_path)
+    if not json_files:
+        return f"No annotation files found in {json_folder}."
+
+    required_frames = {
+        frame
+        for frame in (_extract_frame_number_from_json_name(name) for name in json_files)
+        if frame is not None
+    }
+    csv_path = Path(csv_file)
+    if _existing_csv_covers_all_frames(csv_path, required_frames):
+        if tracked_output is not None:
+            try:
+                tracked_output.close()
+            except Exception:
+                pass
+        _report_progress(100)
+        return str(csv_path)
+
     video_path = None
     if tracked_writer is not None:
         video_path = _find_video_for_json_folder(json_folder_path)
@@ -204,23 +279,6 @@ def convert_json_to_csv(
         with open(csv_file, "w", newline="") as csv_output:
             csv_writer = csv.writer(csv_output)
             csv_writer.writerow(csv_header)
-
-            json_files = sorted(
-                f for f in os.listdir(json_folder) if f.endswith(".json")
-            )
-
-            store = AnnotationStore.for_frame_path(
-                json_folder_path / f"{json_folder_path.name}_000000000.json"
-            )
-            if store.store_path.exists():
-                store_files = [
-                    f"{json_folder_path.name}_{frame:09d}.json"
-                    for frame in sorted(store.iter_frames())
-                ]
-                json_files = sorted(set(json_files) | set(store_files))
-
-            if not json_files:
-                return f"No annotation files found in {json_folder}."
 
             total_files = len(json_files)
             num_processed_files = 0

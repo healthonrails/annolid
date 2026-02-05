@@ -68,8 +68,8 @@ class CsvConversionMixin:
                 self, "Error", f"An unexpected error occurred: {str(e)}"
             )
             try:
-                if hasattr(self, "progress_bar") and self.progress_bar.isVisible():
-                    self.statusBar().removeWidget(self.progress_bar)
+                if hasattr(self, "_hide_progress_bar"):
+                    self._hide_progress_bar()
             except Exception:
                 pass
             self.csv_worker = None
@@ -83,10 +83,8 @@ class CsvConversionMixin:
     def _on_csv_conversion_finished(self, result=None):
         """Handle cleanup and user feedback after CSV conversion completes."""
         try:
-            if hasattr(self, "progress_bar") and self.progress_bar.isVisible():
-                self.statusBar().removeWidget(self.progress_bar)
-            if hasattr(self, "progress_bar"):
-                self.progress_bar.setVisible(False)
+            if hasattr(self, "_hide_progress_bar"):
+                self._hide_progress_bar()
         except Exception:
             pass
         self._progress_bar_owner = None

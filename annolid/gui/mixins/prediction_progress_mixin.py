@@ -105,12 +105,21 @@ class PredictionProgressMixin:
         self._force_stop_thread_ref = None
 
     def _initialize_progress_bar(self, *, owner: str) -> None:
-        """Initialize the progress bar and add it to the status bar."""
+        """Initialize progress state without rendering a status-bar widget."""
         self._progress_bar_owner = owner
         self.progress_bar.setValue(0)
-        if not self.progress_bar.isVisible():
-            self.statusBar().addWidget(self.progress_bar)
-        self.progress_bar.setVisible(True)
+        self.progress_bar.setVisible(False)
+
+    def _hide_progress_bar(self) -> None:
+        if not hasattr(self, "progress_bar"):
+            return
+        try:
+            if self.progress_bar.parent() is self.statusBar():
+                self.statusBar().removeWidget(self.progress_bar)
+            self.progress_bar.setVisible(False)
+            self.progress_bar.setValue(0)
+        except Exception:
+            logger.debug("Failed to hide progress bar.", exc_info=True)
 
     def _csv_worker_progress_proxy(self, progress):
         """Route worker progress updates through thread-safe signal emission."""
@@ -130,12 +139,12 @@ class PredictionProgressMixin:
 
     def _finalize_prediction_progress(self, message=""):
         logger.info(f"Prediction finalization: {message}")
-        if (
-            getattr(self, "_progress_bar_owner", None) in (None, "prediction")
-            and hasattr(self, "progress_bar")
-            and self.progress_bar.isVisible()
-        ):
-            self.statusBar().removeWidget(self.progress_bar)
+        if getattr(self, "_progress_bar_owner", None) in (
+            None,
+            "prediction",
+        ) and hasattr(self, "progress_bar"):
+            self._hide_progress_bar()
+            self._progress_bar_owner = None
         self._stop_prediction_folder_watcher()
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")

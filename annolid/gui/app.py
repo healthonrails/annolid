@@ -226,6 +226,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
         self._progress_bar_owner: Optional[str] = None
 
         self._current_video_defined_segments: List[TrackingSegment] = []

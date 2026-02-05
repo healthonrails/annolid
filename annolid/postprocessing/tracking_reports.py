@@ -115,13 +115,18 @@ def find_tracking_gaps(video_path: str) -> dict:
             records.append(frame_record)
         df_presence_sparse = pd.DataFrame(records).set_index("frame_number")
 
-    df_master = pd.DataFrame(index=master_frame_index)
-    df_full = df_master.join(df_presence_sparse).fillna(False)
+    # Reindex directly with a fill value so we avoid DataFrame.fillna downcasting
+    # warnings on object-dtype columns in newer pandas versions.
+    df_full = df_presence_sparse.reindex(master_frame_index, fill_value=False)
 
     # --- 4. Identify Gaps for Each Animal ---
     gap_report = {}
     for label in sorted_labels:
-        missing_frames = df_full[~df_full[label]]
+        # Be defensive about non-bool column dtypes (e.g. ints from legacy CSV/JSON):
+        # using `~series` on integer values yields -1/-2 and breaks DataFrame indexing.
+        present_mask = df_full[label].eq(True)
+        missing_mask = ~present_mask
+        missing_frames = df_full.loc[missing_mask].copy()
         if missing_frames.empty:
             continue
 
