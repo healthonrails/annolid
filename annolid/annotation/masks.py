@@ -16,7 +16,17 @@ def binary_mask_to_coco_rle(binary_mask):
     return coco_rle
 
 
-def mask_to_polygons(mask, use_convex_hull=False):
+def mask_to_polygons(
+    mask,
+    use_convex_hull=False,
+    *,
+    simplify: bool = True,
+    epsilon_ratio: float = 0.001,
+    min_epsilon: float = 0.5,
+    max_epsilon: float = 2.0,
+    epsilon: float | None = None,
+    max_vertices: int | None = 5000,
+):
     """
     convert predicted mask to polygons
     """
@@ -48,14 +58,33 @@ def mask_to_polygons(mask, use_convex_hull=False):
             simplified_contours.append(contour)
             continue
 
-        perimeter = cv2.arcLength(contour, True)
-        # Use a perimeter-proportional epsilon so large contours are simplified
-        # aggressively while preserving detail on small shapes.
-        epsilon = max(0.01 * perimeter, 0.5)
+        if not simplify:
+            simplified_contours.append(contour)
+            continue
 
-        approx = cv2.approxPolyDP(contour, epsilon, True)
+        perimeter = cv2.arcLength(contour, True)
+        # Keep polygon detail even for large objects. The previous behavior used
+        # epsilon=0.01*perimeter which could over-simplify big masks into very
+        # few vertices (e.g. large animals/objects).
+        if epsilon is None:
+            approx_epsilon = float(perimeter) * float(epsilon_ratio)
+            approx_epsilon = max(
+                float(min_epsilon),
+                min(approx_epsilon, float(max_epsilon)),
+            )
+        else:
+            approx_epsilon = float(epsilon)
+
+        approx = cv2.approxPolyDP(contour, approx_epsilon, True)
         if approx.shape[0] < 3:
             approx = contour
+
+        if max_vertices is not None and approx.shape[0] > int(max_vertices):
+            step = int(np.ceil(float(approx.shape[0]) / float(max_vertices)))
+            approx = approx[:: max(step, 1)].copy()
+            if approx.shape[0] < 3:
+                approx = contour
+
         simplified_contours.append(approx)
 
     if simplified_contours:

@@ -231,7 +231,7 @@ class TrackingController(QtCore.QObject):
             logger.info("TrackAll: Setting up watcher for %s", output_folder_path)
             window._setup_prediction_folder_watcher(output_folder_path)
             if hasattr(window, "progress_bar"):
-                window._initialize_progress_bar()
+                window._initialize_progress_bar(owner="prediction")
         else:
             logger.warning(
                 "TrackAll: Video %s not properly loaded or output folder mismatch.",
