@@ -408,6 +408,10 @@ class AnnolidWindow(AnnolidWindowBase):
         )
         self.flags_controller.initialize()
 
+        # Ensure flag_dock is visible and raised (shown as the active tab)
+        self.flag_dock.setVisible(True)
+        self.flag_dock.raise_()
+
         self.dino_controller = DinoController(self)
         self.dino_controller.initialize()
 
