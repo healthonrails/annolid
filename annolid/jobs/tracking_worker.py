@@ -2,7 +2,7 @@ import gc
 import torch
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, TYPE_CHECKING
 
 from qtpy.QtCore import QThread, Signal, Slot, QObject
 
@@ -10,8 +10,6 @@ from .tracking_jobs import VideoProcessingJob, JobType
 
 from annolid.segmentation.cutie_vos.processor import SegmentedCutieExecutor
 from annolid.segmentation.cutie_vos.engine import CutieEngine
-
-from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 
 # Utilities
 from annolid.utils.files import (
@@ -21,6 +19,9 @@ from annolid.utils.files import (
 from annolid.annotation.labelme2csv import convert_json_to_csv
 
 from annolid.gui.label_file import LabelFile
+
+if TYPE_CHECKING:
+    from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 
 
 class TrackingWorker(QThread):
@@ -418,8 +419,11 @@ class TrackingWorker(QThread):
         )
         self._log_gpu_memory(f"WholeVideo {video_name}", "Before")
 
-        vp_instance: Optional[VideoProcessor] = None
+        vp_instance: Optional["VideoProcessor"] = None
         try:
+            # Import lazily to avoid importing optional ONNX dependencies at GUI startup.
+            from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
+
             annotated_frame_for_vp = job.initial_annotated_frame_for_whole_video
             if annotated_frame_for_vp is None:  # Try to find the "main" annotation
                 json_files = find_manual_labeled_json_files(str(output_folder))

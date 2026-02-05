@@ -13,7 +13,6 @@ from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
-from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
 from annolid.segmentation.cutie_vos.predict import CutieVideoProcessor
 from annolid.utils.logger import logger
 from annolid.tracker.cotracker.track import CoTrackerProcessor
@@ -187,6 +186,13 @@ class VideoProcessor:
         elif self.sam_name == "Segment-Anything (Edge)":
             self.edge_sam = self.get_model()
         elif self.sam_name == "efficientvit_sam":
+            try:
+                from annolid.segmentation.SAM.efficientvit_sam import EfficientViTSAM
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to initialize EfficientViT-SAM. "
+                    "Please verify onnxruntime is installed and compatible."
+                ) from exc
             self.edge_sam = EfficientViTSAM()
         self.num_frames = self.video_loader.total_frames()
         self.most_recent_file = self.get_most_recent_file()
