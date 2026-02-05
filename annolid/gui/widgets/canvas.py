@@ -913,6 +913,8 @@ class Canvas(QtWidgets.QWidget):
     def isVisible(self, shape):
         if not self._show_pose_bboxes and self._is_pose_bbox_shape(shape):
             return False
+        if not getattr(shape, "visible", True):
+            return False
         return self.visible.get(id(shape), True)
 
     def drawing(self):
@@ -2300,7 +2302,11 @@ class Canvas(QtWidgets.QWidget):
         self.update()
 
     def setShapeVisible(self, shape, value):
-        self.visible[id(shape)] = value
+        try:
+            shape.visible = bool(value)
+        except Exception:
+            pass
+        self.visible[id(shape)] = bool(value)
         self.update()
 
     def overrideCursor(self, cursor):

@@ -55,9 +55,124 @@ class AnnolidLabelListItem(QtWidgets.QListWidgetItem):
 class AnnolidLabelListWidget(QtWidgets.QListWidget):
     """QListWidget with LabelMe-like iteration helpers."""
 
+    VISIBILITY_STATE_ROLE = int(QtCore.Qt.UserRole) + 10
+
+    shapeVisibilityChanged = QtCore.Signal(object, bool)
+    shapeDeleteRequested = QtCore.Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pending_delete_item: Optional[QtWidgets.QListWidgetItem] = None
+        self._pending_delete_global_pos: Optional[QtCore.QPoint] = None
+
+        self._delete_click_timer = QtCore.QTimer(self)
+        self._delete_click_timer.setSingleShot(True)
+        self._delete_click_timer.timeout.connect(self._show_delete_menu_for_click)
+
+        self.itemChanged.connect(self._on_item_changed)
+
     def __iter__(self):
         for idx in range(self.count()):
             yield self.item(idx)
+
+    def _on_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
+        if not isinstance(item, AnnolidLabelListItem):
+            return
+        if not (item.flags() & QtCore.Qt.ItemIsUserCheckable):
+            return
+        shape = item.shape()
+        if shape is None:
+            return
+
+        is_visible = item.checkState() == QtCore.Qt.Checked
+        prev = item.data(self.VISIBILITY_STATE_ROLE)
+        if prev is not None and bool(prev) == bool(is_visible):
+            return
+
+        # Store the last-known state so non-checkbox item changes (text/color)
+        # don't repeatedly trigger visibility wiring downstream.
+        item.setData(self.VISIBILITY_STATE_ROLE, bool(is_visible))
+        self.shapeVisibilityChanged.emit(shape, bool(is_visible))
+
+    def _is_checkbox_click(
+        self, item: QtWidgets.QListWidgetItem, pos: QtCore.QPoint
+    ) -> bool:
+        if not (item.flags() & QtCore.Qt.ItemIsUserCheckable):
+            return False
+        rect = self.visualItemRect(item)
+        opt = QtWidgets.QStyleOptionViewItem()
+        try:
+            opt.initFrom(self)
+        except Exception:
+            pass
+        opt.rect = rect
+        try:
+            opt.features |= QtWidgets.QStyleOptionViewItem.HasCheckIndicator
+        except Exception:
+            # Older Qt bindings may not expose this flag; best-effort.
+            pass
+        try:
+            opt.checkState = item.checkState()
+        except Exception:
+            pass
+        check_rect = self.style().subElementRect(
+            QtWidgets.QStyle.SE_ItemViewItemCheckIndicator, opt, self
+        )
+        return check_rect.contains(pos)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # pragma: no cover
+        # Cancel any pending single-click delete menu when the user continues
+        # interacting (e.g., starting a double-click).
+        try:
+            if self._delete_click_timer.isActive():
+                self._delete_click_timer.stop()
+        except Exception:
+            pass
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # pragma: no cover
+        super().mouseReleaseEvent(event)
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        item = self.itemAt(event.pos())
+        if item is None:
+            return
+        if self._is_checkbox_click(item, event.pos()):
+            return
+        # Delay the menu until we're sure this isn't part of a double-click,
+        # otherwise label editing (double click) becomes unusable.
+        self._pending_delete_item = item
+        self._pending_delete_global_pos = self.viewport().mapToGlobal(event.pos())
+        interval = int(QtWidgets.QApplication.doubleClickInterval())
+        self._delete_click_timer.start(max(0, interval))
+
+    def mouseDoubleClickEvent(
+        self, event: QtGui.QMouseEvent
+    ) -> None:  # pragma: no cover
+        try:
+            if self._delete_click_timer.isActive():
+                self._delete_click_timer.stop()
+        except Exception:
+            pass
+        super().mouseDoubleClickEvent(event)
+
+    def _show_delete_menu_for_click(self) -> None:
+        item = self._pending_delete_item
+        pos = self._pending_delete_global_pos
+        self._pending_delete_item = None
+        self._pending_delete_global_pos = None
+        if item is None or pos is None:
+            return
+        if not isinstance(item, AnnolidLabelListItem):
+            return
+        shape = item.shape()
+        if shape is None:
+            return
+        menu = QtWidgets.QMenu(self)
+        delete_action = menu.addAction(self.tr("Delete shape"))
+        chosen = menu.exec_(pos)
+        if chosen is delete_action:
+            self.shapeDeleteRequested.emit(shape)
 
 
 class AnnolidUniqLabelListWidget(QtWidgets.QListWidget):

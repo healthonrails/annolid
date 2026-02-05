@@ -81,6 +81,64 @@ class LabelPanelMixin:
             pass
         self.labelList.itemDoubleClicked.connect(self.editLabel)
 
+        def on_shape_visibility_changed(shape: Shape, visible: bool) -> None:
+            if shape is None:
+                return
+            try:
+                shape.visible = bool(visible)
+            except Exception:
+                pass
+            try:
+                self.canvas.setShapeVisible(shape, bool(visible))
+            except Exception:
+                try:
+                    self.canvas.update()
+                except Exception:
+                    pass
+            try:
+                self.setDirty()
+            except Exception:
+                pass
+
+        def on_shape_delete_requested(shape: Shape) -> None:
+            if shape is None:
+                return
+            try:
+                self._noSelectionSlot = True
+                self.canvas.selectShapes([shape])
+                # Keep the label list selection aligned so subsequent actions
+                # (e.g. Delete key) behave predictably.
+                for idx in range(self.labelList.count()):
+                    it = self.labelList.item(idx)
+                    try:
+                        if isinstance(it, AnnolidLabelListItem) and it.shape() is shape:
+                            it.setSelected(True)
+                        elif it is not None:
+                            it.setSelected(False)
+                    except Exception:
+                        continue
+            finally:
+                self._noSelectionSlot = False
+            try:
+                self.deleteSelectedShapes()
+            except Exception:
+                pass
+
+        try:
+            self.labelList.shapeVisibilityChanged.disconnect()
+        except Exception:
+            pass
+        try:
+            self.labelList.shapeDeleteRequested.disconnect()
+        except Exception:
+            pass
+        try:
+            self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
+            self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)
+        except Exception:
+            # If the list widget doesn't expose these signals, ignore.
+            pass
+
     def _setup_file_list_connections(self) -> None:
         if getattr(self, "_file_list_connections_setup", False):
             return
@@ -238,6 +296,22 @@ class LabelPanelMixin:
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
         label_list_item = AnnolidLabelListItem(text, shape)
+        try:
+            # Per-shape visibility toggle (checkbox in front of each label).
+            visible = bool(getattr(shape, "visible", True))
+            role = getattr(
+                self.labelList, "VISIBILITY_STATE_ROLE", int(Qt.UserRole) + 10
+            )
+            with QtCore.QSignalBlocker(self.labelList):
+                label_list_item.setFlags(
+                    label_list_item.flags()
+                    | Qt.ItemIsUserCheckable
+                    | Qt.ItemIsSelectable
+                )
+                label_list_item.setCheckState(Qt.Checked if visible else Qt.Unchecked)
+                label_list_item.setData(role, bool(visible))
+        except Exception:
+            pass
         self.labelList.addItem(label_list_item)
 
         self.labelDialog.addLabelHistory(str(shape.label))
