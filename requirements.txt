@@ -1,6 +1,7 @@
 --find-links https://download.pytorch.org/whl/torch_stable.html
 easydict>=1.9
 einops>=0.6.0
+ffpyplayer>=4.5.0
 gdown
 h5py>=3.15.1
 huggingface-hub>=0.22.0
