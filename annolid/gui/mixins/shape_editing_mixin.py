@@ -11,6 +11,21 @@ class ShapeEditingMixin:
         self._rebuild_unique_label_list()
 
     def deleteSelectedShapes(self, _value=False) -> None:
+        # Prefer explicit selection from Label Instances dock when available.
+        selected_shapes = []
+        for item in self.labelList.selectedItems():
+            try:
+                shape = item.shape()
+            except Exception:
+                shape = None
+            if shape is not None:
+                selected_shapes.append(shape)
+        if selected_shapes:
+            try:
+                self.canvas.selectShapes(selected_shapes)
+            except Exception:
+                pass
+
         deleted = self.canvas.deleteSelected() or []
         if deleted:
             self.remLabels(deleted)

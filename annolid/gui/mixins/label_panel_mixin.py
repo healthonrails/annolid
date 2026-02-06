@@ -124,6 +124,30 @@ class LabelPanelMixin:
             except Exception:
                 pass
 
+        def on_shapes_delete_requested(shapes: list[Shape]) -> None:
+            shape_list = [s for s in (shapes or []) if s is not None]
+            if not shape_list:
+                return
+            try:
+                self._noSelectionSlot = True
+                self.canvas.selectShapes(shape_list)
+                selected_ids = {id(s) for s in shape_list}
+                for idx in range(self.labelList.count()):
+                    it = self.labelList.item(idx)
+                    try:
+                        shape = (
+                            it.shape() if isinstance(it, AnnolidLabelListItem) else None
+                        )
+                        it.setSelected(shape is not None and id(shape) in selected_ids)
+                    except Exception:
+                        continue
+            finally:
+                self._noSelectionSlot = False
+            try:
+                self.deleteSelectedShapes()
+            except Exception:
+                pass
+
         try:
             self.labelList.shapeVisibilityChanged.disconnect()
         except Exception:
@@ -133,11 +157,45 @@ class LabelPanelMixin:
         except Exception:
             pass
         try:
+            self.labelList.shapesDeleteRequested.disconnect()
+        except Exception:
+            pass
+        try:
             self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
             self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)
+            self.labelList.shapesDeleteRequested.connect(on_shapes_delete_requested)
         except Exception:
             # If the list widget doesn't expose these signals, ignore.
             pass
+
+        # Label Instances dock shortcuts:
+        # - Select all instances in the list
+        # - Delete selected instances directly from the dock
+        if not getattr(self, "_label_list_shortcuts_setup", False):
+            self._label_list_shortcuts_setup = True
+            self._label_list_shortcuts = []
+
+            def _delete_selected_from_label_list() -> None:
+                if self.labelList.selectedItems():
+                    self.deleteSelectedShapes()
+
+            delete_seqs = (
+                QtGui.QKeySequence(Qt.Key_Delete),
+                QtGui.QKeySequence(Qt.Key_Backspace),
+                QtGui.QKeySequence("Meta+Backspace"),
+            )
+            for seq in delete_seqs:
+                shortcut = QtWidgets.QShortcut(seq, self.labelList)
+                shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(_delete_selected_from_label_list)
+                self._label_list_shortcuts.append(shortcut)
+
+            select_all = QtWidgets.QShortcut(
+                QtGui.QKeySequence.SelectAll, self.labelList
+            )
+            select_all.setContext(Qt.WidgetWithChildrenShortcut)
+            select_all.activated.connect(self.labelList.selectAll)
+            self._label_list_shortcuts.append(select_all)
 
     def _setup_file_list_connections(self) -> None:
         if getattr(self, "_file_list_connections_setup", False):

@@ -59,15 +59,11 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
 
     shapeVisibilityChanged = QtCore.Signal(object, bool)
     shapeDeleteRequested = QtCore.Signal(object)
+    shapesDeleteRequested = QtCore.Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._pending_delete_item: Optional[QtWidgets.QListWidgetItem] = None
-        self._pending_delete_global_pos: Optional[QtCore.QPoint] = None
-
-        self._delete_click_timer = QtCore.QTimer(self)
-        self._delete_click_timer.setSingleShot(True)
-        self._delete_click_timer.timeout.connect(self._show_delete_menu_for_click)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
         self.itemChanged.connect(self._on_item_changed)
 
@@ -121,58 +117,59 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
         return check_rect.contains(pos)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # pragma: no cover
-        # Cancel any pending single-click delete menu when the user continues
-        # interacting (e.g., starting a double-click).
-        try:
-            if self._delete_click_timer.isActive():
-                self._delete_click_timer.stop()
-        except Exception:
-            pass
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # pragma: no cover
+        # User-friendly behavior: left-click should only select/list-focus.
+        # Deletion is available via explicit shortcuts and right-click menu.
         super().mouseReleaseEvent(event)
-        if event.button() != QtCore.Qt.LeftButton:
-            return
-        item = self.itemAt(event.pos())
-        if item is None:
-            return
-        if self._is_checkbox_click(item, event.pos()):
-            return
-        # Delay the menu until we're sure this isn't part of a double-click,
-        # otherwise label editing (double click) becomes unusable.
-        self._pending_delete_item = item
-        self._pending_delete_global_pos = self.viewport().mapToGlobal(event.pos())
-        interval = int(QtWidgets.QApplication.doubleClickInterval())
-        self._delete_click_timer.start(max(0, interval))
 
     def mouseDoubleClickEvent(
         self, event: QtGui.QMouseEvent
     ) -> None:  # pragma: no cover
-        try:
-            if self._delete_click_timer.isActive():
-                self._delete_click_timer.stop()
-        except Exception:
-            pass
         super().mouseDoubleClickEvent(event)
 
-    def _show_delete_menu_for_click(self) -> None:
-        item = self._pending_delete_item
-        pos = self._pending_delete_global_pos
-        self._pending_delete_item = None
-        self._pending_delete_global_pos = None
-        if item is None or pos is None:
+    def contextMenuEvent(
+        self, event: QtGui.QContextMenuEvent
+    ) -> None:  # pragma: no cover
+        item = self.itemAt(event.pos())
+        if item is not None and not item.isSelected():
+            self.clearSelection()
+            item.setSelected(True)
+        self._show_delete_menu(self.viewport().mapToGlobal(event.pos()))
+        event.accept()
+
+    def _show_delete_menu(
+        self, global_pos: QtCore.QPoint, clicked_item: QtWidgets.QListWidgetItem = None
+    ) -> None:
+        selected_shapes = []
+        for item in self.selectedItems():
+            if not isinstance(item, AnnolidLabelListItem):
+                continue
+            shape = item.shape()
+            if shape is not None:
+                selected_shapes.append(shape)
+
+        # Fallback for single-click flow where selection may lag behind.
+        if not selected_shapes and isinstance(clicked_item, AnnolidLabelListItem):
+            shape = clicked_item.shape()
+            if shape is not None:
+                selected_shapes = [shape]
+
+        if not selected_shapes:
             return
-        if not isinstance(item, AnnolidLabelListItem):
-            return
-        shape = item.shape()
-        if shape is None:
-            return
+
         menu = QtWidgets.QMenu(self)
-        delete_action = menu.addAction(self.tr("Delete shape"))
-        chosen = menu.exec_(pos)
+        if len(selected_shapes) > 1:
+            delete_action = menu.addAction(self.tr("Delete selected shapes"))
+        else:
+            delete_action = menu.addAction(self.tr("Delete shape"))
+        chosen = menu.exec_(global_pos)
         if chosen is delete_action:
-            self.shapeDeleteRequested.emit(shape)
+            if len(selected_shapes) > 1:
+                self.shapesDeleteRequested.emit(selected_shapes)
+            else:
+                self.shapeDeleteRequested.emit(selected_shapes[0])
 
 
 class AnnolidUniqLabelListWidget(QtWidgets.QListWidget):
@@ -584,12 +581,16 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
             self.style().standardIcon(QtWidgets.QStyle.SP_TrashIcon)
         )
         self.actions.deleteShapes = self._mk_action(
-            self.tr("Delete Polygons"), self.deleteSelectedShapes
+            self.tr("Delete Polygons"),
+            self.deleteSelectedShapes,
+            shortcut=self._shortcut("delete_polygon"),
         )
         self.actions.deleteShapes.setIcon(self._icon("delete_polygons.svg"))
         self.actions.deleteShapes.setEnabled(False)
         self.actions.duplicateShapes = self._mk_action(
-            self.tr("Duplicate Polygons"), self.duplicateSelectedShapes
+            self.tr("Duplicate Polygons"),
+            self.duplicateSelectedShapes,
+            shortcut=self._shortcut("duplicate_polygon"),
         )
         self.actions.duplicateShapes.setIcon(self._icon("duplicate_polygons.svg"))
         self.actions.duplicateShapes.setEnabled(False)
