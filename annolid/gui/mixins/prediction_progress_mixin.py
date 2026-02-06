@@ -561,44 +561,42 @@ class PredictionProgressMixin:
                 return
 
             latest_completed_frames = sorted(current_frame_set)
-            if latest_completed_frames:
-                latest_frame = latest_completed_frames[-1]
-                if prediction_active:
-                    self.last_known_predicted_frame = latest_frame
-                else:
-                    self.last_known_predicted_frame = max(
-                        self.last_known_predicted_frame, latest_frame
-                    )
+            progress_frame: int | None = None
+            if prediction_active:
+                run_completed_frames = sorted(all_frame_nums)
+                if run_completed_frames:
+                    progress_frame = int(run_completed_frames[-1])
+                elif self._prediction_start_frame is not None:
+                    progress_frame = int(self._prediction_start_frame)
+            elif latest_completed_frames:
+                progress_frame = int(latest_completed_frames[-1])
 
-                if self.num_frames > 0:
-                    progress = int(
-                        (self.last_known_predicted_frame / self.num_frames) * 100
-                    )
-                    self._update_progress_bar(progress)
+            if progress_frame is None:
+                self._clear_prediction_progress_mark()
+                return
 
-                if prediction_active and 0 <= latest_frame < self.num_frames:
-                    self._clear_prediction_progress_mark()
-                    progress_mark = VideoSliderMark(
-                        mark_type="prediction_progress", val=latest_frame
-                    )
-                    self.seekbar.addMark(progress_mark)
-                    self._prediction_progress_mark = progress_mark
-                    if bool(getattr(self, "_follow_prediction_progress", False)):
-                        self._sync_prediction_progress_frame(latest_frame)
-                else:
-                    self._clear_prediction_progress_mark()
-            elif prediction_active and self._prediction_start_frame is not None:
-                start_frame = self._prediction_start_frame
-                if 0 <= start_frame < self.num_frames:
-                    self._clear_prediction_progress_mark()
-                    progress_mark = VideoSliderMark(
-                        mark_type="prediction_progress", val=start_frame
-                    )
-                    self.seekbar.addMark(progress_mark)
-                    self._prediction_progress_mark = progress_mark
-                    if bool(getattr(self, "_follow_prediction_progress", False)):
-                        self._sync_prediction_progress_frame(start_frame)
-                    self._update_progress_bar(0)
+            if prediction_active:
+                self.last_known_predicted_frame = int(progress_frame)
+            else:
+                self.last_known_predicted_frame = max(
+                    self.last_known_predicted_frame, int(progress_frame)
+                )
+
+            if self.num_frames > 0:
+                progress = int(
+                    (self.last_known_predicted_frame / self.num_frames) * 100
+                )
+                self._update_progress_bar(progress)
+
+            if prediction_active and 0 <= int(progress_frame) < self.num_frames:
+                self._clear_prediction_progress_mark()
+                progress_mark = VideoSliderMark(
+                    mark_type="prediction_progress", val=int(progress_frame)
+                )
+                self.seekbar.addMark(progress_mark)
+                self._prediction_progress_mark = progress_mark
+                if bool(getattr(self, "_follow_prediction_progress", False)):
+                    self._sync_prediction_progress_frame(int(progress_frame))
             else:
                 self._clear_prediction_progress_mark()
 
