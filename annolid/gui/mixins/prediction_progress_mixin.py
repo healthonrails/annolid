@@ -17,6 +17,80 @@ from annolid.utils.logger import logger
 class PredictionProgressMixin:
     """Prediction stop/progress/watcher helpers."""
 
+    def _set_prediction_session_active(self, active: bool) -> None:
+        self._prediction_session_active = bool(active)
+
+    def _prediction_session_is_active(self) -> bool:
+        return bool(getattr(self, "_prediction_session_active", False))
+
+    def _clear_prediction_progress_mark(self) -> None:
+        if self.seekbar:
+            self.seekbar.removeMarksByType("prediction_progress")
+        self._prediction_progress_mark = None
+
+    @staticmethod
+    def _frames_to_intervals(frame_nums: list[int] | set[int]) -> list[tuple[int, int]]:
+        if not frame_nums:
+            return []
+        ordered = sorted({int(v) for v in frame_nums})
+        intervals: list[tuple[int, int]] = []
+        start = ordered[0]
+        prev = ordered[0]
+        for frame in ordered[1:]:
+            if int(frame) == int(prev) + 1:
+                prev = frame
+                continue
+            intervals.append((int(start), int(prev)))
+            start = frame
+            prev = frame
+        intervals.append((int(start), int(prev)))
+        return intervals
+
+    def _render_prediction_sections(
+        self,
+        *,
+        existing_frames: list[int] | set[int],
+        predicted_frames: list[int] | set[int],
+    ) -> None:
+        if not self.seekbar or self.num_frames is None:
+            return
+
+        existing_intervals = self._frames_to_intervals(existing_frames)
+        predicted_intervals = self._frames_to_intervals(predicted_frames)
+        signature = (tuple(existing_intervals), tuple(predicted_intervals))
+        if signature == getattr(self, "_prediction_marks_signature", None):
+            return
+
+        self.seekbar.blockSignals(True)
+        self.seekbar.removeMarksByType("predicted")
+        self.seekbar.removeMarksByType("predicted_existing")
+
+        for start, end in existing_intervals:
+            if start < 0 or start >= self.num_frames:
+                continue
+            clipped_end = min(int(end), int(self.num_frames) - 1)
+            mark = VideoSliderMark(
+                mark_type="predicted_existing",
+                val=int(start),
+                end_val=int(clipped_end) if clipped_end > int(start) else None,
+            )
+            self.seekbar.addMark(mark, update=False)
+
+        for start, end in predicted_intervals:
+            if start < 0 or start >= self.num_frames:
+                continue
+            clipped_end = min(int(end), int(self.num_frames) - 1)
+            mark = VideoSliderMark(
+                mark_type="predicted",
+                val=int(start),
+                end_val=int(clipped_end) if clipped_end > int(start) else None,
+            )
+            self.seekbar.addMark(mark, update=False)
+
+        self.seekbar.blockSignals(False)
+        self.seekbar.update()
+        self._prediction_marks_signature = signature
+
     def _discover_manual_seed_frames(self, folder_path: Path) -> set[int]:
         """Return frame indices that have manual seed image+json pairs."""
         seeds: set[int] = set()
@@ -222,6 +296,11 @@ class PredictionProgressMixin:
 
     def _finalize_prediction_progress(self, message=""):
         logger.info(f"Prediction finalization: {message}")
+        prediction_folder = None
+        try:
+            prediction_folder = getattr(self, "video_results_folder", None)
+        except Exception:
+            prediction_folder = None
         if getattr(self, "_progress_bar_owner", None) in (
             None,
             "prediction",
@@ -232,8 +311,17 @@ class PredictionProgressMixin:
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")
             self.seekbar.removeMarksByType("predicted_existing")
-            self.seekbar.removeMarksByType("prediction_progress")
-            self._prediction_progress_mark = None
+            self._clear_prediction_progress_mark()
+            self._prediction_marks_signature = None
+            # Rebuild completed-frame marks from existing prediction outputs.
+            if prediction_folder:
+                try:
+                    self._scan_prediction_folder(str(prediction_folder))
+                except Exception:
+                    logger.debug(
+                        "Failed to rebuild completed prediction marks.",
+                        exc_info=True,
+                    )
 
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
@@ -252,6 +340,8 @@ class PredictionProgressMixin:
             )
 
         if osp.isdir(folder_path_to_watch):
+            self._set_prediction_session_active(True)
+            self._prediction_marks_signature = None
             self.prediction_progress_folder = folder_path_to_watch
             self.prediction_start_timestamp = time.time()
             if start_frame is None:
@@ -359,9 +449,10 @@ class PredictionProgressMixin:
         return existing
 
     def _scan_prediction_folder(self, folder_path):
-        if not self.video_loader or self.num_frames is None or self.num_frames == 0:
-            return
         if not self.seekbar:
+            return
+        if not self.video_loader or self.num_frames is None or self.num_frames == 0:
+            self._clear_prediction_progress_mark()
             return
         self._refresh_manual_seed_slider_marks(folder_path)
 
@@ -369,84 +460,94 @@ class PredictionProgressMixin:
             path = Path(folder_path)
             prefixed_pattern = re.compile(r"_(\d{9,})\.json$")
             bare_pattern = re.compile(r"^(\d{9,})\.json$")
-            prediction_active = bool(self.prediction_start_timestamp)
+            prediction_active = self._prediction_session_is_active()
+            if not prediction_active:
+                self._clear_prediction_progress_mark()
 
-            all_frame_nums_set: set[int] = set()
+            json_frame_nums_set: set[int] = set()
             for f_name in os.listdir(path):
                 if not f_name.endswith(".json"):
                     continue
                 match = None
-                if self.video_results_folder.name in f_name:
+                if path.name in f_name:
                     match = prefixed_pattern.search(f_name)
                 if match is None:
                     match = bare_pattern.match(f_name)
                 if match is None:
                     continue
-                file_path = path / f_name
-                if self.prediction_start_timestamp:
-                    try:
-                        if file_path.stat().st_mtime < self.prediction_start_timestamp:
-                            continue
-                    except FileNotFoundError:
-                        continue
                 try:
                     frame_num = int(float(match.group(1)))
-                    all_frame_nums_set.add(frame_num)
+                    json_frame_nums_set.add(frame_num)
                 except (ValueError, IndexError):
                     continue
 
+            store_frame_nums_set: set[int] = set()
             if prediction_active:
-                all_frame_nums_set.update(self._scan_prediction_store_updates())
-
-            all_frame_nums: list[int] = []
-            if not all_frame_nums_set:
-                store = AnnotationStore.for_frame_path(
-                    path / f"{path.name}_000000000.json"
+                store_frame_nums_set.update(
+                    int(frame)
+                    for frame in getattr(
+                        self, "_prediction_existing_store_frames", set()
+                    )
                 )
-                if store.store_path.exists():
-                    store_frames = sorted(store.iter_frames())
-                    if prediction_active and self._prediction_existing_store_frames:
-                        store_frames = [
-                            frame
-                            for frame in store_frames
-                            if frame not in self._prediction_existing_store_frames
-                        ]
-                    all_frame_nums = store_frames
+                store_frame_nums_set.update(self._scan_prediction_store_updates())
             else:
-                all_frame_nums = sorted(all_frame_nums_set)
-            existing_frame_set = set()
+                try:
+                    store = AnnotationStore.for_frame_path(
+                        path / f"{path.name}_000000000.json"
+                    )
+                    if store.store_path.exists():
+                        for frame in store.iter_frames():
+                            try:
+                                store_frame_nums_set.add(int(frame))
+                            except (TypeError, ValueError):
+                                continue
+                except Exception:
+                    logger.debug(
+                        "Failed to read annotation store frames for slider marks.",
+                        exc_info=True,
+                    )
+
+            current_frame_set = set(json_frame_nums_set)
+            current_frame_set.update(store_frame_nums_set)
+
+            baseline_frame_set: set[int] = set()
             if prediction_active:
-                existing_frame_set.update(self._prediction_existing_json_frames)
-                if self._prediction_existing_store_frames:
-                    existing_frame_set.update(self._prediction_existing_store_frames)
-                if all_frame_nums:
-                    existing_frame_set.difference_update(all_frame_nums)
-            existing_frame_nums = sorted(existing_frame_set)
+                baseline_frame_set.update(
+                    int(frame)
+                    for frame in getattr(
+                        self, "_prediction_existing_json_frames", set()
+                    )
+                )
+                baseline_frame_set.update(
+                    int(frame)
+                    for frame in getattr(
+                        self, "_prediction_existing_store_frames", set()
+                    )
+                )
 
-            DECIMATION_THRESHOLD = 2000
-
-            def decimate_frames(frame_nums):
-                if not frame_nums:
-                    return []
-                if len(frame_nums) < DECIMATION_THRESHOLD:
-                    return frame_nums
-                step = 100 if len(frame_nums) > 10000 else 20
-                decimated = frame_nums[::step]
-                if frame_nums[-1] not in decimated:
-                    decimated.append(frame_nums[-1])
-                return decimated
-
-            frames_to_mark = decimate_frames(all_frame_nums)
-            existing_frames_to_mark = decimate_frames(existing_frame_nums)
+            # Keep completed sections visible while prediction is running:
+            # - existing frames: already present before this run started
+            # - predicted frames: newly produced during this run
             if prediction_active:
-                # During an active run, emphasize new progress marks only.
-                existing_frames_to_mark = []
+                existing_frame_nums = sorted(baseline_frame_set)
+                all_frame_nums = sorted(current_frame_set - baseline_frame_set)
+            else:
+                existing_frame_nums = []
+                all_frame_nums = sorted(current_frame_set)
 
-            if not frames_to_mark and not existing_frames_to_mark:
+            frames_to_mark = list(all_frame_nums)
+            existing_frames_to_mark = list(existing_frame_nums)
+
+            self._render_prediction_sections(
+                existing_frames=existing_frames_to_mark,
+                predicted_frames=frames_to_mark,
+            )
+
+            if not current_frame_set:
                 if prediction_active and self._prediction_start_frame is not None:
                     start_frame = self._prediction_start_frame
                     if 0 <= start_frame < self.num_frames:
-                        self.seekbar.removeMarksByType("prediction_progress")
+                        self._clear_prediction_progress_mark()
                         progress_mark = VideoSliderMark(
                             mark_type="prediction_progress", val=start_frame
                         )
@@ -455,55 +556,13 @@ class PredictionProgressMixin:
                         if bool(getattr(self, "_follow_prediction_progress", False)):
                             self._sync_prediction_progress_frame(start_frame)
                         self._update_progress_bar(0)
+                else:
+                    self._clear_prediction_progress_mark()
                 return
 
-            existing_predicted_vals = {
-                mark.val
-                for mark in self.seekbar.getMarks()
-                if mark.mark_type == "predicted"
-            }
-            existing_existing_vals = {
-                mark.val
-                for mark in self.seekbar.getMarks()
-                if mark.mark_type == "predicted_existing"
-            }
-
-            self.seekbar.blockSignals(True)
-
-            new_marks_added = False
-            for frame_num in existing_frames_to_mark:
-                if 0 <= frame_num < self.num_frames:
-                    if (
-                        frame_num in existing_existing_vals
-                        or frame_num in existing_predicted_vals
-                    ):
-                        continue
-                    existing_mark = VideoSliderMark(
-                        mark_type="predicted_existing", val=frame_num
-                    )
-                    self.seekbar.addMark(existing_mark)
-                    existing_existing_vals.add(frame_num)
-                    new_marks_added = True
-            for frame_num in frames_to_mark:
-                if 0 <= frame_num < self.num_frames:
-                    if frame_num in existing_predicted_vals:
-                        continue
-                    if frame_num in existing_existing_vals:
-                        for mark in self.seekbar.getMarksAtVal(frame_num):
-                            if mark.mark_type == "predicted_existing":
-                                self.seekbar.removeMark(mark)
-                        existing_existing_vals.discard(frame_num)
-                    pred_mark = VideoSliderMark(mark_type="predicted", val=frame_num)
-                    self.seekbar.addMark(pred_mark)
-                    existing_predicted_vals.add(frame_num)
-                    new_marks_added = True
-
-            self.seekbar.blockSignals(False)
-            if new_marks_added:
-                self.seekbar.update()
-
-            if all_frame_nums:
-                latest_frame = all_frame_nums[-1]
+            latest_completed_frames = sorted(current_frame_set)
+            if latest_completed_frames:
+                latest_frame = latest_completed_frames[-1]
                 if prediction_active:
                     self.last_known_predicted_frame = latest_frame
                 else:
@@ -517,8 +576,8 @@ class PredictionProgressMixin:
                     )
                     self._update_progress_bar(progress)
 
-                if 0 <= latest_frame < self.num_frames:
-                    self.seekbar.removeMarksByType("prediction_progress")
+                if prediction_active and 0 <= latest_frame < self.num_frames:
+                    self._clear_prediction_progress_mark()
                     progress_mark = VideoSliderMark(
                         mark_type="prediction_progress", val=latest_frame
                     )
@@ -526,10 +585,12 @@ class PredictionProgressMixin:
                     self._prediction_progress_mark = progress_mark
                     if bool(getattr(self, "_follow_prediction_progress", False)):
                         self._sync_prediction_progress_frame(latest_frame)
+                else:
+                    self._clear_prediction_progress_mark()
             elif prediction_active and self._prediction_start_frame is not None:
                 start_frame = self._prediction_start_frame
                 if 0 <= start_frame < self.num_frames:
-                    self.seekbar.removeMarksByType("prediction_progress")
+                    self._clear_prediction_progress_mark()
                     progress_mark = VideoSliderMark(
                         mark_type="prediction_progress", val=start_frame
                     )
@@ -538,6 +599,8 @@ class PredictionProgressMixin:
                     if bool(getattr(self, "_follow_prediction_progress", False)):
                         self._sync_prediction_progress_frame(start_frame)
                     self._update_progress_bar(0)
+            else:
+                self._clear_prediction_progress_mark()
 
         except Exception as e:
             logger.error(
@@ -548,10 +611,19 @@ class PredictionProgressMixin:
     def _handle_prediction_folder_change(self):
         path = self.video_results_folder
         if path:
+            if not self._prediction_session_is_active():
+                self._clear_prediction_progress_mark()
+                if (
+                    self.prediction_progress_watcher
+                    and self.prediction_progress_watcher.isActive()
+                ):
+                    self.prediction_progress_watcher.stop()
+                return
             logger.debug(f"Scanning prediction folder: {path}.")
             self._scan_prediction_folder(str(path))
 
     def _stop_prediction_folder_watcher(self):
+        self._set_prediction_session_active(False)
         if self.prediction_progress_watcher:
             self.prediction_progress_watcher.stop()
             logger.info("Prediction progress watcher stopped.")
@@ -564,6 +636,5 @@ class PredictionProgressMixin:
         self._prediction_store_path = None
         self._prediction_store_baseline_size = 0
         self._prediction_appended_frames = set()
-        if self.seekbar:
-            self.seekbar.removeMarksByType("prediction_progress")
-        self._prediction_progress_mark = None
+        self._prediction_marks_signature = None
+        self._clear_prediction_progress_mark()

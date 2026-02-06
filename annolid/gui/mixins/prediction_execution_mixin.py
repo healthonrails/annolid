@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 import functools
+import json
 import os
 import re
 from pathlib import Path
 
+import cv2
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
@@ -19,6 +21,153 @@ PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 
 class PredictionExecutionMixin:
     """Prediction worker setup and completion handling."""
+
+    def _cutie_seed_paths(self, frame_index: int) -> tuple[Path, Path]:
+        results_dir = Path(self.video_results_folder)
+        stem = results_dir.name
+        json_path = results_dir / f"{stem}_{int(frame_index):09d}.json"
+        return (json_path, json_path.with_suffix(".png"))
+
+    def _has_cutie_seed_frame(self, frame_index: int) -> bool:
+        if not self.video_results_folder:
+            return False
+        try:
+            idx = max(0, int(frame_index))
+        except Exception:
+            return False
+        json_path, png_path = self._cutie_seed_paths(idx)
+        return json_path.exists() and png_path.exists()
+
+    def _is_cutie_tracking_model(self, model_name: str | None = None) -> bool:
+        active = str(
+            model_name
+            if model_name is not None
+            else getattr(self, "_active_prediction_model_name", "")
+        ).lower()
+        return ("cutie" in active) and ("cotracker" not in active)
+
+    def _queue_cutie_resume_from_frame(self, stalled_frame: int, message: str) -> None:
+        if self._prediction_stop_requested:
+            return
+        if not self.video_results_folder or not self.video_loader:
+            return
+        if not self._is_cutie_tracking_model():
+            return
+
+        try:
+            fallback = max(0, int(stalled_frame))
+        except Exception:
+            fallback = max(0, int(self.frame_number or 0))
+
+        latest_available = fallback
+        try:
+            latest_available = max(
+                fallback,
+                int(self._max_predicted_frame_index(Path(self.video_results_folder))),
+            )
+        except Exception:
+            latest_available = fallback
+
+        question = self.tr(
+            "Tracking stalled near frame {stalled}.\n\n"
+            "{details}\n\n"
+            "Resume by saving frame {seed} as a new seed and continue from there?"
+        ).format(
+            stalled=int(stalled_frame),
+            details=str(message or "").strip(),
+            seed=int(latest_available),
+        )
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            self.tr("Resume Tracking"),
+            question,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+
+        self._pending_prediction_resume_frame = int(latest_available)
+        logger.info(
+            "Queued CUTIE resume from frame %s after stall at frame %s.",
+            int(latest_available),
+            int(stalled_frame),
+        )
+
+    def _materialize_prediction_seed(self, frame_index: int) -> bool:
+        if not self.video_results_folder or not self.video_loader:
+            return False
+
+        try:
+            frame_idx = max(0, int(frame_index))
+        except Exception:
+            return False
+
+        results_dir = Path(self.video_results_folder)
+        stem = results_dir.name
+        json_path = results_dir / f"{stem}_{frame_idx:09d}.json"
+        png_path = json_path.with_suffix(".png")
+
+        should_write_json = not json_path.exists()
+        if json_path.exists():
+            try:
+                with json_path.open("r", encoding="utf-8") as fh:
+                    payload = json.load(fh) or {}
+                shapes = payload.get("shapes") or []
+                should_write_json = len(shapes) == 0
+            except Exception:
+                should_write_json = True
+
+        if should_write_json:
+            try:
+                store = AnnotationStore.for_frame_path(json_path)
+                record = store.get_frame(frame_idx)
+            except Exception:
+                record = None
+            if not record:
+                logger.warning(
+                    "Cannot materialize seed for frame %s: no annotation record found.",
+                    int(frame_idx),
+                )
+                return False
+            payload = {
+                "version": record.get("version"),
+                "flags": record.get("flags", {}),
+                "shapes": record.get("shapes", []),
+                "imagePath": png_path.name,
+                "imageHeight": record.get("imageHeight"),
+                "imageWidth": record.get("imageWidth"),
+            }
+            if record.get("caption") is not None:
+                payload["caption"] = record["caption"]
+            if record.get("imageData") is not None:
+                payload["imageData"] = record["imageData"]
+            for key, value in (record.get("otherData") or {}).items():
+                payload[key] = value
+            try:
+                json_path.parent.mkdir(parents=True, exist_ok=True)
+                with json_path.open("w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, separators=(",", ":"))
+            except Exception as exc:
+                logger.warning("Failed to write seed JSON %s: %s", json_path, exc)
+                return False
+
+        if not png_path.exists():
+            try:
+                frame_rgb = self.video_loader.load_frame(int(frame_idx))
+                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+                if not cv2.imwrite(str(png_path), frame_bgr):
+                    logger.warning("Failed to write seed image %s", png_path)
+                    return False
+            except Exception as exc:
+                logger.warning("Failed to materialize seed image %s: %s", png_path, exc)
+                return False
+
+        try:
+            self._refresh_manual_seed_slider_marks(results_dir)
+        except Exception:
+            logger.debug("Failed to refresh manual seed marks.", exc_info=True)
+        return True
 
     def _max_predicted_frame_index(self, folder: Path) -> int:
         """Return the maximum frame index present in the prediction folder."""
@@ -325,12 +474,6 @@ class PredictionExecutionMixin:
                     pass
 
             self.seg_pred_thread = QtCore.QThread(self)
-            if self.step_size < 0:
-                end_frame = self.num_frames + self.step_size
-            else:
-                end_frame = self.frame_number + to_frame * self.step_size
-            if end_frame >= self.num_frames:
-                end_frame = self.num_frames - 1
             stop_when_lost_tracking_instance = (
                 self.stepSizeWidget.occclusion_checkbox.isChecked()
                 or self.automatic_pause_enabled
@@ -342,6 +485,9 @@ class PredictionExecutionMixin:
             if self.video_results_folder:
                 try:
                     results_folder = Path(self.video_results_folder)
+                    # Refresh existing predicted marks before a resumed run so users
+                    # can see completed sections immediately.
+                    self._scan_prediction_folder(str(results_folder))
                     if should_start_predictions_from_frame0(results_folder):
                         inference_start_frame = 0
                     else:
@@ -350,40 +496,96 @@ class PredictionExecutionMixin:
                             inference_start_frame = int(max_existing) + 1
                 except Exception:
                     pass
+            if self.num_frames and int(inference_start_frame) >= int(self.num_frames):
+                try:
+                    self.frame_number = int(self.num_frames) - 1
+                except Exception:
+                    pass
+                QtWidgets.QMessageBox.information(
+                    self,
+                    self.tr("Prediction Complete"),
+                    self.tr(
+                        "All frames already have predictions. Delete or prune later "
+                        "predictions if you want to rerun from an earlier frame."
+                    ),
+                )
+                return
+
+            # CUTIE resume robustness:
+            # if we plan to continue from frame N, ensure frame N-1 is a real
+            # seed (PNG+JSON). Otherwise CUTIE may fall back to an older seed.
+            if (
+                self._is_cutie_tracking_model(model_name)
+                and int(inference_start_frame) > 1
+            ):
+                resume_seed_frame = int(inference_start_frame) - 1
+                if not self._has_cutie_seed_frame(resume_seed_frame):
+                    # Try to auto-materialize the seed from stored predictions.
+                    _ = self._materialize_prediction_seed(resume_seed_frame)
+                if not self._has_cutie_seed_frame(resume_seed_frame):
+                    answer = QtWidgets.QMessageBox.question(
+                        self,
+                        self.tr("Missing Resume Seed"),
+                        self.tr(
+                            "To resume from frame {start}, CUTIE needs a seed at frame {seed}, "
+                            "but only older seeds are available.\n\n"
+                            "Do you want to jump to frame {seed} now, review/edit, save, and continue?"
+                        ).format(
+                            start=int(inference_start_frame),
+                            seed=int(resume_seed_frame),
+                        ),
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                        QtWidgets.QMessageBox.Yes,
+                    )
+                    if answer == QtWidgets.QMessageBox.Yes:
+                        try:
+                            self.set_frame_number(int(resume_seed_frame))
+                            if self.seekbar is not None:
+                                self.seekbar.setValue(int(resume_seed_frame))
+                        except Exception:
+                            pass
+                        return
+
+            if self.step_size < 0:
+                end_frame = self.num_frames + self.step_size
+            else:
+                end_frame = (int(inference_start_frame) - 1) + to_frame * self.step_size
+            if end_frame >= self.num_frames:
+                end_frame = self.num_frames - 1
             watch_start_frame = int(self.frame_number or 0)
             if self._is_dino_kpseg_tracker_model(model_name, model_weight):
                 end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.process_video,
-                    start_frame=self.frame_number,
+                    start_frame=int(inference_start_frame),
                     end_frame=end_frame,
                     step=1,
                     pred_worker=None,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
-                watch_start_frame = int(self.frame_number or 0)
+                watch_start_frame = int(inference_start_frame)
             elif self._is_dino_keypoint_model(model_name, model_weight):
                 end_frame = self.num_frames - 1
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.process_video,
-                    start_frame=self.frame_number,
+                    start_frame=int(inference_start_frame),
                     end_frame=end_frame,
                     step=1,
                     pred_worker=None,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 self.pred_worker._kwargs["pred_worker"] = self.pred_worker
-                watch_start_frame = int(self.frame_number or 0)
+                watch_start_frame = int(inference_start_frame)
             elif self._is_efficienttam_model(model_name, model_weight):
-                frame_idx = max(self.frame_number, 0)
+                frame_idx = max(int(inference_start_frame), 0)
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
                 )
                 watch_start_frame = int(frame_idx)
             elif self.sam2_manager.is_sam2_model(model_name, model_weight):
-                frame_idx = max(self.frame_number, 0)
+                frame_idx = max(int(inference_start_frame), 0)
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
@@ -432,7 +634,7 @@ class PredictionExecutionMixin:
             else:
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor.process_video_frames,
-                    start_frame=self.frame_number + 1,
+                    start_frame=int(inference_start_frame),
                     end_frame=end_frame,
                     step=self.step_size,
                     is_cutie=False
@@ -443,7 +645,7 @@ class PredictionExecutionMixin:
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
-                watch_start_frame = int(self.frame_number + 1)
+                watch_start_frame = int(inference_start_frame)
 
             if self.video_results_folder:
                 try:
@@ -493,9 +695,21 @@ class PredictionExecutionMixin:
         if message is None or "#" not in str(message):
             return
         message, current_frame_index = message.split("#")
-        _ = current_frame_index
+        try:
+            stalled_frame = int(float(current_frame_index))
+        except Exception:
+            stalled_frame = int(self.frame_number or 0)
         if "missing instance(s)" in message:
-            QtWidgets.QMessageBox.information(self, "Stop early", message)
+            if self._is_cutie_tracking_model():
+                try:
+                    self._queue_cutie_resume_from_frame(stalled_frame, str(message))
+                except Exception:
+                    logger.debug(
+                        "Failed to queue CUTIE resume workflow.",
+                        exc_info=True,
+                    )
+            else:
+                QtWidgets.QMessageBox.information(self, "Stop early", message)
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;"
@@ -504,6 +718,7 @@ class PredictionExecutionMixin:
         self.stop_prediction_flag = False
 
     def predict_is_ready(self, message):
+        pending_resume_frame = getattr(self, "_pending_prediction_resume_frame", None)
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;"
@@ -587,6 +802,34 @@ class PredictionExecutionMixin:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
         self._finalize_prediction_progress("Manual prediction worker finished.")
+        if pending_resume_frame is not None:
+            try:
+                self._pending_prediction_resume_frame = None
+            except Exception:
+                pass
+            should_resume = (
+                (not self._prediction_stop_requested)
+                and self.stop_prediction_flag is False
+                and self._is_cutie_tracking_model()
+            )
+            if should_resume:
+                if self._materialize_prediction_seed(int(pending_resume_frame)):
+                    try:
+                        self.frame_number = int(pending_resume_frame)
+                    except Exception:
+                        pass
+                    QtCore.QTimer.singleShot(
+                        0, lambda: self.predict_from_next_frame(to_frame=60)
+                    )
+                else:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("Resume Failed"),
+                        self.tr(
+                            "Could not save a seed at frame {frame}. "
+                            "Please save that frame manually, then run prediction again."
+                        ).format(frame=int(pending_resume_frame)),
+                    )
         self._prediction_stop_requested = False
         self._skip_tracking_csv_overwrite_for_keypoint_round = False
 

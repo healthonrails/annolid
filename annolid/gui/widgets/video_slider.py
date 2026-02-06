@@ -743,9 +743,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
         )
 
         color = new_mark.QColor
-        is_interval = (
-            new_mark.mark_type == "behavior_interval" and new_mark.has_interval
-        )
+        is_interval = bool(new_mark.has_interval)
 
         if is_interval:
             pen = QPen(QtCore.Qt.NoPen)
