@@ -72,6 +72,14 @@ class Candidate:
 
 
 @dataclass
+class RefineRegion:
+    logits: np.ndarray
+    r_min: int
+    c_min: int
+    valid_mask: Optional[np.ndarray] = None
+
+
+@dataclass
 class MotionPrior:
     predicted_xy: Tuple[float, float]
     predicted_rc: Tuple[int, int]
@@ -388,11 +396,37 @@ class DinoKeypointTracker:
         previous_positions = {
             track.key: track.last_position for track in self.tracks.values()
         }
+        context_weight = float(
+            max(0.0, getattr(self.runtime_config, "context_weight", 0.0))
+        )
+        appearance_weight = float(
+            max(0.0, getattr(self.runtime_config, "appearance_bundle_weight", 0.0))
+        )
+        baseline_weight = float(
+            max(0.0, getattr(self.runtime_config, "baseline_similarity_weight", 0.0))
+        )
+        struct_weight = float(
+            max(
+                0.0,
+                getattr(self.runtime_config, "structural_consistency_weight", 0.0),
+            )
+        )
+        symmetry_weight = float(
+            max(0.0, getattr(self.runtime_config, "symmetry_penalty", 0.0))
+        )
+        motion_penalty_weight = float(
+            max(0.0, getattr(self.runtime_config, "motion_prior_penalty_weight", 0.0))
+        )
+        support_weight = float(
+            max(0.0, getattr(self.runtime_config, "support_probe_weight", 0.0))
+        )
+        velocity_smoothing = float(
+            np.clip(getattr(self.runtime_config, "velocity_smoothing", 0.0), 0.0, 1.0)
+        )
+        use_body_prior = struct_weight > 0.0
 
         track_candidates: Dict[str, List[Candidate]] = {}
-        candidate_clouds: Dict[
-            str, List[Tuple[Tuple[int, int], Tuple[float, float], float, float]]
-        ] = {}
+        refine_regions: Dict[str, RefineRegion] = {}
         mask_descriptors: Dict[str, Optional[torch.Tensor]] = {}
         mask_patches: Dict[str, Optional[np.ndarray]] = {}
         mask_pixels_by_track: Dict[str, Optional[np.ndarray]] = {}
@@ -409,9 +443,6 @@ class DinoKeypointTracker:
                 track, feats.device
             )
             shared_weight = self._part_shared_weight(track, shared_key)
-            context_weight = float(
-                max(0.0, getattr(self.runtime_config, "context_weight", 0.0))
-            )
             use_context = (
                 context_weight > 0.0
                 and context_map is not None
@@ -474,9 +505,6 @@ class DinoKeypointTracker:
             c_min = max(0, predicted_c - radius)
             c_max = min(grid_w - 1, predicted_c + radius)
             candidate_list: List[Candidate] = []
-            candidate_cloud: List[
-                Tuple[Tuple[int, int], Tuple[float, float], float, float]
-            ] = []
 
             mask_entry = mask_cache.get(track.instance_label)
             patch_mask = mask_entry.get("patch_mask") if mask_entry else None
@@ -490,12 +518,6 @@ class DinoKeypointTracker:
             mask_pixels = active_masks.get(track.instance_label)
             mask_pixels_by_track[track.key] = mask_pixels
 
-            appearance_weight = float(
-                max(0.0, self.runtime_config.appearance_bundle_weight)
-            )
-            baseline_weight = float(
-                max(0.0, self.runtime_config.baseline_similarity_weight)
-            )
             use_appearance = (
                 appearance_weight > 0.0 and track.appearance_codebook is not None
             )
@@ -505,22 +527,13 @@ class DinoKeypointTracker:
                     codebook = codebook.to(feats.device)
                     track.appearance_codebook = codebook
 
-            struct_weight = float(
-                max(0.0, self.runtime_config.structural_consistency_weight)
-            )
             use_struct_penalty = (
                 struct_weight > 0.0
                 and bool(track.struct_refs)
                 and not self._is_fresh_start
             )
-            use_body_prior = struct_weight > 0.0
-            symmetry_weight = float(max(0.0, self.runtime_config.symmetry_penalty))
             use_symmetry_penalty = symmetry_weight > 0.0
-            motion_penalty_weight = float(
-                max(0.0, self.runtime_config.motion_prior_penalty_weight)
-            )
             use_motion_penalty = motion_penalty_weight > 0.0
-            support_weight = float(max(0.0, self.runtime_config.support_probe_weight))
             use_support = support_weight > 0.0 and bool(track.support_probes)
             if use_context and track.context_descriptor is not None:
                 if track.context_descriptor.device != feats.device:
@@ -668,40 +681,27 @@ class DinoKeypointTracker:
                     )
                 )
 
+            refine_region: Optional[RefineRegion] = None
             if self.keypoint_refine_radius > 0:
-                sims_flat = sims.detach().cpu().numpy()
-                for local_r in range(region_h):
-                    row_mask = None
-                    if mask_region is not None:
-                        row_mask = mask_region[local_r]
-                    row_y = float(patch_centers_y[r_min + local_r])
-                    for local_c in range(region_w):
-                        if (
-                            row_mask is not None
-                            and not row_mask[local_c]
-                            and self.restrict_to_mask
-                        ):
-                            continue
-                        flat_idx = local_r * region_w + local_c
-                        refine_logit = float(sims_flat[flat_idx])
-                        if row_mask is not None and row_mask[local_c]:
-                            refine_logit += float(similarity_bonus)
-                        candidate_cloud.append(
-                            (
-                                (r_min + local_r, c_min + local_c),
-                                (
-                                    float(patch_centers_x[c_min + local_c]),
-                                    row_y,
-                                ),
-                                refine_logit,
-                                refine_logit,
-                            )
-                        )
+                refine_logits = sims.reshape(region_h, region_w).detach().cpu().numpy()
+                if mask_region is not None:
+                    refine_logits = refine_logits + mask_region.astype(
+                        np.float32
+                    ) * float(similarity_bonus)
+                valid_mask = None
+                if mask_region is not None and self.restrict_to_mask:
+                    valid_mask = mask_region.astype(bool, copy=False)
+                refine_region = RefineRegion(
+                    logits=refine_logits,
+                    r_min=r_min,
+                    c_min=c_min,
+                    valid_mask=valid_mask,
+                )
 
             candidate_list.sort(key=lambda c: c.score, reverse=True)
             track_candidates[track.key] = candidate_list[: self.max_candidates]
-            if self.keypoint_refine_radius > 0:
-                candidate_clouds[track.key] = candidate_cloud
+            if refine_region is not None:
+                refine_regions[track.key] = refine_region
 
         assignments = self._resolve_assignments(track_candidates)
 
@@ -724,10 +724,14 @@ class DinoKeypointTracker:
                 refine_confidence = 0.0
                 body_prior_rejected = False
                 if self.keypoint_refine_radius > 0:
-                    refined_x, refined_y, refine_confidence = self._refine_keypoint_xy(
-                        center_rc=assignment.rc,
-                        fallback_xy=(x, y),
-                        candidate_cloud=candidate_clouds.get(track.key, []),
+                    refined_x, refined_y, refine_confidence = (
+                        self._refine_keypoint_xy_from_region(
+                            center_rc=assignment.rc,
+                            fallback_xy=(x, y),
+                            refine_region=refine_regions.get(track.key),
+                            patch_centers_x=patch_centers_x,
+                            patch_centers_y=patch_centers_y,
+                        )
                     )
                     x, y = refined_x, refined_y
                 candidate_visible = True
@@ -868,12 +872,11 @@ class DinoKeypointTracker:
                     self._update_support_probe_mask_flags(track, patch_mask)
                     delta_x = x - base_x
                     delta_y = y - base_y
-                    smoothing = float(
-                        np.clip(self.runtime_config.velocity_smoothing, 0.0, 1.0)
-                    )
                     track.velocity = (
-                        (1.0 - smoothing) * track.velocity[0] + smoothing * delta_x,
-                        (1.0 - smoothing) * track.velocity[1] + smoothing * delta_y,
+                        (1.0 - velocity_smoothing) * track.velocity[0]
+                        + velocity_smoothing * delta_x,
+                        (1.0 - velocity_smoothing) * track.velocity[1]
+                        + velocity_smoothing * delta_y,
                     )
 
             quality = max(0.0, quality)
@@ -1000,6 +1003,85 @@ class DinoKeypointTracker:
             sum_y += w * float(xy[1])
         if total <= 1e-12:
             return fallback_xy[0], fallback_xy[1], 0.0
+        confidence = float(np.clip(max_weight / total, 0.0, 1.0))
+        return (sum_x / total, sum_y / total, confidence)
+
+    def _refine_keypoint_xy_from_region(
+        self,
+        *,
+        center_rc: Tuple[int, int],
+        fallback_xy: Tuple[float, float],
+        refine_region: Optional[RefineRegion],
+        patch_centers_x: np.ndarray,
+        patch_centers_y: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        radius = int(self.keypoint_refine_radius)
+        if radius <= 0 or refine_region is None:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        logits = refine_region.logits
+        if logits.size == 0:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        local_r = int(center_rc[0] - refine_region.r_min)
+        local_c = int(center_rc[1] - refine_region.c_min)
+        if (
+            local_r < 0
+            or local_c < 0
+            or local_r >= int(logits.shape[0])
+            or local_c >= int(logits.shape[1])
+        ):
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        sigma = max(1e-4, float(self.keypoint_refine_sigma))
+        temperature = max(1e-4, float(self.keypoint_refine_temperature))
+        inv_sigma_sq = 1.0 / (sigma * sigma)
+        valid_mask = refine_region.valid_mask
+
+        r_start = max(0, local_r - radius)
+        r_end = min(int(logits.shape[0]) - 1, local_r + radius)
+        c_start = max(0, local_c - radius)
+        c_end = min(int(logits.shape[1]) - 1, local_c + radius)
+
+        selected: List[Tuple[int, int, Tuple[float, float], float]] = []
+        for r_idx in range(r_start, r_end + 1):
+            for c_idx in range(c_start, c_end + 1):
+                if valid_mask is not None and not bool(valid_mask[r_idx, c_idx]):
+                    continue
+                global_r = int(refine_region.r_min + r_idx)
+                global_c = int(refine_region.c_min + c_idx)
+                selected.append(
+                    (
+                        global_r - int(center_rc[0]),
+                        global_c - int(center_rc[1]),
+                        (
+                            float(patch_centers_x[global_c]),
+                            float(patch_centers_y[global_r]),
+                        ),
+                        float(logits[r_idx, c_idx]),
+                    )
+                )
+
+        if not selected:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        max_similarity = max(item[3] for item in selected)
+        total = 0.0
+        sum_x = 0.0
+        sum_y = 0.0
+        max_weight = 0.0
+        for dr, dc, xy, similarity in selected:
+            dist_sq = float(dr * dr + dc * dc)
+            spatial = math.exp(-0.5 * dist_sq * inv_sigma_sq)
+            weight = math.exp((float(similarity) - float(max_similarity)) / temperature)
+            w = spatial * weight
+            max_weight = max(max_weight, w)
+            total += w
+            sum_x += w * float(xy[0])
+            sum_y += w * float(xy[1])
+        if total <= 1e-12:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
         confidence = float(np.clip(max_weight / total, 0.0, 1.0))
         return (sum_x / total, sum_y / total, confidence)
 
