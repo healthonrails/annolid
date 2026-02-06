@@ -57,6 +57,7 @@ from annolid.gui.yolo_training_manager import YOLOTrainingManager
 from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
 from annolid.gui.cli import parse_cli
 from annolid.gui.application import create_qapp
+from annolid.gui.qt_env import sanitize_qt_plugin_env
 from annolid.gui.controllers import (
     AnnotationController,
     DinoController,
@@ -517,6 +518,9 @@ def main(argv=None, *, config=None):
 
     configure_logging()
 
+    # OpenCV may reset Qt plugin env vars during import; sanitize again right
+    # before QApplication is constructed so Qt does not resolve cv2 plugins.
+    sanitize_qt_plugin_env(os.environ)
     qt_args = sys.argv if argv is None else [sys.argv[0], *argv]
     app = create_qapp(qt_args)
 
