@@ -253,13 +253,31 @@ class PredictionExecutionMixin:
                     )
                     return
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
-                self.video_processor = DinoKPSEGVideoProcessor(
-                    video_path=self.video_file,
-                    result_folder=self.video_results_folder,
-                    kpseg_weights=resolved,
-                    device=None,
-                    runtime_config=fresh_tracker_config,
-                )
+                try:
+                    self.video_processor = DinoKPSEGVideoProcessor(
+                        video_path=self.video_file,
+                        result_folder=self.video_results_folder,
+                        kpseg_weights=resolved,
+                        device=None,
+                        runtime_config=fresh_tracker_config,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to initialize Cutie + DINO keypoint segmentation: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("Cutie + DINO Keypoint Segmentation"),
+                        self.tr(
+                            "Failed to initialize tracker:\n%(error)s\n\n"
+                            "If using RADIO features, install optional dependency:\n"
+                            "pip install open-clip-torch"
+                        )
+                        % {"error": str(exc)},
+                    )
+                    return
             elif self._is_dino_keypoint_model(model_name, model_weight):
                 from annolid.tracking.dino_keypoint_tracker import (
                     DinoKeypointVideoProcessor,
@@ -269,14 +287,33 @@ class PredictionExecutionMixin:
                     self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
                 )
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
-                self.video_processor = DinoKeypointVideoProcessor(
-                    video_path=self.video_file,
-                    result_folder=self.video_results_folder,
-                    model_name=dino_model,
-                    short_side=768,
-                    device=None,
-                    runtime_config=fresh_tracker_config,
-                )
+                try:
+                    self.video_processor = DinoKeypointVideoProcessor(
+                        video_path=self.video_file,
+                        result_folder=self.video_results_folder,
+                        model_name=dino_model,
+                        short_side=768,
+                        device=None,
+                        runtime_config=fresh_tracker_config,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to initialize DINO keypoint tracker '%s': %s",
+                        dino_model,
+                        exc,
+                        exc_info=True,
+                    )
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("DINO Keypoint Tracker"),
+                        self.tr(
+                            "Failed to initialize model '%(model)s'.\n\n%(error)s\n\n"
+                            "If you selected a RADIO model, install its optional dependency:\n"
+                            "pip install open-clip-torch"
+                        )
+                        % {"model": dino_model, "error": str(exc)},
+                    )
+                    return
             elif self._is_efficienttam_model(model_name, model_weight):
                 from annolid.segmentation.SAM.sam_v2 import process_video_efficienttam
 

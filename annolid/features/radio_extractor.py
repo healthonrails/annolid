@@ -32,12 +32,25 @@ class RadioFeatureExtractor(Dinov3FeatureExtractor):
                 self.model_id, cache_dir=self.cache_dir, trust_remote_code=True
             )
             return processor, model
+        except ImportError as exc:
+            if "open_clip" in str(exc):
+                raise RuntimeError(
+                    "RADIO load error: missing optional dependency 'open-clip-torch' "
+                    "(import name: open_clip). Install it with: pip install open-clip-torch"
+                ) from exc
+            hint = (
+                "Failed to load RADIO model via transformers. Ensure optional dependencies "
+                "required by the checkpoint are installed."
+            )
+            raise RuntimeError(f"RADIO load error: {exc}. {hint}") from exc
         except Exception as exc:
             hint = (
                 "Failed to load RADIO model via transformers. Ensure 'transformers' is installed "
                 "and the requested checkpoint is available."
             )
-            raise RuntimeError(f"RADIO load error: {exc}. {hint}")
+            if "open_clip" in str(exc):
+                hint = "Install RADIO optional dependency with: pip install open-clip-torch"
+            raise RuntimeError(f"RADIO load error: {exc}. {hint}") from exc
 
     def _resolve_model_properties(self) -> None:
         """Resolve model properties specific to RADIO models."""
