@@ -413,9 +413,12 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         # Tabify Files and Flags docks together (Flags on top, Files as tab)
         self.tabifyDockWidget(self.flag_dock, self.file_dock)
 
-        # Add label and shape docks below the tabified Flags/Files
+        # Add label and shape docks below the tabified Flags/Files.
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.label_dock)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.shape_dock)
+        # Tabify Labels + Label Instances, with Label Instances active by default.
+        self.tabifyDockWidget(self.shape_dock, self.label_dock)
+        self.shape_dock.raise_()
 
         self.zoomWidget = QtWidgets.QSpinBox(self)
         self.zoomWidget.setRange(1, 1000)

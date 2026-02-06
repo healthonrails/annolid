@@ -397,6 +397,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         )
         self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_controls_dock)
         self.tabifyDockWidget(self.behavior_log_dock, self.behavior_controls_dock)
+        self.behavior_log_dock.raise_()
 
         self.timeline_panel = TimelinePanel(self)
         self.timeline_panel.frameSelected.connect(self._jump_to_frame_from_log)
