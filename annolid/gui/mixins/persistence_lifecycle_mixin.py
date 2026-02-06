@@ -74,6 +74,15 @@ class PersistenceLifecycleMixin:
         lf = LabelFile()
         has_zone_shapes = False
 
+        def with_manual_tag(description: str | None) -> str:
+            text = (description or "").strip()
+            if not text:
+                return "manul"
+            lowered_tokens = {token.strip().lower() for token in text.split(",")}
+            if "manul" in lowered_tokens:
+                return text
+            return f"{text}, manul"
+
         def format_shape(s):
             data = s.other_data.copy()
             if s.description and "zone" in s.description.lower():
@@ -91,7 +100,7 @@ class PersistenceLifecycleMixin:
                     if s.mask is None
                     else utils.img_arr_to_b64(s.mask.astype(np.uint8)),
                     visible=s.visible,
-                    description=s.description,
+                    description=with_manual_tag(s.description),
                 )
             )
             return data
@@ -184,6 +193,15 @@ class PersistenceLifecycleMixin:
 
             if self.caption_widget is not None:
                 self.caption_widget.set_image_path(image_filename)
+
+            if self.video_results_folder:
+                try:
+                    self._refresh_manual_seed_slider_marks(self.video_results_folder)
+                except Exception:
+                    logger.debug(
+                        "Failed to refresh manual seed marks after save.",
+                        exc_info=True,
+                    )
 
             self.setClean()
 

@@ -32,6 +32,7 @@ class VideoSliderMark:
             * "tick_column"
             * "event_start"
             * "event_end"
+            * "manual_seed"
         val: Beginning of mark range
         color: Color of mark, can be string or (r, g, b) tuple.
         filled: Whether the mark is shown filled (solid color).
@@ -58,6 +59,7 @@ class VideoSliderMark:
             tick_column="gray",
             event_start="green",
             event_end="red",
+            manual_seed=(255, 179, 0),  # amber
         )
 
         if self.mark_type in colors:
@@ -117,6 +119,7 @@ class VideoSliderMark:
             "predicted",
             "predicted_existing",
             "prediction_progress",
+            "manual_seed",
         ):
             return 1
         return 2

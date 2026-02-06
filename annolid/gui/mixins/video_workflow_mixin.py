@@ -159,6 +159,12 @@ class VideoWorkflowMixin:
             self.seekbar.setEnabled(True)
             self.seekbar.resizeEvent()
             self.seekbar.setTooltipCallable(self.tooltip_callable)
+            try:
+                self._refresh_manual_seed_slider_marks(self.video_results_folder)
+            except Exception:
+                logger.debug(
+                    "Failed to refresh manual seed slider marks.", exc_info=True
+                )
             self.playButton = QtWidgets.QPushButton("Play", self)
             self.playButton.setIcon(
                 QtWidgets.QApplication.style().standardIcon(

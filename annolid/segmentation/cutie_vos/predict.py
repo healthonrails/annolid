@@ -1723,23 +1723,33 @@ class CutieCoreVideoProcessor:
             for seed in self._seed_frames
             if seed.frame_index in self._seed_segment_lookup
         ]
-        selected = [
-            seed for seed in valid_seed_frames if seed.frame_index >= start_frame
-        ]
-        if selected:
-            return selected
+        if len(valid_seed_frames) >= 2:
+            # Multi-seed workflow: always start from the first seed and let
+            # segment-level completion checks skip already-predicted ranges.
+            return valid_seed_frames
 
         prior_seeds = [
             seed for seed in valid_seed_frames if seed.frame_index < start_frame
         ]
+        later_seeds = [
+            seed for seed in valid_seed_frames if seed.frame_index >= start_frame
+        ]
+
+        # Include the nearest earlier seed so CUTIE can propagate through the gap
+        # before the first later seed (e.g., seeds at 0 and 100 with start at 1).
         if prior_seeds:
-            fallback_seed = prior_seeds[-1]
+            nearest_prior_seed = prior_seeds[-1]
+            selected = [nearest_prior_seed, *later_seeds]
             logger.info(
-                "No seed >= start_frame (%s); reusing nearest earlier seed at frame %s.",
+                "Using nearest earlier seed at frame %s for start_frame %s.",
+                nearest_prior_seed.frame_index,
                 start_frame,
-                fallback_seed.frame_index,
             )
-            return [fallback_seed]
+            return selected
+
+        if later_seeds:
+            return later_seeds
+
         return []
 
     def _count_tracking_instances(self, seeds: List[SeedFrame]) -> int:

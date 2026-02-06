@@ -17,6 +17,62 @@ from annolid.utils.logger import logger
 class PredictionProgressMixin:
     """Prediction stop/progress/watcher helpers."""
 
+    def _discover_manual_seed_frames(self, folder_path: Path) -> set[int]:
+        """Return frame indices that have manual seed image+json pairs."""
+        seeds: set[int] = set()
+        if not folder_path.exists() or not folder_path.is_dir():
+            return seeds
+
+        stem = folder_path.name
+        stem_prefix = f"{stem}_"
+        stem_prefix_lower = stem_prefix.lower()
+        for png_path in folder_path.glob("*.png"):
+            name_lower = png_path.stem.lower()
+            if not name_lower.startswith(stem_prefix_lower):
+                continue
+            suffix = name_lower[len(stem_prefix_lower) :]
+            if len(suffix) != 9 or not suffix.isdigit():
+                continue
+            frame_idx = int(suffix)
+            if png_path.with_suffix(".json").exists():
+                seeds.add(frame_idx)
+        return seeds
+
+    def _refresh_manual_seed_slider_marks(self, folder_path: str | Path) -> None:
+        """Synchronize `manual_seed` marks on the seekbar with current seed files."""
+        if not self.seekbar:
+            return
+        if self.num_frames is None:
+            return
+
+        folder = Path(folder_path)
+        seed_frames = self._discover_manual_seed_frames(folder)
+        valid_seed_frames = {
+            int(frame)
+            for frame in seed_frames
+            if 0 <= int(frame) < int(self.num_frames)
+        }
+        existing_seed_marks = self.seekbar.getMarks(mark_type="manual_seed")
+        existing_seed_vals = {int(mark.val) for mark in existing_seed_marks}
+
+        to_remove = [
+            mark
+            for mark in existing_seed_marks
+            if int(mark.val) not in valid_seed_frames
+        ]
+        to_add = sorted(valid_seed_frames - existing_seed_vals)
+
+        if not to_remove and not to_add:
+            return
+
+        self.seekbar.blockSignals(True)
+        for mark in to_remove:
+            self.seekbar.removeMark(mark)
+        for frame in to_add:
+            self.seekbar.addMark(VideoSliderMark(mark_type="manual_seed", val=frame))
+        self.seekbar.blockSignals(False)
+        self.seekbar.update()
+
     def stop_prediction(self):
         worker = getattr(self, "pred_worker", None)
         thread = getattr(self, "seg_pred_thread", None)
@@ -307,6 +363,7 @@ class PredictionProgressMixin:
             return
         if not self.seekbar:
             return
+        self._refresh_manual_seed_slider_marks(folder_path)
 
         try:
             path = Path(folder_path)
