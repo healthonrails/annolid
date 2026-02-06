@@ -160,3 +160,88 @@ def test_polygon_only_seed_tracks_masks_then_predicts_keypoints(tmp_path, monkey
     shapes = payload.get("shapes", [])
     assert any(shape.get("shape_type") == "polygon" for shape in shapes)
     assert any(shape.get("shape_type") == "point" for shape in shapes)
+
+
+def test_kpseg_projects_points_back_into_instance_polygon(tmp_path, monkeypatch):
+    monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.CV2Video", _DummyVideo)
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.CutieMaskManager", _DummyCutieMaskManager
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.DinoKPSEGPredictor", _DummyKpsegPredictor
+    )
+
+    def _build_instance_crops(_frame_bgr, instance_masks, pad_px, use_mask_gate):
+        return list(instance_masks)
+
+    def _predict_on_instance_crops(_predictor, crops, stabilize_lr):
+        for gid, _mask in crops:
+            yield (
+                int(gid),
+                _DummyPred(
+                    keypoints_xy=[(100.0, 100.0), (120.0, 140.0)],
+                    keypoint_scores=[0.95, 0.95],
+                ),
+            )
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.build_instance_crops",
+        _build_instance_crops,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.predict_on_instance_crops",
+        _predict_on_instance_crops,
+    )
+
+    out_dir = tmp_path / "video"
+    out_dir.mkdir()
+
+    polygon = [[5.0, 5.0], [30.0, 5.0], [30.0, 25.0], [5.0, 25.0], [5.0, 5.0]]
+    seed_json = {
+        "shapes": [
+            {
+                "label": "0",
+                "shape_type": "polygon",
+                "group_id": 0,
+                "points": polygon,
+            }
+        ]
+    }
+    (out_dir / "video_000000000.json").write_text(
+        json.dumps(seed_json), encoding="utf-8"
+    )
+    (out_dir / "video_000000000.png").write_bytes(b"")
+
+    cfg = CutieDinoTrackerConfig(
+        kpseg_apply_mode="always",
+        use_cutie_tracking=True,
+        persist_labelme_json=True,
+        kpseg_use_mask_gate=False,
+        restrict_to_initial_mask=False,
+        mask_enforce_position=False,
+        mask_enforce_reject_outside=False,
+    )
+    processor = DinoKPSEGVideoProcessor(
+        video_path=str(tmp_path / "dummy.mp4"),
+        result_folder=out_dir,
+        kpseg_weights="dummy.pt",
+        runtime_config=cfg,
+    )
+    # The Cutie+DinoKPSEG processor enforces inside-mask guarantees.
+    assert processor.config.kpseg_use_mask_gate is True
+    assert processor.config.restrict_to_initial_mask is True
+    assert processor.config.mask_enforce_position is True
+    assert processor.config.mask_enforce_reject_outside is True
+    processor.process_video(start_frame=0, end_frame=2, step=1)
+
+    payload = json.loads((out_dir / "video_000000001.json").read_text(encoding="utf-8"))
+    point_shapes = [
+        shape
+        for shape in payload.get("shapes", [])
+        if shape.get("shape_type") == "point"
+    ]
+    assert point_shapes
+    for point_shape in point_shapes:
+        x, y = point_shape["points"][0]
+        assert 5.0 <= float(x) <= 30.0
+        assert 5.0 <= float(y) <= 25.0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -33,6 +34,17 @@ from annolid.utils.files import (
 )
 from annolid.utils.logger import logger
 from PIL import Image
+
+
+@dataclass(slots=True)
+class _KPSEGInstanceContext:
+    gid: int
+    instance_key: str
+    instance: object
+    mask: Optional[np.ndarray]
+    max_jump_px: float
+    mask_points_xy: Optional[np.ndarray]
+    mask_centroid_xy: Optional[Tuple[float, float]]
 
 
 class DinoKPSEGVideoProcessor:
@@ -75,6 +87,12 @@ class DinoKPSEGVideoProcessor:
             == "never"
         ):
             self.config.kpseg_apply_mode = "always"
+        # Cutie + DinoKPSEG contract: keypoints must stay inside instance polygons.
+        # Force inside-mask tracking/search and inside-mask kpseg fusion gates.
+        self.config.restrict_to_initial_mask = True
+        self.config.kpseg_use_mask_gate = True
+        self.config.mask_enforce_position = True
+        self.config.mask_enforce_reject_outside = True
         self.config.normalize()
         self.adapter = AnnotationAdapter(
             image_height=self.video_height,
@@ -612,6 +630,152 @@ class DinoKPSEGVideoProcessor:
     ) -> None:
         raise NotImplementedError  # replaced by _maybe_apply_kpseg
 
+    @staticmethod
+    def _keypoint_key(instance_label: str, keypoint_label: str) -> str:
+        return f"{instance_label}:{keypoint_label}"
+
+    def _build_kpseg_instance_contexts(
+        self,
+        registry: InstanceRegistry,
+        *,
+        use_mask_gate: bool,
+    ) -> Tuple[Dict[int, _KPSEGInstanceContext], List[Tuple[int, np.ndarray]]]:
+        contexts: Dict[int, _KPSEGInstanceContext] = {}
+        instance_masks: List[Tuple[int, np.ndarray]] = []
+
+        for instance in registry:
+            gid = self._normalize_group_id(instance.label)
+            if gid is None:
+                continue
+            mask = instance.mask_bitmap
+            if mask is None and instance.polygon is not None:
+                mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
+            if mask is None:
+                continue
+
+            mask_bool = mask.astype(bool)
+            if not np.any(mask_bool):
+                continue
+
+            ys, xs = np.nonzero(mask_bool)
+            if xs.size == 0 or ys.size == 0:
+                continue
+
+            points_xy = np.column_stack((xs, ys)).astype(np.float32)
+            centroid_xy = (float(xs.mean()), float(ys.mean()))
+            max_jump_px = float(getattr(self.config, "kpseg_max_jump_px", 0.0))
+            if max_jump_px <= 0.0:
+                max_jump_px = self._resolve_max_jump_px(mask_bool)
+
+            context = _KPSEGInstanceContext(
+                gid=int(gid),
+                instance_key=str(instance.label),
+                instance=instance,
+                mask=(mask_bool if use_mask_gate else None),
+                max_jump_px=float(max_jump_px),
+                mask_points_xy=points_xy,
+                mask_centroid_xy=centroid_xy,
+            )
+            contexts[int(gid)] = context
+            instance_masks.append((int(gid), mask_bool))
+
+        return contexts, instance_masks
+
+    def _project_coord_to_instance_mask(
+        self,
+        coord: Tuple[float, float],
+        context: _KPSEGInstanceContext,
+        *,
+        fallback_xy: Optional[Tuple[float, float]] = None,
+    ) -> Tuple[float, float]:
+        mask = context.mask
+        if mask is None:
+            return (float(coord[0]), float(coord[1]))
+
+        if self._point_in_mask(coord, mask):
+            return (float(coord[0]), float(coord[1]))
+        if fallback_xy is not None and self._point_in_mask(fallback_xy, mask):
+            return (float(fallback_xy[0]), float(fallback_xy[1]))
+
+        points = context.mask_points_xy
+        if points is not None and points.size > 0:
+            target = np.asarray([float(coord[0]), float(coord[1])], dtype=np.float32)
+            deltas = points - target[None, :]
+            d2 = np.einsum("ij,ij->i", deltas, deltas)
+            best = points[int(np.argmin(d2))]
+            return (float(best[0]), float(best[1]))
+
+        if context.mask_centroid_xy is not None:
+            return (
+                float(context.mask_centroid_xy[0]),
+                float(context.mask_centroid_xy[1]),
+            )
+        return (float(coord[0]), float(coord[1]))
+
+    def _align_predictions_to_schema(
+        self,
+        *,
+        context: _KPSEGInstanceContext,
+        coords: List[Tuple[float, float]],
+        scores: List[float],
+    ) -> Tuple[List[Tuple[float, float]], List[float]]:
+        aligned_coords: List[Tuple[float, float]] = []
+        aligned_scores: List[float] = []
+
+        for idx, label in enumerate(self.keypoint_names):
+            key = self._keypoint_key(context.instance_key, str(label))
+            prev = context.instance.keypoints.get(key)
+            fallback_prev = (float(prev.x), float(prev.y)) if prev is not None else None
+
+            if idx < len(coords):
+                coord = (float(coords[idx][0]), float(coords[idx][1]))
+                score = float(scores[idx]) if idx < len(scores) else 0.0
+            elif prev is not None:
+                coord = fallback_prev
+                score = float(prev.confidence)
+            elif context.mask_centroid_xy is not None:
+                coord = (
+                    float(context.mask_centroid_xy[0]),
+                    float(context.mask_centroid_xy[1]),
+                )
+                score = 0.0
+            else:
+                coord = (0.0, 0.0)
+                score = 0.0
+
+            coord = self._project_coord_to_instance_mask(
+                coord, context, fallback_xy=fallback_prev
+            )
+            aligned_coords.append(coord)
+            aligned_scores.append(score)
+
+        return aligned_coords, aligned_scores
+
+    def _is_kpseg_measurement_reliable(
+        self,
+        *,
+        context: _KPSEGInstanceContext,
+        coord: Tuple[float, float],
+        score: float,
+        prev: Optional[KeypointState],
+        min_score: float,
+        instance_fallback: bool,
+    ) -> bool:
+        if instance_fallback:
+            return False
+        if float(score) < float(min_score):
+            return False
+        if context.mask is not None and not self._point_in_mask(coord, context.mask):
+            return False
+        if prev is not None and float(context.max_jump_px) > 0.0:
+            dx = float(coord[0]) - float(prev.x)
+            dy = float(coord[1]) - float(prev.y)
+            if (dx * dx + dy * dy) > float(context.max_jump_px) * float(
+                context.max_jump_px
+            ):
+                return False
+        return True
+
     def _maybe_apply_kpseg(
         self,
         frame_bgr: np.ndarray,
@@ -635,23 +799,14 @@ class DinoKPSEGVideoProcessor:
             self.predictor.reset_state()
 
         corrections: Dict[str, Tuple[float, float]] = {}
-        use_mask_gate = bool(getattr(self.config, "kpseg_use_mask_gate", True))
-        instance_masks: List[Tuple[int, np.ndarray]] = []
-        instance_lookup: Dict[int, object] = {}
-        instance_key_lookup: Dict[int, str] = {}
-
-        for instance in registry:
-            gid = self._normalize_group_id(instance.label)
-            if gid is None:
-                continue
-            mask = instance.mask_bitmap
-            if mask is None and instance.polygon is not None:
-                mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-            if mask is None:
-                continue
-            instance_lookup[int(gid)] = instance
-            instance_key_lookup[int(gid)] = str(instance.label)
-            instance_masks.append((int(gid), mask))
+        # Pipeline guarantee: keypoint search/estimation happens inside instance masks.
+        use_mask_gate = True
+        context_by_gid, instance_masks = self._build_kpseg_instance_contexts(
+            registry,
+            use_mask_gate=use_mask_gate,
+        )
+        if not context_by_gid:
+            return
 
         crops = build_instance_crops(
             frame_bgr,
@@ -676,23 +831,43 @@ class DinoKPSEGVideoProcessor:
                 .lower()
             )
         use_temporal_correction = smoother_mode not in ("", "none")
+        min_score = float(getattr(self.config, "kpseg_min_score", 0.25))
+        blend_alpha = float(getattr(self.config, "kpseg_blend_alpha", 0.7))
+        fallback_mode = (
+            str(
+                getattr(self.config, "kpseg_fallback_mode", "per_keypoint")
+                or "per_keypoint"
+            )
+            .strip()
+            .lower()
+        )
+        fallback_ratio = float(getattr(self.config, "kpseg_fallback_ratio", 0.5))
+        fallback_to_track = bool(getattr(self.config, "kpseg_fallback_to_track", True))
 
-        for gid, instance in instance_lookup.items():
+        for gid, context in context_by_gid.items():
             pred = preds_by_id.get(int(gid))
             if pred is None:
                 continue
-            instance_key = instance_key_lookup.get(int(gid), str(gid))
+            instance = context.instance
+            instance_key = context.instance_key
             enabled = (
                 True
                 if mode == "always"
                 else bool(self._kpseg_enabled_by_instance.get(instance_key, False))
             )
 
-            coords = [(float(x), float(y)) for x, y in pred.keypoints_xy]
+            raw_coords = [(float(x), float(y)) for x, y in pred.keypoints_xy]
+            raw_scores = [float(s) for s in pred.keypoint_scores]
+            coords, scores = self._align_predictions_to_schema(
+                context=context,
+                coords=raw_coords,
+                scores=raw_scores,
+            )
             reliability_ratio = self._kpseg_reliability_ratio(
-                instance=instance,
+                context=context,
                 coords=coords,
-                scores=pred.keypoint_scores,
+                scores=scores,
+                min_score=min_score,
             )
 
             if mode == "auto":
@@ -731,76 +906,62 @@ class DinoKPSEGVideoProcessor:
             if not enabled:
                 continue
 
-            measured_ok: Optional[List[bool]] = None
+            instance_fallback = (
+                fallback_mode == "instance"
+                and reliability_ratio is not None
+                and float(reliability_ratio) < float(fallback_ratio)
+            )
+
             if not use_temporal_correction:
-                final_coords, final_scores = self._combine_pred_with_track(
-                    instance=instance,
+                final_coords, final_scores, measured_ok = self._combine_pred_with_track(
+                    context=context,
                     coords=coords,
-                    scores=pred.keypoint_scores,
+                    scores=scores,
                     reliability_ratio=reliability_ratio,
+                    min_score=min_score,
+                    blend_alpha=blend_alpha,
+                    fallback_to_track=fallback_to_track,
+                    fallback_mode=fallback_mode,
+                    fallback_ratio=fallback_ratio,
                 )
             else:
-                measured_ok = []
-                mask = instance.mask_bitmap
-                if mask is None and instance.polygon is not None:
-                    mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-                if not use_mask_gate:
-                    mask = None
-
-                min_score = float(getattr(self.config, "kpseg_min_score", 0.25))
-                blend_alpha = float(getattr(self.config, "kpseg_blend_alpha", 0.7))
-                max_jump = float(getattr(self.config, "kpseg_max_jump_px", 0.0))
-                if max_jump <= 0.0:
-                    max_jump = self._resolve_max_jump_px(mask)
-
-                fallback_mode = (
-                    str(
-                        getattr(self.config, "kpseg_fallback_mode", "per_keypoint")
-                        or "per_keypoint"
-                    )
-                    .strip()
-                    .lower()
-                )
-                fallback_ratio = float(
-                    getattr(self.config, "kpseg_fallback_ratio", 0.5)
-                )
-                instance_fallback = (
-                    fallback_mode == "instance"
-                    and reliability_ratio is not None
-                    and float(reliability_ratio) < float(fallback_ratio)
-                )
-
                 final_coords = []
                 final_scores = []
-                for idx, (coord, score) in enumerate(zip(coords, pred.keypoint_scores)):
+                measured_ok = []
+                for idx, (coord, score) in enumerate(zip(coords, scores)):
                     label = (
                         self.keypoint_names[idx]
                         if idx < len(self.keypoint_names)
                         else str(idx)
                     )
-                    key = f"{instance.label}:{label}"
+                    key = self._keypoint_key(context.instance_key, str(label))
                     prev = instance.keypoints.get(key)
+                    prev_xy = (
+                        (float(prev.x), float(prev.y)) if prev is not None else None
+                    )
+                    projected = self._project_coord_to_instance_mask(
+                        coord, context, fallback_xy=prev_xy
+                    )
+                    ok = self._is_kpseg_measurement_reliable(
+                        context=context,
+                        coord=projected,
+                        score=float(score),
+                        prev=prev,
+                        min_score=min_score,
+                        instance_fallback=instance_fallback,
+                    )
 
-                    ok = (not instance_fallback) and float(score) >= min_score
-                    if ok and mask is not None:
-                        ok = self._point_in_mask(coord, mask)
-                    if ok and prev is not None and max_jump > 0.0:
-                        dx = float(coord[0]) - float(prev.x)
-                        dy = float(coord[1]) - float(prev.y)
-                        if (dx * dx + dy * dy) > max_jump * max_jump:
-                            ok = False
-
-                    input_coord = coord
+                    input_coord = projected
                     if ok and prev is not None and blend_alpha < 1.0:
-                        x = blend_alpha * float(coord[0]) + (1.0 - blend_alpha) * float(
-                            prev.x
-                        )
-                        y = blend_alpha * float(coord[1]) + (1.0 - blend_alpha) * float(
-                            prev.y
-                        )
+                        x = blend_alpha * float(projected[0]) + (
+                            1.0 - blend_alpha
+                        ) * float(prev.x)
+                        y = blend_alpha * float(projected[1]) + (
+                            1.0 - blend_alpha
+                        ) * float(prev.y)
                         input_coord = (float(x), float(y))
                     elif (not ok) and prev is not None:
-                        input_coord = (float(prev.x), float(prev.y))
+                        input_coord = prev_xy or input_coord
 
                     smooth_coord = self._kpseg_smoother.smooth(
                         key,
@@ -808,8 +969,18 @@ class DinoKPSEGVideoProcessor:
                         score=float(score),
                         mask_ok=bool(ok),
                     )
+                    smooth_coord = self._project_coord_to_instance_mask(
+                        smooth_coord, context, fallback_xy=prev_xy
+                    )
                     final_coords.append(smooth_coord)
-                    final_scores.append(float(score))
+                    if ok:
+                        final_scores.append(float(score))
+                    elif prev is not None:
+                        final_scores.append(float(prev.confidence))
+                    else:
+                        final_scores.append(
+                            float(max(0.0, min(float(score), min_score)))
+                        )
                     measured_ok.append(bool(ok))
 
             self.predictor.seed_instance_state(
@@ -821,7 +992,7 @@ class DinoKPSEGVideoProcessor:
             for idx, (kpt_label, (x, y), score) in enumerate(
                 zip(self.keypoint_names, final_coords, final_scores)
             ):
-                key = f"{instance.label}:{kpt_label}"
+                key = self._keypoint_key(context.instance_key, str(kpt_label))
                 prev = instance.keypoints.get(key)
                 if prev is not None:
                     vx = float(x) - float(prev.x)
@@ -837,11 +1008,13 @@ class DinoKPSEGVideoProcessor:
                         misses = 0
                 state = KeypointState(
                     key=key,
-                    instance_label=str(instance.label),
+                    instance_label=str(context.instance_key),
                     label=str(kpt_label),
                     x=float(x),
                     y=float(y),
-                    visible=True,
+                    visible=True
+                    if context.mask is None
+                    else bool(self._point_in_mask((float(x), float(y)), context.mask)),
                     confidence=float(score),
                     velocity_x=float(vx),
                     velocity_y=float(vy),
@@ -862,21 +1035,13 @@ class DinoKPSEGVideoProcessor:
     def _kpseg_reliability_ratio(
         self,
         *,
-        instance,
+        context: _KPSEGInstanceContext,
         coords: List[Tuple[float, float]],
         scores: List[float],
+        min_score: float,
     ) -> float:
         if not coords or not self.keypoint_names:
             return 0.0
-        mask = instance.mask_bitmap
-        if mask is None and instance.polygon is not None:
-            mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-        if not bool(getattr(self.config, "kpseg_use_mask_gate", True)):
-            mask = None
-        max_jump = float(getattr(self.config, "kpseg_max_jump_px", 0.0))
-        if max_jump <= 0.0:
-            max_jump = self._resolve_max_jump_px(mask)
-        min_score = float(getattr(self.config, "kpseg_min_score", 0.25))
 
         reliable = 0
         total = min(len(coords), len(self.keypoint_names))
@@ -884,18 +1049,24 @@ class DinoKPSEGVideoProcessor:
             return 0.0
         for idx in range(total):
             label = self.keypoint_names[idx]
-            key = f"{instance.label}:{label}"
-            prev = instance.keypoints.get(key)
+            key = self._keypoint_key(context.instance_key, str(label))
+            prev = context.instance.keypoints.get(key)
             score = float(scores[idx]) if idx < len(scores) else 0.0
-            coord = coords[idx]
-
-            ok = score >= min_score
-            if ok and mask is not None:
-                ok = self._point_in_mask(coord, mask)
-            if ok and prev is not None and max_jump > 0:
-                dx = float(coord[0]) - float(prev.x)
-                dy = float(coord[1]) - float(prev.y)
-                ok = (dx * dx + dy * dy) <= max_jump * max_jump
+            coord = self._project_coord_to_instance_mask(
+                coords[idx],
+                context,
+                fallback_xy=(float(prev.x), float(prev.y))
+                if prev is not None
+                else None,
+            )
+            ok = self._is_kpseg_measurement_reliable(
+                context=context,
+                coord=coord,
+                score=score,
+                prev=prev,
+                min_score=min_score,
+                instance_fallback=False,
+            )
             if ok:
                 reliable += 1
         return float(reliable) / float(total)
@@ -953,73 +1124,76 @@ class DinoKPSEGVideoProcessor:
     def _combine_pred_with_track(
         self,
         *,
-        instance,
+        context: _KPSEGInstanceContext,
         coords: List[Tuple[float, float]],
         scores: List[float],
         reliability_ratio: Optional[float] = None,
-    ) -> Tuple[List[Tuple[float, float]], List[float]]:
-        min_score = float(self.config.kpseg_min_score)
-        blend_alpha = float(self.config.kpseg_blend_alpha)
-        use_mask_gate = bool(self.config.kpseg_use_mask_gate)
-        fallback_to_track = bool(self.config.kpseg_fallback_to_track)
-        max_jump = float(self.config.kpseg_max_jump_px)
-        fallback_mode = (
-            str(
-                getattr(self.config, "kpseg_fallback_mode", "per_keypoint")
-                or "per_keypoint"
-            )
-            .strip()
-            .lower()
-        )
-        fallback_ratio = float(getattr(self.config, "kpseg_fallback_ratio", 0.5))
+        min_score: float,
+        blend_alpha: float,
+        fallback_to_track: bool,
+        fallback_mode: str,
+        fallback_ratio: float,
+    ) -> Tuple[List[Tuple[float, float]], List[float], List[bool]]:
         instance_fallback = (
             fallback_mode == "instance"
             and reliability_ratio is not None
             and float(reliability_ratio) < float(fallback_ratio)
         )
 
-        mask = instance.mask_bitmap
-        if mask is None and instance.polygon is not None:
-            mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-        if max_jump <= 0.0:
-            max_jump = self._resolve_max_jump_px(mask)
-
         final_coords: List[Tuple[float, float]] = []
         final_scores: List[float] = []
+        measured_ok: List[bool] = []
 
         for idx, (coord, score) in enumerate(zip(coords, scores)):
             label = (
                 self.keypoint_names[idx] if idx < len(self.keypoint_names) else str(idx)
             )
-            key = f"{instance.label}:{label}"
-            prev = instance.keypoints.get(key)
-
-            reliable = (not instance_fallback) and float(score) >= min_score
-            if reliable and use_mask_gate and mask is not None:
-                reliable = self._point_in_mask(coord, mask)
-
-            if reliable and prev is not None and max_jump > 0:
-                dx = float(coord[0]) - float(prev.x)
-                dy = float(coord[1]) - float(prev.y)
-                if (dx * dx + dy * dy) > max_jump * max_jump:
-                    reliable = False
+            key = self._keypoint_key(context.instance_key, str(label))
+            prev = context.instance.keypoints.get(key)
+            prev_xy = (float(prev.x), float(prev.y)) if prev is not None else None
+            projected = self._project_coord_to_instance_mask(
+                coord, context, fallback_xy=prev_xy
+            )
+            reliable = self._is_kpseg_measurement_reliable(
+                context=context,
+                coord=projected,
+                score=float(score),
+                prev=prev,
+                min_score=min_score,
+                instance_fallback=instance_fallback,
+            )
 
             if not reliable and fallback_to_track and prev is not None:
-                coord = (float(prev.x), float(prev.y))
+                coord = prev_xy or projected
                 score = float(prev.confidence)
                 prev.misses += 1
-            elif prev is not None and blend_alpha < 1.0:
-                x = blend_alpha * float(coord[0]) + (1.0 - blend_alpha) * float(prev.x)
-                y = blend_alpha * float(coord[1]) + (1.0 - blend_alpha) * float(prev.y)
+            elif reliable and prev is not None and blend_alpha < 1.0:
+                x = blend_alpha * float(projected[0]) + (1.0 - blend_alpha) * float(
+                    prev.x
+                )
+                y = blend_alpha * float(projected[1]) + (1.0 - blend_alpha) * float(
+                    prev.y
+                )
                 coord = (float(x), float(y))
                 prev.misses = 0
+            elif not reliable:
+                coord = self._project_coord_to_instance_mask(
+                    projected, context, fallback_xy=prev_xy
+                )
+                score = float(max(0.0, min(float(score), min_score)))
+                if prev is not None:
+                    prev.misses += 1
             elif prev is not None:
+                coord = projected
                 prev.misses = 0
+            else:
+                coord = projected
 
             final_coords.append((float(coord[0]), float(coord[1])))
             final_scores.append(float(score))
+            measured_ok.append(bool(reliable))
 
-        return final_coords, final_scores
+        return final_coords, final_scores, measured_ok
 
     @staticmethod
     def _point_in_mask(
