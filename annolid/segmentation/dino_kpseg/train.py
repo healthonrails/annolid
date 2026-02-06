@@ -46,6 +46,7 @@ from annolid.segmentation.dino_kpseg.keypoints import (
     infer_orientation_anchor_indices,
     symmetric_pairs_from_flip_idx,
 )
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
 from annolid.utils.logger import logger
 
@@ -832,15 +833,15 @@ def train(
     short_side: int,
     layers: Tuple[int, ...],
     radius_px: float,
-    mask_type: str = "gaussian",
+    mask_type: str = dino_defaults.MASK_TYPE,
     heatmap_sigma_px: Optional[float] = None,
-    instance_mode: str = "union",
-    bbox_scale: float = 1.25,
+    instance_mode: str = dino_defaults.INSTANCE_MODE,
+    bbox_scale: float = dino_defaults.BBOX_SCALE,
     hidden_dim: int,
     lr: float,
     epochs: int,
     threshold: float,
-    batch_size: int = 1,
+    batch_size: int = dino_defaults.BATCH,
     accumulate: int = 1,
     grad_clip: float = 1.0,
     balanced_bce: bool = True,
@@ -851,43 +852,43 @@ def train(
     device: Optional[str] = None,
     cache_features: bool = True,
     augment: Optional[DinoKPSEGAugmentConfig] = None,
-    early_stop_patience: int = 0,
-    early_stop_min_delta: float = 0.0,
-    early_stop_min_epochs: int = 0,
-    best_metric: str = "pck@8px",
+    early_stop_patience: int = dino_defaults.EARLY_STOP_PATIENCE,
+    early_stop_min_delta: float = dino_defaults.EARLY_STOP_MIN_DELTA,
+    early_stop_min_epochs: int = dino_defaults.EARLY_STOP_MIN_EPOCHS,
+    best_metric: str = dino_defaults.BEST_METRIC,
     early_stop_metric: Optional[str] = None,
     pck_weighted_weights: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0),
     tb_add_graph: bool = False,
-    bce_type: str = "bce",
-    focal_alpha: float = 0.25,
-    focal_gamma: float = 2.0,
-    coord_warmup_epochs: int = 0,
+    bce_type: str = dino_defaults.BCE_TYPE,
+    focal_alpha: float = dino_defaults.FOCAL_ALPHA,
+    focal_gamma: float = dino_defaults.FOCAL_GAMMA,
+    coord_warmup_epochs: int = dino_defaults.COORD_WARMUP_EPOCHS,
     radius_schedule: str = "none",
     radius_start_px: Optional[float] = None,
     radius_end_px: Optional[float] = None,
     overfit_n: int = 0,
     seed: Optional[int] = None,
-    tb_projector: bool = False,
-    tb_projector_split: str = "val",
-    tb_projector_max_images: int = 64,
-    tb_projector_max_patches: int = 4000,
-    tb_projector_per_image_per_keypoint: int = 3,
-    tb_projector_pos_threshold: float = 0.35,
-    tb_projector_crop_px: int = 96,
-    tb_projector_sprite_border_px: int = 3,
-    tb_projector_add_negatives: bool = False,
-    tb_projector_neg_threshold: float = 0.02,
-    tb_projector_negatives_per_image: int = 6,
-    head_type: str = "conv",
-    attn_heads: int = 4,
-    attn_layers: int = 1,
-    dice_loss_weight: float = 0.5,
-    coord_loss_weight: float = 0.25,
-    coord_loss_type: str = "smooth_l1",
-    lr_pair_loss_weight: float = 0.0,
-    lr_pair_margin_px: float = 0.0,
-    lr_side_loss_weight: float = 0.0,
-    lr_side_loss_margin: float = 0.0,
+    tb_projector: bool = dino_defaults.TB_PROJECTOR,
+    tb_projector_split: str = dino_defaults.TB_PROJECTOR_SPLIT,
+    tb_projector_max_images: int = dino_defaults.TB_PROJECTOR_MAX_IMAGES,
+    tb_projector_max_patches: int = dino_defaults.TB_PROJECTOR_MAX_PATCHES,
+    tb_projector_per_image_per_keypoint: int = dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT,
+    tb_projector_pos_threshold: float = dino_defaults.TB_PROJECTOR_POS_THRESHOLD,
+    tb_projector_crop_px: int = dino_defaults.TB_PROJECTOR_CROP_PX,
+    tb_projector_sprite_border_px: int = dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX,
+    tb_projector_add_negatives: bool = dino_defaults.TB_PROJECTOR_ADD_NEGATIVES,
+    tb_projector_neg_threshold: float = dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
+    tb_projector_negatives_per_image: int = dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
+    head_type: str = dino_defaults.HEAD_TYPE,
+    attn_heads: int = dino_defaults.ATTN_HEADS,
+    attn_layers: int = dino_defaults.ATTN_LAYERS,
+    dice_loss_weight: float = dino_defaults.DICE_LOSS_WEIGHT,
+    coord_loss_weight: float = dino_defaults.COORD_LOSS_WEIGHT,
+    coord_loss_type: str = dino_defaults.COORD_LOSS_TYPE,
+    lr_pair_loss_weight: float = dino_defaults.LR_PAIR_LOSS_WEIGHT,
+    lr_pair_margin_px: float = dino_defaults.LR_PAIR_MARGIN_PX,
+    lr_side_loss_weight: float = dino_defaults.LR_SIDE_LOSS_WEIGHT,
+    lr_side_loss_margin: float = dino_defaults.LR_SIDE_LOSS_MARGIN,
 ) -> Path:
     if seed is not None:
         _set_global_seed(int(seed))
@@ -2381,6 +2382,52 @@ def train(
                                     (float(x), float(y))
                                     for x, y in pred_xy_cpu[bi].tolist()
                                 ]
+                                pred_xy_orig = [
+                                    (
+                                        float(x) * (float(orig_w) / float(resized_w)),
+                                        float(y) * (float(orig_h) / float(resized_h)),
+                                    )
+                                    for x, y in pred_xy_resized
+                                ]
+                                # Build comparable overlay pairs:
+                                # - one GT point per keypoint index (nearest candidate)
+                                # - predicted point shown only when that keypoint has GT
+                                overlay_pred_resized: List[Tuple[float, float]] = []
+                                overlay_gt_resized: List[Tuple[float, float]] = []
+                                for kpt_idx in range(int(kpt_count)):
+                                    if kpt_idx >= len(pred_xy_orig):
+                                        break
+                                    candidates = _collect_gt_candidates(
+                                        gt_instances,
+                                        kpt_idx=kpt_idx,
+                                        image_hw=(orig_h, orig_w),
+                                    )
+                                    if not candidates:
+                                        continue
+                                    pred_x_o, pred_y_o = pred_xy_orig[kpt_idx]
+                                    gt_x_o, gt_y_o = min(
+                                        candidates,
+                                        key=lambda pt: (
+                                            (float(pt[0]) - float(pred_x_o)) ** 2
+                                            + (float(pt[1]) - float(pred_y_o)) ** 2
+                                        ),
+                                    )
+                                    overlay_pred_resized.append(
+                                        (
+                                            float(pred_x_o)
+                                            * (float(resized_w) / float(orig_w)),
+                                            float(pred_y_o)
+                                            * (float(resized_h) / float(orig_h)),
+                                        )
+                                    )
+                                    overlay_gt_resized.append(
+                                        (
+                                            float(gt_x_o)
+                                            * (float(resized_w) / float(orig_w)),
+                                            float(gt_y_o)
+                                            * (float(resized_h) / float(orig_h)),
+                                        )
+                                    )
                                 if (
                                     image_batch is not None
                                     and isinstance(image_batch, torch.Tensor)
@@ -2391,40 +2438,13 @@ def train(
                                         .detach()
                                         .cpu()
                                     )
-                                    gt_xy_resized: List[Tuple[float, float]] = []
-                                    if gt_instances:
-                                        gt0 = gt_instances[0]
-                                        if (
-                                            isinstance(gt0, np.ndarray)
-                                            and gt0.ndim == 2
-                                        ):
-                                            for row in gt0:
-                                                if row.shape[0] < 3:
-                                                    continue
-                                                if float(row[2]) <= 0:
-                                                    continue
-                                                gt_xy_resized.append(
-                                                    (
-                                                        float(row[0])
-                                                        * float(resized_w),
-                                                        float(row[1])
-                                                        * float(resized_h),
-                                                    )
-                                                )
                                     pred_overlays.append(
                                         _overlay_keypoints(
                                             img,
-                                            pred_xy=pred_xy_resized,
-                                            gt_xy=gt_xy_resized,
+                                            pred_xy=overlay_pred_resized,
+                                            gt_xy=overlay_gt_resized,
                                         )
                                     )
-                                pred_xy_orig = [
-                                    (
-                                        float(x) * (float(orig_w) / float(resized_w)),
-                                        float(y) * (float(orig_h) / float(resized_h)),
-                                    )
-                                    for x, y in pred_xy_resized
-                                ]
                                 if gt_instances:
                                     pck_acc.update(
                                         pred_xy=pred_xy_orig,
@@ -2458,30 +2478,10 @@ def train(
                                         .detach()
                                         .cpu()
                                     )
-                                    gt_xy_resized: List[Tuple[float, float]] = []
-                                    if gt_instances:
-                                        gt0 = gt_instances[0]
-                                        if (
-                                            isinstance(gt0, np.ndarray)
-                                            and gt0.ndim == 2
-                                        ):
-                                            for row in gt0:
-                                                if row.shape[0] < 3:
-                                                    continue
-                                                if float(row[2]) <= 0:
-                                                    continue
-                                                gt_xy_resized.append(
-                                                    (
-                                                        float(row[0])
-                                                        * float(resized_w),
-                                                        float(row[1])
-                                                        * float(resized_h),
-                                                    )
-                                                )
                                     overlay = _overlay_keypoints(
                                         img,
-                                        pred_xy=pred_xy_resized,
-                                        gt_xy=gt_xy_resized,
+                                        pred_xy=overlay_pred_resized,
+                                        gt_xy=overlay_gt_resized,
                                     )
                                     if len(error_samples) < int(error_max):
                                         error_samples.append((mean_err, overlay))
@@ -2959,21 +2959,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument(
         "--model-name",
-        default="facebook/dinov3-vits16-pretrain-lvd1689m",
+        default=dino_defaults.MODEL_NAME,
         help="Hugging Face model id or dinov3 alias",
     )
-    p.add_argument("--short-side", type=int, default=768)
+    p.add_argument("--short-side", type=int, default=dino_defaults.SHORT_SIDE)
     p.add_argument(
         "--layers",
         type=str,
-        default="-1",
+        default=dino_defaults.LAYERS,
         help="Comma-separated transformer block indices",
     )
-    p.add_argument("--radius-px", type=float, default=6.0)
+    p.add_argument("--radius-px", type=float, default=dino_defaults.RADIUS_PX)
     p.add_argument(
         "--mask-type",
         choices=("disk", "gaussian"),
-        default="gaussian",
+        default=dino_defaults.MASK_TYPE,
         help="Keypoint supervision mask type",
     )
     p.add_argument(
@@ -2985,18 +2985,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--instance-mode",
         choices=("auto", "union", "per_instance"),
-        default="auto",
+        default=dino_defaults.INSTANCE_MODE,
         help="How to handle multiple pose instances per image.",
     )
     p.add_argument(
         "--bbox-scale",
         type=float,
-        default=1.25,
+        default=dino_defaults.BBOX_SCALE,
         help="Scale factor for per-instance bounding box crops.",
     )
-    p.add_argument("--hidden-dim", type=int, default=128)
-    p.add_argument("--lr", type=float, default=2e-3)
-    p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--hidden-dim", type=int, default=dino_defaults.HIDDEN_DIM)
+    p.add_argument("--lr", type=float, default=dino_defaults.LR)
+    p.add_argument("--epochs", type=int, default=dino_defaults.EPOCHS)
     p.add_argument(
         "--overfit-n",
         type=int,
@@ -3008,7 +3008,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--batch-size",
         dest="batch",
         type=int,
-        default=1,
+        default=dino_defaults.BATCH,
         help="Batch size (uses padded collation for variable feature sizes).",
     )
     p.add_argument(
@@ -3046,14 +3046,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--bce-type",
         choices=("bce", "focal"),
-        default="bce",
+        default=dino_defaults.BCE_TYPE,
         help="Loss type for mask supervision (default: bce).",
     )
     p.add_argument(
-        "--focal-alpha", type=float, default=0.25, help="Alpha for focal BCE."
+        "--focal-alpha",
+        type=float,
+        default=dino_defaults.FOCAL_ALPHA,
+        help="Alpha for focal BCE.",
     )
     p.add_argument(
-        "--focal-gamma", type=float, default=2.0, help="Gamma for focal BCE."
+        "--focal-gamma",
+        type=float,
+        default=dino_defaults.FOCAL_GAMMA,
+        help="Gamma for focal BCE.",
     )
     sched_group = p.add_mutually_exclusive_group()
     sched_group.add_argument(
@@ -3086,10 +3092,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--coord-warmup-epochs",
         type=int,
-        default=0,
+        default=dino_defaults.COORD_WARMUP_EPOCHS,
         help="Warm up coordinate loss over N epochs (0=off).",
     )
-    p.add_argument("--threshold", type=float, default=0.4)
+    p.add_argument("--threshold", type=float, default=dino_defaults.THRESHOLD)
     p.add_argument(
         "--radius-schedule",
         choices=("none", "linear"),
@@ -3103,88 +3109,97 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--head-type",
         choices=("conv", "attn", "hybrid"),
-        default="conv",
+        default=dino_defaults.HEAD_TYPE,
         help="Head architecture",
     )
     p.add_argument(
-        "--attn-heads", type=int, default=4, help="Attention heads (attn head only)"
+        "--attn-heads",
+        type=int,
+        default=dino_defaults.ATTN_HEADS,
+        help="Attention heads (attn head only)",
     )
     p.add_argument(
-        "--attn-layers", type=int, default=1, help="Attention layers (attn head only)"
+        "--attn-layers",
+        type=int,
+        default=dino_defaults.ATTN_LAYERS,
+        help="Attention layers (attn head only)",
     )
     p.add_argument(
         "--lr-pair-loss-weight",
         type=float,
-        default=0.0,
+        default=dino_defaults.LR_PAIR_LOSS_WEIGHT,
         help="Optional symmetric-pair regularizer weight (0=off).",
     )
     p.add_argument(
         "--lr-pair-margin-px",
         type=float,
-        default=0.0,
+        default=dino_defaults.LR_PAIR_MARGIN_PX,
         help="Optional minimum separation margin in pixels for symmetric pairs (0=off).",
     )
     p.add_argument(
         "--lr-side-loss-weight",
         type=float,
-        default=0.0,
+        default=dino_defaults.LR_SIDE_LOSS_WEIGHT,
         help="Optional left/right side-consistency loss weight (0=off). Uses orientation anchors when available.",
     )
     p.add_argument(
         "--lr-side-loss-margin",
         type=float,
-        default=0.0,
+        default=dino_defaults.LR_SIDE_LOSS_MARGIN,
         help="Margin for side-consistency in [0,1] (0=enforce opposite sign).",
     )
     p.add_argument(
         "--dice-loss-weight",
         type=float,
-        default=0.5,
+        default=dino_defaults.DICE_LOSS_WEIGHT,
         help="Dice loss weight (0=off).",
     )
     p.add_argument(
         "--coord-loss-weight",
         type=float,
-        default=0.25,
+        default=dino_defaults.COORD_LOSS_WEIGHT,
         help="Coordinate regression loss weight (0=off).",
     )
     p.add_argument(
         "--coord-loss-type",
         choices=("smooth_l1", "l1", "l2"),
-        default="smooth_l1",
+        default=dino_defaults.COORD_LOSS_TYPE,
         help="Coordinate regression loss type.",
     )
     p.add_argument(
-        "--early-stop-patience", type=int, default=0, help="Early stop patience (0=off)"
+        "--early-stop-patience",
+        type=int,
+        default=dino_defaults.EARLY_STOP_PATIENCE,
+        help="Early stop patience (0=off)",
     )
     p.add_argument(
         "--early-stop-min-delta",
         type=float,
-        default=0.0,
+        default=dino_defaults.EARLY_STOP_MIN_DELTA,
         help="Min metric improvement to reset patience",
     )
     p.add_argument(
         "--early-stop-min-epochs",
         type=int,
-        default=0,
+        default=dino_defaults.EARLY_STOP_MIN_EPOCHS,
         help="Do not early-stop before this epoch",
     )
     p.add_argument(
         "--best-metric",
         choices=("pck@8px", "pck_weighted", "val_loss", "train_loss"),
-        default="pck@8px",
+        default=dino_defaults.BEST_METRIC,
         help="Metric for best checkpoint selection (default: pck@8px).",
     )
     p.add_argument(
         "--early-stop-metric",
         choices=("auto", "pck@8px", "pck_weighted", "val_loss", "train_loss"),
-        default="auto",
+        default=dino_defaults.EARLY_STOP_METRIC,
         help="Metric for early stopping (default: auto -> same as best-metric).",
     )
     p.add_argument(
         "--pck-weighted-weights",
         type=str,
-        default="1,1,1,1",
+        default=dino_defaults.PCK_WEIGHTED_WEIGHTS,
         help="Comma-separated weights for pck_weighted over thresholds [2,4,8,16] px (default: 1,1,1,1).",
     )
     p.add_argument(
@@ -3200,39 +3215,108 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--tb-projector-split",
         choices=("train", "val", "both"),
-        default="val",
+        default=dino_defaults.TB_PROJECTOR_SPLIT,
         help="Which dataset split(s) to sample for the projector (default: val).",
     )
-    p.add_argument("--tb-projector-max-images", type=int, default=64)
-    p.add_argument("--tb-projector-max-patches", type=int, default=4000)
-    p.add_argument("--tb-projector-per-image-per-keypoint", type=int, default=3)
-    p.add_argument("--tb-projector-pos-threshold", type=float, default=0.35)
-    p.add_argument("--tb-projector-crop-px", type=int, default=96)
-    p.add_argument("--tb-projector-sprite-border-px", type=int, default=3)
+    p.add_argument(
+        "--tb-projector-max-images",
+        type=int,
+        default=dino_defaults.TB_PROJECTOR_MAX_IMAGES,
+    )
+    p.add_argument(
+        "--tb-projector-max-patches",
+        type=int,
+        default=dino_defaults.TB_PROJECTOR_MAX_PATCHES,
+    )
+    p.add_argument(
+        "--tb-projector-per-image-per-keypoint",
+        type=int,
+        default=dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT,
+    )
+    p.add_argument(
+        "--tb-projector-pos-threshold",
+        type=float,
+        default=dino_defaults.TB_PROJECTOR_POS_THRESHOLD,
+    )
+    p.add_argument(
+        "--tb-projector-crop-px",
+        type=int,
+        default=dino_defaults.TB_PROJECTOR_CROP_PX,
+    )
+    p.add_argument(
+        "--tb-projector-sprite-border-px",
+        type=int,
+        default=dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX,
+    )
     p.add_argument("--tb-projector-add-negatives", action="store_true")
-    p.add_argument("--tb-projector-neg-threshold", type=float, default=0.02)
-    p.add_argument("--tb-projector-negatives-per-image", type=int, default=6)
     p.add_argument(
-        "--augment", action="store_true", help="Enable YOLO-like pose augmentations"
+        "--tb-projector-neg-threshold",
+        type=float,
+        default=dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
     )
     p.add_argument(
-        "--hflip", type=float, default=0.5, help="Horizontal flip probability"
+        "--tb-projector-negatives-per-image",
+        type=int,
+        default=dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
+    )
+    p.set_defaults(
+        tb_projector_add_negatives=bool(dino_defaults.TB_PROJECTOR_ADD_NEGATIVES)
+    )
+    aug_group = p.add_mutually_exclusive_group()
+    aug_group.add_argument(
+        "--augment", dest="augment", action="store_true", help="Enable augmentations"
+    )
+    aug_group.add_argument(
+        "--no-augment",
+        dest="augment",
+        action="store_false",
+        help="Disable augmentations",
+    )
+    p.set_defaults(
+        augment=bool(dino_defaults.AUGMENT_ENABLED),
+        tb_projector=bool(dino_defaults.TB_PROJECTOR),
     )
     p.add_argument(
-        "--degrees", type=float, default=0.0, help="Random rotation degrees (+/-)"
+        "--hflip",
+        type=float,
+        default=dino_defaults.HFLIP,
+        help="Horizontal flip probability",
     )
     p.add_argument(
-        "--translate", type=float, default=0.0, help="Random translate fraction (+/-)"
+        "--degrees",
+        type=float,
+        default=dino_defaults.DEGREES,
+        help="Random rotation degrees (+/-)",
     )
     p.add_argument(
-        "--scale", type=float, default=0.0, help="Random scale fraction (+/-)"
+        "--translate",
+        type=float,
+        default=dino_defaults.TRANSLATE,
+        help="Random translate fraction (+/-)",
     )
     p.add_argument(
-        "--brightness", type=float, default=0.0, help="Brightness jitter (+/-)"
+        "--scale",
+        type=float,
+        default=dino_defaults.SCALE,
+        help="Random scale fraction (+/-)",
     )
-    p.add_argument("--contrast", type=float, default=0.0, help="Contrast jitter (+/-)")
     p.add_argument(
-        "--saturation", type=float, default=0.0, help="Saturation jitter (+/-)"
+        "--brightness",
+        type=float,
+        default=dino_defaults.BRIGHTNESS,
+        help="Brightness jitter (+/-)",
+    )
+    p.add_argument(
+        "--contrast",
+        type=float,
+        default=dino_defaults.CONTRAST,
+        help="Contrast jitter (+/-)",
+    )
+    p.add_argument(
+        "--saturation",
+        type=float,
+        default=dino_defaults.SATURATION,
+        help="Saturation jitter (+/-)",
     )
     p.add_argument(
         "--seed",

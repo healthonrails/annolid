@@ -10,6 +10,7 @@ from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 
 from annolid.segmentation.dino_kpseg.cli_utils import parse_layers
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
 
 @register_model
@@ -28,21 +29,21 @@ class DinoKPSEGPlugin(ModelPluginBase):
         )
         parser.add_argument(
             "--model-name",
-            default="facebook/dinov3-vits16-pretrain-lvd1689m",
+            default=dino_defaults.MODEL_NAME,
             help="Hugging Face model id or dinov3 alias",
         )
-        parser.add_argument("--short-side", type=int, default=768)
+        parser.add_argument("--short-side", type=int, default=dino_defaults.SHORT_SIDE)
         parser.add_argument(
             "--layers",
             type=str,
-            default="-1",
+            default=dino_defaults.LAYERS,
             help="Comma-separated transformer block indices",
         )
-        parser.add_argument("--radius-px", type=float, default=6.0)
+        parser.add_argument("--radius-px", type=float, default=dino_defaults.RADIUS_PX)
         parser.add_argument(
             "--mask-type",
             choices=("disk", "gaussian"),
-            default="gaussian",
+            default=dino_defaults.MASK_TYPE,
             help="Keypoint supervision mask type",
         )
         parser.add_argument(
@@ -54,19 +55,19 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument(
             "--instance-mode",
             choices=("auto", "union", "per_instance"),
-            default="auto",
+            default=dino_defaults.INSTANCE_MODE,
             help="How to handle multiple pose instances per image.",
         )
         parser.add_argument(
             "--bbox-scale",
             type=float,
-            default=1.25,
+            default=dino_defaults.BBOX_SCALE,
             help="Scale factor for per-instance bounding box crops.",
         )
-        parser.add_argument("--hidden-dim", type=int, default=128)
-        parser.add_argument("--lr", type=float, default=2e-3)
-        parser.add_argument("--epochs", type=int, default=50)
-        parser.add_argument("--threshold", type=float, default=0.4)
+        parser.add_argument("--hidden-dim", type=int, default=dino_defaults.HIDDEN_DIM)
+        parser.add_argument("--lr", type=float, default=dino_defaults.LR)
+        parser.add_argument("--epochs", type=int, default=dino_defaults.EPOCHS)
+        parser.add_argument("--threshold", type=float, default=dino_defaults.THRESHOLD)
         parser.add_argument("--device", default=None)
         parser.add_argument(
             "--no-cache", action="store_true", help="Disable feature caching"
@@ -74,76 +75,85 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument(
             "--head-type",
             choices=("conv", "attn", "hybrid"),
-            default="conv",
+            default=dino_defaults.HEAD_TYPE,
             help="Head architecture",
         )
         parser.add_argument(
-            "--attn-heads", type=int, default=4, help="Attention heads (attn head only)"
+            "--attn-heads",
+            type=int,
+            default=dino_defaults.ATTN_HEADS,
+            help="Attention heads (attn head only)",
         )
         parser.add_argument(
             "--attn-layers",
             type=int,
-            default=1,
+            default=dino_defaults.ATTN_LAYERS,
             help="Attention layers (attn head only)",
         )
         parser.add_argument(
             "--lr-pair-loss-weight",
             type=float,
-            default=0.0,
+            default=dino_defaults.LR_PAIR_LOSS_WEIGHT,
             help="Optional symmetric-pair regularizer weight (0=off).",
         )
         parser.add_argument(
             "--lr-pair-margin-px",
             type=float,
-            default=0.0,
+            default=dino_defaults.LR_PAIR_MARGIN_PX,
             help="Optional minimum separation margin in pixels for symmetric pairs (0=off).",
         )
         parser.add_argument(
             "--lr-side-loss-weight",
             type=float,
-            default=0.0,
+            default=dino_defaults.LR_SIDE_LOSS_WEIGHT,
             help="Optional left/right side-consistency loss weight (0=off). Uses orientation anchors when available.",
         )
         parser.add_argument(
             "--lr-side-loss-margin",
             type=float,
-            default=0.0,
+            default=dino_defaults.LR_SIDE_LOSS_MARGIN,
             help="Margin for side-consistency in [0,1] (0=enforce opposite sign).",
         )
         parser.add_argument(
             "--dice-loss-weight",
             type=float,
-            default=0.5,
+            default=dino_defaults.DICE_LOSS_WEIGHT,
             help="Dice loss weight (0=off).",
         )
         parser.add_argument(
             "--coord-loss-weight",
             type=float,
-            default=0.25,
+            default=dino_defaults.COORD_LOSS_WEIGHT,
             help="Coordinate regression loss weight (0=off).",
         )
         parser.add_argument(
             "--coord-loss-type",
             choices=("smooth_l1", "l1", "l2"),
-            default="smooth_l1",
+            default=dino_defaults.COORD_LOSS_TYPE,
             help="Coordinate regression loss type.",
         )
         parser.add_argument(
             "--bce-type",
             choices=("bce", "focal"),
-            default="bce",
+            default=dino_defaults.BCE_TYPE,
             help="Loss type for mask supervision (default: bce).",
         )
         parser.add_argument(
-            "--focal-alpha", type=float, default=0.25, help="Alpha for focal BCE."
+            "--focal-alpha",
+            type=float,
+            default=dino_defaults.FOCAL_ALPHA,
+            help="Alpha for focal BCE.",
         )
         parser.add_argument(
-            "--focal-gamma", type=float, default=2.0, help="Gamma for focal BCE."
+            "--focal-gamma",
+            type=float,
+            default=dino_defaults.FOCAL_GAMMA,
+            help="Gamma for focal BCE.",
         )
         parser.add_argument(
             "--coord-warmup-epochs",
             type=int,
-            default=0,
+            default=dino_defaults.COORD_WARMUP_EPOCHS,
             help="Warm up coordinate loss over N epochs (0=off).",
         )
         parser.add_argument(
@@ -163,19 +173,19 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument(
             "--early-stop-patience",
             type=int,
-            default=0,
+            default=dino_defaults.EARLY_STOP_PATIENCE,
             help="Early stop patience (0=off)",
         )
         parser.add_argument(
             "--early-stop-min-delta",
             type=float,
-            default=0.0,
+            default=dino_defaults.EARLY_STOP_MIN_DELTA,
             help="Min metric improvement to reset patience",
         )
         parser.add_argument(
             "--early-stop-min-epochs",
             type=int,
-            default=0,
+            default=dino_defaults.EARLY_STOP_MIN_EPOCHS,
             help="Do not early-stop before this epoch",
         )
         parser.add_argument(
@@ -191,46 +201,111 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument(
             "--tb-projector-split",
             choices=("train", "val", "both"),
-            default="val",
+            default=dino_defaults.TB_PROJECTOR_SPLIT,
             help="Which dataset split(s) to sample for the projector (default: val).",
         )
-        parser.add_argument("--tb-projector-max-images", type=int, default=64)
-        parser.add_argument("--tb-projector-max-patches", type=int, default=4000)
         parser.add_argument(
-            "--tb-projector-per-image-per-keypoint", type=int, default=3
+            "--tb-projector-max-images",
+            type=int,
+            default=dino_defaults.TB_PROJECTOR_MAX_IMAGES,
         )
-        parser.add_argument("--tb-projector-pos-threshold", type=float, default=0.35)
-        parser.add_argument("--tb-projector-crop-px", type=int, default=96)
-        parser.add_argument("--tb-projector-sprite-border-px", type=int, default=3)
+        parser.add_argument(
+            "--tb-projector-max-patches",
+            type=int,
+            default=dino_defaults.TB_PROJECTOR_MAX_PATCHES,
+        )
+        parser.add_argument(
+            "--tb-projector-per-image-per-keypoint",
+            type=int,
+            default=dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT,
+        )
+        parser.add_argument(
+            "--tb-projector-pos-threshold",
+            type=float,
+            default=dino_defaults.TB_PROJECTOR_POS_THRESHOLD,
+        )
+        parser.add_argument(
+            "--tb-projector-crop-px",
+            type=int,
+            default=dino_defaults.TB_PROJECTOR_CROP_PX,
+        )
+        parser.add_argument(
+            "--tb-projector-sprite-border-px",
+            type=int,
+            default=dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX,
+        )
         parser.add_argument("--tb-projector-add-negatives", action="store_true")
-        parser.add_argument("--tb-projector-neg-threshold", type=float, default=0.02)
-        parser.add_argument("--tb-projector-negatives-per-image", type=int, default=6)
         parser.add_argument(
-            "--augment", action="store_true", help="Enable YOLO-like pose augmentations"
+            "--tb-projector-neg-threshold",
+            type=float,
+            default=dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
         )
         parser.add_argument(
-            "--hflip", type=float, default=0.5, help="Horizontal flip probability"
+            "--tb-projector-negatives-per-image",
+            type=int,
+            default=dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
+        )
+        parser.set_defaults(
+            tb_projector_add_negatives=bool(dino_defaults.TB_PROJECTOR_ADD_NEGATIVES)
+        )
+        aug_group = parser.add_mutually_exclusive_group()
+        aug_group.add_argument(
+            "--augment",
+            dest="augment",
+            action="store_true",
+            help="Enable augmentations",
+        )
+        aug_group.add_argument(
+            "--no-augment",
+            dest="augment",
+            action="store_false",
+            help="Disable augmentations",
+        )
+        parser.set_defaults(
+            augment=bool(dino_defaults.AUGMENT_ENABLED),
+            tb_projector=bool(dino_defaults.TB_PROJECTOR),
         )
         parser.add_argument(
-            "--degrees", type=float, default=0.0, help="Random rotation degrees (+/-)"
+            "--hflip",
+            type=float,
+            default=dino_defaults.HFLIP,
+            help="Horizontal flip probability",
+        )
+        parser.add_argument(
+            "--degrees",
+            type=float,
+            default=dino_defaults.DEGREES,
+            help="Random rotation degrees (+/-)",
         )
         parser.add_argument(
             "--translate",
             type=float,
-            default=0.0,
+            default=dino_defaults.TRANSLATE,
             help="Random translate fraction (+/-)",
         )
         parser.add_argument(
-            "--scale", type=float, default=0.0, help="Random scale fraction (+/-)"
+            "--scale",
+            type=float,
+            default=dino_defaults.SCALE,
+            help="Random scale fraction (+/-)",
         )
         parser.add_argument(
-            "--brightness", type=float, default=0.0, help="Brightness jitter (+/-)"
+            "--brightness",
+            type=float,
+            default=dino_defaults.BRIGHTNESS,
+            help="Brightness jitter (+/-)",
         )
         parser.add_argument(
-            "--contrast", type=float, default=0.0, help="Contrast jitter (+/-)"
+            "--contrast",
+            type=float,
+            default=dino_defaults.CONTRAST,
+            help="Contrast jitter (+/-)",
         )
         parser.add_argument(
-            "--saturation", type=float, default=0.0, help="Saturation jitter (+/-)"
+            "--saturation",
+            type=float,
+            default=dino_defaults.SATURATION,
+            help="Saturation jitter (+/-)",
         )
         parser.add_argument(
             "--seed",
@@ -287,10 +362,12 @@ class DinoKPSEGPlugin(ModelPluginBase):
             dice_loss_weight=float(args.dice_loss_weight),
             coord_loss_weight=float(args.coord_loss_weight),
             coord_loss_type=str(args.coord_loss_type),
-            bce_type=str(getattr(args, "bce_type", "bce")),
-            focal_alpha=float(getattr(args, "focal_alpha", 0.25)),
-            focal_gamma=float(getattr(args, "focal_gamma", 2.0)),
-            coord_warmup_epochs=int(getattr(args, "coord_warmup_epochs", 0)),
+            bce_type=str(getattr(args, "bce_type", dino_defaults.BCE_TYPE)),
+            focal_alpha=float(getattr(args, "focal_alpha", dino_defaults.FOCAL_ALPHA)),
+            focal_gamma=float(getattr(args, "focal_gamma", dino_defaults.FOCAL_GAMMA)),
+            coord_warmup_epochs=int(
+                getattr(args, "coord_warmup_epochs", dino_defaults.COORD_WARMUP_EPOCHS)
+            ),
             radius_schedule=str(getattr(args, "radius_schedule", "none")),
             radius_start_px=(
                 float(getattr(args, "radius_start_px", 0.0))
@@ -308,30 +385,72 @@ class DinoKPSEGPlugin(ModelPluginBase):
             early_stop_min_delta=float(args.early_stop_min_delta),
             early_stop_min_epochs=int(args.early_stop_min_epochs),
             tb_add_graph=bool(args.tb_add_graph),
-            tb_projector=bool(getattr(args, "tb_projector", False)),
-            tb_projector_split=str(getattr(args, "tb_projector_split", "val")),
-            tb_projector_max_images=int(getattr(args, "tb_projector_max_images", 64)),
+            tb_projector=bool(
+                getattr(args, "tb_projector", dino_defaults.TB_PROJECTOR)
+            ),
+            tb_projector_split=str(
+                getattr(args, "tb_projector_split", dino_defaults.TB_PROJECTOR_SPLIT)
+            ),
+            tb_projector_max_images=int(
+                getattr(
+                    args,
+                    "tb_projector_max_images",
+                    dino_defaults.TB_PROJECTOR_MAX_IMAGES,
+                )
+            ),
             tb_projector_max_patches=int(
-                getattr(args, "tb_projector_max_patches", 4000)
+                getattr(
+                    args,
+                    "tb_projector_max_patches",
+                    dino_defaults.TB_PROJECTOR_MAX_PATCHES,
+                )
             ),
             tb_projector_per_image_per_keypoint=int(
-                getattr(args, "tb_projector_per_image_per_keypoint", 3)
+                getattr(
+                    args,
+                    "tb_projector_per_image_per_keypoint",
+                    dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT,
+                )
             ),
             tb_projector_pos_threshold=float(
-                getattr(args, "tb_projector_pos_threshold", 0.35)
+                getattr(
+                    args,
+                    "tb_projector_pos_threshold",
+                    dino_defaults.TB_PROJECTOR_POS_THRESHOLD,
+                )
             ),
-            tb_projector_crop_px=int(getattr(args, "tb_projector_crop_px", 96)),
+            tb_projector_crop_px=int(
+                getattr(
+                    args, "tb_projector_crop_px", dino_defaults.TB_PROJECTOR_CROP_PX
+                )
+            ),
             tb_projector_sprite_border_px=int(
-                getattr(args, "tb_projector_sprite_border_px", 3)
+                getattr(
+                    args,
+                    "tb_projector_sprite_border_px",
+                    dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX,
+                )
             ),
             tb_projector_add_negatives=bool(
-                getattr(args, "tb_projector_add_negatives", False)
+                getattr(
+                    args,
+                    "tb_projector_add_negatives",
+                    dino_defaults.TB_PROJECTOR_ADD_NEGATIVES,
+                )
             ),
             tb_projector_neg_threshold=float(
-                getattr(args, "tb_projector_neg_threshold", 0.02)
+                getattr(
+                    args,
+                    "tb_projector_neg_threshold",
+                    dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
+                )
             ),
             tb_projector_negatives_per_image=int(
-                getattr(args, "tb_projector_negatives_per_image", 6)
+                getattr(
+                    args,
+                    "tb_projector_negatives_per_image",
+                    dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
+                )
             ),
             augment=DinoKPSEGAugmentConfig(
                 enabled=bool(args.augment),

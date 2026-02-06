@@ -22,6 +22,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
 from annolid.gui.models_registry import MODEL_REGISTRY, PATCH_SIMILARITY_MODELS
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
 
 YOLO_TASKS = {
@@ -954,7 +955,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.dino_short_side_spin = QtWidgets.QSpinBox()
         self.dino_short_side_spin.setRange(224, 2048)
         self.dino_short_side_spin.setSingleStep(32)
-        self.dino_short_side_spin.setValue(768)
+        self.dino_short_side_spin.setValue(int(dino_defaults.SHORT_SIDE))
         model_layout.addRow("Short side:", self.dino_short_side_spin)
 
         layout.addWidget(model_group)
@@ -964,23 +965,23 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 
         self.dino_epochs_spin = QtWidgets.QSpinBox()
         self.dino_epochs_spin.setRange(1, 500)
-        self.dino_epochs_spin.setValue(100)
+        self.dino_epochs_spin.setValue(int(dino_defaults.EPOCHS))
         train_layout.addRow("Epochs:", self.dino_epochs_spin)
 
         self.dino_batch_spin = QtWidgets.QSpinBox()
         self.dino_batch_spin.setRange(1, 64)
-        self.dino_batch_spin.setValue(8)
+        self.dino_batch_spin.setValue(int(dino_defaults.BATCH))
         train_layout.addRow("Batch size:", self.dino_batch_spin)
 
         self.dino_lr_spin = QtWidgets.QDoubleSpinBox()
         self.dino_lr_spin.setRange(0.0001, 0.05)
         self.dino_lr_spin.setDecimals(4)
-        self.dino_lr_spin.setValue(0.002)
+        self.dino_lr_spin.setValue(float(dino_defaults.LR))
         train_layout.addRow("Learning rate:", self.dino_lr_spin)
 
         self.dino_radius_spin = QtWidgets.QDoubleSpinBox()
         self.dino_radius_spin.setRange(1.0, 30.0)
-        self.dino_radius_spin.setValue(6.0)
+        self.dino_radius_spin.setValue(float(dino_defaults.RADIUS_PX))
         train_layout.addRow("Keypoint radius (px):", self.dino_radius_spin)
 
         layout.addWidget(train_group)
@@ -1288,8 +1289,11 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
                 row("Model", str(config.get("model", "DINO"))),
                 row("Epochs", str(config.get("epochs", 100))),
                 row("Batch", str(config.get("batch", 8))),
-                row("Short side", str(config.get("short_side", 768))),
-                row("LR", str(config.get("lr", 0.002))),
+                row(
+                    "Short side",
+                    str(config.get("short_side", dino_defaults.SHORT_SIDE)),
+                ),
+                row("LR", str(config.get("lr", dino_defaults.LR))),
                 row("Radius (px)", str(config.get("radius_px", 6.0))),
                 row("Dataset format", str(config.get("data_format", "auto"))),
             ]

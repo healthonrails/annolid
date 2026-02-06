@@ -12,6 +12,7 @@ from annolid.gui.models_registry import (
     PATCH_SIMILARITY_MODELS,
     PATCH_SIMILARITY_DEFAULT_MODEL,
 )
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
 
 YOLO11_TASK_SUFFIXES = {
@@ -61,55 +62,67 @@ class TrainModelDialog(QtWidgets.QDialog):
         # DinoKPSEG defaults
         self.dino_model_name = PATCH_SIMILARITY_DEFAULT_MODEL
         self.dino_data_format = "auto"
-        self.dino_short_side = 768
-        self.dino_layers = "-1"
-        self.dino_radius_px = 6.0
-        self.dino_hidden_dim = 128
-        self.dino_head_type = "conv"
-        self.dino_attn_heads = 4
-        self.dino_attn_layers = 1
-        self.dino_lr_pair_loss_weight = 0.0
-        self.dino_lr_pair_margin_px = 0.0
-        self.dino_lr_side_loss_weight = 0.0
-        self.dino_lr_side_loss_margin = 0.0
-        self.dino_lr = 0.002
-        self.dino_threshold = 0.4
-        self.dino_bce_type = "bce"
-        self.dino_focal_alpha = 0.25
-        self.dino_focal_gamma = 2.0
-        self.dino_coord_warmup_epochs = 0
+        self.dino_short_side = int(dino_defaults.SHORT_SIDE)
+        self.dino_layers = str(dino_defaults.LAYERS)
+        self.dino_radius_px = float(dino_defaults.RADIUS_PX)
+        self.dino_hidden_dim = int(dino_defaults.HIDDEN_DIM)
+        self.dino_head_type = str(dino_defaults.HEAD_TYPE)
+        self.dino_attn_heads = int(dino_defaults.ATTN_HEADS)
+        self.dino_attn_layers = int(dino_defaults.ATTN_LAYERS)
+        self.dino_lr_pair_loss_weight = float(dino_defaults.LR_PAIR_LOSS_WEIGHT)
+        self.dino_lr_pair_margin_px = float(dino_defaults.LR_PAIR_MARGIN_PX)
+        self.dino_lr_side_loss_weight = float(dino_defaults.LR_SIDE_LOSS_WEIGHT)
+        self.dino_lr_side_loss_margin = float(dino_defaults.LR_SIDE_LOSS_MARGIN)
+        self.dino_lr = float(dino_defaults.LR)
+        self.dino_threshold = float(dino_defaults.THRESHOLD)
+        self.dino_bce_type = str(dino_defaults.BCE_TYPE)
+        self.dino_focal_alpha = float(dino_defaults.FOCAL_ALPHA)
+        self.dino_focal_gamma = float(dino_defaults.FOCAL_GAMMA)
+        self.dino_coord_warmup_epochs = int(dino_defaults.COORD_WARMUP_EPOCHS)
         self.dino_radius_schedule = "none"
         self.dino_radius_start_px = float(self.dino_radius_px)
         self.dino_radius_end_px = float(self.dino_radius_px)
         self.dino_overfit_n = 0
         self.dino_cache_features = True
-        self.dino_patience = 10
-        self.dino_min_delta = 0.0
-        self.dino_min_epochs = 10
-        self.dino_best_metric = "pck@8px"
-        self.dino_early_stop_metric = "auto"
-        self.dino_pck_weighted_weights = "1,1,1,1"
-        self.dino_augment_enabled = False
-        self.dino_hflip_prob = 0.5
-        self.dino_degrees = 0.0
-        self.dino_translate = 0.0
-        self.dino_scale = 0.0
-        self.dino_brightness = 0.0
-        self.dino_contrast = 0.0
-        self.dino_saturation = 0.0
+        self.dino_patience = int(dino_defaults.EARLY_STOP_PATIENCE)
+        self.dino_min_delta = float(dino_defaults.EARLY_STOP_MIN_DELTA)
+        self.dino_min_epochs = int(dino_defaults.EARLY_STOP_MIN_EPOCHS)
+        self.dino_best_metric = str(dino_defaults.BEST_METRIC)
+        self.dino_early_stop_metric = str(dino_defaults.EARLY_STOP_METRIC)
+        self.dino_pck_weighted_weights = str(dino_defaults.PCK_WEIGHTED_WEIGHTS)
+        self.dino_augment_enabled = bool(dino_defaults.AUGMENT_ENABLED)
+        self.dino_hflip_prob = float(dino_defaults.HFLIP)
+        self.dino_degrees = float(dino_defaults.DEGREES)
+        self.dino_translate = float(dino_defaults.TRANSLATE)
+        self.dino_scale = float(dino_defaults.SCALE)
+        self.dino_brightness = float(dino_defaults.BRIGHTNESS)
+        self.dino_contrast = float(dino_defaults.CONTRAST)
+        self.dino_saturation = float(dino_defaults.SATURATION)
         self.dino_seed = -1
         self.dino_tb_add_graph = False
-        self.dino_tb_projector = True
-        self.dino_tb_projector_split = "val"
-        self.dino_tb_projector_max_images = 64
-        self.dino_tb_projector_max_patches = 4000
-        self.dino_tb_projector_per_image_per_keypoint = 3
-        self.dino_tb_projector_pos_threshold = 0.35
-        self.dino_tb_projector_crop_px = 96
-        self.dino_tb_projector_sprite_border_px = 3
-        self.dino_tb_projector_add_negatives = False
-        self.dino_tb_projector_neg_threshold = 0.02
-        self.dino_tb_projector_negatives_per_image = 6
+        self.dino_tb_projector = bool(dino_defaults.TB_PROJECTOR)
+        self.dino_tb_projector_split = str(dino_defaults.TB_PROJECTOR_SPLIT)
+        self.dino_tb_projector_max_images = int(dino_defaults.TB_PROJECTOR_MAX_IMAGES)
+        self.dino_tb_projector_max_patches = int(dino_defaults.TB_PROJECTOR_MAX_PATCHES)
+        self.dino_tb_projector_per_image_per_keypoint = int(
+            dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT
+        )
+        self.dino_tb_projector_pos_threshold = float(
+            dino_defaults.TB_PROJECTOR_POS_THRESHOLD
+        )
+        self.dino_tb_projector_crop_px = int(dino_defaults.TB_PROJECTOR_CROP_PX)
+        self.dino_tb_projector_sprite_border_px = int(
+            dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX
+        )
+        self.dino_tb_projector_add_negatives = bool(
+            dino_defaults.TB_PROJECTOR_ADD_NEGATIVES
+        )
+        self.dino_tb_projector_neg_threshold = float(
+            dino_defaults.TB_PROJECTOR_NEG_THRESHOLD
+        )
+        self.dino_tb_projector_negatives_per_image = int(
+            dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE
+        )
 
         # YOLO hyperparams (Advanced tab)
         self.yolo_lr0 = 0.01
@@ -812,13 +825,17 @@ class TrainModelDialog(QtWidgets.QDialog):
         head_type.addItem("Attention head (relational)", userData="attn")
         head_type.addItem("Hybrid head (conv + attn)", userData="hybrid")
         head_default_idx = head_type.findData(
-            str(getattr(self, "dino_head_type", "conv"))
+            str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE))
         )
         if head_default_idx >= 0:
             head_type.setCurrentIndex(head_default_idx)
 
         def _on_head_changed(_=None) -> None:
-            setattr(self, "dino_head_type", str(head_type.currentData() or "conv"))
+            setattr(
+                self,
+                "dino_head_type",
+                str(head_type.currentData() or dino_defaults.HEAD_TYPE),
+            )
             self._update_dino_head_controls()
 
         head_type.currentIndexChanged.connect(_on_head_changed)
@@ -898,13 +915,20 @@ class TrainModelDialog(QtWidgets.QDialog):
         bce_type = QtWidgets.QComboBox(box)
         bce_type.addItem("Standard BCE", userData="bce")
         bce_type.addItem("Focal BCE", userData="focal")
-        bce_default = str(getattr(self, "dino_bce_type", "bce") or "bce")
+        bce_default = str(
+            getattr(self, "dino_bce_type", dino_defaults.BCE_TYPE)
+            or dino_defaults.BCE_TYPE
+        )
         bce_idx = bce_type.findData(bce_default)
         if bce_idx >= 0:
             bce_type.setCurrentIndex(bce_idx)
 
         def _on_bce_changed(_=None) -> None:
-            setattr(self, "dino_bce_type", str(bce_type.currentData() or "bce"))
+            setattr(
+                self,
+                "dino_bce_type",
+                str(bce_type.currentData() or dino_defaults.BCE_TYPE),
+            )
             self._update_dino_focal_controls()
 
         bce_type.currentIndexChanged.connect(_on_bce_changed)
@@ -913,14 +937,18 @@ class TrainModelDialog(QtWidgets.QDialog):
         focal_alpha.setDecimals(3)
         focal_alpha.setRange(0.0, 1.0)
         focal_alpha.setSingleStep(0.05)
-        focal_alpha.setValue(float(getattr(self, "dino_focal_alpha", 0.25)))
+        focal_alpha.setValue(
+            float(getattr(self, "dino_focal_alpha", dino_defaults.FOCAL_ALPHA))
+        )
         self._bind_spin_float(focal_alpha, "dino_focal_alpha")
 
         focal_gamma = QtWidgets.QDoubleSpinBox(box)
         focal_gamma.setDecimals(3)
         focal_gamma.setRange(0.0, 10.0)
         focal_gamma.setSingleStep(0.1)
-        focal_gamma.setValue(float(getattr(self, "dino_focal_gamma", 2.0)))
+        focal_gamma.setValue(
+            float(getattr(self, "dino_focal_gamma", dino_defaults.FOCAL_GAMMA))
+        )
         self._bind_spin_float(focal_gamma, "dino_focal_gamma")
 
         self._dino_focal_controls = [focal_alpha, focal_gamma]
@@ -988,7 +1016,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_projector = QtWidgets.QCheckBox(
             "Write TensorBoard Projector embeddings (interactive)", box
         )
-        tb_projector.setChecked(bool(getattr(self, "dino_tb_projector", True)))
+        tb_projector.setChecked(
+            bool(getattr(self, "dino_tb_projector", dino_defaults.TB_PROJECTOR))
+        )
 
         def _on_projector_changed(_=None) -> None:
             setattr(self, "dino_tb_projector", bool(tb_projector.isChecked()))
@@ -1000,7 +1030,10 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_projector_split.addItem("Validation (recommended)", userData="val")
         tb_projector_split.addItem("Train", userData="train")
         tb_projector_split.addItem("Both", userData="both")
-        split_default = str(getattr(self, "dino_tb_projector_split", "val") or "val")
+        split_default = str(
+            getattr(self, "dino_tb_projector_split", dino_defaults.TB_PROJECTOR_SPLIT)
+            or dino_defaults.TB_PROJECTOR_SPLIT
+        )
         idx = tb_projector_split.findData(split_default)
         if idx >= 0:
             tb_projector_split.setCurrentIndex(idx)
@@ -1008,27 +1041,49 @@ class TrainModelDialog(QtWidgets.QDialog):
             lambda _=None: setattr(
                 self,
                 "dino_tb_projector_split",
-                str(tb_projector_split.currentData() or "val"),
+                str(
+                    tb_projector_split.currentData() or dino_defaults.TB_PROJECTOR_SPLIT
+                ),
             )
         )
 
         tb_max_images = QtWidgets.QSpinBox(box)
         tb_max_images.setRange(1, 10_000)
-        tb_max_images.setValue(int(getattr(self, "dino_tb_projector_max_images", 64)))
+        tb_max_images.setValue(
+            int(
+                getattr(
+                    self,
+                    "dino_tb_projector_max_images",
+                    dino_defaults.TB_PROJECTOR_MAX_IMAGES,
+                )
+            )
+        )
         self._bind_spin_int(tb_max_images, "dino_tb_projector_max_images")
 
         tb_max_patches = QtWidgets.QSpinBox(box)
         tb_max_patches.setRange(64, 200_000)
         tb_max_patches.setSingleStep(256)
         tb_max_patches.setValue(
-            int(getattr(self, "dino_tb_projector_max_patches", 4000))
+            int(
+                getattr(
+                    self,
+                    "dino_tb_projector_max_patches",
+                    dino_defaults.TB_PROJECTOR_MAX_PATCHES,
+                )
+            )
         )
         self._bind_spin_int(tb_max_patches, "dino_tb_projector_max_patches")
 
         tb_per_image_per_kpt = QtWidgets.QSpinBox(box)
         tb_per_image_per_kpt.setRange(0, 1000)
         tb_per_image_per_kpt.setValue(
-            int(getattr(self, "dino_tb_projector_per_image_per_keypoint", 3))
+            int(
+                getattr(
+                    self,
+                    "dino_tb_projector_per_image_per_keypoint",
+                    dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT,
+                )
+            )
         )
         self._bind_spin_int(
             tb_per_image_per_kpt, "dino_tb_projector_per_image_per_keypoint"
@@ -1039,24 +1094,52 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_pos_thr.setRange(0.0, 1.0)
         tb_pos_thr.setSingleStep(0.05)
         tb_pos_thr.setValue(
-            float(getattr(self, "dino_tb_projector_pos_threshold", 0.35))
+            float(
+                getattr(
+                    self,
+                    "dino_tb_projector_pos_threshold",
+                    dino_defaults.TB_PROJECTOR_POS_THRESHOLD,
+                )
+            )
         )
         self._bind_spin_float(tb_pos_thr, "dino_tb_projector_pos_threshold")
 
         tb_crop = QtWidgets.QSpinBox(box)
         tb_crop.setRange(16, 512)
         tb_crop.setSingleStep(16)
-        tb_crop.setValue(int(getattr(self, "dino_tb_projector_crop_px", 96)))
+        tb_crop.setValue(
+            int(
+                getattr(
+                    self,
+                    "dino_tb_projector_crop_px",
+                    dino_defaults.TB_PROJECTOR_CROP_PX,
+                )
+            )
+        )
         self._bind_spin_int(tb_crop, "dino_tb_projector_crop_px")
 
         tb_border = QtWidgets.QSpinBox(box)
         tb_border.setRange(0, 16)
-        tb_border.setValue(int(getattr(self, "dino_tb_projector_sprite_border_px", 3)))
+        tb_border.setValue(
+            int(
+                getattr(
+                    self,
+                    "dino_tb_projector_sprite_border_px",
+                    dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX,
+                )
+            )
+        )
         self._bind_spin_int(tb_border, "dino_tb_projector_sprite_border_px")
 
         tb_add_negs = QtWidgets.QCheckBox("Also sample background patches", box)
         tb_add_negs.setChecked(
-            bool(getattr(self, "dino_tb_projector_add_negatives", False))
+            bool(
+                getattr(
+                    self,
+                    "dino_tb_projector_add_negatives",
+                    dino_defaults.TB_PROJECTOR_ADD_NEGATIVES,
+                )
+            )
         )
         tb_add_negs.stateChanged.connect(
             lambda _=None: setattr(
@@ -1069,14 +1152,26 @@ class TrainModelDialog(QtWidgets.QDialog):
         tb_neg_thr.setRange(0.0, 1.0)
         tb_neg_thr.setSingleStep(0.01)
         tb_neg_thr.setValue(
-            float(getattr(self, "dino_tb_projector_neg_threshold", 0.02))
+            float(
+                getattr(
+                    self,
+                    "dino_tb_projector_neg_threshold",
+                    dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
+                )
+            )
         )
         self._bind_spin_float(tb_neg_thr, "dino_tb_projector_neg_threshold")
 
         tb_negs_per_img = QtWidgets.QSpinBox(box)
         tb_negs_per_img.setRange(0, 10_000)
         tb_negs_per_img.setValue(
-            int(getattr(self, "dino_tb_projector_negatives_per_image", 6))
+            int(
+                getattr(
+                    self,
+                    "dino_tb_projector_negatives_per_image",
+                    dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
+                )
+            )
         )
         self._bind_spin_int(tb_negs_per_img, "dino_tb_projector_negatives_per_image")
 
@@ -1116,14 +1211,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         best_metric.addItem("Val loss", "val_loss")
         best_metric.addItem("Train loss (no val)", "train_loss")
         best_metric.setCurrentIndex(
-            max(0, best_metric.findData(getattr(self, "dino_best_metric", "pck@8px")))
+            max(
+                0,
+                best_metric.findData(
+                    getattr(self, "dino_best_metric", dino_defaults.BEST_METRIC)
+                ),
+            )
         )
         best_metric.currentIndexChanged.connect(
             lambda _=None: (
                 setattr(
                     self,
                     "dino_best_metric",
-                    str(best_metric.currentData() or "pck@8px"),
+                    str(best_metric.currentData() or dino_defaults.BEST_METRIC),
                 ),
                 self._update_dino_model_selection_controls(),
             )
@@ -1156,7 +1256,15 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         pck_weights = QtWidgets.QLineEdit(box)
         pck_weights.setPlaceholderText("1,1,1,1")
-        pck_weights.setText(str(getattr(self, "dino_pck_weighted_weights", "1,1,1,1")))
+        pck_weights.setText(
+            str(
+                getattr(
+                    self,
+                    "dino_pck_weighted_weights",
+                    dino_defaults.PCK_WEIGHTED_WEIGHTS,
+                )
+            )
+        )
         self._bind_lineedit_str(pck_weights, "dino_pck_weighted_weights")
 
         self._dino_best_metric_combo = best_metric
@@ -1226,7 +1334,9 @@ class TrainModelDialog(QtWidgets.QDialog):
 
     def _update_dino_head_controls(self) -> None:
         head_type = (
-            str(getattr(self, "dino_head_type", "conv") or "conv").strip().lower()
+            str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE) or "")
+            .strip()
+            .lower()
         )
         attn_enabled = head_type in {"attn", "hybrid"}
         for w in (
@@ -1237,7 +1347,7 @@ class TrainModelDialog(QtWidgets.QDialog):
                 w.setEnabled(attn_enabled)
 
     def _update_dino_projector_enabled_state(self) -> None:
-        enabled = bool(getattr(self, "dino_tb_projector", True))
+        enabled = bool(getattr(self, "dino_tb_projector", dino_defaults.TB_PROJECTOR))
         controls = getattr(self, "_dino_projector_controls", None)
         if not controls:
             return
@@ -1248,7 +1358,14 @@ class TrainModelDialog(QtWidgets.QDialog):
                 pass
 
     def _update_dino_focal_controls(self) -> None:
-        bce_type = str(getattr(self, "dino_bce_type", "bce") or "bce").strip().lower()
+        bce_type = (
+            str(
+                getattr(self, "dino_bce_type", dino_defaults.BCE_TYPE)
+                or dino_defaults.BCE_TYPE
+            )
+            .strip()
+            .lower()
+        )
         enabled = bce_type == "focal"
         controls = getattr(self, "_dino_focal_controls", None)
         if not controls:

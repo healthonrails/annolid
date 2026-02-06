@@ -245,3 +245,134 @@ def test_kpseg_projects_points_back_into_instance_polygon(tmp_path, monkeypatch)
         x, y = point_shape["points"][0]
         assert 5.0 <= float(x) <= 30.0
         assert 5.0 <= float(y) <= 25.0
+
+
+def test_kpseg_multi_instance_points_remain_in_their_own_polygons(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("annolid.tracking.dino_kpseg_tracker.CV2Video", _DummyVideo)
+
+    class _DummyCutieMaskManagerMulti:
+        def __init__(self, _video_path: Path, adapter, config) -> None:
+            self.adapter = adapter
+            self.config = config
+            self.enabled = True
+            self._last_by_label: Dict[
+                str, Tuple[np.ndarray, List[Tuple[float, float]]]
+            ] = {}
+
+        def reset_state(self) -> None:
+            self._last_by_label = {}
+
+        def prime(self, _frame_number: int, _frame: np.ndarray, registry) -> None:
+            for instance in registry:
+                if instance.mask_bitmap is None or instance.polygon is None:
+                    continue
+                self._last_by_label[str(instance.label)] = (
+                    instance.mask_bitmap.astype(bool),
+                    [tuple(pt) for pt in instance.polygon],
+                )
+
+        def update_masks(
+            self, _frame_number: int, _frame: np.ndarray, registry
+        ) -> Dict[str, MaskResult]:
+            results: Dict[str, MaskResult] = {}
+            for instance in registry:
+                stored = self._last_by_label.get(str(instance.label))
+                if stored is None:
+                    continue
+                mask, polygon = stored
+                results[str(instance.label)] = MaskResult(
+                    instance_label=str(instance.label),
+                    mask_bitmap=np.array(mask, copy=True),
+                    polygon=list(polygon),
+                )
+            return results
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.CutieMaskManager",
+        _DummyCutieMaskManagerMulti,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.DinoKPSEGPredictor", _DummyKpsegPredictor
+    )
+
+    def _build_instance_crops(_frame_bgr, instance_masks, pad_px, use_mask_gate):
+        return list(instance_masks)
+
+    def _predict_on_instance_crops(_predictor, crops, stabilize_lr):
+        for gid, _mask in crops:
+            # Deliberately place peaks near the other instance; projection should
+            # pull each prediction back into its own polygon.
+            if int(gid) == 0:
+                xy = [(36.0, 20.0), (37.0, 21.0)]
+            else:
+                xy = [(8.0, 8.0), (9.0, 9.0)]
+            yield (
+                int(gid),
+                _DummyPred(
+                    keypoints_xy=xy,
+                    keypoint_scores=[0.9, 0.9],
+                ),
+            )
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.build_instance_crops",
+        _build_instance_crops,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.predict_on_instance_crops",
+        _predict_on_instance_crops,
+    )
+
+    out_dir = tmp_path / "video"
+    out_dir.mkdir()
+    seed_json = {
+        "shapes": [
+            {
+                "label": "mouse0",
+                "shape_type": "polygon",
+                "group_id": 0,
+                "points": [[5, 5], [15, 5], [15, 15], [5, 15]],
+            },
+            {
+                "label": "mouse1",
+                "shape_type": "polygon",
+                "group_id": 1,
+                "points": [[25, 15], [38, 15], [38, 28], [25, 28]],
+            },
+        ]
+    }
+    (out_dir / "video_000000000.json").write_text(
+        json.dumps(seed_json), encoding="utf-8"
+    )
+    (out_dir / "video_000000000.png").write_bytes(b"")
+
+    cfg = CutieDinoTrackerConfig(
+        kpseg_apply_mode="always", use_cutie_tracking=True, persist_labelme_json=True
+    )
+    processor = DinoKPSEGVideoProcessor(
+        video_path=str(tmp_path / "dummy.mp4"),
+        result_folder=out_dir,
+        kpseg_weights="dummy.pt",
+        runtime_config=cfg,
+    )
+    processor.process_video(start_frame=0, end_frame=2, step=1)
+
+    payload = json.loads((out_dir / "video_000000001.json").read_text(encoding="utf-8"))
+    points_by_gid = {}
+    for shape in payload.get("shapes", []):
+        if shape.get("shape_type") != "point":
+            continue
+        gid = int(shape.get("group_id"))
+        x, y = shape["points"][0]
+        points_by_gid.setdefault(gid, []).append((float(x), float(y)))
+
+    assert points_by_gid.get(0)
+    assert points_by_gid.get(1)
+    for x, y in points_by_gid[0]:
+        assert 5.0 <= x <= 15.0
+        assert 5.0 <= y <= 15.0
+    for x, y in points_by_gid[1]:
+        assert 25.0 <= x <= 38.0
+        assert 15.0 <= y <= 28.0

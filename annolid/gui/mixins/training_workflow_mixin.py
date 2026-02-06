@@ -10,6 +10,7 @@ from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ProgressingWindow
 from annolid.gui.widgets import TrainModelDialog
 from annolid.gui.workers import FlexibleWorker
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 from annolid.utils.runs import shared_runs_root
 
 try:
@@ -111,72 +112,122 @@ class TrainingWorkflowMixin:
                 else {}
             )
             dino_model_name = getattr(dlg, "dino_model_name", None)
-            dino_short_side = getattr(dlg, "dino_short_side", 768)
-            dino_layers = getattr(dlg, "dino_layers", "-1")
-            dino_radius_px = getattr(dlg, "dino_radius_px", 6.0)
-            dino_hidden_dim = getattr(dlg, "dino_hidden_dim", 128)
-            dino_head_type = getattr(dlg, "dino_head_type", "conv")
-            dino_attn_heads = getattr(dlg, "dino_attn_heads", 4)
-            dino_attn_layers = getattr(dlg, "dino_attn_layers", 1)
-            dino_lr_pair_loss_weight = getattr(dlg, "dino_lr_pair_loss_weight", 0.0)
-            dino_lr_pair_margin_px = getattr(dlg, "dino_lr_pair_margin_px", 0.0)
-            dino_lr_side_loss_weight = getattr(dlg, "dino_lr_side_loss_weight", 0.0)
-            dino_lr_side_loss_margin = getattr(dlg, "dino_lr_side_loss_margin", 0.0)
-            dino_lr = getattr(dlg, "dino_lr", 0.002)
-            dino_threshold = getattr(dlg, "dino_threshold", 0.4)
-            dino_bce_type = getattr(dlg, "dino_bce_type", "bce")
-            dino_focal_alpha = getattr(dlg, "dino_focal_alpha", 0.25)
-            dino_focal_gamma = getattr(dlg, "dino_focal_gamma", 2.0)
-            dino_coord_warmup_epochs = getattr(dlg, "dino_coord_warmup_epochs", 0)
+            dino_short_side = getattr(dlg, "dino_short_side", dino_defaults.SHORT_SIDE)
+            dino_layers = getattr(dlg, "dino_layers", dino_defaults.LAYERS)
+            dino_radius_px = getattr(dlg, "dino_radius_px", dino_defaults.RADIUS_PX)
+            dino_hidden_dim = getattr(dlg, "dino_hidden_dim", dino_defaults.HIDDEN_DIM)
+            dino_head_type = getattr(dlg, "dino_head_type", dino_defaults.HEAD_TYPE)
+            dino_attn_heads = getattr(dlg, "dino_attn_heads", dino_defaults.ATTN_HEADS)
+            dino_attn_layers = getattr(
+                dlg, "dino_attn_layers", dino_defaults.ATTN_LAYERS
+            )
+            dino_lr_pair_loss_weight = getattr(
+                dlg, "dino_lr_pair_loss_weight", dino_defaults.LR_PAIR_LOSS_WEIGHT
+            )
+            dino_lr_pair_margin_px = getattr(
+                dlg, "dino_lr_pair_margin_px", dino_defaults.LR_PAIR_MARGIN_PX
+            )
+            dino_lr_side_loss_weight = getattr(
+                dlg, "dino_lr_side_loss_weight", dino_defaults.LR_SIDE_LOSS_WEIGHT
+            )
+            dino_lr_side_loss_margin = getattr(
+                dlg, "dino_lr_side_loss_margin", dino_defaults.LR_SIDE_LOSS_MARGIN
+            )
+            dino_lr = getattr(dlg, "dino_lr", dino_defaults.LR)
+            dino_threshold = getattr(dlg, "dino_threshold", dino_defaults.THRESHOLD)
+            dino_bce_type = getattr(dlg, "dino_bce_type", dino_defaults.BCE_TYPE)
+            dino_focal_alpha = getattr(
+                dlg, "dino_focal_alpha", dino_defaults.FOCAL_ALPHA
+            )
+            dino_focal_gamma = getattr(
+                dlg, "dino_focal_gamma", dino_defaults.FOCAL_GAMMA
+            )
+            dino_coord_warmup_epochs = getattr(
+                dlg, "dino_coord_warmup_epochs", dino_defaults.COORD_WARMUP_EPOCHS
+            )
             dino_radius_schedule = getattr(dlg, "dino_radius_schedule", "none")
             dino_radius_start_px = getattr(dlg, "dino_radius_start_px", dino_radius_px)
             dino_radius_end_px = getattr(dlg, "dino_radius_end_px", dino_radius_px)
             dino_overfit_n = getattr(dlg, "dino_overfit_n", 0)
             dino_cache_features = getattr(dlg, "dino_cache_features", True)
-            dino_patience = getattr(dlg, "dino_patience", 0)
-            dino_min_delta = getattr(dlg, "dino_min_delta", 0.0)
-            dino_min_epochs = getattr(dlg, "dino_min_epochs", 0)
-            dino_best_metric = getattr(dlg, "dino_best_metric", "pck@8px")
-            dino_early_stop_metric = getattr(dlg, "dino_early_stop_metric", "auto")
-            dino_pck_weighted_weights = getattr(
-                dlg, "dino_pck_weighted_weights", "1,1,1,1"
+            dino_patience = getattr(
+                dlg, "dino_patience", dino_defaults.EARLY_STOP_PATIENCE
             )
-            dino_augment_enabled = getattr(dlg, "dino_augment_enabled", False)
-            dino_hflip_prob = getattr(dlg, "dino_hflip_prob", 0.5)
-            dino_degrees = getattr(dlg, "dino_degrees", 0.0)
-            dino_translate = getattr(dlg, "dino_translate", 0.0)
-            dino_scale = getattr(dlg, "dino_scale", 0.0)
-            dino_brightness = getattr(dlg, "dino_brightness", 0.0)
-            dino_contrast = getattr(dlg, "dino_contrast", 0.0)
-            dino_saturation = getattr(dlg, "dino_saturation", 0.0)
+            dino_min_delta = getattr(
+                dlg, "dino_min_delta", dino_defaults.EARLY_STOP_MIN_DELTA
+            )
+            dino_min_epochs = getattr(
+                dlg, "dino_min_epochs", dino_defaults.EARLY_STOP_MIN_EPOCHS
+            )
+            dino_best_metric = getattr(
+                dlg, "dino_best_metric", dino_defaults.BEST_METRIC
+            )
+            dino_early_stop_metric = getattr(
+                dlg, "dino_early_stop_metric", dino_defaults.EARLY_STOP_METRIC
+            )
+            dino_pck_weighted_weights = getattr(
+                dlg, "dino_pck_weighted_weights", dino_defaults.PCK_WEIGHTED_WEIGHTS
+            )
+            dino_augment_enabled = getattr(
+                dlg, "dino_augment_enabled", dino_defaults.AUGMENT_ENABLED
+            )
+            dino_hflip_prob = getattr(dlg, "dino_hflip_prob", dino_defaults.HFLIP)
+            dino_degrees = getattr(dlg, "dino_degrees", dino_defaults.DEGREES)
+            dino_translate = getattr(dlg, "dino_translate", dino_defaults.TRANSLATE)
+            dino_scale = getattr(dlg, "dino_scale", dino_defaults.SCALE)
+            dino_brightness = getattr(dlg, "dino_brightness", dino_defaults.BRIGHTNESS)
+            dino_contrast = getattr(dlg, "dino_contrast", dino_defaults.CONTRAST)
+            dino_saturation = getattr(dlg, "dino_saturation", dino_defaults.SATURATION)
             dino_seed = getattr(dlg, "dino_seed", -1)
             dino_tb_add_graph = getattr(dlg, "dino_tb_add_graph", False)
-            dino_tb_projector = getattr(dlg, "dino_tb_projector", True)
-            dino_tb_projector_split = getattr(dlg, "dino_tb_projector_split", "val")
+            dino_tb_projector = getattr(
+                dlg, "dino_tb_projector", dino_defaults.TB_PROJECTOR
+            )
+            dino_tb_projector_split = getattr(
+                dlg, "dino_tb_projector_split", dino_defaults.TB_PROJECTOR_SPLIT
+            )
             dino_tb_projector_max_images = getattr(
-                dlg, "dino_tb_projector_max_images", 64
+                dlg,
+                "dino_tb_projector_max_images",
+                dino_defaults.TB_PROJECTOR_MAX_IMAGES,
             )
             dino_tb_projector_max_patches = getattr(
-                dlg, "dino_tb_projector_max_patches", 4000
+                dlg,
+                "dino_tb_projector_max_patches",
+                dino_defaults.TB_PROJECTOR_MAX_PATCHES,
             )
             dino_tb_projector_per_image_per_keypoint = getattr(
-                dlg, "dino_tb_projector_per_image_per_keypoint", 3
+                dlg,
+                "dino_tb_projector_per_image_per_keypoint",
+                dino_defaults.TB_PROJECTOR_PER_IMAGE_PER_KEYPOINT,
             )
             dino_tb_projector_pos_threshold = getattr(
-                dlg, "dino_tb_projector_pos_threshold", 0.35
+                dlg,
+                "dino_tb_projector_pos_threshold",
+                dino_defaults.TB_PROJECTOR_POS_THRESHOLD,
             )
-            dino_tb_projector_crop_px = getattr(dlg, "dino_tb_projector_crop_px", 96)
+            dino_tb_projector_crop_px = getattr(
+                dlg, "dino_tb_projector_crop_px", dino_defaults.TB_PROJECTOR_CROP_PX
+            )
             dino_tb_projector_sprite_border_px = getattr(
-                dlg, "dino_tb_projector_sprite_border_px", 3
+                dlg,
+                "dino_tb_projector_sprite_border_px",
+                dino_defaults.TB_PROJECTOR_SPRITE_BORDER_PX,
             )
             dino_tb_projector_add_negatives = getattr(
-                dlg, "dino_tb_projector_add_negatives", False
+                dlg,
+                "dino_tb_projector_add_negatives",
+                dino_defaults.TB_PROJECTOR_ADD_NEGATIVES,
             )
             dino_tb_projector_neg_threshold = getattr(
-                dlg, "dino_tb_projector_neg_threshold", 0.02
+                dlg,
+                "dino_tb_projector_neg_threshold",
+                dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
             )
             dino_tb_projector_negatives_per_image = getattr(
-                dlg, "dino_tb_projector_negatives_per_image", 6
+                dlg,
+                "dino_tb_projector_negatives_per_image",
+                dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
             )
 
         if config_file is None:
@@ -211,14 +262,14 @@ class TrainingWorkflowMixin:
                 out_dir=out_dir,
                 model_name=str(dino_model_name or ""),
                 short_side=int(dino_short_side),
-                layers=str(dino_layers or "-1"),
+                layers=str(dino_layers or dino_defaults.LAYERS),
                 radius_px=float(dino_radius_px),
                 hidden_dim=int(dino_hidden_dim),
                 lr=float(dino_lr),
                 epochs=int(epochs),
                 batch_size=int(batch_size),
                 threshold=float(dino_threshold),
-                bce_type=str(dino_bce_type or "bce"),
+                bce_type=str(dino_bce_type or dino_defaults.BCE_TYPE),
                 focal_alpha=float(dino_focal_alpha),
                 focal_gamma=float(dino_focal_gamma),
                 coord_warmup_epochs=int(dino_coord_warmup_epochs),
@@ -228,7 +279,7 @@ class TrainingWorkflowMixin:
                 overfit_n=int(dino_overfit_n),
                 device=yolo_device,
                 cache_features=bool(dino_cache_features),
-                head_type=str(dino_head_type or "conv"),
+                head_type=str(dino_head_type or dino_defaults.HEAD_TYPE),
                 attn_heads=int(dino_attn_heads),
                 attn_layers=int(dino_attn_layers),
                 lr_pair_loss_weight=float(dino_lr_pair_loss_weight),
@@ -238,9 +289,13 @@ class TrainingWorkflowMixin:
                 early_stop_patience=int(dino_patience),
                 early_stop_min_delta=float(dino_min_delta),
                 early_stop_min_epochs=int(dino_min_epochs),
-                best_metric=str(dino_best_metric or "pck@8px"),
-                early_stop_metric=str(dino_early_stop_metric or "auto"),
-                pck_weighted_weights=str(dino_pck_weighted_weights or "1,1,1,1"),
+                best_metric=str(dino_best_metric or dino_defaults.BEST_METRIC),
+                early_stop_metric=str(
+                    dino_early_stop_metric or dino_defaults.EARLY_STOP_METRIC
+                ),
+                pck_weighted_weights=str(
+                    dino_pck_weighted_weights or dino_defaults.PCK_WEIGHTED_WEIGHTS
+                ),
                 augment=bool(dino_augment_enabled),
                 hflip=float(dino_hflip_prob),
                 degrees=float(dino_degrees),
@@ -252,7 +307,9 @@ class TrainingWorkflowMixin:
                 seed=(int(dino_seed) if int(dino_seed) >= 0 else None),
                 tb_add_graph=bool(dino_tb_add_graph),
                 tb_projector=bool(dino_tb_projector),
-                tb_projector_split=str(dino_tb_projector_split or "val"),
+                tb_projector_split=str(
+                    dino_tb_projector_split or dino_defaults.TB_PROJECTOR_SPLIT
+                ),
                 tb_projector_max_images=int(dino_tb_projector_max_images),
                 tb_projector_max_patches=int(dino_tb_projector_max_patches),
                 tb_projector_per_image_per_keypoint=int(

@@ -82,6 +82,117 @@ class DinoKPSEGPredictor:
         self.head.eval()
 
     @staticmethod
+    def _sanitize_threshold(threshold: float) -> float:
+        thr = float(threshold)
+        if not math.isfinite(thr):
+            return 0.0
+        return thr
+
+    @staticmethod
+    def _normalize_instance_id(value: object, *, fallback: int) -> int:
+        if value is None:
+            return int(fallback)
+        if isinstance(value, bool):  # bool is also int
+            return int(value)
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float) and math.isfinite(float(value)):
+            return int(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw:
+                sign = 1
+                if raw[0] in ("+", "-"):
+                    sign = -1 if raw[0] == "-" else 1
+                    raw = raw[1:]
+                if raw.isdigit():
+                    return int(sign * int(raw))
+        return int(fallback)
+
+    @classmethod
+    def _resolve_instance_ids(
+        cls,
+        *,
+        count: int,
+        instance_ids: Optional[Sequence[object]] = None,
+    ) -> List[int]:
+        n = max(0, int(count))
+        if n == 0:
+            return []
+
+        raw_ids = list(instance_ids) if instance_ids is not None else []
+        resolved: List[int] = []
+        used: set[int] = set()
+        for idx in range(n):
+            raw = raw_ids[idx] if idx < len(raw_ids) else None
+            candidate = cls._normalize_instance_id(raw, fallback=idx)
+            unique = int(candidate)
+            while unique in used:
+                unique += 1
+            used.add(unique)
+            resolved.append(int(unique))
+        return resolved
+
+    @staticmethod
+    def _clip_xy_to_frame(
+        x: float,
+        y: float,
+        *,
+        frame_h: int,
+        frame_w: int,
+    ) -> Tuple[float, float]:
+        if frame_w <= 0 or frame_h <= 0:
+            return (0.0, 0.0)
+        x_clip = float(min(max(float(x), 0.0), float(frame_w - 1)))
+        y_clip = float(min(max(float(y), 0.0), float(frame_h - 1)))
+        return (x_clip, y_clip)
+
+    @staticmethod
+    def _resized_to_original_xy(
+        x_resized: float,
+        y_resized: float,
+        *,
+        resized_h: int,
+        resized_w: int,
+        frame_h: int,
+        frame_w: int,
+    ) -> Tuple[float, float]:
+        if resized_h <= 0 or resized_w <= 0:
+            return (0.0, 0.0)
+        x_orig = float(x_resized) * (float(frame_w) / float(resized_w))
+        y_orig = float(y_resized) * (float(frame_h) / float(resized_h))
+        return DinoKPSEGPredictor._clip_xy_to_frame(
+            x_orig, y_orig, frame_h=frame_h, frame_w=frame_w
+        )
+
+    @staticmethod
+    def _mask_to_uint8(mask: np.ndarray, *, frame_shape: Tuple[int, int]) -> np.ndarray:
+        mask_arr = np.asarray(mask)
+        if mask_arr.shape[:2] != tuple(frame_shape):
+            raise ValueError("mask must have the same HxW as the input frame/crop")
+        if mask_arr.dtype == bool:
+            return mask_arr.astype(np.uint8) * 255
+        if np.issubdtype(mask_arr.dtype, np.floating):
+            clipped = np.clip(mask_arr, 0.0, 1.0)
+            return (clipped * 255.0).astype(np.uint8)
+        if mask_arr.dtype != np.uint8:
+            return np.clip(mask_arr, 0, 255).astype(np.uint8)
+        return mask_arr
+
+    @staticmethod
+    def _apply_mask_gate(
+        probs_raw: torch.Tensor, mask_patch: torch.Tensor
+    ) -> torch.Tensor:
+        gated = probs_raw * mask_patch.unsqueeze(0)
+        gated_mass = gated.sum(dim=(1, 2))
+        fallback = gated_mass <= 1e-6
+        if bool(torch.any(fallback)):
+            probs = probs_raw.clone()
+            probs[~fallback] = gated[~fallback]
+            return probs
+        return gated
+
+    @staticmethod
     def _soft_argmax_coords(
         probs: torch.Tensor,
         *,
@@ -189,28 +300,12 @@ class DinoKPSEGPredictor:
         probs = probs_raw
 
         if mask is not None:
-            mask_arr = np.asarray(mask)
-            if mask_arr.shape[:2] != tuple(frame_shape):
-                raise ValueError("mask must have the same HxW as the input frame/crop")
-            if mask_arr.dtype == bool:
-                mask_arr = mask_arr.astype(np.uint8) * 255
-            elif np.issubdtype(mask_arr.dtype, np.floating):
-                mask_arr = np.clip(mask_arr, 0.0, 1.0)
-                mask_arr = (mask_arr * 255.0).astype(np.uint8)
-            elif mask_arr.dtype != np.uint8:
-                mask_arr = np.clip(mask_arr, 0, 255).astype(np.uint8)
+            mask_arr = self._mask_to_uint8(mask, frame_shape=frame_shape)
 
             mask_patch = self.extractor.quantize_mask(mask_arr).to(
                 dtype=probs_raw.dtype, device=probs_raw.device
             )
-            gated = probs_raw * mask_patch.unsqueeze(0)
-            gated_mass = gated.sum(dim=(1, 2))
-            fallback = gated_mass <= 1e-6
-            if bool(torch.any(fallback)):
-                probs = probs_raw.clone()
-                probs[~fallback] = gated[~fallback]
-            else:
-                probs = gated
+            probs = self._apply_mask_gate(probs_raw, mask_patch)
 
         return probs, (int(resized_h), int(resized_w)), int(patch_size)
 
@@ -229,9 +324,9 @@ class DinoKPSEGPredictor:
         probs, (resized_h, resized_w), patch_size = self._compute_probs(
             feats, frame_shape=frame_shape, mask=mask
         )
-        thr = float(threshold) if threshold is not None else float(self.meta.threshold)
-        if not math.isfinite(thr):
-            thr = 0.0
+        thr = self._sanitize_threshold(
+            float(threshold) if threshold is not None else float(self.meta.threshold)
+        )
         nms_patch = max(
             0, int(round(float(nms_radius_px) / max(1.0, float(patch_size))))
         )
@@ -259,8 +354,14 @@ class DinoKPSEGPredictor:
             for (x_idx, y_idx), score in zip(coords_patch, scores):
                 x_res = (float(x_idx) + 0.5) * float(patch_size)
                 y_res = (float(y_idx) + 0.5) * float(patch_size)
-                x_orig = float(x_res) * (float(w0) / float(resized_w))
-                y_orig = float(y_res) * (float(h0) / float(resized_h))
+                x_orig, y_orig = self._resized_to_original_xy(
+                    x_res,
+                    y_res,
+                    resized_h=resized_h,
+                    resized_w=resized_w,
+                    frame_h=h0,
+                    frame_w=w0,
+                )
                 peaks.append((float(x_orig), float(y_orig), float(score)))
             out[int(k)] = peaks
 
@@ -356,7 +457,9 @@ class DinoKPSEGPredictor:
             feats, frame_shape=frame_shape, mask=mask
         )
 
-        thr = float(threshold) if threshold is not None else float(self.meta.threshold)
+        thr = self._sanitize_threshold(
+            float(threshold) if threshold is not None else float(self.meta.threshold)
+        )
         masks: Optional[np.ndarray] = None
         masks_t = None
         if return_patch_masks:
@@ -370,14 +473,19 @@ class DinoKPSEGPredictor:
 
         # Scores from peak probability for consistency with prior outputs.
         flat = probs.view(probs.shape[0], -1)
-        best_idx = torch.argmax(flat, dim=1)
-        scores = torch.gather(flat, 1, best_idx[:, None]).squeeze(1).tolist()
+        scores = flat.max(dim=1).values.tolist()
 
         keypoints_xy: List[Tuple[float, float]] = []
         h0, w0 = int(frame_shape[0]), int(frame_shape[1])
         for x_res, y_res in coords_resized:
-            x_orig = float(x_res) * (float(w0) / float(resized_w))
-            y_orig = float(y_res) * (float(h0) / float(resized_h))
+            x_orig, y_orig = self._resized_to_original_xy(
+                x_res,
+                y_res,
+                resized_h=resized_h,
+                resized_w=resized_w,
+                frame_h=h0,
+                frame_w=w0,
+            )
             keypoints_xy.append((float(x_orig), float(y_orig)))
 
         if stabilize_lr and self._symmetric_pairs and prev_xy is not None:
@@ -436,6 +544,7 @@ class DinoKPSEGPredictor:
         frame_bgr: np.ndarray,
         *,
         bboxes_xyxy: Sequence[Sequence[float]],
+        instance_ids: Optional[Sequence[object]] = None,
         threshold: Optional[float] = None,
         return_patch_masks: bool = False,
         stabilize_lr: bool = False,
@@ -449,9 +558,14 @@ class DinoKPSEGPredictor:
         if frame_h <= 1 or frame_w <= 1:
             return []
 
+        bboxes = list(bboxes_xyxy)
+        resolved_ids = self._resolve_instance_ids(
+            count=len(bboxes),
+            instance_ids=instance_ids,
+        )
         results: List[Tuple[int, DinoKPSEGPrediction]] = []
         scale = float(bbox_scale) if bbox_scale is not None else 1.0
-        for idx, bbox in enumerate(list(bboxes_xyxy)):
+        for bbox, instance_id in zip(bboxes, resolved_ids):
             if len(bbox) < 4:
                 continue
             x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
@@ -481,7 +595,7 @@ class DinoKPSEGPredictor:
                 return_patch_masks=return_patch_masks,
                 stabilize_lr=stabilize_lr,
                 stabilize_cfg=stabilize_cfg,
-                instance_id=int(idx),
+                instance_id=int(instance_id),
             )
             shifted_xy = [
                 (float(x) + float(rx1), float(y) + float(ry1))
@@ -489,7 +603,7 @@ class DinoKPSEGPredictor:
             ]
             results.append(
                 (
-                    int(idx),
+                    int(instance_id),
                     DinoKPSEGPrediction(
                         keypoints_xy=shifted_xy,
                         keypoint_scores=pred.keypoint_scores,

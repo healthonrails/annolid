@@ -141,6 +141,9 @@ class DinoKPSEGVideoProcessor:
         self.pred_worker = None
         self._bbox_padding_px = max(0, int(bbox_padding_px))
         self._instance_display_labels: Dict[str, str] = {}
+        self._instance_numeric_id_by_label: Dict[str, int] = {}
+        self._instance_label_by_numeric_id: Dict[int, str] = {}
+        self._next_instance_numeric_id: int = 0
         self.annotation_parser = DinoKPSEGAnnotationParser(
             image_height=self.video_height,
             image_width=self.video_width,
@@ -149,6 +152,48 @@ class DinoKPSEGVideoProcessor:
         self._kpseg_enabled_by_instance: Dict[str, bool] = {}
         self._kpseg_good_streak: Dict[str, int] = {}
         self._kpseg_bad_streak: Dict[str, int] = {}
+
+    def _reset_instance_id_state(self) -> None:
+        self._instance_numeric_id_by_label = {}
+        self._instance_label_by_numeric_id = {}
+        self._next_instance_numeric_id = 0
+
+    def _reserve_instance_numeric_id(
+        self,
+        *,
+        instance_label: str,
+        preferred: Optional[int] = None,
+    ) -> int:
+        label = str(instance_label)
+        existing = self._instance_numeric_id_by_label.get(label)
+        if existing is not None:
+            return int(existing)
+
+        if preferred is not None:
+            candidate = int(preferred)
+            owner = self._instance_label_by_numeric_id.get(candidate)
+            if owner is None or owner == label:
+                self._instance_numeric_id_by_label[label] = int(candidate)
+                self._instance_label_by_numeric_id[int(candidate)] = label
+                self._next_instance_numeric_id = max(
+                    int(self._next_instance_numeric_id), int(candidate) + 1
+                )
+                return int(candidate)
+
+        candidate = int(self._next_instance_numeric_id)
+        while candidate in self._instance_label_by_numeric_id:
+            candidate += 1
+        self._instance_numeric_id_by_label[label] = int(candidate)
+        self._instance_label_by_numeric_id[int(candidate)] = label
+        self._next_instance_numeric_id = int(candidate) + 1
+        return int(candidate)
+
+    def _resolve_instance_numeric_id(self, instance_label: str) -> int:
+        preferred = self._normalize_group_id(instance_label)
+        return self._reserve_instance_numeric_id(
+            instance_label=str(instance_label),
+            preferred=(int(preferred) if preferred is not None else None),
+        )
 
     def _ensure_keypoint_tracker(self) -> DinoKeypointTracker:
         if self._keypoint_tracker is None:
@@ -210,6 +255,7 @@ class DinoKPSEGVideoProcessor:
             end_frame=end_frame,
         )
         manual_frames.pop(manual_seed.frame_number, None)
+        self._reset_instance_id_state()
 
         self.mask_manager.reset_state()
         self.predictor.reset_state()
@@ -551,9 +597,7 @@ class DinoKPSEGVideoProcessor:
             return
         frame_bgr = frame_rgb[:, :, ::-1]
         for instance in registry:
-            gid = self._normalize_group_id(instance.label)
-            if gid is None:
-                continue
+            gid = self._resolve_instance_numeric_id(str(instance.label))
             manual_points = keypoints_by_instance.get(instance.label, {})
             if not manual_points:
                 continue
@@ -644,9 +688,7 @@ class DinoKPSEGVideoProcessor:
         instance_masks: List[Tuple[int, np.ndarray]] = []
 
         for instance in registry:
-            gid = self._normalize_group_id(instance.label)
-            if gid is None:
-                continue
+            gid = self._resolve_instance_numeric_id(str(instance.label))
             mask = instance.mask_bitmap
             if mask is None and instance.polygon is not None:
                 mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
@@ -1078,8 +1120,7 @@ class DinoKPSEGVideoProcessor:
         )
         shapes: List[Shape] = []
         for instance in registry:
-            gid = self._normalize_group_id(instance.label)
-            group_id = int(gid) if gid is not None else None
+            group_id = int(self._resolve_instance_numeric_id(str(instance.label)))
             display = self._instance_display_labels.get(
                 instance.label, str(instance.label)
             )

@@ -113,3 +113,50 @@ def test_dino_kpseg_annotation_parser_reuses_group_ids_by_polygon_label(tmp_path
 
     assert set(parsed_a.registry.instances.keys()) == {"0"}
     assert set(parsed_b.registry.instances.keys()) == {"0"}
+
+
+def test_dino_kpseg_annotation_parser_handles_duplicate_group_ids(tmp_path: Path):
+    payload = {
+        "shapes": [
+            {
+                "label": "mouse_a",
+                "shape_type": "polygon",
+                "group_id": 0,
+                "points": [[4, 4], [14, 4], [14, 14], [4, 14]],
+            },
+            {
+                "label": "mouse_b",
+                "shape_type": "polygon",
+                "group_id": 0,
+                "points": [[20, 20], [30, 20], [30, 30], [20, 30]],
+            },
+            {
+                "label": "nose",
+                "shape_type": "point",
+                "group_id": 0,
+                "points": [[10, 10]],
+            },
+            {
+                "label": "tail",
+                "shape_type": "point",
+                "group_id": 0,
+                "points": [[26, 26]],
+            },
+        ]
+    }
+    json_path = tmp_path / "dup_gid.json"
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    adapter = AnnotationAdapter(image_height=40, image_width=40, persist_json=False)
+    parser = DinoKPSEGAnnotationParser(
+        image_height=40,
+        image_width=40,
+        adapter=adapter,
+    )
+    manual = parser.read_manual_annotation(0, json_path)
+
+    # Parser remaps duplicate polygon group IDs to keep instances distinct.
+    assert set(manual.registry.instances.keys()) == {"0", "1"}
+    assert manual.keypoints_by_instance["0"]["nose"] == (10.0, 10.0)
+    # Explicit duplicate group_id on this point is corrected by mask assignment.
+    assert manual.keypoints_by_instance["1"]["tail"] == (26.0, 26.0)

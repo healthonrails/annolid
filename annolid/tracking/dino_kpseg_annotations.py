@@ -11,6 +11,7 @@ import numpy as np
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.domain import InstanceRegistry, KeypointState
 from annolid.utils.annotation_store import load_labelme_json
+from annolid.utils.logger import logger
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,15 @@ class DinoKPSEGAnnotationParser:
                     gid = int(self._polygon_label_to_gid[raw_label])
                 else:
                     gid = self._next_group_id(used_gids)
+            if int(gid) in used_gids:
+                remapped = self._next_group_id(used_gids)
+                logger.warning(
+                    "Duplicate polygon group_id=%s in %s; remapped to %s.",
+                    gid,
+                    json_path,
+                    remapped,
+                )
+                gid = remapped
             used_gids.add(int(gid))
             points = shape.get("points") or []
             polygon = [
@@ -134,6 +144,20 @@ class DinoKPSEGAnnotationParser:
 
             if gid is None:
                 gid = self._assign_group_for_point(x, y, polygon_masks, polygons)
+            else:
+                gid_int = int(gid)
+                mask = polygon_masks.get(gid_int)
+                xi = int(round(float(x)))
+                yi = int(round(float(y)))
+                if (
+                    mask is None
+                    or xi < 0
+                    or yi < 0
+                    or yi >= int(mask.shape[0])
+                    or xi >= int(mask.shape[1])
+                    or not bool(mask[yi, xi])
+                ):
+                    gid = self._assign_group_for_point(x, y, polygon_masks, polygons)
             if gid is None:
                 continue
             inst_key = str(int(gid))

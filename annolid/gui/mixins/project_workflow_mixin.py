@@ -10,6 +10,7 @@ from annolid.core.behavior.spec import (
     default_behavior_spec,
     save_behavior_spec,
 )
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 from annolid.gui.widgets import TrainingDashboardDialog
 from annolid.utils.logger import logger
 
@@ -170,14 +171,14 @@ class ProjectWorkflowMixin:
                 data_format=str(config.get("data_format", "auto") or "auto"),
                 out_dir=config.get("output_dir"),
                 model_name=config.get("model"),
-                short_side=config.get("short_side", 768),
-                layers=config.get("layers", "-1"),
-                radius_px=config.get("radius_px", 6.0),
-                hidden_dim=config.get("hidden_dim", 128),
-                lr=config.get("lr", 0.002),
-                epochs=config.get("epochs", 100),
-                batch_size=config.get("batch", 8),
-                threshold=config.get("threshold", 0.4),
+                short_side=config.get("short_side", dino_defaults.SHORT_SIDE),
+                layers=config.get("layers", dino_defaults.LAYERS),
+                radius_px=config.get("radius_px", dino_defaults.RADIUS_PX),
+                hidden_dim=config.get("hidden_dim", dino_defaults.HIDDEN_DIM),
+                lr=config.get("lr", dino_defaults.LR),
+                epochs=config.get("epochs", dino_defaults.EPOCHS),
+                batch_size=config.get("batch", dino_defaults.BATCH),
+                threshold=config.get("threshold", dino_defaults.THRESHOLD),
                 device=config.get("device", ""),
                 cache_features=config.get("cache_features", True),
             )

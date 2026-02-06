@@ -399,6 +399,21 @@ class InferenceProcessor:
             )
             return False
 
+        instance_ids = visual_prompts.get("instance_ids")
+        if instance_ids is not None:
+            try:
+                num_ids = int(len(instance_ids))
+            except Exception:
+                logger.error("Visual prompts 'instance_ids' must be array-like.")
+                return False
+            if num_ids != int(bboxes.shape[0]):
+                logger.error(
+                    "Mismatch: %d bboxes vs %d instance_ids.",
+                    bboxes.shape[0],
+                    num_ids,
+                )
+                return False
+
         return True
 
     @staticmethod
@@ -478,9 +493,14 @@ class InferenceProcessor:
 
         if visual_prompts is not None:
             try:
+                raw_prompts = dict(visual_prompts)
                 bboxes = np.asarray(visual_prompts.get("bboxes", []), dtype=float)
                 cls = np.asarray(visual_prompts.get("cls", []), dtype=int)
                 visual_prompts = {"bboxes": bboxes, "cls": cls}
+                if "instance_ids" in raw_prompts:
+                    visual_prompts["instance_ids"] = np.asarray(
+                        raw_prompts.get("instance_ids", []), dtype=object
+                    )
             except Exception as exc:
                 logger.error(
                     "Failed to normalize visual prompts; proceeding without them: %s",
@@ -707,8 +727,10 @@ class InferenceProcessor:
                     break
                 frame_shape = (frame.shape[0], frame.shape[1], 3)
                 bboxes = None
+                instance_ids = None
                 if visual_prompts is not None:
                     bboxes = visual_prompts.get("bboxes")
+                    instance_ids = visual_prompts.get("instance_ids")
                 prompt_shapes = self._load_prompt_shapes(
                     output_directory, frame_index=int(frame_index)
                 )
@@ -716,7 +738,10 @@ class InferenceProcessor:
                     prompt_shapes, frame_hw=(int(frame_shape[0]), int(frame_shape[1]))
                 )
                 annotations = self.extract_dino_kpseg_results(
-                    frame, bboxes=bboxes, instance_masks=instance_masks
+                    frame,
+                    bboxes=bboxes,
+                    instance_masks=instance_masks,
+                    instance_ids=instance_ids,
                 )
                 self.save_yolo_to_labelme(
                     annotations,
@@ -1035,12 +1060,24 @@ class InferenceProcessor:
                 if clean and clean.lower() not in schema_instances:
                     schema_instances[clean.lower()] = int(idx)
 
-        instance_masks: List[Tuple[int, np.ndarray]] = []
-        used_gids: set[int] = set()
+        polygon_like = []
         for shape in shapes:
             shape_type = str(shape.get("shape_type") or "").strip().lower()
-            if shape_type not in ("polygon", "rectangle", "circle"):
+            if shape_type in ("polygon", "rectangle", "circle"):
+                polygon_like.append(shape)
+
+        label_counts: Dict[str, int] = {}
+        for shape in polygon_like:
+            clean = self._clean_instance_label(shape.get("label"))
+            if not clean:
                 continue
+            key = clean.lower()
+            label_counts[key] = int(label_counts.get(key, 0)) + 1
+
+        instance_masks: List[Tuple[int, np.ndarray]] = []
+        used_gids: set[int] = set()
+        for shape in polygon_like:
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
             points = shape.get("points") or []
             if not isinstance(points, list) or not points:
                 continue
@@ -1057,15 +1094,19 @@ class InferenceProcessor:
                 by_schema = schema_instances.get(label.lower())
                 if by_schema is not None:
                     gid = int(by_schema)
-            if gid is None and label:
+            # Reuse label->gid only for labels that are unique in this frame.
+            if gid is None and label and int(label_counts.get(label.lower(), 0)) == 1:
                 existing = self._instance_label_to_gid.get(label.lower())
                 if existing is not None:
                     gid = int(existing)
             if gid is None:
                 gid = self._next_group_id(used_gids)
+            elif int(gid) in used_gids:
+                # Avoid collapsing multiple polygons onto the same identity.
+                gid = self._next_group_id(used_gids)
             used_gids.add(int(gid))
-            if label:
-                self._instance_label_to_gid.setdefault(label.lower(), int(gid))
+            if label and int(label_counts.get(label.lower(), 0)) == 1:
+                self._instance_label_to_gid[label.lower()] = int(gid)
 
             mask = np.zeros((height, width), dtype=np.uint8)
             if shape_type == "polygon":
@@ -1131,6 +1172,7 @@ class InferenceProcessor:
         *,
         bboxes: Optional[np.ndarray] = None,
         instance_masks: Optional[Sequence[Tuple[int, np.ndarray]]] = None,
+        instance_ids: Optional[Sequence[object]] = None,
     ) -> list:
         annotations = []
         try:
@@ -1156,6 +1198,7 @@ class InferenceProcessor:
                 predictions = self.model.predict_instances(
                     frame_bgr,
                     bboxes_xyxy=bboxes,
+                    instance_ids=instance_ids,
                     return_patch_masks=False,
                     stabilize_lr=True,
                 )
