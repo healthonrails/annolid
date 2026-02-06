@@ -553,8 +553,8 @@ class PredictionProgressMixin:
                         )
                         self.seekbar.addMark(progress_mark)
                         self._prediction_progress_mark = progress_mark
-                        if bool(getattr(self, "_follow_prediction_progress", False)):
-                            self._sync_prediction_progress_frame(start_frame)
+                        # Keep the viewport on the user's current frame until
+                        # the first prediction result is actually produced.
                         self._update_progress_bar(0)
                 else:
                     self._clear_prediction_progress_mark()
@@ -566,8 +566,22 @@ class PredictionProgressMixin:
                 run_completed_frames = sorted(all_frame_nums)
                 if run_completed_frames:
                     progress_frame = int(run_completed_frames[-1])
-                elif self._prediction_start_frame is not None:
-                    progress_frame = int(self._prediction_start_frame)
+                else:
+                    # Only baseline/seed frames exist so far; keep progress at 0
+                    # and do not advance the viewport until fresh outputs appear.
+                    self._update_progress_bar(0)
+                    if self._prediction_start_frame is not None:
+                        start_frame = int(self._prediction_start_frame)
+                        if 0 <= start_frame < self.num_frames:
+                            self._clear_prediction_progress_mark()
+                            progress_mark = VideoSliderMark(
+                                mark_type="prediction_progress", val=start_frame
+                            )
+                            self.seekbar.addMark(progress_mark)
+                            self._prediction_progress_mark = progress_mark
+                    else:
+                        self._clear_prediction_progress_mark()
+                    return
             elif latest_completed_frames:
                 progress_frame = int(latest_completed_frames[-1])
 

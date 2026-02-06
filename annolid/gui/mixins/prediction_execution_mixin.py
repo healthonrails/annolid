@@ -694,10 +694,6 @@ class PredictionExecutionMixin:
                     logger.debug(
                         "Failed to start prediction progress watcher.", exc_info=True
                     )
-            try:
-                self.frame_number = int(watch_start_frame)
-            except Exception:
-                pass
             logger.info("Prediction started from frame: %s", int(watch_start_frame))
             self.stepSizeWidget.predict_button.setText("Stop")
             self.stepSizeWidget.predict_button.setStyleSheet(
