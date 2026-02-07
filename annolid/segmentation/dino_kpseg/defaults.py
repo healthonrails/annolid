@@ -15,21 +15,21 @@ BBOX_SCALE = 1.15
 
 # Optimization/model capacity
 HIDDEN_DIM = 192
-LR = 4e-4
-EPOCHS = 100
+LR = 3e-4
+EPOCHS = 120
 BATCH = 8
 THRESHOLD = 0.40
 HEAD_TYPE = "hybrid"
 ATTN_HEADS = 4
 ATTN_LAYERS = 2
-COORD_WARMUP_EPOCHS = 3
+COORD_WARMUP_EPOCHS = 5
 
 # Loss weighting
 BCE_TYPE = "bce"
 FOCAL_ALPHA = 0.25
 FOCAL_GAMMA = 2.0
 DICE_LOSS_WEIGHT = 0.35
-COORD_LOSS_WEIGHT = 0.40
+COORD_LOSS_WEIGHT = 0.50
 COORD_LOSS_TYPE = "smooth_l1"
 
 # Left-right regularization (helps reduce swap errors when flip_idx is available)
@@ -39,12 +39,12 @@ LR_SIDE_LOSS_WEIGHT = 0.04
 LR_SIDE_LOSS_MARGIN = 0.05
 
 # Early stopping/model selection
-EARLY_STOP_PATIENCE = 12
-EARLY_STOP_MIN_DELTA = 0.002
+EARLY_STOP_PATIENCE = 20
+EARLY_STOP_MIN_DELTA = 0.001
 EARLY_STOP_MIN_EPOCHS = 12
-BEST_METRIC = "pck@8px"
+BEST_METRIC = "pck_weighted"
 EARLY_STOP_METRIC = "auto"
-PCK_WEIGHTED_WEIGHTS = "1,1,1,1"
+PCK_WEIGHTED_WEIGHTS = "1,1,2,2"
 
 # Augmentation defaults (used when augmentations are enabled)
 AUGMENT_ENABLED = True

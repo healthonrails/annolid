@@ -1151,15 +1151,31 @@ class Canvas(QtWidgets.QWidget):
         self.movingShape = True
 
     def removeSelectedPoint(self):
-        shape = self.prevhShape
-        index = self.prevhVertex
+        shape = self.hShape if self.hShape is not None else self.prevhShape
+        index = self.hVertex if self.hVertex is not None else self.prevhVertex
         if shape is None or index is None:
-            return
+            return False
+        if index < 0 or index >= len(shape.points):
+            return False
+        point_count_before = len(shape.points)
         shape.removePoint(index)
+        if len(shape.points) == point_count_before:
+            return False
         shape.highlightClear()
         self.hShape = shape
-        self.prevhVertex = None
+        if shape.points:
+            new_index = min(index, len(shape.points) - 1)
+            self.hVertex = new_index
+            self.prevhVertex = new_index
+            shape.highlightVertex(new_index, shape.MOVE_VERTEX)
+        else:
+            self.hVertex = None
+            self.prevhVertex = None
+        self.hEdge = None
+        self.prevhEdge = None
         self.movingShape = True  # Save changes
+        self.vertexSelected.emit(self.hVertex is not None)
+        return True
 
     def _icon(self, filename: str) -> QtGui.QIcon:
         path = self._icons_dir / filename
@@ -2205,7 +2221,15 @@ class Canvas(QtWidgets.QWidget):
             elif modifiers == QtCore.Qt.AltModifier:
                 self.snapping = False
         elif self.editing():
-            if key == QtCore.Qt.Key_Up:
+            if key in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                if self.selectedVertex() and self.removeSelectedPoint():
+                    self.storeShapes()
+                    self.shapeMoved.emit()
+                    self.movingShape = False
+                    self.update()
+                ev.accept()
+                return
+            elif key == QtCore.Qt.Key_Up:
                 self.moveByKeyboard(QtCore.QPointF(0.0, -MOVE_SPEED))
             elif key == QtCore.Qt.Key_Down:
                 self.moveByKeyboard(QtCore.QPointF(0.0, MOVE_SPEED))
