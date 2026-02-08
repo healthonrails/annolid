@@ -334,6 +334,7 @@ class MediaPipeEngine:
                     ]
                 )
         elif self.type == "face" and results.face_landmarks:
+            metadata_gaze = {}
             for face_landmarks in results.face_landmarks:
                 face_lms_norm = [[lm.x, lm.y, 1.0] for lm in face_landmarks]
                 norm_landmarks.append(face_lms_norm)
@@ -383,8 +384,87 @@ class MediaPipeEngine:
                                 focal_length_px * real_iris_diameter_mm
                             ) / avg_diameter_px
                             distance_cm = distance_mm / 10.0
+
+                            # Gaze estimation
+                            def get_gaze(eye_indices, iris_center_idx):
+                                eye_pts = np.array(
+                                    [
+                                        (face_landmarks[i].x, face_landmarks[i].y)
+                                        for i in eye_indices
+                                    ]
+                                )
+                                eye_center = np.mean(eye_pts, axis=0)
+                                iris_center = np.array(
+                                    [
+                                        face_landmarks[iris_center_idx].x,
+                                        face_landmarks[iris_center_idx].y,
+                                    ]
+                                )
+                                width = np.max(eye_pts[:, 0]) - np.min(eye_pts[:, 0])
+                                height = np.max(eye_pts[:, 1]) - np.min(eye_pts[:, 1])
+                                gaze_x = (
+                                    (iris_center[0] - eye_center[0]) / (width / 2.0)
+                                    if width > 0
+                                    else 0
+                                )
+                                gaze_y = (
+                                    (iris_center[1] - eye_center[1]) / (height / 2.0)
+                                    if height > 0
+                                    else 0
+                                )
+                                return [float(gaze_x), float(gaze_y)]
+
+                            # Indices for eye contours (same as in plot)
+                            RIGHT_EYE = [
+                                33,
+                                7,
+                                163,
+                                144,
+                                145,
+                                153,
+                                154,
+                                155,
+                                133,
+                                173,
+                                157,
+                                158,
+                                159,
+                                160,
+                                161,
+                                246,
+                            ]
+                            LEFT_EYE = [
+                                362,
+                                382,
+                                381,
+                                380,
+                                374,
+                                373,
+                                390,
+                                249,
+                                263,
+                                466,
+                                388,
+                                387,
+                                386,
+                                385,
+                                384,
+                                398,
+                            ]
+
+                            gaze_right = get_gaze(RIGHT_EYE, 473)
+                            gaze_left = get_gaze(LEFT_EYE, 468)
+
+                            metadata_gaze = {
+                                "gaze_left": gaze_left,
+                                "gaze_right": gaze_right,
+                                "gaze_avg": [
+                                    (gaze_left[0] + gaze_right[0]) / 2.0,
+                                    (gaze_left[1] + gaze_right[1]) / 2.0,
+                                ],
+                            }
                     except Exception as e:
-                        logger.debug(f"Iris depth estimation error: {e}")
+                        logger.debug(f"Iris depth/gaze estimation error: {e}")
 
         elif self.type == "pose" and results.pose_landmarks:
             for pose_landmarks in results.pose_landmarks:
@@ -405,6 +485,7 @@ class MediaPipeEngine:
             names=self.names,
             orig_img=frame,
             distance_cm=distance_cm,
+            metadata=metadata_gaze if "metadata_gaze" in locals() else {},
         )
         return [res]
 

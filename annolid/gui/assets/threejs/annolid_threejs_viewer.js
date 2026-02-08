@@ -381,6 +381,21 @@ async function boot() {
     const poseGroup = new THREE.Group();
     scene.add(poseGroup);
 
+    // --- Gaze Integration ---
+    const gazeReticle = new THREE.Group();
+    const reticleRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.1, 0.12, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff3366, transparent: true, opacity: 0.8 })
+    );
+    const reticleDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.02, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xff3366 })
+    );
+    gazeReticle.add(reticleRing);
+    gazeReticle.add(reticleDot);
+    gazeReticle.visible = false;
+    scene.add(gazeReticle);
+
     const initRealtimeVideo = () => {
       // Use RGBAFormat for better compatibility with newer Three.js data textures
       videoTexture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
@@ -451,14 +466,6 @@ async function boot() {
             let nx = kp[0];
             let ny = kp[1];
 
-            // If pixels are provided, normalize them first
-            if (det.keypoints_pixels) {
-              // We don't have the original image dimensions here easily,
-              // but we can assume they match the videoTexture aspect or just use normalized if available.
-              // For now, let's stick to normalized if available, or assume a standard width/height if not.
-              // Most YOLO pose results include both.
-            }
-
             // Map normalized [0..1] to scene space [-aspect*5, aspect*5] and [5, -5]
             const x = (nx - 0.5) * (aspect * 10);
             const y = -(ny - 0.5) * 10;
@@ -476,7 +483,31 @@ async function boot() {
             const line = new THREE.Line(lineGeo, lineMat);
             poseSkeleton.add(line);
           }
+
+          // 3. Update Gaze if present
+          if (det.metadata && det.metadata.gaze_avg) {
+            const gaze = det.metadata.gaze_avg;
+            // Smoothing
+            const lerpFactor = 0.25;
+            const gx = (gaze[0] * (aspect * 5)) * lerpFactor + gazeReticle.position.x * (1 - lerpFactor);
+            const gy = (-gaze[1] * 5) * lerpFactor + gazeReticle.position.y * (1 - lerpFactor);
+
+            gazeReticle.position.set(gx, gy, 0.05);
+            gazeReticle.visible = true;
+
+            if (window.__annolidEnableEyeControl && root.children.length > 0) {
+              // Map gaze [-1..1] to rotation
+              const targetRotX = gaze[1] * 1.2;
+              const targetRotY = gaze[0] * 1.2;
+              root.rotation.x = targetRotX * lerpFactor + root.rotation.x * (1 - lerpFactor);
+              root.rotation.y = targetRotY * lerpFactor + root.rotation.y * (1 - lerpFactor);
+            }
+          } else {
+            gazeReticle.visible = false;
+          }
         });
+      } else {
+        gazeReticle.visible = false;
       }
     };
 

@@ -67,16 +67,18 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             pass
         layout.addWidget(self._web_view, 1)
 
-    def init_viewer(self) -> None:
+    def init_viewer(self, enable_eye_control: bool = False) -> None:
         """Initialize the Three.js viewer HTML without loading a model."""
         if self._web_view is None:
             return
         if self._current_path is not None:
-            return  # Already has a model
+            # If model is already loaded, just update eye control state
+            self.set_eye_control(enable_eye_control)
+            return
 
         base = _ensure_threejs_http_server()
         base_url = QtCore.QUrl(base + "/")
-        html = """
+        html = f"""
 <!doctype html>
 <html>
 <head>
@@ -86,6 +88,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     window.__annolidThreeTitle = "Real-time";
     window.__annolidThreeModelUrl = "";
     window.__annolidThreeModelExt = "";
+    window.__annolidEnableEyeControl = {str(enable_eye_control).lower()};
   </script>
 </head>
 <body>
@@ -111,11 +114,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         import base64
         from qtpy.QtCore import QBuffer, QIODevice
 
-        # Convert QImage to base64 JPEG
-        buffer = QBuffer()
-        buffer.open(QIODevice.WriteOnly)
-        qimage.save(buffer, "JPG", 80)
-        base64_data = base64.b64encode(buffer.data().data()).decode("utf-8")
+        base64_data = ""
+        if qimage is not None and not qimage.isNull():
+            # Convert QImage to base64 JPEG
+            buffer = QBuffer()
+            buffer.open(QIODevice.WriteOnly)
+            qimage.save(buffer, "JPG", 80)
+            base64_data = base64.b64encode(buffer.data().data()).decode("utf-8")
 
         # Prepare detections JSON
         # We only pass keys that Three.js logic expects: behavior, confidence, keypoints, keypoints_pixels
@@ -127,6 +132,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
                     "confidence": det.get("confidence"),
                     "keypoints": det.get("keypoints"),
                     "keypoints_pixels": det.get("keypoints_pixels"),
+                    "metadata": det.get("metadata", {}),
                 }
             )
 
@@ -135,6 +141,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             f"window.updateRealtimeData('{base64_data}', {json.dumps(minimal_detections)});"
             f"}}"
         )
+        self._web_view.page().runJavaScript(js_code)
+
+    def set_eye_control(self, enabled: bool) -> None:
+        """Dynamically enable/disable eye control in the JS viewer."""
+        if self._web_view is None:
+            return
+        js_code = f"window.__annolidEnableEyeControl = {str(enabled).lower()};"
         self._web_view.page().runJavaScript(js_code)
 
     def load_model(self, model_path: str | Path) -> None:
@@ -164,6 +177,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     window.__annolidThreeTitle = "{title}";
     window.__annolidThreeModelUrl = "{model_url}";
     window.__annolidThreeModelExt = "{model_ext}";
+    window.__annolidEnableEyeControl = false;
   </script>
 </head>
 <body>

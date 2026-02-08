@@ -204,7 +204,7 @@ def _register_threejs_http_model(path: Path) -> str:
     base = _ensure_threejs_http_server()
     token = uuid.uuid4().hex
     _THREEJS_HTTP_TOKENS[token] = path
-    return f"{base}/model/{token}"
+    return f"{base}/model/{token}/{path.name}"
 
 
 __all__ = ["_ensure_threejs_http_server", "_register_threejs_http_model"]

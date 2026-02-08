@@ -926,44 +926,47 @@ class DetectionPublisher:
 
     async def publish_frame(
         self,
-        frame: np.ndarray,
+        frame: Optional[np.ndarray],
         metadata: Dict[str, Any],
         encoding: str = "jpg",
         quality: int = 80,
     ):
         """Publish an encoded frame with associated metadata."""
-        if frame is None:
-            return
-
         try:
-            encoding = (encoding or "jpg").lower()
-            quality = int(max(1, min(int(quality), 100)))
-
-            encode_params = []
-            if encoding in ("jpg", "jpeg"):
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
-            elif encoding == "png":
-                # Default compression keeps latency low.
-                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
-
-            success, buffer = await asyncio.to_thread(
-                cv2.imencode, f".{encoding}", frame, encode_params
-            )
-            if not success:
-                logger.error("Failed to encode frame for publishing")
-                return
-
             payload_metadata = dict(metadata or {})
-            payload_metadata.setdefault(
-                "encoding", "jpeg" if encoding in ("jpg", "jpeg") else encoding
-            )
-            payload_metadata.setdefault(
-                "shape", [int(frame.shape[0]), int(frame.shape[1])]
-            )
+            buffer_bytes = b""
+
+            if frame is not None:
+                encoding = (encoding or "jpg").lower()
+                quality = int(max(1, min(int(quality), 100)))
+
+                encode_params = []
+                if encoding in ("jpg", "jpeg"):
+                    encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+                elif encoding == "png":
+                    # Default compression keeps latency low.
+                    encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
+
+                success, buffer = await asyncio.to_thread(
+                    cv2.imencode, f".{encoding}", frame, encode_params
+                )
+                if not success:
+                    logger.error("Failed to encode frame for publishing")
+                    return
+
+                payload_metadata.setdefault(
+                    "encoding", "jpeg" if encoding in ("jpg", "jpeg") else encoding
+                )
+                payload_metadata.setdefault(
+                    "shape", [int(frame.shape[0]), int(frame.shape[1])]
+                )
+                buffer_bytes = buffer.tobytes()
+            else:
+                payload_metadata["skip_frame"] = True
 
             await self.socket.send_string("frames", flags=zmq.SNDMORE)
             await self.socket.send_json(payload_metadata, flags=zmq.SNDMORE)
-            await self.socket.send(buffer.tobytes())
+            await self.socket.send(buffer_bytes)
         except Exception as e:
             logger.error(f"Failed to publish frame: {e}")
 
@@ -1244,22 +1247,23 @@ class PerceptionProcess:
                                 )
                                 else frame
                             )
-                            await self.publisher.publish_frame(
-                                frame_to_publish,
-                                {
-                                    "frame_index": metadata["frame_index"],
-                                    "capture_timestamp": metadata.get(
-                                        "capture_timestamp"
-                                    ),
-                                    "source": metadata.get("source"),
-                                    "recording_state": self.recording_manager.state.name,
-                                    "processing": processing_active,
-                                    "detection_count": detection_count,
-                                    "inference_ms": inference_time * 1000.0,
-                                },
-                                encoding=self.config.frame_encoding,
-                                quality=self.config.frame_quality,
-                            )
+                        else:
+                            frame_to_publish = None
+
+                        await self.publisher.publish_frame(
+                            frame_to_publish,
+                            {
+                                "frame_index": metadata["frame_index"],
+                                "capture_timestamp": metadata.get("capture_timestamp"),
+                                "source": metadata.get("source"),
+                                "recording_state": self.recording_manager.state.name,
+                                "processing": processing_active,
+                                "detection_count": detection_count,
+                                "inference_ms": inference_time * 1000.0,
+                            },
+                            encoding=self.config.frame_encoding,
+                            quality=self.config.frame_quality,
+                        )
                     finally:
                         self._frame_index += 1
 
@@ -1497,6 +1501,10 @@ class PerceptionProcess:
                 payload_metadata = dict(metadata or {})
                 if result.distance_cm is not None:
                     payload_metadata["distance_cm"] = result.distance_cm
+
+                # Merge additional metadata (like gaze) if present
+                if hasattr(result, "metadata") and result.metadata:
+                    payload_metadata.update(result.metadata)
 
                 detection = DetectionResult(
                     behavior=class_name,

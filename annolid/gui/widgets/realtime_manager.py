@@ -246,7 +246,9 @@ class RealtimeManager(QtCore.QObject):
             if threejs_manager:
                 viewer = threejs_manager.ensure_threejs_viewer()
                 if viewer:
-                    viewer.init_viewer()
+                    viewer.init_viewer(
+                        enable_eye_control=extras.get("enable_eye_control", False)
+                    )
                 self.window._set_active_view("threejs")
         else:
             self.window._set_active_view("canvas")
@@ -532,14 +534,19 @@ class RealtimeManager(QtCore.QObject):
         if not self.realtime_running:
             return
 
-        pixmap = QtGui.QPixmap.fromImage(qimage)
-        self.window.canvas.loadPixmap(pixmap, clear_shapes=False)
-        shapes = self._convert_detections_to_shapes(
-            detections, pixmap.width(), pixmap.height()
-        )
-        if hasattr(self.window.canvas, "setRealtimeShapes"):
-            self.window.canvas.setRealtimeShapes(shapes)
-        self._realtime_shapes = shapes
+        shapes = []
+        if qimage is not None:
+            pixmap = QtGui.QPixmap.fromImage(qimage)
+            self.window.canvas.loadPixmap(pixmap, clear_shapes=False)
+            shapes = self._convert_detections_to_shapes(
+                detections, pixmap.width(), pixmap.height()
+            )
+            if hasattr(self.window.canvas, "setRealtimeShapes"):
+                self.window.canvas.setRealtimeShapes(shapes)
+            self._realtime_shapes = shapes
+        else:
+            # Metadata-only update (e.g. for Eye Control in Three.js)
+            self._realtime_shapes = []
 
         # If Three.js viewer is visible, send the data there too
         threejs_manager = getattr(self.window, "threejs_manager", None)

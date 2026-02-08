@@ -1233,20 +1233,20 @@ class RealtimeSubscriberWorker(QtCore.QThread):
             metadata = {}
 
         frame_bytes = parts[2]
-        np_buffer = np.frombuffer(frame_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
-        if frame is None:
-            return
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        height, width, channels = frame_rgb.shape
-        qimage = QtGui.QImage(
-            frame_rgb.data,
-            width,
-            height,
-            channels * width,
-            QtGui.QImage.Format_RGB888,
-        ).copy()
+        qimage = None
+        if frame_bytes:
+            np_buffer = np.frombuffer(frame_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                height, width, channels = frame_rgb.shape
+                qimage = QtGui.QImage(
+                    frame_rgb.data,
+                    width,
+                    height,
+                    channels * width,
+                    QtGui.QImage.Format_RGB888,
+                ).copy()
 
         key = self._make_key(
             metadata.get("frame_index"), metadata.get("capture_timestamp")

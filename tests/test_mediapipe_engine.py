@@ -48,3 +48,11 @@ def test_mediapipe_face_engine():
     assert res.model_type == "face"
     assert res.names[0] == "face"
     assert hasattr(res, "distance_cm")
+    if (
+        res.landmarks
+        and hasattr(res.landmarks, "face_landmarks")
+        and res.landmarks.face_landmarks
+    ):
+        assert "gaze_avg" in res.metadata
+        assert "gaze_left" in res.metadata
+        assert "gaze_right" in res.metadata
