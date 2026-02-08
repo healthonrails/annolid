@@ -67,13 +67,16 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             pass
         layout.addWidget(self._web_view, 1)
 
-    def init_viewer(self, enable_eye_control: bool = False) -> None:
+    def init_viewer(
+        self, enable_eye_control: bool = False, enable_hand_control: bool = False
+    ) -> None:
         """Initialize the Three.js viewer HTML without loading a model."""
         if self._web_view is None:
             return
         if self._current_path is not None:
-            # If model is already loaded, just update eye control state
+            # If model is already loaded, just update control states
             self.set_eye_control(enable_eye_control)
+            self.set_hand_control(enable_hand_control)
             return
 
         base = _ensure_threejs_http_server()
@@ -89,6 +92,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     window.__annolidThreeModelUrl = "";
     window.__annolidThreeModelExt = "";
     window.__annolidEnableEyeControl = {str(enable_eye_control).lower()};
+    window.__annolidEnableHandControl = {str(enable_hand_control).lower()};
   </script>
 </head>
 <body>
@@ -150,6 +154,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         js_code = f"window.__annolidEnableEyeControl = {str(enabled).lower()};"
         self._web_view.page().runJavaScript(js_code)
 
+    def set_hand_control(self, enabled: bool) -> None:
+        """Dynamically enable/disable hand control in the JS viewer."""
+        if self._web_view is None:
+            return
+        js_code = f"window.__annolidEnableHandControl = {str(enabled).lower()};"
+        self._web_view.page().runJavaScript(js_code)
+
     def load_model(self, model_path: str | Path) -> None:
         path = Path(model_path)
         if not path.exists():
@@ -178,6 +189,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     window.__annolidThreeModelUrl = "{model_url}";
     window.__annolidThreeModelExt = "{model_ext}";
     window.__annolidEnableEyeControl = false;
+    window.__annolidEnableHandControl = false;
   </script>
 </head>
 <body>

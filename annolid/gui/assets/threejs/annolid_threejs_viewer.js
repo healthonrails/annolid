@@ -381,6 +381,9 @@ async function boot() {
     const poseGroup = new THREE.Group();
     scene.add(poseGroup);
 
+    const handGroup = new THREE.Group();
+    scene.add(handGroup);
+
     // --- Gaze Integration ---
     const gazeReticle = new THREE.Group();
     const reticleRing = new THREE.Mesh(
@@ -446,9 +449,10 @@ async function boot() {
         img.src = `data:image/jpeg;base64,${base64Frame}`;
       }
 
-      // 2. Update Poses
+      // 2. Update Poses and Hands
       poseKeypoints.clear();
       poseSkeleton.clear();
+      handGroup.clear();
 
       if (detections && detections.length > 0) {
         detections.forEach((det, detIdx) => {
@@ -484,7 +488,112 @@ async function boot() {
             poseSkeleton.add(line);
           }
 
-          // 3. Update Gaze if present
+          // 4. Update Hand Controls
+          if (det.metadata && det.metadata.hands) {
+            const handsData = det.metadata.hands;
+            const aspect = videoPlane.scale.x / videoPlane.scale.y;
+
+            let leftPinch = null;
+            let rightPinch = null;
+
+            handsData.forEach((hand) => {
+              const color = hand.label === "Left" ? 0x33ff66 : 0x3366ff;
+              const isPinching = hand.is_pinching;
+
+              // Draw hand landmarks
+              const geo = new THREE.SphereGeometry(0.04, 8, 8);
+              const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7 });
+
+              hand.landmarks.forEach((kp, idx) => {
+                // Only draw tips for less clutter
+                if (idx % 4 !== 0 && idx !== 0) return;
+
+                const x = (kp[0] - 0.5) * (aspect * 10);
+                const y = -(kp[1] - 0.5) * 10;
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(x, y, 0.02);
+                handGroup.add(mesh);
+
+                // Pinch visual
+                if (isPinching && (idx === 4 || idx === 8)) {
+                  mesh.scale.set(1.5, 1.5, 1.5);
+                  mesh.material.opacity = 1.0;
+                }
+              });
+
+              // Track pinches for interaction
+              const p4 = hand.landmarks[4];
+              const p8 = hand.landmarks[8];
+              const pinchCenter = [
+                (p4[0] + p8[0]) / 2,
+                (p4[1] + p8[1]) / 2
+              ];
+
+              if (isPinching) {
+                if (hand.label === "Left") leftPinch = pinchCenter;
+                else rightPinch = pinchCenter;
+              }
+            });
+
+            // --- Hand Interactions Logic ---
+            const lerpFactor = 0.2;
+
+            if (window.__annolidEnableHandControl) {
+              // 1. Zoom: Both hands pinching
+              if (leftPinch && rightPinch) {
+                const dist = Math.sqrt(
+                  Math.pow(leftPinch[0] - rightPinch[0], 2) +
+                  Math.pow(leftPinch[1] - rightPinch[1], 2)
+                );
+
+                if (window.__prevHandDist !== undefined) {
+                  const delta = dist - window.__prevHandDist;
+                  const zoomSpeed = 15;
+                  camera.position.multiplyScalar(1 - delta * zoomSpeed);
+                }
+                window.__prevHandDist = dist;
+                window.__prevLeftPinch = null;
+                window.__prevRightPinch = null;
+              }
+              // 2. Rotate: Right hand only pinch (alternative to eye control)
+              else if (rightPinch) {
+                if (window.__prevRightPinch) {
+                  const dx = rightPinch[0] - window.__prevRightPinch[0];
+                  const dy = rightPinch[1] - window.__prevRightPinch[1];
+
+                  const rotateSpeed = 5;
+                  root.rotation.y += dx * rotateSpeed;
+                  root.rotation.x += dy * rotateSpeed;
+                }
+                window.__prevRightPinch = rightPinch;
+                window.__prevLeftPinch = null;
+                window.__prevHandDist = undefined;
+              }
+              // 3. Pan: Left hand only pinch
+              else if (leftPinch) {
+                if (window.__prevLeftPinch) {
+                  const dx = leftPinch[0] - window.__prevLeftPinch[0];
+                  const dy = leftPinch[1] - window.__prevLeftPinch[1];
+
+                  const panSpeed = 10;
+                  // Move camera target for panning
+                  const offset = new THREE.Vector3(-dx * panSpeed, dy * panSpeed, 0);
+                  offset.applyQuaternion(camera.quaternion);
+                  controls.target.add(offset);
+                  camera.position.add(offset);
+                }
+                window.__prevLeftPinch = leftPinch;
+                window.__prevRightPinch = null;
+                window.__prevHandDist = undefined;
+              } else {
+                window.__prevLeftPinch = null;
+                window.__prevRightPinch = null;
+                window.__prevHandDist = undefined;
+              }
+            }
+          }
+
+          // 5. Update Gaze if present
           if (det.metadata && det.metadata.gaze_avg) {
             const gaze = det.metadata.gaze_avg;
             // Smoothing

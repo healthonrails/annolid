@@ -133,6 +133,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             self.tr("Send annotated frames")
         )
         self.enable_eye_control = QtWidgets.QCheckBox(self.tr("Enable Eye Control"))
+        self.enable_hand_control = QtWidgets.QCheckBox(self.tr("Enable Hand Control"))
         self.publish_frames_check.toggled.connect(self._on_publish_frames_toggled)
         self.log_check = QtWidgets.QCheckBox(self.tr("Log detections to NDJSON"))
         self.log_check.toggled.connect(self._on_log_toggled)
@@ -155,7 +156,8 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
         output_layout.addWidget(self.publish_frames_check, 0, 0, 1, 3)
         output_layout.addWidget(self.publish_annotated_check, 1, 0, 1, 3)
-        output_layout.addWidget(self.enable_eye_control, 2, 0, 1, 3)
+        output_layout.addWidget(self.enable_eye_control, 2, 0, 1, 1)
+        output_layout.addWidget(self.enable_hand_control, 2, 1, 1, 2)
         output_layout.addWidget(self.log_check, 3, 0, 1, 3)
         output_layout.addWidget(self.log_path_edit, 3, 0, 1, 2)
         output_layout.addWidget(browse_log_btn, 3, 2)
@@ -375,5 +377,6 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             "log_path": log_path,
             "viewer_type": self.viewer_combo.currentData(),
             "enable_eye_control": self.enable_eye_control.isChecked(),
+            "enable_hand_control": self.enable_hand_control.isChecked(),
         }
         return config, extras

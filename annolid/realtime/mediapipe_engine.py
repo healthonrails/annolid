@@ -326,13 +326,39 @@ class MediaPipeEngine:
         distance_cm = None
 
         if self.type == "hands" and results.hand_landmarks:
-            for hand_landmarks in results.hand_landmarks:
-                norm_landmarks.append(
-                    [
+            metadata_hands = {"hands": []}
+            for i, hand_landmarks in enumerate(results.hand_landmarks):
+                hand_info = {
+                    "index": i,
+                    "landmarks": [
                         [lm.x, lm.y, getattr(lm, "presence", 1.0)]
                         for lm in hand_landmarks
-                    ]
+                    ],
+                }
+
+                # Get handedness
+                if hasattr(results, "handedness") and i < len(results.handedness):
+                    hand_info["label"] = results.handedness[i][
+                        0
+                    ].category_name  # "Left" or "Right"
+                    hand_info["score"] = results.handedness[i][0].score
+
+                # Basic gesture: Pinch (Thumb tip 4 to Index tip 8)
+                p4 = hand_landmarks[4]
+                p8 = hand_landmarks[8]
+                dist = np.sqrt(
+                    (p4.x - p8.x) ** 2 + (p4.y - p8.y) ** 2 + (p4.z - p8.z) ** 2
                 )
+                # Threshold for pinch can be around 0.05 normalized distance
+                hand_info["pinch_score"] = float(dist)
+                hand_info["is_pinching"] = bool(dist < 0.05)
+
+                metadata_hands["hands"].append(hand_info)
+
+                # Keep backward compatibility with norm_landmarks
+                norm_landmarks.append(hand_info["landmarks"])
+
+            metadata_gaze = metadata_hands  # Reusing variable name for final assignment
         elif self.type == "face" and results.face_landmarks:
             metadata_gaze = {}
             for face_landmarks in results.face_landmarks:

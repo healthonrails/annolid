@@ -247,7 +247,8 @@ class RealtimeManager(QtCore.QObject):
                 viewer = threejs_manager.ensure_threejs_viewer()
                 if viewer:
                     viewer.init_viewer(
-                        enable_eye_control=extras.get("enable_eye_control", False)
+                        enable_eye_control=extras.get("enable_eye_control", False),
+                        enable_hand_control=extras.get("enable_hand_control", False),
                     )
                 self.window._set_active_view("threejs")
         else:
