@@ -65,6 +65,128 @@ async function boot() {
     controls.target.set(0, 0, 0);
     controls.update();
 
+    let realtimeEnabled = true;
+
+    // --- Toolbar Interaction ---
+    const btnHome = document.getElementById("btnHome");
+    const btnToggleRealtime = document.getElementById("btnToggleRealtime");
+
+    const resetCamera = () => {
+      if (!root) return;
+      const box = new THREE.Box3().setFromObject(root);
+      if (box.isEmpty()) return;
+
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+
+      const maxDim = Math.max(size.x, size.y, size.z, 0.1);
+      const distance = maxDim * 1.8;
+
+      camera.position.set(distance, distance * 0.65, distance);
+      controls.target.set(0, 0, 0);
+      camera.lookAt(0, 0, 0);
+      controls.update();
+    };
+
+    if (btnHome) btnHome.onclick = resetCamera;
+
+    // --- Advanced Views ---
+    const btnViewX = document.getElementById("btnViewX");
+    const btnViewY = document.getElementById("btnViewY");
+    const btnViewZ = document.getElementById("btnViewZ");
+
+    const setView = (axis) => {
+      const box = new THREE.Box3().setFromObject(root);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z, 0.1);
+      const dist = maxDim * 2.2;
+
+      if (axis === "x") camera.position.set(dist, 0, 0);
+      else if (axis === "y") camera.position.set(0, dist, 0);
+      else if (axis === "z") camera.position.set(0, 0, dist);
+
+      controls.target.set(0, 0, 0);
+      controls.update();
+    };
+
+    if (btnViewX) btnViewX.onclick = () => setView("x");
+    if (btnViewY) btnViewY.onclick = () => setView("y");
+    if (btnViewZ) btnViewZ.onclick = () => setView("z");
+
+    // --- Orientation Controls ---
+    const btnFlipX = document.getElementById("btnFlipX");
+    const btnFlipY = document.getElementById("btnFlipY");
+    const btnFlipZ = document.getElementById("btnFlipZ");
+    const btnRotateX = document.getElementById("btnRotateX");
+    const btnRotateY = document.getElementById("btnRotateY");
+    const btnRotateZ = document.getElementById("btnRotateZ");
+
+    if (btnFlipX) btnFlipX.onclick = () => { root.scale.x *= -1; };
+    if (btnFlipY) btnFlipY.onclick = () => { root.scale.y *= -1; };
+    if (btnFlipZ) btnFlipZ.onclick = () => { root.scale.z *= -1; };
+
+    const rotate90 = (axis) => {
+      const angle = Math.PI / 2;
+      if (axis === "x") root.rotateX(angle);
+      else if (axis === "y") root.rotateY(angle);
+      else if (axis === "z") root.rotateZ(angle);
+    };
+
+    if (btnRotateX) btnRotateX.onclick = () => rotate90("x");
+    if (btnRotateY) btnRotateY.onclick = () => rotate90("y");
+    if (btnRotateZ) btnRotateZ.onclick = () => rotate90("z");
+
+    // --- Helpers and Themes ---
+    const btnToggleAxes = document.getElementById("btnToggleAxes");
+    const btnToggleTheme = document.getElementById("btnToggleTheme");
+    let axesHelper = null;
+
+    if (btnToggleAxes) {
+      btnToggleAxes.onclick = () => {
+        if (!axesHelper) {
+          const box = new THREE.Box3().setFromObject(root);
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          const maxDim = Math.max(size.x, size.y, size.z, 0.1);
+          axesHelper = new THREE.AxesHelper(maxDim * 0.5);
+          root.add(axesHelper);
+        } else {
+          axesHelper.visible = !axesHelper.visible;
+        }
+        btnToggleAxes.style.color = axesHelper.visible ? "#fff" : "#888";
+      };
+    }
+
+    if (btnToggleTheme) {
+      btnToggleTheme.onclick = () => {
+        const isWhite = document.body.classList.toggle("white-theme");
+        scene.background = new THREE.Color(isWhite ? 0xd9e2ec : 0x121824);
+        btnToggleTheme.style.color = isWhite ? "#333" : "#fff";
+      };
+    }
+    if (btnToggleRealtime) {
+      btnToggleRealtime.onclick = () => {
+        realtimeEnabled = !realtimeEnabled;
+        btnToggleRealtime.style.color = realtimeEnabled ? "#fff" : "#ff3366";
+        btnToggleRealtime.style.background = realtimeEnabled ? "rgba(255, 255, 255, 0.08)" : "rgba(255, 51, 102, 0.2)";
+        setStatus(realtimeEnabled ? "Real-time updates resumed" : "Real-time updates paused");
+      };
+    }
+
+    // --- Gesture Indicators ---
+    const indRotate = document.getElementById("indRotate");
+    const indPan = document.getElementById("indPan");
+    const indZoom = document.getElementById("indZoom");
+
+    const updateIndicator = (el, active) => {
+      if (!el) return;
+      if (active) el.classList.add("active");
+      else el.classList.remove("active");
+    };
+
     scene.add(new THREE.AmbientLight(0x90a8ff, 0.55));
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
     keyLight.position.set(3, 5, 8);
@@ -424,6 +546,8 @@ async function boot() {
     poseGroup.renderOrder = 999;
 
     window.updateRealtimeData = (base64Frame, detections) => {
+      if (!realtimeEnabled) return;
+
       // 1. Update Video Frame
       if (base64Frame) {
         const img = new Image();
@@ -541,6 +665,10 @@ async function boot() {
             if (window.__annolidEnableHandControl) {
               // 1. Zoom: Both hands pinching
               if (leftPinch && rightPinch) {
+                updateIndicator(indZoom, true);
+                updateIndicator(indRotate, false);
+                updateIndicator(indPan, false);
+
                 const dist = Math.sqrt(
                   Math.pow(leftPinch[0] - rightPinch[0], 2) +
                   Math.pow(leftPinch[1] - rightPinch[1], 2)
@@ -557,6 +685,10 @@ async function boot() {
               }
               // 2. Rotate: Right hand only pinch (alternative to eye control)
               else if (rightPinch) {
+                updateIndicator(indRotate, true);
+                updateIndicator(indZoom, false);
+                updateIndicator(indPan, false);
+
                 if (window.__prevRightPinch) {
                   const dx = rightPinch[0] - window.__prevRightPinch[0];
                   const dy = rightPinch[1] - window.__prevRightPinch[1];
@@ -571,6 +703,10 @@ async function boot() {
               }
               // 3. Pan: Left hand only pinch
               else if (leftPinch) {
+                updateIndicator(indPan, true);
+                updateIndicator(indRotate, false);
+                updateIndicator(indZoom, false);
+
                 if (window.__prevLeftPinch) {
                   const dx = leftPinch[0] - window.__prevLeftPinch[0];
                   const dy = leftPinch[1] - window.__prevLeftPinch[1];
@@ -586,6 +722,10 @@ async function boot() {
                 window.__prevRightPinch = null;
                 window.__prevHandDist = undefined;
               } else {
+                updateIndicator(indRotate, false);
+                updateIndicator(indPan, false);
+                updateIndicator(indZoom, false);
+
                 window.__prevLeftPinch = null;
                 window.__prevRightPinch = null;
                 window.__prevHandDist = undefined;
@@ -596,6 +736,13 @@ async function boot() {
           // 5. Update Gaze if present
           if (det.metadata && det.metadata.gaze_avg) {
             const gaze = det.metadata.gaze_avg;
+
+            // Only show indicator if eye control is actually toggled on and no hand gesture is overriding
+            const handActive = leftPinch || rightPinch;
+            if (window.__annolidEnableEyeControl && !handActive) {
+              updateIndicator(indRotate, true);
+            }
+
             // Smoothing
             const lerpFactor = 0.25;
             const gx = (gaze[0] * (aspect * 5)) * lerpFactor + gazeReticle.position.x * (1 - lerpFactor);

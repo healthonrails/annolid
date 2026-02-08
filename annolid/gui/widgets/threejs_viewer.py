@@ -99,6 +99,49 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
   <div id="annolidThreeRoot">
     <canvas id="annolidThreeCanvas"></canvas>
   </div>
+
+  <div id="annolidThreeToolbar">
+    <div class="tool-group">
+      <button class="tool-btn" id="btnHome" title="Reset Camera">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8h5z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnViewX" title="Sagittal (X) View">X</button>
+      <button class="tool-btn" id="btnViewY" title="Coronal (Y) View">Y</button>
+      <button class="tool-btn" id="btnViewZ" title="Axial (Z) View">Z</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnFlipX" title="Flip X">fX</button>
+      <button class="tool-btn" id="btnFlipY" title="Flip Y">fY</button>
+      <button class="tool-btn" id="btnFlipZ" title="Flip Z">fZ</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnRotateX" title="Rotate X 90°">rX</button>
+      <button class="tool-btn" id="btnRotateY" title="Rotate Y 90°">rY</button>
+      <button class="tool-btn" id="btnRotateZ" title="Rotate Z 90°">rZ</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnToggleAxes" title="Toggle Axes">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M13 1.07V9h7c.55 0 1 .45 1 1v2c0 .55-.45 1-1 1h-7v7.93c0 .55-.45 1-1 1h-2c-.55 0-1-.45-1-1V13H3c-.55 0-1-.45-1-1v-2c0-.55.45-1 1-1h7V1.07c0-.55.45-1 1-1h2c.55 0 1 .45 1 1z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnToggleTheme" title="Toggle Theme">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.85 7 7.93s-3.06 7.44-7 7.93V4.07z"/></svg>
+      </button>
+    </div>
+    <div class="tool-sep"></div>
+    <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+    </button>
+  </div>
+
+  <div id="annolidThreeIndicators">
+    <div class="indicator" id="indRotate">Rotating</div>
+    <div class="indicator" id="indPan">Panning</div>
+    <div class="indicator" id="indZoom">Zooming</div>
+  </div>
+
   <div id="annolidThreeStatus">Starting real-time viewer…</div>
   <div id="annolidThreeHints">Real-time inference mode active.</div>
   <script type="module" src="threejs/annolid_threejs_viewer.js"></script>
@@ -196,6 +239,49 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
   <div id="annolidThreeRoot">
     <canvas id="annolidThreeCanvas"></canvas>
   </div>
+
+  <div id="annolidThreeToolbar">
+    <div class="tool-group">
+      <button class="tool-btn" id="btnHome" title="Reset Camera">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8h5z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnViewX" title="Sagittal (X) View">X</button>
+      <button class="tool-btn" id="btnViewY" title="Coronal (Y) View">Y</button>
+      <button class="tool-btn" id="btnViewZ" title="Axial (Z) View">Z</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnFlipX" title="Flip X">fX</button>
+      <button class="tool-btn" id="btnFlipY" title="Flip Y">fY</button>
+      <button class="tool-btn" id="btnFlipZ" title="Flip Z">fZ</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnRotateX" title="Rotate X 90°">rX</button>
+      <button class="tool-btn" id="btnRotateY" title="Rotate Y 90°">rY</button>
+      <button class="tool-btn" id="btnRotateZ" title="Rotate Z 90°">rZ</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnToggleAxes" title="Toggle Axes">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M13 1.07V9h7c.55 0 1 .45 1 1v2c0 .55-.45 1-1 1h-7v7.93c0 .55-.45 1-1 1h-2c-.55 0-1-.45-1-1V13H3c-.55 0-1-.45-1-1v-2c0-.55.45-1 1-1h7V1.07c0-.55.45-1 1-1h2c.55 0 1 .45 1 1z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnToggleTheme" title="Toggle Theme">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.85 7 7.93s-3.06 7.44-7 7.93V4.07z"/></svg>
+      </button>
+    </div>
+    <div class="tool-sep"></div>
+    <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+    </button>
+  </div>
+
+  <div id="annolidThreeIndicators">
+    <div class="indicator" id="indRotate">Rotating</div>
+    <div class="indicator" id="indPan">Panning</div>
+    <div class="indicator" id="indZoom">Zooming</div>
+  </div>
+
   <div id="annolidThreeStatus">Loading {title}…</div>
   <div id="annolidThreeHints">Drag: rotate | Wheel: zoom | Right-drag: pan</div>
   <script type="module" src="threejs/annolid_threejs_viewer.js"></script>

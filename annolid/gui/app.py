@@ -106,6 +106,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.label_dock.setVisible(True)
         self.shape_dock.setVisible(True)
         self.file_dock.setVisible(True)
+        self._other_docks_states: Dict[QtWidgets.QDockWidget, bool] = {}
 
         self.csv_thread = None
         self.csv_worker = None
@@ -499,6 +500,31 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)
+
+    def set_unrelated_docks_visible(
+        self, visible: bool, exclude: Optional[List[QtWidgets.QDockWidget]] = None
+    ) -> None:
+        """Hide all docks except excluded ones for distraction-free viewing."""
+        if not visible:
+            # Only save currently visible docks if we are hiding.
+            # Don't overwrite states if we're already in a "hidden" mode.
+            if not self._other_docks_states:
+                for dock in self.findChildren(QtWidgets.QDockWidget):
+                    if exclude and dock in exclude:
+                        continue
+                    if dock.isVisible():
+                        self._other_docks_states[dock] = True
+                        dock.hide()
+        else:
+            # Restore previously hidden docks.
+            for dock, was_visible in self._other_docks_states.items():
+                if was_visible:
+                    try:
+                        dock.show()
+                        dock.raise_()
+                    except (RuntimeError, Exception):
+                        continue
+            self._other_docks_states.clear()
 
 
 def main(argv=None, *, config=None):

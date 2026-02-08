@@ -54,20 +54,8 @@ class ThreeJsManager(QtCore.QObject):
                 ),
             )
             return False
-        # Hide PDF-specific docks when switching to the 3D canvas.
-        pdf_manager = getattr(self.window, "pdf_manager", None)
-        if pdf_manager is not None:
-            for dock in (
-                getattr(pdf_manager, "pdf_tts_dock", None),
-                getattr(pdf_manager, "pdf_controls_dock", None),
-                getattr(pdf_manager, "pdf_reader_dock", None),
-                getattr(pdf_manager, "pdf_log_dock", None),
-            ):
-                try:
-                    if dock is not None:
-                        dock.hide()
-                except Exception:
-                    continue
+        # Hide unrelated docks when switching to the 3D canvas.
+        self.window.set_unrelated_docks_visible(False)
         self.window._set_active_view("threejs")
         self.window.statusBar().showMessage(
             self.window.tr("Loaded 3D model %1").replace("%1", path.name), 3000

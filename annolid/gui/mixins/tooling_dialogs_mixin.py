@@ -82,6 +82,9 @@ class ToolingDialogsMixin:
         dlg.exec_()
 
     def _set_active_view(self, mode: str = "canvas") -> None:
+        if mode == "canvas":
+            self.set_unrelated_docks_visible(True)
+
         if mode == "pdf" and getattr(self, "pdf_manager", None) is not None:
             viewer = self.pdf_manager.pdf_widget()
             if viewer is not None:
@@ -90,6 +93,7 @@ class ToolingDialogsMixin:
                     self._viewer_stack.setCurrentIndex(pdf_index)
                     return
         if mode == "threejs" and getattr(self, "threejs_manager", None) is not None:
+            self.set_unrelated_docks_visible(False)
             viewer = self.threejs_manager.viewer_widget()
             if viewer is not None:
                 three_index = self._viewer_stack.indexOf(viewer)

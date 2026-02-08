@@ -64,12 +64,11 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_control_dock.visibilityChanged.connect(
             self._on_dock_visibility_changed
         )
-        self._other_docks_states = {}
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         """Handle dock visibility changes to restore layout when closed."""
         if not visible and not self.realtime_running:
-            self.restore_other_docks()
+            self.window.set_unrelated_docks_visible(True)
 
     # ------------------------------------------------------------------ UI helpers
     def show_control_dialog(self) -> None:
@@ -80,30 +79,12 @@ class RealtimeManager(QtCore.QObject):
         )
 
         if not self.realtime_control_dock.isVisible():
-            self._hide_other_docks()
+            self.window.set_unrelated_docks_visible(
+                False, exclude=[self.realtime_control_dock]
+            )
             self.realtime_control_dock.show()
 
         self.realtime_control_dock.raise_()
-
-    def _hide_other_docks(self) -> None:
-        """Hide all other main window docks to clear the view for real-time."""
-        self._other_docks_states.clear()
-        for dock in self.window.findChildren(QtWidgets.QDockWidget):
-            if dock == self.realtime_control_dock:
-                continue
-            if dock.isVisible():
-                self._other_docks_states[dock] = True
-                dock.hide()
-
-    def restore_other_docks(self) -> None:
-        """Restore previous dock visibility when real-time control is closed."""
-        for dock, was_visible in self._other_docks_states.items():
-            if was_visible:
-                try:
-                    dock.show()
-                except Exception:
-                    pass
-        self._other_docks_states.clear()
 
     # ------------------------------------------------------------------ Start/Stop
     def _handle_realtime_start_request(
