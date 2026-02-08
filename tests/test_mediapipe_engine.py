@@ -47,3 +47,4 @@ def test_mediapipe_face_engine():
     res = results[0]
     assert res.model_type == "face"
     assert res.names[0] == "face"
+    assert hasattr(res, "distance_cm")

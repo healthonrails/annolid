@@ -1494,12 +1494,16 @@ class PerceptionProcess:
                     self.class_names[0] if self.class_names else result.model_type
                 )
 
+                payload_metadata = dict(metadata or {})
+                if result.distance_cm is not None:
+                    payload_metadata["distance_cm"] = result.distance_cm
+
                 detection = DetectionResult(
                     behavior=class_name,
                     confidence=0.9,  # MediaPipe doesn't always expose box confidence in a standard way here
                     bbox_normalized=bbox_norm,
                     timestamp=timestamp,
-                    metadata=metadata,
+                    metadata=payload_metadata,
                     bbox_pixels=bbox_pixels,
                     keypoints_normalized=obj_norm_lms,
                     keypoints_pixels=[[p[0] * w, p[1] * h, p[2]] for p in obj_norm_lms],

@@ -22,6 +22,8 @@ class MediaPipeResult:
     segmentation_mask: Optional[np.ndarray] = None
     names: Dict[int, str] = field(default_factory=dict)
     orig_img: Optional[np.ndarray] = None
+    distance_cm: Optional[float] = None  # Estimated distance to subject
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def plot(self, **kwargs) -> np.ndarray:
         """Draw detections on the original image and return the annotated frame."""
@@ -54,6 +56,107 @@ class MediaPipeResult:
                         face_lms,
                         face_landmarker.FaceLandmarksConnections.FACE_LANDMARKS_CONTOURS,
                     )
+
+                    # Highlight Iris and eye contours
+                    if len(face_lms) > 477:
+                        # Landmarks for eyes and iris
+                        # Right eye: 33+
+                        RIGHT_EYE_CONTOUR = [
+                            33,
+                            7,
+                            163,
+                            144,
+                            145,
+                            153,
+                            154,
+                            155,
+                            133,
+                            173,
+                            157,
+                            158,
+                            159,
+                            160,
+                            161,
+                            246,
+                        ]
+                        # Left eye: 362+
+                        LEFT_EYE_CONTOUR = [
+                            362,
+                            382,
+                            381,
+                            380,
+                            374,
+                            373,
+                            390,
+                            249,
+                            263,
+                            466,
+                            388,
+                            387,
+                            386,
+                            385,
+                            384,
+                            398,
+                        ]
+                        LEFT_IRIS = [468, 469, 470, 471, 472]
+                        RIGHT_IRIS = [473, 474, 475, 476, 477]
+
+                        def to_pixels(idx):
+                            lm = face_lms[idx]
+                            return (int(lm.x * w), int(lm.y * h))
+
+                        # 1. Draw eye contours in red
+                        for contour in [LEFT_EYE_CONTOUR, RIGHT_EYE_CONTOUR]:
+                            pts = np.array([to_pixels(i) for i in contour], np.int32)
+                            cv2.polylines(
+                                annotated_frame,
+                                [pts],
+                                True,
+                                (0, 0, 255),
+                                1,
+                                cv2.LINE_AA,
+                            )
+
+                        # 2. Draw Iris blue circle and green dots
+                        for iris_indices in [LEFT_IRIS, RIGHT_IRIS]:
+                            center = to_pixels(iris_indices[0])
+
+                            # Draw all key iris points (center, top, bottom, left, right) as green dots
+                            for idx in iris_indices:
+                                cv2.circle(
+                                    annotated_frame, to_pixels(idx), 2, (0, 255, 0), -1
+                                )
+
+                            # Draw iris boundary as a blue circle centered at the pupil
+                            iris_pts = [to_pixels(i) for i in iris_indices[1:]]
+                            if iris_pts:
+                                # Average distance from center to boundary points for radius
+                                radius = np.mean(
+                                    [
+                                        np.linalg.norm(np.array(pt) - np.array(center))
+                                        for pt in iris_pts
+                                    ]
+                                )
+                                cv2.circle(
+                                    annotated_frame,
+                                    center,
+                                    int(radius),
+                                    (255, 0, 0),
+                                    1,
+                                    cv2.LINE_AA,
+                                )
+
+                        if self.distance_cm:
+                            text = f"Dist: {self.distance_cm:.1f} cm"
+                            cv2.putText(
+                                annotated_frame,
+                                text,
+                                (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.8,
+                                (0, 255, 0),
+                                2,
+                            )
             elif self.model_type == "pose" and hasattr(
                 self.landmarks, "pose_landmarks"
             ):
@@ -220,6 +323,7 @@ class MediaPipeEngine:
 
         norm_landmarks = []
         mask = None
+        distance_cm = None
 
         if self.type == "hands" and results.hand_landmarks:
             for hand_landmarks in results.hand_landmarks:
@@ -231,7 +335,57 @@ class MediaPipeEngine:
                 )
         elif self.type == "face" and results.face_landmarks:
             for face_landmarks in results.face_landmarks:
-                norm_landmarks.append([[lm.x, lm.y, 1.0] for lm in face_landmarks])
+                face_lms_norm = [[lm.x, lm.y, 1.0] for lm in face_landmarks]
+                norm_landmarks.append(face_lms_norm)
+
+                # Iris depth estimation
+                # Indices: 468-472 (left), 473-477 (right)
+                if len(face_landmarks) > 477:
+                    try:
+                        h, w = frame.shape[:2]
+
+                        # Calculate iris diameter in pixels (average of both eyes)
+                        def get_diameter(p1_idx, p3_idx, p2_idx, p4_idx):
+                            # Horizontal diameter
+                            dx = (
+                                face_landmarks[p1_idx].x - face_landmarks[p3_idx].x
+                            ) * w
+                            dy = (
+                                face_landmarks[p1_idx].y - face_landmarks[p3_idx].y
+                            ) * h
+                            d1 = np.sqrt(dx**2 + dy**2)
+                            # Vertical diameter
+                            dx2 = (
+                                face_landmarks[p2_idx].x - face_landmarks[p4_idx].x
+                            ) * w
+                            dy2 = (
+                                face_landmarks[p2_idx].y - face_landmarks[p4_idx].y
+                            ) * h
+                            d2 = np.sqrt(dx2**2 + dy2**2)
+                            return (d1 + d2) / 2.0
+
+                        # Left iris: 469, 471 (horiz), 470, 472 (vert)
+                        d_left = get_diameter(469, 471, 470, 472)
+                        # Right iris: 474, 476 (horiz), 475, 477 (vert)
+                        d_right = get_diameter(474, 476, 475, 477)
+
+                        diameters = [d for d in [d_left, d_right] if d > 0]
+                        if diameters:
+                            avg_diameter_px = sum(diameters) / len(diameters)
+
+                            # Focal length approximation (f_px = image_width * 0.75)
+                            focal_length_px = w * 0.75
+                            # Average human iris is 11.7mm
+                            real_iris_diameter_mm = 11.7
+
+                            # Distance D = (F * RealSize) / PixelSize
+                            distance_mm = (
+                                focal_length_px * real_iris_diameter_mm
+                            ) / avg_diameter_px
+                            distance_cm = distance_mm / 10.0
+                    except Exception as e:
+                        logger.debug(f"Iris depth estimation error: {e}")
+
         elif self.type == "pose" and results.pose_landmarks:
             for pose_landmarks in results.pose_landmarks:
                 norm_landmarks.append(
@@ -250,6 +404,7 @@ class MediaPipeEngine:
             segmentation_mask=mask,
             names=self.names,
             orig_img=frame,
+            distance_cm=distance_cm,
         )
         return [res]
 
