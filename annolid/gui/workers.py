@@ -1087,14 +1087,10 @@ class PerceptionProcessWorker(QtCore.QThread):
         loop = self._loop
         perception = self._perception
         if loop and loop.is_running() and perception:
-            try:
-                loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(perception.shutdown())
-                )
-            except Exception as exc:
-                logger.error(
-                    "Failed to request perception shutdown: %s", exc, exc_info=True
-                )
+            # Just set the running flag to False.
+            # The run() loop will exit, and _run_main's finally block
+            # will handle the actual async shutdown() call.
+            perception.running = False
 
 
 class RealtimeSubscriberWorker(QtCore.QThread):

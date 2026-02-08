@@ -56,6 +56,21 @@ MODEL_REGISTRY = [
         "dino_kpseg",
         "runs/dino_kpseg/train/weights/best.pt",
     ),
+    ModelConfig(
+        "MediaPipe Pose",
+        "mediapipe_pose",
+        "mediapipe_pose",
+    ),
+    ModelConfig(
+        "MediaPipe Hands",
+        "mediapipe_hands",
+        "mediapipe_hands",
+    ),
+    ModelConfig(
+        "MediaPipe Face",
+        "mediapipe_face",
+        "mediapipe_face",
+    ),
 ]
 
 

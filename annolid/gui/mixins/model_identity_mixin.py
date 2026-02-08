@@ -135,3 +135,9 @@ class ModelIdentityMixin:
         """Detect EfficientTAM models based on identifier/weight strings."""
         key = f"{identifier or ''} {weight or ''}".lower()
         return "efficienttam" in key
+
+    @staticmethod
+    def _is_mediapipe_model(identifier: str, weight: str) -> bool:
+        """Detect MediaPipe models based on identifier/weight strings."""
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return "mediapipe" in key

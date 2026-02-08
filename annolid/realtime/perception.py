@@ -1,4 +1,3 @@
-import asyncio
 import argparse
 import json
 import signal
@@ -7,14 +6,29 @@ import statistics
 import struct
 import time
 import warnings
-from collections import deque
+import asyncio
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Dict,
+    List,
+    Optional,
+    Union,
+    Tuple,
+    Protocol,
+)
 from contextlib import asynccontextmanager
+
+if TYPE_CHECKING:
+    from annolid.realtime.mediapipe_engine import MediaPipeEngine
+
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import partial
 from itertools import accumulate
 from pathlib import Path
-from typing import Optional, List, Union, Tuple, Dict, Any, AsyncIterator, Protocol
 
 import cv2
 import numpy as np
@@ -33,6 +47,8 @@ from ultralytics import YOLO
 
 from annolid.utils.logger import logger
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+# Late import to avoid dependency issues
+# from annolid.realtime.mediapipe_engine import MediaPipeEngine
 
 
 # --- Configuration and Validation ---
@@ -974,7 +990,7 @@ class PerceptionProcess:
 
     def __init__(self, config: Config):
         self.config = config
-        self.model: Optional[YOLO] = None
+        self.model: Optional[Union[YOLO, "MediaPipeEngine"]] = None
         self.class_names: Optional[List[str]] = None
         self.keypoint_labels: Optional[List[str]] = None
 
@@ -1081,35 +1097,48 @@ class PerceptionProcess:
         )
 
     @asynccontextmanager
-    async def _model_context(self) -> AsyncIterator[YOLO]:
-        """Context manager for YOLO model."""
+    async def _model_context(self) -> AsyncIterator[Union[YOLO, "MediaPipeEngine"]]:
+        """Context manager for perception model."""
         try:
-            model_ref = str(resolve_weight_path(self.config.model_base_name))
-            logger.info("Loading YOLO model: %s", model_ref)
-            model = await asyncio.to_thread(YOLO, model_ref)
-            self.class_names = model.names
-            keypoint_labels = self._extract_keypoint_labels(model)
-            if keypoint_labels:
-                if not self.config.enable_pose:
-                    logger.info("Pose metadata detected; enabling pose processing.")
-                self.config.enable_pose = True
-                self.keypoint_labels = keypoint_labels
-                if self.config.enable_segmentation:
-                    logger.info(
-                        "Disabling segmentation because pose keypoints are present."
-                    )
-                    self.config.enable_segmentation = False
-                logger.info(
-                    "Keypoint labels (%d): %s",
-                    len(keypoint_labels),
-                    ", ".join(keypoint_labels),
-                )
-            logger.info("YOLO model loaded successfully")
-            yield model
+            model_ref = str(self.config.model_base_name)
+            if "mediapipe" in model_ref.lower():
+                from annolid.realtime.mediapipe_engine import MediaPipeEngine
+
+                if not MediaPipeEngine.is_installed():
+                    logger.info("MediaPipe not found. Prompting installation...")
+                    if not MediaPipeEngine.install():
+                        raise ImportError("Failed to install MediaPipe automatically.")
+
+                logger.info("Loading MediaPipe engine: %s", model_ref)
+                model = await asyncio.to_thread(MediaPipeEngine, model_ref)
+                self.class_names = list(model.names.values())
+                self.keypoint_labels = model.landmark_names
+                self.config.enable_pose = True  # Usually true for Mediapipe
+                yield model
+            else:
+                model_ref = str(resolve_weight_path(model_ref))
+                logger.info("Loading YOLO model: %s", model_ref)
+                model = await asyncio.to_thread(YOLO, model_ref)
+                self.class_names = model.names
+                keypoint_labels = self._extract_keypoint_labels(model)
+                if keypoint_labels:
+                    if not self.config.enable_pose:
+                        logger.info("Pose metadata detected; enabling pose processing.")
+                    self.config.enable_pose = True
+                    self.keypoint_labels = keypoint_labels
+                    if self.config.enable_segmentation:
+                        logger.info(
+                            "Disabling segmentation because pose keypoints are present."
+                        )
+                        self.config.enable_segmentation = False
+                logger.info("YOLO model loaded successfully")
+                yield model
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise
         finally:
+            if "model" in locals() and model and hasattr(model, "close"):
+                model.close()
             logger.info("Model context closed")
 
     async def setup(self):
@@ -1121,7 +1150,10 @@ class PerceptionProcess:
         # Verify model exists or download
         model_ref = str(resolve_weight_path(self.config.model_base_name))
         model_path = Path(model_ref)
-        if not (model_path.is_file() or model_path.is_dir()):
+        if (
+            not (model_path.is_file() or model_path.is_dir())
+            and "mediapipe" not in model_ref.lower()
+        ):
             logger.info(
                 f"Model '{model_path}' not found locally, attempting Ultralytics resolution..."
             )
@@ -1337,6 +1369,12 @@ class PerceptionProcess:
         self, result, timestamp: float, metadata: Dict[str, Any]
     ) -> int:
         """Process detection results and publish with mask support."""
+        # Polymorphic handling of MediaPipe results
+        from annolid.realtime.mediapipe_engine import MediaPipeResult
+
+        if isinstance(result, MediaPipeResult):
+            return await self._process_mediapipe_detections(result, timestamp, metadata)
+
         if not result.boxes or len(result.boxes) == 0:
             return 0
 
@@ -1432,6 +1470,45 @@ class PerceptionProcess:
             except Exception as e:
                 logger.error(f"Detection processing error: {e}", exc_info=True)
 
+    async def _process_mediapipe_detections(
+        self, result: Any, timestamp: float, metadata: Dict[str, Any]
+    ) -> int:
+        """Process native MediaPipe detections."""
+        detection_count = 0
+        h, w = result.orig_img.shape[:2]
+
+        for i, obj_norm_lms in enumerate(result.norm_landmarks):
+            try:
+                xs = [p[0] for p in obj_norm_lms]
+                ys = [p[1] for p in obj_norm_lms]
+                bbox_norm = [min(xs), min(ys), max(xs), max(ys)]
+                bbox_pixels = [
+                    bbox_norm[0] * w,
+                    bbox_norm[1] * h,
+                    bbox_norm[2] * w,
+                    bbox_norm[3] * h,
+                ]
+
+                # MediaPipe classes are currently fixed
+                class_name = (
+                    self.class_names[0] if self.class_names else result.model_type
+                )
+
+                detection = DetectionResult(
+                    behavior=class_name,
+                    confidence=0.9,  # MediaPipe doesn't always expose box confidence in a standard way here
+                    bbox_normalized=bbox_norm,
+                    timestamp=timestamp,
+                    metadata=metadata,
+                    bbox_pixels=bbox_pixels,
+                    keypoints_normalized=obj_norm_lms,
+                    keypoints_pixels=[[p[0] * w, p[1] * h, p[2]] for p in obj_norm_lms],
+                    keypoint_labels=self.keypoint_labels,
+                )
+                await self.publisher.publish_detection(detection)
+                detection_count += 1
+            except Exception as e:
+                logger.error(f"MediaPipe detection error: {e}")
         return detection_count
 
     def _visualize_results(
@@ -1439,8 +1516,11 @@ class PerceptionProcess:
     ) -> np.ndarray:
         """Create an annotated frame and optionally display it locally."""
         try:
-            # Use the built-in YOLO plotting that handles masks automatically
-            annotated_frame = result.plot()
+            # Polymorphic plot/annotation
+            if hasattr(result, "plot"):
+                annotated_frame = result.plot()
+            else:
+                annotated_frame = frame.copy()
 
             # Alternative: Manual mask overlay if you want custom styling
             if (
@@ -1589,7 +1669,20 @@ class PerceptionProcess:
             await self.publisher.cleanup()
 
             if self.config.visualize:
-                cv2.destroyAllWindows()
+                # On macOS, destroyAllWindows can crash if called from a thread.
+                # Also, we check if it's even available (headless etc).
+                try:
+                    import platform
+
+                    if platform.system() == "Darwin":
+                        # Be conservative on macOS
+                        logger.debug(
+                            "Skipping cv2.destroyAllWindows() on macOS to avoid crash."
+                        )
+                    else:
+                        cv2.destroyAllWindows()
+                except Exception:
+                    pass
 
             logger.info("Shutdown complete")
         except Exception as e:
