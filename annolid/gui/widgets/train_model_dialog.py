@@ -79,9 +79,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_focal_alpha = float(dino_defaults.FOCAL_ALPHA)
         self.dino_focal_gamma = float(dino_defaults.FOCAL_GAMMA)
         self.dino_coord_warmup_epochs = int(dino_defaults.COORD_WARMUP_EPOCHS)
-        self.dino_radius_schedule = "none"
-        self.dino_radius_start_px = float(self.dino_radius_px)
-        self.dino_radius_end_px = float(self.dino_radius_px)
+        self.dino_radius_schedule = str(dino_defaults.RADIUS_SCHEDULE)
+        self.dino_radius_start_px = float(dino_defaults.RADIUS_START_PX)
+        self.dino_radius_end_px = float(dino_defaults.RADIUS_END_PX)
         self.dino_overfit_n = 0
         self.dino_cache_features = True
         self.dino_patience = int(dino_defaults.EARLY_STOP_PATIENCE)

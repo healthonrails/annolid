@@ -145,9 +145,15 @@ class TrainingWorkflowMixin:
             dino_coord_warmup_epochs = getattr(
                 dlg, "dino_coord_warmup_epochs", dino_defaults.COORD_WARMUP_EPOCHS
             )
-            dino_radius_schedule = getattr(dlg, "dino_radius_schedule", "none")
-            dino_radius_start_px = getattr(dlg, "dino_radius_start_px", dino_radius_px)
-            dino_radius_end_px = getattr(dlg, "dino_radius_end_px", dino_radius_px)
+            dino_radius_schedule = getattr(
+                dlg, "dino_radius_schedule", dino_defaults.RADIUS_SCHEDULE
+            )
+            dino_radius_start_px = getattr(
+                dlg, "dino_radius_start_px", dino_defaults.RADIUS_START_PX
+            )
+            dino_radius_end_px = getattr(
+                dlg, "dino_radius_end_px", dino_defaults.RADIUS_END_PX
+            )
             dino_overfit_n = getattr(dlg, "dino_overfit_n", 0)
             dino_cache_features = getattr(dlg, "dino_cache_features", True)
             dino_patience = getattr(
@@ -273,7 +279,9 @@ class TrainingWorkflowMixin:
                 focal_alpha=float(dino_focal_alpha),
                 focal_gamma=float(dino_focal_gamma),
                 coord_warmup_epochs=int(dino_coord_warmup_epochs),
-                radius_schedule=str(dino_radius_schedule or "none"),
+                radius_schedule=str(
+                    dino_radius_schedule or dino_defaults.RADIUS_SCHEDULE
+                ),
                 radius_start_px=float(dino_radius_start_px),
                 radius_end_px=float(dino_radius_end_px),
                 overfit_n=int(dino_overfit_n),

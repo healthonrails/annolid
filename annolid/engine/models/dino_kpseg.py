@@ -159,11 +159,19 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument(
             "--radius-schedule",
             choices=("none", "linear"),
-            default="none",
-            help="Schedule radius_px across epochs (default: none).",
+            default=dino_defaults.RADIUS_SCHEDULE,
+            help="Schedule radius_px across epochs.",
         )
-        parser.add_argument("--radius-start-px", type=float, default=None)
-        parser.add_argument("--radius-end-px", type=float, default=None)
+        parser.add_argument(
+            "--radius-start-px",
+            type=float,
+            default=dino_defaults.RADIUS_START_PX,
+        )
+        parser.add_argument(
+            "--radius-end-px",
+            type=float,
+            default=dino_defaults.RADIUS_END_PX,
+        )
         parser.add_argument(
             "--overfit-n",
             type=int,
@@ -368,7 +376,9 @@ class DinoKPSEGPlugin(ModelPluginBase):
             coord_warmup_epochs=int(
                 getattr(args, "coord_warmup_epochs", dino_defaults.COORD_WARMUP_EPOCHS)
             ),
-            radius_schedule=str(getattr(args, "radius_schedule", "none")),
+            radius_schedule=str(
+                getattr(args, "radius_schedule", dino_defaults.RADIUS_SCHEDULE)
+            ),
             radius_start_px=(
                 float(getattr(args, "radius_start_px", 0.0))
                 if getattr(args, "radius_start_px", None) is not None

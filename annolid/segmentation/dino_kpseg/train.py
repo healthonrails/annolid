@@ -351,9 +351,13 @@ def _draw_loss_curve_image(
             tr_v = float(tr)
         except Exception:
             tr_v = None
+        if tr_v is not None and not math.isfinite(float(tr_v)):
+            tr_v = None
         try:
             va_v = float(va)
         except Exception:
+            va_v = None
+        if va_v is not None and not math.isfinite(float(va_v)):
             va_v = None
         if tr_v is None and va_v is None:
             continue
@@ -364,7 +368,9 @@ def _draw_loss_curve_image(
     if not xs:
         return None
 
-    all_vals = [v for v in train_ys + val_ys if v is not None]
+    all_vals = [
+        float(v) for v in train_ys + val_ys if v is not None and math.isfinite(float(v))
+    ]
     if not all_vals:
         return None
     y_min = min(all_vals)
@@ -405,6 +411,9 @@ def _draw_loss_curve_image(
             if loss is None:
                 pts.append(None)
                 continue
+            if not math.isfinite(float(loss)):
+                pts.append(None)
+                continue
             pts.append(to_xy(epoch, float(loss)))
         last = None
         for pt in pts:
@@ -428,6 +437,30 @@ def _draw_loss_curve_image(
     arr = np.array(img, dtype=np.uint8, copy=True)
     tens = torch.from_numpy(arr).permute(2, 0, 1).to(dtype=torch.float32) / 255.0
     return tens
+
+
+def _sanitize_tb_image_tensor(image: torch.Tensor) -> torch.Tensor:
+    """Clamp and denoise tensorboard image tensors to avoid NaN cast warnings."""
+    if not isinstance(image, torch.Tensor):
+        raise TypeError("Expected a torch.Tensor image")
+    out = image.detach().float().cpu()
+    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
+    return out.clamp(0.0, 1.0)
+
+
+def _tb_add_image(
+    tb_writer: SummaryWriter, tag: str, image: torch.Tensor, step: int
+) -> None:
+    tb_writer.add_image(tag, _sanitize_tb_image_tensor(image), int(step))
+
+
+def _tb_add_images(
+    tb_writer: SummaryWriter,
+    tag: str,
+    images: torch.Tensor,
+    step: int,
+) -> None:
+    tb_writer.add_images(tag, _sanitize_tb_image_tensor(images), int(step))
 
 
 def _dice_loss(
@@ -797,10 +830,10 @@ def _log_example_images(
     try:
         imgs = torch.stack(tensors, dim=0)
         grid = _grid_images(imgs, nrow=min(4, int(imgs.shape[0])), pad=2, pad_value=0.0)
-        tb_writer.add_image(tag, grid, 0)
+        _tb_add_image(tb_writer, tag, grid, 0)
     except Exception:
         for idx, img in enumerate(tensors):
-            tb_writer.add_image(f"{tag}/{idx}", img, 0)
+            _tb_add_image(tb_writer, f"{tag}/{idx}", img, 0)
 
 
 def _default_device() -> str:
@@ -863,9 +896,9 @@ def train(
     focal_alpha: float = dino_defaults.FOCAL_ALPHA,
     focal_gamma: float = dino_defaults.FOCAL_GAMMA,
     coord_warmup_epochs: int = dino_defaults.COORD_WARMUP_EPOCHS,
-    radius_schedule: str = "none",
-    radius_start_px: Optional[float] = None,
-    radius_end_px: Optional[float] = None,
+    radius_schedule: str = dino_defaults.RADIUS_SCHEDULE,
+    radius_start_px: Optional[float] = dino_defaults.RADIUS_START_PX,
+    radius_end_px: Optional[float] = dino_defaults.RADIUS_END_PX,
     overfit_n: int = 0,
     seed: Optional[int] = None,
     tb_projector: bool = dino_defaults.TB_PROJECTOR,
@@ -998,8 +1031,10 @@ def train(
 
     augment_cfg = augment or DinoKPSEGAugmentConfig(enabled=False)
     if augment_cfg.enabled and cache_features:
-        logger.warning("DinoKPSEG augmentations enabled; disabling feature caching.")
-        cache_features = False
+        logger.info(
+            "DinoKPSEG augmentations enabled: training split will skip feature "
+            "cache; non-augmented splits still use cache."
+        )
 
     overfit_n = max(0, int(overfit_n))
     if overfit_n > 0:
@@ -1972,8 +2007,8 @@ def train(
                                 )
                                 imgs = imgs.unsqueeze(1).clamp(0.0, 1.0)  # (2k,1,H,W)
                                 grid = _grid_images(imgs, nrow=k, pad=2, pad_value=0.0)
-                                tb_writer.add_image(
-                                    "qual/gt_then_pred_batch0", grid, epoch
+                                _tb_add_image(
+                                    tb_writer, "qual/gt_then_pred_batch0", grid, epoch
                                 )
                             except Exception:
                                 pass
@@ -1993,7 +2028,9 @@ def train(
                                     .cpu()
                                     .clamp(0.0, 1.0)
                                 )  # 3HW
-                                tb_writer.add_image("qual/image_batch0", img0, epoch)
+                                _tb_add_image(
+                                    tb_writer, "qual/image_batch0", img0, epoch
+                                )
 
                                 prob_mean = (
                                     probs0.detach().float().cpu().mean(dim=0)
@@ -2007,13 +2044,17 @@ def train(
                                 gmax = float(gt_sum.max().item())
                                 gt_norm = (gt_sum - gmin) / max(gmax - gmin, 1e-6)
 
-                                tb_writer.add_image(
+                                _tb_add_image(
+                                    tb_writer,
                                     "qual/pred_mean_batch0",
                                     prob_norm.unsqueeze(0),
                                     epoch,
                                 )
-                                tb_writer.add_image(
-                                    "qual/gt_sum_batch0", gt_norm.unsqueeze(0), epoch
+                                _tb_add_image(
+                                    tb_writer,
+                                    "qual/gt_sum_batch0",
+                                    gt_norm.unsqueeze(0),
+                                    epoch,
                                 )
 
                                 # Upsample patch-grid maps to image resolution for overlays.
@@ -2031,12 +2072,14 @@ def train(
                                         mode="bilinear",
                                         align_corners=False,
                                     )[0, 0].clamp(0.0, 1.0)
-                                    tb_writer.add_image(
+                                    _tb_add_image(
+                                        tb_writer,
                                         "qual/pred_mean_up_batch0",
                                         prob_up.unsqueeze(0),
                                         epoch,
                                     )
-                                    tb_writer.add_image(
+                                    _tb_add_image(
+                                        tb_writer,
                                         "qual/gt_sum_up_batch0",
                                         gt_up.unsqueeze(0),
                                         epoch,
@@ -2049,7 +2092,8 @@ def train(
                                 overlay[0] = overlay[0] * (1.0 - alpha) + alpha * 1.0
                                 overlay[1] = overlay[1] * (1.0 - alpha)
                                 overlay[2] = overlay[2] * (1.0 - alpha)
-                                tb_writer.add_image(
+                                _tb_add_image(
+                                    tb_writer,
                                     "qual/overlay_pred_mean_batch0",
                                     overlay.clamp(0.0, 1.0),
                                     epoch,
@@ -2725,9 +2769,12 @@ def train(
                             [sample[1] for sample in error_samples],
                             pad_value=0.0,
                         ).clamp(0.0, 1.0)
-                        tb_writer.add_images("val/error_overlays", overlay_stack, epoch)
+                        _tb_add_images(
+                            tb_writer, "val/error_overlays", overlay_stack, epoch
+                        )
                     if pred_overlays:
-                        tb_writer.add_images(
+                        _tb_add_images(
+                            tb_writer,
                             "val/pred_overlays",
                             _stack_chw_images_with_padding(
                                 pred_overlays, pad_value=0.0
@@ -2921,7 +2968,7 @@ def train(
         # Persist a "YOLO-like" loss curve image in TensorBoard (no matplotlib).
         curve = _draw_loss_curve_image(csv_path)
         if curve is not None:
-            tb_writer.add_image("plots/loss_curve", curve, int(epochs))
+            _tb_add_image(tb_writer, "plots/loss_curve", curve, int(epochs))
     finally:
         tb_writer.flush()
         tb_writer.close()
@@ -3099,11 +3146,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--radius-schedule",
         choices=("none", "linear"),
-        default="none",
-        help="Schedule radius_px across epochs (default: none).",
+        default=dino_defaults.RADIUS_SCHEDULE,
+        help="Schedule radius_px across epochs.",
     )
-    p.add_argument("--radius-start-px", type=float, default=None)
-    p.add_argument("--radius-end-px", type=float, default=None)
+    p.add_argument(
+        "--radius-start-px",
+        type=float,
+        default=dino_defaults.RADIUS_START_PX,
+    )
+    p.add_argument(
+        "--radius-end-px",
+        type=float,
+        default=dino_defaults.RADIUS_END_PX,
+    )
     p.add_argument("--device", default=None)
     p.add_argument("--no-cache", action="store_true", help="Disable feature caching")
     p.add_argument(
