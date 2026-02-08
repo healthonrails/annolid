@@ -668,6 +668,14 @@ class CameraSource:
 
         try:
             ret, frame = await asyncio.to_thread(self.cap.read)
+            if not ret or frame is None:
+                # If it's a file, try to loop
+                source = self.config.camera_index
+                if isinstance(source, str) and Path(source).is_file():
+                    logger.debug("Local video EOF reached, looping...")
+                    await asyncio.to_thread(self.cap.set, cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = await asyncio.to_thread(self.cap.read)
+
             if ret and frame is not None:
                 return frame, {
                     "source": "local",
@@ -764,7 +772,9 @@ class HybridVideoSource:
                 await self._try_remote_reconnect()
                 return result
             else:
-                logger.error("Local source failed")
+                logger.warning(
+                    "Local source returned no frame, resetting connection state"
+                )
                 async with self._state_lock:
                     self.state = SourceState.DISCONNECTED
 

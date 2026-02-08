@@ -73,6 +73,12 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
         self.camera_edit = QtWidgets.QLineEdit()
         self.camera_edit.setPlaceholderText(self.tr("e.g. 0, rtsp://, filename"))
+        browse_camera_btn = QtWidgets.QPushButton(self.tr("Browse…"))
+        browse_camera_btn.clicked.connect(self._browse_camera_source)
+
+        camera_layout = QtWidgets.QHBoxLayout()
+        camera_layout.addWidget(self.camera_edit)
+        camera_layout.addWidget(browse_camera_btn)
 
         self.server_edit = QtWidgets.QLineEdit()
         self.server_edit.setPlaceholderText("localhost")
@@ -91,7 +97,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             self.tr("Comma separated behaviours (leave blank for all)")
         )
 
-        source_form.addRow(self.tr("Camera / Stream"), self.camera_edit)
+        source_form.addRow(self.tr("Camera / Stream"), camera_layout)
         source_form.addRow(self.tr("Remote Server"), self.server_edit)
         source_form.addRow(self.tr("Remote Port"), self.port_spin)
         source_form.addRow(self.tr("Publisher Bind"), self.publisher_edit)
@@ -276,6 +282,17 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             custom_index = self.model_combo.count() - 1
             if self.model_combo.currentIndex() != custom_index:
                 self.model_combo.setCurrentIndex(custom_index)
+
+    def _browse_camera_source(self):
+        last_path = self.camera_edit.text().strip() or str(Path.home())
+        selected, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select Video File"),
+            last_path,
+            self.tr("Video Files (*.mp4 *.avi *.mov *.mkv *.wmv);;All Files (*.*)"),
+        )
+        if selected:
+            self.camera_edit.setText(selected)
 
     def _on_log_toggled(self, checked: bool):
         self.log_path_edit.setEnabled(checked)
