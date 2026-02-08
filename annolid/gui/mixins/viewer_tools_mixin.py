@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from qtpy import QtWidgets
 
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.gui.threejs_examples import generate_threejs_example
 
 
 class ViewerToolsMixin:
@@ -107,6 +109,17 @@ class ViewerToolsMixin:
 
         point_cloud_suffixes = {".ply", ".csv", ".xyz"}
         mesh_suffixes = {".stl", ".obj"}
+        threejs_suffixes = point_cloud_suffixes | mesh_suffixes
+
+        if suffix in threejs_suffixes:
+            manager = getattr(self, "threejs_manager", None)
+            if manager is not None:
+                try:
+                    if manager.show_model_in_viewer(tiff_path):
+                        return
+                except Exception:
+                    pass
+
         requires_vtk = suffix in point_cloud_suffixes or suffix in mesh_suffixes
 
         def _vtk_available() -> tuple[bool, str | None]:
@@ -170,6 +183,32 @@ class ViewerToolsMixin:
                     "Pip:    pip install vtk\n\n"
                     "You are currently using the built-in slice/MIP viewer."
                 ),
+            )
+
+    def open_threejs_example(self, example_id: str):
+        manager = getattr(self, "threejs_manager", None)
+        if manager is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Three.js Examples"),
+                self.tr("Three.js canvas is not available in this session."),
+            )
+            return
+        try:
+            base_dir = Path(tempfile.gettempdir()) / "annolid_threejs_examples"
+            example_path = generate_threejs_example(example_id, base_dir)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Three.js Examples"),
+                self.tr("Failed to generate example:\n%1").replace("%1", str(exc)),
+            )
+            return
+        if not manager.show_model_in_viewer(example_path):
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Three.js Examples"),
+                self.tr("Unable to open generated example in Three.js viewer."),
             )
 
     def _on_pca_map_started(self):

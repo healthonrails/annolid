@@ -89,6 +89,13 @@ class ToolingDialogsMixin:
                 if pdf_index != -1:
                     self._viewer_stack.setCurrentIndex(pdf_index)
                     return
+        if mode == "threejs" and getattr(self, "threejs_manager", None) is not None:
+            viewer = self.threejs_manager.viewer_widget()
+            if viewer is not None:
+                three_index = self._viewer_stack.indexOf(viewer)
+                if three_index != -1:
+                    self._viewer_stack.setCurrentIndex(three_index)
+                    return
         self._viewer_stack.setCurrentIndex(0)
 
     def show_pdf_in_viewer(self, pdf_path: str) -> None:

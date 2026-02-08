@@ -1,0 +1,54 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at 20% 20%, #1f2636, #0e121a 70%);
+  color: #e9edf4;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+}
+
+#annolidThreeRoot {
+  position: fixed;
+  inset: 0;
+}
+
+#annolidThreeCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#annolidThreeStatus {
+  position: fixed;
+  left: 12px;
+  top: 12px;
+  max-width: min(80vw, 760px);
+  background: rgba(8, 12, 18, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+#annolidThreeStatus[data-level="error"] {
+  color: #ffd4d4;
+  border-color: rgba(255, 122, 122, 0.5);
+}
+
+#annolidThreeHints {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  font-size: 11px;
+  color: rgba(233, 237, 244, 0.85);
+  background: rgba(8, 12, 18, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+}

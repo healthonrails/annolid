@@ -523,6 +523,35 @@ class MenuController:
             w.open_3d_viewer,
             tip=w.tr("View and explore 3D TIFF image stacks"),
         )
+        w.close_3d_viewer_action = self._action_factory(
+            w.tr("Close 3D View"),
+            self._close_3d_viewer,
+            tip=w.tr("Close the Three.js 3D view and return to canvas"),
+        )
+        w.close_pdf_action = self._action_factory(
+            w.tr("Close PDF View"),
+            self._close_pdf_view,
+            tip=w.tr("Close the PDF view and return to canvas"),
+        )
+        w.threejs_example_helix_action = self._action_factory(
+            w.tr("Helix Point Cloud"),
+            lambda: w.open_threejs_example("helix_points_csv"),
+            tip=w.tr("Open a generated helix point cloud example in Three.js"),
+        )
+        w.threejs_example_wave_action = self._action_factory(
+            w.tr("Wave Surface Mesh"),
+            lambda: w.open_threejs_example("wave_surface_obj"),
+            tip=w.tr("Open a generated wave mesh example in Three.js"),
+        )
+        w.threejs_example_sphere_action = self._action_factory(
+            w.tr("Sphere Point Cloud"),
+            lambda: w.open_threejs_example("sphere_points_ply"),
+            tip=w.tr("Open a generated sphere point cloud example in Three.js"),
+        )
+        w.threejs_examples_menu = QtWidgets.QMenu(w.tr("3D Examples"), w)
+        w.threejs_examples_menu.addAction(w.threejs_example_helix_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_wave_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_sphere_action)
 
         # ------------------------------------------------------------------
         # Pose/keypoint annotation helpers (visible vs occluded)
@@ -775,7 +804,10 @@ class MenuController:
             ),
             (
                 w.open_3d_viewer_action,
+                w.close_3d_viewer_action,
+                w.close_pdf_action,
                 actions["sam3d_reconstruct"],
+                w.threejs_examples_menu.menuAction(),
             ),
             (actions["glitter2"],),
         ]
@@ -978,3 +1010,19 @@ class MenuController:
         # Re-add in the requested order.
         for menu in menus:
             bar.addMenu(menu)
+
+    def _close_3d_viewer(self) -> None:
+        """Close the Three.js 3D view and return to canvas."""
+        if (
+            hasattr(self._window, "threejs_manager")
+            and self._window.threejs_manager is not None
+        ):
+            self._window.threejs_manager.close_threejs()
+
+    def _close_pdf_view(self) -> None:
+        """Close the PDF view and return to canvas."""
+        if (
+            hasattr(self._window, "pdf_manager")
+            and self._window.pdf_manager is not None
+        ):
+            self._window.pdf_manager.close_pdf()

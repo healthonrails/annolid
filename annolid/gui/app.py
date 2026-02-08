@@ -36,6 +36,7 @@ from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
 from annolid.gui.widgets.pdf_manager import PdfManager
+from annolid.gui.widgets.threejs_manager import ThreeJsManager
 from annolid.gui.widgets.depth_manager import DepthManager
 from annolid.gui.widgets.sam3d_manager import Sam3DManager
 from annolid.gui.widgets.sam2_manager import Sam2Manager
@@ -268,6 +269,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._viewer_stack.setContentsMargins(0, 0, 0, 0)
         self._viewer_stack.addWidget(self.canvas)
         self.pdf_manager = PdfManager(self, self._viewer_stack)
+        self.threejs_manager = ThreeJsManager(self, self._viewer_stack)
         self.depth_manager = DepthManager(self)
         self.optical_flow_manager = OpticalFlowManager(self)
         self.sam3d_manager = Sam3DManager(self)
