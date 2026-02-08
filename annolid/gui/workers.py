@@ -1086,9 +1086,11 @@ class PerceptionProcessWorker(QtCore.QThread):
         self._shutdown_requested.set()
         loop = self._loop
         perception = self._perception
-        if loop and perception:
+        if loop and loop.is_running() and perception:
             try:
-                asyncio.run_coroutine_threadsafe(perception.shutdown(), loop)
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(perception.shutdown())
+                )
             except Exception as exc:
                 logger.error(
                     "Failed to request perception shutdown: %s", exc, exc_info=True
@@ -1141,6 +1143,7 @@ class RealtimeSubscriberWorker(QtCore.QThread):
     def _close(self):
         if self._socket is not None:
             try:
+                self._socket.setsockopt(zmq.LINGER, 0)
                 self._socket.close(0)
             except Exception:
                 pass

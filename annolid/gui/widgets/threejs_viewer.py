@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
@@ -65,6 +66,76 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         except Exception:
             pass
         layout.addWidget(self._web_view, 1)
+
+    def init_viewer(self) -> None:
+        """Initialize the Three.js viewer HTML without loading a model."""
+        if self._web_view is None:
+            return
+        if self._current_path is not None:
+            return  # Already has a model
+
+        base = _ensure_threejs_http_server()
+        base_url = QtCore.QUrl(base + "/")
+        html = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="threejs/annolid_threejs_viewer.css" />
+  <script>
+    window.__annolidThreeTitle = "Real-time";
+    window.__annolidThreeModelUrl = "";
+    window.__annolidThreeModelExt = "";
+  </script>
+</head>
+<body>
+  <div id="annolidThreeRoot">
+    <canvas id="annolidThreeCanvas"></canvas>
+  </div>
+  <div id="annolidThreeStatus">Starting real-time viewer…</div>
+  <div id="annolidThreeHints">Real-time inference mode active.</div>
+  <script type="module" src="threejs/annolid_threejs_viewer.js"></script>
+</body>
+</html>
+        """.strip()
+        self._web_view.setHtml(html, base_url)
+        logger.info("Initialized empty Three.js viewer for real-time mode")
+
+    def update_realtime_data(
+        self, qimage: QtGui.QImage, detections: List[dict]
+    ) -> None:
+        """Stream base64-encoded frame and detections to the Three.js canvas."""
+        if self._web_view is None:
+            return
+
+        import base64
+        from qtpy.QtCore import QBuffer, QIODevice
+
+        # Convert QImage to base64 JPEG
+        buffer = QBuffer()
+        buffer.open(QIODevice.WriteOnly)
+        qimage.save(buffer, "JPG", 80)
+        base64_data = base64.b64encode(buffer.data().data()).decode("utf-8")
+
+        # Prepare detections JSON
+        # We only pass keys that Three.js logic expects: behavior, confidence, keypoints, keypoints_pixels
+        minimal_detections = []
+        for det in detections:
+            minimal_detections.append(
+                {
+                    "behavior": det.get("behavior"),
+                    "confidence": det.get("confidence"),
+                    "keypoints": det.get("keypoints"),
+                    "keypoints_pixels": det.get("keypoints_pixels"),
+                }
+            )
+
+        js_code = (
+            f"if (window.updateRealtimeData) {{ "
+            f"window.updateRealtimeData('{base64_data}', {json.dumps(minimal_detections)});"
+            f"}}"
+        )
+        self._web_view.page().runJavaScript(js_code)
 
     def load_model(self, model_path: str | Path) -> None:
         path = Path(model_path)

@@ -36,12 +36,13 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_log_fp = None
         self.realtime_log_path = None
 
-        # Dialog + control widget
-        self.realtime_control_dialog = QtWidgets.QDialog(window)
-        self.realtime_control_dialog.setWindowTitle(window.tr("Realtime Control"))
-        self.realtime_control_dialog.setModal(False)
+        # Dock + control widget
+        self.realtime_control_dock = QtWidgets.QDockWidget(
+            window.tr("Realtime Control"), window
+        )
+        self.realtime_control_dock.setObjectName("realtimeControlDock")
         self.realtime_control_widget = RealtimeControlWidget(
-            parent=self.realtime_control_dialog,
+            parent=self.realtime_control_dock,
             config=window._config,
         )
         self.realtime_control_widget.start_requested.connect(
@@ -50,17 +51,59 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_control_widget.stop_requested.connect(
             self.stop_realtime_inference
         )
-        dialog_layout = QtWidgets.QVBoxLayout(self.realtime_control_dialog)
-        dialog_layout.setContentsMargins(10, 10, 10, 10)
-        dialog_layout.addWidget(self.realtime_control_widget)
-        self.realtime_control_dialog.resize(420, 560)
+        self.realtime_control_dock.setWidget(self.realtime_control_widget)
+        self.realtime_control_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+        )
+        # We don't add it to the window yet; show_control_dialog will handle it.
+        self.realtime_control_dock.hide()
         self.realtime_control_widget.set_status_text(window.tr("Realtime idle."))
+
+        self.realtime_control_dock.visibilityChanged.connect(
+            self._on_dock_visibility_changed
+        )
+        self._other_docks_states = {}
+
+    def _on_dock_visibility_changed(self, visible: bool) -> None:
+        """Handle dock visibility changes to restore layout when closed."""
+        if not visible and not self.realtime_running:
+            self.restore_other_docks()
 
     # ------------------------------------------------------------------ UI helpers
     def show_control_dialog(self) -> None:
-        self.realtime_control_dialog.show()
-        self.realtime_control_dialog.raise_()
-        self.realtime_control_dialog.activateWindow()
+        """Show the realtime control dock and hide other docks for focus."""
+        # Ensure it's docked on the right side.
+        self.window.addDockWidget(
+            QtCore.Qt.RightDockWidgetArea, self.realtime_control_dock
+        )
+
+        if not self.realtime_control_dock.isVisible():
+            self._hide_other_docks()
+            self.realtime_control_dock.show()
+
+        self.realtime_control_dock.raise_()
+
+    def _hide_other_docks(self) -> None:
+        """Hide all other main window docks to clear the view for real-time."""
+        self._other_docks_states.clear()
+        for dock in self.window.findChildren(QtWidgets.QDockWidget):
+            if dock == self.realtime_control_dock:
+                continue
+            if dock.isVisible():
+                self._other_docks_states[dock] = True
+                dock.hide()
+
+    def restore_other_docks(self) -> None:
+        """Restore previous dock visibility when real-time control is closed."""
+        for dock, was_visible in self._other_docks_states.items():
+            if was_visible:
+                try:
+                    dock.show()
+                except Exception:
+                    pass
+        self._other_docks_states.clear()
 
     # ------------------------------------------------------------------ Start/Stop
     def _handle_realtime_start_request(
@@ -197,6 +240,17 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_subscriber_worker.error.connect(self._on_realtime_error)
         self.realtime_subscriber_worker.start()
 
+        viewer_type = extras.get("viewer_type", "pyqt")
+        if viewer_type == "threejs":
+            threejs_manager = getattr(self.window, "threejs_manager", None)
+            if threejs_manager:
+                viewer = threejs_manager.ensure_threejs_viewer()
+                if viewer:
+                    viewer.init_viewer()
+                self.window._set_active_view("threejs")
+        else:
+            self.window._set_active_view("canvas")
+
     def stop_realtime_inference(self):
         if self.realtime_perception_worker is None and not self.realtime_running:
             self.realtime_control_widget.set_running(False)
@@ -217,7 +271,11 @@ class RealtimeManager(QtCore.QObject):
         worker = self.realtime_perception_worker
         if worker is not None:
             worker.request_stop()
-            return
+            if not worker.wait(2500):  # Wait up to 2.5s
+                logger.warning(
+                    "Realtime perception worker did not stop gracefully in time."
+                )
+            self.realtime_perception_worker = None
 
         self._finalize_realtime_shutdown()
 
@@ -482,6 +540,13 @@ class RealtimeManager(QtCore.QObject):
         if hasattr(self.window.canvas, "setRealtimeShapes"):
             self.window.canvas.setRealtimeShapes(shapes)
         self._realtime_shapes = shapes
+
+        # If Three.js viewer is visible, send the data there too
+        threejs_manager = getattr(self.window, "threejs_manager", None)
+        if threejs_manager:
+            viewer = threejs_manager.viewer_widget()
+            if viewer and viewer.isVisible():
+                viewer.update_realtime_data(qimage, detections)
 
         if self.realtime_log_fp:
             try:

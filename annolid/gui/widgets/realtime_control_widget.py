@@ -147,11 +147,18 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         browse_log_btn.setEnabled(False)
         self._log_browse_btn = browse_log_btn
 
+        # Viewer selection
+        self.viewer_combo = QtWidgets.QComboBox()
+        self.viewer_combo.addItem(self.tr("PyQt Canvas"), "pyqt")
+        self.viewer_combo.addItem(self.tr("Three.js Viewer"), "threejs")
+
         output_layout.addWidget(self.publish_frames_check, 0, 0, 1, 3)
         output_layout.addWidget(self.publish_annotated_check, 1, 0, 1, 3)
         output_layout.addWidget(self.log_check, 2, 0, 1, 3)
         output_layout.addWidget(self.log_path_edit, 3, 0, 1, 2)
         output_layout.addWidget(browse_log_btn, 3, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Preferred Viewer")), 4, 0)
+        output_layout.addWidget(self.viewer_combo, 4, 1, 1, 2)
         main_layout.addWidget(output_group)
 
         # --- Buttons / Status ------------------------------------------------
@@ -364,5 +371,6 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             "subscriber_address": subscriber,
             "log_enabled": log_enabled,
             "log_path": log_path,
+            "viewer_type": self.viewer_combo.currentData(),
         }
         return config, extras

@@ -864,8 +864,33 @@ class DetectionPublisher:
         self.address = address
         self.context = zmq.asyncio.Context()
         self.socket = self.context.socket(zmq.PUB)
-        self.socket.bind(address)
-        logger.info(f"Detection publisher bound to {address}")
+        self.socket.setsockopt(zmq.LINGER, 0)
+        self._bound = False
+
+    async def bind(self):
+        """Bind the publisher to the address with retries."""
+        if self._bound:
+            return
+
+        last_exc = None
+        for attempt in range(3):
+            try:
+                # Use asyncio to_thread for bind just in case it blocks on some platforms
+                await asyncio.to_thread(self.socket.bind, self.address)
+                self._bound = True
+                logger.info(f"Detection publisher bound to {self.address}")
+                return
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    f"Bind attempt {attempt + 1} failed for {self.address}: {e}"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.5)
+
+        logger.error(f"Failed to bind publisher to {self.address} after 3 attempts.")
+        if last_exc:
+            raise last_exc
 
     async def publish_detection(self, detection: DetectionResult):
         """Publish a detection result."""
@@ -928,9 +953,14 @@ class DetectionPublisher:
 
     async def cleanup(self):
         """Clean up publisher resources."""
+        if self.socket is None:
+            return
         try:
+            self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.close()
+            self.socket = None
             self.context.term()
+            self.context = None
             logger.info("Detection publisher cleaned up")
         except Exception as e:
             logger.error(f"Publisher cleanup error: {e}")
@@ -1096,6 +1126,9 @@ class PerceptionProcess:
                 f"Model '{model_path}' not found locally, attempting Ultralytics resolution..."
             )
             await asyncio.to_thread(YOLO, model_ref)
+
+        # Initialize publisher
+        await self.publisher.bind()
 
         # Initialize video source
         await self.video_source.connect()
@@ -1544,7 +1577,7 @@ class PerceptionProcess:
 
     async def shutdown(self):
         """Graceful shutdown."""
-        if not self.running:
+        if self._shutdown_event.is_set() and not self.running:
             return
 
         logger.info("Shutting down perception process...")

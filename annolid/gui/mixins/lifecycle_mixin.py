@@ -53,6 +53,11 @@ class LifecycleMixin:
 
         self._stop_frame_loader()
         self._stop_csv_worker()
+        if hasattr(self, "realtime_manager") and self.realtime_manager:
+            try:
+                self.realtime_manager.stop_realtime_inference()
+            except Exception:
+                pass
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
         quit_and_wait(self.seg_pred_thread, "Bye!")
