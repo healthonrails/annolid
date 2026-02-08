@@ -167,6 +167,14 @@ async function boot() {
         btnToggleTheme.style.color = isWhite ? "#333" : "#fff";
       };
     }
+
+    const btnToggleAutoRotate = document.getElementById("btnToggleAutoRotate");
+    if (btnToggleAutoRotate) {
+      btnToggleAutoRotate.onclick = () => {
+        controls.autoRotate = !controls.autoRotate;
+        btnToggleAutoRotate.style.color = controls.autoRotate ? "#fff" : "#888";
+      };
+    }
     if (btnToggleRealtime) {
       btnToggleRealtime.onclick = () => {
         realtimeEnabled = !realtimeEnabled;
