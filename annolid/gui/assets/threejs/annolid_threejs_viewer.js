@@ -35,6 +35,9 @@ async function boot() {
     const { OBJLoader } = await import(
       `${THREE_ESM_BASE}/examples/jsm/loaders/OBJLoader.js`
     );
+    const { MTLLoader } = await import(
+      `${THREE_ESM_BASE}/examples/jsm/loaders/MTLLoader.js`
+    );
 
     const renderer = new THREE.WebGLRenderer({
       canvas,
@@ -104,6 +107,89 @@ async function boot() {
       document.body.setAttribute("data-threejs-ready", "1");
     };
 
+    // Gaussian Splats PLY detection and loading functions
+    const detectGaussianSplatsPLY = (buffer) => {
+      const headerText = new TextDecoder().decode(buffer.slice(0, 4000));
+      return headerText.includes('f_dc_0') &&
+        headerText.includes('opacity') &&
+        headerText.includes('scale_0');
+    };
+
+    const loadGaussianSplatsPLY = (buffer, addLoadedObject, setStatus) => {
+      try {
+        const headerText = new TextDecoder().decode(buffer.slice(0, 10000));
+        const headerEnd = 'end_header\n';
+        const headerEndIndex = headerText.indexOf(headerEnd);
+        if (headerEndIndex === -1) throw new Error("Invalid PLY header");
+
+        const headerPart = headerText.slice(0, headerEndIndex);
+        const vertexCountMatch = headerPart.match(/element vertex (\d+)/);
+        const vertexCount = vertexCountMatch ? parseInt(vertexCountMatch[1]) : 0;
+
+        // Find property definitions to calculate stride
+        const properties = headerPart.match(/property float \w+/g) || [];
+        const stride = properties.length * 4;
+        const offset = headerEndIndex + headerEnd.length;
+
+        console.log(`Loading Gaussian Splats: ${vertexCount} points, stride ${stride} bytes.`);
+
+        const limit = 1000000;
+        const count = Math.min(vertexCount, limit);
+
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        const colors = new Float32Array(count * 3);
+
+        const dataView = new DataView(buffer, offset);
+
+        // Map common property names to their indices in the stride
+        const propIndices = {};
+        properties.forEach((prop, i) => {
+          const name = prop.split(' ').pop();
+          propIndices[name] = i;
+        });
+
+        for (let i = 0; i < count; i++) {
+          const base = i * stride;
+
+          // Position
+          positions[i * 3 + 0] = dataView.getFloat32(base + (propIndices['x'] || 0) * 4, true);
+          positions[i * 3 + 1] = dataView.getFloat32(base + (propIndices['y'] || 1) * 4, true);
+          positions[i * 3 + 2] = dataView.getFloat32(base + (propIndices['z'] || 2) * 4, true);
+
+          // SH DC to RGB (approximate)
+          const r_dc = dataView.getFloat32(base + (propIndices['f_dc_0'] || 6) * 4, true);
+          const g_dc = dataView.getFloat32(base + (propIndices['f_dc_1'] || 7) * 4, true);
+          const b_dc = dataView.getFloat32(base + (propIndices['f_dc_2'] || 8) * 4, true);
+
+          // SH coefficient to sRGB: 0.5 + 0.28209 * DC
+          // Simpler approx: 0.5 + 0.5 * dc
+          colors[i * 3 + 0] = Math.max(0, Math.min(1, 0.5 + 0.28209 * r_dc));
+          colors[i * 3 + 1] = Math.max(0, Math.min(1, 0.5 + 0.28209 * g_dc));
+          colors[i * 3 + 2] = Math.max(0, Math.min(1, 0.5 + 0.28209 * b_dc));
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const material = new THREE.PointsMaterial({
+          vertexColors: true,
+          size: 0.015,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: 0.95,
+          alphaTest: 0.05
+        });
+
+        const points = new THREE.Points(geometry, material);
+        addLoadedObject(points);
+        setStatus(`Loaded Gaussian Splats with ${count.toLocaleString()} points.`);
+      } catch (err) {
+        console.error(err);
+        setStatus(`Failed to parse GS-PLY: ${err.message}`, "error");
+      }
+    };
+
     const buildPointCloudFromRows = (rows) => {
       const points = [];
       for (const row of rows) {
@@ -169,55 +255,108 @@ async function boot() {
         }
       );
     } else if (ext === "ply") {
-      const loader = new PLYLoader();
-      loader.load(
-        modelUrl,
-        (geometry) => {
-          geometry.computeVertexNormals();
-          const hasIndex =
-            geometry.getIndex() && geometry.getAttribute("normal") !== undefined;
-          if (hasIndex) {
-            const mat = new THREE.MeshStandardMaterial({
-              color: 0x84d6bf,
-              roughness: 0.5,
-              metalness: 0.12,
-            });
-            addLoadedObject(new THREE.Mesh(geometry, mat));
+      // Check if this is a Gaussian Splats PLY file
+      fetch(modelUrl)
+        .then(response => response.arrayBuffer())
+        .then(buffer => {
+          const isGaussianSplats = detectGaussianSplatsPLY(buffer);
+          if (isGaussianSplats) {
+            loadGaussianSplatsPLY(buffer, addLoadedObject, setStatus);
           } else {
-            const mat = new THREE.PointsMaterial({
-              color: 0x84d6bf,
-              size: 0.01,
-              sizeAttenuation: true,
-            });
-            addLoadedObject(new THREE.Points(geometry, mat));
+            // Regular PLY loading - reuse the buffer to avoid redundant fetch
+            const loader = new PLYLoader();
+            try {
+              const geometry = loader.parse(buffer);
+              geometry.computeVertexNormals();
+              const hasIndex =
+                geometry.getIndex() && geometry.getAttribute("normal") !== undefined;
+              if (hasIndex) {
+                const mat = new THREE.MeshStandardMaterial({
+                  color: 0x84d6bf,
+                  roughness: 0.5,
+                  metalness: 0.12,
+                });
+                addLoadedObject(new THREE.Mesh(geometry, mat));
+              } else {
+                const mat = new THREE.PointsMaterial({
+                  color: 0x84d6bf,
+                  size: 0.01,
+                  sizeAttenuation: true,
+                });
+                addLoadedObject(new THREE.Points(geometry, mat));
+              }
+            } catch (err) {
+              setStatus(`Failed to parse PLY: ${err}`, "error");
+            }
           }
-        },
-        undefined,
-        (err) => {
+        })
+        .catch(err => {
           setStatus(`Failed to load PLY: ${err}`, "error");
-        }
-      );
+        });
     } else if (ext === "obj") {
-      const loader = new OBJLoader();
-      loader.load(
-        modelUrl,
-        (obj) => {
-          obj.traverse((child) => {
-            if (child && child.isMesh) {
-              child.material = new THREE.MeshStandardMaterial({
-                color: 0xb7b9ff,
-                roughness: 0.58,
-                metalness: 0.08,
+      // Try to load MTL file first
+      const title = window.__annolidThreeTitle || "";
+      const baseName = title.replace(/\.obj$/i, '');
+      const mtlFilename = baseName + '.mtl';
+      const mtlUrl = modelUrl + '/' + mtlFilename;
+
+      console.log('OBJ loading:', { modelUrl, title, baseName, mtlFilename, mtlUrl, ext });
+
+      const loadObjWithMaterials = (materials) => {
+        const loader = new OBJLoader();
+        if (materials) {
+          loader.setMaterials(materials);
+        }
+        loader.load(
+          modelUrl,
+          (obj) => {
+            if (!materials) {
+              obj.traverse((child) => {
+                if (child && child.isMesh) {
+                  child.material = new THREE.MeshStandardMaterial({
+                    color: 0xb7b9ff,
+                    roughness: 0.58,
+                    metalness: 0.08,
+                  });
+                }
               });
             }
-          });
-          addLoadedObject(obj);
-        },
-        undefined,
-        (err) => {
-          setStatus(`Failed to load OBJ: ${err}`, "error");
-        }
-      );
+            addLoadedObject(obj);
+          },
+          undefined,
+          (err) => {
+            setStatus(`Failed to load OBJ: ${err}`, "error");
+          }
+        );
+      };
+
+      // Try to load MTL file
+      try {
+        const mtlLoader = new MTLLoader();
+        mtlLoader.setPath(modelUrl + '/');
+        console.log('Attempting to load MTL:', mtlUrl);
+        mtlLoader.load(
+          mtlFilename,
+          (materials) => {
+            console.log('MTL loaded successfully:', materials);
+            console.log('Materials keys:', Object.keys(materials.materials || {}));
+            materials.preload();
+            loadObjWithMaterials(materials);
+          },
+          (progress) => {
+            console.log('MTL loading progress:', progress);
+          },
+          (err) => {
+            // MTL file not found or failed to load, load OBJ without materials
+            console.warn('MTL file not available, loading OBJ without materials:', err);
+            loadObjWithMaterials(null);
+          }
+        );
+      } catch (err) {
+        // MTL loading failed, load OBJ without materials
+        console.warn('MTL loading failed, loading OBJ without materials:', err);
+        loadObjWithMaterials(null);
+      }
     } else if (ext === "csv" || ext === "xyz") {
       const cloud = await parseDelimitedPointCloud();
       if (!cloud) {

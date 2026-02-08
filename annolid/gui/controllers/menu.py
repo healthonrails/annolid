@@ -1,4 +1,5 @@
 import functools
+from pathlib import Path
 from typing import Dict, TYPE_CHECKING
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -169,10 +170,21 @@ class MenuController:
                 "tip": w.tr("Open Audio"),
             },
             {
+                "name": "open_3d",
+                "text": w.tr("Open &3D File…"),
+                "slot": self._open_3d_file,
+                "tip": w.tr(
+                    "Open a 3D model file (STL, OBJ, PLY, CSV, XYZ) in Three.js viewer. OBJ files with MTL material files are supported."
+                ),
+                "icon_path": here / "icons/visualization.png",
+            },
+            {
                 "name": "open_caption",
-                "text": w.tr("&Open Caption"),
+                "text": w.tr("Open &Caption"),
                 "slot": w.openCaption,
-                "tip": w.tr("Open Caption"),
+                "tip": w.tr(
+                    "Open caption widget for adding text captions to images/videos"
+                ),
             },
             {
                 "name": "open_florence2",
@@ -718,11 +730,10 @@ class MenuController:
                 w.actions.close,
                 actions["open_video"],
                 actions["open_youtube_video"],
-            ),
-            (
-                actions["open_audio"],
+                actions["open_3d"],
                 actions["open_caption"],
             ),
+            (actions["open_audio"],),
             (
                 actions["save_labels"],
                 actions["export_dataset_wizard"],
@@ -1026,3 +1037,45 @@ class MenuController:
             and self._window.pdf_manager is not None
         ):
             self._window.pdf_manager.close_pdf()
+
+    def _open_3d_file(self) -> None:
+        """Open a 3D model file dialog and load it in the Three.js viewer."""
+        if (
+            not hasattr(self._window, "threejs_manager")
+            or self._window.threejs_manager is None
+        ):
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                self._window.tr("3D Viewer Not Available"),
+                self._window.tr(
+                    "The Three.js 3D viewer is not available in this session."
+                ),
+            )
+            return
+
+        start_dir = getattr(self._window, "lastOpenDir", str(Path.home()))
+        filters = self._window.tr(
+            "3D Models (*.stl *.obj *.ply *.csv *.xyz);;OBJ with Materials (*.obj *.mtl);;All Files (*)"
+        )
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self._window,
+            self._window.tr("Open 3D Model"),
+            start_dir,
+            filters,
+        )
+        if not filename:
+            return
+
+        # Update last open directory
+        self._window.lastOpenDir = str(Path(filename).parent)
+
+        # Load the 3D model
+        success = self._window.threejs_manager.show_model_in_viewer(filename)
+        if not success:
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                self._window.tr("Load Error"),
+                self._window.tr("Failed to load the 3D model: %1").replace(
+                    "%1", Path(filename).name
+                ),
+            )

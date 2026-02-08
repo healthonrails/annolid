@@ -111,11 +111,49 @@ def _ensure_threejs_http_server() -> str:
                     self.send_error(404)
                     return
 
-                token = unquote(path[len("/model/") :]).strip().split("/", 1)[0]
-                file_path = _THREEJS_HTTP_TOKENS.get(token)
-                if file_path is None or not file_path.exists():
+                token_and_path = unquote(path[len("/model/") :]).strip()
+                parts = token_and_path.split("/", 1)
+                token = parts[0]
+
+                # Get the base model file path
+                base_file_path = _THREEJS_HTTP_TOKENS.get(token)
+                if base_file_path is None:
+                    logger.warning(f"Token not found: {token}")
                     self.send_error(404)
                     return
+
+                logger.info(
+                    f"Model request: token={token}, base_file={base_file_path}, parts={parts}"
+                )
+
+                # If no additional path, serve the base file
+                if len(parts) == 1:
+                    file_path = base_file_path
+                else:
+                    # Serve a related file in the same directory
+                    requested_filename = parts[1]
+                    model_dir = base_file_path.parent
+                    file_path = model_dir / requested_filename
+
+                    logger.info(
+                        f"Related file request: {requested_filename}, full_path={file_path}, exists={file_path.exists()}"
+                    )
+
+                    # Security check: only serve files in the same directory or subdirectories
+                    try:
+                        file_path.resolve().relative_to(model_dir.resolve())
+                    except ValueError:
+                        # File is outside the model directory
+                        logger.warning(
+                            f"Security violation: requested file {file_path} is outside model directory {model_dir}"
+                        )
+                        self.send_error(403)
+                        return
+
+                if not file_path.exists():
+                    self.send_error(404)
+                    return
+
                 try:
                     payload = file_path.read_bytes()
                 except Exception:
@@ -128,9 +166,13 @@ def _ensure_threejs_http_server() -> str:
                     if suffix == ".stl":
                         content_type = "model/stl"
                     elif suffix == ".obj":
-                        content_type = "text/plain"
+                        content_type = "model/obj"
+                    elif suffix == ".mtl":
+                        content_type = "model/mtl"
                     elif suffix == ".ply":
-                        content_type = "application/octet-stream"
+                        content_type = "model/ply"
+                    elif suffix in (".png", ".jpg", ".jpeg"):
+                        content_type = f"image/{suffix[1:]}"
                     else:
                         content_type = "application/octet-stream"
 
