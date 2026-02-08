@@ -7,6 +7,7 @@ This document covers detailed installation instructions for Annolid, including a
 - [Alternative Installation Methods](#alternative-installation-methods)
   - [Pip Only](#pip-only-installation)
   - [uv (High Performance)](#uv-lightweight-venv--installer)
+  - [MediaPipe Integration (Optional)](#mediapipe-integration-optional)
   - [Docker](#docker)
 - [Troubleshooting](#troubleshooting)
 
@@ -81,8 +82,23 @@ conda create -n annolid-env python=3.11
 conda activate annolid-env
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
+source .venv/bin/activate
 pip install -e .
 annolid
+```
+
+### MediaPipe Integration (Optional)
+
+MediaPipe provides high-performance real-time pose, hand, and face landmark detection. It is an optional dependency.
+
+To install MediaPipe support:
+
+```bash
+# Recommended: Install as an extra
+pip install "annolid[mediapipe]"
+
+# Alternatively, the GUI will prompt to auto-install it
+# the first time you select a MediaPipe model.
 ```
 
 ---

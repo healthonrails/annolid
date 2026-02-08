@@ -100,6 +100,10 @@ qwen3_embedding = [
     "qwen-vl-utils>=0.0.14",
 ]
 
+mediapipe = [
+    "mediapipe>=0.10.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"

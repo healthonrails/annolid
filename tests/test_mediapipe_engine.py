@@ -1,7 +1,13 @@
+import importlib.util
+import pytest
 import numpy as np
 from annolid.realtime.mediapipe_engine import MediaPipeEngine, MediaPipeResult
 
+# Check if mediapipe is available
+HAS_MEDIAPIPE = importlib.util.find_spec("mediapipe") is not None
 
+
+@pytest.mark.skipif(not HAS_MEDIAPIPE, reason="mediapipe not installed")
 def test_mediapipe_pose_engine():
     engine = MediaPipeEngine("mediapipe_pose")
     # Create a black frame
@@ -17,6 +23,7 @@ def test_mediapipe_pose_engine():
     assert res.names[0] == "person"
 
 
+@pytest.mark.skipif(not HAS_MEDIAPIPE, reason="mediapipe not installed")
 def test_mediapipe_hands_engine():
     engine = MediaPipeEngine("mediapipe_hands")
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -29,6 +36,7 @@ def test_mediapipe_hands_engine():
     assert res.names[0] == "hand"
 
 
+@pytest.mark.skipif(not HAS_MEDIAPIPE, reason="mediapipe not installed")
 def test_mediapipe_face_engine():
     engine = MediaPipeEngine("mediapipe_face")
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
