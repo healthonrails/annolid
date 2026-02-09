@@ -830,6 +830,8 @@ class PerformanceMetrics:
     def record_frame(self, inference_time: float, detection_count: int):
         """Record metrics for a processed frame."""
         self.latency_history.append(inference_time)
+        if detection_count is None:
+            detection_count = 0
         self.detection_count += detection_count
         self.frame_count += 1
 
@@ -1483,6 +1485,7 @@ class PerceptionProcess:
 
             except Exception as e:
                 logger.error(f"Detection processing error: {e}", exc_info=True)
+        return detection_count
 
     async def _process_mediapipe_detections(
         self, result: Any, timestamp: float, metadata: Dict[str, Any]
