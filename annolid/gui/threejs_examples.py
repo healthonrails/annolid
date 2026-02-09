@@ -7,12 +7,20 @@ THREEJS_EXAMPLE_IDS = (
     "helix_points_csv",
     "wave_surface_obj",
     "sphere_points_ply",
+    "brain_viewer_html",
 )
 
 
 def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    if example_id == "brain_viewer_html":
+        # This is a standalone HTML example, return the asset path
+        asset_path = (
+            Path(__file__).resolve().parent / "assets" / "threejs" / "points_3d.html"
+        )
+        return asset_path
 
     if example_id == "helix_points_csv":
         path = out / "helix_points.csv"

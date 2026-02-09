@@ -62,6 +62,17 @@ class ThreeJsManager(QtCore.QObject):
         )
         return True
 
+    def show_url_in_viewer(self, url: str) -> bool:
+        viewer = self.ensure_threejs_viewer()
+        try:
+            viewer.load_url(url)
+        except Exception as exc:
+            logger.warning("Failed to load URL in Three.js viewer: %s", exc)
+            return False
+        self.window.set_unrelated_docks_visible(False)
+        self.window._set_active_view("threejs")
+        return True
+
     def viewer_widget(self) -> Optional[ThreeJsViewerWidget]:
         return self.threejs_viewer
 

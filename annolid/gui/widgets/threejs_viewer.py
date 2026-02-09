@@ -22,6 +22,26 @@ from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.utils.logger import logger
 
 
+if _WEBENGINE_AVAILABLE:
+
+    class _ThreeJsWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+        def createWindow(
+            self, windowType: QtWebEngineWidgets.QWebEnginePage.WebWindowType
+        ) -> QtWebEngineWidgets.QWebEnginePage:
+            page = _ThreeJsWebEnginePage(self)
+
+            def handle_url_changed(url: QtCore.QUrl) -> None:
+                if url.isValid() and not url.isEmpty():
+                    QtGui.QDesktopServices.openUrl(url)
+                    # We can't easily close/delete the page immediately here
+                    # as it's still in the middle of being created.
+                    # QTimer.singleShot(0, ...) is a common trick.
+                    QtCore.QTimer.singleShot(0, page.deleteLater)
+
+            page.urlChanged.connect(handle_url_changed)
+            return page
+
+
 class ThreeJsViewerWidget(QtWidgets.QWidget):
     """Embedded Three.js viewer for mesh and point-cloud files."""
 
@@ -47,6 +67,10 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             return
 
         self._web_view = QtWebEngineWidgets.QWebEngineView(self)
+        try:
+            self._web_view.setPage(_ThreeJsWebEnginePage(self._web_view))
+        except Exception:
+            pass
         try:
             settings = self._web_view.settings()
             local_remote_attr = getattr(
@@ -302,6 +326,12 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         if self._current_path is None:
             return None
         return str(self._current_path)
+
+    def load_url(self, url: str) -> None:
+        if self._web_view is None:
+            raise RuntimeError("Qt WebEngine is unavailable")
+        self._web_view.setUrl(QtCore.QUrl(url))
+        self.status_changed.emit(f"Loading URL: {url}")
 
     def clear_model(self) -> None:
         self._current_path = None

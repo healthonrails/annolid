@@ -71,6 +71,8 @@ def _ensure_threejs_http_server() -> str:
                     if name not in {
                         "annolid_threejs_viewer.js",
                         "annolid_threejs_viewer.css",
+                        "points_3d.html",
+                        "parser.worker.js",
                     }:
                         self.send_error(404)
                         return
@@ -89,11 +91,13 @@ def _ensure_threejs_http_server() -> str:
                         self.send_error(404)
                         return
                     payload = cached[1]
-                    content_type = (
-                        "text/css"
-                        if name.endswith(".css")
-                        else "application/javascript"
-                    )
+                    if name.endswith(".css"):
+                        content_type = "text/css"
+                    elif name.endswith(".html"):
+                        content_type = "text/html"
+                    else:
+                        content_type = "application/javascript"
+
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)
                     self.send_header("Cache-Control", "no-store")

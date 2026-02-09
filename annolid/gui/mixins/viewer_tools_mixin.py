@@ -205,6 +205,24 @@ class ViewerToolsMixin:
             )
             return
         if not manager.show_model_in_viewer(example_path):
+            # If it's an HTML file, we can try to open it directly if the manager supports it
+            # or use the system browser.
+            if example_path.suffix.lower() == ".html":
+                from annolid.gui.widgets.threejs_viewer_server import (
+                    _ensure_threejs_http_server,
+                )
+
+                base_url = _ensure_threejs_http_server()
+                url = f"{base_url}/threejs/{example_path.name}"
+                if hasattr(
+                    manager, "show_url_in_viewer"
+                ) and manager.show_url_in_viewer(url):
+                    return
+                import webbrowser
+
+                webbrowser.open(url)
+                return
+
             QtWidgets.QMessageBox.warning(
                 self,
                 self.tr("Three.js Examples"),
