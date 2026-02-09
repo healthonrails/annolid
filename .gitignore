@@ -150,3 +150,6 @@ skills.md
 *_plan.md
 *openvino*
 annolid/realtime/models/
+
+# Do not track vendored nested git repo
+annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/

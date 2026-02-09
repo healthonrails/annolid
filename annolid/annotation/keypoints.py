@@ -2,7 +2,6 @@ import base64
 import os
 import cv2
 import numpy as np
-import pandas as pd
 import json
 import math
 from pathlib import Path
@@ -338,6 +337,8 @@ def to_labelme(img_folder, anno_file, multiple_animals=True):
         anno_file (h5): keypoints annotation file.
         multiple_animals: labeled with multiple animals(default True)
     """
+    import pandas as pd
+
     df = pd.read_hdf(os.path.join(img_folder, anno_file))
     scorer = df.columns.get_level_values(0)[0]
     if multiple_animals:

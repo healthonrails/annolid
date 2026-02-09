@@ -675,10 +675,16 @@ class PredictionExecutionMixin:
                     end_frame=end_frame,
                     step=self.step_size,
                     is_cutie=False
-                    if self._is_cotracker_model(model_name, model_weight)
+                    if (
+                        self._is_cotracker_model(model_name, model_weight)
+                        or self._is_cowtracker_model(model_name, model_weight)
+                    )
                     else True,
                     mem_every=self.step_size,
-                    point_tracking=self._is_cotracker_model(model_name, model_weight),
+                    point_tracking=(
+                        self._is_cotracker_model(model_name, model_weight)
+                        or self._is_cowtracker_model(model_name, model_weight)
+                    ),
                     has_occlusion=stop_when_lost_tracking_instance,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)

@@ -126,6 +126,24 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - Optional exports include `depth_frames/`, `<video_stem>_vis.mp4`, point cloud CSVs, `*.npz`, and `*_depths_exr/` (EXR requires `OpenEXR`/`Imath`).
 - Full walkthrough: `docs/source/video_depth_anything.md`.
 
+## CoWTracker Setup
+
+If you want to run the CoWTracker backend, install Annolid with the CowTracker extra:
+
+```bash
+pip install "annolid[cowtracker]"
+# or from source
+pip install -e ".[cowtracker]"
+```
+
+If Annolid is already installed, add only the CowTracker dependency:
+
+```bash
+pip install "safetensors>=0.4.0"
+```
+
+Then select **CoWTracker** in the model dropdown. The model checkpoint is fetched from Hugging Face on first use.
+
 ## Annotation Guide
 ![Annolid UI based on LabelMe](docs/imgs/annolid_ui.png)
 

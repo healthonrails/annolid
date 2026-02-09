@@ -563,11 +563,13 @@ class CutieCoreVideoProcessor:
             object_counts[seed.frame_index] = len(segment.active_labels)
             frame_indices.append(seed.frame_index)
 
-            for label, value in segment.labels_map.items():
-                if label == "_background_":
+            for label in segment.active_labels:
+                value = segment.labels_map.get(label)
+                if value is None or int(value) == 0:
                     continue
-                global_label_names.setdefault(value, label)
-                global_object_ids.add(value)
+                normalized_value = int(value)
+                global_label_names.setdefault(normalized_value, label)
+                global_object_ids.add(normalized_value)
 
         cache_entry = {
             "video_key": video_key,
@@ -758,17 +760,28 @@ class CutieCoreVideoProcessor:
             }
             current_shape.mask = mask
             _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
-            if len(_shapes) < 0:
+            if len(_shapes) <= 0:
                 continue
             current_shape = _shapes[0]
             points = [[point.x(), point.y()] for point in current_shape.points]
+            if self._should_reject_frame_sized_prediction(
+                label=label,
+                mask=mask,
+                points=points,
+                frame_area=float(frame_area),
+            ):
+                logger.warning(
+                    "CUTIE frame-sized artifact rejected for '%s' at frame %s.",
+                    label,
+                    self._frame_number,
+                )
+                continue
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
             label_list.append(current_shape)
-            if self.reject_suspicious_mask_jumps:
-                self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
-                    float(frame_area), 1.0
-                )
+            self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
+                float(frame_area), 1.0
+            )
         save_labels(
             filename=filename,
             imagePath=None,
@@ -847,6 +860,54 @@ class CutieCoreVideoProcessor:
         if cleaned_ratio >= current_ratio or cleaned_ratio >= 0.98:
             return mask, False
         return cleaned, True
+
+    def _should_reject_frame_sized_prediction(
+        self, label: str, mask: np.ndarray, points: List[List[float]], frame_area: float
+    ) -> bool:
+        """Reject near-full-frame masks when prior bbox/area history indicates artifact."""
+        if frame_area <= 0:
+            return False
+        current_area = float(np.count_nonzero(mask))
+        if current_area <= 0:
+            return False
+        current_ratio = current_area / frame_area
+        if current_ratio < 0.97:
+            return False
+
+        touches_all_borders = bool(
+            mask[0, :].any()
+            and mask[-1, :].any()
+            and mask[:, 0].any()
+            and mask[:, -1].any()
+        )
+        if not touches_all_borders:
+            return False
+
+        if not points:
+            return False
+        xs = [float(pt[0]) for pt in points]
+        ys = [float(pt[1]) for pt in points]
+        bbox_area = max(0.0, (max(xs) - min(xs)) * (max(ys) - min(ys)))
+        bbox_ratio = bbox_area / frame_area
+        if bbox_ratio < 0.94:
+            return False
+
+        recent_bbox = self.cache.get_most_recent_bbox(label)
+        if recent_bbox is not None:
+            x1, y1, x2, y2 = recent_bbox
+            recent_bbox_area = max(0.0, float(x2 - x1) * float(y2 - y1))
+            recent_ratio = recent_bbox_area / frame_area
+            if 0.0 < recent_ratio < 0.75:
+                return True
+
+        previous_ratio = self._last_mask_area_ratio.get(label)
+        if previous_ratio is None:
+            return False
+        if previous_ratio >= 0.75:
+            return False
+
+        growth_ratio = current_ratio / max(previous_ratio, 1.0 / frame_area)
+        return growth_ratio >= 1.35
 
     def _is_suspicious_mask_jump(
         self, label: str, mask: np.ndarray, frame_area: float
@@ -1093,12 +1154,14 @@ class CutieCoreVideoProcessor:
                 self._seed_object_counts[seed.frame_index] = len(
                     cached_segment.active_labels
                 )
-                for label, value in cached_segment.labels_map.items():
-                    if label == "_background_":
+                for label in cached_segment.active_labels:
+                    value = cached_segment.labels_map.get(label)
+                    if value is None or int(value) == 0:
                         continue
-                    if value not in self._global_label_names:
-                        self._global_label_names[value] = label
-                        self._global_object_ids.append(value)
+                    normalized_value = int(value)
+                    if normalized_value not in self._global_label_names:
+                        self._global_label_names[normalized_value] = label
+                        self._global_object_ids.append(normalized_value)
                 self._global_object_ids.sort()
 
             segment = replace(cached_segment)
@@ -1240,8 +1303,7 @@ class CutieCoreVideoProcessor:
     ) -> str:
         if not segments:
             return "No valid segments found for CUTIE processing."
-        if self.reject_suspicious_mask_jumps:
-            self._last_mask_area_ratio = {}
+        self._last_mask_area_ratio = {}
 
         # Refresh cached labeled frames so resume logic sees the latest edits
         self._cached_labeled_frames = None
@@ -1758,8 +1820,9 @@ class CutieCoreVideoProcessor:
             segment = self._seed_segment_lookup.get(seed.frame_index)
             if segment is None:
                 continue
-            for label, value in segment.labels_map.items():
-                if label == "_background_":
+            for label in segment.active_labels:
+                value = segment.labels_map.get(label)
+                if value is None or int(value) == 0:
                     continue
                 object_ids.add(int(value))
         return len(object_ids)

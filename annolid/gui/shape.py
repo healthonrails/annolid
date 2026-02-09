@@ -2,13 +2,35 @@ import copy
 import math
 import numpy as np
 import cv2
-from qtpy import QtCore
-from qtpy.QtCore import Qt
-from qtpy import QtGui
+
+try:
+    from qtpy import QtCore
+    from qtpy.QtCore import Qt
+    from qtpy import QtGui
+
+    _QT_AVAILABLE = True
+except ImportError:
+    _QT_AVAILABLE = False
+
+    class QtCore:
+        class Qt:
+            black = None
+            NoPen = None
+            RoundCap = None
+            RoundJoin = None
+            DotLine = None
+
+        class QPointF:
+            def __init__(self, *args):
+                pass
+
+        class QRectF:
+            def __init__(self, *args):
+                pass
+
+    Qt = QtCore.Qt
 from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
-import skimage.measure
-from shapely.geometry import Polygon
 
 from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
@@ -18,13 +40,22 @@ from annolid.annotation.keypoint_visibility import (
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
 
-DEFAULT_LINE_COLOR = QtGui.QColor(0, 255, 0, 128)  # bf hovering
-DEFAULT_FILL_COLOR = QtGui.QColor(0, 255, 0, 128)  # hovering
-DEFAULT_SELECT_LINE_COLOR = QtGui.QColor(255, 255, 255)  # selected
-DEFAULT_SELECT_FILL_COLOR = QtGui.QColor(0, 255, 0, 155)  # selected
-DEFAULT_VERTEX_FILL_COLOR = QtGui.QColor(0, 255, 0, 255)  # hovering
-DEFAULT_HVERTEX_FILL_COLOR = QtGui.QColor(255, 255, 255, 255)  # hovering
-DEFAULT_NEG_VERTEX_FILL_COLOR = QtGui.QColor(255, 0, 0, 255)
+if _QT_AVAILABLE:
+    DEFAULT_LINE_COLOR = QtGui.QColor(0, 255, 0, 128)  # bf hovering
+    DEFAULT_FILL_COLOR = QtGui.QColor(0, 255, 0, 128)  # hovering
+    DEFAULT_SELECT_LINE_COLOR = QtGui.QColor(255, 255, 255)  # selected
+    DEFAULT_SELECT_FILL_COLOR = QtGui.QColor(0, 255, 0, 155)  # selected
+    DEFAULT_VERTEX_FILL_COLOR = QtGui.QColor(0, 255, 0, 255)  # hovering
+    DEFAULT_HVERTEX_FILL_COLOR = QtGui.QColor(255, 255, 255, 255)  # hovering
+    DEFAULT_NEG_VERTEX_FILL_COLOR = QtGui.QColor(255, 0, 0, 255)
+else:
+    DEFAULT_LINE_COLOR = None
+    DEFAULT_FILL_COLOR = None
+    DEFAULT_SELECT_LINE_COLOR = None
+    DEFAULT_SELECT_FILL_COLOR = None
+    DEFAULT_VERTEX_FILL_COLOR = None
+    DEFAULT_HVERTEX_FILL_COLOR = None
+    DEFAULT_NEG_VERTEX_FILL_COLOR = None
 
 
 class Shape(object):
@@ -196,6 +227,8 @@ class Shape(object):
         return QtCore.QRectF(x1, y1, x2 - x1, y2 - y1)
 
     def paint(self, painter, image_width=None, image_height=None):
+        if not _QT_AVAILABLE:
+            return
         if self.mask is None and not self.points:
             return
 
@@ -206,6 +239,8 @@ class Shape(object):
         painter.setPen(pen)
 
         if self.mask is not None:
+            import skimage.measure
+
             image_to_draw = np.zeros(self.mask.shape + (4,), dtype=np.uint8)
             fill_color = (
                 self.select_fill_color.getRgb()
@@ -683,6 +718,8 @@ class Shape(object):
             raise ValueError("Both shapes must be polygons to calculate IoU.")
 
         # Convert the vertices to Shapely Polygon objects
+        from shapely.geometry import Polygon
+
         poly1 = Polygon([(p.x(), p.y()) for p in self.points])
         poly2 = Polygon([(p.x(), p.y()) for p in other.points])
         # Check if the polygons are valid

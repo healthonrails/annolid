@@ -20,6 +20,7 @@ pyyaml>=5.3
 pyzmq>=25.1.2
 qimage2ndarray>=1.8
 qtpy>=2.4.0
+safetensors>=0.4.0
 scikit-image>=0.20.0
 scikit-learn>=1.7.2
 scipy

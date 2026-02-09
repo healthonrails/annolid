@@ -16,6 +16,7 @@ MODEL_REGISTRY = [
     ModelConfig("EfficientTAM_ti", "efficienttam_ti", "efficienttam_ti.pt"),
     ModelConfig("Cutie", "Cutie", "Cutie.pt"),
     ModelConfig("CoTracker", "CoTracker", "CoTracker.pt"),
+    ModelConfig("CoWTracker", "CoWTracker", "facebook/cowtracker"),
     ModelConfig("sam2_hiera_s", "sam2_hiera_s", "sam2_hiera_s.pt"),
     ModelConfig("sam2_hiera_l", "sam2_hiera_l", "sam2_hiera_l.pt"),
     ModelConfig("SAM3", "sam3", "sam3"),

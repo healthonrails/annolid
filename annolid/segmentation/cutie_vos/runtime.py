@@ -2,22 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from annolid.tracker.processor_registry import (
+    CUTIE_BACKEND,
+    TRACKING_PROCESSOR_REGISTRY,
+    register_tracking_backend,
+    resolve_tracking_processor_class,
+)
+
 
 def is_cutie_model_name(model_name: str | None) -> bool:
     """Return True when the model identifier routes to CUTIE tracking."""
-    return "cutie" in str(model_name or "").lower()
+    return TRACKING_PROCESSOR_REGISTRY.has_match(model_name, CUTIE_BACKEND)
 
 
 def resolve_tracking_video_processor_class(model_name: str | None):
     """Resolve the appropriate video processor class for the selected model."""
-    if is_cutie_model_name(model_name):
-        from annolid.segmentation.cutie_vos.video_processor import CutieVideoProcessor
-
-        return CutieVideoProcessor
-
-    from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
-
-    return VideoProcessor
+    return resolve_tracking_processor_class(model_name)
 
 
 def build_tracking_video_processor(
@@ -38,3 +38,11 @@ def build_tracking_video_processor(
         model_name=effective_model_name,
         **kwargs,
     )
+
+
+__all__ = [
+    "build_tracking_video_processor",
+    "is_cutie_model_name",
+    "register_tracking_backend",
+    "resolve_tracking_video_processor_class",
+]

@@ -72,6 +72,16 @@ class ModelIdentityMixin:
         return identifier == "cotracker" or weight == "cotracker.pt"
 
     @staticmethod
+    def _is_cowtracker_model(identifier: str, weight: str) -> bool:
+        identifier = identifier.lower()
+        weight = weight.lower()
+        return (
+            identifier == "cowtracker"
+            or weight == "cowtracker.pt"
+            or "cowtracker" in weight
+        )
+
+    @staticmethod
     def _is_dino_keypoint_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()

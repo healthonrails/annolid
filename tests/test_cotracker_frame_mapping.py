@@ -1,6 +1,9 @@
 import unittest
 
+import pytest
 import torch
+
+pytest.importorskip("shapely")
 
 from annolid.tracker.cotracker.track import CoTrackerProcessor
 
@@ -12,10 +15,10 @@ class TestCoTrackerFrameMapping(unittest.TestCase):
         processor.end_frame = end_frame
         saved_frames = []
 
-        def _save(frame_number, _points):
+        def _save(frame_number, _points, _description=""):
             saved_frames.append(frame_number)
 
-        processor.save_current_frame_tracked_points_to_json = _save
+        processor.save_frame_json = _save
         return processor, saved_frames
 
     def test_extract_frame_points_uses_chunk_start_frame(self):

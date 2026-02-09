@@ -104,6 +104,11 @@ mediapipe = [
     "mediapipe>=0.10.0",
 ]
 
+cowtracker = [
+    # VGGT/CowTracker dependency used by the bundled third-party backend.
+    "safetensors>=0.4.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"

@@ -15,7 +15,6 @@ from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
 from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
 from annolid.utils.logger import logger
-from annolid.tracker.cotracker.track import CoTrackerProcessor
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 from annolid.motion.optical_flow import optical_flow_settings_from
 
@@ -535,13 +534,6 @@ class VideoProcessor:
                     has_occlusion=has_occlusion,
                 )
                 return message
-            elif point_tracking:
-                message = self._run_cotracker_tracking(
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    grid_size=self._cotracker_grid_size,
-                )
-                return message
             elif not point_tracking and not is_cutie:
                 if end_frame is None:
                     end_frame = self.num_frames
@@ -561,46 +553,6 @@ class VideoProcessor:
         _recent_file = find_most_recent_file(self.results_folder)
         return _recent_file
 
-    def _run_cotracker_tracking(
-        self, start_frame=0, end_frame=-1, grid_size=10, grid_query_frame=0
-    ):
-        """Execute CoTracker point tracking with safety checks."""
-        if self.pred_worker is None:
-            logger.warning("CoTracker run requested without an active worker")
-            return "CoTracker worker is not initialized#-1"
-
-        if self.most_recent_file is None:
-            self.most_recent_file = self.get_most_recent_file()
-
-        if not self.most_recent_file:
-            logger.warning(
-                "CoTracker requires at least one labeled frame before tracking"
-            )
-            self.pred_worker.stop_signal.emit()
-            return "Please label at least one frame before running CoTracker#-1"
-
-        try:
-            tracker_processor = CoTrackerProcessor(
-                self.video_path,
-                json_path=self.most_recent_file,
-                is_online=True,
-                should_stop=self.pred_worker.is_stopped,
-            )
-            message = tracker_processor.process_video(
-                start_frame=start_frame,
-                end_frame=end_frame if end_frame is not None else -1,
-                grid_size=grid_size,
-                grid_query_frame=grid_query_frame,
-            )
-            return message
-        except ModuleNotFoundError as exc:  # pragma: no cover - environment safeguard
-            logger.exception("CoTracker dependencies are missing")
-            return f"CoTracker dependencies missing: {exc}#-1"
-        except RuntimeError as exc:
-            logger.exception("CoTracker tracking failed")
-            return f"CoTracker failed: {exc}#-1"
-        finally:
-            self.pred_worker.stop_signal.emit()
 
 
 if __name__ == "__main__":

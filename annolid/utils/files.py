@@ -8,10 +8,8 @@ import subprocess
 import platform
 import shutil
 import glob
-import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
-from annolid.postprocessing.video_timestamp_annotator import annotate_csv
 from annolid.utils.annotation_store import AnnotationStore
 
 
@@ -350,6 +348,9 @@ def create_tracking_csv_file(
       output_file (str): Output CSV file name.
       fps (int): Frames per second for generating timestamps.
     """
+    import pandas as pd
+    from annolid.postprocessing.video_timestamp_annotator import annotate_csv
+
     # Try to load the existing CSV file; if it doesn't exist, start with an empty DataFrame.
     try:
         existing_data = pd.read_csv(output_file)
