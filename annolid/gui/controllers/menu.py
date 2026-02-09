@@ -623,6 +623,11 @@ class MenuController:
         except Exception:
             pass
 
+        # Toolbar toggle
+        w.toggle_toolbar_action = w.tools.toggleViewAction()
+        w.toggle_toolbar_action.setText(w.tr("Show &Toolbar"))
+        registry["toggle_toolbar"] = w.toggle_toolbar_action
+
     def _create_action_from_spec(self, spec: dict) -> QtWidgets.QAction:
         action = self._action_factory(
             spec["text"],
@@ -815,6 +820,7 @@ class MenuController:
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
                 actions["toggle_agent_mode"],
+                actions["toggle_toolbar"],
                 actions["toggle_embedding_search"],
                 w.patch_similarity_action,
                 w.pca_map_action,
