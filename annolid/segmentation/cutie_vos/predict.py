@@ -112,11 +112,6 @@ class CutieCoreVideoProcessor:
             f"Using epsilon: {self.epsilon_for_polygon} for polygon approximation."
         )
 
-        self._frame_numbers = []
-        self._instance_names = []
-        self._cx_values = []
-        self._cy_values = []
-        self._motion_indices = []
         self.output_tracking_csvpath = None
         self._frame_number = None
         self._motion_index = ""
@@ -127,11 +122,6 @@ class CutieCoreVideoProcessor:
         self.cache = BboxCache(max_size=self.mem_every * 10)
         self.sam_hq = None
         self.output_tracking_csvpath = str(self.video_folder) + "_tracked.csv"
-        self._tracking_cache_path = str(self.video_folder) + "_tracked_cache.csv"
-        self._tracking_cache_file = None
-        self._tracking_cache_writer = None
-        self._tracking_cache_pending = 0
-        self._tracking_cache_flush_every = 500
         self.showing_KMedoids_in_mask = False
         self._optical_flow_settings = optical_flow_settings_from(kwargs)
         self.compute_optical_flow = bool(
@@ -196,68 +186,18 @@ class CutieCoreVideoProcessor:
         return False
 
     @staticmethod
-    def _safe_float(value: Optional[str]) -> float:
+    def _normalize_tracking_scalar(value: Any, default: float = 0.0) -> float:
         if value is None:
-            return 0.0
+            return default
         try:
-            return float(value)
+            parsed = float(value)
         except (TypeError, ValueError):
-            return 0.0
+            return default
+        if not np.isfinite(parsed):
+            return default
+        return parsed
 
-    def _open_tracking_cache(self) -> None:
-        if self._tracking_cache_writer is not None:
-            return
-        if not self._tracking_cache_path:
-            return
-        cache_path = Path(self._tracking_cache_path)
-        header = [
-            "frame_number",
-            "instance_name",
-            "cx",
-            "cy",
-            "motion_index",
-        ]
-        try:
-            file_exists = cache_path.exists()
-            self._tracking_cache_file = open(cache_path, "a", newline="")
-            self._tracking_cache_writer = csv.writer(self._tracking_cache_file)
-            if not file_exists:
-                self._tracking_cache_writer.writerow(header)
-                self._tracking_cache_file.flush()
-        except Exception as exc:
-            logger.error("Failed to open CUTIE tracking cache: %s", exc, exc_info=True)
-            self._tracking_cache_file = None
-            self._tracking_cache_writer = None
-
-    def _append_tracking_cache_row(
-        self, frame_number, instance_name, cx, cy, motion_index
-    ) -> None:
-        if self._tracking_cache_writer is None:
-            return
-        try:
-            self._tracking_cache_writer.writerow(
-                [frame_number, instance_name, cx, cy, motion_index]
-            )
-            self._tracking_cache_pending += 1
-            if self._tracking_cache_pending >= self._tracking_cache_flush_every:
-                self._tracking_cache_file.flush()
-                self._tracking_cache_pending = 0
-        except Exception as exc:
-            logger.debug("Failed to append tracking cache row: %s", exc, exc_info=True)
-
-    def _close_tracking_cache(self) -> None:
-        if self._tracking_cache_writer is None:
-            return
-        try:
-            self._tracking_cache_file.flush()
-            self._tracking_cache_file.close()
-        except Exception:
-            pass
-        self._tracking_cache_file = None
-        self._tracking_cache_writer = None
-        self._tracking_cache_pending = 0
-
-    def _read_tracking_rows(self, path: Path) -> Dict[tuple, tuple]:
+    def _read_tracking_rows_from_csv(self, path: Path) -> Dict[tuple, tuple]:
         rows: Dict[tuple, tuple] = {}
         try:
             with open(path, "r", newline="") as csv_input:
@@ -271,9 +211,11 @@ class CutieCoreVideoProcessor:
                         frame_number = int(float(frame_raw))
                     except (TypeError, ValueError):
                         continue
-                    cx = self._safe_float(row.get("cx"))
-                    cy = self._safe_float(row.get("cy"))
-                    motion_index = self._safe_float(row.get("motion_index"))
+                    cx = self._normalize_tracking_scalar(row.get("cx"), default=0.0)
+                    cy = self._normalize_tracking_scalar(row.get("cy"), default=0.0)
+                    motion_index = self._normalize_tracking_scalar(
+                        row.get("motion_index"), default=-1.0
+                    )
                     rows[(frame_number, instance_name)] = (
                         frame_number,
                         instance_name,
@@ -287,17 +229,67 @@ class CutieCoreVideoProcessor:
             logger.error("Failed to read tracking CSV %s: %s", path, exc)
         return rows
 
+    def _read_tracking_rows_from_annotations_store(self) -> Dict[tuple, tuple]:
+        rows: Dict[tuple, tuple] = {}
+        frame_path = self.video_folder / f"{self.video_folder.name}_000000000.json"
+        store = AnnotationStore.for_frame_path(frame_path)
+        try:
+            for frame_number in sorted(store.iter_frames()):
+                try:
+                    frame_idx = int(frame_number)
+                except (TypeError, ValueError):
+                    continue
+                record = store.get_frame(frame_idx)
+                if record is None:
+                    # Some legacy stores may keep string frame keys.
+                    record = store.get_frame(str(frame_idx))
+                if not isinstance(record, dict):
+                    continue
+                for shape in record.get("shapes") or []:
+                    if not isinstance(shape, dict):
+                        continue
+                    instance_name = str(shape.get("label") or "").strip()
+                    if not instance_name:
+                        continue
+                    # CUTIE shapes usually store cx/cy/motion_index as top-level fields.
+                    # Keep compatibility with nested other_data/otherData payloads.
+                    source: Dict[str, Any] = {}
+                    for candidate in (
+                        shape,
+                        shape.get("other_data"),
+                        shape.get("otherData"),
+                    ):
+                        if not isinstance(candidate, dict):
+                            continue
+                        if any(k in candidate for k in ("cx", "cy", "motion_index")):
+                            source = candidate
+                            break
+                    if not source:
+                        continue
+                    cx = self._normalize_tracking_scalar(
+                        source.get("cx"), default=0.0
+                    )
+                    cy = self._normalize_tracking_scalar(
+                        source.get("cy"), default=0.0
+                    )
+                    motion_index = self._normalize_tracking_scalar(
+                        source.get("motion_index"), default=-1.0
+                    )
+                    rows[(frame_idx, instance_name)] = (
+                        frame_idx,
+                        instance_name,
+                        cx,
+                        cy,
+                        motion_index,
+                    )
+        except Exception as exc:
+            logger.error("Failed to read tracking rows from annotation store: %s", exc)
+        return rows
+
     def _write_tracking_csv(self, fps: float) -> None:
         if not self.output_tracking_csvpath:
             return
         output_path = Path(self.output_tracking_csvpath)
-        cache_path = (
-            Path(self._tracking_cache_path) if self._tracking_cache_path else None
-        )
-        has_cache = cache_path.exists() if cache_path else False
-        if not self._frame_numbers and not has_cache and not output_path.exists():
-            logger.info("No tracking rows to write for CUTIE.")
-            return
         tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
         header = [
             "frame_number",
@@ -307,29 +299,25 @@ class CutieCoreVideoProcessor:
             "motion_index",
             "timestamps",
         ]
+        # Best-effort cleanup of stale temp files from interrupted prior runs.
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception as exc:
+            logger.debug("Failed to remove stale tracking tmp file: %s", exc)
+
+        rows: Dict[tuple, tuple] = {}
+        if output_path.exists():
+            rows.update(self._read_tracking_rows_from_csv(output_path))
+        rows.update(self._read_tracking_rows_from_annotations_store())
+        if not rows:
+            logger.info("No tracking rows to write for CUTIE.")
+            return
+
         try:
             with open(tmp_path, "w", newline="") as csv_output:
                 writer = csv.writer(csv_output)
                 writer.writerow(header)
-                rows: Dict[tuple, tuple] = {}
-                if output_path.exists():
-                    rows.update(self._read_tracking_rows(output_path))
-                if has_cache:
-                    rows.update(self._read_tracking_rows(cache_path))
-                for frame_number, instance_name, cx, cy, motion_index in zip(
-                    self._frame_numbers,
-                    self._instance_names,
-                    self._cx_values,
-                    self._cy_values,
-                    self._motion_indices,
-                ):
-                    rows[(frame_number, instance_name)] = (
-                        frame_number,
-                        instance_name,
-                        cx,
-                        cy,
-                        motion_index,
-                    )
                 for _, row in sorted(
                     rows.items(), key=lambda item: (item[0][0], item[0][1])
                 ):
@@ -360,6 +348,13 @@ class CutieCoreVideoProcessor:
             except Exception:
                 pass
             return
+        finally:
+            # In case replace succeeded or failed mid-way, ensure no temp residue remains.
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
 
         try:
             from annolid.postprocessing.video_timestamp_annotator import (
@@ -369,14 +364,6 @@ class CutieCoreVideoProcessor:
             annotate_csv(output_path, Path(self.video_name))
         except Exception as exc:
             logger.error("Failed to annotate tracking CSV: %s", exc)
-
-        if has_cache:
-            try:
-                cache_path.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception as exc:
-                logger.debug("Failed to clear tracking cache: %s", exc, exc_info=True)
 
     @staticmethod
     def _json_has_manual_seed_content(json_path: Path) -> bool:
@@ -802,10 +789,8 @@ class CutieCoreVideoProcessor:
         except ZeroDivisionError as e:
             logger.info(e)
             return None
-        self._instance_names.append(label)
-        self._frame_numbers.append(self._frame_number)
-        self._cx_values.append(cx)
-        self._cy_values.append(cy)
+        cx = self._normalize_tracking_scalar(cx, default=0.0)
+        cy = self._normalize_tracking_scalar(cy, default=0.0)
         if self._flow_hsv is not None:
             # unnormalized magnitude
             magnitude = self._flow_hsv[..., 2]
@@ -817,9 +802,8 @@ class CutieCoreVideoProcessor:
                 self._motion_index = 0.0
         else:
             self._motion_index = -1
-        self._motion_indices.append(self._motion_index)
-        self._append_tracking_cache_row(
-            self._frame_number, label, cx, cy, self._motion_index
+        self._motion_index = self._normalize_tracking_scalar(
+            self._motion_index, default=-1.0
         )
         return cx, cy, self._motion_index
 
@@ -1426,8 +1410,6 @@ class CutieCoreVideoProcessor:
                 pred_worker.stop_signal.emit()
             return f"Failed to open video {self.video_name}"
 
-        self._open_tracking_cache()
-
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         last_frame_index = max(0, total_frames - 1)
@@ -1446,6 +1428,7 @@ class CutieCoreVideoProcessor:
         halt_requested = False
         processed_any_segment = False
         skipped_segments = 0
+        max_resolved_end = -1
 
         if seed_segment_lookup is None:
             seed_segment_lookup = {
@@ -1471,6 +1454,7 @@ class CutieCoreVideoProcessor:
                         f"Skipping segment starting at {segment.start_frame} with end {resolved_end}."
                     )
                     continue
+                max_resolved_end = max(max_resolved_end, resolved_end)
 
                 if self._segment_already_completed(
                     segment, resolved_end, labeled_frames, labeled_intervals
@@ -1531,10 +1515,21 @@ class CutieCoreVideoProcessor:
             cap.release()
             if recording and hasattr(self, "video_writer"):
                 self.video_writer.release()
-            self._close_tracking_cache()
 
-        if not halt_requested and not self._should_stop(pred_worker):
+        reached_video_end = max_resolved_end >= last_frame_index
+        if (
+            not halt_requested
+            and not self._should_stop(pred_worker)
+            and reached_video_end
+        ):
             self._write_tracking_csv(fps)
+        elif not halt_requested and not self._should_stop(pred_worker):
+            logger.info(
+                "Skipping tracked CSV/gap report generation because CUTIE did not reach video end "
+                "(max resolved end=%s, last frame=%s).",
+                max_resolved_end,
+                last_frame_index,
+            )
 
         if pred_worker is not None and not halt_requested:
             pred_worker.stop_signal.emit()
