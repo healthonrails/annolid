@@ -116,6 +116,8 @@ class VideoRescaleWidget(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video Rescaling")
+        self.input_folder_path = ""
+        self.output_folder_path = ""
         self.init_ui()
 
     def init_ui(self):
@@ -212,8 +214,11 @@ class VideoRescaleWidget(QDialog):
 
     def select_input_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Input Folder")
-        if folder:
-            self.input_folder_label.setText(f"Input Folder: {folder}")
+        if not folder:
+            return
+
+        self.input_folder_path = folder
+        self.input_folder_label.setText(f"Input Folder: {folder}")
         video_files = get_video_files(folder)
         if video_files:
             first_video_path = os.path.join(folder, video_files[0])
@@ -226,6 +231,7 @@ class VideoRescaleWidget(QDialog):
     def select_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
         if folder:
+            self.output_folder_path = folder
             self.output_folder_label.setText(f"Output Folder: {folder}")
 
     def update_scale_factor_from_slider(self):
@@ -244,7 +250,7 @@ class VideoRescaleWidget(QDialog):
 
     def preview_and_crop(self):
         """Extract the first frame from the first video in the input folder and open the crop dialog."""
-        input_folder = self.input_folder_label.text().split(": ", 1)[-1]
+        input_folder = self.input_folder_path
         if not os.path.isdir(input_folder):
             QMessageBox.warning(self, "Error", "Please select a valid input folder.")
             return
@@ -376,8 +382,14 @@ class VideoRescaleWidget(QDialog):
         self.run_button.setEnabled(False)
         self.run_button.setText("Processing...")
 
-        input_folder = self.input_folder_label.text().split(": ", 1)[-1]
-        output_folder = self.output_folder_label.text().split(": ", 1)[-1]
+        input_folder = self.input_folder_path
+        output_folder = self.output_folder_path
+
+        if not os.path.isdir(input_folder):
+            QMessageBox.warning(self, "Error", "Please select a valid input folder.")
+            self.run_button.setEnabled(True)
+            self.run_button.setText("Run Rescaling")
+            return
 
         try:
             scale_factor = float(self.scale_factor_text.text())
@@ -424,6 +436,13 @@ class VideoRescaleWidget(QDialog):
             self.save_metadata_files(input_folder)
             QMessageBox.information(self, "Done", "Metadata collection is done.")
         elif rescale:
+            if not output_folder:
+                QMessageBox.warning(
+                    self, "Error", "Please select a valid output folder."
+                )
+                self.run_button.setEnabled(True)
+                self.run_button.setText("Run Rescaling")
+                return
             command_log = compress_and_rescale_video(
                 input_folder,
                 output_folder,
