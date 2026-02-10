@@ -86,6 +86,7 @@ class CutieCoreVideoProcessor:
         "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
     )
     _MD5 = "a6071de6136982e396851903ab4c083a"
+    _DISCOVERED_SEEDS_CACHE: Dict[str, List[SeedFrame]] = {}
 
     def __init__(self, video_name, *args, **kwargs):
         self.video_name = video_name
@@ -144,6 +145,9 @@ class CutieCoreVideoProcessor:
         )
         self.auto_missing_instance_recovery = kwargs.get(
             "auto_missing_instance_recovery", False
+        )
+        self.continue_on_missing_instances = bool(
+            kwargs.get("continue_on_missing_instances", True)
         )
         logger.info(
             f"Auto missing instance recovery is set to {self.auto_missing_instance_recovery}."
@@ -416,6 +420,13 @@ class CutieCoreVideoProcessor:
         results_dir = (
             Path(results_folder) if results_folder else Path(video_name).with_suffix("")
         )
+        cache_key = str(results_dir.resolve())
+        cached = CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.get(cache_key)
+        if cached is not None:
+            logger.info(
+                "Using cached CUTIE seeds (%d) for %s", len(cached), results_dir
+            )
+            return list(cached)
         if not results_dir.exists() or not results_dir.is_dir():
             logger.info(
                 f"CUTIE seed discovery skipped: folder does not exist -> {results_dir}"
@@ -496,6 +507,7 @@ class CutieCoreVideoProcessor:
             seeds = collect_seeds(nested_dir)
 
         discovered = [seeds[idx] for idx in sorted(seeds.keys())]
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE[cache_key] = list(discovered)
         logger.info(f"Discovered {len(discovered)} CUTIE seed(s) in {results_dir}")
         return discovered
 
@@ -1702,6 +1714,7 @@ class CutieCoreVideoProcessor:
                             if (
                                 len(mask_dict) < self.num_tracking_instances
                                 and not has_occlusion
+                                and not self.continue_on_missing_instances
                             ):
                                 if pred_worker is not None:
                                     pred_worker.stop_signal.emit()

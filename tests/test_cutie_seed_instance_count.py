@@ -227,3 +227,48 @@ def test_json_has_manual_seed_content_accepts_user_polygon(tmp_path) -> None:
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is True
+
+
+def test_discover_seed_frames_uses_cache_for_whole_video(tmp_path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_seed(frame: int) -> None:
+        stem = f"{results_dir.name}_{frame:09d}"
+        (results_dir / f"{stem}.png").write_bytes(b"")
+        (results_dir / f"{stem}.json").write_text(
+            json.dumps(
+                {
+                    "shapes": [
+                        {
+                            "label": "mouse",
+                            "shape_type": "polygon",
+                            "points": [[1, 1], [4, 1], [4, 4], [1, 4]],
+                            "description": "",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    old_cache = dict(CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE)
+    try:
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.clear()
+        _write_seed(100)
+        first = CutieCoreVideoProcessor.discover_seed_frames(
+            str(video_path), results_dir
+        )
+        assert [seed.frame_index for seed in first] == [100]
+
+        # Add another seed after first discovery; cached results should be reused.
+        _write_seed(200)
+        second = CutieCoreVideoProcessor.discover_seed_frames(
+            str(video_path), results_dir
+        )
+        assert [seed.frame_index for seed in second] == [100]
+    finally:
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.clear()
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.update(old_cache)
