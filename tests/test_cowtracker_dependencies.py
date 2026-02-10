@@ -24,3 +24,6 @@ def test_ensure_vggt_importable_points_to_vendored_tree() -> None:
     assert isinstance(root, Path)
     assert root.exists()
     assert (root / "vggt").exists()
+    assert (root / "vggt" / "models" / "aggregator.py").exists()
+    assert (root / "vggt" / "heads" / "dpt_head.py").exists()
+    assert (root / "vggt" / "layers" / "vision_transformer.py").exists()

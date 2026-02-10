@@ -142,7 +142,16 @@ If Annolid is already installed, add only the CowTracker dependency:
 pip install "safetensors>=0.4.0"
 ```
 
-Then select **CoWTracker** in the model dropdown. The model checkpoint is fetched from Hugging Face on first use.
+Then select **CoWTracker** in the model dropdown. The model checkpoint is fetched
+from Hugging Face on first use.
+
+CowTracker uses a minimal vendored VGGT runtime subset under:
+
+`annolid/tracker/cowtracker/cowtracker/thirdparty/vggt`
+
+If that vendored subset is not present, CowTracker can also use an externally
+installed `vggt` package. See `annolid/tracker/cowtracker/README.md` for the
+required vendored file list and packaging notes.
 
 ## Annotation Guide
 ![Annolid UI based on LabelMe](docs/imgs/annolid_ui.png)

@@ -151,5 +151,11 @@ skills.md
 *openvino*
 annolid/realtime/models/
 
-# Do not track vendored nested git repo
-annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/
+# Track only the curated vendored VGGT runtime subset
+annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/**
+!annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/
+!annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/LICENSE.txt
+!annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/VENDORED_MANIFEST.json
+!annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/vggt/
+!annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/vggt/**/
+!annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/vggt/**/*.py

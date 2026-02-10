@@ -1,0 +1,26 @@
+{
+  "upstream": {
+    "project": "facebookresearch/vggt",
+    "note": "Vendored runtime subset for CowTracker inference only."
+  },
+  "required_runtime_files": [
+    "vggt/__init__.py",
+    "vggt/models/__init__.py",
+    "vggt/models/aggregator.py",
+    "vggt/heads/__init__.py",
+    "vggt/heads/dpt_head.py",
+    "vggt/heads/head_act.py",
+    "vggt/heads/utils.py",
+    "vggt/layers/__init__.py",
+    "vggt/layers/attention.py",
+    "vggt/layers/block.py",
+    "vggt/layers/drop_path.py",
+    "vggt/layers/layer_scale.py",
+    "vggt/layers/mlp.py",
+    "vggt/layers/patch_embed.py",
+    "vggt/layers/rope.py",
+    "vggt/layers/swiglu_ffn.py",
+    "vggt/layers/vision_transformer.py",
+    "LICENSE.txt"
+  ]
+}
