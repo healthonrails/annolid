@@ -169,8 +169,17 @@ class PredictionExecutionMixin:
             logger.debug("Failed to refresh manual seed marks.", exc_info=True)
         return True
 
-    def _max_predicted_frame_index(self, folder: Path) -> int:
-        """Return the maximum frame index present in the prediction folder."""
+    def _max_predicted_frame_index(
+        self, folder: Path, *, include_store: bool = True
+    ) -> int:
+        """Return the maximum predicted frame index found for a results folder.
+
+        Args:
+            folder: Results folder containing per-frame JSON files.
+            include_store: When True, also consider frames in AnnotationStore.
+                Use False when we need strictly on-disk JSON availability
+                (for example after users manually deleted prediction files).
+        """
         folder = Path(folder)
         prefixed_pattern = re.compile(r"_(\d{9,})\.json$")
         bare_pattern = re.compile(r"^(\d{9,})\.json$")
@@ -196,16 +205,17 @@ class PredictionExecutionMixin:
         except Exception:
             pass
 
-        try:
-            store = AnnotationStore.for_frame_path(
-                folder / f"{folder.name}_000000000.json"
-            )
-            if store.store_path.exists():
-                for idx in store.iter_frames():
-                    if int(idx) > max_frame:
-                        max_frame = int(idx)
-        except Exception:
-            pass
+        if include_store:
+            try:
+                store = AnnotationStore.for_frame_path(
+                    folder / f"{folder.name}_000000000.json"
+                )
+                if store.store_path.exists():
+                    for idx in store.iter_frames():
+                        if int(idx) > max_frame:
+                            max_frame = int(idx)
+            except Exception:
+                pass
 
         return int(max_frame)
 
@@ -528,7 +538,9 @@ class PredictionExecutionMixin:
                     if should_start_predictions_from_frame0(results_folder):
                         inference_start_frame = 0
                     else:
-                        max_existing = self._max_predicted_frame_index(results_folder)
+                        max_existing = self._max_predicted_frame_index(
+                            results_folder, include_store=False
+                        )
                         if max_existing >= int(inference_start_frame):
                             inference_start_frame = int(max_existing) + 1
                 except Exception:
