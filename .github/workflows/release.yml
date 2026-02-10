@@ -27,6 +27,23 @@ jobs:
       release_url: ${{ steps.create_release.outputs.html_url }}
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag matches package version
+        run: |
+          pkg_version=$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )
+          expected_tag="v${pkg_version}"
+          if [ "${GITHUB_REF_NAME}" != "${expected_tag}" ]; then
+            echo "Tag mismatch: got ${GITHUB_REF_NAME}, expected ${expected_tag}"
+            exit 1
+          fi
+
       - name: Build Changelog
         id: github_release
         uses: mikepenz/release-changelog-builder-action@v4
