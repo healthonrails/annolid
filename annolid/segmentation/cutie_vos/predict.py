@@ -1846,8 +1846,11 @@ class CutieCoreVideoProcessor:
                     if len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:
+                            missing_count = int(expected_instance_count - len(mask_dict))
+                            verb = "is" if missing_count == 1 else "are"
+                            noun = "instance" if missing_count == 1 else "instances"
                             message = (
-                                f"There are {expected_instance_count - len(mask_dict)} missing instance(s) in the current frame ({current_frame_index}).\n\n"
+                                f"There {verb} {missing_count} missing {noun} in the current frame ({current_frame_index}).\n\n"
                                 f"Missing or occluded: {', '.join(str(instance) for instance in missing_instances)}"
                             )
                             message_with_index = (
