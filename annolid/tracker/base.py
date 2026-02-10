@@ -154,7 +154,7 @@ class BasePointTracker(ABC):
         processed_queries = []
         for shape in shapes:
             label = shape.get("label")
-            shape_type = shape.get("shape_type")
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
             if shape_type == "point" and shape.get("points"):
                 processed_queries.append(
                     self._process_point(shape["points"][0], frame_number, label)
@@ -194,6 +194,15 @@ class BasePointTracker(ABC):
         points_in_polygon = sample_grid_in_polygon(
             points, grid_size=self.polygon_grid_size
         )
+        if points_in_polygon is None or len(points_in_polygon) == 0:
+            # Very small/thin polygons can yield zero strict "inside" samples.
+            # Fallback to polygon centroid so tracking can still bootstrap.
+            pts = np.asarray(points, dtype=np.float32)
+            if pts.size == 0:
+                return queries
+            centroid = pts.mean(axis=0)
+            points_in_polygon = np.asarray([centroid], dtype=np.float32)
+
         for point in points_in_polygon:
             self.point_labels.append(label)
             queries.append([frame_number] + list(point))

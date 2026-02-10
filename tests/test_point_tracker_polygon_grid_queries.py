@@ -62,3 +62,23 @@ def test_polygon_grid_queries_can_be_disabled() -> None:
 
     assert queries == []
     assert tracker.point_labels == []
+
+
+def test_polygon_grid_empty_sampling_falls_back_to_centroid(monkeypatch) -> None:
+    tracker = _make_tracker(track_polygon_grid_points=True)
+    shapes = [
+        {
+            "label": "teaball",
+            "shape_type": "polygon",
+            "points": [[10, 10], [14, 10], [14, 14], [10, 14]],
+            "description": "",
+        }
+    ]
+
+    monkeypatch.setattr(
+        "annolid.tracker.base.sample_grid_in_polygon", lambda *args, **kwargs: []
+    )
+    queries = tracker._process_shapes(shapes, frame_number=1)
+
+    assert len(queries) == 1
+    assert tracker.point_labels == ["teaball"]
