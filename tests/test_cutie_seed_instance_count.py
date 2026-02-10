@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import types
+import json
 
 import numpy as np
 
@@ -192,3 +193,37 @@ def test_select_seed_frames_keeps_frame_zero_anchor_when_present() -> None:
 
     selected = processor._select_seed_frames_for_start(start_frame=150)
     assert [seed.frame_index for seed in selected] == [0, 100, 200]
+
+
+def test_json_has_manual_seed_content_rejects_auto_motion_index(tmp_path) -> None:
+    json_path = tmp_path / "seed.json"
+    payload = {
+        "shapes": [
+            {
+                "label": "mouse",
+                "shape_type": "polygon",
+                "points": [[1, 1], [4, 1], [4, 4], [1, 4]],
+                "description": "motion_index: 0.123",
+            }
+        ]
+    }
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is False
+
+
+def test_json_has_manual_seed_content_accepts_user_polygon(tmp_path) -> None:
+    json_path = tmp_path / "seed.json"
+    payload = {
+        "shapes": [
+            {
+                "label": "mouse",
+                "shape_type": "polygon",
+                "points": [[1, 1], [4, 1], [4, 4], [1, 4]],
+                "description": "",
+            }
+        ]
+    }
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is True

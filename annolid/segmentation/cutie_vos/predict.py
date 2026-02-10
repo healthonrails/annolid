@@ -375,6 +375,40 @@ class CutieCoreVideoProcessor:
                 logger.debug("Failed to clear tracking cache: %s", exc, exc_info=True)
 
     @staticmethod
+    def _json_has_manual_seed_content(json_path: Path) -> bool:
+        """Return True when a JSON likely represents a user-authored seed.
+
+        Model-produced CUTIE polygons typically carry `motion_index:` descriptions.
+        Treat those as non-seed candidates unless there is at least one polygon-like
+        shape without this synthetic description.
+        """
+        try:
+            with open(json_path, "r", encoding="utf-8") as fp:
+                payload = json.load(fp) or {}
+        except Exception:
+            return False
+
+        shapes = payload.get("shapes") or []
+        has_polygon_like = False
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            shape_type = str(shape.get("shape_type") or "").strip().lower()
+            if shape_type not in {"polygon", "rectangle", "circle"}:
+                continue
+            points = shape.get("points") or []
+            if len(points) < 3 and shape_type == "polygon":
+                continue
+            has_polygon_like = True
+            description = str(shape.get("description") or "").strip().lower()
+            if not description.startswith("motion_index:"):
+                return True
+
+        # If there are no polygon-like shapes this is not a valid seed;
+        # if all polygon-like shapes are auto motion-index outputs, skip it.
+        return False if has_polygon_like else False
+
+    @staticmethod
     def discover_seed_frames(
         video_name, results_folder: Optional[Path] = None
     ) -> List[SeedFrame]:
@@ -422,6 +456,11 @@ class CutieCoreVideoProcessor:
                 if not json_path.exists():
                     logger.debug(
                         f"Skipping {png_path.name}: missing JSON {json_path.name}"
+                    )
+                    continue
+                if not CutieCoreVideoProcessor._json_has_manual_seed_content(json_path):
+                    logger.debug(
+                        f"Skipping {png_path.name}: JSON does not look like a manual seed."
                     )
                     continue
 
