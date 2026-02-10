@@ -5,10 +5,11 @@ import torch
 import gdown
 import json
 import numpy as np
+from bisect import bisect_right
 from datetime import datetime, timedelta
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from PIL import Image
 from annolid.gui.shape import MaskShape, Shape
 from annolid.annotation.keypoints import save_labels
@@ -623,19 +624,73 @@ class CutieCoreVideoProcessor:
             )
 
     @staticmethod
+    def _build_frame_intervals(frame_indices: Set[int]) -> List[Tuple[int, int]]:
+        """Convert sparse frame indices into sorted closed intervals."""
+        if not frame_indices:
+            return []
+        sorted_indices = sorted(int(idx) for idx in frame_indices)
+        intervals: List[Tuple[int, int]] = []
+        start = sorted_indices[0]
+        end = start
+        for idx in sorted_indices[1:]:
+            if idx == end + 1:
+                end = idx
+                continue
+            intervals.append((start, end))
+            start = idx
+            end = idx
+        intervals.append((start, end))
+        return intervals
+
+    @staticmethod
+    def _range_fully_covered(
+        intervals: List[Tuple[int, int]], start: int, end: int
+    ) -> bool:
+        """Return True if [start, end] is fully covered by interval union."""
+        if start > end:
+            return True
+        if not intervals:
+            return False
+        starts = [it[0] for it in intervals]
+        idx = bisect_right(starts, start) - 1
+        if idx < 0:
+            return False
+        cur_start, cur_end = intervals[idx]
+        if cur_start > start or cur_end < start:
+            return False
+        target = start
+        while True:
+            if cur_end >= end:
+                return True
+            target = cur_end + 1
+            idx += 1
+            if idx >= len(intervals):
+                return False
+            nxt_start, nxt_end = intervals[idx]
+            if nxt_start > target:
+                return False
+            cur_end = max(cur_end, nxt_end)
+
+    @staticmethod
     def _segment_already_completed(
-        segment: SeedSegment, resolved_end: int, labeled_frames: Set[int]
+        segment: SeedSegment,
+        resolved_end: int,
+        labeled_frames: Set[int],
+        labeled_intervals: Optional[List[Tuple[int, int]]] = None,
     ) -> bool:
         """Return True if every frame in the segment range already has annotations."""
         if resolved_end is None:
             return False
         if resolved_end < segment.start_frame:
             return True
-
-        for frame_idx in range(segment.start_frame, resolved_end + 1):
-            if frame_idx not in labeled_frames:
-                return False
-        return True
+        intervals = (
+            labeled_intervals
+            if labeled_intervals is not None
+            else CutieCoreVideoProcessor._build_frame_intervals(labeled_frames)
+        )
+        return CutieCoreVideoProcessor._range_fully_covered(
+            intervals, int(segment.start_frame), int(resolved_end)
+        )
 
     def initialize_video_writer(
         self, output_video_path, frame_width, frame_height, fps=30
@@ -1144,7 +1199,11 @@ class CutieCoreVideoProcessor:
     ) -> List[SeedSegment]:
         """Create contiguous segments from discovered seeds."""
         segments: List[SeedSegment] = []
-        for idx, seed in enumerate(seeds):
+        ordered_unique_seeds = sorted(
+            {int(seed.frame_index): seed for seed in seeds}.values(),
+            key=lambda seed: int(seed.frame_index),
+        )
+        for idx, seed in enumerate(ordered_unique_seeds):
             cached_segment = self._seed_segment_lookup.get(seed.frame_index)
             if cached_segment is None:
                 cached_segment = self._load_seed_mask(seed)
@@ -1169,8 +1228,8 @@ class CutieCoreVideoProcessor:
             segment.end_frame = None
 
             next_seed_frame = None
-            if idx + 1 < len(seeds):
-                next_seed_frame = seeds[idx + 1].frame_index
+            if idx + 1 < len(ordered_unique_seeds):
+                next_seed_frame = ordered_unique_seeds[idx + 1].frame_index
 
             if requested_end is not None:
                 segment.end_frame = requested_end
@@ -1308,6 +1367,7 @@ class CutieCoreVideoProcessor:
         # Refresh cached labeled frames so resume logic sees the latest edits
         self._cached_labeled_frames = None
         labeled_frames = self._collect_labeled_frame_indices()
+        labeled_intervals = self._build_frame_intervals(labeled_frames)
 
         cap = cv2.VideoCapture(self.video_name)
         if not cap.isOpened():
@@ -1362,7 +1422,7 @@ class CutieCoreVideoProcessor:
                     continue
 
                 if self._segment_already_completed(
-                    segment, resolved_end, labeled_frames
+                    segment, resolved_end, labeled_frames, labeled_intervals
                 ):
                     skipped_segments += 1
                     logger.info(
@@ -1391,6 +1451,11 @@ class CutieCoreVideoProcessor:
                 if should_halt:
                     halt_requested = True
                     break
+
+                # Mark this processed span as complete for fast overlap checks
+                # when subsequent seed segments share frame ranges.
+                labeled_frames.update(range(segment.start_frame, resolved_end + 1))
+                labeled_intervals = self._build_frame_intervals(labeled_frames)
 
             if (
                 not processed_any_segment

@@ -91,3 +91,36 @@ def test_allows_normal_polygon_mask() -> None:
         )
         is False
     )
+
+
+def test_build_frame_intervals_merges_contiguous_ranges() -> None:
+    intervals = CutieCoreVideoProcessor._build_frame_intervals({5, 6, 7, 10, 12, 13})
+    assert intervals == [(5, 7), (10, 10), (12, 13)]
+
+
+def test_segment_already_completed_uses_interval_coverage() -> None:
+    segment = SeedSegment(
+        seed=_seed(100),
+        start_frame=100,
+        end_frame=109,
+        mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1},
+        active_labels=["mouse"],
+    )
+    labeled = set(range(100, 110))
+    intervals = CutieCoreVideoProcessor._build_frame_intervals(labeled)
+    assert (
+        CutieCoreVideoProcessor._segment_already_completed(
+            segment, 109, labeled, intervals
+        )
+        is True
+    )
+
+    labeled.remove(105)
+    intervals = CutieCoreVideoProcessor._build_frame_intervals(labeled)
+    assert (
+        CutieCoreVideoProcessor._segment_already_completed(
+            segment, 109, labeled, intervals
+        )
+        is False
+    )
