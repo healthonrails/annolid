@@ -612,6 +612,12 @@ class PredictionExecutionMixin:
                 end_frame = self.num_frames + self.step_size
             else:
                 end_frame = (int(inference_start_frame) - 1) + to_frame * self.step_size
+            if self._is_cotracker_model(
+                model_name, model_weight
+            ) or self._is_cowtracker_model(model_name, model_weight):
+                # Point-tracking backends should continue to the end of the video
+                # from the selected start frame.
+                end_frame = self.num_frames - 1
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
             watch_start_frame = int(self.frame_number or 0)
