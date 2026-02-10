@@ -124,3 +124,71 @@ def test_segment_already_completed_uses_interval_coverage() -> None:
         )
         is False
     )
+
+
+def test_select_seed_frames_uses_nearest_prior_for_multi_seed_start() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._seed_frames = [_seed(100), _seed(200), _seed(300)]
+    processor._seed_segment_lookup = {
+        100: SeedSegment(
+            seed=_seed(100),
+            start_frame=100,
+            end_frame=None,
+            mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        ),
+        200: SeedSegment(
+            seed=_seed(200),
+            start_frame=200,
+            end_frame=None,
+            mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        ),
+        300: SeedSegment(
+            seed=_seed(300),
+            start_frame=300,
+            end_frame=None,
+            mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        ),
+    }
+
+    selected = processor._select_seed_frames_for_start(start_frame=301)
+    assert [seed.frame_index for seed in selected] == [300]
+
+
+def test_select_seed_frames_keeps_frame_zero_anchor_when_present() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._seed_frames = [_seed(0), _seed(100), _seed(200)]
+    processor._seed_segment_lookup = {
+        0: SeedSegment(
+            seed=_seed(0),
+            start_frame=0,
+            end_frame=None,
+            mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        ),
+        100: SeedSegment(
+            seed=_seed(100),
+            start_frame=100,
+            end_frame=None,
+            mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        ),
+        200: SeedSegment(
+            seed=_seed(200),
+            start_frame=200,
+            end_frame=None,
+            mask=np.array([[0, 1], [1, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        ),
+    }
+
+    selected = processor._select_seed_frames_for_start(start_frame=150)
+    assert [seed.frame_index for seed in selected] == [0, 100, 200]
