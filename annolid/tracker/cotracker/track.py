@@ -73,7 +73,30 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         logger.info("Loaded CoTracker model '%s' on %s", model_name, self.device)
         return cotracker
 
-    def process_step(self, window_frames, is_first_step, grid_size, grid_query_frame):
+    def _build_chunk_queries(
+        self, chunk_start_frame: int, chunk_num_frames: int
+    ) -> Optional[torch.Tensor]:
+        """Map global query frame indices into the local chunk frame range."""
+        if self.queries is None or chunk_num_frames <= 0:
+            return None
+
+        q = self.queries.clone()
+        # CoTracker expects query timestamps in [0, T-1] for the provided chunk.
+        q[:, 0] = torch.clamp(
+            q[:, 0] - float(chunk_start_frame),
+            min=0.0,
+            max=float(chunk_num_frames - 1),
+        )
+        return q[None]
+
+    def process_step(
+        self,
+        window_frames,
+        is_first_step,
+        grid_size,
+        grid_query_frame,
+        chunk_start_frame: int,
+    ):
         model = self._ensure_model()
         window = window_frames[-model.step * 2 :]
         video_chunk = (
@@ -87,8 +110,12 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             "grid_size": grid_size,
             "grid_query_frame": grid_query_frame,
         }
-        if self.queries is not None:
-            kwargs["queries"] = self.queries[None]
+        queries = self._build_chunk_queries(
+            chunk_start_frame=chunk_start_frame,
+            chunk_num_frames=video_chunk.shape[1],
+        )
+        if queries is not None:
+            kwargs["queries"] = queries
 
         return model(video_chunk, **kwargs)
 
@@ -178,7 +205,11 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
                 and (i - last_saved_frame) % step_size == 0
             ):
                 pred_tracks, pred_visibility = self.process_step(
-                    window_frames, is_first_step, grid_size, grid_query_frame
+                    window_frames,
+                    is_first_step,
+                    grid_size,
+                    grid_query_frame,
+                    chunk_start_frame=i - min_window_size + 1,
                 )
 
                 if pred_tracks is not None:
@@ -204,7 +235,13 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         # Final flush for remaining frames
         if last_saved_frame < frame_idx and len(window_frames) > 0:
             pred_tracks, pred_visibility = self.process_step(
-                window_frames, is_first_step, grid_size, grid_query_frame
+                window_frames,
+                is_first_step,
+                grid_size,
+                grid_query_frame,
+                chunk_start_frame=frame_idx
+                - min(len(window_frames), min_window_size)
+                + 1,
             )
             if pred_tracks is not None:
                 num_local_frames = int(pred_tracks.shape[1])
@@ -256,12 +293,19 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
                 is_first_step=True,
                 grid_size=grid_size,
                 grid_query_frame=grid_query_frame,
-                queries=self.queries[None] if self.queries is not None else None,
+                queries=self._build_chunk_queries(
+                    chunk_start_frame=start_frame,
+                    chunk_num_frames=video_tensor.shape[1],
+                ),
             )
 
         kwargs = {"grid_size": grid_size, "grid_query_frame": grid_query_frame}
-        if self.queries is not None:
-            kwargs["queries"] = self.queries[None]
+        queries = self._build_chunk_queries(
+            chunk_start_frame=start_frame,
+            chunk_num_frames=video_tensor.shape[1],
+        )
+        if queries is not None:
+            kwargs["queries"] = queries
 
         with torch.no_grad():
             pred_tracks, pred_visibility = offline_model(video_tensor, **kwargs)
@@ -287,10 +331,14 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             torch.from_numpy(video).permute(0, 3, 1, 2)[None].float().to(self.device)
         )
         model = self._ensure_model()
+        queries = self._build_chunk_queries(
+            chunk_start_frame=start_frame,
+            chunk_num_frames=video.shape[1],
+        )
         pred_tracks, pred_visibility = model(
             video,
             grid_size=grid_size,
-            queries=self.queries[None],
+            queries=queries,
             backward_tracking=True,
             segm_mask=self.mask,
         )
