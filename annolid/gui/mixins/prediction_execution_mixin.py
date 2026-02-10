@@ -655,21 +655,28 @@ class PredictionExecutionMixin:
                 end_frame = self.num_frames + self.step_size
             else:
                 end_frame = (int(inference_start_frame) - 1) + to_frame * self.step_size
+            if self._is_cutie_tracking_model(model_name):
+                # CUTIE already processes seed-defined segments sequentially inside a
+                # single run. Avoid GUI-level chunk restarts that make progress look
+                # stalled and repeatedly restart from earlier seeds.
+                end_frame = self.num_frames - 1
             if self._is_cotracker_model(model_name, model_weight):
                 # CoTracker can stream windows efficiently to the end of the video.
                 end_frame = self.num_frames - 1
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
             self._prediction_run_start_frame = int(inference_start_frame)
-            if (
-                self._is_cotracker_model(model_name, model_weight)
-                or self._is_cowtracker_model(model_name, model_weight)
-                or self._is_cutie_tracking_model(model_name)
-            ):
-                # For CoTracker/CoWTracker/CUTIE, continue launching chunks until
-                # prediction reaches the true last frame.
+            if self._is_cotracker_model(
+                model_name, model_weight
+            ) or self._is_cowtracker_model(model_name, model_weight):
+                # For CoTracker/CoWTracker, continue launching chunks until prediction
+                # reaches the true last frame.
                 self._prediction_auto_continue_to_end = True
                 self._prediction_target_end_frame = int(self.num_frames) - 1
+            elif self._is_cutie_tracking_model(model_name):
+                # CUTIE runs to the target end in a single worker run.
+                self._prediction_auto_continue_to_end = False
+                self._prediction_target_end_frame = int(end_frame)
             else:
                 self._prediction_target_end_frame = int(end_frame)
             watch_start_frame = int(self.frame_number or 0)
@@ -795,6 +802,9 @@ class PredictionExecutionMixin:
             )
             self.pred_worker.result_signal.connect(
                 self.lost_tracking_instance, QtCore.Qt.QueuedConnection
+            )
+            self.pred_worker.progress_signal.connect(
+                self._update_progress_bar, QtCore.Qt.QueuedConnection
             )
             self.pred_worker.finished_signal.connect(
                 self.predict_is_ready, QtCore.Qt.QueuedConnection

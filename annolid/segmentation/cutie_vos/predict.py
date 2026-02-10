@@ -1711,6 +1711,16 @@ class CutieCoreVideoProcessor:
         current_frame_index = segment.start_frame
         prev_frame = None
         delimiter = "#"
+        segment_length = max(1, int(end_frame - segment.start_frame + 1))
+        progress_log_every = max(100, min(1000, segment_length // 200 or 1))
+
+        logger.info(
+            "Processing Cutie segment [%s, %s] (%s frames, %s tracked instance(s)).",
+            segment.start_frame,
+            end_frame,
+            segment_length,
+            expected_instance_count,
+        )
 
         if current_frame_index >= end_frame:
             # Still process the single frame
@@ -1736,6 +1746,36 @@ class CutieCoreVideoProcessor:
                         return (None, True)
 
                     self._frame_number = current_frame_index
+                    processed_in_segment = (
+                        current_frame_index - int(segment.start_frame) + 1
+                    )
+                    if (
+                        processed_in_segment == 1
+                        or processed_in_segment % progress_log_every == 0
+                    ):
+                        pct = int(
+                            min(
+                                100,
+                                max(
+                                    0,
+                                    round((processed_in_segment / segment_length) * 100),
+                                ),
+                            )
+                        )
+                        logger.info(
+                            "Cutie segment progress: frame %s/%s (%s%%).",
+                            current_frame_index,
+                            end_frame,
+                            pct,
+                        )
+                        try:
+                            if pred_worker is not None:
+                                if hasattr(pred_worker, "report_progress"):
+                                    pred_worker.report_progress(pct)
+                                elif hasattr(pred_worker, "progress_signal"):
+                                    pred_worker.progress_signal.emit(pct)
+                        except Exception:
+                            pass
                     frame_torch = image_to_torch(frame, device=self.device)
                     filename = self.video_folder / (
                         self.video_folder.name + f"_{current_frame_index:0>{9}}.json"
