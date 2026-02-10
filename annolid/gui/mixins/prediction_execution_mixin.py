@@ -248,6 +248,10 @@ class PredictionExecutionMixin:
 
         if self.video_file:
             self._prediction_stop_requested = False
+            self._prediction_auto_continue_to_end = False
+            self._prediction_target_end_frame = None
+            self._prediction_chunk_to_frame = int(to_frame)
+            self._prediction_run_start_frame = None
 
             if self._is_dino_kpseg_tracker_model(model_name, model_weight):
                 from annolid.tracking.dino_kpseg_tracker import DinoKPSEGVideoProcessor
@@ -612,14 +616,21 @@ class PredictionExecutionMixin:
                 end_frame = self.num_frames + self.step_size
             else:
                 end_frame = (int(inference_start_frame) - 1) + to_frame * self.step_size
-            if self._is_cotracker_model(
-                model_name, model_weight
-            ) or self._is_cowtracker_model(model_name, model_weight):
-                # Point-tracking backends should continue to the end of the video
-                # from the selected start frame.
+            if self._is_cotracker_model(model_name, model_weight):
+                # CoTracker can stream windows efficiently to the end of the video.
                 end_frame = self.num_frames - 1
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
+            self._prediction_run_start_frame = int(inference_start_frame)
+            if self._is_cotracker_model(
+                model_name, model_weight
+            ) or self._is_cowtracker_model(model_name, model_weight):
+                # For CoTracker/CoWTracker, continue launching chunks until
+                # prediction reaches the true last frame.
+                self._prediction_auto_continue_to_end = True
+                self._prediction_target_end_frame = int(self.num_frames) - 1
+            else:
+                self._prediction_target_end_frame = int(end_frame)
             watch_start_frame = int(self.frame_number or 0)
             if self._is_dino_kpseg_tracker_model(model_name, model_weight):
                 end_frame = self.num_frames - 1
@@ -789,6 +800,7 @@ class PredictionExecutionMixin:
 
     def predict_is_ready(self, message):
         pending_resume_frame = getattr(self, "_pending_prediction_resume_frame", None)
+        queue_point_tracker_resume = False
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;"
@@ -837,14 +849,25 @@ class PredictionExecutionMixin:
                             )
                     except Exception:
                         max_predicted = -1
+                    expected_end_frame = int(
+                        getattr(self, "_prediction_target_end_frame", -1)
+                    )
+                    if expected_end_frame < 0:
+                        expected_end_frame = int(self.num_frames or 0) - 1
                     logger.info(
-                        "Predicted frames available: max_frame=%s of %s",
+                        "Predicted frames available: max_frame=%s of end_frame=%s",
                         int(max_predicted),
-                        int(self.num_frames or 0),
+                        int(expected_end_frame),
+                    )
+                    auto_continue_to_end = bool(
+                        getattr(self, "_prediction_auto_continue_to_end", False)
+                    )
+                    run_start_frame = int(
+                        getattr(self, "_prediction_run_start_frame", -1)
                     )
                     if (
-                        self.num_frames
-                        and int(max_predicted) >= int(self.num_frames) - 1
+                        expected_end_frame >= 0
+                        and int(max_predicted) >= int(expected_end_frame)
                         and int(max_predicted) >= 0
                     ):
                         skip_csv = bool(
@@ -865,13 +888,41 @@ class PredictionExecutionMixin:
                         else:
                             self.convert_json_to_tracked_csv()
                     else:
-                        logger.info(
-                            "Prediction did not reach the last frame; skipping tracking CSV conversion."
-                        )
+                        if (
+                            auto_continue_to_end
+                            and expected_end_frame >= 0
+                            and int(max_predicted) >= 0
+                            and int(max_predicted) < int(expected_end_frame)
+                        ):
+                            # Keep advancing point-tracker inference in chunks
+                            # until the true end frame is reached.
+                            if (
+                                run_start_frame >= 0
+                                and int(max_predicted) < run_start_frame
+                            ):
+                                logger.warning(
+                                    "Prediction made no forward progress (max=%d, start=%d); stopping auto-continue.",
+                                    int(max_predicted),
+                                    int(run_start_frame),
+                                )
+                            else:
+                                try:
+                                    self.frame_number = int(max_predicted)
+                                except Exception:
+                                    pass
+                                queue_point_tracker_resume = True
+                        logger.info("Prediction has not reached target end frame yet.")
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
         self._finalize_prediction_progress("Manual prediction worker finished.")
+        if queue_point_tracker_resume and not self._prediction_stop_requested:
+            chunk_to_frame = int(getattr(self, "_prediction_chunk_to_frame", 60))
+            QtCore.QTimer.singleShot(
+                0, lambda: self.predict_from_next_frame(to_frame=chunk_to_frame)
+            )
+            self._prediction_stop_requested = False
+            return
         if pending_resume_frame is not None:
             try:
                 self._pending_prediction_resume_frame = None
