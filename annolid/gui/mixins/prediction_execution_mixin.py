@@ -639,10 +639,12 @@ class PredictionExecutionMixin:
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
             self._prediction_run_start_frame = int(inference_start_frame)
-            if self._is_cotracker_model(
-                model_name, model_weight
-            ) or self._is_cowtracker_model(model_name, model_weight):
-                # For CoTracker/CoWTracker, continue launching chunks until
+            if (
+                self._is_cotracker_model(model_name, model_weight)
+                or self._is_cowtracker_model(model_name, model_weight)
+                or self._is_cutie_tracking_model(model_name)
+            ):
+                # For CoTracker/CoWTracker/CUTIE, continue launching chunks until
                 # prediction reaches the true last frame.
                 self._prediction_auto_continue_to_end = True
                 self._prediction_target_end_frame = int(self.num_frames) - 1
