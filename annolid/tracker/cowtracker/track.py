@@ -176,6 +176,14 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
             if video_tensor.ndim == 4
             else video_tensor / 255.0
         )
+        # Keep input dtype aligned with model weights (e.g., fp16 on CUDA)
+        # to avoid conv dtype mismatch errors on platforms like Windows.
+        try:
+            model_dtype = next(model.parameters()).dtype
+        except StopIteration:
+            model_dtype = images.dtype
+        if images.dtype != model_dtype:
+            images = images.to(dtype=model_dtype)
 
         B, T_total, C, H, W = images.shape
         device, dtype = images.device, images.dtype
