@@ -85,6 +85,9 @@ The script will:
 - Prompt for optional features (SAM3, Text-to-Speech, etc.).
 - Offer to launch Annolid immediately.
 
+For a full breakdown of one-line installer choices (GPU vs CPU, interactive vs non-interactive, custom paths, Conda, and extras), see:
+- [One-Line Installer Choices (Detailed Guide)](docs/one_line_install_choices.md)
+
 ### Other Installation Methods
 
 For advanced users, Docker, Conda, or manual Pip installation, please see the [Detailed Installation Guide](docs/installation.md).
