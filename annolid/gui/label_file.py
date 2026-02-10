@@ -133,7 +133,11 @@ class LabelFile(object):
                     mask=utils.img_b64_to_arr(s["mask"]).astype(bool)
                     if s.get("mask")
                     else None,
-                    visible=s.get("visible"),
+                    # Backward-compatible default: missing/null visibility should
+                    # keep shapes visible in the canvas and checked in the list.
+                    visible=True
+                    if s.get("visible") is None
+                    else bool(s.get("visible")),
                     other_data={k: v for k, v in s.items() if k not in shape_keys},
                 )
                 for s in data["shapes"]

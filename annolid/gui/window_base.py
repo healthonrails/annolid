@@ -1079,6 +1079,11 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+        # A freshly loaded file is the new baseline; only user edits should
+        # mark it dirty afterwards.
+        if hasattr(self, "setClean"):
+            self.setClean()
+
     def closeFile(self, _value=False):
         return None
 
