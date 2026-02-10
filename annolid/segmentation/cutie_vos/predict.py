@@ -157,6 +157,9 @@ class CutieCoreVideoProcessor:
         self._video_seed_cache: Dict[str, Dict[str, Any]] = {}
         self._current_video_cache_key: Optional[str] = None
         self._video_active_object_ids: Set[int] = set()
+        # Latest per-instance masks available in the current run.
+        self._recent_instance_masks: Dict[str, np.ndarray] = {}
+        self._recent_instance_mask_frames: Dict[str, int] = {}
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -808,9 +811,24 @@ class CutieCoreVideoProcessor:
         return cx, cy, self._motion_index
 
     def _save_annotation(self, filename, mask_dict, frame_shape):
+        return self._save_annotation_with_notes(
+            filename=filename,
+            mask_dict=mask_dict,
+            frame_shape=frame_shape,
+            shape_notes=None,
+        )
+
+    def _save_annotation_with_notes(
+        self,
+        filename,
+        mask_dict,
+        frame_shape,
+        shape_notes: Optional[Dict[str, str]] = None,
+    ):
         height, width, _ = frame_shape
         frame_area = height * width
         label_list = []
+        shape_notes = shape_notes or {}
         for label_id, mask in mask_dict.items():
             label = str(label_id)
             mask, corrected = self._sanitize_full_frame_artifact(
@@ -837,17 +855,23 @@ class CutieCoreVideoProcessor:
                 continue
             cx, cy, motion_index = metrics
             self.save_KMedoids_in_mask(label_list, mask)
+            note_text = str(shape_notes.get(label, "") or "").strip()
+            description = f"motion_index: {motion_index}"
+            if note_text:
+                description += f"; note: {note_text}"
 
             current_shape = MaskShape(
                 label=label,
                 flags={},
-                description=f"motion_index: {motion_index}",
+                description=description,
             )
             current_shape.other_data = {
                 "cx": cx,
                 "cy": cy,
                 "motion_index": motion_index,
             }
+            if note_text:
+                current_shape.other_data["note"] = note_text
             current_shape.mask = mask
             _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
             if len(_shapes) <= 0:
@@ -1056,21 +1080,116 @@ class CutieCoreVideoProcessor:
                 fpoint_shape.points = [fpoint]
                 label_list.append(fpoint_shape)
 
+    def _recover_missing_instances_with_bbox(
+        self, instance_names, cur_frame, score_threshold=0.60
+    ) -> Tuple[Dict[str, np.ndarray], Set[str]]:
+        """Recover missing masks from cached bboxes in a single SAM call.
+
+        Returns:
+            recovered_masks: recovered label->mask mappings.
+            attempted_labels: labels that were actually sent to SAM for recovery.
+        """
+        if not instance_names:
+            return {}, set()
+        if self.sam_hq is None or not hasattr(self.sam_hq, "segment_objects"):
+            logger.debug("Skipping missing-instance recovery: SAM HQ is unavailable.")
+            return {}, set()
+
+        valid_names: List[str] = []
+        valid_boxes: List[Tuple[float, float, float, float]] = []
+        for instance_name in sorted(instance_names):
+            bbox = self.cache.get_most_recent_bbox(instance_name)
+            if bbox is None:
+                continue
+            try:
+                x1, y1, x2, y2 = (float(v) for v in bbox)
+            except Exception:
+                continue
+            if not np.isfinite([x1, y1, x2, y2]).all():
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            valid_names.append(str(instance_name))
+            valid_boxes.append((x1, y1, x2, y2))
+
+        if not valid_boxes:
+            return {}, set()
+
+        attempted_labels = set(valid_names)
+        try:
+            masks, scores, _ = self.sam_hq.segment_objects(cur_frame, valid_boxes)
+        except Exception as exc:
+            logger.warning(
+                "Missing-instance recovery failed for frame %s: %s",
+                self._frame_number,
+                exc,
+            )
+            return {}, attempted_labels
+
+        recovered: Dict[str, np.ndarray] = {}
+        num_items = min(len(valid_names), len(masks), len(scores))
+        for idx in range(num_items):
+            instance_name = valid_names[idx]
+            score = self._normalize_tracking_scalar(scores[idx], default=0.0)
+            logger.info(
+                "BBox recovery candidate %s score=%.4f threshold=%.2f",
+                instance_name,
+                score,
+                score_threshold,
+            )
+            if score < score_threshold:
+                continue
+
+            mask_arr = np.asarray(masks[idx])
+            if mask_arr.ndim == 3:
+                mask_arr = mask_arr[0]
+            if mask_arr.ndim != 2:
+                continue
+            mask_bool = mask_arr.astype(bool)
+            if not mask_bool.any():
+                continue
+            recovered[instance_name] = mask_bool
+
+        return recovered, attempted_labels
+
+    # Backward-compatible alias (legacy misspelling).
     def segement_with_bbox(self, instance_names, cur_frame, score_threshold=0.60):
-        label_mask_dict = {}
-        for instance_name in instance_names:
-            _bboxes = self.cache.get_most_recent_bbox(instance_name)
-            if _bboxes is not None:
-                masks, scores, input_box = self.sam_hq.segment_objects(
-                    cur_frame, [_bboxes]
-                )
-                logger.info(
-                    f"Use bbox prompt to recover {instance_name} with score {scores}."
-                )
-                logger.info(f"Using score threshold: {score_threshold} ")
-                if scores[0] > score_threshold:
-                    label_mask_dict[instance_name] = masks[0]
-        return label_mask_dict
+        recovered, _ = self._recover_missing_instances_with_bbox(
+            instance_names, cur_frame, score_threshold=score_threshold
+        )
+        return recovered
+
+    def _update_recent_instance_masks(self, frame_idx: int, mask_dict: Dict[str, np.ndarray]) -> None:
+        """Store latest available binary mask per instance for fallback fill."""
+        for label, mask in (mask_dict or {}).items():
+            try:
+                mask_bool = np.asarray(mask).astype(bool)
+            except Exception:
+                continue
+            if mask_bool.ndim != 2 or not mask_bool.any():
+                continue
+            key = str(label)
+            self._recent_instance_masks[key] = mask_bool.copy()
+            self._recent_instance_mask_frames[key] = int(frame_idx)
+
+    def _fill_missing_instances_from_recent_masks(
+        self, missing_instances: Set[str]
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
+        """Fill missing instances using their most recent available mask."""
+        recovered: Dict[str, np.ndarray] = {}
+        notes: Dict[str, str] = {}
+        for instance_name in sorted(missing_instances):
+            key = str(instance_name)
+            prev_mask = self._recent_instance_masks.get(key)
+            if prev_mask is None:
+                continue
+            prev_frame = self._recent_instance_mask_frames.get(key)
+            recovered[key] = prev_mask.copy()
+            if prev_frame is None:
+                notes[key] = "filled_from_previous_available_instance_mask"
+            else:
+                notes[key] = f"filled_from_previous_available_instance_mask(frame={prev_frame})"
+        return recovered, notes
 
     def shapes_to_mask(self, label_json_file, image_size):
         """
@@ -1584,6 +1703,7 @@ class CutieCoreVideoProcessor:
         if self._global_label_names:
             value_to_label_names.update(self._global_label_names)
         instance_names = set(segment.active_labels)
+        expected_instance_count = len(instance_names)
         local_to_global = np.zeros(len(active_ids) + 1, dtype=np.int32)
         for local_idx, global_id in enumerate(active_ids, start=1):
             local_to_global[local_idx] = int(global_id)
@@ -1682,13 +1802,12 @@ class CutieCoreVideoProcessor:
                             **self._optical_flow_kwargs,
                         )
 
-                    self._save_annotation(filename, mask_dict, frame.shape)
-
-                    if len(mask_dict) < self.num_tracking_instances:
+                    shape_notes_for_frame: Dict[str, str] = {}
+                    if len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:
                             message = (
-                                f"There are {self.num_tracking_instances - len(mask_dict)} missing instance(s) in the current frame ({current_frame_index}).\n\n"
+                                f"There are {expected_instance_count - len(mask_dict)} missing instance(s) in the current frame ({current_frame_index}).\n\n"
                                 f"Missing or occluded: {', '.join(str(instance) for instance in missing_instances)}"
                             )
                             message_with_index = (
@@ -1697,23 +1816,62 @@ class CutieCoreVideoProcessor:
                             logger.info(message)
 
                             if self.auto_missing_instance_recovery:
-                                segemented_instances = self.segement_with_bbox(
-                                    missing_instances, frame
+                                recovered_instances, _ = (
+                                    self._recover_missing_instances_with_bbox(
+                                        missing_instances, frame
+                                    )
                                 )
-                                if len(segemented_instances) >= 1:
-                                    mask_dict.update(segemented_instances)
-                                    self._save_annotation(
-                                        filename, mask_dict, frame.shape
+                                if recovered_instances:
+                                    mask_dict.update(recovered_instances)
+                            missing_instances = instance_names - set(mask_dict.keys())
+                            if missing_instances:
+                                filled_instances, filled_notes = (
+                                    self._fill_missing_instances_from_recent_masks(
+                                        missing_instances
+                                    )
+                                )
+                                if filled_instances:
+                                    mask_dict.update(filled_instances)
+                                    shape_notes_for_frame.update(filled_notes)
+                                    missing_instances = (
+                                        instance_names - set(mask_dict.keys())
                                     )
 
+                            if missing_instances:
+                                logger.info(
+                                    "Missing instances after recovery/fill at frame %s: %s",
+                                    current_frame_index,
+                                    ", ".join(
+                                        str(instance)
+                                        for instance in sorted(missing_instances)
+                                    ),
+                                )
+
                             if (
-                                len(mask_dict) < self.num_tracking_instances
+                                missing_instances
                                 and not has_occlusion
                                 and not self.continue_on_missing_instances
                             ):
+                                self._save_annotation_with_notes(
+                                    filename,
+                                    mask_dict,
+                                    frame.shape,
+                                    shape_notes=shape_notes_for_frame,
+                                )
+                                self._update_recent_instance_masks(
+                                    current_frame_index, mask_dict
+                                )
                                 if pred_worker is not None:
                                     pred_worker.stop_signal.emit()
                                 return (message_with_index, True)
+
+                    self._save_annotation_with_notes(
+                        filename,
+                        mask_dict,
+                        frame.shape,
+                        shape_notes=shape_notes_for_frame,
+                    )
+                    self._update_recent_instance_masks(current_frame_index, mask_dict)
 
                     if recording:
                         if global_prediction is None:
@@ -1776,6 +1934,8 @@ class CutieCoreVideoProcessor:
         self._committed_seed_frames.clear()
         self._seed_segment_lookup = {}
         self._video_active_object_ids = set()
+        self._recent_instance_masks.clear()
+        self._recent_instance_mask_frames.clear()
         self._seed_frames = seed_frames or []
 
         ordered_labels = sorted(labels_dict.items(), key=lambda item: item[1])
@@ -1828,6 +1988,8 @@ class CutieCoreVideoProcessor:
         self.label_registry = {"_background_": 0}
         self._committed_seed_frames.clear()
         self._video_active_object_ids = set()
+        self._recent_instance_masks.clear()
+        self._recent_instance_mask_frames.clear()
         self._seed_frames = self.discover_seed_frames(
             self.video_name, self.video_folder
         )
