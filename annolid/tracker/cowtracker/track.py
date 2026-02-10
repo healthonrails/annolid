@@ -37,8 +37,8 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
         json_path: Optional[str] = None,
         should_stop: Optional[Callable[[], bool]] = None,
         model_name: Optional[str] = None,
-        window_len: int = 8,
-        stride: int = 8,
+        window_len: int = 4,
+        stride: int = 1,
         **kwargs: Any,
     ):
         """Initialize CoWTrackerProcessor.
@@ -48,8 +48,8 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
             json_path: Optional path to JSON annotations.
             should_stop: Optional callback to check for stop requests.
             model_name: Optional model name (unused, for API compatibility).
-            window_len: Number of frames per inference window (default: 8).
-            stride: Step size between windows (default: 8).
+            window_len: Number of frames per inference window (default: 4).
+            stride: Step size between windows (default: 1).
             **kwargs: Additional arguments passed to parent.
         """
         super().__init__(

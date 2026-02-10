@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 import json
-import numpy as np
-import torch
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Optional, Iterable
+
+import numpy as np
+import torch
 
 from annolid.annotation.keypoints import save_labels
 from annolid.data.videos import CV2Video
@@ -50,6 +52,10 @@ class BasePointTracker(ABC):
         self.end_frame = 0
         self.mask = None
         self.mask_label = None
+        self.track_polygon_grid_points = bool(
+            kwargs.get("track_polygon_grid_points", True)
+        )
+        self.polygon_grid_size = kwargs.get("polygon_grid_size")
 
     @staticmethod
     def _select_device() -> torch.device:
@@ -153,11 +159,13 @@ class BasePointTracker(ABC):
                 processed_queries.append(
                     self._process_point(shape["points"][0], frame_number, label)
                 )
-            elif (
-                shape_type == "polygon"
-                and shape.get("description")
-                and any(key in shape["description"] for key in ("grid", "point"))
-            ):
+            elif shape_type == "polygon" and shape.get("points"):
+                description = str(shape.get("description") or "").lower()
+                polygon_prompt_enabled = self.track_polygon_grid_points or any(
+                    key in description for key in ("grid", "point")
+                )
+                if not polygon_prompt_enabled:
+                    continue
                 processed_queries.extend(
                     self._process_polygon(shape.get("points", []), frame_number, label)
                 )
@@ -183,7 +191,9 @@ class BasePointTracker(ABC):
             )
             self.mask = torch.from_numpy(self.mask)[None, None].to(self.device)
 
-        points_in_polygon = sample_grid_in_polygon(points)
+        points_in_polygon = sample_grid_in_polygon(
+            points, grid_size=self.polygon_grid_size
+        )
         for point in points_in_polygon:
             self.point_labels.append(label)
             queries.append([frame_number] + list(point))
