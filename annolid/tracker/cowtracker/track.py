@@ -212,11 +212,13 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
                 break
 
             logger.info(
-                "Processing window %d/%d: frames [%d, %d)",
+                "Processing window %d/%d: local [%d, %d), global [%d, %d)",
                 window_idx + 1,
                 len(windows),
                 start,
                 end,
+                start_frame + start,
+                start_frame + end,
             )
 
             self._process_window(

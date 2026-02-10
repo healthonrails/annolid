@@ -501,6 +501,10 @@ class PredictionExecutionMixin:
                     model_name=model_name,
                     **processor_kwargs,
                 )
+                if self._is_cowtracker_model(model_name, model_weight):
+                    # In the predict-next workflow, advance CowTracker windows one
+                    # frame at a time to reduce temporal jumps.
+                    self.video_processor.stride = 1
             if getattr(self, "seg_pred_thread", None) is not None:
                 try:
                     if self.seg_pred_thread.isRunning():
@@ -529,13 +533,22 @@ class PredictionExecutionMixin:
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)
             inference_end_frame = None
             inference_skip_existing = True
+            is_point_tracking_model = bool(
+                self._is_cotracker_model(model_name, model_weight)
+                or self._is_cowtracker_model(model_name, model_weight)
+                or self._is_dino_kpseg_tracker_model(model_name, model_weight)
+                or self._is_dino_keypoint_model(model_name, model_weight)
+            )
             if self.video_results_folder:
                 try:
                     results_folder = Path(self.video_results_folder)
                     # Refresh existing predicted marks before a resumed run so users
                     # can see completed sections immediately.
                     self._scan_prediction_folder(str(results_folder))
-                    if should_start_predictions_from_frame0(results_folder):
+                    if (
+                        not is_point_tracking_model
+                        and should_start_predictions_from_frame0(results_folder)
+                    ):
                         inference_start_frame = 0
                     else:
                         max_existing = self._max_predicted_frame_index(
