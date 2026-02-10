@@ -13,7 +13,11 @@ from qtpy import QtCore, QtWidgets
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.annotation_store import AnnotationStore
-from annolid.utils.files import should_start_predictions_from_frame0
+from annolid.utils.files import (
+    find_manual_labeled_json_files,
+    get_frame_number_from_json,
+    should_start_predictions_from_frame0,
+)
 from annolid.utils.logger import logger
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
@@ -549,7 +553,20 @@ class PredictionExecutionMixin:
                     # Refresh existing predicted marks before a resumed run so users
                     # can see completed sections immediately.
                     self._scan_prediction_folder(str(results_folder))
-                    if (
+                    manual_seed_max = -1
+                    try:
+                        for name in find_manual_labeled_json_files(str(results_folder)):
+                            manual_seed_max = max(
+                                manual_seed_max, int(get_frame_number_from_json(name))
+                            )
+                    except Exception:
+                        manual_seed_max = -1
+
+                    if manual_seed_max >= 0:
+                        inference_start_frame = max(
+                            int(inference_start_frame), int(manual_seed_max) + 1
+                        )
+                    elif (
                         not is_point_tracking_model
                         and should_start_predictions_from_frame0(results_folder)
                     ):
