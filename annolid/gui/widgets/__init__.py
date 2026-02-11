@@ -1,5 +1,6 @@
 from annolid.gui.widgets.extract_frame_dialog import ExtractFrameDialog
 from annolid.gui.widgets.convert_coco_dialog import ConvertCOODialog
+from annolid.gui.widgets.convert_coco2labelme_dialog import ConvertCOCO2LabelMeDialog
 from annolid.gui.widgets.train_model_dialog import TrainModelDialog
 from annolid.gui.widgets.track_dialog import TrackDialog
 from annolid.gui.widgets.glitter2_dialog import Glitter2Dialog
@@ -44,6 +45,7 @@ from annolid.gui.widgets.inference_wizard import InferenceWizard
 __all__ = [
     "ExtractFrameDialog",
     "ConvertCOODialog",
+    "ConvertCOCO2LabelMeDialog",
     "TrainModelDialog",
     "TrackDialog",
     "Glitter2Dialog",

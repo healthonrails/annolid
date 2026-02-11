@@ -6,11 +6,12 @@ from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.annotation import labelme2coco
+from annolid.annotation import coco2labelme, labelme2coco
 from annolid.gui.tensorboard import VisualizationWindow, ensure_tensorboard
 from annolid.gui.widgets import ProgressingWindow, TrainingDashboardDialog
 from annolid.gui.widgets import QualityControlDialog
 from annolid.gui.widgets import ConvertCOODialog
+from annolid.gui.widgets import ConvertCOCO2LabelMeDialog
 from annolid.gui.widgets import Glitter2Dialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
@@ -79,6 +80,44 @@ class WorkflowActionsMixin:
             )
         except Exception:
             print("Failed to create the zip file")
+
+    def coco_to_labelme(self):
+        """Convert a COCO annotations directory into a LabelMe dataset."""
+        start_dir = str(
+            self.annotation_dir or self.output_dir or self.lastOpenDir or Path.home()
+        )
+        dlg = ConvertCOCO2LabelMeDialog(self, start_dir=start_dir)
+        if not dlg.exec_() or dlg.config is None:
+            return
+        cfg = dlg.config
+
+        try:
+            summary = coco2labelme.convert_coco_annotations_dir_to_labelme_dataset(
+                cfg.annotations_dir,
+                output_dir=cfg.output_dir,
+                images_dir=cfg.images_dir,
+                recursive=cfg.recursive,
+                link_mode=cfg.link_mode,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "COCO to LabelMe", f"Conversion failed:\n{exc}"
+            )
+            return
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "COCO to LabelMe",
+            (
+                f"Processed JSON files: {summary.get('json_files_total', 0)}\n"
+                f"Converted images: {summary.get('converted_images', 0)} / "
+                f"{summary.get('images_total', 0)}\n"
+                f"Copied/linked images: {summary.get('copied_images', 0)}\n"
+                f"Missing images: {summary.get('missing_images', 0)}\n"
+                f"Total shapes: {summary.get('shapes_total', 0)}\n\n"
+                f"Output dataset: {cfg.output_dir}"
+            ),
+        )
 
     def visualization(self):
         try:

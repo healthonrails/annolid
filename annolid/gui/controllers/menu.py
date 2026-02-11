@@ -326,6 +326,12 @@ class MenuController:
                 "icon_path": here / "icons/coco.png",
             },
             {
+                "name": "coco_to_labelme",
+                "text": w.tr("COCO to &LabelMe"),
+                "slot": w.coco_to_labelme,
+                "tip": w.tr("Convert COCO annotations to LabelMe JSON files"),
+            },
+            {
                 "name": "save_labels",
                 "text": w.tr("&Save labels"),
                 "slot": w.save_labels,
@@ -843,6 +849,7 @@ class MenuController:
             (
                 actions["convert_labelme2yolo_format"],
                 actions["coco"],
+                actions["coco_to_labelme"],
             ),
             (
                 actions["convert_deeplabcut"],
