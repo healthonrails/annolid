@@ -60,6 +60,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#evaluation">Evaluation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#labelme-to-coco-gui">LabelMe to COCO (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#coco-to-labelme-gui">COCO to LabelMe (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#running-inference-gui">Running Inference (GUI)</a></li>
 </ul>
@@ -254,6 +255,57 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 </div>
 <p>For COCO keypoints datasets, pass the COCO spec YAML and set <code class="docutils literal notranslate"><span class="pre">--data-format</span> <span class="pre">coco</span></code>.
 Annolid will stage a temporary YOLO-pose view internally before evaluation.</p>
+</section>
+<section id="labelme-to-coco-gui">
+<h2>LabelMe to COCO (GUI)<a class="headerlink" href="#labelme-to-coco-gui" title="Link to this heading"></a></h2>
+<p>Use this when your annotations are in LabelMe JSON format and you want a COCO
+train/valid dataset for training or interoperability.</p>
+<ol class="arabic simple">
+<li><p>Open Annolid.</p></li>
+<li><p>Go to <strong>Convert -&gt; LabelMe -&gt; COCO</strong>.</p></li>
+<li><p>In <strong>Annotation dir</strong>, choose the folder containing LabelMe <code class="docutils literal notranslate"><span class="pre">*.json</span></code> files.</p></li>
+<li><p>(Optional) Set <strong>Output dir</strong>. If left empty, Annolid uses
+<code class="docutils literal notranslate"><span class="pre">&lt;annotation_dir&gt;_coco_dataset</span></code>.</p></li>
+<li><p>(Optional) Set <strong>Labels file</strong> (<code class="docutils literal notranslate"><span class="pre">labels.txt</span></code>). If empty, labels are auto-detected
+from shape labels in JSON files.</p></li>
+<li><p>Set <strong>Train split</strong> (for example <code class="docutils literal notranslate"><span class="pre">70%</span></code>).</p></li>
+<li><p>Choose <strong>Output mode</strong>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Segmentation</span></code>: polygon-oriented COCO export (default, backward compatible).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Keypoints</span></code>: strict COCO pose-style export (<code class="docutils literal notranslate"><span class="pre">keypoints</span></code> + <code class="docutils literal notranslate"><span class="pre">num_keypoints</span></code>).</p></li>
+</ul>
+</li>
+<li><p>Click <strong>OK</strong> to export.</p></li>
+</ol>
+<p>What the dialog shows:</p>
+<ul class="simple">
+<li><p>Number of discovered JSON files.</p></li>
+<li><p>Number of valid JSON+image pairs.</p></li>
+<li><p>Estimated train/valid counts based on the selected split.</p></li>
+</ul>
+<p>What Annolid writes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">train/annotations.json</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">train/JPEGImages/*.jpg</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">valid/annotations.json</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">valid/JPEGImages/*.jpg</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annotations_train.json</span></code> and <code class="docutils literal notranslate"><span class="pre">annotations_valid.json</span></code> (root-level convenience copies)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">data.yaml</span></code></p></li>
+</ul>
+<p>In <strong>Keypoints</strong> mode, each COCO annotation represents one instance and includes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">keypoints</span></code> (flattened <code class="docutils literal notranslate"><span class="pre">[x,</span> <span class="pre">y,</span> <span class="pre">v]</span></code> list),</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">num_keypoints</span></code>,</p></li>
+<li><p>category-level <code class="docutils literal notranslate"><span class="pre">keypoints</span></code> names in <code class="docutils literal notranslate"><span class="pre">categories[*].keypoints</span></code>.</p></li>
+</ul>
+<p>Notes:</p>
+<ul class="simple">
+<li><p>The exporter expects image files to be resolvable from each LabelMe JSON.</p></li>
+<li><p>Shapes are exported as COCO segmentations; supported shape types include
+polygon, rectangle, circle, and point.</p></li>
+<li><p>If no valid JSON/image pairs are found, export is blocked and the dialog shows
+an actionable warning.</p></li>
+</ul>
 </section>
 <section id="coco-to-labelme-gui">
 <h2>COCO to LabelMe (GUI)<a class="headerlink" href="#coco-to-labelme-gui" title="Link to this heading"></a></h2>

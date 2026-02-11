@@ -180,6 +180,53 @@ python -m annolid.segmentation.dino_kpseg.eval \
 For COCO keypoints datasets, pass the COCO spec YAML and set `--data-format coco`.
 Annolid will stage a temporary YOLO-pose view internally before evaluation.
 
+## LabelMe to COCO (GUI)
+
+Use this when your annotations are in LabelMe JSON format and you want a COCO
+train/valid dataset for training or interoperability.
+
+1. Open Annolid.
+2. Go to **Convert -> LabelMe -> COCO**.
+3. In **Annotation dir**, choose the folder containing LabelMe `*.json` files.
+4. (Optional) Set **Output dir**. If left empty, Annolid uses
+   `<annotation_dir>_coco_dataset`.
+5. (Optional) Set **Labels file** (`labels.txt`). If empty, labels are auto-detected
+   from shape labels in JSON files.
+6. Set **Train split** (for example `70%`).
+7. Choose **Output mode**:
+   - `Segmentation`: polygon-oriented COCO export (default, backward compatible).
+   - `Keypoints`: strict COCO pose-style export (`keypoints` + `num_keypoints`).
+8. Click **OK** to export.
+
+What the dialog shows:
+
+- Number of discovered JSON files.
+- Number of valid JSON+image pairs.
+- Estimated train/valid counts based on the selected split.
+
+What Annolid writes:
+
+- `train/annotations.json`
+- `train/JPEGImages/*.jpg`
+- `valid/annotations.json`
+- `valid/JPEGImages/*.jpg`
+- `annotations_train.json` and `annotations_valid.json` (root-level convenience copies)
+- `data.yaml`
+
+In **Keypoints** mode, each COCO annotation represents one instance and includes:
+
+- `keypoints` (flattened `[x, y, v]` list),
+- `num_keypoints`,
+- category-level `keypoints` names in `categories[*].keypoints`.
+
+Notes:
+
+- The exporter expects image files to be resolvable from each LabelMe JSON.
+- Shapes are exported as COCO segmentations; supported shape types include
+  polygon, rectangle, circle, and point.
+- If no valid JSON/image pairs are found, export is blocked and the dialog shows
+  an actionable warning.
+
 ## COCO to LabelMe (GUI)
 
 Use this when you have COCO keypoint annotations and want editable LabelMe JSON files.

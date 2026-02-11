@@ -123,16 +123,26 @@ python<span class="w"> </span>main.py<span class="w"> </span>-v<span class="w"> 
 </section>
 <section id="how-to-convert-labelme-labeled-dataset-to-coco-format">
 <h2>How to convert labelme labeled dataset to COCO format?<a class="headerlink" href="#how-to-convert-labelme-labeled-dataset-to-coco-format" title="Link to this heading"></a></h2>
-<p>:warning: You might need to reinstall annolid because it requires <code class="docutils literal notranslate"><span class="pre">labelme</span></code>
-and <code class="docutils literal notranslate"><span class="pre">pycocotools</span></code> now.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>annold
-python<span class="w"> </span>main.py<span class="w"> </span>--labelme2coco<span class="o">=</span>/path/to/my_labeled_images<span class="w"> </span>--to<span class="w"> </span>/path/to/my_dataset_coco<span class="w"> </span>--labels<span class="o">=</span>/path/to/my_labels.txt<span class="w"> </span>--vis<span class="o">=</span>True
+<p>Use the GUI export dialog:</p>
+<ol class="arabic simple">
+<li><p>Open Annolid.</p></li>
+<li><p>Go to <strong>Convert -&gt; LabelMe -&gt; COCO</strong>.</p></li>
+<li><p>Select your LabelMe annotation directory.</p></li>
+<li><p>Optionally set output directory and labels file.</p></li>
+<li><p>Choose train split and output mode (Segmentation or Keypoints), then click <strong>OK</strong>.</p></li>
+</ol>
+<p>You can also run the CLI:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>annolid/main.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--labelme2coco<span class="o">=</span>/path/to/my_labeled_images<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--to<span class="w"> </span>/path/to/my_dataset_coco<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--labels<span class="o">=</span>/path/to/my_labels.txt
 </pre></div>
 </div>
-<p>If vis is true, it will create an additional visualization folder.
-The dataset is structured as follows.</p>
+<p>The dataset is structured as:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>../../datasets/mydataset_coco/
 ├── data.yaml
+├── annotations_train.json
+├── annotations_valid.json
 ├── train
 │   ├── annotations.json
 │   └── JPEGImages
@@ -143,9 +153,6 @@ The dataset is structured as follows.</p>
         ├── 00000443.jpg
 </pre></div>
 </div>
-<p><img alt="Visualization" src="_images/00002895_7.jpg" /></p>
-<p>An example mask file</p>
-<p><img alt="Masks" src="_images/00002895_7_mask.png" /></p>
 </section>
 <section id="convert-the-tracking-results-csv-file-to-glitter2-csv-format">
 <h2>Convert the tracking results csv file to Glitter2 csv format<a class="headerlink" href="#convert-the-tracking-results-csv-file-to-glitter2-csv-format" title="Link to this heading"></a></h2>
