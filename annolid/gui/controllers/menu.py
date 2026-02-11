@@ -319,10 +319,10 @@ class MenuController:
             },
             {
                 "name": "coco",
-                "text": w.tr("&COCO format"),
+                "text": w.tr("LabelMe -> &COCO"),
                 "slot": w.coco,
                 "shortcut": "Ctrl+C+O",
-                "tip": w.tr("Convert to COCO format"),
+                "tip": w.tr("Export LabelMe annotations to a COCO train/valid dataset"),
                 "icon_path": here / "icons/coco.png",
             },
             {

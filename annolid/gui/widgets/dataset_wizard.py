@@ -984,17 +984,22 @@ class ExportWorker(QtCore.QThread):
             self.progress.emit(50)
             self.log_message.emit("Creating COCO annotations...")
 
-            labelme2coco.convert(
+            for pct, current_json in labelme2coco.convert(
                 str(source),
                 str(output),
                 labels_file=labels_file,
                 # Convert to train/total ratio
                 train_valid_split=config["train_split"]
                 / (config["train_split"] + config["val_split"]),
-            )
+            ):
+                self.progress.emit(max(50, min(99, int(round(50 + pct * 0.5)))))
+                if pct % 20 == 0:
+                    self.log_message.emit(
+                        f"Converted {pct}% (latest: {Path(current_json).name})"
+                    )
 
             # Check if files were created
-            coco_files = list(output.glob("*.json"))
+            coco_files = list(output.rglob("*.json"))
             if coco_files:
                 self.log_message.emit(
                     f"Created COCO files: {[f.name for f in coco_files]}"

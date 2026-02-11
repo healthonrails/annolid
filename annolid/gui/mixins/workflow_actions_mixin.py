@@ -28,11 +28,13 @@ class WorkflowActionsMixin:
         labels_file = None
         input_anno_dir = None
         num_train_frames = 0.7
+        output_mode = "segmentation"
         if coco_dlg.exec_():
             input_anno_dir = coco_dlg.annotation_dir
             labels_file = coco_dlg.label_list_text
             output_dir = coco_dlg.out_dir
             num_train_frames = coco_dlg.num_train_frames
+            output_mode = coco_dlg.output_mode
         else:
             return
 
@@ -51,14 +53,12 @@ class WorkflowActionsMixin:
         else:
             self.output_dir = output_dir
 
-        if labels_file is None:
-            labels_file = str(self.here.parent / "annotation" / "labels_custom.txt")
-
         label_gen = labelme2coco.convert(
             str(input_anno_dir),
             output_annotated_dir=str(self.output_dir),
             labels_file=labels_file,
             train_valid_split=num_train_frames,
+            output_mode=output_mode,
         )
         pw = ProgressingWindow(label_gen)
         if pw.exec_():
@@ -68,7 +68,12 @@ class WorkflowActionsMixin:
         QtWidgets.QMessageBox.about(
             self,
             "Finished",
-            f"Done! Results are in folder:                                             {str(self.output_dir)}",
+            (
+                f"COCO export finished.\n\n"
+                f"Output: {str(self.output_dir)}\n"
+                f"Train split: {int(round(float(num_train_frames) * 100))}%\n"
+                f"Mode: {output_mode}"
+            ),
         )
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
         try:

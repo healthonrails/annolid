@@ -25,17 +25,30 @@ python main.py -v /path/to/my_video.mp4 --extract_frames=20 --to /path/to/dest -
 YOLO-based tracking has been removed from Annolid.
 
 ## How to convert labelme labeled dataset to COCO format?
-:warning: You might need to reinstall annolid because it requires `labelme`
-and `pycocotools` now.
+Use the GUI export dialog:
+
+1. Open Annolid.
+2. Go to **Convert -> LabelMe -> COCO**.
+3. Select your LabelMe annotation directory.
+4. Optionally set output directory and labels file.
+5. Choose train split and output mode (Segmentation or Keypoints), then click **OK**.
+
+You can also run the CLI:
+
 ```bash
-cd annold
-python main.py --labelme2coco=/path/to/my_labeled_images --to /path/to/my_dataset_coco --labels=/path/to/my_labels.txt --vis=True
+python annolid/main.py \
+  --labelme2coco=/path/to/my_labeled_images \
+  --to /path/to/my_dataset_coco \
+  --labels=/path/to/my_labels.txt
 ```
-If vis is true, it will create an additional visualization folder.
-The dataset is structured as follows.
+
+The dataset is structured as:
+
 ```
 ../../datasets/mydataset_coco/
 ├── data.yaml
+├── annotations_train.json
+├── annotations_valid.json
 ├── train
 │   ├── annotations.json
 │   └── JPEGImages
@@ -45,12 +58,6 @@ The dataset is structured as follows.
     └── JPEGImages
         ├── 00000443.jpg
 ```
-
-![Visualization](../imgs/00002895_7.jpg)
-
-An example mask file
-
-![Masks](../imgs/00002895_7_mask.png)
 
 ## Convert the tracking results csv file to Glitter2 csv format
 The result csv file named as tracking_results_nix.csv in the folder as provided in --to option.
