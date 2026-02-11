@@ -7,7 +7,7 @@ import socket
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -16,9 +16,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.widgets import RealtimeControlWidget
 from annolid.gui.workers import PerceptionProcessWorker, RealtimeSubscriberWorker
-from annolid.realtime.perception import Config as RealtimeConfig
 from annolid.gui.shape import Shape, MaskShape
 from annolid.utils.logger import logger
+
+if TYPE_CHECKING:
+    from annolid.realtime.config import Config as RealtimeConfig
 
 
 class RealtimeManager(QtCore.QObject):
@@ -89,7 +91,7 @@ class RealtimeManager(QtCore.QObject):
     # ------------------------------------------------------------------ Start/Stop
     def _handle_realtime_start_request(
         self,
-        realtime_config: RealtimeConfig,
+        realtime_config: "RealtimeConfig",
         extras: Dict[str, Any],
     ):
         self.show_control_dialog()
@@ -151,7 +153,7 @@ class RealtimeManager(QtCore.QObject):
             )
 
     def start_realtime_inference(
-        self, realtime_config: RealtimeConfig, extras: Dict[str, Any]
+        self, realtime_config: "RealtimeConfig", extras: Dict[str, Any]
     ):
         resolved_model = self._resolve_model_path(realtime_config.model_base_name)
         if resolved_model is not None and self._validate_model_file(resolved_model):

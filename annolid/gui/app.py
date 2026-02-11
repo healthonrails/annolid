@@ -43,6 +43,7 @@ from annolid.gui.widgets.sam2_manager import Sam2Manager
 from annolid.gui.widgets.sam3_manager import Sam3Manager
 from annolid.gui.widgets.optical_flow_manager import OpticalFlowManager
 from annolid.gui.widgets.realtime_manager import RealtimeManager
+from annolid.gui.widgets.ai_chat_manager import AIChatManager
 
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.model_manager import AIModelManager
@@ -277,6 +278,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.sam2_manager = Sam2Manager(self)
         self.sam3_manager = Sam3Manager(self)
         self.realtime_manager = RealtimeManager(self)
+        self.ai_chat_manager = AIChatManager(self)
         self.canvas.zoomRequest.connect(self.zoomRequest)
         scrollArea = QtWidgets.QScrollArea()
         scrollArea.setWidget(self._viewer_stack)

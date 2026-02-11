@@ -6,7 +6,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.workers import LoadFrameThread
-from annolid.realtime.perception import Config as RealtimeConfig
+from annolid.realtime.config import Config as RealtimeConfig
 from annolid.utils.logger import logger
 
 

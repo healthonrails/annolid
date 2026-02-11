@@ -178,51 +178,98 @@ class MediaWorkflowMixin:
                 )
 
     def openCaption(self):
-        self.caption_dock = QtWidgets.QDockWidget(self.tr("Caption"), self)
-        self.caption_dock.setObjectName("Caption")
-        self.caption_widget = CaptionWidget()
-        self.caption_widget.set_canvas(self.canvas)
-        self.caption_dock.setWidget(self.caption_widget)
-        self.caption_dock.installEventFilter(self.caption_widget)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.caption_dock)
-        self._apply_fixed_dock_sizes()
+        dock = getattr(self, "caption_dock", None)
+        widget = getattr(self, "caption_widget", None)
+        if dock is None or widget is None:
+            self.caption_dock = QtWidgets.QDockWidget(self.tr("Caption"), self)
+            self.caption_dock.setObjectName("Caption")
+            self.caption_widget = CaptionWidget()
+            self.caption_dock.setWidget(self.caption_widget)
+            self.caption_dock.installEventFilter(self.caption_widget)
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.caption_dock)
+            self._apply_fixed_dock_sizes()
 
-        self.caption_widget.charInserted.connect(self.setDirty)
-        self.caption_widget.charDeleted.connect(self.setDirty)
-        self.caption_widget.captionChanged.connect(self.canvas.setCaption)
-        self.caption_widget.imageGenerated.connect(self.display_generated_image)
+            self.caption_widget.charInserted.connect(self.setDirty)
+            self.caption_widget.charDeleted.connect(self.setDirty)
+            self.caption_widget.captionChanged.connect(self.canvas.setCaption)
+            self.caption_widget.imageGenerated.connect(self.display_generated_image)
+
+            dock = self.caption_dock
+            widget = self.caption_widget
+
+        if dock is not None:
+            dock.show()
+            dock.raise_()
+
+        if widget is None:
+            return
+
+        widget.set_canvas(self.canvas)
+        widget.set_host_window(self)
+        widget.set_default_visual_share_mode(attach_canvas=True, attach_window=False)
 
         if self.video_file and self.fps and self.num_frames:
-            self.caption_widget.set_video_context(
+            widget.set_video_context(
                 self.video_file,
                 self.fps,
                 self.num_frames,
             )
             try:
-                self.caption_widget.set_video_segments(
-                    self._current_video_defined_segments
-                )
+                widget.set_video_segments(self._current_video_defined_segments)
             except Exception:
                 pass
 
         if self.filename:
-            self.caption_widget.set_image_path(self.filename)
+            widget.set_image_path(self.filename)
         if self.video_loader is not None:
-            self.caption_widget.set_video_context(
+            widget.set_video_context(
                 self.video_file,
                 self.fps,
                 self.num_frames,
             )
-            self.caption_widget.set_video_segments(
+            widget.set_video_segments(
                 getattr(self, "_current_video_defined_segments", [])
             )
-            if getattr(self.caption_widget, "behavior_widget", None) is not None:
+            if getattr(widget, "behavior_widget", None) is not None:
                 try:
-                    self.caption_widget.behavior_widget.set_current_frame(
-                        self.frame_number
-                    )
+                    widget.behavior_widget.set_current_frame(self.frame_number)
                 except Exception:
                     pass
+
+    def open_mini_cpm_chat_dock(self) -> None:
+        """Open the dedicated AI chat dock preconfigured for MiniCPM-o."""
+        manager = getattr(self, "ai_chat_manager", None)
+        if manager is None:
+            self.openCaption()
+            widget = getattr(self, "caption_widget", None)
+            if widget is None:
+                return
+            widget.set_provider_and_model("ollama", "MiniCPM-o-4_5-gguf")
+            widget.set_default_visual_share_mode(
+                attach_canvas=True, attach_window=False
+            )
+            widget.prompt_text_edit.setPlaceholderText(
+                "Ask MiniCPM-o about this canvas/window snapshot..."
+            )
+            return
+
+        manager.show_chat_dock(provider="ollama", model="MiniCPM-o-4_5-gguf")
+        widget = getattr(manager, "ai_chat_widget", None)
+        if widget is not None:
+            widget.prompt_text_edit.setPlaceholderText(
+                "Ask MiniCPM-o about this canvas/window snapshot..."
+            )
+
+    def open_ai_chat_dock(self) -> None:
+        """Open the dedicated right-side AI chat dock."""
+        manager = getattr(self, "ai_chat_manager", None)
+        if manager is not None:
+            manager.show_chat_dock()
+            widget = getattr(manager, "ai_chat_widget", None)
+            if widget is not None:
+                widget.prompt_text_edit.setPlaceholderText("Type a message…")
+            return
+        self.openCaption()
 
     def _apply_timeline_caption_if_available(
         self,

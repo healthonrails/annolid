@@ -5,7 +5,7 @@ from typing import Callable, Iterable, Optional, Tuple
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.realtime.perception import Config as RealtimeConfig
+from annolid.realtime.config import Config as RealtimeConfig
 from annolid.gui.models_registry import MODEL_REGISTRY, ModelConfig
 
 

@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from annolid.realtime.mediapipe_engine import MediaPipeEngine
 
 from collections import deque
-from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import partial
 from itertools import accumulate
@@ -47,46 +46,12 @@ from ultralytics import YOLO
 
 from annolid.utils.logger import logger
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+from annolid.realtime.config import Config
 # Late import to avoid dependency issues
 # from annolid.realtime.mediapipe_engine import MediaPipeEngine
 
 
 # --- Configuration and Validation ---
-
-
-@dataclass
-class Config:
-    """Configuration for the PerceptionProcess with validation."""
-
-    camera_index: Union[int, str] = 0
-    server_address: str = "localhost"
-    server_port: int = 5002
-    model_base_name: str = "yolo11n-seg.pt"  # Default to segmentation model
-    publisher_address: str = "tcp://*:5555"
-    target_behaviors: List[str] = field(default_factory=lambda: ["mouse"])
-    confidence_threshold: float = 0.25
-    frame_width: int = 640
-    frame_height: int = 480
-    max_fps: float = 30.0
-    retry_attempts: int = 3
-    retry_delay: float = 5.0
-    visualize: bool = False
-    remote_connect_timeout: float = 2.0
-    remote_retry_cooldown: float = 10.0
-    pause_on_recording_stop: bool = True
-    recording_state_timeout: float = 30.0
-    publish_frames: bool = True
-    frame_encoding: str = "jpg"
-    frame_quality: int = 80
-    publish_annotated_frames: bool = False
-
-    # segmentation-specific options
-    enable_segmentation: bool = True  # Whether to process masks
-    mask_confidence_threshold: float = 0.5  # Threshold for mask pixels
-    mask_encoding: str = "rle"  # "rle", "polygon", or "bitmap"
-
-    # pose-specific options
-    enable_pose: bool = False  # Whether to publish pose keypoints
 
 
 # --- Recording State Management ---

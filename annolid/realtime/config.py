@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Union
 
 
 @dataclass
 class Config:
-    """Configuration for the realtime `PerceptionProcess`."""
+    """Lightweight realtime configuration shared by GUI and perception process."""
 
     camera_index: Union[int, str] = 0
     server_address: str = "localhost"
@@ -29,10 +29,7 @@ class Config:
     frame_encoding: str = "jpg"
     frame_quality: int = 80
     publish_annotated_frames: bool = False
-
     enable_segmentation: bool = True
     mask_confidence_threshold: float = 0.5
     mask_encoding: str = "rle"
-
     enable_pose: bool = False
-    pose_schema_path: Optional[str] = None

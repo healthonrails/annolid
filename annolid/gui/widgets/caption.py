@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.rich_text_renderer import RichTextRenderer
+from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 from annolid.utils.llm_settings import (
     load_llm_settings,
     save_llm_settings,
@@ -77,6 +78,7 @@ class CaptionWidget(QtWidgets.QWidget):
         self.is_streaming_chat = False  # Flag to indicate if chat is streaming
         self.current_ai_span_id = None  # Tracks current AI response span
         self.canvas_widget: Optional[QtWidgets.QWidget] = None
+        self.host_window_widget: Optional[QtWidgets.QWidget] = None
         self._canvas_snapshot_paths: List[str] = []
         self._message_buffers: Dict[str, str] = {}
         self._chat_mode_active: bool = False
@@ -344,15 +346,46 @@ class CaptionWidget(QtWidgets.QWidget):
             layout.addLayout(sub_layout)
         return layout
 
-    def _build_prompt_controls(self) -> QHBoxLayout:
-        layout = QtWidgets.QHBoxLayout()
+    def _build_prompt_controls(self) -> QtWidgets.QVBoxLayout:
+        layout = QtWidgets.QVBoxLayout()
+        prompt_row = QtWidgets.QHBoxLayout()
         self.prompt_text_edit = QtWidgets.QLineEdit(self)
         self.prompt_text_edit.setPlaceholderText("Type your chat prompt here...")
-        layout.addWidget(self.prompt_text_edit)
+        prompt_row.addWidget(self.prompt_text_edit)
 
         self.chat_button = QtWidgets.QPushButton("Chat", self)
         self.chat_button.clicked.connect(self.chat_with_model)
-        layout.addWidget(self.chat_button)
+        prompt_row.addWidget(self.chat_button)
+        layout.addLayout(prompt_row)
+
+        share_row = QtWidgets.QHBoxLayout()
+        self.attach_canvas_checkbox = QtWidgets.QCheckBox(
+            "Attach canvas snapshot",
+            self,
+        )
+        self.attach_canvas_checkbox.setChecked(True)
+        share_row.addWidget(self.attach_canvas_checkbox)
+
+        self.attach_window_checkbox = QtWidgets.QCheckBox(
+            "Attach Annolid window",
+            self,
+        )
+        self.attach_window_checkbox.setChecked(False)
+        share_row.addWidget(self.attach_window_checkbox)
+
+        self.share_canvas_button = QtWidgets.QPushButton("Share Canvas Now", self)
+        self.share_canvas_button.clicked.connect(self._share_canvas_now)
+        share_row.addWidget(self.share_canvas_button)
+
+        self.share_window_button = QtWidgets.QPushButton("Share Window Now", self)
+        self.share_window_button.clicked.connect(self._share_window_now)
+        share_row.addWidget(self.share_window_button)
+        share_row.addStretch(1)
+        layout.addLayout(share_row)
+
+        self.shared_image_label = QtWidgets.QLabel("Shared image: none", self)
+        self.shared_image_label.setStyleSheet("color: #57606a;")
+        layout.addWidget(self.shared_image_label)
         return layout
 
     def _wire_caption_signals(self) -> None:
@@ -402,6 +435,37 @@ class CaptionWidget(QtWidgets.QWidget):
             )
         self._update_model_selector()
         self._persist_state()
+
+    def set_provider_and_model(self, provider: str, model: str = "") -> None:
+        """Programmatically select provider/model while keeping settings in sync."""
+        provider = (provider or "").strip().lower()
+        if not provider:
+            return
+
+        provider_index = self.provider_selector.findData(provider)
+        if provider_index != -1:
+            self.provider_selector.setCurrentIndex(provider_index)
+        else:
+            self.selected_provider = provider
+            self._providers.set_current_provider(provider)
+            self.available_models = self._providers.available_models(provider)
+
+        if model:
+            model = model.strip()
+            if model and model not in self.available_models:
+                self.available_models.append(model)
+            self.selected_model = model
+            self._update_model_selector()
+            self.model_selector.setCurrentText(model)
+        self._persist_state()
+
+    def set_default_visual_share_mode(
+        self, *, attach_canvas: bool = True, attach_window: bool = False
+    ) -> None:
+        if hasattr(self, "attach_canvas_checkbox"):
+            self.attach_canvas_checkbox.setChecked(bool(attach_canvas))
+        if hasattr(self, "attach_window_checkbox"):
+            self.attach_window_checkbox.setChecked(bool(attach_window))
 
     def open_llm_settings_dialog(self):
         """Open the settings dialog for configuring providers and models."""
@@ -500,6 +564,7 @@ class CaptionWidget(QtWidgets.QWidget):
             return
 
         # Text chat path
+        chat_image_path = self._prepare_chat_image()
         self.append_to_chat_history(raw_prompt, is_user=True)
         provider_label = self.provider_labels.get(self.selected_provider, "AI")
         self.current_ai_span_id = f"ai-response-{uuid.uuid4().hex}"
@@ -515,7 +580,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
         task = StreamingChatTask(
             prompt=raw_prompt,
-            image_path=self.image_path,
+            image_path=chat_image_path or self.image_path,
             widget=self,
             model=self.selected_model,
             provider=self.selected_provider,
@@ -820,11 +885,16 @@ class CaptionWidget(QtWidgets.QWidget):
         """Attach the canvas widget so we can snapshot it when needed."""
         self.canvas_widget = canvas
 
+    def set_host_window(self, window: Optional[QtWidgets.QWidget]) -> None:
+        """Attach the main Annolid window for full-UI screenshot sharing."""
+        self.host_window_widget = window
+
     def set_image_path(self, image_path):
         """Sets the image path."""
         if image_path and image_path not in self._canvas_snapshot_paths:
             self._cleanup_canvas_snapshots()
         self.image_path = image_path
+        self._update_shared_image_label(image_path)
 
     def set_video_context(
         self,
@@ -875,24 +945,21 @@ class CaptionWidget(QtWidgets.QWidget):
             except OSError:
                 pass
 
-    def _snapshot_canvas_to_tempfile(self) -> Optional[str]:
-        """Capture the current canvas pixmap into a temporary PNG file."""
-        canvas = self.canvas_widget
-        if canvas is None:
+    def _snapshot_widget_to_tempfile(
+        self, widget: Optional[QtWidgets.QWidget], prefix: str
+    ) -> Optional[str]:
+        if widget is None:
             return None
-
-        pixmap = getattr(canvas, "pixmap", None)
-        if pixmap is None or getattr(pixmap, "isNull", lambda: True)():
-            try:
-                pixmap = canvas.grab()
-            except Exception:
-                pixmap = None
+        try:
+            pixmap = widget.grab()
+        except Exception:
+            return None
 
         if pixmap is None or pixmap.isNull():
             return None
 
         try:
-            fd, tmp_path = tempfile.mkstemp(prefix="annolid_canvas_", suffix=".png")
+            fd, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=".png")
             os.close(fd)
             if not pixmap.save(tmp_path, "PNG"):
                 os.remove(tmp_path)
@@ -900,8 +967,81 @@ class CaptionWidget(QtWidgets.QWidget):
             self._canvas_snapshot_paths.append(tmp_path)
             return tmp_path
         except Exception as exc:
-            print(f"Failed to snapshot canvas: {exc}")
+            print(f"Failed to capture widget snapshot: {exc}")
             return None
+
+    def _snapshot_canvas_to_tempfile(self) -> Optional[str]:
+        """Capture the current canvas pixmap into a temporary PNG file."""
+        return self._snapshot_widget_to_tempfile(self.canvas_widget, "annolid_canvas_")
+
+    def _snapshot_window_to_tempfile(self) -> Optional[str]:
+        """Capture the full Annolid window to include UI + canvas context."""
+        host = self.host_window_widget or self.window()
+        return self._snapshot_widget_to_tempfile(host, "annolid_window_")
+
+    def _update_shared_image_label(self, image_path: Optional[str]) -> None:
+        if not hasattr(self, "shared_image_label"):
+            return
+        if image_path and os.path.exists(image_path):
+            self.shared_image_label.setText(
+                f"Shared image: {os.path.basename(image_path)}"
+            )
+        else:
+            self.shared_image_label.setText("Shared image: none")
+
+    def _share_canvas_now(self) -> None:
+        image_path = self._snapshot_canvas_to_tempfile()
+        if image_path:
+            self.set_image_path(image_path)
+            self.append_to_chat_history(
+                f"Canvas snapshot attached: {os.path.basename(image_path)}",
+                is_user=False,
+                header_label="System",
+            )
+        else:
+            self.append_to_chat_history(
+                "Unable to capture canvas snapshot.",
+                is_user=False,
+                header_label="System",
+            )
+
+    def _share_window_now(self) -> None:
+        image_path = self._snapshot_window_to_tempfile()
+        if image_path:
+            self.set_image_path(image_path)
+            self.append_to_chat_history(
+                f"Annolid window snapshot attached: {os.path.basename(image_path)}",
+                is_user=False,
+                header_label="System",
+            )
+        else:
+            self.append_to_chat_history(
+                "Unable to capture Annolid window snapshot.",
+                is_user=False,
+                header_label="System",
+            )
+
+    def _prepare_chat_image(self) -> Optional[str]:
+        """Capture a fresh visual context image before sending chat requests."""
+        use_window = bool(
+            getattr(self, "attach_window_checkbox", None)
+            and self.attach_window_checkbox.isChecked()
+        )
+        use_canvas = bool(
+            getattr(self, "attach_canvas_checkbox", None)
+            and self.attach_canvas_checkbox.isChecked()
+        )
+
+        image_path: Optional[str] = None
+        if use_window:
+            image_path = self._snapshot_window_to_tempfile()
+        elif use_canvas:
+            image_path = self._snapshot_canvas_to_tempfile()
+
+        if image_path:
+            self.set_image_path(image_path)
+            return image_path
+        return None
 
     def _resolve_image_for_description(self) -> Optional[str]:
         """Determine the best image path for description, falling back to the canvas."""
@@ -1856,192 +1996,3 @@ class ReadCaptionTask(QRunnable):
     def run(self):
         """Runs the read_caption method in the background."""
         self.widget.read_caption(self.text, self.tts_settings)
-
-
-# Generalised chat task supporting multiple providers
-class StreamingChatTask(QRunnable):
-    """A task to chat with the selected model in the background."""
-
-    def __init__(
-        self,
-        prompt,
-        image_path=None,
-        widget=None,
-        model="llama3.2-vision:latest",
-        provider="ollama",
-        settings=None,
-    ):
-        super().__init__()
-        self.prompt = prompt
-        self.image_path = image_path
-        self.widget = widget
-        self.model = model
-        self.provider = provider
-        self.settings = settings or {}
-
-    def run(self):
-        """Route chat request to the appropriate provider."""
-        try:
-            if self.provider == "ollama":
-                self._run_ollama()
-            elif self.provider == "openai":
-                self._run_openai()
-            elif self.provider == "gemini":
-                self._run_gemini()
-            else:
-                raise ValueError(f"Unsupported provider '{self.provider}'.")
-        except Exception as e:
-            error_message = f"Error in chat interaction: {e}"
-            QtCore.QMetaObject.invokeMethod(
-                self.widget,
-                "update_chat_response",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, str(error_message)),
-                QtCore.Q_ARG(bool, True),
-            )
-
-    # ------------------------------------------------------------------ #
-    # Provider handlers
-    # ------------------------------------------------------------------ #
-    def _run_ollama(self) -> None:
-        ollama_module = globals().get("ollama")
-        if ollama_module is None:
-            try:
-                ollama_module = importlib.import_module("ollama")
-            except ImportError as exc:
-                raise ImportError(
-                    "The python 'ollama' package is not installed."
-                ) from exc
-            globals()["ollama"] = ollama_module
-
-        host = self.settings.get("ollama", {}).get("host")
-        if host:
-            os.environ["OLLAMA_HOST"] = host
-
-        messages = [{"role": "user", "content": self.prompt}]
-        if self.image_path and os.path.exists(self.image_path):
-            messages[0]["images"] = [self.image_path]
-
-        stream = ollama_module.chat(model=self.model, messages=messages, stream=True)
-        full_response = ""
-
-        for part in stream:
-            if "message" in part and "content" in part["message"]:
-                chunk = part["message"]["content"]
-                full_response += chunk
-                QMetaObject.invokeMethod(
-                    self.widget,
-                    "stream_chat_chunk",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, chunk),
-                )
-            elif "error" in part:
-                error_message = f"Stream error: {part['error']}"
-                QtCore.QMetaObject.invokeMethod(
-                    self.widget,
-                    "update_chat_response",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, error_message),
-                    QtCore.Q_ARG(bool, True),
-                )
-                return
-
-        if not full_response.strip():
-            error_message = "No response from Ollama."
-            QtCore.QMetaObject.invokeMethod(
-                self.widget,
-                "update_chat_response",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, error_message),
-                QtCore.Q_ARG(bool, True),
-            )
-        else:
-            QtCore.QMetaObject.invokeMethod(
-                self.widget,
-                "update_chat_response",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, ""),
-                QtCore.Q_ARG(bool, False),
-            )
-
-    def _run_openai(self) -> None:
-        try:
-            from openai import OpenAI  # type: ignore
-        except ImportError as exc:
-            raise ImportError(
-                "The 'openai' package is required for GPT providers."
-            ) from exc
-
-        config = self.settings.get("openai", {})
-        api_key = config.get("api_key")
-        base_url = config.get("base_url")
-        if not api_key:
-            raise ValueError("OpenAI API key is missing. Configure it in settings.")
-
-        client_kwargs = {"api_key": api_key}
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        client = OpenAI(**client_kwargs)
-
-        user_prompt = self.prompt
-        if self.image_path and os.path.exists(self.image_path):
-            user_prompt += (
-                f"\n\n[Note: Image context available at {self.image_path}. "
-                "Upload handling is not automated; describe based on this reminder.]"
-            )
-
-        request_payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": user_prompt}],
-        }
-        model_lower = (self.model or "").lower()
-        if "gpt-5" not in model_lower:
-            request_payload["temperature"] = 0.7
-
-        response = client.chat.completions.create(**request_payload)
-        text = ""
-        if response.choices:
-            text = response.choices[0].message.content or ""
-
-        QtCore.QMetaObject.invokeMethod(
-            self.widget,
-            "update_chat_response",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, text),
-            QtCore.Q_ARG(bool, False),
-        )
-
-    def _run_gemini(self) -> None:
-        try:
-            import google.generativeai as genai  # type: ignore
-        except ImportError as exc:
-            raise ImportError(
-                "The 'google-generativeai' package is required for Gemini providers."
-            ) from exc
-
-        config = self.settings.get("gemini", {})
-        api_key = config.get("api_key")
-        if not api_key:
-            raise ValueError("Gemini API key is missing. Configure it in settings.")
-
-        genai.configure(api_key=api_key)
-        model_name = self.model or "gemini-1.5-flash"
-        model = genai.GenerativeModel(model_name)
-
-        user_prompt = self.prompt
-        if self.image_path and os.path.exists(self.image_path):
-            user_prompt += (
-                f"\n\n[Note: Image context available at {self.image_path}. "
-                "Upload handling is not automated; describe based on this reminder.]"
-            )
-
-        result = model.generate_content(user_prompt)
-        text = getattr(result, "text", "") or ""
-
-        QtCore.QMetaObject.invokeMethod(
-            self.widget,
-            "update_chat_response",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, text),
-            QtCore.Q_ARG(bool, False),
-        )

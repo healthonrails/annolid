@@ -187,6 +187,14 @@ class MenuController:
                 ),
             },
             {
+                "name": "open_ai_chat",
+                "text": w.tr("&AI Chat Studio…"),
+                "slot": w.open_ai_chat_dock,
+                "tip": w.tr(
+                    "Open the dedicated AI chat dock with streaming multimodal chat and voice tools"
+                ),
+            },
+            {
                 "name": "open_florence2",
                 "text": w.tr("Florence-&2 Assistant"),
                 "slot": w.openFlorence2,
@@ -791,6 +799,7 @@ class MenuController:
             ),
             # AI-assisted annotation tools
             (
+                actions["open_ai_chat"],
                 w.createPolygonSAMMode,
                 actions["open_florence2"],
                 actions["open_image_editing"],
