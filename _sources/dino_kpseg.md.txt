@@ -180,6 +180,31 @@ python -m annolid.segmentation.dino_kpseg.eval \
 For COCO keypoints datasets, pass the COCO spec YAML and set `--data-format coco`.
 Annolid will stage a temporary YOLO-pose view internally before evaluation.
 
+## COCO to LabelMe (GUI)
+
+Use this when you have COCO keypoint annotations and want editable LabelMe JSON files.
+
+1. Open Annolid.
+2. Go to **Convert → COCO to LabelMe**.
+3. Select your COCO annotations directory (for example `annotations/`).
+4. Optionally select an image directory (you can cancel to use paths from the COCO file).
+5. Select an output directory for the generated LabelMe dataset.
+
+What the converter writes:
+
+- One image file plus one sidecar LabelMe JSON per COCO image (saved together).
+- `polygon` shapes from COCO polygon segmentations (when available).
+- `rectangle` shapes from COCO bounding boxes (fallback when no polygons exist).
+- `point` shapes from COCO keypoints.
+
+Notes:
+
+- Keypoints with non-visible flags (`v <= 0`) are skipped.
+- `group_id` is set from COCO annotation id, so polygon/box/keypoints from the same object stay linked.
+- If your COCO JSON is under `annotations/` and image files are under sibling `images/`,
+  Annolid auto-resolves those paths (you can still set images dir explicitly).
+- `imagePath` in output JSON is written as the local image filename next to the JSON sidecar.
+
 ## Running Inference (GUI)
 
 1. Train the model (or point Annolid to a DinoKPSEG checkpoint).

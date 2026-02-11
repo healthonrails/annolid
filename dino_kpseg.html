@@ -60,6 +60,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#evaluation">Evaluation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#coco-to-labelme-gui">COCO to LabelMe (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#running-inference-gui">Running Inference (GUI)</a></li>
 </ul>
 </li>
@@ -253,6 +254,32 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 </div>
 <p>For COCO keypoints datasets, pass the COCO spec YAML and set <code class="docutils literal notranslate"><span class="pre">--data-format</span> <span class="pre">coco</span></code>.
 Annolid will stage a temporary YOLO-pose view internally before evaluation.</p>
+</section>
+<section id="coco-to-labelme-gui">
+<h2>COCO to LabelMe (GUI)<a class="headerlink" href="#coco-to-labelme-gui" title="Link to this heading"></a></h2>
+<p>Use this when you have COCO keypoint annotations and want editable LabelMe JSON files.</p>
+<ol class="arabic simple">
+<li><p>Open Annolid.</p></li>
+<li><p>Go to <strong>Convert → COCO to LabelMe</strong>.</p></li>
+<li><p>Select your COCO annotations directory (for example <code class="docutils literal notranslate"><span class="pre">annotations/</span></code>).</p></li>
+<li><p>Optionally select an image directory (you can cancel to use paths from the COCO file).</p></li>
+<li><p>Select an output directory for the generated LabelMe dataset.</p></li>
+</ol>
+<p>What the converter writes:</p>
+<ul class="simple">
+<li><p>One image file plus one sidecar LabelMe JSON per COCO image (saved together).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">polygon</span></code> shapes from COCO polygon segmentations (when available).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rectangle</span></code> shapes from COCO bounding boxes (fallback when no polygons exist).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">point</span></code> shapes from COCO keypoints.</p></li>
+</ul>
+<p>Notes:</p>
+<ul class="simple">
+<li><p>Keypoints with non-visible flags (<code class="docutils literal notranslate"><span class="pre">v</span> <span class="pre">&lt;=</span> <span class="pre">0</span></code>) are skipped.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">group_id</span></code> is set from COCO annotation id, so polygon/box/keypoints from the same object stay linked.</p></li>
+<li><p>If your COCO JSON is under <code class="docutils literal notranslate"><span class="pre">annotations/</span></code> and image files are under sibling <code class="docutils literal notranslate"><span class="pre">images/</span></code>,
+Annolid auto-resolves those paths (you can still set images dir explicitly).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">imagePath</span></code> in output JSON is written as the local image filename next to the JSON sidecar.</p></li>
+</ul>
 </section>
 <section id="running-inference-gui">
 <h2>Running Inference (GUI)<a class="headerlink" href="#running-inference-gui" title="Link to this heading"></a></h2>
