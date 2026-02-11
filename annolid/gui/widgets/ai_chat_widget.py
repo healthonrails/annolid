@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
@@ -120,6 +122,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self.is_recording = False
         self._applying_theme_styles = False
         self.thread_pool = QThreadPool()
+        self._asr_pipeline = None
+        self._asr_lock = threading.Lock()
 
         self._build_ui()
         self._apply_theme_styles()
@@ -723,7 +727,8 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def _record_voice(self) -> None:
         try:
-            import speech_recognition as sr
+            import sounddevice as sd
+            import soundfile as sf
         except ImportError:
             QtCore.QMetaObject.invokeMethod(
                 self.status_label,
@@ -731,7 +736,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(
                     str,
-                    "SpeechRecognition missing. Install: pip install SpeechRecognition",
+                    "Audio recording deps missing. Install: pip install sounddevice soundfile",
                 ),
             )
             QtCore.QMetaObject.invokeMethod(
@@ -743,20 +748,79 @@ class AIChatWidget(QtWidgets.QWidget):
             self.is_recording = False
             return
 
-        recognizer = sr.Recognizer()
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.3)
-            chunks: List[str] = []
-            while self.is_recording:
-                try:
-                    audio = recognizer.listen(source, timeout=1, phrase_time_limit=6)
-                    text = recognizer.recognize_google(audio)
-                    if text:
-                        chunks.append(text)
-                except Exception:
-                    continue
+        sample_rate = 16000
+        channels = 1
+        audio_chunks: List[np.ndarray] = []
 
-        final_text = " ".join(chunks).strip()
+        def _audio_callback(indata, frames, stream_time, status) -> None:
+            del frames, stream_time
+            if status:
+                return
+            audio_chunks.append(indata.copy())
+
+        try:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=channels,
+                dtype="float32",
+                callback=_audio_callback,
+            ):
+                while self.is_recording:
+                    time.sleep(0.1)
+        except Exception as exc:
+            QtCore.QMetaObject.invokeMethod(
+                self.status_label,
+                "setText",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, f"Mic capture failed: {exc}"),
+            )
+            QtCore.QMetaObject.invokeMethod(
+                self.talk_button,
+                "setText",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, "Talk"),
+            )
+            self.is_recording = False
+            return
+
+        final_text = ""
+        if audio_chunks:
+            audio_data = np.concatenate(audio_chunks, axis=0).reshape(-1)
+            if np.abs(audio_data).max(initial=0.0) < 1e-4:
+                final_text = ""
+            else:
+                fd, audio_path = tempfile.mkstemp(prefix="annolid_talk_", suffix=".wav")
+                os.close(fd)
+                try:
+                    sf.write(audio_path, audio_data, sample_rate)
+                    final_text = self._transcribe_with_whisper_tiny(audio_path)
+                except Exception as exc:
+                    QtCore.QMetaObject.invokeMethod(
+                        self.status_label,
+                        "setText",
+                        QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(str, f"Transcription failed: {exc}"),
+                    )
+                    QtCore.QMetaObject.invokeMethod(
+                        self.talk_button,
+                        "setText",
+                        QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(str, "Talk"),
+                    )
+                    self.is_recording = False
+                    try:
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
+                    except OSError:
+                        pass
+                    return
+                finally:
+                    try:
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
+                    except OSError:
+                        pass
+
         if final_text:
             QtCore.QMetaObject.invokeMethod(
                 self.prompt_text_edit,
@@ -784,3 +848,35 @@ class AIChatWidget(QtWidgets.QWidget):
             QtCore.Q_ARG(str, "Talk"),
         )
         self.is_recording = False
+
+    def _get_asr_pipeline(self):
+        with self._asr_lock:
+            if self._asr_pipeline is not None:
+                return self._asr_pipeline
+            try:
+                import torch
+                from transformers import pipeline
+            except ImportError as exc:
+                raise RuntimeError(
+                    "ASR deps missing. Install: pip install transformers torch"
+                ) from exc
+            device = -1
+            if torch.cuda.is_available():
+                device = 0
+            self._asr_pipeline = pipeline(
+                "automatic-speech-recognition",
+                model="openai/whisper-tiny",
+                device=device,
+            )
+            return self._asr_pipeline
+
+    def _transcribe_with_whisper_tiny(self, audio_path: str) -> str:
+        asr = self._get_asr_pipeline()
+        result = asr(
+            audio_path,
+            return_timestamps=False,
+            generate_kwargs={"task": "transcribe"},
+        )
+        if isinstance(result, dict):
+            return str(result.get("text", "")).strip()
+        return str(result).strip()

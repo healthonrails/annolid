@@ -109,7 +109,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
   annolid --labels=/path/to/labels_custom.txt
   ```
 - Pick between Ollama, OpenAI GPT, or Google Gemini for caption chat features by opening the caption panel and clicking `Configure…` next to the model selector. API keys are stored in `~/.annolid/llm_settings.json`.
-- Open **AI & Models → AI Chat Studio…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, voice talk/read controls, and one-click canvas/window sharing).
+- Open **AI & Models → AI Chat Studio…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, local `openai/whisper-tiny` speech-to-text for Talk/Record, voice talk/read controls, and one-click canvas/window sharing).
 - Summarise annotated behavior events into a time-budget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins and a project schema):
   ```bash
   python -m annolid.behavior.time_budget exported_events.csv \
