@@ -9,6 +9,7 @@ import os
 import random
 import time
 import gc
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -23,8 +24,10 @@ from annolid.segmentation.dino_kpseg.data import (
     DinoKPSEGAugmentConfig,
     DinoKPSEGPoseDataset,
     build_extractor,
+    load_coco_pose_spec,
     load_labelme_pose_spec,
     load_yolo_pose_spec,
+    materialize_coco_pose_as_yolo,
     summarize_labelme_pose_labels,
     summarize_yolo_pose_labels,
 )
@@ -927,7 +930,7 @@ def train(
         _set_global_seed(int(seed))
 
     data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme"}:
+    if data_format_norm not in {"auto", "yolo", "labelme", "coco"}:
         raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
 
     if data_format_norm == "auto":
@@ -937,10 +940,30 @@ def train(
             fmt_token = (
                 str(payload.get("format") or payload.get("type") or "").strip().lower()
             )
-        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+        if "labelme" in fmt_token:
+            data_format_norm = "labelme"
+        elif "coco" in fmt_token:
+            data_format_norm = "coco"
+        else:
+            data_format_norm = "yolo"
+
+    staged_yolo_yaml: Optional[Path] = None
+    label_format = "yolo"
+    source_yaml = Path(data_yaml)
+    if data_format_norm == "coco":
+        coco_spec = load_coco_pose_spec(data_yaml)
+        staged_dir = (output_dir / "dataset_coco_yolo").resolve()
+        if staged_dir.exists():
+            shutil.rmtree(staged_dir)
+        staged_yolo_yaml = materialize_coco_pose_as_yolo(
+            spec=coco_spec,
+            output_dir=staged_dir,
+        )
+        source_yaml = staged_yolo_yaml
+        label_format = "yolo"
 
     if data_format_norm == "labelme":
-        spec_lm = load_labelme_pose_spec(data_yaml)
+        spec_lm = load_labelme_pose_spec(source_yaml)
         train_images = list(spec_lm.train_images)
         val_images = list(spec_lm.val_images)
         train_label_paths = list(spec_lm.train_json)
@@ -949,8 +972,9 @@ def train(
         flip_idx = spec_lm.flip_idx
         kpt_count = int(spec_lm.kpt_count)
         kpt_dims = int(spec_lm.kpt_dims)
+        label_format = "labelme"
     else:
-        spec = load_yolo_pose_spec(data_yaml)
+        spec = load_yolo_pose_spec(source_yaml)
         train_images = list(spec.train_images)
         val_images = list(spec.val_images)
         train_label_paths = None
@@ -959,6 +983,7 @@ def train(
         flip_idx = spec.flip_idx
         kpt_count = int(spec.kpt_count)
         kpt_dims = int(spec.kpt_dims)
+        label_format = "yolo"
     if not train_images:
         raise ValueError("No training images found")
 
@@ -1066,7 +1091,7 @@ def train(
         kpt_dims=kpt_dims,
         radius_px=radius_px,
         extractor=extractor,
-        label_format=str(data_format_norm),
+        label_format=str(label_format),
         label_paths=train_label_paths,
         keypoint_names=keypoint_names,
         flip_idx=flip_idx,
@@ -1085,7 +1110,7 @@ def train(
             kpt_dims=kpt_dims,
             radius_px=radius_px,
             extractor=extractor,
-            label_format=str(data_format_norm),
+            label_format=str(label_format),
             label_paths=val_label_paths,
             keypoint_names=keypoint_names,
             flip_idx=flip_idx,
@@ -1195,6 +1220,7 @@ def train(
             "mode: train",
             "task: dino_kpseg",
             f"data: {str(data_yaml)}",
+            f"resolved_data: {str(source_yaml)}",
             f"data_format: {str(data_format_norm)}",
             f"model_name: {model_name}",
             f"short_side: {short_side}",
@@ -1351,6 +1377,8 @@ def train(
     tb_writer = SummaryWriter(str(tb_dir))
     try:
         tb_writer.add_text("config/data_yaml", str(data_yaml), 0)
+        if source_yaml != data_yaml:
+            tb_writer.add_text("config/data_yaml_resolved", str(source_yaml), 0)
         tb_writer.add_text("config/model_name", str(model_name), 0)
         tb_writer.add_text("config/layers", str(list(layers)), 0)
         tb_writer.add_text("config/device", str(device_str), 0)
@@ -1503,13 +1531,13 @@ def train(
                 log_dataset_health,
             )
 
-            if data_format_norm != "yolo":
+            if label_format != "yolo":
                 raise RuntimeError(
                     "Dataset audit currently requires a YOLO pose dataset."
                 )
 
             audit_report = audit_yolo_pose_dataset(
-                data_yaml,
+                source_yaml,
                 split="both",
                 instance_mode=str(instance_mode),
                 bbox_scale=float(bbox_scale),
@@ -1599,7 +1627,7 @@ def train(
                         kpt_dims=kpt_dims,
                         radius_px=radius_px,
                         extractor=extractor,
-                        label_format=str(data_format_norm),
+                        label_format=str(label_format),
                         label_paths=split_label_paths,
                         keypoint_names=keypoint_names,
                         flip_idx=flip_idx,
@@ -2983,11 +3011,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--data",
         required=True,
-        help="Path to dataset YAML (YOLO pose data.yaml or LabelMe spec.yaml)",
+        help="Path to dataset YAML (YOLO pose data.yaml, LabelMe spec.yaml, or COCO spec.yaml)",
     )
     p.add_argument(
         "--data-format",
-        choices=("auto", "yolo", "labelme"),
+        choices=("auto", "yolo", "labelme", "coco"),
         default="auto",
         help="Dataset annotation format (default: auto-detect from YAML).",
     )

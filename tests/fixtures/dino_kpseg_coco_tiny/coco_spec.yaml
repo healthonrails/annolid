@@ -1,0 +1,7 @@
+format: coco
+path: .
+image_root: .
+train: annotations/train.json
+val: annotations/val.json
+kpt_shape: [3, 3]
+keypoint_names: [nose, left_ear, right_ear]

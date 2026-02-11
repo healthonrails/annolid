@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import hashlib
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -672,6 +674,391 @@ def load_yolo_pose_spec(data_yaml: Path) -> YoloPoseDatasetSpec:
         keypoint_names=keypoint_names,
         flip_idx=flip_idx,
     )
+
+
+def _safe_int(value: object) -> Optional[int]:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+@dataclass(frozen=True)
+class CocoPoseDatasetSpec:
+    root: Path
+    image_root: Path
+    train_ann: Optional[Path]
+    val_ann: Optional[Path]
+    kpt_count: int
+    kpt_dims: int
+    keypoint_names: List[str]
+    flip_idx: Optional[List[int]]
+    category_names: List[str]
+    category_id_to_index: Dict[int, int]
+
+
+def _load_coco_payload(path: Path) -> Dict[str, object]:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Failed to read COCO annotation JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid COCO annotation JSON: {path}")
+    return payload
+
+
+def _resolve_coco_image_path(
+    file_name: str,
+    *,
+    root: Path,
+    image_root: Path,
+) -> Optional[Path]:
+    p = Path(str(file_name)).expanduser()
+    if p.is_absolute():
+        return p if p.exists() else None
+
+    candidates = [
+        (image_root / p).resolve(),
+        (root / p).resolve(),
+        (root / "images" / p).resolve(),
+        (image_root / p.name).resolve(),
+        (root / "images" / p.name).resolve(),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return cand
+    return None
+
+
+def _install_file(src: Path, dst: Path, *, mode: str = "hardlink") -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+
+    if mode == "copy":
+        shutil.copy2(src, dst)
+        return
+    if mode == "symlink":
+        dst.symlink_to(src)
+        return
+    if mode == "hardlink":
+        try:
+            dst.hardlink_to(src)
+        except OSError:
+            shutil.copy2(src, dst)
+        return
+    raise ValueError(f"Unsupported link mode: {mode!r}")
+
+
+def load_coco_pose_spec(data_yaml: Path) -> CocoPoseDatasetSpec:
+    payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid YAML: {data_yaml}")
+
+    fmt = str(payload.get("format") or payload.get("type") or "coco").strip().lower()
+    if fmt not in {"coco", "coco_pose", "coco_keypoints"}:
+        raise ValueError(f"Unsupported COCO spec type/format: {fmt!r}")
+
+    root = payload.get("path")
+    root_path = (
+        _resolve_yaml_path(str(root), yaml_path=data_yaml) if root else data_yaml.parent
+    )
+
+    image_root_val = payload.get("image_root") or payload.get("images") or "."
+    image_root = _resolve_dataset_path(
+        str(image_root_val),
+        yaml_path=data_yaml,
+        root_path=root_path,
+    )
+
+    train_ann = None
+    val_ann = None
+    if payload.get("train"):
+        train_ann = _resolve_dataset_path(
+            str(payload.get("train")),
+            yaml_path=data_yaml,
+            root_path=root_path,
+        )
+    if payload.get("val"):
+        val_ann = _resolve_dataset_path(
+            str(payload.get("val")),
+            yaml_path=data_yaml,
+            root_path=root_path,
+        )
+    if train_ann is None and val_ann is None:
+        raise ValueError("COCO spec requires at least one of 'train' or 'val'")
+
+    ann_payload = None
+    for candidate in (train_ann, val_ann):
+        if candidate is not None and candidate.exists():
+            ann_payload = _load_coco_payload(candidate)
+            break
+    if ann_payload is None:
+        missing = [str(p) for p in (train_ann, val_ann) if p is not None]
+        raise ValueError(f"No readable COCO annotation JSON found: {missing}")
+
+    categories = ann_payload.get("categories")
+    cat_list = categories if isinstance(categories, list) else []
+    category_names: List[str] = []
+    category_id_to_index: Dict[int, int] = {}
+    for cat in cat_list:
+        if not isinstance(cat, dict):
+            continue
+        cid = _safe_int(cat.get("id"))
+        if cid is None or cid in category_id_to_index:
+            continue
+        category_id_to_index[cid] = len(category_id_to_index)
+        category_names.append(str(cat.get("name") or f"class_{cid}"))
+    if not category_names:
+        category_names = ["animal"]
+        category_id_to_index = {1: 0}
+
+    kpt_shape = payload.get("kpt_shape") or []
+    kpt_count = 0
+    kpt_dims = 3
+    if isinstance(kpt_shape, (list, tuple)) and len(kpt_shape) >= 1:
+        kpt_count = int(kpt_shape[0])
+        if len(kpt_shape) >= 2:
+            kpt_dims = int(kpt_shape[1])
+
+    category_keypoints: List[str] = []
+    for cat in cat_list:
+        if not isinstance(cat, dict):
+            continue
+        raw = cat.get("keypoints")
+        if isinstance(raw, list):
+            category_keypoints = [str(x).strip() for x in raw if str(x).strip()]
+            if category_keypoints:
+                break
+
+    if kpt_count <= 0 and category_keypoints:
+        kpt_count = len(category_keypoints)
+
+    if kpt_count <= 0:
+        annotations = ann_payload.get("annotations")
+        ann_list = annotations if isinstance(annotations, list) else []
+        for ann in ann_list:
+            if not isinstance(ann, dict):
+                continue
+            kpts = ann.get("keypoints")
+            if isinstance(kpts, list) and len(kpts) >= 3:
+                kpt_count = len(kpts) // 3
+                break
+    if kpt_count <= 0:
+        raise ValueError("Could not infer keypoint count from COCO spec/annotations")
+
+    if kpt_dims not in (2, 3):
+        raise ValueError(f"Unsupported kpt_dims: {kpt_dims} (expected 2 or 3)")
+
+    keypoint_names_raw = payload.get("keypoint_names")
+    if isinstance(keypoint_names_raw, list):
+        keypoint_names = [str(x).strip() for x in keypoint_names_raw if str(x).strip()]
+    elif category_keypoints:
+        keypoint_names = list(category_keypoints)
+    else:
+        keypoint_names = [f"kp_{i}" for i in range(int(kpt_count))]
+
+    if len(keypoint_names) != int(kpt_count):
+        raise ValueError(
+            f"Expected {int(kpt_count)} keypoint names, got {len(keypoint_names)}"
+        )
+
+    flip_idx = None
+    raw_flip = payload.get("flip_idx")
+    if isinstance(raw_flip, (list, tuple)) and raw_flip:
+        try:
+            candidate = [int(v) for v in raw_flip]
+        except Exception:
+            candidate = None
+        if candidate and len(candidate) == int(kpt_count):
+            flip_idx = candidate
+    if flip_idx is None and keypoint_names:
+        inferred = _infer_flip_idx_from_names(keypoint_names, kpt_count=int(kpt_count))
+        if inferred is not None:
+            flip_idx = inferred
+
+    return CocoPoseDatasetSpec(
+        root=root_path,
+        image_root=image_root,
+        train_ann=train_ann,
+        val_ann=val_ann,
+        kpt_count=int(kpt_count),
+        kpt_dims=int(kpt_dims),
+        keypoint_names=list(keypoint_names),
+        flip_idx=flip_idx,
+        category_names=list(category_names),
+        category_id_to_index=dict(category_id_to_index),
+    )
+
+
+def materialize_coco_pose_as_yolo(
+    *,
+    spec: CocoPoseDatasetSpec,
+    output_dir: Path,
+    link_mode: str = "hardlink",
+) -> Path:
+    output_dir = Path(output_dir).expanduser().resolve()
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    (output_dir / "images" / "train").mkdir(parents=True, exist_ok=True)
+    (output_dir / "images" / "val").mkdir(parents=True, exist_ok=True)
+    (output_dir / "labels" / "train").mkdir(parents=True, exist_ok=True)
+    (output_dir / "labels" / "val").mkdir(parents=True, exist_ok=True)
+
+    def _convert_split(split_name: str, ann_path: Optional[Path]) -> None:
+        if ann_path is None:
+            return
+        payload = _load_coco_payload(ann_path)
+        images_raw = payload.get("images")
+        ann_raw = payload.get("annotations")
+        images_list = images_raw if isinstance(images_raw, list) else []
+        ann_list = ann_raw if isinstance(ann_raw, list) else []
+
+        images_by_id: Dict[int, Dict[str, object]] = {}
+        for rec in images_list:
+            if not isinstance(rec, dict):
+                continue
+            img_id = _safe_int(rec.get("id"))
+            if img_id is None:
+                continue
+            images_by_id[img_id] = rec
+
+        ann_by_image: Dict[int, List[Dict[str, object]]] = {}
+        for rec in ann_list:
+            if not isinstance(rec, dict):
+                continue
+            img_id = _safe_int(rec.get("image_id"))
+            if img_id is None:
+                continue
+            ann_by_image.setdefault(img_id, []).append(rec)
+
+        for image_id in sorted(images_by_id.keys()):
+            image_rec = images_by_id[image_id]
+            file_name = str(image_rec.get("file_name") or "").strip()
+            if not file_name:
+                continue
+            src_image = _resolve_coco_image_path(
+                file_name,
+                root=spec.root,
+                image_root=spec.image_root,
+            )
+            if src_image is None:
+                continue
+
+            width = _safe_int(image_rec.get("width")) or 0
+            height = _safe_int(image_rec.get("height")) or 0
+            if width <= 0 or height <= 0:
+                try:
+                    with Image.open(src_image) as pil:
+                        width, height = pil.size
+                except Exception:
+                    continue
+            width_f = float(width)
+            height_f = float(height)
+            if width_f <= 0.0 or height_f <= 0.0:
+                continue
+
+            stem = f"{Path(file_name).stem}__{int(image_id)}"
+            suffix = src_image.suffix or ".jpg"
+            dst_image = output_dir / "images" / split_name / f"{stem}{suffix}"
+            _install_file(src_image, dst_image, mode=link_mode)
+            dst_label = output_dir / "labels" / split_name / f"{stem}.txt"
+
+            lines: List[str] = []
+            for ann in ann_by_image.get(image_id, []):
+                bbox = ann.get("bbox")
+                if not isinstance(bbox, list) or len(bbox) < 4:
+                    continue
+                try:
+                    x, y, bw, bh = [float(v) for v in bbox[:4]]
+                except Exception:
+                    continue
+                if bw <= 0.0 or bh <= 0.0:
+                    continue
+
+                cx = (x + bw / 2.0) / width_f
+                cy = (y + bh / 2.0) / height_f
+                nw = bw / width_f
+                nh = bh / height_f
+                cx = float(np.clip(cx, 0.0, 1.0))
+                cy = float(np.clip(cy, 0.0, 1.0))
+                nw = float(np.clip(nw, 1e-8, 1.0))
+                nh = float(np.clip(nh, 1e-8, 1.0))
+
+                category_id = _safe_int(ann.get("category_id"))
+                cls_idx = 0
+                if category_id is not None:
+                    cls_idx = int(spec.category_id_to_index.get(category_id, 0))
+
+                raw_kpts = ann.get("keypoints")
+                if not isinstance(raw_kpts, list) or len(raw_kpts) < (
+                    int(spec.kpt_count) * 3
+                ):
+                    continue
+
+                kp_tokens: List[str] = []
+                for i in range(int(spec.kpt_count)):
+                    try:
+                        x_px = float(raw_kpts[3 * i + 0])
+                        y_px = float(raw_kpts[3 * i + 1])
+                        v = float(raw_kpts[3 * i + 2])
+                    except Exception:
+                        x_px, y_px, v = 0.0, 0.0, 0.0
+
+                    x_n = float(np.clip(x_px / width_f, 0.0, 1.0))
+                    y_n = float(np.clip(y_px / height_f, 0.0, 1.0))
+                    if int(spec.kpt_dims) == 2:
+                        kp_tokens.extend([f"{x_n:.6f}", f"{y_n:.6f}"])
+                    else:
+                        if v < 0.0:
+                            vis = 0
+                        elif v > 2.0:
+                            vis = 2
+                        else:
+                            vis = int(round(v))
+                        kp_tokens.extend([f"{x_n:.6f}", f"{y_n:.6f}", f"{vis:d}"])
+
+                line = " ".join(
+                    [
+                        str(int(cls_idx)),
+                        f"{cx:.6f}",
+                        f"{cy:.6f}",
+                        f"{nw:.6f}",
+                        f"{nh:.6f}",
+                        *kp_tokens,
+                    ]
+                )
+                lines.append(line)
+
+            dst_label.write_text(
+                ("\n".join(lines) + ("\n" if lines else "")),
+                encoding="utf-8",
+            )
+
+    _convert_split("train", spec.train_ann)
+    _convert_split("val", spec.val_ann)
+
+    names = list(spec.category_names or ["animal"])
+    yolo_payload: Dict[str, object] = {
+        "path": str(output_dir),
+        "train": "images/train",
+        "val": "images/val",
+        "nc": int(max(1, len(names))),
+        "names": names,
+        "kpt_shape": [int(spec.kpt_count), int(spec.kpt_dims)],
+        "kpt_names": {
+            int(i): list(spec.keypoint_names) for i in range(int(max(1, len(names))))
+        },
+    }
+    if spec.flip_idx:
+        yolo_payload["flip_idx"] = [int(x) for x in spec.flip_idx]
+
+    yolo_yaml = output_dir / "data.yaml"
+    yolo_yaml.write_text(
+        yaml.safe_dump(yolo_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    return yolo_yaml
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,59 @@
+{
+  "images": [
+    {
+      "id": 101,
+      "file_name": "images/mouse_val_001.png",
+      "width": 128,
+      "height": 96
+    }
+  ],
+  "annotations": [
+    {
+      "id": 101,
+      "image_id": 101,
+      "category_id": 1,
+      "bbox": [
+        48.0,
+        20.0,
+        24.0,
+        20.0
+      ],
+      "area": 480.0,
+      "iscrowd": 0,
+      "num_keypoints": 3,
+      "keypoints": [
+        60.0,
+        30.0,
+        2.0,
+        52.0,
+        28.0,
+        2.0,
+        66.0,
+        28.0,
+        2.0
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "mouse",
+      "supercategory": "animal",
+      "keypoints": [
+        "nose",
+        "left_ear",
+        "right_ear"
+      ],
+      "skeleton": [
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ]
+      ]
+    }
+  ]
+}

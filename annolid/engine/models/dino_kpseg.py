@@ -19,7 +19,17 @@ class DinoKPSEGPlugin(ModelPluginBase):
     description = "DINOv3 feature + small conv head for keypoint mask segmentation."
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--data", required=True, help="Path to YOLO pose data.yaml")
+        parser.add_argument(
+            "--data",
+            required=True,
+            help="Path to dataset YAML (YOLO pose, LabelMe spec, or COCO spec)",
+        )
+        parser.add_argument(
+            "--data-format",
+            choices=("auto", "yolo", "labelme", "coco"),
+            default="auto",
+            help="Dataset annotation format (default: auto-detect from YAML).",
+        )
         parser.add_argument(
             "--output", default=None, help="Run output directory (optional)"
         )
@@ -343,6 +353,7 @@ class DinoKPSEGPlugin(ModelPluginBase):
             )
         best = train_kpseg(
             data_yaml=Path(args.data).expanduser().resolve(),
+            data_format=str(args.data_format),
             output_dir=out_dir,
             model_name=str(args.model_name),
             short_side=int(args.short_side),

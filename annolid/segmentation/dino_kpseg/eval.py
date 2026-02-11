@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+import tempfile
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -18,8 +19,10 @@ from annolid.segmentation.dino_kpseg.data import (
     _labelme_keypoint_instances_from_payload,
     _parse_yolo_pose_line,
     build_extractor,
+    load_coco_pose_spec,
     load_labelme_pose_spec,
     load_yolo_pose_spec,
+    materialize_coco_pose_as_yolo,
     merge_feature_layers,
 )
 from annolid.segmentation.dino_kpseg.keypoints import (
@@ -434,7 +437,7 @@ def evaluate(
     include_per_keypoint: bool = False,
 ) -> Dict[str, object]:
     data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme"}:
+    if data_format_norm not in {"auto", "yolo", "labelme", "coco"}:
         raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
     if data_format_norm == "auto":
         payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
@@ -443,10 +446,28 @@ def evaluate(
             fmt_token = (
                 str(payload.get("format") or payload.get("type") or "").strip().lower()
             )
-        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+        if "labelme" in fmt_token:
+            data_format_norm = "labelme"
+        elif "coco" in fmt_token:
+            data_format_norm = "coco"
+        else:
+            data_format_norm = "yolo"
 
-    if data_format_norm == "labelme":
-        spec_lm = load_labelme_pose_spec(data_yaml)
+    source_yaml = Path(data_yaml)
+    label_format = str(data_format_norm)
+    if data_format_norm == "coco":
+        coco_spec = load_coco_pose_spec(data_yaml)
+        staged_root = Path(
+            tempfile.mkdtemp(prefix="dino_kpseg_eval_coco_", dir=tempfile.gettempdir())
+        )
+        source_yaml = materialize_coco_pose_as_yolo(
+            spec=coco_spec,
+            output_dir=staged_root,
+        )
+        label_format = "yolo"
+
+    if label_format == "labelme":
+        spec_lm = load_labelme_pose_spec(source_yaml)
         kpt_count = int(spec_lm.kpt_count)
         kpt_dims = int(spec_lm.kpt_dims)
         keypoint_names = list(spec_lm.keypoint_names)
@@ -456,7 +477,7 @@ def evaluate(
         val_labels = list(spec_lm.val_json)
         flip_idx = spec_lm.flip_idx
     else:
-        spec = load_yolo_pose_spec(data_yaml)
+        spec = load_yolo_pose_spec(source_yaml)
         kpt_count = int(spec.kpt_count)
         kpt_dims = int(spec.kpt_dims)
         keypoint_names = list(spec.keypoint_names or [])
@@ -518,7 +539,7 @@ def evaluate(
         pil = ImageOps.exif_transpose(pil.convert("RGB"))
         width, height = pil.size
 
-        if data_format_norm == "labelme":
+        if label_format == "labelme":
             json_path = None
             if label_paths is not None and idx < len(label_paths):
                 json_path = label_paths[idx]
@@ -593,7 +614,7 @@ def calibrate_thresholds(
     per_keypoint: bool = False,
 ) -> Dict[str, object]:
     data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme"}:
+    if data_format_norm not in {"auto", "yolo", "labelme", "coco"}:
         raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
     if data_format_norm == "auto":
         payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
@@ -602,10 +623,30 @@ def calibrate_thresholds(
             fmt_token = (
                 str(payload.get("format") or payload.get("type") or "").strip().lower()
             )
-        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+        if "labelme" in fmt_token:
+            data_format_norm = "labelme"
+        elif "coco" in fmt_token:
+            data_format_norm = "coco"
+        else:
+            data_format_norm = "yolo"
 
-    if data_format_norm == "labelme":
-        spec_lm = load_labelme_pose_spec(data_yaml)
+    source_yaml = Path(data_yaml)
+    label_format = str(data_format_norm)
+    if data_format_norm == "coco":
+        coco_spec = load_coco_pose_spec(data_yaml)
+        staged_root = Path(
+            tempfile.mkdtemp(
+                prefix="dino_kpseg_calibrate_coco_", dir=tempfile.gettempdir()
+            )
+        )
+        source_yaml = materialize_coco_pose_as_yolo(
+            spec=coco_spec,
+            output_dir=staged_root,
+        )
+        label_format = "yolo"
+
+    if label_format == "labelme":
+        spec_lm = load_labelme_pose_spec(source_yaml)
         kpt_count = int(spec_lm.kpt_count)
         kpt_dims = int(spec_lm.kpt_dims)
         keypoint_names = list(spec_lm.keypoint_names)
@@ -614,7 +655,7 @@ def calibrate_thresholds(
         train_labels = list(spec_lm.train_json)
         val_labels = list(spec_lm.val_json)
     else:
-        spec = load_yolo_pose_spec(data_yaml)
+        spec = load_yolo_pose_spec(source_yaml)
         kpt_count = int(spec.kpt_count)
         kpt_dims = int(spec.kpt_dims)
         keypoint_names = list(spec.keypoint_names or [])
@@ -663,7 +704,7 @@ def calibrate_thresholds(
         pil = ImageOps.exif_transpose(pil.convert("RGB"))
         width, height = pil.size
 
-        if data_format_norm == "labelme":
+        if label_format == "labelme":
             json_path = None
             if label_paths is not None and idx < len(label_paths):
                 json_path = label_paths[idx]
@@ -790,7 +831,7 @@ def calibrate_thresholds(
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate DinoKPSEG checkpoints on a pose dataset (YOLO or LabelMe)."
+        description="Evaluate DinoKPSEG checkpoints on a pose dataset (YOLO, LabelMe, or COCO)."
     )
     parser.add_argument(
         "--data",
@@ -799,7 +840,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--data-format",
-        choices=("auto", "yolo", "labelme"),
+        choices=("auto", "yolo", "labelme", "coco"),
         default="auto",
         help="Dataset annotation format (default: auto-detect from YAML).",
     )
