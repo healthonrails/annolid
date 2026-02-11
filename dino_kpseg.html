@@ -55,6 +55,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">DINOv3 Keypoint Segmentation (DinoKPSEG)</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#training">Training</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#native-labelme-training">Native LabelMe training</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#native-coco-keypoints-training">Native COCO keypoints training</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#relational-attention-head">Relational (Attention) Head</a></li>
 </ul>
 </li>
@@ -106,7 +107,8 @@
 <p>This trainer consumes either:</p>
 <ul class="simple">
 <li><p>A standard YOLO pose dataset (<code class="docutils literal notranslate"><span class="pre">data.yaml</span></code> with <code class="docutils literal notranslate"><span class="pre">kpt_shape</span></code> and labels in <code class="docutils literal notranslate"><span class="pre">labels/*.txt</span></code>), or</p></li>
-<li><p>A native LabelMe dataset (per-image <code class="docutils literal notranslate"><span class="pre">*.json</span></code> next to images, with point/polygon shapes).</p></li>
+<li><p>A native LabelMe dataset (per-image <code class="docutils literal notranslate"><span class="pre">*.json</span></code> next to images, with point/polygon shapes), or</p></li>
+<li><p>A COCO keypoints dataset (<code class="docutils literal notranslate"><span class="pre">images</span></code> + <code class="docutils literal notranslate"><span class="pre">annotations/*.json</span></code>).</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
@@ -131,6 +133,29 @@
 <span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
 </pre></div>
 </div>
+</section>
+<section id="native-coco-keypoints-training">
+<h3>Native COCO keypoints training<a class="headerlink" href="#native-coco-keypoints-training" title="Link to this heading"></a></h3>
+<p>Create a COCO spec YAML:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">coco</span>
+<span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/path/to/dataset_root</span>
+<span class="nt">image_root</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">.</span><span class="w">                  </span><span class="c1"># optional; defaults to path</span>
+<span class="nt">train</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">annotations/train.json</span>
+<span class="nt">val</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">annotations/val.json</span>
+<span class="c1"># Optional overrides:</span>
+<span class="c1"># kpt_shape: [27, 3]</span>
+<span class="c1"># keypoint_names: [nose, left_ear, ...]</span>
+</pre></div>
+</div>
+<p>Then train with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/coco_spec.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-format<span class="w"> </span>coco<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--epochs<span class="w"> </span><span class="m">50</span>
+</pre></div>
+</div>
+<p>Annolid will stage the COCO annotations into YOLO-pose labels automatically inside
+the run directory and train with the same DinoKPSEG pipeline.</p>
 <p>LabelMe conventions:</p>
 <ul class="simple">
 <li><p>Keypoints are <code class="docutils literal notranslate"><span class="pre">shape_type:</span> <span class="pre">point</span></code> with <code class="docutils literal notranslate"><span class="pre">label</span></code> matching an entry in <code class="docutils literal notranslate"><span class="pre">keypoint_names</span></code>.</p></li>
@@ -226,6 +251,8 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 <span class="w">  </span>--split<span class="w"> </span>val
 </pre></div>
 </div>
+<p>For COCO keypoints datasets, pass the COCO spec YAML and set <code class="docutils literal notranslate"><span class="pre">--data-format</span> <span class="pre">coco</span></code>.
+Annolid will stage a temporary YOLO-pose view internally before evaluation.</p>
 </section>
 <section id="running-inference-gui">
 <h2>Running Inference (GUI)<a class="headerlink" href="#running-inference-gui" title="Link to this heading"></a></h2>

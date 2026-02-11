@@ -12,7 +12,8 @@ Annolid includes an experimental keypoint-centric segmentation model that:
 This trainer consumes either:
 
 - A standard YOLO pose dataset (`data.yaml` with `kpt_shape` and labels in `labels/*.txt`), or
-- A native LabelMe dataset (per-image `*.json` next to images, with point/polygon shapes).
+- A native LabelMe dataset (per-image `*.json` next to images, with point/polygon shapes), or
+- A COCO keypoints dataset (`images` + `annotations/*.json`).
 
 ```bash
 python -m annolid.segmentation.dino_kpseg.train \
@@ -41,6 +42,33 @@ python -m annolid.segmentation.dino_kpseg.train \
   --data-format labelme \
   --epochs 50
 ```
+
+### Native COCO keypoints training
+
+Create a COCO spec YAML:
+
+```yaml
+format: coco
+path: /path/to/dataset_root
+image_root: .                  # optional; defaults to path
+train: annotations/train.json
+val: annotations/val.json
+# Optional overrides:
+# kpt_shape: [27, 3]
+# keypoint_names: [nose, left_ear, ...]
+```
+
+Then train with:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/coco_spec.yaml \
+  --data-format coco \
+  --epochs 50
+```
+
+Annolid will stage the COCO annotations into YOLO-pose labels automatically inside
+the run directory and train with the same DinoKPSEG pipeline.
 
 LabelMe conventions:
 
@@ -148,6 +176,9 @@ python -m annolid.segmentation.dino_kpseg.eval \
   --weights /path/to/dino_kpseg/weights/best.pt \
   --split val
 ```
+
+For COCO keypoints datasets, pass the COCO spec YAML and set `--data-format coco`.
+Annolid will stage a temporary YOLO-pose view internally before evaluation.
 
 ## Running Inference (GUI)
 
