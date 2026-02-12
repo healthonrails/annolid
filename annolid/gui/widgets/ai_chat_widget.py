@@ -19,6 +19,7 @@ from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.utils.llm_settings import (
     has_provider_api_key,
     load_llm_settings,
+    provider_kind,
     save_llm_settings,
 )
 
@@ -150,12 +151,7 @@ class AIChatWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.llm_settings = load_llm_settings()
         self._providers = ProviderRegistry(self.llm_settings, save_llm_settings)
-        self.provider_labels: Dict[str, str] = {
-            "ollama": "Ollama (local)",
-            "openai": "OpenAI GPT",
-            "openrouter": "OpenRouter",
-            "gemini": "Google Gemini",
-        }
+        self.provider_labels: Dict[str, str] = self._providers.labels()
         self.selected_provider = self._providers.current_provider()
         self.available_models = self._providers.available_models(self.selected_provider)
         self.selected_model = self._providers.resolve_initial_model(
@@ -260,8 +256,7 @@ class AIChatWidget(QtWidgets.QWidget):
     def _build_provider_bar(self) -> QtWidgets.QHBoxLayout:
         top_bar = QtWidgets.QHBoxLayout()
         self.provider_selector = QtWidgets.QComboBox(self)
-        for key, label in self.provider_labels.items():
-            self.provider_selector.addItem(label, userData=key)
+        self._populate_provider_selector()
         idx = self.provider_selector.findData(self.selected_provider)
         if idx >= 0:
             self.provider_selector.setCurrentIndex(idx)
@@ -272,6 +267,16 @@ class AIChatWidget(QtWidgets.QWidget):
         self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
         top_bar.addWidget(self.model_selector, 3)
         return top_bar
+
+    def _populate_provider_selector(self) -> None:
+        self.provider_labels = self._providers.labels()
+        self.provider_selector.blockSignals(True)
+        try:
+            self.provider_selector.clear()
+            for key, label in self.provider_labels.items():
+                self.provider_selector.addItem(label, userData=key)
+        finally:
+            self.provider_selector.blockSignals(False)
 
     def _build_share_bar(self) -> QtWidgets.QHBoxLayout:
         share_bar = QtWidgets.QHBoxLayout()
@@ -791,31 +796,17 @@ class AIChatWidget(QtWidgets.QWidget):
         return "Annolid Bot"
 
     def _ensure_provider_ready(self) -> bool:
-        if self.selected_provider == "openai" and not has_provider_api_key(
-            self.llm_settings, "openai"
+        kind = provider_kind(self.llm_settings, self.selected_provider)
+        if kind in {"openai_compat", "gemini"} and not has_provider_api_key(
+            self.llm_settings, self.selected_provider
         ):
-            QtWidgets.QMessageBox.warning(
-                self,
-                "OpenAI API key required",
-                "Please add your OpenAI API key in the AI Model Settings dialog.",
+            label = self.provider_labels.get(
+                self.selected_provider, self.selected_provider
             )
-            return False
-        if self.selected_provider == "gemini" and not has_provider_api_key(
-            self.llm_settings, "gemini"
-        ):
             QtWidgets.QMessageBox.warning(
                 self,
-                "Gemini API key required",
-                "Please add your Gemini API key in the AI Model Settings dialog.",
-            )
-            return False
-        if self.selected_provider == "openrouter" and not has_provider_api_key(
-            self.llm_settings, "openrouter"
-        ):
-            QtWidgets.QMessageBox.warning(
-                self,
-                "OpenRouter API key required",
-                "Please add your OpenRouter API key in the AI Model Settings dialog.",
+                f"{label} API key required",
+                f"Please configure an API key for {label} in AI Model Settings.",
             )
             return False
         return True
@@ -889,6 +880,7 @@ class AIChatWidget(QtWidgets.QWidget):
         settings.setdefault("last_models", self.llm_settings.get("last_models", {}))
         self.llm_settings = settings
         self._providers = ProviderRegistry(self.llm_settings, save_llm_settings)
+        self._populate_provider_selector()
         new_provider = self.llm_settings.get("provider", self.selected_provider)
         self._suppress_provider_updates = True
         try:
@@ -899,7 +891,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 self.selected_provider = new_provider
         finally:
             self._suppress_provider_updates = False
-        self.selected_provider = self.provider_selector.currentData()
+        self.selected_provider = self.provider_selector.currentData() or new_provider
         self.available_models = self._providers.available_models(self.selected_provider)
         self.selected_model = self._providers.resolve_initial_model(
             self.selected_provider,

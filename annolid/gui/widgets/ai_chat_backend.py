@@ -30,7 +30,11 @@ from annolid.core.agent.tools import (
 )
 from annolid.core.agent.tools.policy import resolve_allowed_tools
 from annolid.core.agent.utils import get_agent_workspace_path
-from annolid.utils.llm_settings import LLMConfig, resolve_agent_runtime_config
+from annolid.utils.llm_settings import (
+    LLMConfig,
+    provider_kind,
+    resolve_agent_runtime_config,
+)
 
 
 _SESSION_STORE: Optional[PersistentSessionStore] = None
@@ -151,13 +155,12 @@ class StreamingChatTask(QRunnable):
             )
             try:
                 # Keep backward-compatible fallback behavior if agent loop setup fails.
-                if self.provider == "ollama":
+                kind = provider_kind(self.settings, self.provider)
+                if kind == "ollama":
                     self._run_ollama()
-                elif self.provider == "openai":
-                    self._run_openai()
-                elif self.provider == "openrouter":
-                    self._run_openai(provider_name="openrouter")
-                elif self.provider == "gemini":
+                elif kind == "openai_compat":
+                    self._run_openai(provider_name=self.provider)
+                elif kind == "gemini":
                     self._run_gemini()
                 else:
                     raise ValueError(f"Unsupported provider '{self.provider}'.")
@@ -197,14 +200,15 @@ class StreamingChatTask(QRunnable):
                 )
 
     def _provider_dependency_error(self) -> Optional[str]:
-        if self.provider in {"openai", "openrouter"}:
+        kind = provider_kind(self.settings, self.provider)
+        if kind == "openai_compat":
             if importlib.util.find_spec("openai") is None:
                 return (
-                    "OpenAI/OpenRouter provider requires the `openai` package. "
+                    "OpenAI-compatible provider requires the `openai` package. "
                     "Install it in your Annolid environment, for example: "
                     "`.venv/bin/pip install openai`."
                 )
-        if self.provider == "gemini":
+        if kind == "gemini":
             if importlib.util.find_spec("google.generativeai") is None:
                 return (
                     "Gemini provider requires `google-generativeai`. "
@@ -215,16 +219,14 @@ class StreamingChatTask(QRunnable):
 
     def _format_dependency_error(self, raw_error: str) -> str:
         message = str(raw_error or "").strip()
-        if (
-            self.provider in {"openai", "openrouter"}
-            and "openai package is required" in message
-        ):
+        kind = provider_kind(self.settings, self.provider)
+        if kind == "openai_compat" and "openai package is required" in message:
             return (
-                "OpenAI/OpenRouter provider requires the `openai` package. "
+                "OpenAI-compatible provider requires the `openai` package. "
                 "Install it in your Annolid environment, for example: "
                 "`.venv/bin/pip install openai`."
             )
-        if self.provider == "gemini" and "google-generativeai" in message:
+        if kind == "gemini" and "google-generativeai" in message:
             return (
                 "Gemini provider requires `google-generativeai`. "
                 "Install it in your Annolid environment, for example: "
@@ -1362,7 +1364,7 @@ class StreamingChatTask(QRunnable):
 
     def _run_openai(self, provider_name: str = "openai") -> None:
         provider_key = str(provider_name or "openai").strip().lower()
-        provider_block = dict(self.settings.get(provider_key, {}))
+        provider_block = dict(self.settings.get(provider_key, {}) or {})
         cfg = LLMConfig(
             provider=provider_key,
             model=self.model,
@@ -1404,7 +1406,7 @@ class StreamingChatTask(QRunnable):
                 "The 'google-generativeai' package is required for Gemini providers."
             ) from exc
 
-        config = self.settings.get("gemini", {})
+        config = self.settings.get(self.provider, {})
         api_key = config.get("api_key")
         if not api_key:
             raise ValueError("Gemini API key is missing. Configure it in settings.")

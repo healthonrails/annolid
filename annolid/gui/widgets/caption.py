@@ -23,7 +23,9 @@ from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.rich_text_renderer import RichTextRenderer
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 from annolid.utils.llm_settings import (
+    has_provider_api_key,
     load_llm_settings,
+    provider_kind,
     save_llm_settings,
     resolve_llm_config,
     ensure_provider_env,
@@ -54,11 +56,7 @@ class CaptionWidget(QtWidgets.QWidget):
             self.llm_settings,
             save_llm_settings,
         )
-        self.provider_labels: Dict[str, str] = {
-            "ollama": "Ollama (local)",
-            "openai": "OpenAI GPT",
-            "gemini": "Google Gemini",
-        }
+        self.provider_labels: Dict[str, str] = self._providers.labels()
         self.selected_provider = self._providers.current_provider()
         self.available_models = self._providers.available_models(self.selected_provider)
         self.selected_model = self._providers.resolve_initial_model(
@@ -187,19 +185,17 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def _ensure_provider_ready(self) -> bool:
         """Validate that required credentials are present for the provider."""
-        provider_config = self.llm_settings.get(self.selected_provider, {})
-        if self.selected_provider == "openai" and not provider_config.get("api_key"):
-            QtWidgets.QMessageBox.warning(
-                self,
-                "OpenAI API key required",
-                "Please add your OpenAI API key in the AI Model Settings dialog.",
+        kind = provider_kind(self.llm_settings, self.selected_provider)
+        if kind in {"openai_compat", "gemini"} and not has_provider_api_key(
+            self.llm_settings, self.selected_provider
+        ):
+            label = self.provider_labels.get(
+                self.selected_provider, self.selected_provider
             )
-            return False
-        if self.selected_provider == "gemini" and not provider_config.get("api_key"):
             QtWidgets.QMessageBox.warning(
                 self,
-                "Gemini API key required",
-                "Please add your Google Gemini API key in the AI Model Settings dialog.",
+                f"{label} API key required",
+                f"Please add your {label} API key in the AI Model Settings dialog.",
             )
             return False
         return True
@@ -220,8 +216,7 @@ class CaptionWidget(QtWidgets.QWidget):
         layout = QHBoxLayout()
         self.provider_label = QLabel("Provider:")
         self.provider_selector = QComboBox()
-        for key, label in self.provider_labels.items():
-            self.provider_selector.addItem(label, userData=key)
+        self._populate_provider_selector()
         provider_index = self.provider_selector.findData(self.selected_provider)
         if provider_index != -1:
             self.provider_selector.setCurrentIndex(provider_index)
@@ -235,6 +230,16 @@ class CaptionWidget(QtWidgets.QWidget):
 
         self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
         return layout
+
+    def _populate_provider_selector(self) -> None:
+        self.provider_labels = self._providers.labels()
+        self.provider_selector.blockSignals(True)
+        try:
+            self.provider_selector.clear()
+            for key, label in self.provider_labels.items():
+                self.provider_selector.addItem(label, userData=key)
+        finally:
+            self.provider_selector.blockSignals(False)
 
     def _build_model_controls(self) -> QHBoxLayout:
         layout = QHBoxLayout()
@@ -478,6 +483,7 @@ class CaptionWidget(QtWidgets.QWidget):
                 self.llm_settings,
                 save_llm_settings,
             )
+            self._populate_provider_selector()
             new_provider = self.llm_settings.get("provider", self.selected_provider)
             self._suppress_provider_updates = True
             try:
@@ -489,7 +495,9 @@ class CaptionWidget(QtWidgets.QWidget):
             finally:
                 self._suppress_provider_updates = False
 
-            self.selected_provider = self.provider_selector.currentData()
+            self.selected_provider = (
+                self.provider_selector.currentData() or new_provider
+            )
             self.available_models = self._providers.available_models(
                 self.selected_provider
             )

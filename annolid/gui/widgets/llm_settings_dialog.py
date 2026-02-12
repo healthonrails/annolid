@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.utils.llm_settings import default_settings
+from annolid.utils.llm_settings import (
+    default_settings,
+    global_env_path,
+    persist_global_env_vars,
+)
 from annolid.utils.tts_settings import (
     default_tts_settings,
     load_tts_settings,
@@ -41,22 +45,89 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self._settings = {**default_settings(), **self._settings}
         self._tts_settings = load_tts_settings()
         self._tts_defaults = default_tts_settings()
+        self._provider_specs: Dict[str, Dict[str, Any]] = dict(
+            self._settings.get("provider_definitions", {}) or {}
+        )
+        self._provider_specs.setdefault(
+            "openai",
+            {
+                "label": "OpenAI GPT",
+                "kind": "openai_compat",
+                "env_keys": ["OPENAI_API_KEY"],
+                "api_key_env": ["OPENAI_API_KEY"],
+                "base_url_default": "https://api.openai.com/v1",
+                "base_url_env": "OPENAI_BASE_URL",
+                "model_placeholder": "Type model name (e.g. gpt-4o-mini) and press Add",
+            },
+        )
+        self._provider_specs.setdefault(
+            "openrouter",
+            {
+                "label": "OpenRouter",
+                "kind": "openai_compat",
+                "env_keys": ["OPENROUTER_API_KEY", "OPENAI_API_KEY"],
+                "api_key_env": ["OPENROUTER_API_KEY"],
+                "base_url_default": "https://openrouter.ai/api/v1",
+                "model_placeholder": (
+                    "Type model name (e.g. openai/gpt-4o-mini) and press Add"
+                ),
+            },
+        )
+        self._provider_specs.setdefault(
+            "gemini",
+            {
+                "label": "Google Gemini",
+                "kind": "gemini",
+                "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+                "api_key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+                "model_placeholder": (
+                    "Type model name (e.g. gemini-1.5-flash) and press Add"
+                ),
+            },
+        )
+        self._provider_specs.setdefault(
+            "ollama",
+            {
+                "label": "Ollama (local)",
+                "kind": "ollama",
+                "env_keys": ["OLLAMA_HOST"],
+                "host_default": "http://localhost:11434",
+                "model_placeholder": "Type model name (e.g. qwen3-vl) and press Add",
+            },
+        )
+        self._provider_env_keys: Dict[str, List[str]] = {
+            provider: [str(v).strip() for v in list(spec.get("env_keys", []) or [])]
+            for provider, spec in self._provider_specs.items()
+        }
+        self._provider_widgets: Dict[str, Dict[str, Any]] = {}
+        self._api_key_inputs: Dict[str, QtWidgets.QLineEdit] = {}
+        self._api_key_status_labels: Dict[str, QtWidgets.QLabel] = {}
 
         main_layout = QtWidgets.QVBoxLayout(self)
         info_label = QtWidgets.QLabel(
-            "API keys are not persisted in ~/.annolid/llm_settings.json.\n"
-            "Set keys here for the current session and/or via environment variables."
+            "API keys entered here are session-only and are not persisted to "
+            "~/.annolid/llm_settings.json.\n"
+            "Use environment variables for durable credentials."
         )
         info_label.setWordWrap(True)
         main_layout.addWidget(info_label)
+        add_provider_button = QtWidgets.QPushButton("Add Provider")
+        add_provider_button.clicked.connect(self._add_provider_dialog)
+        main_layout.addWidget(add_provider_button, 0, QtCore.Qt.AlignLeft)
+        self.persist_env_checkbox = QtWidgets.QCheckBox(
+            f"Persist entered credentials to {global_env_path()} (optional)"
+        )
+        self.persist_env_checkbox.setChecked(False)
+        main_layout.addWidget(self.persist_env_checkbox, 0, QtCore.Qt.AlignLeft)
 
         self._tabs = QtWidgets.QTabWidget()
         main_layout.addWidget(self._tabs, 1)
 
         self._build_ollama_tab()
-        self._build_openai_tab()
-        self._build_openrouter_tab()
-        self._build_gemini_tab()
+        for provider, spec in self._provider_specs.items():
+            if str(spec.get("kind") or "").strip().lower() == "ollama":
+                continue
+            self._build_provider_tab(provider)
         self._build_tts_tab()
 
         button_box = QtWidgets.QDialogButtonBox(
@@ -72,15 +143,21 @@ class LLMSettingsDialog(QtWidgets.QDialog):
     def _build_ollama_tab(self) -> None:
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(widget)
+        spec = self._provider_specs.get("ollama", {})
+        ollama_cfg = dict(self._settings.get("ollama", {}) or {})
+        default_host = str(spec.get("host_default") or "http://localhost:11434")
 
         self.ollama_host_edit = QtWidgets.QLineEdit(
-            self._settings["ollama"].get("host", "http://localhost:11434")
+            str(ollama_cfg.get("host") or default_host)
         )
         layout.addRow("Server URL:", self.ollama_host_edit)
 
         self.ollama_models_list = self._create_model_list_editor(
-            self._settings["ollama"].get("preferred_models", []),
-            placeholder="Type model name (e.g. qwen3-vl) and press Add",
+            ollama_cfg.get("preferred_models", []),
+            placeholder=str(
+                spec.get("model_placeholder")
+                or "Type model name (e.g. qwen3-vl) and press Add"
+            ),
         )
         layout.addRow("Preferred models:", self.ollama_models_list["container"])
 
@@ -88,100 +165,65 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         refresh_button.clicked.connect(self._refresh_ollama_models)
         layout.addRow(refresh_button)
 
-        self._tabs.addTab(widget, "Ollama")
+        self._tabs.addTab(widget, str(spec.get("label") or "Ollama"))
 
     def _build_openai_tab(self) -> None:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QFormLayout(widget)
-
-        self.openai_key_edit = QtWidgets.QLineEdit(
-            self._settings["openai"].get("api_key", "")
-        )
-        self.openai_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-        layout.addRow("API key:", self.openai_key_edit)
-
-        toggle_button = QtWidgets.QPushButton("Show")
-        toggle_button.setCheckable(True)
-        toggle_button.toggled.connect(
-            lambda checked: self.openai_key_edit.setEchoMode(
-                QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password
-            )
-        )
-        layout.addRow("Reveal key:", toggle_button)
-
-        self.openai_base_url_edit = QtWidgets.QLineEdit(
-            self._settings["openai"].get("base_url", "https://api.openai.com/v1")
-        )
-        layout.addRow("Base URL:", self.openai_base_url_edit)
-
-        self.openai_models_list = self._create_model_list_editor(
-            self._settings["openai"].get("preferred_models", []),
-            placeholder="Type model name (e.g. gpt-4o-mini) and press Add",
-        )
-        layout.addRow("Preferred models:", self.openai_models_list["container"])
-
-        self._tabs.addTab(widget, "OpenAI GPT")
+        self._build_provider_tab("openai")
 
     def _build_openrouter_tab(self) -> None:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QFormLayout(widget)
-
-        openrouter_cfg = dict(self._settings.get("openrouter", {}) or {})
-
-        self.openrouter_key_edit = QtWidgets.QLineEdit(
-            openrouter_cfg.get("api_key") or os.getenv("OPENROUTER_API_KEY", "")
-        )
-        self.openrouter_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-        layout.addRow("API key:", self.openrouter_key_edit)
-
-        toggle_button = QtWidgets.QPushButton("Show")
-        toggle_button.setCheckable(True)
-        toggle_button.toggled.connect(
-            lambda checked: self.openrouter_key_edit.setEchoMode(
-                QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password
-            )
-        )
-        layout.addRow("Reveal key:", toggle_button)
-
-        self.openrouter_base_url_edit = QtWidgets.QLineEdit(
-            openrouter_cfg.get("base_url", "https://openrouter.ai/api/v1")
-        )
-        layout.addRow("Base URL:", self.openrouter_base_url_edit)
-
-        self.openrouter_models_list = self._create_model_list_editor(
-            openrouter_cfg.get("preferred_models", []),
-            placeholder="Type model name (e.g. openai/gpt-4o-mini) and press Add",
-        )
-        layout.addRow("Preferred models:", self.openrouter_models_list["container"])
-
-        self._tabs.addTab(widget, "OpenRouter")
+        self._build_provider_tab("openrouter")
 
     def _build_gemini_tab(self) -> None:
+        self._build_provider_tab("gemini")
+
+    def _build_provider_tab(self, provider: str) -> None:
+        spec = self._provider_specs.get(provider)
+        if not spec:
+            return
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(widget)
-
-        self.gemini_key_edit = QtWidgets.QLineEdit(
-            self._settings["gemini"].get("api_key", "")
+        provider_cfg = dict(self._settings.get(provider, {}) or {})
+        kind = str(spec.get("kind") or "openai_compat").strip().lower()
+        self._provider_widgets.setdefault(provider, {})["tab_widget"] = widget
+        key_edit = self._add_api_key_controls(
+            layout,
+            provider=provider,
+            initial_value=self._resolve_initial_api_key(provider, provider_cfg),
         )
-        self.gemini_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-        layout.addRow("API key:", self.gemini_key_edit)
+        self._provider_widgets.setdefault(provider, {})["key_edit"] = key_edit
 
-        toggle_button = QtWidgets.QPushButton("Show")
-        toggle_button.setCheckable(True)
-        toggle_button.toggled.connect(
-            lambda checked: self.gemini_key_edit.setEchoMode(
-                QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password
+        base_url_edit: Optional[QtWidgets.QLineEdit] = None
+        if kind == "openai_compat":
+            default_base_url = str(spec.get("base_url_default") or "").strip()
+            base_url_edit = QtWidgets.QLineEdit(
+                str(provider_cfg.get("base_url") or default_base_url)
             )
-        )
-        layout.addRow("Reveal key:", toggle_button)
+            layout.addRow("Base URL:", base_url_edit)
+        self._provider_widgets.setdefault(provider, {})["base_url_edit"] = base_url_edit
 
-        self.gemini_models_list = self._create_model_list_editor(
-            self._settings["gemini"].get("preferred_models", []),
-            placeholder="Type model name (e.g. gemini-1.5-flash) and press Add",
+        models_list = self._create_model_list_editor(
+            provider_cfg.get("preferred_models", []),
+            placeholder=str(
+                spec.get("model_placeholder", "Type model name and press Add")
+            ),
         )
-        layout.addRow("Preferred models:", self.gemini_models_list["container"])
+        layout.addRow("Preferred models:", models_list["container"])
+        self._provider_widgets.setdefault(provider, {})["models_list"] = models_list
 
-        self._tabs.addTab(widget, "Google Gemini")
+        # Backward-compatible widget aliases used in tests/callers.
+        setattr(self, f"{provider}_key_edit", key_edit)
+        setattr(self, f"{provider}_models_list", models_list)
+        if base_url_edit is not None:
+            setattr(self, f"{provider}_base_url_edit", base_url_edit)
+
+        if provider not in {"openai", "openrouter", "gemini"}:
+            remove_button = QtWidgets.QPushButton("Remove Provider")
+            remove_button.clicked.connect(
+                lambda _checked=False, p=provider: self._remove_provider_tab(p)
+            )
+            layout.addRow(remove_button)
+
+        self._tabs.addTab(widget, str(spec.get("label") or provider.title()))
 
     def _build_tts_tab(self) -> None:
         widget = QtWidgets.QWidget()
@@ -357,9 +399,180 @@ class LLMSettingsDialog(QtWidgets.QDialog):
     def _clear_pocket_prompt(self) -> None:
         self.tts_pocket_prompt_edit.setText("")
 
+    def _add_provider_dialog(self) -> None:
+        provider_id, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Add Provider",
+            "Provider ID (lowercase, e.g. nvidia):",
+        )
+        if not ok:
+            return
+        provider = str(provider_id or "").strip().lower().replace(" ", "_")
+        if not provider:
+            return
+        if provider in self._provider_specs:
+            QtWidgets.QMessageBox.information(
+                self, "Provider Exists", f"Provider '{provider}' already exists."
+            )
+            return
+
+        label, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Add Provider",
+            "Display name:",
+            text=provider.title(),
+        )
+        if not ok:
+            return
+        base_url, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Add Provider",
+            "Base URL (OpenAI-compatible endpoint):",
+            text="https://integrate.api.nvidia.com/v1",
+        )
+        if not ok:
+            return
+        env_var, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Add Provider",
+            "API key env var name:",
+            text=f"{provider.upper()}_API_KEY",
+        )
+        if not ok:
+            return
+        env_name = str(env_var or "").strip().upper() or f"{provider.upper()}_API_KEY"
+        self._provider_specs[provider] = {
+            "label": str(label or provider.title()).strip(),
+            "kind": "openai_compat",
+            "env_keys": [env_name],
+            "api_key_env": [env_name],
+            "base_url_default": str(base_url or "").strip(),
+            "base_url_env": "",
+            "model_placeholder": "Type model name and press Add",
+        }
+        self._provider_env_keys[provider] = [env_name]
+        self._settings.setdefault(provider, {})
+        self._build_provider_tab(provider)
+        self._tabs.setCurrentIndex(self._tabs.count() - 1)
+
+    def _remove_provider_tab(self, provider: str) -> None:
+        if provider in {"openai", "openrouter", "gemini", "ollama"}:
+            return
+        index_to_remove = -1
+        for idx in range(self._tabs.count()):
+            if self._tabs.widget(idx) is self._provider_widgets.get(provider, {}).get(
+                "tab_widget"
+            ):
+                index_to_remove = idx
+                break
+        if index_to_remove >= 0:
+            page = self._tabs.widget(index_to_remove)
+            self._tabs.removeTab(index_to_remove)
+            if page is not None:
+                page.deleteLater()
+        self._provider_widgets.pop(provider, None)
+        self._provider_specs.pop(provider, None)
+        self._provider_env_keys.pop(provider, None)
+        self._settings.pop(provider, None)
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
+    def _add_api_key_controls(
+        self,
+        layout: QtWidgets.QFormLayout,
+        *,
+        provider: str,
+        initial_value: str = "",
+    ) -> QtWidgets.QLineEdit:
+        row_widget = QtWidgets.QWidget(self)
+        row_layout = QtWidgets.QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        key_edit = QtWidgets.QLineEdit(str(initial_value or ""))
+        key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        key_edit.setPlaceholderText("Paste API key (session-only)")
+        key_edit.setClearButtonEnabled(True)
+        row_layout.addWidget(key_edit, 1)
+
+        show_button = QtWidgets.QToolButton(row_widget)
+        show_button.setText("Show")
+        show_button.setCheckable(True)
+        show_button.toggled.connect(
+            lambda checked, edit=key_edit: edit.setEchoMode(
+                QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password
+            )
+        )
+        row_layout.addWidget(show_button, 0)
+
+        env_button = QtWidgets.QToolButton(row_widget)
+        env_button.setText("Use Env")
+        env_button.clicked.connect(
+            lambda _checked=False, p=provider, edit=key_edit: self._fill_key_from_env(
+                p, edit
+            )
+        )
+        row_layout.addWidget(env_button, 0)
+
+        clear_button = QtWidgets.QToolButton(row_widget)
+        clear_button.setText("Clear")
+        clear_button.clicked.connect(key_edit.clear)
+        row_layout.addWidget(clear_button, 0)
+
+        layout.addRow("API key:", row_widget)
+        status_label = QtWidgets.QLabel("")
+        status_label.setWordWrap(True)
+        status_label.setStyleSheet("color: #6b7280;")
+        layout.addRow("", status_label)
+
+        self._api_key_inputs[provider] = key_edit
+        self._api_key_status_labels[provider] = status_label
+        key_edit.textChanged.connect(
+            lambda _text, p=provider: self._update_api_key_status(p)
+        )
+        self._update_api_key_status(provider)
+        return key_edit
+
+    def _fill_key_from_env(self, provider: str, edit: QtWidgets.QLineEdit) -> None:
+        for env_name in self._provider_env_keys.get(provider, []):
+            value = str(os.getenv(env_name) or "").strip()
+            if value:
+                edit.setText(value)
+                return
+
+    def _resolve_initial_api_key(
+        self, provider: str, provider_cfg: Dict[str, Any]
+    ) -> str:
+        key = str(provider_cfg.get("api_key") or "").strip()
+        if key:
+            return key
+        for env_name in self._provider_env_keys.get(provider, []):
+            env_value = str(os.getenv(env_name) or "").strip()
+            if env_value:
+                return env_value
+        return ""
+
+    def _update_api_key_status(self, provider: str) -> None:
+        edit = self._api_key_inputs.get(provider)
+        label = self._api_key_status_labels.get(provider)
+        if edit is None or label is None:
+            return
+        if edit.text().strip():
+            label.setText("Session key is set. It will not be persisted to disk.")
+            return
+        for env_name in self._provider_env_keys.get(provider, []):
+            if str(os.getenv(env_name) or "").strip():
+                label.setText(f"Using environment variable: {env_name}")
+                return
+        label.setText("No key configured. Paste one for this session or set env var.")
+
+    @staticmethod
+    def _set_env_if_present(name: str, value: str) -> None:
+        text = str(value or "").strip()
+        if text:
+            os.environ[name] = text
+
     def _normalize_models(self, raw_models) -> List[str]:
         if isinstance(raw_models, str):
             raw_models = [raw_models]
@@ -555,48 +768,102 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
     def accept(self) -> None:  # type: ignore[override]
         updated = dict(self._settings)
-        openai_base_url = (
-            self.openai_base_url_edit.text().strip() or "https://api.openai.com/v1"
-        )
-        openai_key = self.openai_key_edit.text().strip()
-        openrouter_key = self.openrouter_key_edit.text().strip()
-        openrouter_base_url = (
-            self.openrouter_base_url_edit.text().strip()
-            or "https://openrouter.ai/api/v1"
-        )
 
+        ollama_default_host = str(
+            (self._provider_specs.get("ollama", {}) or {}).get("host_default")
+            or "http://localhost:11434"
+        )
         updated["ollama"] = {
-            "host": self.ollama_host_edit.text().strip() or "http://localhost:11434",
+            "host": self.ollama_host_edit.text().strip() or ollama_default_host,
             "preferred_models": self._get_models_from_list(
                 self.ollama_models_list["list"]
             ),
         }
-        updated["openai"] = {
-            "api_key": openai_key,
-            "base_url": openai_base_url,
-            "preferred_models": self._get_models_from_list(
-                self.openai_models_list["list"]
-            ),
-        }
-        updated["openrouter"] = {
-            "api_key": openrouter_key,
-            "base_url": openrouter_base_url,
-            "preferred_models": self._get_models_from_list(
-                self.openrouter_models_list["list"]
-            ),
-        }
-        updated["gemini"] = {
-            "api_key": self.gemini_key_edit.text().strip(),
-            "preferred_models": self._get_models_from_list(
-                self.gemini_models_list["list"]
-            ),
-        }
-        if openrouter_key:
-            os.environ["OPENROUTER_API_KEY"] = openrouter_key
-        if openai_key:
-            os.environ["OPENAI_API_KEY"] = openai_key
-        if openai_base_url:
-            os.environ["OPENAI_BASE_URL"] = openai_base_url
+        persistent_env_values: Dict[str, str] = {}
+        provider_defs_out: Dict[str, Dict[str, Any]] = {}
+        for provider, spec in self._provider_specs.items():
+            kind = str(spec.get("kind") or "openai_compat").strip().lower()
+            if kind not in {"ollama", "openai_compat", "gemini"}:
+                kind = "openai_compat"
+            if kind == "ollama":
+                provider_defs_out[provider] = {
+                    "label": str(spec.get("label") or "Ollama"),
+                    "kind": "ollama",
+                    "env_keys": [
+                        str(v).strip() for v in list(spec.get("env_keys", []) or [])
+                    ],
+                    "api_key_env": [
+                        str(v).strip() for v in list(spec.get("api_key_env", []) or [])
+                    ],
+                    "base_url_default": str(spec.get("base_url_default") or "").strip(),
+                    "base_url_env": str(spec.get("base_url_env") or "").strip(),
+                    "host_default": str(spec.get("host_default") or "").strip(),
+                    "model_placeholder": str(
+                        spec.get("model_placeholder") or "Type model name and press Add"
+                    ),
+                }
+                continue
+            provider_state = self._provider_widgets.get(provider, {})
+            provider_payload: Dict[str, Any] = {}
+            model_editor = provider_state.get("models_list")
+            if isinstance(model_editor, dict):
+                model_list = model_editor.get("list")
+                if isinstance(model_list, QtWidgets.QListWidget):
+                    provider_payload["preferred_models"] = self._get_models_from_list(
+                        model_list
+                    )
+
+            base_url_edit = provider_state.get("base_url_edit")
+            if kind == "openai_compat" and isinstance(
+                base_url_edit, QtWidgets.QLineEdit
+            ):
+                default_base_url = str(spec.get("base_url_default") or "").strip()
+                provider_payload["base_url"] = (
+                    base_url_edit.text().strip() or default_base_url
+                )
+
+            updated[provider] = provider_payload
+
+            key_edit = provider_state.get("key_edit")
+            key_value = (
+                key_edit.text().strip()
+                if isinstance(key_edit, QtWidgets.QLineEdit)
+                else ""
+            )
+            for env_name in spec.get("api_key_env", []) or []:
+                env_key = str(env_name).strip()
+                self._set_env_if_present(env_key, key_value)
+                if env_key and key_value and self.persist_env_checkbox.isChecked():
+                    persistent_env_values[env_key] = key_value
+            base_url_env = str(spec.get("base_url_env") or "").strip()
+            if (
+                kind == "openai_compat"
+                and isinstance(base_url_edit, QtWidgets.QLineEdit)
+                and base_url_env
+            ):
+                base_url_value = base_url_edit.text().strip() or str(
+                    spec.get("base_url_default") or ""
+                )
+                self._set_env_if_present(base_url_env, base_url_value)
+                if base_url_value and self.persist_env_checkbox.isChecked():
+                    persistent_env_values[base_url_env] = base_url_value
+            provider_defs_out[provider] = {
+                "label": str(spec.get("label") or provider.title()),
+                "kind": kind,
+                "env_keys": [
+                    str(v).strip() for v in list(spec.get("env_keys", []) or [])
+                ],
+                "api_key_env": [
+                    str(v).strip() for v in list(spec.get("api_key_env", []) or [])
+                ],
+                "base_url_default": str(spec.get("base_url_default") or "").strip(),
+                "base_url_env": base_url_env,
+                "host_default": str(spec.get("host_default") or "").strip(),
+                "model_placeholder": str(
+                    spec.get("model_placeholder") or "Type model name and press Add"
+                ),
+            }
+        updated["provider_definitions"] = provider_defs_out
 
         self._tts_settings = {
             "engine": self.tts_engine_combo.currentData() or "auto",
@@ -623,5 +890,14 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             ),
         }
         save_tts_settings(self._tts_settings)
+        if self.persist_env_checkbox.isChecked():
+            try:
+                persist_global_env_vars(persistent_env_values)
+            except OSError as exc:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Could not persist credentials",
+                    f"Failed to update {global_env_path()}.\n\n{exc}",
+                )
         self._settings = updated
         super().accept()

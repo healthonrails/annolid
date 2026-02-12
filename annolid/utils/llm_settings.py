@@ -5,11 +5,12 @@ import os
 from dataclasses import dataclass, field
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 _SETTINGS_DIR = Path.home() / ".annolid"
 _SETTINGS_FILE = _SETTINGS_DIR / "llm_settings.json"
+_GLOBAL_DOTENV_FILE = _SETTINGS_DIR / ".env"
 _SETTINGS_DIR_MODE = 0o700
 _SETTINGS_FILE_MODE = 0o600
 _SECRET_KEY_NAMES = {
@@ -20,6 +21,8 @@ _SECRET_KEY_NAMES = {
     "secret",
     "password",
 }
+_SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "access_key")
+_SAFE_METADATA_KEYS = {"api_key_env"}
 
 _DEFAULT_MODEL_FALLBACKS: Dict[str, str] = {
     "ollama": "qwen3-vl",  # prefer a tool-friendly local VLM
@@ -28,62 +31,103 @@ _DEFAULT_MODEL_FALLBACKS: Dict[str, str] = {
     "gemini": "gemini-1.5-flash",
 }
 
-_DEFAULT_SETTINGS: Dict[str, Any] = {
-    "provider": "ollama",
+_DEFAULT_PROVIDER_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "ollama": {
-        "host": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-        "preferred_models": ["qwen3-vl", "llama3.2-vision:latest"],
+        "label": "Ollama (local)",
+        "kind": "ollama",
+        "env_keys": ["OLLAMA_HOST"],
+        "host_default": "http://localhost:11434",
+        "model_placeholder": "Type model name (e.g. qwen3-vl) and press Add",
     },
     "openai": {
-        "api_key": os.getenv("OPENAI_API_KEY", ""),
-        "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        "preferred_models": [
-            "gpt-4o-mini",
-            "gpt-4o",
-            "gpt-4.1-mini",
-            "gpt-3.5-turbo",
-        ],
+        "label": "OpenAI GPT",
+        "kind": "openai_compat",
+        "env_keys": ["OPENAI_API_KEY"],
+        "api_key_env": ["OPENAI_API_KEY"],
+        "base_url_default": "https://api.openai.com/v1",
+        "base_url_env": "OPENAI_BASE_URL",
+        "model_placeholder": "Type model name (e.g. gpt-4o-mini) and press Add",
     },
     "openrouter": {
-        "api_key": os.getenv("OPENROUTER_API_KEY", ""),
-        "base_url": "https://openrouter.ai/api/v1",
-        "preferred_models": [
-            "openai/gpt-4o-mini",
-            "anthropic/claude-3.5-sonnet",
-            "google/gemini-2.0-flash-001",
-        ],
+        "label": "OpenRouter",
+        "kind": "openai_compat",
+        "env_keys": ["OPENROUTER_API_KEY", "OPENAI_API_KEY"],
+        "api_key_env": ["OPENROUTER_API_KEY"],
+        "base_url_default": "https://openrouter.ai/api/v1",
+        "base_url_env": "",
+        "model_placeholder": (
+            "Type model name (e.g. openai/gpt-4o-mini) and press Add"
+        ),
     },
     "gemini": {
-        "api_key": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", ""),
-        "preferred_models": [
-            "gemini-2.0-flash-thinking-exp-01-21",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-        ],
-    },
-    "last_models": {},
-    "agent": {
-        "temperature": 0.7,
-        "max_tool_iterations": 12,
-        "max_history_messages": 24,
-        "memory_window": 50,
-    },
-    "profiles": {
-        "caption": {"provider": "ollama"},
-        "behavior_agent": {
-            "provider": "gemini",
-            "model": "gemini-2.0-flash-thinking-exp-01-21",
-        },
-        "polygon_agent": {
-            "provider": "gemini",
-            "model": "gemini-2.0-flash-thinking-exp-01-21",
-        },
-        "frame_agent": {"provider": "ollama", "model": "llama3.2"},
-        "research_agent": {"provider": "ollama", "model": "llama3.2"},
-        "playground": {"provider": "openai", "model": "gpt-4o"},
-        "sam3_agent": {"provider": "ollama", "model": "qwen3-vl"},
+        "label": "Google Gemini",
+        "kind": "gemini",
+        "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "api_key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "model_placeholder": "Type model name (e.g. gemini-1.5-flash) and press Add",
     },
 }
+
+
+def _build_default_settings() -> Dict[str, Any]:
+    return {
+        "provider": "ollama",
+        "provider_definitions": deepcopy(_DEFAULT_PROVIDER_DEFINITIONS),
+        "env": {"vars": {}},
+        "ollama": {
+            "host": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+            "preferred_models": ["qwen3-vl", "llama3.2-vision:latest"],
+        },
+        "openai": {
+            "api_key": os.getenv("OPENAI_API_KEY", ""),
+            "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            "preferred_models": [
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4.1-mini",
+                "gpt-3.5-turbo",
+            ],
+        },
+        "openrouter": {
+            "api_key": os.getenv("OPENROUTER_API_KEY", ""),
+            "base_url": "https://openrouter.ai/api/v1",
+            "preferred_models": [
+                "openai/gpt-4o-mini",
+                "anthropic/claude-3.5-sonnet",
+                "google/gemini-2.0-flash-001",
+            ],
+        },
+        "gemini": {
+            "api_key": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", ""),
+            "preferred_models": [
+                "gemini-2.0-flash-thinking-exp-01-21",
+                "gemini-1.5-flash",
+                "gemini-1.5-pro",
+            ],
+        },
+        "last_models": {},
+        "agent": {
+            "temperature": 0.7,
+            "max_tool_iterations": 12,
+            "max_history_messages": 24,
+            "memory_window": 50,
+        },
+        "profiles": {
+            "caption": {"provider": "ollama"},
+            "behavior_agent": {
+                "provider": "gemini",
+                "model": "gemini-2.0-flash-thinking-exp-01-21",
+            },
+            "polygon_agent": {
+                "provider": "gemini",
+                "model": "gemini-2.0-flash-thinking-exp-01-21",
+            },
+            "frame_agent": {"provider": "ollama", "model": "llama3.2"},
+            "research_agent": {"provider": "ollama", "model": "llama3.2"},
+            "playground": {"provider": "openai", "model": "gpt-4o"},
+            "sam3_agent": {"provider": "ollama", "model": "qwen3-vl"},
+        },
+    }
 
 
 @dataclass
@@ -134,11 +178,95 @@ def _deep_update(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, An
     return base
 
 
+def _normalize_provider_id(value: Any) -> str:
+    provider = str(value or "").strip().lower()
+    if not provider:
+        return ""
+    out: List[str] = []
+    for ch in provider:
+        if ch.isalnum() or ch in {"_", "-"}:
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out).strip("_")
+
+
+def _normalize_provider_definitions(
+    settings: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {
+        key: dict(value) for key, value in _DEFAULT_PROVIDER_DEFINITIONS.items()
+    }
+    raw_defs = settings.get("provider_definitions")
+    if isinstance(raw_defs, dict):
+        for raw_key, raw_value in raw_defs.items():
+            provider_id = _normalize_provider_id(raw_key)
+            if not provider_id:
+                continue
+            block = dict(raw_value) if isinstance(raw_value, dict) else {}
+            base = dict(merged.get(provider_id, {}))
+            base.update(block)
+            base["label"] = str(base.get("label") or provider_id.title()).strip()
+            kind = str(base.get("kind") or "openai_compat").strip().lower()
+            if kind not in {"ollama", "openai_compat", "gemini"}:
+                kind = "openai_compat"
+            base["kind"] = kind
+
+            env_keys = base.get("env_keys", [])
+            if isinstance(env_keys, str):
+                env_keys = [env_keys]
+            if not isinstance(env_keys, list):
+                env_keys = []
+            base["env_keys"] = [str(k).strip() for k in env_keys if str(k).strip()]
+
+            api_key_env = base.get("api_key_env", [])
+            if isinstance(api_key_env, str):
+                api_key_env = [api_key_env]
+            if not isinstance(api_key_env, list):
+                api_key_env = []
+            base["api_key_env"] = [
+                str(k).strip() for k in api_key_env if str(k).strip()
+            ]
+            if kind != "ollama" and not base["api_key_env"]:
+                base["api_key_env"] = list(base["env_keys"])
+            base["base_url_default"] = str(base.get("base_url_default") or "").strip()
+            base["base_url_env"] = str(base.get("base_url_env") or "").strip()
+            base["model_placeholder"] = str(
+                base.get("model_placeholder") or "Type model name and press Add"
+            ).strip()
+            if kind == "ollama" and not str(base.get("host_default") or "").strip():
+                base["host_default"] = "http://localhost:11434"
+            merged[provider_id] = base
+
+    for provider_id, spec in list(merged.items()):
+        if provider_id not in settings or not isinstance(
+            settings.get(provider_id), dict
+        ):
+            settings[provider_id] = {}
+        if provider_id == "ollama":
+            settings[provider_id].setdefault(
+                "host",
+                str(spec.get("host_default") or "http://localhost:11434"),
+            )
+    return merged
+
+
 def _normalise_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     settings.setdefault("last_models", {})
     settings.setdefault("profiles", {})
     settings.setdefault("agent", {})
-    for key in ("ollama", "openai", "openrouter", "gemini"):
+    provider_definitions = _normalize_provider_definitions(settings)
+    settings["provider_definitions"] = provider_definitions
+    settings.setdefault("env", {})
+    env_block = settings.get("env")
+    if not isinstance(env_block, dict):
+        env_block = {}
+        settings["env"] = env_block
+    vars_block = env_block.get("vars")
+    if not isinstance(vars_block, dict):
+        env_block["vars"] = {}
+
+    for key in provider_definitions:
         settings.setdefault(key, {})
         block = settings.get(key)
         if not isinstance(block, dict):
@@ -188,7 +316,16 @@ def _migrate_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     - `agent.max_iterations` -> `agent.max_tool_iterations`
     - profile-level `max_iterations` -> `max_tool_iterations`
     """
+    original_env = data.get("env") if isinstance(data.get("env"), dict) else None
     migrated = _convert_keys_to_snake(data)
+    if isinstance(original_env, dict):
+        restored_env: Dict[str, Any] = {}
+        for key, value in original_env.items():
+            if str(key) == "vars" and isinstance(value, dict):
+                restored_env["vars"] = {str(k): v for k, v in value.items()}
+            else:
+                restored_env[str(key)] = value
+        migrated["env"] = restored_env
 
     agent_cfg = migrated.get("agent")
     if isinstance(agent_cfg, dict):
@@ -212,30 +349,79 @@ def _fallback_model_for(provider: str) -> str:
     return _DEFAULT_MODEL_FALLBACKS.get(provider, "")
 
 
-def _inject_env_defaults(provider: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def provider_definitions(settings: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return dict(_normalise_settings(settings).get("provider_definitions", {}) or {})
+
+
+def list_providers(settings: Dict[str, Any]) -> List[str]:
+    defs = provider_definitions(settings)
+    return list(defs.keys())
+
+
+def provider_label(settings: Dict[str, Any], provider: str) -> str:
+    defs = provider_definitions(settings)
+    spec = defs.get(str(provider or "").strip().lower(), {})
+    return str(spec.get("label") or str(provider or "").strip() or "Provider")
+
+
+def provider_kind(settings: Dict[str, Any], provider: str) -> str:
+    defs = provider_definitions(settings)
+    spec = defs.get(str(provider or "").strip().lower(), {})
+    kind = str(spec.get("kind") or "").strip().lower()
+    if kind in {"ollama", "openai_compat", "gemini"}:
+        return kind
+    return "openai_compat"
+
+
+def _provider_block(settings: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    block = settings.get(provider)
+    if isinstance(block, dict):
+        return dict(block)
+    return {}
+
+
+def _inject_env_defaults(
+    settings: Dict[str, Any], provider: str, params: Dict[str, Any]
+) -> Dict[str, Any]:
     params = {k: v for k, v in params.items() if v not in (None, "")}
-    if provider == "ollama":
+    p_kind = provider_kind(settings, provider)
+    defs = provider_definitions(settings)
+    spec = defs.get(provider, {})
+    if p_kind == "ollama":
         if not params.get("host"):
             env_host = os.getenv("OLLAMA_HOST")
             if env_host:
                 params["host"] = env_host
-    elif provider == "openai":
-        if not params.get("api_key"):
-            env_key = os.getenv("OPENAI_API_KEY")
-            if env_key:
-                params["api_key"] = env_key
+        return params
+
+    env_keys = spec.get("env_keys", [])
+    if not isinstance(env_keys, list):
+        env_keys = []
+    if not params.get("api_key"):
+        for env_name in env_keys:
+            value = str(os.getenv(str(env_name).strip()) or "").strip()
+            if value:
+                params["api_key"] = value
+                break
+    if (
+        provider == "openai"
+        and not params.get("api_key")
+        and "openrouter" in str(params.get("base_url") or "").lower()
+    ):
+        openrouter_key = str(os.getenv("OPENROUTER_API_KEY") or "").strip()
+        if openrouter_key:
+            params["api_key"] = openrouter_key
+    if p_kind == "openai_compat" and not params.get("base_url"):
+        env_base_url = str(spec.get("base_url_env") or "").strip()
+        if env_base_url:
+            value = str(os.getenv(env_base_url) or "").strip()
+            if value:
+                params["base_url"] = value
         if not params.get("base_url"):
-            env_url = os.getenv("OPENAI_BASE_URL")
-            if env_url:
-                params["base_url"] = env_url
-    elif provider == "openrouter":
-        if not params.get("api_key"):
-            env_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-            if env_key:
-                params["api_key"] = env_key
-        if not params.get("base_url"):
-            params["base_url"] = "https://openrouter.ai/api/v1"
-    elif provider == "gemini":
+            default_base = str(spec.get("base_url_default") or "").strip()
+            if default_base:
+                params["base_url"] = default_base
+    if p_kind == "gemini" and not params.get("api_key"):
         if not params.get("api_key"):
             env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
             if env_key:
@@ -243,24 +429,140 @@ def _inject_env_defaults(provider: str, params: Dict[str, Any]) -> Dict[str, Any
     return params
 
 
+def _parse_dotenv_file(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    out: Dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env_name = str(key).strip()
+        if not env_name:
+            continue
+        parsed = str(value).strip()
+        if (
+            parsed.startswith(("'", '"'))
+            and parsed.endswith(("'", '"'))
+            and len(parsed) >= 2
+        ):
+            parsed = parsed[1:-1]
+        out[env_name] = parsed
+    return out
+
+
+def _apply_env_files() -> None:
+    dotenv_sources = [
+        Path.cwd() / ".env",
+        _GLOBAL_DOTENV_FILE,
+    ]
+    for source in dotenv_sources:
+        values = _parse_dotenv_file(source)
+        for key, value in values.items():
+            if key not in os.environ:
+                os.environ[key] = value
+
+
+def _iter_inline_env(settings: Dict[str, Any]) -> List[Tuple[str, str]]:
+    env_cfg = settings.get("env")
+    if not isinstance(env_cfg, dict):
+        return []
+    pairs: List[Tuple[str, str]] = []
+    for key, value in env_cfg.items():
+        if key == "vars":
+            continue
+        env_name = str(key or "").strip()
+        if env_name:
+            pairs.append((env_name, str(value or "")))
+    vars_cfg = env_cfg.get("vars")
+    if isinstance(vars_cfg, dict):
+        for key, value in vars_cfg.items():
+            env_name = str(key or "").strip()
+            if env_name:
+                pairs.append((env_name, str(value or "")))
+    return pairs
+
+
+def _apply_inline_env(settings: Dict[str, Any]) -> None:
+    for env_name, env_value in _iter_inline_env(settings):
+        if env_name in os.environ:
+            continue
+        if env_value:
+            os.environ[env_name] = env_value
+
+
+def _format_dotenv_value(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return '""'
+    if any(ch.isspace() for ch in text) or "#" in text or '"' in text or "\\" in text:
+        return json.dumps(text)
+    return text
+
+
+def global_env_path() -> Path:
+    """Return the global dotenv path used by Annolid for env fallbacks."""
+    return _GLOBAL_DOTENV_FILE
+
+
+def persist_global_env_vars(values: Dict[str, str]) -> None:
+    """
+    Upsert environment variables into ~/.annolid/.env.
+
+    Existing keys are updated, unknown keys are appended, and file mode is
+    hardened to 600. Empty keys/values are ignored.
+    """
+    filtered: Dict[str, str] = {}
+    for raw_key, raw_value in dict(values or {}).items():
+        key = str(raw_key or "").strip()
+        value = str(raw_value or "").strip()
+        if not key or not value:
+            continue
+        filtered[key] = value
+    if not filtered:
+        return
+
+    _ensure_secure_storage_permissions()
+    existing = _parse_dotenv_file(_GLOBAL_DOTENV_FILE)
+    merged = dict(existing)
+    merged.update(filtered)
+    lines = [f"{key}={_format_dotenv_value(merged[key])}" for key in sorted(merged)]
+    _GLOBAL_DOTENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _secure_path_permissions(_GLOBAL_DOTENV_FILE, _SETTINGS_FILE_MODE)
+
+
 def load_llm_settings() -> Dict[str, Any]:
     """Load saved LLM settings, falling back to defaults when unavailable."""
-    settings = deepcopy(_DEFAULT_SETTINGS)
+    _apply_env_files()
+    settings = deepcopy(_build_default_settings())
     _ensure_secure_storage_permissions()
     if not _SETTINGS_FILE.exists():
-        return deepcopy(settings)
+        normalized = _normalise_settings(settings)
+        _apply_inline_env(normalized)
+        return deepcopy(normalized)
 
     try:
         with _SETTINGS_FILE.open("r", encoding="utf-8") as fh:
             persisted = json.load(fh)
     except (json.JSONDecodeError, OSError):
-        return deepcopy(settings)
+        normalized = _normalise_settings(settings)
+        _apply_inline_env(normalized)
+        return deepcopy(normalized)
 
     if not isinstance(persisted, dict):
-        return deepcopy(settings)
+        normalized = _normalise_settings(settings)
+        _apply_inline_env(normalized)
+        return deepcopy(normalized)
     persisted = _migrate_settings(persisted)
     merged = _deep_update(settings, persisted)
-    return _normalise_settings(merged)
+    normalized = _normalise_settings(merged)
+    _apply_inline_env(normalized)
+    return normalized
 
 
 def save_llm_settings(settings: Dict[str, Any]) -> None:
@@ -297,7 +599,12 @@ def _scrub_secrets_recursive(data: Any) -> Any:
         cleaned: Dict[str, Any] = {}
         for key, value in data.items():
             key_text = str(key or "").strip().lower()
-            if key_text in _SECRET_KEY_NAMES:
+            if key_text in _SAFE_METADATA_KEYS:
+                cleaned[key] = _scrub_secrets_recursive(value)
+                continue
+            if key_text in _SECRET_KEY_NAMES or any(
+                marker in key_text for marker in _SECRET_KEY_MARKERS
+            ):
                 continue
             cleaned[key] = _scrub_secrets_recursive(value)
         return cleaned
@@ -317,34 +624,31 @@ def scrub_secrets_for_persistence(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 def has_provider_api_key(settings: Dict[str, Any], provider: str) -> bool:
     provider_key = str(provider or "").strip().lower()
-    block = settings.get(provider_key, {})
+    block = _provider_block(settings, provider_key)
     if isinstance(block, dict):
         value = str(block.get("api_key") or "").strip()
         if value:
             return True
+    defs = provider_definitions(settings)
+    spec = defs.get(provider_key, {})
+    env_keys = spec.get("env_keys", [])
+    if isinstance(env_keys, list):
+        for env_name in env_keys:
+            if bool(str(os.getenv(str(env_name).strip()) or "").strip()):
+                return True
     if provider_key == "openai":
-        if bool(str(os.getenv("OPENAI_API_KEY") or "").strip()):
-            return True
-        base_url = str((settings.get("openai") or {}).get("base_url") or "").lower()
+        base_url = str(block.get("base_url") or "").lower()
         if "openrouter" in base_url:
             return bool(str(os.getenv("OPENROUTER_API_KEY") or "").strip())
-        return False
-    if provider_key == "openrouter":
-        return bool(
-            str(os.getenv("OPENROUTER_API_KEY") or "").strip()
-            or str(os.getenv("OPENAI_API_KEY") or "").strip()
-        )
-    if provider_key == "gemini":
-        return bool(
-            str(os.getenv("GEMINI_API_KEY") or "").strip()
-            or str(os.getenv("GOOGLE_API_KEY") or "").strip()
-        )
     return False
 
 
 def default_settings() -> Dict[str, Any]:
     """Return a copy of the default settings."""
-    return deepcopy(_DEFAULT_SETTINGS)
+    _apply_env_files()
+    defaults = _normalise_settings(_build_default_settings())
+    _apply_inline_env(defaults)
+    return deepcopy(defaults)
 
 
 def resolve_llm_config(
@@ -373,8 +677,8 @@ def resolve_llm_config(
         or "ollama"
     )
 
-    provider_block = dict(settings.get(resolved_provider, {}))
-    provider_block = _inject_env_defaults(resolved_provider, provider_block)
+    provider_block = _provider_block(settings, resolved_provider)
+    provider_block = _inject_env_defaults(settings, resolved_provider, provider_block)
 
     last_models = settings.get("last_models", {})
     resolved_model = (
@@ -481,64 +785,37 @@ def update_last_model(provider: str, model: str) -> None:
 
 def ensure_provider_env(config: LLMConfig) -> None:
     """Apply environment variables required by third-party SDKs."""
-    if config.provider == "ollama":
+    settings = load_llm_settings()
+    p_kind = provider_kind(settings, config.provider)
+    defs = provider_definitions(settings)
+    spec = defs.get(config.provider, {})
+    if p_kind == "ollama":
         host = config.params.get("host")
         if host:
             os.environ["OLLAMA_HOST"] = host
-    elif config.provider == "openai":
+    elif p_kind == "openai_compat":
         api_key = config.params.get("api_key")
+        env_vars = spec.get("api_key_env", [])
+        if isinstance(env_vars, str):
+            env_vars = [env_vars]
+        if not isinstance(env_vars, list):
+            env_vars = []
         if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
+            for env_name in env_vars:
+                env_key = str(env_name or "").strip()
+                if env_key:
+                    os.environ[env_key] = str(api_key)
         base_url = config.params.get("base_url")
-        if base_url:
-            os.environ["OPENAI_BASE_URL"] = base_url
-    elif config.provider == "openrouter":
-        api_key = config.params.get("api_key")
-        if api_key:
-            os.environ["OPENROUTER_API_KEY"] = api_key
-            os.environ["OPENAI_API_KEY"] = api_key
-        base_url = config.params.get("base_url")
-        if base_url:
-            os.environ["OPENAI_BASE_URL"] = base_url
-    elif config.provider == "gemini":
+        base_env = str(spec.get("base_url_env") or "").strip()
+        if base_url and base_env:
+            os.environ[base_env] = str(base_url)
+        if base_url and config.provider == "openai":
+            os.environ["OPENAI_BASE_URL"] = str(base_url)
+    elif p_kind == "gemini":
         api_key = config.params.get("api_key")
         if api_key:
             os.environ["GOOGLE_API_KEY"] = api_key
             os.environ["GEMINI_API_KEY"] = api_key
-
-
-def create_phi_model(config: LLMConfig):
-    """
-    Instantiate a Phi model for the resolved configuration.
-
-    The corresponding environment variables are ensured before model creation.
-    """
-    ensure_provider_env(config)
-
-    if config.provider == "ollama":
-        from phi.model.ollama import Ollama
-
-        return Ollama(id=config.model)
-
-    if config.provider == "openai":
-        from phi.model.openai import OpenAIChat
-
-        kwargs: Dict[str, Any] = {}
-        if config.api_key:
-            kwargs["api_key"] = config.api_key
-        if config.base_url:
-            kwargs["base_url"] = config.base_url
-        return OpenAIChat(id=config.model, **kwargs)
-
-    if config.provider == "gemini":
-        from phi.model.google import Gemini
-
-        kwargs: Dict[str, Any] = {}
-        if config.api_key:
-            kwargs["api_key"] = config.api_key
-        return Gemini(id=config.model, **kwargs)
-
-    raise ValueError(f"Unsupported provider '{config.provider}'.")
 
 
 def fetch_available_models(provider: str) -> List[str]:
@@ -548,9 +825,10 @@ def fetch_available_models(provider: str) -> List[str]:
     Ollama queries the local server, while OpenAI/Gemini return preferred presets.
     """
     settings = load_llm_settings()
-    provider_block = settings.get(provider, {})
+    provider_block = _provider_block(settings, provider)
+    kind = provider_kind(settings, provider)
 
-    if provider == "ollama":
+    if kind == "ollama":
         host = provider_block.get("host")
         prev_host = os.environ.get("OLLAMA_HOST")
         if host:
@@ -561,9 +839,8 @@ def fetch_available_models(provider: str) -> List[str]:
 
             response = ollama.list()
         except Exception:
-            return provider_block.get("preferred_models", []) or [
-                _fallback_model_for("ollama")
-            ]
+            fallback = _fallback_model_for(provider) or _fallback_model_for("ollama")
+            return provider_block.get("preferred_models", []) or [fallback]
         finally:
             if host and prev_host is not None:
                 os.environ["OLLAMA_HOST"] = prev_host

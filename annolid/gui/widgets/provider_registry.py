@@ -1,6 +1,12 @@
 import os
 from typing import Any, Callable, Dict, List, Optional
 
+from annolid.utils.llm_settings import (
+    list_providers,
+    provider_definitions,
+    provider_kind,
+)
+
 
 class ProviderRegistry:
     """Manage provider selection and available model lists."""
@@ -24,10 +30,26 @@ class ProviderRegistry:
 
     # ------------------------------------------------------------------ basic i/o
     def current_provider(self) -> str:
-        return self._settings.get("provider", "ollama")
+        provider = str(self._settings.get("provider", "ollama")).strip().lower()
+        if provider and provider in self.available_providers():
+            return provider
+        providers = self.available_providers()
+        return providers[0] if providers else "ollama"
 
     def set_current_provider(self, provider: str) -> None:
-        self._settings["provider"] = provider
+        self._settings["provider"] = str(provider or "").strip().lower()
+        self._save_settings(self._settings)
+
+    def available_providers(self) -> List[str]:
+        return list_providers(self._settings)
+
+    def labels(self) -> Dict[str, str]:
+        defs = provider_definitions(self._settings)
+        labels: Dict[str, str] = {}
+        for key in self.available_providers():
+            spec = defs.get(key, {})
+            labels[key] = str(spec.get("label") or key)
+        return labels
 
     # ------------------------------------------------------------------ models
     def available_models(self, provider: str) -> List[str]:
@@ -37,7 +59,7 @@ class ProviderRegistry:
         )
         custom = self._normalize_model_list(provider_settings.get("custom_models", []))
 
-        if provider == "ollama":
+        if provider_kind(self._settings, provider) == "ollama":
             models = self._fetch_ollama_models()
             for model in preferred:
                 if model and model not in models:
@@ -70,7 +92,13 @@ class ProviderRegistry:
         if available_models:
             return available_models[0]
 
+        provider_settings = self._settings.get(provider, {}) or {}
+        preferred = self._normalize_model_list(
+            provider_settings.get("preferred_models", [])
+        )
         fallback = self._DEFAULT_MODELS.get(provider, "")
+        if not fallback and preferred:
+            fallback = preferred[0]
         if fallback and fallback not in available_models:
             available_models.append(fallback)
         return fallback
