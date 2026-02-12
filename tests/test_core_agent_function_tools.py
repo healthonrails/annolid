@@ -6,6 +6,10 @@ import sys
 import types
 from pathlib import Path
 
+import cv2
+import numpy as np
+import pytest
+
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
     CronTool,
@@ -19,6 +23,12 @@ from annolid.core.agent.tools.function_builtin import (
     WebSearchTool,
     WriteFileTool,
     register_nanobot_style_tools,
+)
+from annolid.core.agent.tools.function_video import (
+    VideoInfoTool,
+    VideoProcessSegmentsTool,
+    VideoSampleFramesTool,
+    VideoSegmentTool,
 )
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 
@@ -42,6 +52,21 @@ class _EchoTool(FunctionTool):
 
     async def execute(self, **kwargs) -> str:
         return str(kwargs.get("text", ""))
+
+
+def _write_test_video(path: Path, *, fps: float = 10.0, frames: int = 8) -> None:
+    width, height = 64, 48
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    writer = cv2.VideoWriter(str(path), fourcc, float(fps), (width, height))
+    if not writer.isOpened():
+        pytest.skip("OpenCV VideoWriter is not available in this environment.")
+    try:
+        for idx in range(int(frames)):
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            frame[..., 0] = (idx * 20) % 255
+            writer.write(frame)
+    finally:
+        writer.release()
 
 
 def test_function_registry_validate_and_execute() -> None:
@@ -184,6 +209,109 @@ def test_extract_pdf_images_tool_renders_pages(tmp_path: Path, monkeypatch) -> N
         assert image_file.suffix == ".png"
 
 
+def test_video_info_tool_reads_metadata(tmp_path: Path) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=8.0, frames=6)
+    tool = VideoInfoTool(allowed_dir=tmp_path)
+    result = asyncio.run(tool.execute(path=str(video_path)))
+    payload = json.loads(result)
+    assert payload["total_frames"] == 6
+    assert payload["fps"] > 0
+    assert payload["width"] == 64
+    assert payload["height"] == 48
+
+
+def test_video_sample_frames_tool_stream_mode(tmp_path: Path) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=10.0, frames=10)
+    tool = VideoSampleFramesTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            path=str(video_path),
+            mode="stream",
+            start_frame=2,
+            step=2,
+            max_frames=3,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["count"] == 3
+    frame_indices = [item["frame_index"] for item in payload["frames"]]
+    assert frame_indices == [2, 4, 6]
+    for item in payload["frames"]:
+        assert Path(item["image_path"]).exists()
+
+
+def test_video_segment_tool_exports_frame_range(tmp_path: Path) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=10.0, frames=12)
+    out_path = tmp_path / "tiny_seg.avi"
+    tool = VideoSegmentTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            path=str(video_path),
+            output_path=str(out_path),
+            start_frame=3,
+            end_frame=6,
+            overwrite=True,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["frames_written"] == 4
+    assert out_path.exists()
+
+
+def test_video_process_segments_tool_exports_multiple_ranges(tmp_path: Path) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=10.0, frames=12)
+    tool = VideoProcessSegmentsTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            path=str(video_path),
+            segments=[
+                {"start_frame": 0, "end_frame": 2},
+                {"start_sec": 0.3, "end_sec": 0.5},
+            ],
+            overwrite=True,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["segments_processed"] == 2
+    assert len(payload["results"]) == 2
+    for item in payload["results"]:
+        assert item["frames_written"] > 0
+        assert Path(item["output_path"]).exists()
+
+
+def test_video_tools_allow_external_read_root_but_write_to_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    external = tmp_path / "external"
+    external.mkdir(parents=True, exist_ok=True)
+    video_path = external / "mouse.avi"
+    _write_test_video(video_path, fps=10.0, frames=8)
+
+    info_tool = VideoInfoTool(allowed_dir=workspace, allowed_read_roots=[str(external)])
+    info_result = asyncio.run(info_tool.execute(path=str(video_path)))
+    info_payload = json.loads(info_result)
+    assert info_payload["total_frames"] == 8
+
+    sample_tool = VideoSampleFramesTool(
+        allowed_dir=workspace, allowed_read_roots=[str(external)]
+    )
+    sample_result = asyncio.run(
+        sample_tool.execute(path=str(video_path), mode="stream", step=2, max_frames=2)
+    )
+    sample_payload = json.loads(sample_result)
+    assert sample_payload["count"] == 2
+    for frame in sample_payload["frames"]:
+        image_path = Path(frame["image_path"])
+        assert image_path.exists()
+        assert str(image_path).startswith(str(workspace))
+
+
 def test_exec_tool_guard_blocks_dangerous() -> None:
     tool = ExecTool()
     result = asyncio.run(tool.execute(command="rm -rf /tmp/foo"))
@@ -216,6 +344,10 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("read_file")
     assert registry.has("extract_pdf_text")
     assert registry.has("extract_pdf_images")
+    assert registry.has("video_info")
+    assert registry.has("video_sample_frames")
+    assert registry.has("video_segment")
+    assert registry.has("video_process_segments")
     assert registry.has("exec")
     assert registry.has("cron")
     assert registry.has("download_url")

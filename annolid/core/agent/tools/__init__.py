@@ -32,6 +32,12 @@ from .function_builtin import (
     WriteFileTool,
     register_nanobot_style_tools,
 )
+from .function_video import (
+    VideoInfoTool,
+    VideoProcessSegmentsTool,
+    VideoSampleFramesTool,
+    VideoSegmentTool,
+)
 from .function_registry import FunctionToolRegistry
 from .llm import CaptionResult, CaptionTool
 from .sampling import FPSampler, MotionSampler, RandomSampler, UniformSampler
@@ -66,6 +72,10 @@ __all__ = [
     "ExecTool",
     "WebSearchTool",
     "WebFetchTool",
+    "VideoInfoTool",
+    "VideoSampleFramesTool",
+    "VideoSegmentTool",
+    "VideoProcessSegmentsTool",
     "MessageTool",
     "SpawnTool",
     "CronTool",

@@ -97,6 +97,7 @@ class ExecToolConfig:
 class ToolsConfig:
     exec: ExecToolConfig = field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False
+    allowed_read_roots: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ToolsConfig":
@@ -105,13 +106,27 @@ class ToolsConfig:
             "restrict_to_workspace",
             payload.get("restrictToWorkspace", False),
         )
+        roots_raw = payload.get(
+            "allowed_read_roots", payload.get("allowedReadRoots", [])
+        )
+        if isinstance(roots_raw, (list, tuple)):
+            allowed_read_roots = [
+                str(item).strip() for item in roots_raw if str(item).strip()
+            ]
+        else:
+            allowed_read_roots = []
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
-        return cls(exec=exec_cfg, restrict_to_workspace=bool(restrict_value))
+        return cls(
+            exec=exec_cfg,
+            restrict_to_workspace=bool(restrict_value),
+            allowed_read_roots=allowed_read_roots,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "exec": self.exec.to_dict(),
             "restrict_to_workspace": self.restrict_to_workspace,
+            "allowed_read_roots": list(self.allowed_read_roots),
         }
 
 

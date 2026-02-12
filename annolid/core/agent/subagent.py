@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, Optional
+from typing import Awaitable, Callable, Dict, Optional, Sequence
 
 from .loop import AgentLoop
 from .tools import FunctionToolRegistry, register_nanobot_style_tools
@@ -151,6 +151,7 @@ class SubagentManager:
 
 def build_subagent_tools_registry(
     workspace: Optional[Path] = None,
+    allowed_read_roots: Optional[Sequence[str | Path]] = None,
 ) -> FunctionToolRegistry:
     """Create a default function-tool registry suitable for subagents."""
 
@@ -158,6 +159,7 @@ def build_subagent_tools_registry(
     register_nanobot_style_tools(
         registry,
         allowed_dir=Path(workspace) if workspace is not None else None,
+        allowed_read_roots=allowed_read_roots,
     )
     # Subagents should stay focused and not recursively spawn or send messages.
     registry.unregister("spawn")

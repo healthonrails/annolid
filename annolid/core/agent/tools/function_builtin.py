@@ -8,7 +8,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 from urllib.parse import urlparse
 
 from annolid.core.agent.cron import CronPayload, CronSchedule, CronService
@@ -16,11 +16,66 @@ from annolid.core.agent.utils import get_agent_data_path
 
 from .function_base import FunctionTool
 from .function_registry import FunctionToolRegistry
+from .function_video import (
+    VideoInfoTool,
+    VideoProcessSegmentsTool,
+    VideoSampleFramesTool,
+    VideoSegmentTool,
+)
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     resolved = Path(path).expanduser().resolve()
     if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
+        raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+    return resolved
+
+
+def _normalize_allowed_read_roots(
+    allowed_dir: Path | None, allowed_read_roots: Sequence[str | Path] | None
+) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    if allowed_dir is not None:
+        roots.append(Path(allowed_dir).expanduser().resolve())
+    if allowed_read_roots:
+        for raw in allowed_read_roots:
+            text = str(raw).strip()
+            if not text:
+                continue
+            with contextlib.suppress(Exception):
+                candidate = Path(text).expanduser().resolve()
+                if candidate not in roots:
+                    roots.append(candidate)
+    return tuple(roots)
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_read_path(
+    path: str,
+    *,
+    allowed_dir: Path | None = None,
+    allowed_read_roots: Sequence[str | Path] | None = None,
+) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    roots = _normalize_allowed_read_roots(allowed_dir, allowed_read_roots)
+    if roots and not any(_is_within_root(resolved, root) for root in roots):
+        allowed = ", ".join(str(root) for root in roots)
+        raise PermissionError(f"Path {path} is outside allowed read roots: [{allowed}]")
+    return resolved
+
+
+def _resolve_write_path(path: str, *, allowed_dir: Path | None = None) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if allowed_dir is not None and not _is_within_root(
+        resolved, Path(allowed_dir).expanduser().resolve()
+    ):
         raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
     return resolved
 
@@ -50,8 +105,13 @@ def _validate_url(url: str) -> tuple[bool, str]:
 
 
 class ReadFileTool(FunctionTool):
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(
+        self,
+        allowed_dir: Path | None = None,
+        allowed_read_roots: Sequence[str | Path] | None = None,
+    ):
         self._allowed_dir = allowed_dir
+        self._allowed_read_roots = tuple(allowed_read_roots or ())
 
     @property
     def name(self) -> str:
@@ -72,7 +132,11 @@ class ReadFileTool(FunctionTool):
     async def execute(self, path: str, **kwargs: Any) -> str:
         del kwargs
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_read_path(
+                path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
@@ -96,10 +160,14 @@ class ReadFileTool(FunctionTool):
 
 class ExtractPdfTextTool(FunctionTool):
     def __init__(
-        self, allowed_dir: Path | None = None, default_max_chars: int = 120000
+        self,
+        allowed_dir: Path | None = None,
+        default_max_chars: int = 120000,
+        allowed_read_roots: Sequence[str | Path] | None = None,
     ):
         self._allowed_dir = allowed_dir
         self._default_max_chars = default_max_chars
+        self._allowed_read_roots = tuple(allowed_read_roots or ())
 
     @property
     def name(self) -> str:
@@ -132,7 +200,11 @@ class ExtractPdfTextTool(FunctionTool):
     ) -> str:
         del kwargs
         try:
-            pdf_path = _resolve_path(path, self._allowed_dir)
+            pdf_path = _resolve_read_path(
+                path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
             if not pdf_path.exists():
                 return json.dumps({"error": f"File not found: {path}", "path": path})
             if not pdf_path.is_file():
@@ -218,9 +290,15 @@ class ExtractPdfTextTool(FunctionTool):
 
 
 class ExtractPdfImagesTool(FunctionTool):
-    def __init__(self, allowed_dir: Path | None = None, default_dpi: int = 144):
+    def __init__(
+        self,
+        allowed_dir: Path | None = None,
+        default_dpi: int = 144,
+        allowed_read_roots: Sequence[str | Path] | None = None,
+    ):
         self._allowed_dir = allowed_dir
         self._default_dpi = default_dpi
+        self._allowed_read_roots = tuple(allowed_read_roots or ())
 
     @property
     def name(self) -> str:
@@ -257,7 +335,11 @@ class ExtractPdfImagesTool(FunctionTool):
     ) -> str:
         del kwargs
         try:
-            pdf_path = _resolve_path(path, self._allowed_dir)
+            pdf_path = _resolve_read_path(
+                path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
             if not pdf_path.exists():
                 return json.dumps({"error": f"File not found: {path}", "path": path})
             if not pdf_path.is_file():
@@ -268,11 +350,15 @@ class ExtractPdfImagesTool(FunctionTool):
                 )
 
             if output_dir:
-                out_dir = _resolve_path(output_dir, self._allowed_dir)
+                out_dir = _resolve_write_path(output_dir, allowed_dir=self._allowed_dir)
             else:
-                out_dir = pdf_path.parent / f"{pdf_path.stem}_pages"
                 if self._allowed_dir is not None:
-                    out_dir = _resolve_path(str(out_dir), self._allowed_dir)
+                    out_dir = _resolve_write_path(
+                        str(Path(self._allowed_dir) / f"{pdf_path.stem}_pages"),
+                        allowed_dir=self._allowed_dir,
+                    )
+                else:
+                    out_dir = pdf_path.parent / f"{pdf_path.stem}_pages"
             out_dir.mkdir(parents=True, exist_ok=True)
 
             start_index = max(0, int(start_page) - 1)
@@ -364,7 +450,7 @@ class WriteFileTool(FunctionTool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         del kwargs
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_write_path(path, allowed_dir=self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {path}"
@@ -406,7 +492,7 @@ class EditFileTool(FunctionTool):
     ) -> str:
         del kwargs
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_write_path(path, allowed_dir=self._allowed_dir)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
 
@@ -431,8 +517,13 @@ class EditFileTool(FunctionTool):
 
 
 class ListDirTool(FunctionTool):
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(
+        self,
+        allowed_dir: Path | None = None,
+        allowed_read_roots: Sequence[str | Path] | None = None,
+    ):
         self._allowed_dir = allowed_dir
+        self._allowed_read_roots = tuple(allowed_read_roots or ())
 
     @property
     def name(self) -> str:
@@ -453,7 +544,11 @@ class ListDirTool(FunctionTool):
     async def execute(self, path: str, **kwargs: Any) -> str:
         del kwargs
         try:
-            dir_path = _resolve_path(path, self._allowed_dir)
+            dir_path = _resolve_read_path(
+                path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
             if not dir_path.exists():
                 return f"Error: Directory not found: {path}"
             if not dir_path.is_dir():
@@ -776,7 +871,7 @@ class DownloadUrlTool(FunctionTool):
             return json.dumps({"error": f"URL validation failed: {err}", "url": url})
 
         try:
-            dst = _resolve_path(output_path, self._allowed_dir)
+            dst = _resolve_write_path(output_path, allowed_dir=self._allowed_dir)
         except PermissionError as exc:
             return json.dumps(
                 {"error": str(exc), "url": url, "output_path": output_path}
@@ -1197,21 +1292,54 @@ def register_nanobot_style_tools(
     registry: FunctionToolRegistry,
     *,
     allowed_dir: Path | None = None,
+    allowed_read_roots: Sequence[str | Path] | None = None,
     send_callback: Callable[[str, str, str], Awaitable[None] | None] | None = None,
     spawn_callback: Callable[[str, str | None], Awaitable[str] | str] | None = None,
 ) -> None:
     """Register a Nanobot-like default tool set."""
 
-    registry.register(ReadFileTool(allowed_dir=allowed_dir))
-    registry.register(ExtractPdfTextTool(allowed_dir=allowed_dir))
-    registry.register(ExtractPdfImagesTool(allowed_dir=allowed_dir))
+    registry.register(
+        ReadFileTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+    )
+    registry.register(
+        ExtractPdfTextTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        ExtractPdfImagesTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
     registry.register(WriteFileTool(allowed_dir=allowed_dir))
     registry.register(EditFileTool(allowed_dir=allowed_dir))
-    registry.register(ListDirTool(allowed_dir=allowed_dir))
+    registry.register(
+        ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+    )
     registry.register(ExecTool())
     registry.register(WebSearchTool())
     registry.register(WebFetchTool())
     registry.register(DownloadUrlTool(allowed_dir=allowed_dir))
+    registry.register(
+        VideoInfoTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+    )
+    registry.register(
+        VideoSampleFramesTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        VideoSegmentTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+    )
+    registry.register(
+        VideoProcessSegmentsTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
     registry.register(MessageTool(send_callback=send_callback))
     registry.register(SpawnTool(spawn_callback=spawn_callback))
     registry.register(CronTool(send_callback=send_callback))

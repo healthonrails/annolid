@@ -27,6 +27,13 @@ Safety notes:
 - `web_fetch(url, extractMode?, maxChars?)`
 - `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?)`
 
+## Video
+
+- `video_info(path)`
+- `video_sample_frames(path, output_dir?, mode?, step?, target_fps?, indices?, start_frame?, max_frames?, overwrite?)`
+- `video_segment(path, output_path?, start_frame?, end_frame?, start_sec?, end_sec?, overwrite?)`
+- `video_process_segments(path, segments, output_dir?, overwrite?)`
+
 ## Communication and Delegation
 
 - `message(content, channel?, chat_id?)`

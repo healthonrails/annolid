@@ -18,6 +18,10 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.agents.defaults.model = "gemini-1.5-flash"
     cfg.providers["gemini"] = ProviderConfig(api_key="secret", api_base="")
     cfg.tools.restrict_to_workspace = True
+    cfg.tools.allowed_read_roots = [
+        str(tmp_path / "videos"),
+        str(tmp_path / "datasets"),
+    ]
 
     save_config(cfg, cfg_path)
     loaded = load_config(cfg_path)
@@ -26,6 +30,10 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.agents.defaults.model == "gemini-1.5-flash"
     assert loaded.providers["gemini"].api_key == "secret"
     assert loaded.tools.restrict_to_workspace is True
+    assert loaded.tools.allowed_read_roots == [
+        str(tmp_path / "videos"),
+        str(tmp_path / "datasets"),
+    ]
 
 
 def test_agent_config_migrates_legacy_restrict_to_workspace(tmp_path: Path) -> None:

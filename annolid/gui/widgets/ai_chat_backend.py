@@ -14,6 +14,7 @@ from qtpy import QtCore
 from qtpy.QtCore import QMetaObject, QRunnable
 
 from annolid.core.agent.loop import AgentLoop
+from annolid.core.agent.config import load_config
 from annolid.core.agent.providers import OpenAICompatProvider, resolve_openai_compat
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
@@ -277,19 +278,27 @@ class StreamingChatTask(QRunnable):
 
     def _run_agent_loop(self) -> None:
         workspace = get_agent_workspace_path()
+        agent_cfg = load_config()
+        allowed_read_roots = list(
+            getattr(agent_cfg.tools, "allowed_read_roots", []) or []
+        )
         tools = FunctionToolRegistry()
         register_nanobot_style_tools(
             tools,
             allowed_dir=workspace,
+            allowed_read_roots=allowed_read_roots,
         )
         for tool_name in _GUI_DISABLED_TOOLS:
             tools.unregister(tool_name)
-        system_prompt = self._build_compact_system_prompt(workspace)
+        system_prompt = self._build_compact_system_prompt(
+            workspace, allowed_read_roots=allowed_read_roots
+        )
         _LOGGER.info(
-            "annolid-bot agent config session=%s model=%s tools=%d prompt_chars=%d",
+            "annolid-bot agent config session=%s model=%s tools=%d read_roots=%d prompt_chars=%d",
             self.session_id,
             self.model,
             len(tools),
+            len(allowed_read_roots),
             len(system_prompt),
         )
         if self.provider == "ollama" and _OLLAMA_FORCE_PLAIN_CACHE.get(
@@ -325,6 +334,7 @@ class StreamingChatTask(QRunnable):
             profile="playground",
             memory_store=self.session_store,
             workspace=str(workspace),
+            allowed_read_roots=allowed_read_roots,
         )
         media: Optional[List[str]] = None
         if self.image_path and os.path.exists(self.image_path):
@@ -473,10 +483,21 @@ class StreamingChatTask(QRunnable):
             return value
         return value[:max_chars].rstrip() + "\n...[truncated]"
 
-    def _build_compact_system_prompt(self, workspace: Path) -> str:
+    def _build_compact_system_prompt(
+        self, workspace: Path, *, allowed_read_roots: Optional[List[str]] = None
+    ) -> str:
         parts: List[str] = [
             "You are Annolid Bot. Be concise, practical, and return plain text answers."
         ]
+        roots = [str(r).strip() for r in (allowed_read_roots or []) if str(r).strip()]
+        if roots:
+            parts.append(
+                "Readable paths include workspace plus configured read roots. "
+                "Do not claim a path is inaccessible before trying the relevant tool."
+            )
+            parts.append(
+                "# Allowed Read Roots\n" + "\n".join(f"- {root}" for root in roots[:20])
+            )
         agents_md = self._read_text_limited(workspace / "AGENTS.md", 2400)
         if agents_md:
             parts.append(f"# Workspace Instructions\n{agents_md}")

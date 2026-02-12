@@ -150,6 +150,7 @@ class AgentLoop:
         memory_config: Optional[AgentMemoryConfig] = None,
         memory_store: Optional[SessionStoreProtocol] = None,
         workspace: Optional[str] = None,
+        allowed_read_roots: Optional[Sequence[str | Path]] = None,
         context_builder: Optional[AgentContextBuilder] = None,
         subagent_manager: Optional["SubagentManager"] = None,
         logger: Optional[logging.Logger] = None,
@@ -169,6 +170,7 @@ class AgentLoop:
         )
         self._memory_store = memory_store or InMemorySessionStore()
         self._workspace = workspace
+        self._allowed_read_roots = tuple(str(p) for p in (allowed_read_roots or ()))
         self._context_builder = context_builder
         self._subagent_manager = subagent_manager
 
@@ -442,7 +444,8 @@ class AgentLoop:
 
         def _loop_factory() -> "AgentLoop":
             tools = build_subagent_tools_registry(
-                Path(self._workspace) if self._workspace else None
+                Path(self._workspace) if self._workspace else None,
+                allowed_read_roots=self._allowed_read_roots,
             )
             return AgentLoop(
                 tools=tools,
@@ -450,6 +453,7 @@ class AgentLoop:
                 model=self.model,
                 max_iterations=min(self._max_iterations, 10),
                 workspace=self._workspace,
+                allowed_read_roots=self._allowed_read_roots,
             )
 
         workspace_path = Path(self._workspace) if self._workspace else None

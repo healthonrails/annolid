@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 
@@ -160,3 +161,13 @@ def test_ollama_llm_callable_fast_retries_without_tools_on_empty(monkeypatch) ->
     assert calls["with_tools"] == 1
     assert calls["without_tools"] == 1
     assert backend._OLLAMA_TOOL_SUPPORT_CACHE.get("m") is False
+
+
+def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> None:
+    task = StreamingChatTask("hi", widget=None)
+    prompt = task._build_compact_system_prompt(
+        tmp_path,
+        allowed_read_roots=["/Users/chenyang/Downloads/test_annolid_videos_batch"],
+    )
+    assert "Allowed Read Roots" in prompt
+    assert "/Users/chenyang/Downloads/test_annolid_videos_batch" in prompt
