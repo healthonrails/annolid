@@ -191,16 +191,12 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(10)
         root.addLayout(self._build_header_bar())
-        root.addLayout(self._build_provider_bar())
-        root.addLayout(self._build_share_bar())
-        root.addWidget(self._build_shared_image_label())
         root.addWidget(self._build_chat_area(), 1)
         root.addLayout(self._build_quick_actions_row())
-        root.addLayout(self._build_input_bar())
-        root.addWidget(self._build_prompt_meta_row())
+        root.addWidget(self._build_composer_panel())
         root.addWidget(self._build_status_label())
         self._audio_controller = ChatAudioController(
             status_label=self.status_label,
@@ -213,30 +209,45 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def _build_header_bar(self) -> QtWidgets.QHBoxLayout:
         header_bar = QtWidgets.QHBoxLayout()
-        self.provider_chip_label = QtWidgets.QLabel(self)
-        self.provider_chip_label.setObjectName("botChipLabel")
-        header_bar.addWidget(self.provider_chip_label)
+        header_bar.setSpacing(8)
 
-        self.model_chip_label = QtWidgets.QLabel(self)
-        self.model_chip_label.setObjectName("botChipLabel")
-        header_bar.addWidget(self.model_chip_label)
+        self.back_button = QtWidgets.QToolButton(self)
+        self.back_button.setObjectName("chatTopIconButton")
+        self.back_button.setToolTip("Back")
+        self.back_button.setEnabled(False)
+        self._set_button_icon(
+            self.back_button,
+            QtWidgets.QStyle.SP_ArrowBack,
+            "go-previous",
+        )
+        header_bar.addWidget(self.back_button, 0)
+
+        title_col = QtWidgets.QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(1)
+        self.chat_title_label = QtWidgets.QLabel("Annolid Bot", self)
+        self.chat_title_label.setObjectName("chatTitleLabel")
+        title_col.addWidget(self.chat_title_label)
 
         self.session_chip_label = QtWidgets.QLabel(self)
-        self.session_chip_label.setObjectName("botChipLabel")
-        header_bar.addWidget(self.session_chip_label, 1)
+        self.session_chip_label.setObjectName("chatSubtitleLabel")
+        title_col.addWidget(self.session_chip_label)
+        header_bar.addLayout(title_col, 1)
 
-        self.clear_chat_button = QtWidgets.QPushButton("Clear Chat", self)
-        self.clear_chat_button.setObjectName("clearChatButton")
+        self.clear_chat_button = QtWidgets.QToolButton(self)
+        self.clear_chat_button.setObjectName("chatTopIconButton")
+        self.clear_chat_button.setToolTip("Clear conversation")
         header_bar.addWidget(self.clear_chat_button, 0)
 
-        self.sessions_button = QtWidgets.QPushButton("Sessions…", self)
-        self.sessions_button.setObjectName("sessionManagerButton")
+        self.sessions_button = QtWidgets.QToolButton(self)
+        self.sessions_button.setObjectName("chatTopIconButton")
+        self.sessions_button.setToolTip("Manage sessions")
         header_bar.addWidget(self.sessions_button, 0)
 
-        self.tool_trace_checkbox = QtWidgets.QCheckBox("Show tool trace", self)
-        self.tool_trace_checkbox.setChecked(False)
-        self.tool_trace_checkbox.setObjectName("toolTraceCheckbox")
-        header_bar.addWidget(self.tool_trace_checkbox, 0)
+        self.configure_button = QtWidgets.QToolButton(self)
+        self.configure_button.setObjectName("chatTopIconButton")
+        self.configure_button.setToolTip("Configure providers and defaults")
+        header_bar.addWidget(self.configure_button, 0)
         return header_bar
 
     def _build_provider_bar(self) -> QtWidgets.QHBoxLayout:
@@ -253,23 +264,30 @@ class AIChatWidget(QtWidgets.QWidget):
         self.model_selector.setEditable(True)
         self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
         top_bar.addWidget(self.model_selector, 3)
-
-        self.configure_button = QtWidgets.QPushButton("Configure…", self)
-        self.configure_button.setToolTip("Manage provider API keys and defaults.")
-        top_bar.addWidget(self.configure_button, 0)
         return top_bar
 
     def _build_share_bar(self) -> QtWidgets.QHBoxLayout:
         share_bar = QtWidgets.QHBoxLayout()
+        share_bar.setSpacing(6)
         self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
         self.attach_canvas_checkbox.setChecked(False)
+        self.attach_canvas_checkbox.setObjectName("chatInlineToggle")
         self.attach_window_checkbox = QtWidgets.QCheckBox("Attach window", self)
+        self.attach_window_checkbox.setObjectName("chatInlineToggle")
+        self.tool_trace_checkbox = QtWidgets.QCheckBox("Trace", self)
+        self.tool_trace_checkbox.setChecked(False)
+        self.tool_trace_checkbox.setObjectName("chatInlineToggle")
         share_bar.addWidget(self.attach_canvas_checkbox)
         share_bar.addWidget(self.attach_window_checkbox)
+        share_bar.addWidget(self.tool_trace_checkbox)
 
-        self.share_canvas_button = QtWidgets.QPushButton("Share Canvas", self)
+        self.share_canvas_button = QtWidgets.QToolButton(self)
+        self.share_canvas_button.setText("")
+        self.share_canvas_button.setObjectName("chatComposerIconButton")
         self.share_canvas_button.setToolTip("Capture the current canvas and attach it.")
-        self.share_window_button = QtWidgets.QPushButton("Share Window", self)
+        self.share_window_button = QtWidgets.QToolButton(self)
+        self.share_window_button.setText("")
+        self.share_window_button.setObjectName("chatComposerIconButton")
         self.share_window_button.setToolTip("Capture the window and attach it.")
         share_bar.addWidget(self.share_canvas_button)
         share_bar.addWidget(self.share_window_button)
@@ -303,23 +321,30 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def _build_input_bar(self) -> QtWidgets.QHBoxLayout:
         input_bar = QtWidgets.QHBoxLayout()
+        input_bar.setSpacing(8)
         self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
         self.prompt_text_edit.setPlaceholderText("Message Annolid Bot…")
-        self.prompt_text_edit.setFixedHeight(74)
+        self.prompt_text_edit.setFixedHeight(118)
         self.prompt_text_edit.setToolTip("Type a message. Use Ctrl+Enter to send.")
         input_bar.addWidget(self.prompt_text_edit, 1)
 
         side_buttons = QtWidgets.QVBoxLayout()
-        self.send_button = QtWidgets.QPushButton("Send", self)
+        side_buttons.setSpacing(8)
+        self.send_button = QtWidgets.QToolButton(self)
         self.send_button.setObjectName("sendButton")
-        self.talk_button = QtWidgets.QPushButton("Talk", self)
-        self.talk_button.setObjectName("talkButton")
+        self.send_button.setText("")
         self.send_button.setToolTip("Send message (Ctrl+Enter).")
+        self.send_button.setFixedSize(42, 42)
+
+        self.talk_button = QtWidgets.QToolButton(self)
+        self.talk_button.setObjectName("talkButton")
+        self.talk_button.setText("")
         self.talk_button.setToolTip("Record voice input.")
+        self.talk_button.setFixedSize(36, 36)
         self._set_button_icon(
             self.send_button,
             QtWidgets.QStyle.SP_ArrowForward,
-            "mail-send",
+            "go-up",
         )
         self._set_button_icon(
             self.talk_button,
@@ -331,6 +356,19 @@ class AIChatWidget(QtWidgets.QWidget):
         side_buttons.addStretch(1)
         input_bar.addLayout(side_buttons)
         return input_bar
+
+    def _build_composer_panel(self) -> QtWidgets.QFrame:
+        panel = QtWidgets.QFrame(self)
+        panel.setObjectName("chatComposerPanel")
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+        layout.addLayout(self._build_input_bar())
+        layout.addLayout(self._build_provider_bar())
+        layout.addLayout(self._build_share_bar())
+        layout.addWidget(self._build_shared_image_label())
+        layout.addWidget(self._build_prompt_meta_row())
+        return panel
 
     def _build_quick_actions_row(self) -> QtWidgets.QHBoxLayout:
         row = QtWidgets.QHBoxLayout()
@@ -391,7 +429,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.sessions_button.clicked.connect(self.open_session_manager_dialog)
         self._set_button_icon(
             self.clear_chat_button,
-            QtWidgets.QStyle.SP_DialogResetButton,
+            QtWidgets.QStyle.SP_BrowserStop,
             "edit-clear",
         )
         self._set_button_icon(
@@ -401,7 +439,7 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         self._set_button_icon(
             self.configure_button,
-            QtWidgets.QStyle.SP_FileDialogContentsView,
+            QtWidgets.QStyle.SP_FileDialogInfoView,
             "preferences-system",
         )
         self._set_button_icon(
@@ -423,7 +461,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _set_button_icon(
-        button: QtWidgets.QPushButton,
+        button: QtWidgets.QAbstractButton,
         style_icon: QtWidgets.QStyle.StandardPixmap,
         theme_icon: str = "",
     ) -> None:
@@ -491,71 +529,91 @@ class AIChatWidget(QtWidgets.QWidget):
         if self._applying_theme_styles:
             return
         self._applying_theme_styles = True
-        pal = self.palette()
-        base = pal.color(QtGui.QPalette.Base)
-        window = pal.color(QtGui.QPalette.Window)
-        text = pal.color(QtGui.QPalette.Text)
-        mid = pal.color(QtGui.QPalette.Mid)
-        highlight = pal.color(QtGui.QPalette.Highlight)
-        button = pal.color(QtGui.QPalette.Button)
-
-        bubble_user = self._mix_colors(base, highlight, 0.28)
-        bubble_assistant = self._mix_colors(base, window, 0.45)
-        bubble_meta = self._mix_colors(text, window, 0.55)
-        area_bg = self._mix_colors(window, base, 0.35)
-        input_bg = base
-        hover_bg = self._mix_colors(button, highlight, 0.18)
-
         try:
             self.setStyleSheet(
-                f"""
+                """
                 QWidget {{
-                    background: {window.name()};
-                    color: {text.name()};
+                    background: #111317;
+                    color: #e7e8ea;
+                }}
+                QComboBox {{
+                    border: 1px solid #31353c;
+                    border-radius: 10px;
+                    background: #1a1d23;
+                    color: #e7e8ea;
+                    min-height: 24px;
+                    padding: 3px 8px;
                 }}
                 QScrollArea {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 10px;
-                    background: {area_bg.name()};
+                    border: 1px solid #2f333b;
+                    border-radius: 14px;
+                    background: #151920;
                 }}
                 QPlainTextEdit {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 10px;
-                    background: {input_bg.name()};
-                    padding: 8px;
-                    font-size: 13px;
+                    border: 1px solid #343943;
+                    border-radius: 14px;
+                    background: #1d2129;
+                    padding: 10px;
+                    font-size: 14px;
                 }}
-                QPushButton {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 8px;
-                    background: {button.name()};
-                    padding: 6px 10px;
+                QFrame#chatComposerPanel {{
+                    border: 1px solid #2f333b;
+                    border-radius: 22px;
+                    background: #1a1d23;
+                }}
+                QToolButton#chatTopIconButton {{
+                    border: 1px solid transparent;
+                    border-radius: 14px;
+                    background: transparent;
+                    min-width: 28px;
+                    min-height: 28px;
+                }}
+                QToolButton#chatTopIconButton:hover {{
+                    background: #232832;
+                    border-color: #343943;
+                }}
+                QLabel#chatTitleLabel {{
+                    color: #f4f5f6;
+                    font-size: 27px;
+                    font-weight: 700;
+                }}
+                QLabel#chatSubtitleLabel {{
+                    color: #9ea4af;
+                    font-size: 11px;
                 }}
                 QPushButton:hover {{
-                    background: {hover_bg.name()};
+                    background: #2b3038;
                 }}
-                QPushButton:disabled {{
-                    color: {bubble_meta.name()};
-                    background: {self._mix_colors(button, window, 0.35).name()};
+                QToolButton#chatComposerIconButton, QToolButton#talkButton {{
+                    border: 1px solid #3a404b;
+                    border-radius: 16px;
+                    background: #252a33;
+                    min-width: 32px;
+                    min-height: 32px;
+                }}
+                QToolButton#chatComposerIconButton:hover, QToolButton#talkButton:hover {{
+                    background: #313744;
                 }}
                 QPushButton#quickActionButton {{
-                    border-radius: 12px;
-                    padding: 4px 10px;
-                    font-size: 11px;
-                    background: {self._mix_colors(area_bg, button, 0.45).name()};
+                    border: 1px solid #373d47;
+                    border-radius: 14px;
+                    padding: 4px 12px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    background: #2a2f38;
                 }}
                 QPushButton#quickActionButton:hover {{
-                    background: {self._mix_colors(hover_bg, highlight, 0.1).name()};
+                    background: #363d49;
                 }}
                 QLabel#sharedImageLabel, QLabel#chatStatusLabel {{
-                    color: {bubble_meta.name()};
+                    color: #9ea4af;
                     font-size: 11px;
                 }}
                 QLabel#chatEmptyState {{
-                    border: 1px dashed {mid.name()};
-                    border-radius: 12px;
-                    background: {area_bg.name()};
-                    color: {bubble_meta.name()};
+                    border: 1px dashed #3b4049;
+                    border-radius: 14px;
+                    background: #181c23;
+                    color: #a9afba;
                     padding: 16px;
                     margin: 20px 12px;
                     font-size: 12px;
@@ -564,89 +622,68 @@ class AIChatWidget(QtWidgets.QWidget):
                     background: transparent;
                 }}
                 QLabel#promptHintLabel, QLabel#promptCountLabel {{
-                    color: {bubble_meta.name()};
+                    color: #8f96a2;
                     font-size: 11px;
                 }}
                 QLabel#promptCountLabel[limitReached="true"] {{
-                    color: #cc3d2f;
+                    color: #ff6a57;
                     font-weight: 700;
                 }}
-                QLabel#botChipLabel {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 10px;
-                    background: {area_bg.name()};
-                    color: {bubble_meta.name()};
-                    padding: 2px 8px;
-                    font-size: 10px;
-                    font-weight: 600;
-                }}
-                QPushButton#clearChatButton {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 8px;
-                    background: {button.name()};
-                    padding: 5px 10px;
+                QCheckBox#chatInlineToggle {{
+                    color: #9aa1ac;
                     font-size: 11px;
                     font-weight: 600;
                 }}
-                QPushButton#sessionManagerButton {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 8px;
-                    background: {button.name()};
-                    padding: 5px 10px;
-                    font-size: 11px;
-                    font-weight: 600;
+                QToolButton#sendButton {{
+                    border: 1px solid #6f7684;
+                    border-radius: 21px;
+                    background: #8d939e;
+                    color: #111317;
+                    font-weight: 800;
                 }}
-                QPushButton#sendButton {{
-                    background: {self._mix_colors(button, highlight, 0.5).name()};
-                    font-weight: 700;
+                QToolButton#sendButton:disabled {{
+                    border-color: #4b505a;
+                    background: #4a4f58;
+                    color: #7f8591;
                 }}
-                QPushButton#sendButton:hover {{
-                    background: {self._mix_colors(button, highlight, 0.62).name()};
-                }}
-                QCheckBox#toolTraceCheckbox {{
-                    color: {bubble_meta.name()};
-                    font-size: 11px;
-                    padding: 1px 4px;
+                QToolButton#sendButton:hover {{
+                    background: #a1a7b2;
                 }}
                 QFrame#chatBubble[role="user"] {{
-                    background-color: {bubble_user.name()};
+                    background-color: #2a2f39;
                     border-radius: 14px;
                     padding: 8px 10px;
+                    border: 1px solid #3a404b;
                 }}
                 QFrame#chatBubble[role="assistant"] {{
-                    background-color: {bubble_assistant.name()};
+                    background-color: #1c2128;
                     border-radius: 14px;
                     padding: 8px 10px;
-                    border: 1px solid {mid.name()};
+                    border: 1px solid #303640;
                 }}
                 QLabel#sender {{
-                    color: {bubble_meta.name()};
+                    color: #9ea4af;
                     font-size: 11px;
                     font-weight: 600;
                 }}
                 QLabel#message {{
-                    color: {text.name()};
+                    color: #e9ebee;
                     font-size: 13px;
                 }}
                 QLabel#meta {{
-                    color: {bubble_meta.name()};
+                    color: #8e95a1;
                     font-size: 10px;
                 }}
-                QPushButton#bubbleSpeakButton {{
-                    border: 1px solid {mid.name()};
+                QPushButton#bubbleSpeakButton, QPushButton#bubbleCopyButton, QPushButton#bubbleRegenerateButton {{
+                    border: 1px solid #424855;
                     border-radius: 6px;
-                    background: {button.name()};
-                    padding: 2px 8px;
+                    background: #2a3039;
+                    padding: 2px 6px;
                     min-height: 18px;
                     font-size: 10px;
                 }}
-                QPushButton#bubbleCopyButton, QPushButton#bubbleRegenerateButton {{
-                    border: 1px solid {mid.name()};
-                    border-radius: 6px;
-                    background: {button.name()};
-                    padding: 2px 8px;
-                    min-height: 18px;
-                    font-size: 10px;
+                QPushButton#bubbleSpeakButton:hover, QPushButton#bubbleCopyButton:hover, QPushButton#bubbleRegenerateButton:hover {{
+                    background: #353c48;
                 }}
                 """
             )
@@ -880,12 +917,8 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         model_text = str(self.selected_model or "unknown")
         session_text = str(self.session_id or "default")
-        total_sessions = len(self._session_manager.list_sessions())
-        self.provider_chip_label.setText(f"Provider: {provider_text}")
-        self.model_chip_label.setText(f"Model: {model_text}")
-        self.session_chip_label.setText(
-            f"Session: {session_text} · Stored: {total_sessions}"
-        )
+        self.chat_title_label.setText(model_text)
+        self.session_chip_label.setText(f"{provider_text} · {session_text}")
 
     def clear_chat_conversation(self) -> None:
         if self.is_streaming_chat:
