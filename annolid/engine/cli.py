@@ -539,6 +539,7 @@ def _cmd_agent_status(_: argparse.Namespace) -> int:
             "TOOLS.md": (workspace / "TOOLS.md").exists(),
             "HEARTBEAT.md": (workspace / "HEARTBEAT.md").exists(),
             "memory/MEMORY.md": (workspace / "memory" / "MEMORY.md").exists(),
+            "memory/HISTORY.md": (workspace / "memory" / "HISTORY.md").exists(),
         },
         "cron_store_path": str(store_path),
         "cron": cron_status,

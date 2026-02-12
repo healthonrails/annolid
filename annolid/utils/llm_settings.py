@@ -66,6 +66,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
         "temperature": 0.7,
         "max_tool_iterations": 12,
         "max_history_messages": 24,
+        "memory_window": 50,
     },
     "profiles": {
         "caption": {"provider": "ollama"},
@@ -121,6 +122,7 @@ class AgentRuntimeConfig:
     temperature: float = 0.7
     max_tool_iterations: int = 12
     max_history_messages: int = 24
+    memory_window: int = 50
 
 
 def _deep_update(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -454,10 +456,16 @@ def resolve_agent_runtime_config(profile: Optional[str] = None) -> AgentRuntimeC
         24,
         2,
     )
+    memory_window = _as_int(
+        profile_cfg.get("memory_window", agent_defaults.get("memory_window", 50)),
+        50,
+        4,
+    )
     return AgentRuntimeConfig(
         temperature=temperature,
         max_tool_iterations=max_tool_iterations,
         max_history_messages=max_history_messages,
+        memory_window=memory_window,
     )
 
 

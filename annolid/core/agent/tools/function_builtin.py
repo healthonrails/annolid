@@ -577,8 +577,8 @@ class MemorySearchTool(FunctionTool):
     @property
     def description(self) -> str:
         return (
-            "Search markdown memory files and return top matching snippets "
-            "with path and line range."
+            "Search markdown memory files (including memory/HISTORY.md) and return "
+            "top matching snippets with path and line range."
         )
 
     @property
@@ -631,8 +631,8 @@ class MemoryGetTool(FunctionTool):
     @property
     def description(self) -> str:
         return (
-            "Read MEMORY.md or a daily memory file under memory/ with an "
-            "optional line range."
+            "Read MEMORY.md, HISTORY.md, or a daily memory file under memory/ "
+            "with an optional line range."
         )
 
     @property

@@ -6,7 +6,7 @@ from pathlib import Path
 from annolid.core.agent.memory import AgentMemoryStore
 
 
-def test_memory_context_includes_long_term_today_and_yesterday(tmp_path: Path) -> None:
+def test_memory_context_includes_only_long_term_by_default(tmp_path: Path) -> None:
     store = AgentMemoryStore(tmp_path)
     store.write_long_term("Use deterministic exports.")
 
@@ -29,9 +29,17 @@ def test_memory_context_includes_long_term_today_and_yesterday(tmp_path: Path) -
     context = store.get_memory_context(recent_days=2)
     assert "Long-term Memory" in context
     assert "Use deterministic exports." in context
-    assert "today note" in context
-    assert "yesterday note" in context
+    assert "today note" not in context
+    assert "yesterday note" not in context
     assert "older note" not in context
+
+
+def test_memory_append_history_writes_history_file(tmp_path: Path) -> None:
+    store = AgentMemoryStore(tmp_path)
+    store.append_history("[2026-01-01 10:00] User asked for export defaults.")
+    content = (store.memory_dir / "HISTORY.md").read_text(encoding="utf-8")
+    assert "# History" in content
+    assert "export defaults" in content
 
 
 def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
@@ -39,6 +47,7 @@ def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
     (store.memory_dir / "MEMORY.md").write_text(
         "line1\nline2\nline3\n", encoding="utf-8"
     )
+    store.append_history("[2026-01-01 10:00] Added line range test.")
 
     payload = store.memory_get("memory/MEMORY.md", start_line=2, end_line=3)
     assert payload["line_start"] == 2
@@ -51,3 +60,7 @@ def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
         assert False, "expected ValueError for escaping memory directory"
     except ValueError:
         pass
+
+    history_payload = store.memory_get("memory/HISTORY.md")
+    assert history_payload["path"] == "memory/HISTORY.md"
+    assert "line range test" in history_payload["content"]

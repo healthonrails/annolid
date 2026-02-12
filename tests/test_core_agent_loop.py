@@ -299,6 +299,87 @@ def test_agent_loop_does_not_persist_empty_assistant_reply() -> None:
     assert loop.get_session_history("s-empty") == []
 
 
+def test_agent_loop_consolidates_large_history_into_history_file(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    state = {"calls": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del tools, model
+        state["calls"] += 1
+        if (
+            len(messages) == 1
+            and messages[0].get("role") == "system"
+            and "Consolidate the archived chat transcript"
+            in str(messages[0].get("content") or "")
+        ):
+            return {
+                "content": (
+                    '{"history_entry":"[2026-01-01 10:00] '
+                    'Consolidated earlier turns.","memory_update":"- user_pref: fast"}'
+                )
+            }
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        memory_config=AgentMemoryConfig(
+            enabled=True,
+            max_history_messages=64,
+            memory_window=6,
+            include_facts_in_system_prompt=True,
+        ),
+    )
+    for i in range(4):
+        _ = asyncio.run(loop.run(f"turn-{i}", session_id="c1"))
+
+    _ = asyncio.run(loop.run("trigger consolidate", session_id="c1"))
+    history_path = tmp_path / "memory" / "HISTORY.md"
+    assert history_path.exists()
+    assert "Consolidated earlier turns" in history_path.read_text(encoding="utf-8")
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "user_pref: fast" in memory_text
+    assert len(loop.get_session_history("c1")) <= 10
+    assert state["calls"] >= 2
+
+
+def test_agent_loop_persists_tools_used_metadata() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        assert any(m.get("role") == "tool" for m in messages)
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("hi", session_id="tools-meta"))
+    hist = loop.get_session_history("tools-meta")
+    assert hist[-1]["role"] == "assistant"
+    assert hist[-1]["tools_used"] == ["echo"]
+
+
 def test_agent_loop_sanitizes_and_deduplicates_tool_calls() -> None:
     registry = FunctionToolRegistry()
 

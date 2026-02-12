@@ -11,7 +11,7 @@ def _today_str() -> str:
 
 
 class AgentMemoryStore:
-    """Persistent markdown memory store (daily notes + long-term memory)."""
+    """Two-layer markdown memory store (long-term facts + searchable history)."""
 
     _DAILY_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
@@ -20,6 +20,7 @@ class AgentMemoryStore:
         self.memory_dir = self.workspace / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.memory_file = self.memory_dir / "MEMORY.md"
+        self.history_file = self.memory_dir / "HISTORY.md"
 
     def get_today_file(self) -> Path:
         return self.memory_dir / f"{_today_str()}.md"
@@ -42,6 +43,19 @@ class AgentMemoryStore:
             )
         else:
             path.write_text(f"# {_today_str()}\n\n{text}\n", encoding="utf-8")
+
+    def append_history(self, content: str) -> None:
+        path = self.history_file
+        text = str(content or "").strip()
+        if not text:
+            return
+        if path.exists():
+            existing = path.read_text(encoding="utf-8")
+            path.write_text(
+                (existing.rstrip() + "\n\n" + text).strip() + "\n", encoding="utf-8"
+            )
+        else:
+            path.write_text("# History\n\n" + text + "\n", encoding="utf-8")
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -80,17 +94,11 @@ class AgentMemoryStore:
     def get_memory_context(
         self, *, recent_days: int = 2, max_chars: int = 12000
     ) -> str:
+        del recent_days
         parts: List[str] = []
         long_term = self.read_long_term().strip()
         if long_term:
             parts.append("## Long-term Memory\n" + long_term)
-
-        for daily_path in self.get_recent_daily_files(days=recent_days):
-            daily = daily_path.read_text(encoding="utf-8").strip()
-            if not daily:
-                continue
-            label = daily_path.stem
-            parts.append(f"## Daily Notes ({label})\n" + daily)
 
         merged = "\n\n".join(parts).strip()
         if len(merged) <= max(0, int(max_chars)):
@@ -105,6 +113,8 @@ class AgentMemoryStore:
         files: List[Path] = []
         if self.memory_file.exists():
             files.append(self.memory_file)
+        if self.history_file.exists():
+            files.append(self.history_file)
         files.extend(self.list_memory_files())
         return files
 
@@ -137,7 +147,11 @@ class AgentMemoryStore:
     def _daily_age_boost(path: Path) -> float:
         name = path.name
         if not AgentMemoryStore._DAILY_FILE_RE.match(name):
-            return 0.10 if name == "MEMORY.md" else 0.0
+            if name == "MEMORY.md":
+                return 0.12
+            if name == "HISTORY.md":
+                return 0.08
+            return 0.0
         try:
             day = datetime.strptime(path.stem, "%Y-%m-%d").date()
             age = max(0, (date.today() - day).days)
@@ -195,9 +209,15 @@ class AgentMemoryStore:
         if raw.startswith("memory/"):
             raw = raw.split("/", 1)[1]
         if "/" in raw:
-            raise ValueError("Only MEMORY.md or memory/YYYY-MM-DD.md are allowed.")
-        if raw != "MEMORY.md" and not self._DAILY_FILE_RE.match(raw):
-            raise ValueError("Only MEMORY.md or memory/YYYY-MM-DD.md are allowed.")
+            raise ValueError(
+                "Only MEMORY.md, HISTORY.md, or memory/YYYY-MM-DD.md are allowed."
+            )
+        if raw not in {"MEMORY.md", "HISTORY.md"} and not self._DAILY_FILE_RE.match(
+            raw
+        ):
+            raise ValueError(
+                "Only MEMORY.md, HISTORY.md, or memory/YYYY-MM-DD.md are allowed."
+            )
         resolved = (self.memory_dir / raw).resolve()
         memory_root = self.memory_dir.resolve()
         if not str(resolved).startswith(str(memory_root)):

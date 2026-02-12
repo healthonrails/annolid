@@ -13,9 +13,11 @@ def test_bootstrap_workspace_creates_templates(tmp_path: Path) -> None:
     assert out["TOOLS.md"] == "created"
     assert out["HEARTBEAT.md"] == "created"
     assert out["memory/MEMORY.md"] == "created"
+    assert out["memory/HISTORY.md"] == "created"
 
     assert (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / "memory" / "MEMORY.md").exists()
+    assert (tmp_path / "memory" / "HISTORY.md").exists()
 
 
 def test_bootstrap_workspace_skips_without_overwrite(tmp_path: Path) -> None:

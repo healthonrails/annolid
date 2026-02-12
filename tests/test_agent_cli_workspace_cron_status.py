@@ -17,6 +17,7 @@ def test_agent_onboard_creates_workspace_templates(tmp_path: Path) -> None:
     assert (workspace / "TOOLS.md").exists()
     assert (workspace / "HEARTBEAT.md").exists()
     assert (workspace / "memory" / "MEMORY.md").exists()
+    assert (workspace / "memory" / "HISTORY.md").exists()
 
 
 def test_agent_status_uses_patched_paths(tmp_path: Path, monkeypatch, capsys) -> None:

@@ -45,12 +45,14 @@ def test_resolve_agent_runtime_config_prefers_profile_overrides(
                 "temperature": 0.3,
                 "max_tool_iterations": 15,
                 "max_history_messages": 50,
+                "memory_window": 80,
             },
             "profiles": {
                 "analysis_agent": {
                     "temperature": 0.4,
                     "max_tool_iterations": 7,
                     "max_history_messages": 30,
+                    "memory_window": 20,
                 }
             },
         }
@@ -60,11 +62,13 @@ def test_resolve_agent_runtime_config_prefers_profile_overrides(
     assert cfg.temperature == 0.4
     assert cfg.max_tool_iterations == 7
     assert cfg.max_history_messages == 30
+    assert cfg.memory_window == 20
 
     global_cfg = mod.resolve_agent_runtime_config()
     assert global_cfg.temperature == 0.3
     assert global_cfg.max_tool_iterations == 15
     assert global_cfg.max_history_messages == 50
+    assert global_cfg.memory_window == 80
 
 
 def test_save_llm_settings_scrubs_nested_secrets(tmp_path: Path, monkeypatch) -> None:

@@ -5,6 +5,7 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import (
@@ -58,6 +59,7 @@ class AgentLoopResult:
 class AgentMemoryConfig:
     enabled: bool = True
     max_history_messages: int = 24
+    memory_window: int = 50
     include_facts_in_system_prompt: bool = True
 
 
@@ -168,7 +170,8 @@ class AgentLoop:
         self._default_temperature = float(runtime_cfg.temperature)
         self._logger = logger or logging.getLogger("annolid.agent.loop")
         self._memory_config = memory_config or AgentMemoryConfig(
-            max_history_messages=runtime_cfg.max_history_messages
+            max_history_messages=runtime_cfg.max_history_messages,
+            memory_window=runtime_cfg.memory_window,
         )
         self._memory_store = memory_store or InMemorySessionStore()
         self._workspace = workspace
@@ -225,6 +228,11 @@ class AgentLoop:
         if memory_enabled:
             memory_history = self._memory_store.get_history(session_id)
             memory_facts = self._memory_store.get_facts(session_id)
+            if len(memory_history) > max(2, int(self._memory_config.memory_window)):
+                memory_history = await self._consolidate_memory(
+                    session_id=session_id,
+                    history=memory_history,
+                )
 
         if system_prompt:
             messages.append({"role": "system", "content": str(system_prompt)})
@@ -340,13 +348,18 @@ class AgentLoop:
 
             final_content = assistant_text
             if memory_enabled and str(final_content).strip():
+                tools_used = self._extract_tools_used(tool_runs)
                 self._memory_store.append_history(
                     session_id,
                     [
                         {"role": "user", "content": user_message_text},
-                        {"role": "assistant", "content": str(final_content)},
+                        {
+                            "role": "assistant",
+                            "content": str(final_content),
+                            "tools_used": tools_used,
+                        },
                     ],
-                    max_messages=self._memory_config.max_history_messages,
+                    max_messages=self._history_persist_limit(),
                 )
             return AgentLoopResult(
                 content=final_content,
@@ -363,13 +376,18 @@ class AgentLoop:
                     "Reached max iterations before producing a final response."
                 )
         if memory_enabled:
+            tools_used = self._extract_tools_used(tool_runs)
             self._memory_store.append_history(
                 session_id,
                 [
                     {"role": "user", "content": user_message_text},
-                    {"role": "assistant", "content": str(final_content)},
+                    {
+                        "role": "assistant",
+                        "content": str(final_content),
+                        "tools_used": tools_used,
+                    },
                 ],
-                max_messages=self._memory_config.max_history_messages,
+                max_messages=self._history_persist_limit(),
             )
         return AgentLoopResult(
             content=final_content,
@@ -448,6 +466,189 @@ class AgentLoop:
         for key, value in facts.items():
             lines.append(f"- {key}: {value}")
         return "\n".join(lines)
+
+    def _history_persist_limit(self) -> int:
+        return max(
+            4,
+            int(self._memory_config.max_history_messages),
+            int(self._memory_config.memory_window) * 2,
+        )
+
+    @staticmethod
+    def _extract_tools_used(tool_runs: Sequence[AgentToolRun]) -> List[str]:
+        if not tool_runs:
+            return []
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for run in tool_runs:
+            name = str(run.name or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            ordered.append(name)
+        return ordered
+
+    async def _consolidate_memory(
+        self,
+        *,
+        session_id: str,
+        history: Sequence[Mapping[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        window = max(4, int(self._memory_config.memory_window))
+        if len(history) <= window:
+            return [dict(m) for m in history]
+        keep_count = min(10, max(2, window // 2))
+        archive = [dict(m) for m in history[:-keep_count]]
+        keep = [dict(m) for m in history[-keep_count:]]
+        if not archive:
+            return keep
+
+        self._replace_session_history(session_id, keep)
+        if not self._workspace:
+            return keep
+
+        try:
+            memory = AgentMemoryStore(Path(self._workspace))
+            old_long_term = memory.read_long_term()
+            transcript = self._format_consolidation_transcript(archive)
+            payload = await self._request_memory_consolidation(
+                transcript=transcript,
+                current_memory=old_long_term,
+            )
+            history_entry = self._normalize_history_entry(
+                str(payload.get("history_entry") or "").strip()
+            )
+            if history_entry:
+                memory.append_history(history_entry)
+            updated_memory = str(payload.get("memory_update") or "")
+            if self._is_valid_memory_update(old_long_term, updated_memory):
+                if updated_memory != old_long_term:
+                    memory.write_long_term(updated_memory)
+        except Exception as exc:
+            self._logger.warning(
+                "memory consolidation failed for session=%s: %s", session_id, exc
+            )
+        return keep
+
+    def _replace_session_history(
+        self,
+        session_id: str,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> None:
+        self._memory_store.clear_history(session_id)
+        if not messages:
+            return
+        self._memory_store.append_history(
+            session_id,
+            [dict(m) for m in messages],
+            max_messages=self._history_persist_limit(),
+        )
+
+    def _format_consolidation_transcript(
+        self, history: Sequence[Mapping[str, Any]]
+    ) -> str:
+        lines: List[str] = []
+        for item in history:
+            role = str(item.get("role") or "unknown").upper()
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            tools_used = item.get("tools_used")
+            if isinstance(tools_used, (list, tuple)):
+                used = [str(t).strip() for t in tools_used if str(t).strip()]
+                if used:
+                    lines.append(f"{role} [tools: {', '.join(used)}]: {content}")
+                    continue
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines).strip()
+
+    async def _request_memory_consolidation(
+        self,
+        *,
+        transcript: str,
+        current_memory: str,
+    ) -> Dict[str, Any]:
+        prompt = (
+            "Consolidate the archived chat transcript into two outputs.\n"
+            "Return strict JSON with keys: history_entry, memory_update.\n"
+            "- history_entry: one compact grep-friendly line prefixed with "
+            "[YYYY-MM-DD HH:MM].\n"
+            "- memory_update: full updated MEMORY.md text. Keep facts stable and "
+            "do not invent details.\n"
+            "- If no long-term facts changed, return current memory unchanged.\n\n"
+            f"Current MEMORY.md:\n{current_memory.strip()}\n\n"
+            f"Archived Transcript:\n{transcript}"
+        )
+        resp = await self._llm_callable(
+            [{"role": "system", "content": prompt}],
+            [],
+            self.model,
+        )
+        content = str(resp.get("content") or "").strip()
+        parsed = self._try_parse_json_object(content)
+        if parsed is None:
+            return {
+                "history_entry": self._fallback_history_entry(transcript),
+                "memory_update": current_memory,
+            }
+        return parsed
+
+    @staticmethod
+    def _try_parse_json_object(text: str) -> Optional[Dict[str, Any]]:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return dict(parsed)
+        except Exception:
+            pass
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(raw[start : end + 1])
+            if isinstance(parsed, dict):
+                return dict(parsed)
+        except Exception:
+            return None
+        return None
+
+    def _fallback_history_entry(self, transcript: str) -> str:
+        lines = [ln.strip() for ln in str(transcript or "").splitlines() if ln.strip()]
+        summary = " | ".join(lines[:2])[:500]
+        if not summary:
+            summary = "Session history consolidated."
+        return self._normalize_history_entry(summary)
+
+    @staticmethod
+    def _normalize_history_entry(entry: str) -> str:
+        text = str(entry or "").strip()
+        if not text:
+            return ""
+        if not text.startswith("["):
+            stamp = datetime.now().strftime("[%Y-%m-%d %H:%M]")
+            text = f"{stamp} {text}"
+        return text
+
+    @staticmethod
+    def _is_valid_memory_update(previous: str, candidate: str) -> bool:
+        new_text = str(candidate or "")
+        old_text = str(previous or "")
+        if new_text == old_text:
+            return True
+        if not new_text.strip():
+            return not old_text.strip()
+        if old_text.strip():
+            old_len = len(old_text.strip())
+            new_len = len(new_text.strip())
+            if new_len < max(40, int(old_len * 0.2)):
+                return False
+            if new_len > int(old_len * 4.0):
+                return False
+        return True
 
     def _wire_tools(self) -> None:
         self._set_tool_context(channel="cli", chat_id="direct")

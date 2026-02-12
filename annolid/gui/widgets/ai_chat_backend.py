@@ -306,7 +306,9 @@ class StreamingChatTask(QRunnable):
                 parts.append(f"User: {user_msg}")
             if assistant_msg:
                 parts.append(f"Assistant: {assistant_msg}")
-            self.workspace_memory.append_today("\n\n".join(parts))
+            entry = "\n\n".join(parts)
+            self.workspace_memory.append_today(entry)
+            self.workspace_memory.append_history(entry)
         except Exception:
             pass
 

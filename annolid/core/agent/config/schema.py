@@ -68,6 +68,7 @@ class AgentDefaults:
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 12
+    memory_window: int = 50
     session: SessionRoutingConfig = field(default_factory=SessionRoutingConfig)
 
     @classmethod
@@ -96,6 +97,12 @@ class AgentDefaults:
                     payload.get("maxToolIterations", payload.get("max_iterations", 12)),
                 )
             ),
+            memory_window=int(
+                payload.get(
+                    "memory_window",
+                    payload.get("memoryWindow", 50),
+                )
+            ),
             session=SessionRoutingConfig.from_dict(session_payload),
         )
 
@@ -106,6 +113,7 @@ class AgentDefaults:
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "max_tool_iterations": self.max_tool_iterations,
+            "memory_window": self.memory_window,
             "session": self.session.to_dict(),
         }
 

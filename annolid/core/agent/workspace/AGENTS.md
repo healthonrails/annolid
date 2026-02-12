@@ -27,7 +27,8 @@ You are the Annolid agent. Prioritize correctness, reproducibility, and safe exe
 ## Memory
 
 - `memory/MEMORY.md`: long-term facts and stable preferences.
-- `memory/YYYY-MM-DD.md`: daily notes and session context.
+- `memory/HISTORY.md`: append-only session/event archive for grep-style recall.
+- `memory/YYYY-MM-DD.md`: legacy daily notes (readable/searchable, not auto-loaded).
 
 ## Heartbeat
 
