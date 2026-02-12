@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections import OrderedDict
 from contextlib import suppress
-from typing import Optional
+from typing import Any, Optional
 
 from ..loop import AgentLoop
 from .events import InboundMessage, OutboundMessage
@@ -20,17 +20,52 @@ class AgentBusService:
         bus: MessageBus,
         loop: AgentLoop,
         max_idempotency_cache: int = 512,
+        default_dm_scope: str = "main",
+        default_main_session_key: str = "",
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.bus = bus
         self.loop = loop
         self._logger = logger or logging.getLogger("annolid.agent.bus.service")
         self._max_idempotency_cache = max(16, int(max_idempotency_cache))
+        self._default_dm_scope = str(default_dm_scope or "").strip() or "main"
+        self._default_main_session_key = str(default_main_session_key or "").strip()
         self._idempotency_cache: OrderedDict[str, OutboundMessage] = OrderedDict()
         self._outbound_seq = 0
         self._state_version = 0
         self._running = False
         self._task: Optional[asyncio.Task[None]] = None
+
+    @classmethod
+    def from_agent_config(
+        cls,
+        *,
+        bus: MessageBus,
+        loop: AgentLoop,
+        agent_config: Any,
+        max_idempotency_cache: int = 512,
+        logger: Optional[logging.Logger] = None,
+    ) -> "AgentBusService":
+        dm_scope = "main"
+        main_key = "main"
+        try:
+            defaults = agent_config.agents.defaults
+            session = getattr(defaults, "session", None)
+            if session is not None:
+                dm_scope = str(getattr(session, "dm_scope", dm_scope) or dm_scope)
+                main_key = str(
+                    getattr(session, "main_session_key", main_key) or main_key
+                )
+        except Exception:
+            pass
+        return cls(
+            bus=bus,
+            loop=loop,
+            max_idempotency_cache=max_idempotency_cache,
+            default_dm_scope=dm_scope,
+            default_main_session_key=main_key,
+            logger=logger,
+        )
 
     async def start(self) -> None:
         if self._running and self._task is not None and not self._task.done():
@@ -58,7 +93,8 @@ class AgentBusService:
                 self._logger.error("Bus service loop error: %s", exc)
 
     async def _process_inbound(self, inbound: InboundMessage) -> None:
-        cache_key = self._idempotency_cache_key(inbound)
+        session_key = self._resolve_session_key(inbound)
+        cache_key = self._idempotency_cache_key(inbound, session_key=session_key)
         if cache_key:
             cached = self._idempotency_cache.get(cache_key)
             if cached is not None:
@@ -80,7 +116,7 @@ class AgentBusService:
         try:
             result = await self.loop.run(
                 inbound.content,
-                session_id=inbound.session_key,
+                session_id=session_key,
                 channel=inbound.channel,
                 chat_id=inbound.chat_id,
                 media=list(inbound.media or []),
@@ -106,12 +142,23 @@ class AgentBusService:
         self._store_idempotency(cache_key, outbound)
         await self.bus.publish_outbound(outbound)
 
-    def _idempotency_cache_key(self, inbound: InboundMessage) -> str:
+    def _resolve_session_key(self, inbound: InboundMessage) -> str:
+        return inbound.resolved_session_key(
+            default_dm_scope=self._default_dm_scope,
+            default_main_key=self._default_main_session_key,
+        )
+
+    def _idempotency_cache_key(
+        self,
+        inbound: InboundMessage,
+        *,
+        session_key: str,
+    ) -> str:
         raw = inbound.metadata.get("idempotency_key")
         key = str(raw or "").strip()
         if not key:
             return ""
-        return f"{inbound.session_key}:{key}"
+        return f"{session_key}:{key}"
 
     def _store_idempotency(self, cache_key: str, outbound: OutboundMessage) -> None:
         if not cache_key:

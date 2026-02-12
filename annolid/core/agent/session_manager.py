@@ -115,7 +115,8 @@ class AgentSessionManager:
     def save(self, session: AgentSession) -> None:
         with self._lock:
             path = self._session_path(session.key)
-            with path.open("w", encoding="utf-8") as fh:
+            tmp_path = path.with_name(f"{path.name}.tmp")
+            with tmp_path.open("w", encoding="utf-8") as fh:
                 meta_line = {
                     "_type": "metadata",
                     "key": session.key,
@@ -128,6 +129,7 @@ class AgentSessionManager:
                 fh.write(json.dumps(meta_line, ensure_ascii=False) + "\n")
                 for msg in session.messages:
                     fh.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            tmp_path.replace(path)
             self._cache[session.key] = session
 
     def delete(self, key: str) -> bool:

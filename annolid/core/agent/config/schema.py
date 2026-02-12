@@ -8,6 +8,34 @@ from annolid.core.agent.providers.registry import PROVIDERS
 
 
 @dataclass
+class SessionRoutingConfig:
+    dm_scope: str = "main"
+    main_session_key: str = "main"
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SessionRoutingConfig":
+        payload = data or {}
+        dm_scope = str(payload.get("dm_scope", payload.get("dmScope", "main"))).strip()
+        if not dm_scope:
+            dm_scope = "main"
+        main_key = str(
+            payload.get(
+                "main_session_key",
+                payload.get("mainSessionKey", payload.get("main_key", "main")),
+            )
+        ).strip()
+        if not main_key:
+            main_key = "main"
+        return cls(dm_scope=dm_scope, main_session_key=main_key)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dm_scope": self.dm_scope,
+            "main_session_key": self.main_session_key,
+        }
+
+
+@dataclass
 class ProviderConfig:
     api_key: str = ""
     api_base: str = ""
@@ -40,10 +68,23 @@ class AgentDefaults:
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 12
+    session: SessionRoutingConfig = field(default_factory=SessionRoutingConfig)
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AgentDefaults":
         payload = data or {}
+        session_payload = payload.get("session")
+        if not isinstance(session_payload, dict):
+            session_payload = {
+                "dm_scope": payload.get(
+                    "session_dm_scope",
+                    payload.get("sessionDmScope"),
+                ),
+                "main_session_key": payload.get(
+                    "main_session_key",
+                    payload.get("mainSessionKey", payload.get("session_main_key")),
+                ),
+            }
         return cls(
             workspace=str(payload.get("workspace") or "~/.annolid/workspace"),
             model=str(payload.get("model") or "qwen3-vl"),
@@ -55,6 +96,7 @@ class AgentDefaults:
                     payload.get("maxToolIterations", payload.get("max_iterations", 12)),
                 )
             ),
+            session=SessionRoutingConfig.from_dict(session_payload),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -64,6 +106,7 @@ class AgentDefaults:
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "max_tool_iterations": self.max_tool_iterations,
+            "session": self.session.to_dict(),
         }
 
 

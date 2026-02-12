@@ -55,16 +55,64 @@ class BaseChannel(ABC):
     ) -> bool:
         if not self.is_allowed(sender_id):
             return False
+        normalized_meta = self._normalize_session_metadata(
+            sender_id=sender_id,
+            chat_id=chat_id,
+            metadata=metadata,
+        )
         msg = InboundMessage(
             channel=self.name,
             sender_id=str(sender_id),
             chat_id=str(chat_id),
             content=str(content),
             media=list(media or []),
-            metadata=dict(metadata or {}),
+            metadata=normalized_meta,
         )
         await self.bus.publish_inbound(msg)
         return True
+
+    def _normalize_session_metadata(
+        self,
+        *,
+        sender_id: str,
+        chat_id: str,
+        metadata: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        merged = dict(metadata or {})
+        sender = str(sender_id or "")
+        chat = str(chat_id or "")
+        merged.setdefault("peer_id", sender or chat)
+        merged.setdefault("channel_key", chat or sender)
+
+        conversation_type = str(
+            merged.get("conversation_type") or merged.get("chat_type") or ""
+        ).strip()
+        if conversation_type:
+            merged.setdefault("conversation_type", conversation_type.lower())
+        is_dm_raw = merged.get("is_dm")
+
+        if "is_dm" not in merged:
+            lowered = conversation_type.lower()
+            if lowered in {"dm", "direct", "direct_message", "private"}:
+                merged["is_dm"] = True
+            elif lowered in {"group", "channel", "room", "thread"}:
+                merged["is_dm"] = False
+            else:
+                merged["is_dm"] = bool(sender and chat and sender == chat)
+        is_dm = bool(merged.get("is_dm"))
+        if not conversation_type:
+            merged["conversation_type"] = "dm" if is_dm else "channel"
+        elif is_dm and conversation_type.lower() not in {
+            "dm",
+            "direct",
+            "direct_message",
+            "private",
+        }:
+            merged["conversation_type"] = "dm"
+
+        if is_dm_raw is None:
+            merged["is_dm"] = is_dm
+        return merged
 
     @property
     def is_running(self) -> bool:

@@ -79,3 +79,47 @@ def test_channel_manager_dispatches_outbound() -> None:
                 pass
 
     asyncio.run(_run())
+
+
+def test_channel_ingest_infers_dm_metadata() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = TelegramChannel({}, bus)
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="alice",
+            content="hello",
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.metadata.get("is_dm") is True
+        assert inbound.metadata.get("conversation_type") == "dm"
+        assert inbound.metadata.get("peer_id") == "alice"
+        assert inbound.metadata.get("channel_key") == "alice"
+
+    asyncio.run(_run())
+
+
+def test_channel_ingest_preserves_explicit_dm_hints() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = SlackChannel({}, bus)
+        ok = await channel.ingest(
+            sender_id="U123",
+            chat_id="C999",
+            content="hello",
+            metadata={
+                "chat_type": "direct_message",
+                "channel_id": "D111",
+                "account_id": "workspace-1",
+            },
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.metadata.get("is_dm") is True
+        assert inbound.metadata.get("conversation_type") == "direct_message"
+        assert inbound.metadata.get("channel_key") == "C999"
+        assert inbound.metadata.get("channel_id") == "D111"
+        assert inbound.metadata.get("account_id") == "workspace-1"
+
+    asyncio.run(_run())

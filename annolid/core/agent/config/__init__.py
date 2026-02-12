@@ -11,6 +11,7 @@ from .schema import (
     AgentsConfig,
     ExecToolConfig,
     ProviderConfig,
+    SessionRoutingConfig,
     ToolPolicyConfig,
     ToolsConfig,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "ProviderConfig",
     "AgentDefaults",
     "AgentsConfig",
+    "SessionRoutingConfig",
     "ExecToolConfig",
     "ToolPolicyConfig",
     "ToolsConfig",

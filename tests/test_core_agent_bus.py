@@ -14,6 +14,7 @@ from annolid.core.agent.bus import (
     ResponseFrame,
     parse_frame,
 )
+from annolid.core.agent.config import AgentConfig, SessionRoutingConfig
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 
@@ -168,9 +169,134 @@ def test_parse_frame_rejects_invalid_payloads() -> None:
         assert False, "Expected ProtocolValidationError"
     except ProtocolValidationError:
         pass
-
     try:
         _ = parse_frame({"type": "event", "event": "", "payload": {}})
         assert False, "Expected ProtocolValidationError"
     except ProtocolValidationError:
         pass
+
+
+def test_inbound_message_session_key_supports_dm_scope() -> None:
+    dm_msg = InboundMessage(
+        channel="telegram",
+        sender_id="alice",
+        chat_id="dm-room",
+        content="hello",
+        metadata={
+            "conversation_type": "dm",
+            "session_dm_scope": "per-channel-peer",
+            "channel_key": "private-thread",
+            "peer_id": "peer-42",
+        },
+    )
+    assert dm_msg.session_key == "telegram:private-thread:dm:peer-42"
+
+    account_dm = InboundMessage(
+        channel="slack",
+        sender_id="alice",
+        chat_id="im-1",
+        content="hello",
+        metadata={
+            "conversation_type": "dm",
+            "session_dm_scope": "per-account-channel-peer",
+            "account_id": "workspace-a",
+            "channel_key": "dm-channel",
+            "peer_id": "U123",
+        },
+    )
+    assert account_dm.session_key == "slack:workspace-a:dm-channel:dm:U123"
+
+
+def test_agent_bus_service_idempotency_isolated_by_peer_scope() -> None:
+    state = {"calls": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["calls"] += 1
+        return {"content": f"run:{state['calls']}"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop, default_dm_scope="per-peer")
+        await svc.start()
+        try:
+            for sender in ("alice", "bob"):
+                await bus.publish_inbound(
+                    InboundMessage(
+                        channel="telegram",
+                        sender_id=sender,
+                        chat_id="shared-dm-chat",
+                        content="ping",
+                        metadata={
+                            "conversation_type": "dm",
+                            "idempotency_key": "abc-123",
+                        },
+                    )
+                )
+            out1 = await bus.consume_outbound(timeout_s=1.0)
+            out2 = await bus.consume_outbound(timeout_s=1.0)
+            assert out1.content == "run:1"
+            assert out2.content == "run:2"
+            assert bool(out2.metadata.get("idempotency_replay")) is False
+            assert state["calls"] == 2
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_uses_session_defaults_from_config() -> None:
+    state = {"calls": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["calls"] += 1
+        return {"content": f"run:{state['calls']}"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        cfg = AgentConfig()
+        cfg.agents.defaults.session = SessionRoutingConfig(dm_scope="per-peer")
+        svc = AgentBusService.from_agent_config(bus=bus, loop=loop, agent_config=cfg)
+        await svc.start()
+        try:
+            for sender in ("alice", "bob"):
+                await bus.publish_inbound(
+                    InboundMessage(
+                        channel="telegram",
+                        sender_id=sender,
+                        chat_id="shared-dm-chat",
+                        content="ping",
+                        metadata={
+                            "conversation_type": "dm",
+                            "idempotency_key": "abc-123",
+                        },
+                    )
+                )
+            out1 = await bus.consume_outbound(timeout_s=1.0)
+            out2 = await bus.consume_outbound(timeout_s=1.0)
+            assert out1.content == "run:1"
+            assert out2.content == "run:2"
+            assert state["calls"] == 2
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())

@@ -6,6 +6,7 @@ from pathlib import Path
 from annolid.core.agent.config import (
     AgentConfig,
     ProviderConfig,
+    SessionRoutingConfig,
     ToolPolicyConfig,
     load_config,
     save_config,
@@ -17,6 +18,10 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg = AgentConfig()
     cfg.agents.defaults.workspace = str(tmp_path / "workspace")
     cfg.agents.defaults.model = "gemini-1.5-flash"
+    cfg.agents.defaults.session = SessionRoutingConfig(
+        dm_scope="per-account-channel-peer",
+        main_session_key="main",
+    )
     cfg.providers["gemini"] = ProviderConfig(api_key="secret", api_base="")
     cfg.tools.restrict_to_workspace = True
     cfg.tools.allowed_read_roots = [
@@ -37,6 +42,8 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
 
     assert loaded.agents.defaults.workspace == str(tmp_path / "workspace")
     assert loaded.agents.defaults.model == "gemini-1.5-flash"
+    assert loaded.agents.defaults.session.dm_scope == "per-account-channel-peer"
+    assert loaded.agents.defaults.session.main_session_key == "main"
     assert loaded.providers["gemini"].api_key == "secret"
     assert loaded.tools.restrict_to_workspace is True
     assert loaded.tools.allowed_read_roots == [
@@ -62,3 +69,19 @@ def test_agent_config_migrates_legacy_restrict_to_workspace(tmp_path: Path) -> N
     loaded = load_config(cfg_path)
     assert loaded.tools.exec.timeout == 10
     assert loaded.tools.restrict_to_workspace is True
+
+
+def test_agent_config_loads_legacy_session_defaults(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.json"
+    payload = {
+        "agents": {
+            "defaults": {
+                "sessionDmScope": "per-peer",
+                "mainSessionKey": "main",
+            }
+        }
+    }
+    cfg_path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_config(cfg_path)
+    assert loaded.agents.defaults.session.dm_scope == "per-peer"
+    assert loaded.agents.defaults.session.main_session_key == "main"
