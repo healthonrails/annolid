@@ -141,7 +141,6 @@ dmypy.json
 *.github.io
 *_secret_key
 *.mlpackage
-AGENTS.md
 *TODO*
 project.annolid.json
 skills.md
