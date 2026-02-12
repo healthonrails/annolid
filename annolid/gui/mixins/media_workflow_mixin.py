@@ -261,13 +261,17 @@ class MediaWorkflowMixin:
             )
 
     def open_ai_chat_dock(self) -> None:
-        """Open the dedicated right-side AI chat dock."""
+        """Backward-compatible alias for opening the Annolid Bot dock."""
+        self.open_annolid_bot_dock()
+
+    def open_annolid_bot_dock(self) -> None:
+        """Open the dedicated right-side Annolid Bot dock."""
         manager = getattr(self, "ai_chat_manager", None)
         if manager is not None:
             manager.show_chat_dock()
             widget = getattr(manager, "ai_chat_widget", None)
             if widget is not None:
-                widget.prompt_text_edit.setPlaceholderText("Type a message…")
+                widget.prompt_text_edit.setPlaceholderText("Message Annolid Bot…")
             return
         self.openCaption()
 

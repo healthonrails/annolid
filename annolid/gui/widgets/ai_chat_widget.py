@@ -11,10 +11,14 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
-from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
+from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_session
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
-from annolid.utils.llm_settings import load_llm_settings, save_llm_settings
+from annolid.utils.llm_settings import (
+    has_provider_api_key,
+    load_llm_settings,
+    save_llm_settings,
+)
 from annolid.utils.tts_settings import default_tts_settings, load_tts_settings
 
 
@@ -94,7 +98,7 @@ class _ChatBubble(QtWidgets.QFrame):
 
 
 class AIChatWidget(QtWidgets.QWidget):
-    """Dedicated chat UI for local/cloud models with visual sharing and streaming."""
+    """Annolid Bot chat UI for local/cloud models with visual sharing and streaming."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -103,6 +107,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.provider_labels: Dict[str, str] = {
             "ollama": "Ollama (local)",
             "openai": "OpenAI GPT",
+            "openrouter": "OpenRouter",
             "gemini": "Google Gemini",
         }
         self.selected_provider = self._providers.current_provider()
@@ -120,6 +125,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._current_response_bubble: Optional[_ChatBubble] = None
         self.is_streaming_chat = False
         self.is_recording = False
+        self.session_id = "gui:annolid_bot:default"
         self._applying_theme_styles = False
         self.thread_pool = QThreadPool()
         self._asr_pipeline = None
@@ -134,6 +140,29 @@ class AIChatWidget(QtWidgets.QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
+        header_bar = QtWidgets.QHBoxLayout()
+        self.provider_chip_label = QtWidgets.QLabel(self)
+        self.provider_chip_label.setObjectName("botChipLabel")
+        header_bar.addWidget(self.provider_chip_label)
+
+        self.model_chip_label = QtWidgets.QLabel(self)
+        self.model_chip_label.setObjectName("botChipLabel")
+        header_bar.addWidget(self.model_chip_label)
+
+        self.session_chip_label = QtWidgets.QLabel(self)
+        self.session_chip_label.setObjectName("botChipLabel")
+        header_bar.addWidget(self.session_chip_label, 1)
+
+        self.clear_chat_button = QtWidgets.QPushButton("Clear Chat", self)
+        self.clear_chat_button.setObjectName("clearChatButton")
+        header_bar.addWidget(self.clear_chat_button, 0)
+
+        self.tool_trace_checkbox = QtWidgets.QCheckBox("Show tool trace", self)
+        self.tool_trace_checkbox.setChecked(False)
+        self.tool_trace_checkbox.setObjectName("toolTraceCheckbox")
+        header_bar.addWidget(self.tool_trace_checkbox, 0)
+        root.addLayout(header_bar)
+
         top_bar = QtWidgets.QHBoxLayout()
         self.provider_selector = QtWidgets.QComboBox(self)
         for key, label in self.provider_labels.items():
@@ -145,7 +174,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self.model_selector = QtWidgets.QComboBox(self)
         self.model_selector.setEditable(True)
-        self.model_selector.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
         top_bar.addWidget(self.model_selector, 3)
 
         self.configure_button = QtWidgets.QPushButton("Configure…", self)
@@ -154,7 +183,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         share_bar = QtWidgets.QHBoxLayout()
         self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
-        self.attach_canvas_checkbox.setChecked(True)
+        self.attach_canvas_checkbox.setChecked(False)
         self.attach_window_checkbox = QtWidgets.QCheckBox("Attach window", self)
         share_bar.addWidget(self.attach_canvas_checkbox)
         share_bar.addWidget(self.attach_window_checkbox)
@@ -183,7 +212,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         input_bar = QtWidgets.QHBoxLayout()
         self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
-        self.prompt_text_edit.setPlaceholderText("Type a message…")
+        self.prompt_text_edit.setPlaceholderText("Message Annolid Bot…")
         self.prompt_text_edit.setFixedHeight(74)
         input_bar.addWidget(self.prompt_text_edit, 1)
 
@@ -203,11 +232,16 @@ class AIChatWidget(QtWidgets.QWidget):
         self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
         self.model_selector.currentIndexChanged.connect(self.on_model_changed)
         self.model_selector.editTextChanged.connect(self.on_model_text_edited)
+        line_edit = self.model_selector.lineEdit()
+        if line_edit is not None:
+            line_edit.editingFinished.connect(self.on_model_editing_finished)
         self.configure_button.clicked.connect(self.open_llm_settings_dialog)
         self.send_button.clicked.connect(self.chat_with_model)
         self.share_canvas_button.clicked.connect(self._share_canvas_now)
         self.share_window_button.clicked.connect(self._share_window_now)
         self.talk_button.clicked.connect(self.toggle_recording)
+        self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
+        self._refresh_header_chips()
 
     @staticmethod
     def _mix_colors(
@@ -271,6 +305,28 @@ class AIChatWidget(QtWidgets.QWidget):
                 QLabel#sharedImageLabel, QLabel#chatStatusLabel {{
                     color: {bubble_meta.name()};
                     font-size: 11px;
+                }}
+                QLabel#botChipLabel {{
+                    border: 1px solid {mid.name()};
+                    border-radius: 10px;
+                    background: {area_bg.name()};
+                    color: {bubble_meta.name()};
+                    padding: 2px 8px;
+                    font-size: 10px;
+                    font-weight: 600;
+                }}
+                QPushButton#clearChatButton {{
+                    border: 1px solid {mid.name()};
+                    border-radius: 8px;
+                    background: {button.name()};
+                    padding: 5px 10px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }}
+                QCheckBox#toolTraceCheckbox {{
+                    color: {bubble_meta.name()};
+                    font-size: 11px;
+                    padding: 1px 4px;
                 }}
                 QFrame#chatBubble[role="user"] {{
                     background-color: {bubble_user.name()};
@@ -344,20 +400,38 @@ class AIChatWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
         return bubble
 
+    def _assistant_display_name(self) -> str:
+        model_name = str(self.selected_model or "").strip()
+        if model_name:
+            return f"Annolid Bot ({model_name})"
+        return "Annolid Bot"
+
     def _ensure_provider_ready(self) -> bool:
-        provider_config = self.llm_settings.get(self.selected_provider, {})
-        if self.selected_provider == "openai" and not provider_config.get("api_key"):
+        if self.selected_provider == "openai" and not has_provider_api_key(
+            self.llm_settings, "openai"
+        ):
             QtWidgets.QMessageBox.warning(
                 self,
                 "OpenAI API key required",
                 "Please add your OpenAI API key in the AI Model Settings dialog.",
             )
             return False
-        if self.selected_provider == "gemini" and not provider_config.get("api_key"):
+        if self.selected_provider == "gemini" and not has_provider_api_key(
+            self.llm_settings, "gemini"
+        ):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Gemini API key required",
                 "Please add your Gemini API key in the AI Model Settings dialog.",
+            )
+            return False
+        if self.selected_provider == "openrouter" and not has_provider_api_key(
+            self.llm_settings, "openrouter"
+        ):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "OpenRouter API key required",
+                "Please add your OpenRouter API key in the AI Model Settings dialog.",
             )
             return False
         return True
@@ -394,18 +468,34 @@ class AIChatWidget(QtWidgets.QWidget):
             )
         self._update_model_selector()
         self._persist_state()
+        self._refresh_header_chips()
 
     def on_model_changed(self, index: int) -> None:
         if self._suppress_model_updates:
             return
         self.selected_model = self.model_selector.itemText(index).strip()
         self._persist_state()
+        self._refresh_header_chips()
 
     def on_model_text_edited(self, text: str) -> None:
         if self._suppress_model_updates:
             return
         self.selected_model = text.strip()
+        self._refresh_header_chips()
+
+    def on_model_editing_finished(self) -> None:
+        if self._suppress_model_updates:
+            return
+        text = self.model_selector.currentText().strip()
+        if not text:
+            return
+        self.selected_model = text
+        if text not in self.available_models:
+            self.available_models.append(text)
+            self._update_model_selector()
+            self.model_selector.setCurrentText(text)
         self._persist_state()
+        self._refresh_header_chips()
 
     def open_llm_settings_dialog(self) -> None:
         dialog = LLMSettingsDialog(self, settings=dict(self.llm_settings))
@@ -433,6 +523,7 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         self._update_model_selector()
         self._persist_state()
+        self._refresh_header_chips()
 
     def set_provider_and_model(self, provider: str, model: str = "") -> None:
         provider = (provider or "").strip().lower()
@@ -453,12 +544,58 @@ class AIChatWidget(QtWidgets.QWidget):
             self._update_model_selector()
             self.model_selector.setCurrentText(model)
         self._persist_state()
+        self._refresh_header_chips()
 
     def set_default_visual_share_mode(
         self, *, attach_canvas: bool = True, attach_window: bool = False
     ) -> None:
         self.attach_canvas_checkbox.setChecked(bool(attach_canvas))
         self.attach_window_checkbox.setChecked(bool(attach_window))
+
+    def set_session_id(self, session_id: str) -> None:
+        session_text = str(session_id or "").strip()
+        if session_text:
+            self.session_id = session_text
+            self._refresh_header_chips()
+
+    def _refresh_header_chips(self) -> None:
+        provider_text = self.provider_labels.get(
+            self.selected_provider, str(self.selected_provider or "unknown")
+        )
+        model_text = str(self.selected_model or "unknown")
+        session_text = str(self.session_id or "default")
+        self.provider_chip_label.setText(f"Provider: {provider_text}")
+        self.model_chip_label.setText(f"Model: {model_text}")
+        self.session_chip_label.setText(f"Session: {session_text}")
+
+    def clear_chat_conversation(self) -> None:
+        if self.is_streaming_chat:
+            self.status_label.setText("Wait for current response to finish.")
+            return
+        clear_chat_session(self.session_id)
+        self._clear_chat_bubbles()
+        self.status_label.setText("Conversation cleared.")
+
+    def _clear_chat_bubbles(self) -> None:
+        while self.chat_layout.count() > 1:
+            item = self.chat_layout.takeAt(0)
+            if item is None:
+                continue
+            layout = item.layout()
+            widget = item.widget()
+            if layout is not None:
+                while layout.count():
+                    sub = layout.takeAt(0)
+                    if sub is None:
+                        continue
+                    w = sub.widget()
+                    if w is not None:
+                        w.deleteLater()
+                layout.deleteLater()
+            elif widget is not None:
+                widget.deleteLater()
+        self._current_response_bubble = None
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def set_canvas(self, canvas: Optional[QtWidgets.QWidget]) -> None:
         self.canvas_widget = canvas
@@ -524,7 +661,7 @@ class AIChatWidget(QtWidgets.QWidget):
         if image_path:
             self.set_image_path(image_path)
             self._add_bubble(
-                "System",
+                "Annolid Bot",
                 f"Canvas snapshot attached: {os.path.basename(image_path)}",
                 is_user=False,
             )
@@ -534,7 +671,7 @@ class AIChatWidget(QtWidgets.QWidget):
         if image_path:
             self.set_image_path(image_path)
             self._add_bubble(
-                "System",
+                "Annolid Bot",
                 f"Window snapshot attached: {os.path.basename(image_path)}",
                 is_user=False,
             )
@@ -562,7 +699,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         chat_image_path = self._prepare_chat_image()
         self._add_bubble("You", raw_prompt, is_user=True)
-        assistant_name = self.provider_labels.get(self.selected_provider, "Assistant")
+        assistant_name = self._assistant_display_name()
         self._current_response_bubble = self._add_bubble(
             assistant_name,
             "",
@@ -581,6 +718,8 @@ class AIChatWidget(QtWidgets.QWidget):
             model=self.selected_model,
             provider=self.selected_provider,
             settings=self.llm_settings,
+            session_id=self.session_id,
+            show_tool_trace=self.tool_trace_checkbox.isChecked(),
         )
         self.thread_pool.start(task)
 

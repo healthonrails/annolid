@@ -499,6 +499,18 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_label_collection_action()
 
         self.populateModeActions()
+        QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
+
+    def _startup_annolid_bot(self) -> None:
+        """Start Annolid Bot when the main window opens."""
+        manager = getattr(self, "ai_chat_manager", None)
+        if manager is None:
+            return
+        try:
+            manager.initialize_annolid_bot(start_visible=False)
+            self.statusBar().showMessage(self.tr("Annolid Bot ready."), 3000)
+        except Exception as exc:
+            logger.warning("Failed to auto-start Annolid Bot: %s", exc)
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)

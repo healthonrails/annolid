@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -121,6 +123,11 @@ def _cmd_agent_validate_tools(_: argparse.Namespace) -> int:
     try:
         from annolid.core.agent.tools.registry import ToolRegistry
         from annolid.core.agent.tools.base import Tool, ToolContext
+        from annolid.core.agent.tools.function_registry import FunctionToolRegistry
+        from annolid.core.agent.tools.function_builtin import (
+            register_nanobot_style_tools,
+        )
+        from annolid.core.agent.tools.utility import register_builtin_utility_tools
 
         class _DummyTool(Tool[int, int]):
             name = "dummy"
@@ -131,9 +138,21 @@ def _cmd_agent_validate_tools(_: argparse.Namespace) -> int:
 
         registry = ToolRegistry()
         registry.register("dummy", _DummyTool)
+        register_builtin_utility_tools(registry)
+        fn_registry = FunctionToolRegistry()
+        register_nanobot_style_tools(fn_registry)
         instance = registry.create("dummy")
-        ok = isinstance(instance, _DummyTool)
-        _record("registry", ok=ok, detail="register/create tool")
+        ok = (
+            isinstance(instance, _DummyTool)
+            and registry.has("calculator")
+            and fn_registry.has("read_file")
+            and fn_registry.has("exec")
+        )
+        _record(
+            "registry",
+            ok=ok,
+            detail="register/create tool + utility + nanobot-style function tools",
+        )
     except Exception as exc:
         _record("registry", ok=False, detail=str(exc))
 
@@ -478,6 +497,293 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     }
     print(json.dumps(summary, indent=2))
     return 0
+
+
+def _default_agent_cron_store_path() -> Path:
+    from annolid.core.agent.utils import get_agent_data_path
+
+    return get_agent_data_path() / "cron" / "jobs.json"
+
+
+def _cmd_agent_onboard(args: argparse.Namespace) -> int:
+    from annolid.core.agent import bootstrap_workspace
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(args.workspace)
+    outcomes = bootstrap_workspace(workspace, overwrite=bool(args.overwrite))
+    summary = {
+        "workspace": str(workspace),
+        "overwrite": bool(args.overwrite),
+        "files": outcomes,
+    }
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_agent_status(_: argparse.Namespace) -> int:
+    from annolid.core.agent.cron import CronService
+    from annolid.core.agent.utils import get_agent_data_path, get_agent_workspace_path
+
+    data_dir = get_agent_data_path()
+    workspace = get_agent_workspace_path()
+    store_path = _default_agent_cron_store_path()
+    cron = CronService(store_path=store_path)
+    cron_status = cron.status()
+    summary = {
+        "data_dir": str(data_dir),
+        "workspace": str(workspace),
+        "workspace_templates": {
+            "AGENTS.md": (workspace / "AGENTS.md").exists(),
+            "SOUL.md": (workspace / "SOUL.md").exists(),
+            "USER.md": (workspace / "USER.md").exists(),
+            "TOOLS.md": (workspace / "TOOLS.md").exists(),
+            "HEARTBEAT.md": (workspace / "HEARTBEAT.md").exists(),
+            "memory/MEMORY.md": (workspace / "memory" / "MEMORY.md").exists(),
+        },
+        "cron_store_path": str(store_path),
+        "cron": cron_status,
+    }
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _mode_octal(path: Path) -> Optional[str]:
+    try:
+        return oct(path.stat().st_mode & 0o777)
+    except OSError:
+        return None
+
+
+def _is_private_dir_mode(path: Path) -> bool:
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        return False
+    return (mode & 0o077) == 0
+
+
+def _is_private_file_mode(path: Path) -> bool:
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        return False
+    # Owner read/write only.
+    return mode == 0o600
+
+
+def _find_persisted_secret_keys(data: object, prefix: str = "") -> list[str]:
+    secret_names = {"api_key", "apikey", "access_token", "token", "secret", "password"}
+    if isinstance(data, dict):
+        hits: list[str] = []
+        for key, value in data.items():
+            key_text = str(key or "").strip().lower()
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if key_text in secret_names:
+                hits.append(path)
+            hits.extend(_find_persisted_secret_keys(value, path))
+        return hits
+    if isinstance(data, list):
+        hits: list[str] = []
+        for idx, item in enumerate(data):
+            item_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            hits.extend(_find_persisted_secret_keys(item, item_prefix))
+        return hits
+    return []
+
+
+def _cmd_agent_security_check(_: argparse.Namespace) -> int:
+    from annolid.core.agent.utils import get_agent_data_path
+    from annolid.utils.llm_settings import (
+        has_provider_api_key,
+        settings_path,
+    )
+
+    data_dir = get_agent_data_path()
+    settings_file = settings_path()
+    settings_dir = settings_file.parent
+
+    persisted_payload: dict = {}
+    parse_error: Optional[str] = None
+    if settings_file.exists():
+        try:
+            persisted_payload = json.loads(settings_file.read_text(encoding="utf-8"))
+            if not isinstance(persisted_payload, dict):
+                persisted_payload = {}
+                parse_error = "llm_settings.json content is not a JSON object."
+        except Exception as exc:
+            parse_error = str(exc)
+
+    persisted_secret_keys = _find_persisted_secret_keys(persisted_payload)
+    # Use persisted payload for inspection so this command does not mutate
+    # permissions via load_llm_settings() side effects before reporting.
+    settings = persisted_payload if isinstance(persisted_payload, dict) else {}
+
+    checks = {
+        "settings_dir_exists": settings_dir.exists(),
+        "settings_file_exists": settings_file.exists(),
+        "settings_dir_private": _is_private_dir_mode(settings_dir),
+        "settings_file_private": _is_private_file_mode(settings_file),
+        "persisted_secrets_found": bool(persisted_secret_keys),
+        "settings_json_parse_ok": parse_error is None,
+    }
+    status = "ok"
+    if not all(
+        [
+            checks["settings_dir_exists"],
+            checks["settings_file_exists"],
+            checks["settings_dir_private"],
+            checks["settings_file_private"],
+            checks["settings_json_parse_ok"],
+        ]
+    ):
+        status = "warning"
+    if checks["persisted_secrets_found"]:
+        status = "warning"
+
+    summary = {
+        "status": status,
+        "data_dir": str(data_dir),
+        "llm_settings_path": str(settings_file),
+        "llm_settings_dir_mode": _mode_octal(settings_dir),
+        "llm_settings_file_mode": _mode_octal(settings_file),
+        "checks": checks,
+        "persisted_secret_keys": persisted_secret_keys,
+        "provider_key_presence": {
+            "openai": bool(has_provider_api_key(settings, "openai")),
+            "gemini": bool(has_provider_api_key(settings, "gemini")),
+        },
+    }
+    if parse_error is not None:
+        summary["settings_json_error"] = parse_error
+
+    print(json.dumps(summary, indent=2))
+    return 0 if status == "ok" else 1
+
+
+def _cmd_agent_cron_list(args: argparse.Namespace) -> int:
+    from annolid.core.agent.cron import CronService
+
+    service = CronService(store_path=_default_agent_cron_store_path())
+    jobs = service.list_jobs(include_disabled=bool(args.all))
+    rows = []
+    for j in jobs:
+        rows.append(
+            {
+                "id": j.id,
+                "name": j.name,
+                "enabled": j.enabled,
+                "schedule": {
+                    "kind": j.schedule.kind,
+                    "at_ms": j.schedule.at_ms,
+                    "every_ms": j.schedule.every_ms,
+                    "expr": j.schedule.expr,
+                    "tz": j.schedule.tz,
+                },
+                "payload": {
+                    "message": j.payload.message,
+                    "deliver": j.payload.deliver,
+                    "channel": j.payload.channel,
+                    "to": j.payload.to,
+                },
+                "state": {
+                    "next_run_at_ms": j.state.next_run_at_ms,
+                    "last_run_at_ms": j.state.last_run_at_ms,
+                    "last_status": j.state.last_status,
+                    "last_error": j.state.last_error,
+                },
+            }
+        )
+    print(json.dumps(rows, indent=2))
+    return 0
+
+
+def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
+    from annolid.core.agent.cron import CronPayload, CronSchedule, CronService
+
+    if args.every is None and args.cron_expr is None and args.at is None:
+        raise SystemExit("Specify one of --every, --cron, or --at.")
+
+    if args.at is not None:
+        try:
+            dt = datetime.datetime.fromisoformat(str(args.at))
+        except ValueError as exc:
+            raise SystemExit(f"Invalid --at value: {args.at}") from exc
+        schedule = CronSchedule(kind="at", at_ms=int(dt.timestamp() * 1000))
+        delete_after_run = True
+    elif args.every is not None:
+        every = int(args.every)
+        if every <= 0:
+            raise SystemExit("--every must be > 0")
+        schedule = CronSchedule(kind="every", every_ms=every * 1000)
+        delete_after_run = False
+    else:
+        schedule = CronSchedule(kind="cron", expr=str(args.cron_expr))
+        delete_after_run = False
+
+    payload = CronPayload(
+        kind="agent_turn",
+        message=str(args.message),
+        deliver=bool(args.deliver),
+        channel=(str(args.channel) if args.channel else None),
+        to=(str(args.to) if args.to else None),
+    )
+    service = CronService(store_path=_default_agent_cron_store_path())
+    job = service.add_job(
+        name=str(args.name),
+        schedule=schedule,
+        payload=payload,
+        delete_after_run=delete_after_run,
+    )
+    print(
+        json.dumps(
+            {
+                "id": job.id,
+                "name": job.name,
+                "enabled": job.enabled,
+                "next_run_at_ms": job.state.next_run_at_ms,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_agent_cron_remove(args: argparse.Namespace) -> int:
+    from annolid.core.agent.cron import CronService
+
+    service = CronService(store_path=_default_agent_cron_store_path())
+    ok = service.remove_job(str(args.job_id))
+    print(json.dumps({"removed": bool(ok), "job_id": str(args.job_id)}, indent=2))
+    return 0 if ok else 1
+
+
+def _cmd_agent_cron_enable(args: argparse.Namespace) -> int:
+    from annolid.core.agent.cron import CronService
+
+    service = CronService(store_path=_default_agent_cron_store_path())
+    job = service.enable_job(str(args.job_id), enabled=not bool(args.disable))
+    if job is None:
+        print(json.dumps({"updated": False, "job_id": str(args.job_id)}, indent=2))
+        return 1
+    print(
+        json.dumps(
+            {"updated": True, "job_id": job.id, "enabled": bool(job.enabled)}, indent=2
+        )
+    )
+    return 0
+
+
+def _cmd_agent_cron_run(args: argparse.Namespace) -> int:
+    from annolid.core.agent.cron import CronService
+
+    service = CronService(store_path=_default_agent_cron_store_path())
+
+    async def _run() -> bool:
+        return await service.run_job(str(args.job_id), force=bool(args.force))
+
+    ok = bool(asyncio.run(_run()))
+    print(json.dumps({"ran": ok, "job_id": str(args.job_id)}, indent=2))
+    return 0 if ok else 1
 
 
 def _build_root_parser() -> argparse.ArgumentParser:
@@ -873,6 +1179,95 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     agent_p.add_argument("--no-progress", action="store_true")
     agent_p.set_defaults(_handler=_cmd_agent)
+
+    onboard_p = sub.add_parser(
+        "agent-onboard",
+        help="Initialize an Annolid agent workspace with bootstrap templates.",
+    )
+    onboard_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    onboard_p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing bootstrap files.",
+    )
+    onboard_p.set_defaults(_handler=_cmd_agent_onboard)
+
+    status_p = sub.add_parser(
+        "agent-status",
+        help="Show Annolid agent workspace/cron status.",
+    )
+    status_p.set_defaults(_handler=_cmd_agent_status)
+
+    security_check_p = sub.add_parser(
+        "agent-security-check",
+        help="Check agent key/config security posture (permissions + secret persistence).",
+    )
+    security_check_p.set_defaults(_handler=_cmd_agent_security_check)
+
+    cron_list_p = sub.add_parser(
+        "agent-cron-list", help="List scheduled Annolid agent cron jobs."
+    )
+    cron_list_p.add_argument(
+        "--all", action="store_true", help="Include disabled jobs."
+    )
+    cron_list_p.set_defaults(_handler=_cmd_agent_cron_list)
+
+    cron_add_p = sub.add_parser(
+        "agent-cron-add", help="Add a scheduled Annolid agent cron job."
+    )
+    cron_add_p.add_argument("--name", required=True, help="Job name.")
+    cron_add_p.add_argument("--message", required=True, help="Message payload.")
+    cron_add_p.add_argument(
+        "--every", type=int, default=None, help="Run every N seconds."
+    )
+    cron_add_p.add_argument(
+        "--cron",
+        dest="cron_expr",
+        default=None,
+        help="Cron expression, e.g. '0 9 * * *'.",
+    )
+    cron_add_p.add_argument(
+        "--at",
+        default=None,
+        help="Run once at ISO datetime, e.g. 2026-02-11T10:00:00.",
+    )
+    cron_add_p.add_argument(
+        "--deliver",
+        action="store_true",
+        help="Mark response as deliverable to channel recipient.",
+    )
+    cron_add_p.add_argument("--channel", default=None, help="Channel name.")
+    cron_add_p.add_argument("--to", default=None, help="Recipient ID.")
+    cron_add_p.set_defaults(_handler=_cmd_agent_cron_add)
+
+    cron_rm_p = sub.add_parser(
+        "agent-cron-remove", help="Remove an Annolid agent cron job by ID."
+    )
+    cron_rm_p.add_argument("job_id", help="Job ID.")
+    cron_rm_p.set_defaults(_handler=_cmd_agent_cron_remove)
+
+    cron_enable_p = sub.add_parser(
+        "agent-cron-enable",
+        help="Enable or disable an Annolid agent cron job.",
+    )
+    cron_enable_p.add_argument("job_id", help="Job ID.")
+    cron_enable_p.add_argument(
+        "--disable", action="store_true", help="Disable instead of enable."
+    )
+    cron_enable_p.set_defaults(_handler=_cmd_agent_cron_enable)
+
+    cron_run_p = sub.add_parser(
+        "agent-cron-run", help="Manually run an Annolid agent cron job."
+    )
+    cron_run_p.add_argument("job_id", help="Job ID.")
+    cron_run_p.add_argument(
+        "--force", action="store_true", help="Run even if currently disabled."
+    )
+    cron_run_p.set_defaults(_handler=_cmd_agent_cron_run)
 
     train_p = sub.add_parser("train", help="Train a model.")
     train_p.add_argument("model", help="Model plugin name (see list-models).")

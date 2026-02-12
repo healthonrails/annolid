@@ -188,10 +188,10 @@ class MenuController:
             },
             {
                 "name": "open_ai_chat",
-                "text": w.tr("&AI Chat Studio…"),
-                "slot": w.open_ai_chat_dock,
+                "text": w.tr("Annolid &Bot…"),
+                "slot": w.open_annolid_bot_dock,
                 "tip": w.tr(
-                    "Open the dedicated AI chat dock with streaming multimodal chat and voice tools"
+                    "Open Annolid Bot with multimodal chat, canvas/window sharing, and voice interaction"
                 ),
             },
             {

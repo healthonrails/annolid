@@ -1,0 +1,733 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from threading import RLock
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+)
+
+from annolid.utils.llm_settings import resolve_agent_runtime_config, resolve_llm_config
+
+from .context import AgentContextBuilder
+from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
+from .tools import FunctionToolRegistry
+from .tools.function_builtin import CronTool, MessageTool, SpawnTool
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .subagent import SubagentManager
+
+LLMCallable = Callable[
+    [Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]], str],
+    Awaitable[Mapping[str, Any]],
+]
+
+
+@dataclass(frozen=True)
+class AgentToolRun:
+    call_id: str
+    name: str
+    arguments: Dict[str, Any]
+    result: str
+
+
+@dataclass(frozen=True)
+class AgentLoopResult:
+    content: str
+    messages: Sequence[Dict[str, Any]]
+    iterations: int
+    tool_runs: Sequence[AgentToolRun] = field(default_factory=tuple)
+    stopped_reason: str = "done"
+
+
+@dataclass(frozen=True)
+class AgentMemoryConfig:
+    enabled: bool = True
+    max_history_messages: int = 24
+    include_facts_in_system_prompt: bool = True
+
+
+class InMemorySessionStore:
+    """Thread-safe in-process memory store for chat history and facts."""
+
+    def __init__(self) -> None:
+        self._history: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self._facts: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self._lock = RLock()
+
+    def get_history(self, session_id: str) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(m) for m in self._history.get(session_id, [])]
+
+    def append_history(
+        self,
+        session_id: str,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        max_messages: int,
+    ) -> None:
+        with self._lock:
+            self._history[session_id].extend([dict(m) for m in messages])
+            max_keep = max(1, int(max_messages))
+            if len(self._history[session_id]) > max_keep:
+                self._history[session_id] = self._history[session_id][-max_keep:]
+
+    def clear_history(self, session_id: str) -> None:
+        with self._lock:
+            self._history.pop(session_id, None)
+
+    def get_facts(self, session_id: str) -> Dict[str, str]:
+        with self._lock:
+            return dict(self._facts.get(session_id, {}))
+
+    def set_fact(self, session_id: str, key: str, value: str) -> None:
+        with self._lock:
+            self._facts[session_id][str(key)] = str(value)
+
+    def delete_fact(self, session_id: str, key: str) -> bool:
+        with self._lock:
+            facts = self._facts.get(session_id)
+            if not facts or key not in facts:
+                return False
+            facts.pop(key, None)
+            return True
+
+    def clear_facts(self, session_id: str) -> None:
+        with self._lock:
+            self._facts.pop(session_id, None)
+
+    def clear_session(self, session_id: str) -> None:
+        with self._lock:
+            self._history.pop(session_id, None)
+            self._facts.pop(session_id, None)
+
+
+class SessionStoreProtocol(Protocol):
+    def get_history(self, session_id: str) -> List[Dict[str, Any]]: ...
+    def append_history(
+        self,
+        session_id: str,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        max_messages: int,
+    ) -> None: ...
+    def clear_history(self, session_id: str) -> None: ...
+    def get_facts(self, session_id: str) -> Dict[str, str]: ...
+    def set_fact(self, session_id: str, key: str, value: str) -> None: ...
+    def delete_fact(self, session_id: str, key: str) -> bool: ...
+    def clear_facts(self, session_id: str) -> None: ...
+    def clear_session(self, session_id: str) -> None: ...
+
+
+class AgentLoop:
+    """OpenAI-compatible async tool loop inspired by nanobot/agent/loop.py.
+
+    This loop is stateless by default: pass existing history in `history`.
+    """
+
+    def __init__(
+        self,
+        *,
+        tools: FunctionToolRegistry,
+        llm_callable: Optional[LLMCallable] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        profile: Optional[str] = None,
+        max_iterations: Optional[int] = None,
+        memory_config: Optional[AgentMemoryConfig] = None,
+        memory_store: Optional[SessionStoreProtocol] = None,
+        workspace: Optional[str] = None,
+        context_builder: Optional[AgentContextBuilder] = None,
+        subagent_manager: Optional["SubagentManager"] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
+        self._tools = tools
+        runtime_cfg = resolve_agent_runtime_config(profile=profile)
+        resolved_max_iterations = (
+            runtime_cfg.max_tool_iterations
+            if max_iterations is None
+            else max(1, int(max_iterations))
+        )
+        self._max_iterations = resolved_max_iterations
+        self._default_temperature = float(runtime_cfg.temperature)
+        self._logger = logger or logging.getLogger("annolid.agent.loop")
+        self._memory_config = memory_config or AgentMemoryConfig(
+            max_history_messages=runtime_cfg.max_history_messages
+        )
+        self._memory_store = memory_store or InMemorySessionStore()
+        self._workspace = workspace
+        self._context_builder = context_builder
+        self._subagent_manager = subagent_manager
+
+        self._provider = provider
+        self._model_override = model
+        self._profile = profile
+        self._llm_callable = llm_callable
+
+        if self._llm_callable is None:
+            self._llm_callable, self._resolved_model = self._build_default_llm_callable(
+                profile=profile,
+                provider=provider,
+                model=model,
+            )
+        else:
+            self._resolved_model = model or "unknown"
+
+        if self._context_builder is None and self._workspace:
+            self._context_builder = AgentContextBuilder(Path(self._workspace))
+
+        self._wire_tools()
+
+    @property
+    def model(self) -> str:
+        return self._resolved_model
+
+    async def run(
+        self,
+        user_message: str,
+        *,
+        session_id: str = "default",
+        history: Optional[Sequence[Mapping[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
+        use_memory: Optional[bool] = None,
+        channel: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        media: Optional[List[str]] = None,
+        skill_names: Optional[List[str]] = None,
+    ) -> AgentLoopResult:
+        memory_enabled = (
+            self._memory_config.enabled if use_memory is None else bool(use_memory)
+        )
+        self._set_tool_context(channel=channel, chat_id=chat_id)
+        messages: List[Dict[str, Any]] = []
+        user_message_text = str(user_message)
+        memory_history: List[Dict[str, Any]] = []
+        memory_facts: Dict[str, str] = {}
+        if memory_enabled:
+            memory_history = self._memory_store.get_history(session_id)
+            memory_facts = self._memory_store.get_facts(session_id)
+
+        if system_prompt:
+            messages.append({"role": "system", "content": str(system_prompt)})
+        elif self._context_builder is not None:
+            contextual = self._context_builder.build_system_prompt(
+                skill_names=skill_names
+            )
+            if channel and chat_id:
+                contextual += (
+                    f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+                )
+            messages.append({"role": "system", "content": contextual})
+        if (
+            memory_enabled
+            and memory_facts
+            and self._memory_config.include_facts_in_system_prompt
+        ):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": self._format_memory_facts(memory_facts),
+                }
+            )
+        if memory_enabled and memory_history:
+            messages.extend(memory_history)
+        if history:
+            messages.extend([dict(m) for m in history])
+        if self._context_builder is not None and media:
+            user_payload = self._context_builder.build_user_content(
+                user_message_text, media
+            )
+            messages.append({"role": "user", "content": user_payload})
+        else:
+            messages.append({"role": "user", "content": user_message_text})
+
+        tool_runs: List[AgentToolRun] = []
+        final_content = ""
+        stopped_reason = "done"
+        all_tool_definitions = self._tools.get_definitions()
+        repeated_tool_cycles = 0
+        last_tool_cycle_signature: Optional[tuple[str, ...]] = None
+        last_iteration = 0
+
+        for iteration in range(1, self._max_iterations + 1):
+            last_iteration = iteration
+            tool_definitions = self._select_relevant_tool_definitions(
+                all_tool_definitions=all_tool_definitions,
+                user_message_text=user_message_text,
+                messages=messages,
+            )
+            response = await self._llm_callable(
+                messages,
+                tool_definitions,
+                self.model,
+            )
+            assistant_text = str(response.get("content") or "")
+            tool_calls = self._sanitize_tool_calls(self._extract_tool_calls(response))
+
+            if tool_calls:
+                tool_cycle_signature = tuple(
+                    f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
+                    for call in tool_calls
+                )
+                if tool_cycle_signature == last_tool_cycle_signature:
+                    repeated_tool_cycles += 1
+                else:
+                    repeated_tool_cycles = 0
+                    last_tool_cycle_signature = tool_cycle_signature
+                if repeated_tool_cycles >= 2:
+                    stopped_reason = "repeated_tool_calls"
+                    final_content = (
+                        "Agent tool loop stalled on repeated identical tool calls. "
+                        "Please revise the prompt or switch model."
+                    )
+                    break
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_text,
+                        "tool_calls": [
+                            self._to_openai_tool_call(tc) for tc in tool_calls
+                        ],
+                    }
+                )
+                for call in tool_calls:
+                    call_id = str(call.get("id") or "")
+                    name = str(call.get("name") or "")
+                    raw_args = call.get("arguments")
+                    args = self._normalize_args(raw_args)
+                    result = await self._tools.execute(name, args)
+                    tool_runs.append(
+                        AgentToolRun(
+                            call_id=call_id,
+                            name=name,
+                            arguments=dict(args),
+                            result=str(result),
+                        )
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "name": name,
+                            "content": str(result),
+                        }
+                    )
+                continue
+
+            repeated_tool_cycles = 0
+            last_tool_cycle_signature = None
+
+            final_content = assistant_text
+            if memory_enabled and str(final_content).strip():
+                self._memory_store.append_history(
+                    session_id,
+                    [
+                        {"role": "user", "content": user_message_text},
+                        {"role": "assistant", "content": str(final_content)},
+                    ],
+                    max_messages=self._memory_config.max_history_messages,
+                )
+            return AgentLoopResult(
+                content=final_content,
+                messages=messages,
+                iterations=iteration,
+                tool_runs=tuple(tool_runs),
+                stopped_reason=stopped_reason,
+            )
+
+        if stopped_reason == "done":
+            stopped_reason = "max_iterations"
+            if not final_content:
+                final_content = (
+                    "Reached max iterations before producing a final response."
+                )
+        if memory_enabled:
+            self._memory_store.append_history(
+                session_id,
+                [
+                    {"role": "user", "content": user_message_text},
+                    {"role": "assistant", "content": str(final_content)},
+                ],
+                max_messages=self._memory_config.max_history_messages,
+            )
+        return AgentLoopResult(
+            content=final_content,
+            messages=messages,
+            iterations=last_iteration or self._max_iterations,
+            tool_runs=tuple(tool_runs),
+            stopped_reason=stopped_reason,
+        )
+
+    def remember(self, session_id: str, key: str, value: str) -> None:
+        self._memory_store.set_fact(session_id, key, value)
+
+    def recall(self, session_id: str, key: Optional[str] = None) -> Any:
+        facts = self._memory_store.get_facts(session_id)
+        if key is None:
+            return facts
+        return facts.get(key)
+
+    def forget(self, session_id: str, key: Optional[str] = None) -> bool:
+        if key is None:
+            self._memory_store.clear_facts(session_id)
+            return True
+        return self._memory_store.delete_fact(session_id, key)
+
+    def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
+        return self._memory_store.get_history(session_id)
+
+    def clear_memory(self, session_id: str) -> None:
+        self._memory_store.clear_session(session_id)
+
+    def set_subagent_manager(self, manager: Optional["SubagentManager"]) -> None:
+        self._subagent_manager = manager
+        self._wire_tools()
+
+    @staticmethod
+    def _format_memory_facts(facts: Mapping[str, str]) -> str:
+        lines = ["Session memory facts (use when relevant):"]
+        for key, value in facts.items():
+            lines.append(f"- {key}: {value}")
+        return "\n".join(lines)
+
+    def _wire_tools(self) -> None:
+        self._set_tool_context(channel="cli", chat_id="direct")
+        if self._subagent_manager is None and isinstance(
+            self._tools.get("spawn"), SpawnTool
+        ):
+            self._subagent_manager = self._create_default_subagent_manager()
+        spawn_tool = self._tools.get("spawn")
+        if isinstance(spawn_tool, SpawnTool) and self._subagent_manager is not None:
+            spawn_tool.set_spawn_callback(self._subagent_manager.spawn)
+
+    def _set_tool_context(
+        self,
+        *,
+        channel: Optional[str],
+        chat_id: Optional[str],
+    ) -> None:
+        resolved_channel = channel or "cli"
+        resolved_chat_id = chat_id or "direct"
+        message_tool = self._tools.get("message")
+        if isinstance(message_tool, MessageTool):
+            message_tool.set_context(resolved_channel, resolved_chat_id)
+
+        cron_tool = self._tools.get("cron")
+        if isinstance(cron_tool, CronTool):
+            cron_tool.set_context(resolved_channel, resolved_chat_id)
+
+        spawn_tool = self._tools.get("spawn")
+        if isinstance(spawn_tool, SpawnTool):
+            spawn_tool.set_context(resolved_channel, resolved_chat_id)
+
+    def _create_default_subagent_manager(self) -> Optional["SubagentManager"]:
+        try:
+            from .subagent import SubagentManager, build_subagent_tools_registry
+        except Exception:
+            return None
+
+        def _loop_factory() -> "AgentLoop":
+            tools = build_subagent_tools_registry(
+                Path(self._workspace) if self._workspace else None
+            )
+            return AgentLoop(
+                tools=tools,
+                llm_callable=self._llm_callable,
+                model=self.model,
+                max_iterations=min(self._max_iterations, 10),
+                workspace=self._workspace,
+            )
+
+        workspace_path = Path(self._workspace) if self._workspace else None
+        return SubagentManager(loop_factory=_loop_factory, workspace=workspace_path)
+
+    _TOOL_SELECTOR_STOPWORDS = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "me",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "use",
+        "with",
+        "you",
+        "your",
+    }
+
+    @classmethod
+    def _tokenize_text(cls, text: str) -> List[str]:
+        raw = re.findall(r"[a-zA-Z0-9_]+", str(text or "").lower())
+        return [t for t in raw if len(t) > 1 and t not in cls._TOOL_SELECTOR_STOPWORDS]
+
+    @classmethod
+    def _build_tool_tokens(cls, schema: Mapping[str, Any]) -> set[str]:
+        fn = schema.get("function")
+        if not isinstance(fn, Mapping):
+            return set()
+        parts: List[str] = [
+            str(fn.get("name") or ""),
+            str(fn.get("description") or ""),
+        ]
+        params = fn.get("parameters")
+        if isinstance(params, Mapping):
+            props = params.get("properties")
+            if isinstance(props, Mapping):
+                for key, value in props.items():
+                    parts.append(str(key))
+                    if isinstance(value, Mapping):
+                        parts.append(str(value.get("description") or ""))
+                        enum_values = value.get("enum")
+                        if isinstance(enum_values, list):
+                            parts.extend(str(item) for item in enum_values)
+        tokens: set[str] = set()
+        for part in parts:
+            tokens.update(cls._tokenize_text(part))
+        return tokens
+
+    @classmethod
+    def _score_tool_schema(
+        cls,
+        schema: Mapping[str, Any],
+        query_tokens: Sequence[str],
+    ) -> int:
+        if not query_tokens:
+            return 0
+        fn = schema.get("function")
+        if not isinstance(fn, Mapping):
+            return 0
+        name = str(fn.get("name") or "").lower()
+        desc = str(fn.get("description") or "").lower()
+        tool_tokens = cls._build_tool_tokens(schema)
+        score = 0
+        for token in query_tokens:
+            if token in tool_tokens:
+                score += 2
+            if token and token in name:
+                score += 3
+            if token and token in desc:
+                score += 1
+        return score
+
+    def _select_relevant_tool_definitions(
+        self,
+        *,
+        all_tool_definitions: Sequence[Mapping[str, Any]],
+        user_message_text: str,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        tools = [dict(t) for t in all_tool_definitions]
+        if len(tools) <= 2:
+            return tools
+        user_tokens = self._tokenize_text(user_message_text)
+        if not user_tokens:
+            return tools
+
+        # Use recent interaction context to improve follow-up turns.
+        tail_text_parts: List[str] = []
+        for msg in messages[-6:]:
+            role = str(msg.get("role") or "")
+            if role in {"assistant", "tool"}:
+                tail_text_parts.append(str(msg.get("content") or ""))
+        tail_tokens = self._tokenize_text(" ".join(tail_text_parts))
+        query_tokens = list(dict.fromkeys([*user_tokens, *tail_tokens]))
+
+        scored: List[tuple[int, Dict[str, Any]]] = []
+        for schema in tools:
+            score = self._score_tool_schema(schema, query_tokens)
+            if score > 0:
+                scored.append((score, schema))
+        if not scored:
+            return tools
+
+        scored.sort(
+            key=lambda item: (
+                -item[0],
+                str((item[1].get("function") or {}).get("name") or ""),
+            )
+        )
+        max_tools = min(6, max(3, len(scored)))
+        selected = [schema for _, schema in scored[:max_tools]]
+        selected_names = {
+            str((schema.get("function") or {}).get("name") or "") for schema in selected
+        }
+        if (
+            "read_file" in self._tools
+            and "read_file" not in selected_names
+            and len(selected) < max_tools
+        ):
+            read_file_schema = next(
+                (
+                    schema
+                    for schema in tools
+                    if str((schema.get("function") or {}).get("name") or "")
+                    == "read_file"
+                ),
+                None,
+            )
+            if read_file_schema is not None:
+                selected.append(read_file_schema)
+        return selected or tools
+
+    def _sanitize_tool_calls(
+        self, tool_calls: Sequence[Mapping[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        deduped: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in tool_calls:
+            call_id = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            args = self._normalize_args(item.get("arguments"))
+            if not call_id:
+                call_id = f"call_{len(deduped)}"
+            signature = (
+                f"{call_id}:{name}:"
+                f"{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            deduped.append({"id": call_id, "name": name, "arguments": args})
+        return deduped
+
+    def _extract_tool_calls(self, response: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        raw_calls = response.get("tool_calls") or []
+        normalized: List[Dict[str, Any]] = []
+        for item in raw_calls:
+            if not isinstance(item, Mapping):
+                continue
+            call_id = str(item.get("id") or "")
+            name = str(item.get("name") or "")
+            args = item.get("arguments", {})
+            if not name:
+                function = item.get("function")
+                if isinstance(function, Mapping):
+                    name = str(function.get("name") or "")
+                    args = function.get("arguments", args)
+            if not call_id:
+                call_id = f"call_{len(normalized)}"
+            if not name:
+                continue
+            normalized.append({"id": call_id, "name": name, "arguments": args})
+        return normalized
+
+    def _to_openai_tool_call(self, call: Mapping[str, Any]) -> Dict[str, Any]:
+        args = call.get("arguments")
+        if isinstance(args, str):
+            args_json = args
+        else:
+            args_json = json.dumps(args or {}, ensure_ascii=False)
+        return {
+            "id": str(call.get("id") or ""),
+            "type": "function",
+            "function": {
+                "name": str(call.get("name") or ""),
+                "arguments": args_json,
+            },
+        }
+
+    @staticmethod
+    def _normalize_args(raw_args: Any) -> Dict[str, Any]:
+        if raw_args is None:
+            return {}
+        if isinstance(raw_args, dict):
+            return dict(raw_args)
+        if isinstance(raw_args, str):
+            text = raw_args.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return dict(parsed)
+            except Exception:
+                return {"_raw": raw_args}
+            return {"_raw": raw_args}
+        return {"_raw": raw_args}
+
+    def _build_default_llm_callable(
+        self,
+        *,
+        profile: Optional[str],
+        provider: Optional[str],
+        model: Optional[str],
+    ) -> tuple[LLMCallable, str]:
+        cfg = resolve_llm_config(
+            profile=profile,
+            provider=provider,
+            model=model,
+            persist=False,
+        )
+        provider_name = str(cfg.provider or "").strip().lower()
+        openai_compat_names = {"openai", "ollama", "openrouter", "aihubmix", "vllm"}
+        model_name = str(cfg.model)
+        if provider_name in openai_compat_names:
+            resolved = resolve_openai_compat(cfg)
+            model_name = resolved.model
+            provider_impl = OpenAICompatProvider(resolved=resolved)
+        else:
+            provider_impl = LiteLLMProvider(
+                provider_name=provider_name or None,
+                api_key=cfg.params.get("api_key"),
+                api_base=cfg.params.get("base_url") or cfg.params.get("host"),
+                default_model=model_name,
+                extra_headers=cfg.params.get("extra_headers"),
+            )
+
+        async def _call(
+            messages: Sequence[Mapping[str, Any]],
+            tools: Sequence[Mapping[str, Any]],
+            model_id: str,
+        ) -> Mapping[str, Any]:
+            resp = await provider_impl.chat(
+                messages=[dict(m) for m in messages],
+                tools=[dict(t) for t in tools] if tools else None,
+                model=model_id,
+                temperature=self._default_temperature,
+            )
+            tool_calls: List[Dict[str, Any]] = []
+            for tc in resp.tool_calls:
+                tool_calls.append(
+                    {"id": tc.id, "name": tc.name, "arguments": dict(tc.arguments)}
+                )
+            return {
+                "content": resp.content or "",
+                "tool_calls": tool_calls,
+                "finish_reason": resp.finish_reason,
+                "usage": dict(resp.usage),
+                "reasoning_content": resp.reasoning_content,
+            }
+
+        return _call, model_name

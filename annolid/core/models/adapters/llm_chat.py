@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from annolid.utils.llm_settings import ensure_provider_env, resolve_llm_config
+from annolid.core.agent.providers import resolve_openai_compat
+from annolid.utils.llm_settings import resolve_llm_config
 
 from ..base import ModelCapabilities, ModelRequest, ModelResponse, RuntimeModel
 
@@ -85,32 +86,13 @@ class LLMChatAdapter(RuntimeModel):
             model=self._model_override,
             persist=self._persist,
         )
-        ensure_provider_env(cfg)
-
-        provider = str(cfg.provider).strip().lower()
-        model = str(cfg.model).strip()
-
-        if provider == "ollama":
-            host = (cfg.host or "").strip() or "http://localhost:11434"
-            base_url = f"{host.rstrip('/')}/v1"
-            api_key = cfg.api_key or "ollama"
-        elif provider == "openai":
-            base_url = (cfg.base_url or "").strip() or "https://api.openai.com/v1"
-            api_key = (cfg.api_key or "").strip()
-            if not api_key:
-                raise ValueError(
-                    "OpenAI provider requires an API key. Set OPENAI_API_KEY or update ~/.annolid/llm_settings.json."
-                )
-        else:
-            raise ValueError(
-                f"LLMChatAdapter currently supports OpenAI-compatible providers only (openai, ollama). Got: {provider!r}"
-            )
+        resolved_cfg = resolve_openai_compat(cfg)
 
         resolved = _OpenAICompatConfig(
-            provider=provider,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
+            provider=resolved_cfg.provider,
+            model=resolved_cfg.model,
+            api_key=resolved_cfg.api_key,
+            base_url=resolved_cfg.base_url,
         )
         self._config = resolved
 

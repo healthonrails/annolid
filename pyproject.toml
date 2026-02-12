@@ -64,6 +64,7 @@ dependencies = [
     'Pillow>=9.3.0,<12.0',
     'chardet>=5.2.0',
     'transformers>=4.45.1',
+    'openai>=1.40.0',
     'ultralytics>=8.4.0',
     'lap',
     'huggingface-hub>=0.22.0',
@@ -137,6 +138,10 @@ annolid = [
     "**/*.icns",
     "**/*.qrc",
     "core/output/schema/*.json",
+    "core/agent/skills/**/*.md",
+    "core/agent/skills/**/*.sh",
+    "core/agent/workspace/**/*.md",
+    "core/agent/workspace/**/*.sh",
 ]
 
 [tool.ruff]

@@ -8,6 +8,7 @@ class ProviderRegistry:
     _DEFAULT_MODELS: Dict[str, str] = {
         "ollama": "llama3.2-vision:latest",
         "openai": "gpt-4o-mini",
+        "openrouter": "openai/gpt-4o-mini",
         "gemini": "gemini-2.5-pro",
     }
 
@@ -30,28 +31,41 @@ class ProviderRegistry:
 
     # ------------------------------------------------------------------ models
     def available_models(self, provider: str) -> List[str]:
+        provider_settings = self._settings.get(provider, {}) or {}
+        preferred = self._normalize_model_list(
+            provider_settings.get("preferred_models", [])
+        )
+        custom = self._normalize_model_list(provider_settings.get("custom_models", []))
+
         if provider == "ollama":
             models = self._fetch_ollama_models()
-            pinned = self._settings.get("ollama", {}).get("preferred_models", [])
-            for model in pinned:
+            for model in preferred:
+                if model and model not in models:
+                    models.append(model)
+            for model in custom:
                 if model and model not in models:
                     models.append(model)
             if not models:
                 fallback = self._DEFAULT_MODELS.get("ollama")
                 if fallback:
                     models.append(fallback)
-            elif models != pinned:
+            elif models != preferred:
                 self._settings.setdefault("ollama", {})["preferred_models"] = models
                 self._save_settings(self._settings)
             return models
 
-        provider_settings = self._settings.get(provider, {})
-        return list(provider_settings.get("preferred_models", []))
+        models = list(preferred)
+        for model in custom:
+            if model and model not in models:
+                models.append(model)
+        return models
 
     def resolve_initial_model(self, provider: str, available_models: List[str]) -> str:
         last_models = self._settings.get("last_models", {})
         last_model = last_models.get(provider)
-        if last_model and last_model in available_models:
+        if last_model:
+            if last_model not in available_models:
+                available_models.append(last_model)
             return last_model
         if available_models:
             return available_models[0]
@@ -64,8 +78,39 @@ class ProviderRegistry:
     def remember_last_model(self, provider: str, model: Optional[str]) -> None:
         if not model:
             return
-        self._settings.setdefault("last_models", {})[provider] = model
-        self._save_settings(self._settings)
+        model_text = str(model).strip()
+        if not model_text:
+            return
+        prev_model = self._settings.setdefault("last_models", {}).get(provider)
+        provider_settings = self._settings.setdefault(provider, {})
+        preferred = self._normalize_model_list(
+            provider_settings.get("preferred_models", [])
+        )
+        custom = self._normalize_model_list(provider_settings.get("custom_models", []))
+        changed = False
+        if model_text not in preferred and model_text not in custom:
+            custom.append(model_text)
+            provider_settings["custom_models"] = custom
+            changed = True
+        self._settings.setdefault("last_models", {})[provider] = model_text
+        if changed or prev_model != model_text:
+            self._save_settings(self._settings)
+
+    @staticmethod
+    def _normalize_model_list(raw_models: Any) -> List[str]:
+        if isinstance(raw_models, str):
+            return [raw_models.strip()] if raw_models.strip() else []
+        if not isinstance(raw_models, list):
+            return []
+        seen = set()
+        out: List[str] = []
+        for item in raw_models:
+            model = str(item or "").strip()
+            if not model or model in seen:
+                continue
+            seen.add(model)
+            out.append(model)
+        return out
 
     # ------------------------------------------------------------------ helpers
     def _fetch_ollama_models(self) -> List[str]:
