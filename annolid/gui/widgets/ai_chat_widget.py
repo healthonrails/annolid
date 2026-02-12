@@ -33,6 +33,9 @@ class _ChatBubble(QtWidgets.QFrame):
         *,
         is_user: bool,
         on_speak=None,
+        on_copy=None,
+        on_regenerate=None,
+        allow_regenerate: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -40,6 +43,9 @@ class _ChatBubble(QtWidgets.QFrame):
         self._is_user = is_user
         self._ts = datetime.now().strftime("%H:%M")
         self._on_speak = on_speak
+        self._on_copy = on_copy
+        self._on_regenerate = on_regenerate
+        self._allow_regenerate = bool(allow_regenerate)
 
         self.setObjectName("chatBubble")
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -77,9 +83,40 @@ class _ChatBubble(QtWidgets.QFrame):
         self.speak_button.setIconSize(QtCore.QSize(14, 14))
         self.speak_button.clicked.connect(self._speak)
 
+        self.copy_button = QtWidgets.QPushButton("", self)
+        self.copy_button.setObjectName("bubbleCopyButton")
+        self.copy_button.setToolTip("Copy message text")
+        self.copy_button.setCursor(QtCore.Qt.PointingHandCursor)
+        copy_icon = self.style().standardIcon(
+            QtWidgets.QStyle.SP_FileDialogDetailedView
+        )
+        if copy_icon.isNull():
+            copy_icon = QtGui.QIcon.fromTheme("edit-copy")
+        self.copy_button.setIcon(copy_icon)
+        self.copy_button.setFixedSize(24, 22)
+        self.copy_button.setIconSize(QtCore.QSize(14, 14))
+        self.copy_button.clicked.connect(self._copy_text)
+
+        self.regenerate_button = QtWidgets.QPushButton("", self)
+        self.regenerate_button.setObjectName("bubbleRegenerateButton")
+        self.regenerate_button.setToolTip("Regenerate this reply")
+        self.regenerate_button.setCursor(QtCore.Qt.PointingHandCursor)
+        regen_icon = self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
+        if regen_icon.isNull():
+            regen_icon = QtGui.QIcon.fromTheme("view-refresh")
+        self.regenerate_button.setIcon(regen_icon)
+        self.regenerate_button.setFixedSize(24, 22)
+        self.regenerate_button.setIconSize(QtCore.QSize(14, 14))
+        self.regenerate_button.setVisible(
+            (not self._is_user) and self._allow_regenerate
+        )
+        self.regenerate_button.clicked.connect(self._regenerate)
+
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(0, 0, 0, 0)
         footer.addWidget(self.speak_button, 0, QtCore.Qt.AlignLeft)
+        footer.addWidget(self.copy_button, 0, QtCore.Qt.AlignLeft)
+        footer.addWidget(self.regenerate_button, 0, QtCore.Qt.AlignLeft)
         footer.addStretch(1)
         footer.addWidget(self.meta_label, 0, QtCore.Qt.AlignRight)
         layout.addLayout(footer)
@@ -96,6 +133,14 @@ class _ChatBubble(QtWidgets.QFrame):
     def _speak(self) -> None:
         if callable(self._on_speak):
             self._on_speak(self.text())
+
+    def _copy_text(self) -> None:
+        if callable(self._on_copy):
+            self._on_copy(self.text())
+
+    def _regenerate(self) -> None:
+        if callable(self._on_regenerate):
+            self._on_regenerate(self.text())
 
 
 class AIChatWidget(QtWidgets.QWidget):
@@ -131,6 +176,12 @@ class AIChatWidget(QtWidgets.QWidget):
         self._audio_controller: Optional[ChatAudioController] = None
         self._session_manager = AgentSessionManager()
         self._session_store = PersistentSessionStore(self._session_manager)
+        self._max_prompt_chars = 4000
+        self._last_user_prompt: str = ""
+        self._typing_tick = 0
+        self._typing_timer = QtCore.QTimer(self)
+        self._typing_timer.setInterval(350)
+        self._typing_timer.timeout.connect(self._on_typing_timer_tick)
 
         self._build_ui()
         self._apply_theme_styles()
@@ -147,7 +198,9 @@ class AIChatWidget(QtWidgets.QWidget):
         root.addLayout(self._build_share_bar())
         root.addWidget(self._build_shared_image_label())
         root.addWidget(self._build_chat_area(), 1)
+        root.addLayout(self._build_quick_actions_row())
         root.addLayout(self._build_input_bar())
+        root.addWidget(self._build_prompt_meta_row())
         root.addWidget(self._build_status_label())
         self._audio_controller = ChatAudioController(
             status_label=self.status_label,
@@ -202,6 +255,7 @@ class AIChatWidget(QtWidgets.QWidget):
         top_bar.addWidget(self.model_selector, 3)
 
         self.configure_button = QtWidgets.QPushButton("Configure…", self)
+        self.configure_button.setToolTip("Manage provider API keys and defaults.")
         top_bar.addWidget(self.configure_button, 0)
         return top_bar
 
@@ -214,7 +268,9 @@ class AIChatWidget(QtWidgets.QWidget):
         share_bar.addWidget(self.attach_window_checkbox)
 
         self.share_canvas_button = QtWidgets.QPushButton("Share Canvas", self)
+        self.share_canvas_button.setToolTip("Capture the current canvas and attach it.")
         self.share_window_button = QtWidgets.QPushButton("Share Window", self)
+        self.share_window_button.setToolTip("Capture the window and attach it.")
         share_bar.addWidget(self.share_canvas_button)
         share_bar.addWidget(self.share_window_button)
         share_bar.addStretch(1)
@@ -233,6 +289,14 @@ class AIChatWidget(QtWidgets.QWidget):
         self.chat_layout = QtWidgets.QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(8, 8, 8, 8)
         self.chat_layout.setSpacing(8)
+        self.empty_state_label = QtWidgets.QLabel(
+            "Start a conversation with Annolid Bot.\nTip: press Ctrl+Enter to send quickly.",
+            self.chat_container,
+        )
+        self.empty_state_label.setObjectName("chatEmptyState")
+        self.empty_state_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.empty_state_label.setWordWrap(True)
+        self.chat_layout.addWidget(self.empty_state_label, 0, QtCore.Qt.AlignCenter)
         self.chat_layout.addStretch(1)
         self.scroll_area.setWidget(self.chat_container)
         return self.scroll_area
@@ -242,16 +306,67 @@ class AIChatWidget(QtWidgets.QWidget):
         self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
         self.prompt_text_edit.setPlaceholderText("Message Annolid Bot…")
         self.prompt_text_edit.setFixedHeight(74)
+        self.prompt_text_edit.setToolTip("Type a message. Use Ctrl+Enter to send.")
         input_bar.addWidget(self.prompt_text_edit, 1)
 
         side_buttons = QtWidgets.QVBoxLayout()
         self.send_button = QtWidgets.QPushButton("Send", self)
+        self.send_button.setObjectName("sendButton")
         self.talk_button = QtWidgets.QPushButton("Talk", self)
+        self.talk_button.setObjectName("talkButton")
+        self.send_button.setToolTip("Send message (Ctrl+Enter).")
+        self.talk_button.setToolTip("Record voice input.")
+        self._set_button_icon(
+            self.send_button,
+            QtWidgets.QStyle.SP_ArrowForward,
+            "mail-send",
+        )
+        self._set_button_icon(
+            self.talk_button,
+            QtWidgets.QStyle.SP_MediaPlay,
+            "audio-input-microphone",
+        )
         side_buttons.addWidget(self.send_button)
         side_buttons.addWidget(self.talk_button)
         side_buttons.addStretch(1)
         input_bar.addLayout(side_buttons)
         return input_bar
+
+    def _build_quick_actions_row(self) -> QtWidgets.QHBoxLayout:
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(6)
+        self.quick_action_buttons: List[QtWidgets.QPushButton] = []
+        actions = [
+            ("Summarize Context", "Summarize what we are doing in this session."),
+            ("Help Me Track", "Help me track the next frames in this video."),
+            ("Review Memory", "Review long-term memory and list key facts."),
+        ]
+        for label, prompt in actions:
+            btn = QtWidgets.QPushButton(label, self)
+            btn.setObjectName("quickActionButton")
+            btn.setToolTip(prompt)
+            btn.clicked.connect(
+                lambda _checked=False, p=prompt: self._apply_quick_action(p)
+            )
+            self.quick_action_buttons.append(btn)
+            row.addWidget(btn, 0)
+        row.addStretch(1)
+        return row
+
+    def _build_prompt_meta_row(self) -> QtWidgets.QWidget:
+        row = QtWidgets.QWidget(self)
+        row.setObjectName("promptMetaRow")
+        layout = QtWidgets.QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.prompt_hint_label = QtWidgets.QLabel("Ctrl+Enter to send", row)
+        self.prompt_hint_label.setObjectName("promptHintLabel")
+        layout.addWidget(self.prompt_hint_label, 0)
+        layout.addStretch(1)
+        self.prompt_count_label = QtWidgets.QLabel("0/4000", row)
+        self.prompt_count_label.setObjectName("promptCountLabel")
+        layout.addWidget(self.prompt_count_label, 0)
+        return row
 
     def _build_status_label(self) -> QtWidgets.QLabel:
         self.status_label = QtWidgets.QLabel("", self)
@@ -262,6 +377,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
         self.model_selector.currentIndexChanged.connect(self.on_model_changed)
         self.model_selector.editTextChanged.connect(self.on_model_text_edited)
+        self.prompt_text_edit.textChanged.connect(self._on_prompt_text_changed)
+        self.prompt_text_edit.installEventFilter(self)
         line_edit = self.model_selector.lineEdit()
         if line_edit is not None:
             line_edit.editingFinished.connect(self.on_model_editing_finished)
@@ -272,6 +389,91 @@ class AIChatWidget(QtWidgets.QWidget):
         self.talk_button.clicked.connect(self.toggle_recording)
         self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
         self.sessions_button.clicked.connect(self.open_session_manager_dialog)
+        self._set_button_icon(
+            self.clear_chat_button,
+            QtWidgets.QStyle.SP_DialogResetButton,
+            "edit-clear",
+        )
+        self._set_button_icon(
+            self.sessions_button,
+            QtWidgets.QStyle.SP_FileDialogDetailedView,
+            "view-list-details",
+        )
+        self._set_button_icon(
+            self.configure_button,
+            QtWidgets.QStyle.SP_FileDialogContentsView,
+            "preferences-system",
+        )
+        self._set_button_icon(
+            self.share_canvas_button,
+            QtWidgets.QStyle.SP_FileDialogNewFolder,
+            "insert-image",
+        )
+        self._set_button_icon(
+            self.share_window_button,
+            QtWidgets.QStyle.SP_DesktopIcon,
+            "window-new",
+        )
+        self._on_prompt_text_changed()
+
+    def _apply_quick_action(self, text: str) -> None:
+        self.prompt_text_edit.setPlainText(str(text or "").strip())
+        self.prompt_text_edit.setFocus()
+        self._on_prompt_text_changed()
+
+    @staticmethod
+    def _set_button_icon(
+        button: QtWidgets.QPushButton,
+        style_icon: QtWidgets.QStyle.StandardPixmap,
+        theme_icon: str = "",
+    ) -> None:
+        style = button.style()
+        icon = style.standardIcon(style_icon)
+        if icon.isNull() and theme_icon:
+            icon = QtGui.QIcon.fromTheme(theme_icon)
+        if not icon.isNull():
+            button.setIcon(icon)
+
+    def _on_prompt_text_changed(self) -> None:
+        text = self.prompt_text_edit.toPlainText()
+        total = len(text)
+        self.prompt_count_label.setText(f"{total}/{self._max_prompt_chars}")
+        self.prompt_count_label.setProperty(
+            "limitReached", total >= self._max_prompt_chars
+        )
+        self.prompt_count_label.style().unpolish(self.prompt_count_label)
+        self.prompt_count_label.style().polish(self.prompt_count_label)
+        can_send = bool(text.strip()) and not self.is_streaming_chat
+        self.send_button.setEnabled(can_send)
+
+    def _start_typing_indicator(self) -> None:
+        self._typing_tick = 0
+        self._on_typing_timer_tick()
+        self._typing_timer.start()
+
+    def _stop_typing_indicator(self) -> None:
+        if self._typing_timer.isActive():
+            self._typing_timer.stop()
+
+    def _on_typing_timer_tick(self) -> None:
+        if not self.is_streaming_chat:
+            self._stop_typing_indicator()
+            return
+        dots = "." * ((self._typing_tick % 3) + 1)
+        self._typing_tick += 1
+        self.status_label.setText(f"{self._assistant_display_name()} is typing{dots}")
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if (
+            watched is self.prompt_text_edit
+            and event.type() == QtCore.QEvent.KeyPress
+            and isinstance(event, QtGui.QKeyEvent)
+            and event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter)
+            and bool(event.modifiers() & QtCore.Qt.ControlModifier)
+        ):
+            self.chat_with_model()
+            return True
+        return super().eventFilter(watched, event)
 
     @staticmethod
     def _mix_colors(
@@ -332,9 +534,42 @@ class AIChatWidget(QtWidgets.QWidget):
                 QPushButton:hover {{
                     background: {hover_bg.name()};
                 }}
+                QPushButton:disabled {{
+                    color: {bubble_meta.name()};
+                    background: {self._mix_colors(button, window, 0.35).name()};
+                }}
+                QPushButton#quickActionButton {{
+                    border-radius: 12px;
+                    padding: 4px 10px;
+                    font-size: 11px;
+                    background: {self._mix_colors(area_bg, button, 0.45).name()};
+                }}
+                QPushButton#quickActionButton:hover {{
+                    background: {self._mix_colors(hover_bg, highlight, 0.1).name()};
+                }}
                 QLabel#sharedImageLabel, QLabel#chatStatusLabel {{
                     color: {bubble_meta.name()};
                     font-size: 11px;
+                }}
+                QLabel#chatEmptyState {{
+                    border: 1px dashed {mid.name()};
+                    border-radius: 12px;
+                    background: {area_bg.name()};
+                    color: {bubble_meta.name()};
+                    padding: 16px;
+                    margin: 20px 12px;
+                    font-size: 12px;
+                }}
+                QWidget#promptMetaRow {{
+                    background: transparent;
+                }}
+                QLabel#promptHintLabel, QLabel#promptCountLabel {{
+                    color: {bubble_meta.name()};
+                    font-size: 11px;
+                }}
+                QLabel#promptCountLabel[limitReached="true"] {{
+                    color: #cc3d2f;
+                    font-weight: 700;
                 }}
                 QLabel#botChipLabel {{
                     border: 1px solid {mid.name()};
@@ -360,6 +595,13 @@ class AIChatWidget(QtWidgets.QWidget):
                     padding: 5px 10px;
                     font-size: 11px;
                     font-weight: 600;
+                }}
+                QPushButton#sendButton {{
+                    background: {self._mix_colors(button, highlight, 0.5).name()};
+                    font-weight: 700;
+                }}
+                QPushButton#sendButton:hover {{
+                    background: {self._mix_colors(button, highlight, 0.62).name()};
                 }}
                 QCheckBox#toolTraceCheckbox {{
                     color: {bubble_meta.name()};
@@ -398,6 +640,14 @@ class AIChatWidget(QtWidgets.QWidget):
                     min-height: 18px;
                     font-size: 10px;
                 }}
+                QPushButton#bubbleCopyButton, QPushButton#bubbleRegenerateButton {{
+                    border: 1px solid {mid.name()};
+                    border-radius: 6px;
+                    background: {button.name()};
+                    padding: 2px 8px;
+                    min-height: 18px;
+                    font-size: 10px;
+                }}
                 """
             )
         finally:
@@ -416,13 +666,23 @@ class AIChatWidget(QtWidgets.QWidget):
         bar = self.scroll_area.verticalScrollBar()
         bar.setValue(bar.maximum())
 
-    def _add_bubble(self, sender: str, text: str, *, is_user: bool) -> _ChatBubble:
+    def _add_bubble(
+        self,
+        sender: str,
+        text: str,
+        *,
+        is_user: bool,
+        allow_regenerate: bool = False,
+    ) -> _ChatBubble:
         row = QtWidgets.QHBoxLayout()
         bubble = _ChatBubble(
             sender,
             text,
             is_user=is_user,
             on_speak=self.speak_text_async,
+            on_copy=self._copy_message_text,
+            on_regenerate=self._regenerate_from_bubble,
+            allow_regenerate=allow_regenerate,
             parent=self.chat_container,
         )
         if is_user:
@@ -435,8 +695,25 @@ class AIChatWidget(QtWidgets.QWidget):
         # Insert before trailing stretch item.
         insert_idx = max(0, self.chat_layout.count() - 1)
         self.chat_layout.insertLayout(insert_idx, row)
+        self._update_empty_state_visibility()
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
         return bubble
+
+    def _copy_message_text(self, text: str) -> None:
+        clipboard = QtGui.QGuiApplication.clipboard()
+        clipboard.setText(str(text or ""))
+        self.status_label.setText("Message copied.")
+
+    def _regenerate_from_bubble(self, _text: str) -> None:
+        prompt = str(self._last_user_prompt or "").strip()
+        if not prompt:
+            self.status_label.setText("No prompt available to regenerate.")
+            return
+        if self.is_streaming_chat:
+            self.status_label.setText("Wait for current response to finish.")
+            return
+        self.prompt_text_edit.setPlainText(prompt)
+        self.chat_with_model()
 
     def _assistant_display_name(self) -> str:
         model_name = str(self.selected_model or "").strip()
@@ -621,8 +898,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self._refresh_header_chips()
 
     def _clear_chat_bubbles(self) -> None:
-        while self.chat_layout.count() > 1:
-            item = self.chat_layout.takeAt(0)
+        while self.chat_layout.count() > 2:
+            item = self.chat_layout.takeAt(1)
             if item is None:
                 continue
             layout = item.layout()
@@ -639,7 +916,23 @@ class AIChatWidget(QtWidgets.QWidget):
             elif widget is not None:
                 widget.deleteLater()
         self._current_response_bubble = None
+        self._update_empty_state_visibility()
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _update_empty_state_visibility(self) -> None:
+        bubble_count = 0
+        for idx in range(self.chat_layout.count()):
+            item = self.chat_layout.itemAt(idx)
+            if item is None:
+                continue
+            row = item.layout()
+            if row is None:
+                continue
+            for j in range(row.count()):
+                widget = row.itemAt(j).widget()
+                if isinstance(widget, _ChatBubble):
+                    bubble_count += 1
+        self.empty_state_label.setVisible(bubble_count == 0)
 
     def _load_session_history_into_bubbles(self, session_id: str) -> None:
         self._clear_chat_bubbles()
@@ -892,6 +1185,7 @@ class AIChatWidget(QtWidgets.QWidget):
         if not self._ensure_provider_ready():
             return
 
+        self._last_user_prompt = raw_prompt
         chat_image_path = self._prepare_chat_image()
         self._add_bubble("You", raw_prompt, is_user=True)
         assistant_name = self._assistant_display_name()
@@ -899,12 +1193,13 @@ class AIChatWidget(QtWidgets.QWidget):
             assistant_name,
             "",
             is_user=False,
+            allow_regenerate=True,
         )
 
         self.prompt_text_edit.clear()
         self.send_button.setEnabled(False)
         self.is_streaming_chat = True
-        self.status_label.setText(f"Talking to {self.selected_model}…")
+        self._start_typing_indicator()
 
         task = StreamingChatTask(
             prompt=raw_prompt,
@@ -945,8 +1240,9 @@ class AIChatWidget(QtWidgets.QWidget):
         else:
             self.status_label.setText("Done")
 
-        self.send_button.setEnabled(True)
         self.is_streaming_chat = False
+        self._stop_typing_indicator()
+        self._on_prompt_text_changed()
         self._current_response_bubble = None
         self._scroll_to_bottom()
 
