@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cv2
@@ -340,6 +341,25 @@ def test_cron_tool_add_list_remove(tmp_path: Path) -> None:
     job_id = added.split("id: ")[-1].rstrip(")")
     removed = asyncio.run(tool.execute(action="remove", job_id=job_id))
     assert f"Removed job {job_id}" == removed
+
+
+def test_cron_tool_add_one_time_at_iso_datetime(tmp_path: Path) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    at_value = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    added = asyncio.run(
+        tool.execute(
+            action="add",
+            message="one-shot",
+            every_seconds=None,
+            cron_expr=None,
+            at=at_value,
+        )
+    )
+    assert "Created job" in added
+    listed = asyncio.run(tool.execute(action="list"))
+    assert "Scheduled jobs" in listed
+    assert "at=" in listed
 
 
 def test_memory_search_and_get_tools(tmp_path: Path) -> None:

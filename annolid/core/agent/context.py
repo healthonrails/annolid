@@ -77,7 +77,9 @@ class AgentContextBuilder:
         return messages
 
     def _get_identity(self) -> str:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        local_now = datetime.now().astimezone()
+        tz_name = local_now.tzname() or "local"
+        now = local_now.strftime("%Y-%m-%d %H:%M (%A)")
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = (
@@ -87,7 +89,7 @@ class AgentContextBuilder:
         return (
             "# Annolid Agent\n\n"
             "You are an Annolid assistant with tool access for annotation workflows.\n\n"
-            f"## Current Time\n{now}\n\n"
+            f"## Current Time\n{now} ({tz_name})\n\n"
             f"## Runtime\n{runtime}\n\n"
             f"## Workspace\n{workspace_path}\n"
         )

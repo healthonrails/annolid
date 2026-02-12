@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 from urllib.parse import urlparse
@@ -1311,6 +1312,7 @@ class CronTool(FunctionTool):
                 "message": {"type": "string"},
                 "every_seconds": {"type": "integer"},
                 "cron_expr": {"type": "string"},
+                "at": {"type": "string"},
                 "at_ms": {"type": "integer"},
                 "deliver": {"type": "boolean"},
                 "job_id": {"type": "string"},
@@ -1324,6 +1326,7 @@ class CronTool(FunctionTool):
         message: str = "",
         every_seconds: int | None = None,
         cron_expr: str | None = None,
+        at: str | None = None,
         at_ms: int | None = None,
         deliver: bool = False,
         job_id: str | None = None,
@@ -1335,6 +1338,7 @@ class CronTool(FunctionTool):
                 message=message,
                 every_seconds=every_seconds,
                 cron_expr=cron_expr,
+                at=at,
                 at_ms=at_ms,
                 deliver=bool(deliver),
             )
@@ -1358,6 +1362,7 @@ class CronTool(FunctionTool):
         message: str,
         every_seconds: int | None,
         cron_expr: str | None,
+        at: str | None,
         at_ms: int | None,
         deliver: bool,
     ) -> str:
@@ -1365,13 +1370,20 @@ class CronTool(FunctionTool):
             return "Error: message is required for add"
         if not self._channel or not self._chat_id:
             return "Error: no session context (channel/chat_id)"
-        if not every_seconds and not cron_expr and not at_ms:
-            return "Error: one of every_seconds, cron_expr, or at_ms is required"
+        parsed_at_ms: int | None = None
+        at_text = str(at or "").strip()
+        if at_text:
+            parsed_at_ms = self._parse_iso_datetime_ms(at_text)
+            if parsed_at_ms is None:
+                return "Error: at must be an ISO datetime string (e.g., 2026-02-13T09:30:00Z)"
+        if not every_seconds and not cron_expr and not at_ms and parsed_at_ms is None:
+            return "Error: one of every_seconds, cron_expr, at, or at_ms is required"
         if every_seconds and int(every_seconds) <= 0:
             return "Error: every_seconds must be > 0"
 
-        if at_ms:
-            schedule = CronSchedule(kind="at", at_ms=int(at_ms))
+        resolved_at_ms = int(at_ms) if at_ms else parsed_at_ms
+        if resolved_at_ms is not None:
+            schedule = CronSchedule(kind="at", at_ms=resolved_at_ms)
         elif every_seconds:
             schedule = CronSchedule(kind="every", every_ms=int(every_seconds) * 1000)
         else:
@@ -1454,6 +1466,20 @@ class CronTool(FunctionTool):
                 if asyncio.iscoroutine(result):
                     await result
         return message
+
+    @staticmethod
+    def _parse_iso_datetime_ms(value: str) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            when = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if when.tzinfo is None:
+            when = when.astimezone()
+        return int(when.timestamp() * 1000)
 
 
 def register_nanobot_style_tools(

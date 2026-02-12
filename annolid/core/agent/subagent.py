@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Awaitable, Callable, Dict, Optional, Sequence
 
 from .loop import AgentLoop
-from .tools import FunctionToolRegistry, register_nanobot_style_tools
+from .tools import (
+    EditFileTool,
+    FunctionToolRegistry,
+    ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
+    register_nanobot_style_tools,
+)
 
 AnnounceCallback = Callable[[str, str, str, str, str], Awaitable[None] | None]
 
@@ -135,17 +142,31 @@ class SubagentManager:
             await ret
 
     def _build_subagent_prompt(self, task: str) -> str:
+        now_local = datetime.now().astimezone()
+        tz_name = now_local.tzname() or "local"
+        tz_offset = now_local.strftime("%z")
+        pretty_offset = (
+            f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
+        )
+        now_text = (
+            f"{now_local.strftime('%Y-%m-%d %H:%M:%S')} ({tz_name}, UTC{pretty_offset})"
+        )
         workspace = str(self._workspace) if self._workspace is not None else "."
+        skills_dir = str(Path(workspace) / "skills")
         return (
             "# Subagent\n\n"
             "You are a focused background subagent for a single task.\n\n"
+            f"## Current Time\n{now_text}\n\n"
             f"## Task\n{task}\n\n"
             "## Rules\n"
             "1. Stay focused on this task only.\n"
             "2. Use tools when needed.\n"
             "3. Return concise findings.\n"
             "4. Do not start side conversations.\n\n"
-            f"## Workspace\n{workspace}\n"
+            f"## Workspace\n{workspace}\n\n"
+            "## Skills\n"
+            f"Workspace skill docs are under: {skills_dir}\n"
+            "Read the relevant `SKILL.md` files when a task needs a specific skill.\n"
         )
 
 
@@ -160,6 +181,15 @@ def build_subagent_tools_registry(
         registry,
         allowed_dir=Path(workspace) if workspace is not None else None,
         allowed_read_roots=allowed_read_roots,
+    )
+    allowed_dir = Path(workspace) if workspace is not None else None
+    registry.register(
+        ReadFileTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+    )
+    registry.register(WriteFileTool(allowed_dir=allowed_dir))
+    registry.register(EditFileTool(allowed_dir=allowed_dir))
+    registry.register(
+        ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
     # Subagents should stay focused and not recursively spawn or send messages.
     registry.unregister("spawn")

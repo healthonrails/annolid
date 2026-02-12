@@ -51,6 +51,9 @@ def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:
     )
     assert messages[0]["role"] == "system"
     assert "workspace instructions" in str(messages[0]["content"])
+    assert "## Current Time" in str(messages[0]["content"])
+    assert "(" in str(messages[0]["content"])
+    assert ")" in str(messages[0]["content"])
     assert isinstance(messages[-1]["content"], list)
     assert messages[-1]["content"][-1]["text"] == "describe"
 
@@ -98,7 +101,35 @@ def test_build_subagent_tools_registry_excludes_recursive_tools(
 ) -> None:
     registry = build_subagent_tools_registry(tmp_path)
     assert registry.has("read_file")
+    assert registry.has("write_file")
+    assert registry.has("edit_file")
+    assert registry.has("list_dir")
     assert registry.has("exec")
     assert not registry.has("spawn")
     assert not registry.has("message")
     assert not registry.has("cron")
+
+
+def test_subagent_prompt_includes_time_and_skills_path(tmp_path: Path) -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "ok"}
+
+    manager = SubagentManager(
+        loop_factory=lambda: AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+            workspace=str(tmp_path),
+        ),
+        workspace=tmp_path,
+    )
+    prompt = manager._build_subagent_prompt("review files")
+    assert "## Current Time" in prompt
+    assert "UTC" in prompt
+    assert "## Skills" in prompt
+    assert str(tmp_path / "skills") in prompt
