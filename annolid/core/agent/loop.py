@@ -23,6 +23,7 @@ from typing import (
 from annolid.utils.llm_settings import resolve_agent_runtime_config, resolve_llm_config
 
 from .context import AgentContextBuilder
+from .memory import AgentMemoryStore
 from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
 from .tools import FunctionToolRegistry
 from .tools.function_builtin import CronTool, MessageTool, SpawnTool
@@ -216,6 +217,7 @@ class AgentLoop:
         self._set_tool_context(channel=channel, chat_id=chat_id)
         messages: List[Dict[str, Any]] = []
         user_message_text = str(user_message)
+        self._persist_long_term_memory_note_from_user_text(user_message_text)
         memory_history: List[Dict[str, Any]] = []
         memory_facts: Dict[str, str] = {}
         if memory_enabled:
@@ -376,6 +378,44 @@ class AgentLoop:
 
     def remember(self, session_id: str, key: str, value: str) -> None:
         self._memory_store.set_fact(session_id, key, value)
+        if not self._workspace:
+            return
+        try:
+            memory = AgentMemoryStore(Path(self._workspace))
+            existing = memory.read_long_term().rstrip()
+            entry = f"- {str(key).strip()}: {str(value).strip()}".strip()
+            if not entry or entry == "- :":
+                return
+            if existing:
+                memory.write_long_term(existing + "\n" + entry + "\n")
+            else:
+                memory.write_long_term(entry + "\n")
+        except Exception:
+            # Best-effort long-term persistence should not break the turn flow.
+            return
+
+    def _persist_long_term_memory_note_from_user_text(self, text: str) -> None:
+        if not self._workspace:
+            return
+        match = self._REMEMBER_NOTE_RE.match(str(text or ""))
+        if match is None:
+            return
+        note = str(match.group(1) or "").strip()
+        if not note:
+            return
+        line = f"- {note}"
+        try:
+            memory = AgentMemoryStore(Path(self._workspace))
+            existing = memory.read_long_term().rstrip()
+            existing_lines = {ln.strip() for ln in existing.splitlines() if ln.strip()}
+            if line in existing_lines:
+                return
+            if existing:
+                memory.write_long_term(existing + "\n" + line + "\n")
+            else:
+                memory.write_long_term(line + "\n")
+        except Exception:
+            return
 
     def recall(self, session_id: str, key: Optional[str] = None) -> Any:
         facts = self._memory_store.get_facts(session_id)
@@ -500,6 +540,10 @@ class AgentLoop:
         "video_sample_frames",
         "extract_pdf_text",
         "web_search",
+    )
+    _REMEMBER_NOTE_RE = re.compile(
+        r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$",
+        flags=re.IGNORECASE,
     )
 
     @classmethod

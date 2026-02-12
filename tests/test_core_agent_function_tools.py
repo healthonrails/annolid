@@ -19,6 +19,9 @@ from annolid.core.agent.tools.function_builtin import (
     ExtractPdfImagesTool,
     ExtractPdfTextTool,
     ListDirTool,
+    MemoryGetTool,
+    MemorySetTool,
+    MemorySearchTool,
     ReadFileTool,
     WebSearchTool,
     WriteFileTool,
@@ -339,10 +342,58 @@ def test_cron_tool_add_list_remove(tmp_path: Path) -> None:
     assert f"Removed job {job_id}" == removed
 
 
+def test_memory_search_and_get_tools(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "MEMORY.md").write_text(
+        "# Long-term\n\nPreferred species: zebrafish\n",
+        encoding="utf-8",
+    )
+    (memory_dir / "2026-02-11.md").write_text(
+        "# 2026-02-11\n\nReviewed tracking thresholds.\n",
+        encoding="utf-8",
+    )
+
+    search_tool = MemorySearchTool(workspace=tmp_path)
+    result = asyncio.run(search_tool.execute(query="zebrafish preference", top_k=3))
+    payload = json.loads(result)
+    assert payload["count"] >= 1
+    assert any(item["path"] == "memory/MEMORY.md" for item in payload["results"])
+
+    get_tool = MemoryGetTool(workspace=tmp_path)
+    got = asyncio.run(get_tool.execute(path="MEMORY.md", start_line=1, end_line=2))
+    got_payload = json.loads(got)
+    assert got_payload["path"] == "memory/MEMORY.md"
+    assert "# Long-term" in got_payload["content"]
+
+    blocked = asyncio.run(get_tool.execute(path="../secret.md"))
+    blocked_payload = json.loads(blocked)
+    assert "allowed" in blocked_payload["error"]
+
+
+def test_memory_set_tool_writes_long_term_memory(tmp_path: Path) -> None:
+    set_tool = MemorySetTool(workspace=tmp_path)
+    first = asyncio.run(set_tool.execute(key="preferred_species", value="zebrafish"))
+    first_payload = json.loads(first)
+    assert first_payload["ok"] is True
+    assert first_payload["path"] == "memory/MEMORY.md"
+
+    second = asyncio.run(set_tool.execute(note="Use higher threshold for arena C"))
+    second_payload = json.loads(second)
+    assert second_payload["ok"] is True
+
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "- preferred_species: zebrafish" in memory_text
+    assert "- Use higher threshold for arena C" in memory_text
+
+
 def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     registry = FunctionToolRegistry()
     register_nanobot_style_tools(registry, allowed_dir=tmp_path)
     assert registry.has("read_file")
+    assert registry.has("memory_search")
+    assert registry.has("memory_get")
+    assert registry.has("memory_set")
     assert registry.has("extract_pdf_text")
     assert registry.has("extract_pdf_images")
     assert registry.has("video_info")

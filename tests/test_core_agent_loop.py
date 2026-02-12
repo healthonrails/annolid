@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig
@@ -227,6 +228,58 @@ def test_agent_loop_memory_facts_injected() -> None:
     _ = asyncio.run(loop.run("hello", session_id="s2"))
     assert observed["has_memory_fact"] is True
     assert loop.recall("s2", "preferred_language") == "zh"
+
+
+def test_agent_loop_remember_persists_long_term_memory(tmp_path: Path) -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+    )
+    loop.remember("s3", "favorite_animal", "mouse")
+
+    memory_path = tmp_path / "memory" / "MEMORY.md"
+    assert memory_path.exists()
+    content = memory_path.read_text(encoding="utf-8")
+    assert "- favorite_animal: mouse" in content
+
+
+def test_agent_loop_remember_prompt_persists_note_to_long_term_memory(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "Noted."}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+    )
+    _ = asyncio.run(loop.run("remember you are annolid bot", session_id="s4"))
+
+    memory_path = tmp_path / "memory" / "MEMORY.md"
+    assert memory_path.exists()
+    content = memory_path.read_text(encoding="utf-8")
+    assert "- you are annolid bot" in content
 
 
 def test_agent_loop_does_not_persist_empty_assistant_reply() -> None:

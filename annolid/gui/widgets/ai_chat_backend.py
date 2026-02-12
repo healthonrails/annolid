@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from datetime import datetime
 import importlib
 import json
 import logging
@@ -16,6 +17,7 @@ from qtpy.QtCore import QMetaObject, QRunnable
 
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.config import load_config
+from annolid.core.agent.memory import AgentMemoryStore
 from annolid.core.agent.providers import OpenAICompatProvider, resolve_openai_compat
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
@@ -84,6 +86,8 @@ class StreamingChatTask(QRunnable):
         self.session_id = str(session_id or "gui:annolid_bot:default")
         self.session_store = session_store or _get_session_store()
         self.show_tool_trace = bool(show_tool_trace)
+        self.workspace = get_agent_workspace_path()
+        self.workspace_memory = AgentMemoryStore(self.workspace)
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
         self.max_history_messages = int(runtime_cfg.max_history_messages)
 
@@ -268,9 +272,13 @@ class StreamingChatTask(QRunnable):
         keep = max(1, int(self.max_history_messages))
         return cleaned[-keep:]
 
-    def _persist_turn(self, user_text: str, assistant_text: str) -> None:
-        if not self.session_store:
-            return
+    def _persist_turn(
+        self,
+        user_text: str,
+        assistant_text: str,
+        *,
+        persist_session_history: bool = True,
+    ) -> None:
         user_msg = str(user_text or "").strip()
         assistant_msg = str(assistant_text or "").strip()
         if not user_msg and not assistant_msg:
@@ -280,16 +288,27 @@ class StreamingChatTask(QRunnable):
             entries.append({"role": "user", "content": user_msg})
         if assistant_msg:
             entries.append({"role": "assistant", "content": assistant_msg})
-        if not entries:
-            return
+
+        if persist_session_history and self.session_store and entries:
+            try:
+                self.session_store.append_history(
+                    self.session_id,
+                    entries,
+                    max_messages=self.max_history_messages,
+                )
+            except Exception:
+                pass
+
         try:
-            self.session_store.append_history(
-                self.session_id,
-                entries,
-                max_messages=self.max_history_messages,
-            )
+            stamp = datetime.now().strftime("%H:%M:%S")
+            parts: List[str] = [f"## {stamp} [{self.session_id}]"]
+            if user_msg:
+                parts.append(f"User: {user_msg}")
+            if assistant_msg:
+                parts.append(f"Assistant: {assistant_msg}")
+            self.workspace_memory.append_today("\n\n".join(parts))
         except Exception:
-            return
+            pass
 
     def _run_agent_loop(self) -> None:
         direct_command_text = self._execute_direct_gui_command(self.prompt)
@@ -473,7 +492,11 @@ class StreamingChatTask(QRunnable):
                 self.model,
             )
         if text.strip():
-            self._persist_turn(self.prompt, text)
+            self._persist_turn(
+                self.prompt,
+                text,
+                persist_session_history=False,
+            )
         self._emit_final(text, is_error=False)
 
     def _get_shared_image_path(self) -> str:

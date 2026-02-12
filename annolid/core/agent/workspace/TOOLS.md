@@ -10,6 +10,9 @@ This workspace is intended for the Annolid agent tool stack.
 - `write_file(path, content)`
 - `edit_file(path, old_text, new_text)`
 - `list_dir(path)`
+- `memory_search(query, top_k?, max_snippet_chars?)`
+- `memory_get(path, start_line?, end_line?, max_chars?)`
+- `memory_set(key?, value?, note?)`
 
 ## Execution
 

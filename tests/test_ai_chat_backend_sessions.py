@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import date
 
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
@@ -110,3 +111,54 @@ def test_run_reports_dependency_missing_without_fallback(monkeypatch) -> None:
     assert called["agent_loop"] is False
     assert emitted["is_error"] is True
     assert "openai" in emitted["message"].lower()
+
+
+def test_persist_turn_writes_workspace_daily_memory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(ai_chat_backend, "get_agent_workspace_path", lambda: workspace)
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    task = StreamingChatTask(
+        prompt="hello",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+        session_id="gui:test-memory-daily",
+        session_store=store,
+    )
+
+    task._persist_turn("how are you?", "all good")
+
+    today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
+    assert today_file.exists()
+    text = today_file.read_text(encoding="utf-8")
+    assert "gui:test-memory-daily" in text
+    assert "User: how are you?" in text
+    assert "Assistant: all good" in text
+
+
+def test_persist_turn_can_skip_session_history_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(ai_chat_backend, "get_agent_workspace_path", lambda: workspace)
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    task = StreamingChatTask(
+        prompt="hello",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+        session_id="gui:test-no-dup",
+        session_store=store,
+    )
+
+    task._persist_turn("q1", "a1", persist_session_history=False)
+
+    assert task._load_history_messages() == []
+    today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
+    assert today_file.exists()
