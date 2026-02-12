@@ -5,6 +5,8 @@ This workspace is intended for the Annolid agent tool stack.
 ## File Tools
 
 - `read_file(path)`
+- `extract_pdf_text(path, start_page?, max_pages?, max_chars?)`
+- `extract_pdf_images(path, output_dir?, start_page?, max_pages?, dpi?, overwrite?)`
 - `write_file(path, content)`
 - `edit_file(path, old_text, new_text)`
 - `list_dir(path)`
@@ -23,6 +25,7 @@ Safety notes:
 
 - `web_search(query, count?)`
 - `web_fetch(url, extractMode?, maxChars?)`
+- `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?)`
 
 ## Communication and Delegation
 
