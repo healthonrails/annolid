@@ -193,6 +193,7 @@ class MenuController:
                 "tip": w.tr(
                     "Open Annolid Bot with multimodal chat, canvas/window sharing, and voice interaction"
                 ),
+                "icon_path": here / "icons/icon_annolid.png",
             },
             {
                 "name": "open_florence2",

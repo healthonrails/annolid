@@ -222,6 +222,13 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         header_bar.addWidget(self.back_button, 0)
 
+        self.bot_icon_label = QtWidgets.QLabel(self)
+        self.bot_icon_label.setObjectName("chatBotIconLabel")
+        self.bot_icon_label.setFixedSize(34, 34)
+        self.bot_icon_label.setAlignment(QtCore.Qt.AlignCenter)
+        self._set_bot_icon()
+        header_bar.addWidget(self.bot_icon_label, 0)
+
         title_col = QtWidgets.QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
         title_col.setSpacing(1)
@@ -472,6 +479,25 @@ class AIChatWidget(QtWidgets.QWidget):
         if not icon.isNull():
             button.setIcon(icon)
 
+    def _set_bot_icon(self) -> None:
+        icon = self._resolve_bot_icon()
+        pixmap = icon.pixmap(QtCore.QSize(26, 26))
+        if not pixmap.isNull():
+            self.bot_icon_label.setPixmap(pixmap)
+
+    def _resolve_bot_icon(self) -> QtGui.QIcon:
+        icon_path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "icons", "icon_annolid.png")
+        )
+        if os.path.exists(icon_path):
+            icon = QtGui.QIcon(icon_path)
+            if not icon.isNull():
+                return icon
+        icon = self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+        if icon.isNull():
+            icon = QtGui.QIcon.fromTheme("applications-science")
+        return icon
+
     def _on_prompt_text_changed(self) -> None:
         text = self.prompt_text_edit.toPlainText()
         total = len(text)
@@ -580,6 +606,12 @@ class AIChatWidget(QtWidgets.QWidget):
                 QLabel#chatSubtitleLabel {{
                     color: #9ea4af;
                     font-size: 11px;
+                }}
+                QLabel#chatBotIconLabel {{
+                    border: 1px solid #353b47;
+                    border-radius: 17px;
+                    background: #1f2530;
+                    padding: 2px;
                 }}
                 QPushButton:hover {{
                     background: #2b3038;

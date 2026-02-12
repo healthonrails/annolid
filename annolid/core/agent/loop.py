@@ -154,6 +154,7 @@ class AgentLoop:
         allowed_read_roots: Optional[Sequence[str | Path]] = None,
         context_builder: Optional[AgentContextBuilder] = None,
         subagent_manager: Optional["SubagentManager"] = None,
+        interleave_post_tool_guidance: bool = True,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._tools = tools
@@ -174,6 +175,7 @@ class AgentLoop:
         self._allowed_read_roots = tuple(str(p) for p in (allowed_read_roots or ()))
         self._context_builder = context_builder
         self._subagent_manager = subagent_manager
+        self._interleave_post_tool_guidance = bool(interleave_post_tool_guidance)
 
         self._provider = provider
         self._model_override = model
@@ -330,6 +332,7 @@ class AgentLoop:
                             "content": str(result),
                         }
                     )
+                self._append_post_tool_guidance(messages)
                 continue
 
             repeated_tool_cycles = 0
@@ -545,6 +548,11 @@ class AgentLoop:
         r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$",
         flags=re.IGNORECASE,
     )
+    _POST_TOOL_SYSTEM_GUIDANCE = (
+        "Use the tool results to decide the next best action. "
+        "Either call another tool with concrete arguments or provide a concise "
+        "final answer. Do not reveal private chain-of-thought."
+    )
 
     @classmethod
     def _tokenize_text(cls, text: str) -> List[str]:
@@ -720,6 +728,19 @@ class AgentLoop:
             seen.add(signature)
             deduped.append({"id": call_id, "name": name, "arguments": args})
         return deduped
+
+    def _append_post_tool_guidance(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._interleave_post_tool_guidance:
+            return
+        if messages:
+            last = messages[-1]
+            if (
+                str(last.get("role") or "") == "system"
+                and str(last.get("content") or "").strip()
+                == self._POST_TOOL_SYSTEM_GUIDANCE
+            ):
+                return
+        messages.append({"role": "system", "content": self._POST_TOOL_SYSTEM_GUIDANCE})
 
     def _extract_tool_calls(self, response: Mapping[str, Any]) -> List[Dict[str, Any]]:
         raw_calls = response.get("tool_calls") or []

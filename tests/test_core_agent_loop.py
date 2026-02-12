@@ -415,6 +415,83 @@ def test_agent_loop_selects_relevant_tools_by_description() -> None:
     assert "calculator" not in observed["tool_names"]
 
 
+def test_agent_loop_inserts_post_tool_system_guidance() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0, "saw_guidance": False}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        state["saw_guidance"] = any(
+            m.get("role") == "system"
+            and "Use the tool results to decide the next best action."
+            in str(m.get("content") or "")
+            for m in messages
+        )
+        assert not any(
+            m.get("role") == "user"
+            and "Reflect on the results and decide next steps."
+            in str(m.get("content") or "")
+            for m in messages
+        )
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("hi"))
+    assert result.content == "done"
+    assert state["saw_guidance"] is True
+
+
+def test_agent_loop_can_disable_post_tool_guidance() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0, "saw_guidance": False}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "x"}}
+                ],
+            }
+        state["saw_guidance"] = any(
+            m.get("role") == "system"
+            and "Use the tool results to decide the next best action."
+            in str(m.get("content") or "")
+            for m in messages
+        )
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        interleave_post_tool_guidance=False,
+    )
+    result = asyncio.run(loop.run("start"))
+    assert result.content == "ok"
+    assert state["saw_guidance"] is False
+
+
 def test_agent_loop_uses_compact_default_tool_subset_for_low_signal_prompt() -> None:
     registry = FunctionToolRegistry()
     registry.register(_SearchLikeTool())
