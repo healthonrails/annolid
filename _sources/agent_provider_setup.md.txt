@@ -125,10 +125,16 @@ Use `profiles` in `~/.annolid/llm_settings.json` to assign different providers/m
   "agent": {
     "temperature": 0.7,
     "max_tool_iterations": 12,
-    "max_history_messages": 24
+    "max_history_messages": 24,
+    "memory_window": 50
   }
 }
 ```
+
+Memory behavior:
+
+- `memory/MEMORY.md` is injected as long-term facts.
+- `memory/HISTORY.md` is an append-only archive for recall/search (not auto-injected).
 
 Model name flexibility:
 

@@ -227,11 +227,17 @@
 <span class="w">  </span><span class="nt">&quot;agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;temperature&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;max_tool_iterations&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;max_history_messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span>
+<span class="w">    </span><span class="nt">&quot;max_history_messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;memory_window&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
+<p>Memory behavior:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">memory/MEMORY.md</span></code> is injected as long-term facts.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">memory/HISTORY.md</span></code> is an append-only archive for recall/search (not auto-injected).</p></li>
+</ul>
 <p>Model name flexibility:</p>
 <ul class="simple">
 <li><p>In Annolid Bot model selector, you can type any model id (not limited to the predefined list).</p></li>
