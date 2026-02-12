@@ -209,6 +209,25 @@ def test_gui_tool_callbacks_validate_and_queue(tmp_path: Path) -> None:
     track_payload = task._tool_gui_track_next_frames(120)
     assert track_payload["ok"] is True
 
+    ai_prompt_payload = task._tool_gui_set_ai_text_prompt("mouse", use_countgd=True)
+    assert ai_prompt_payload["ok"] is True
+    assert ai_prompt_payload["use_countgd"] is True
+
+    run_ai_seg_payload = task._tool_gui_run_ai_text_segmentation()
+    assert run_ai_seg_payload["ok"] is True
+
+    workflow_payload = task._tool_gui_segment_track_video(
+        path=str(video_file),
+        text_prompt="mouse",
+        mode="track",
+        use_countgd=True,
+        model_name="Cutie",
+        to_frame=120,
+    )
+    assert workflow_payload["ok"] is True
+    assert workflow_payload["mode"] == "track"
+    assert workflow_payload["text_prompt"] == "mouse"
+
     assert calls == [
         "bot_open_video",
         "bot_set_frame",
@@ -217,7 +236,24 @@ def test_gui_tool_callbacks_validate_and_queue(tmp_path: Path) -> None:
         "bot_set_chat_model",
         "bot_select_annotation_model",
         "bot_track_next_frames",
+        "bot_set_ai_text_prompt",
+        "bot_run_ai_text_segmentation",
+        "bot_segment_track_video",
     ]
+
+
+def test_invoke_widget_slot_none_result_counts_as_success(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=object())
+
+    def _invoke(*args, **kwargs):
+        del args, kwargs
+        return None
+
+    monkeypatch.setattr(backend.QMetaObject, "invokeMethod", _invoke)
+    ok = task._invoke_widget_slot("bot_segment_track_video")
+    assert ok is True
 
 
 def test_gui_open_video_rejects_missing_path(tmp_path: Path) -> None:
@@ -278,7 +314,23 @@ def test_gui_open_video_resolves_by_basename_in_roots(
 def test_prompt_may_need_tools_heuristic() -> None:
     assert StreamingChatTask._prompt_may_need_tools("use tool to open video") is True
     assert StreamingChatTask._prompt_may_need_tools("please list_dir workspace") is True
+    assert (
+        StreamingChatTask._prompt_may_need_tools("segment mouse with text prompt")
+        is True
+    )
     assert StreamingChatTask._prompt_may_need_tools("hello there") is False
+
+
+def test_parse_direct_segment_track_video_command() -> None:
+    task = StreamingChatTask("track mouse in /tmp/mouse.mp4", widget=None)
+    cmd = task._parse_direct_gui_command(
+        "track mouse in /tmp/mouse.mp4 to frame 120 with countgd"
+    )
+    assert cmd["name"] == "segment_track_video"
+    assert cmd["args"]["mode"] == "track"
+    assert cmd["args"]["text_prompt"] == "mouse"
+    assert cmd["args"]["use_countgd"] is True
+    assert cmd["args"]["to_frame"] == 120
 
 
 def test_ollama_llm_callable_reprobes_tools_when_prompt_needs_tools(

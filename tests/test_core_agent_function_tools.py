@@ -512,6 +512,13 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             "select_model", model_name
         ),
         track_next_frames_callback=lambda to_frame: _mark("track", to_frame),
+        set_ai_text_prompt_callback=lambda text, use_countgd=False: _mark(
+            "set_ai_text_prompt", f"{text}|{bool(use_countgd)}"
+        ),
+        run_ai_text_segmentation_callback=lambda: _mark("run_ai_text_segmentation"),
+        segment_track_video_callback=lambda **kwargs: _mark(
+            "segment_track_video", kwargs
+        ),
     )
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
@@ -522,6 +529,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_set_chat_model")
     assert registry.has("gui_select_annotation_model")
     assert registry.has("gui_track_next_frames")
+    assert registry.has("gui_set_ai_text_prompt")
+    assert registry.has("gui_run_ai_text_segmentation")
+    assert registry.has("gui_segment_track_video")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
     assert ctx_payload["provider"] == "ollama"
@@ -544,6 +554,24 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         )
     )
     asyncio.run(registry.execute("gui_track_next_frames", {"to_frame": 120}))
+    asyncio.run(
+        registry.execute(
+            "gui_set_ai_text_prompt",
+            {"text": "mouse", "use_countgd": True},
+        )
+    )
+    asyncio.run(registry.execute("gui_run_ai_text_segmentation", {}))
+    asyncio.run(
+        registry.execute(
+            "gui_segment_track_video",
+            {
+                "path": "/tmp/a.mp4",
+                "text_prompt": "mouse",
+                "mode": "track",
+                "to_frame": 120,
+            },
+        )
+    )
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("set_frame", 3),
@@ -552,4 +580,15 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("set_chat_model", "ollama:qwen3:8b"),
         ("select_model", "Segment Anything 2"),
         ("track", 120),
+        ("set_ai_text_prompt", "mouse|True"),
+        ("run_ai_text_segmentation", None),
+        (
+            "segment_track_video",
+            {
+                "path": "/tmp/a.mp4",
+                "text_prompt": "mouse",
+                "mode": "track",
+                "to_frame": 120,
+            },
+        ),
     ]

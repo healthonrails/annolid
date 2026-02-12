@@ -271,6 +271,92 @@ class GuiTrackNextFramesTool(FunctionTool):
         return await _run_callback(self._track_callback, **kwargs)
 
 
+class GuiSetAiTextPromptTool(FunctionTool):
+    def __init__(self, set_ai_text_prompt_callback: Optional[ActionCallback] = None):
+        self._set_ai_text_prompt_callback = set_ai_text_prompt_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_set_ai_text_prompt"
+
+    @property
+    def description(self) -> str:
+        return "Set the GUI AI text prompt used by GroundingDINO + SAM segmentation."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "minLength": 1},
+                "use_countgd": {"type": "boolean"},
+            },
+            "required": ["text"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._set_ai_text_prompt_callback, **kwargs)
+
+
+class GuiRunAiTextSegmentationTool(FunctionTool):
+    def __init__(
+        self, run_ai_text_segmentation_callback: Optional[ActionCallback] = None
+    ):
+        self._run_ai_text_segmentation_callback = run_ai_text_segmentation_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_run_ai_text_segmentation"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Run GUI GroundingDINO + SAM segmentation using the current AI text prompt."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._run_ai_text_segmentation_callback)
+
+
+class GuiSegmentTrackVideoTool(FunctionTool):
+    def __init__(self, segment_track_video_callback: Optional[ActionCallback] = None):
+        self._segment_track_video_callback = segment_track_video_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_segment_track_video"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Open a video, run text-prompt GroundingDINO+SAM segmentation, save, and "
+            "optionally track to a target frame."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "text_prompt": {"type": "string", "minLength": 1},
+                "mode": {"type": "string", "enum": ["segment", "track"]},
+                "use_countgd": {"type": "boolean"},
+                "model_name": {"type": "string"},
+                "to_frame": {"type": "integer", "minimum": 1},
+            },
+            "required": ["path", "text_prompt"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._segment_track_video_callback, **kwargs)
+
+
 def register_annolid_gui_tools(
     registry: FunctionToolRegistry,
     *,
@@ -283,6 +369,9 @@ def register_annolid_gui_tools(
     set_chat_model_callback: Optional[ActionCallback] = None,
     select_annotation_model_callback: Optional[ActionCallback] = None,
     track_next_frames_callback: Optional[ActionCallback] = None,
+    set_ai_text_prompt_callback: Optional[ActionCallback] = None,
+    run_ai_text_segmentation_callback: Optional[ActionCallback] = None,
+    segment_track_video_callback: Optional[ActionCallback] = None,
 ) -> None:
     """Register GUI-only tools for Annolid Bot sessions."""
     registry.register(GuiContextTool(context_callback=context_callback))
@@ -298,3 +387,16 @@ def register_annolid_gui_tools(
         )
     )
     registry.register(GuiTrackNextFramesTool(track_callback=track_next_frames_callback))
+    registry.register(
+        GuiSetAiTextPromptTool(set_ai_text_prompt_callback=set_ai_text_prompt_callback)
+    )
+    registry.register(
+        GuiRunAiTextSegmentationTool(
+            run_ai_text_segmentation_callback=run_ai_text_segmentation_callback
+        )
+    )
+    registry.register(
+        GuiSegmentTrackVideoTool(
+            segment_track_video_callback=segment_track_video_callback
+        )
+    )

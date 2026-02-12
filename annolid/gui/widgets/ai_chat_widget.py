@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
@@ -147,6 +147,10 @@ class _ChatBubble(QtWidgets.QFrame):
 class AIChatWidget(QtWidgets.QWidget):
     """Annolid Bot chat UI for local/cloud models with visual sharing and streaming."""
 
+    @staticmethod
+    def _new_startup_session_id() -> str:
+        return f"gui:annolid_bot:{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.llm_settings = load_llm_settings()
@@ -166,7 +170,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._snapshot_paths: List[str] = []
         self._current_response_bubble: Optional[_ChatBubble] = None
         self.is_streaming_chat = False
-        self.session_id = "gui:annolid_bot:default"
+        self.session_id = self._new_startup_session_id()
         self._applying_theme_styles = False
         self.thread_pool = QThreadPool()
         self._audio_controller: Optional[ChatAudioController] = None
@@ -178,6 +182,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer = QtCore.QTimer(self)
         self._typing_timer.setInterval(350)
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
+        self._bot_action_results: Dict[str, Dict[str, Any]] = {}
 
         self._build_ui()
         self._apply_theme_styles()
@@ -1066,6 +1071,29 @@ class AIChatWidget(QtWidgets.QWidget):
     def set_host_window(self, window: Optional[QtWidgets.QWidget]) -> None:
         self.host_window_widget = window
 
+    def _set_bot_action_result(self, action: str, result: Dict[str, Any]) -> None:
+        self._bot_action_results[str(action)] = dict(result or {})
+
+    def get_bot_action_result(self, action: str) -> Dict[str, Any]:
+        payload = self._bot_action_results.get(str(action), {})
+        return dict(payload or {})
+
+    def _canvas_pixmap_ready(self) -> bool:
+        host = self.host_window_widget or self.window()
+        canvas = getattr(host, "canvas", None)
+        pixmap = getattr(canvas, "pixmap", None)
+        return bool(
+            pixmap is not None and hasattr(pixmap, "isNull") and not pixmap.isNull()
+        )
+
+    def _wait_for_canvas_pixmap(self, timeout_ms: int = 3000) -> bool:
+        deadline = QtCore.QDeadlineTimer(int(max(1, timeout_ms)))
+        while not deadline.hasExpired():
+            if self._canvas_pixmap_ready():
+                return True
+            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        return self._canvas_pixmap_ready()
+
     @QtCore.Slot(str)
     def bot_open_video(self, video_path: str) -> None:
         path = str(video_path or "").strip()
@@ -1146,6 +1174,218 @@ class AIChatWidget(QtWidgets.QWidget):
             run_track(to_frame=int(to_frame))
             self.status_label.setText(f"Started tracking to frame {int(to_frame)}")
         except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(str, bool)
+    def bot_set_ai_text_prompt(self, text: str, use_countgd: bool = False) -> None:
+        host = self.host_window_widget or self.window()
+        widget = getattr(host, "aiRectangle", None)
+        prompt_input = getattr(widget, "_aiRectanglePrompt", None)
+        if prompt_input is None:
+            self.status_label.setText(
+                "Bot action failed: AI text prompt UI unavailable."
+            )
+            return
+        try:
+            prompt_text = str(text or "").strip()
+            prompt_input.setText(prompt_text)
+            countgd_checkbox = getattr(widget, "_useCountGDCheckbox", None)
+            if countgd_checkbox is not None:
+                countgd_checkbox.setChecked(bool(use_countgd))
+            self.status_label.setText("AI text prompt updated by bot.")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot()
+    def bot_run_ai_text_segmentation(self) -> None:
+        host = self.host_window_widget or self.window()
+        run_segmentation = getattr(host, "_grounding_sam", None)
+        if not callable(run_segmentation):
+            self.status_label.setText(
+                "Bot action failed: text-prompt segmentation is unavailable."
+            )
+            return
+        try:
+            run_segmentation()
+            self.status_label.setText("Started AI text-prompt segmentation.")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(str, str, str, bool, str, int)
+    def bot_segment_track_video(
+        self,
+        video_path: str,
+        text_prompt: str,
+        mode: str = "track",
+        use_countgd: bool = False,
+        model_name: str = "",
+        to_frame: int = -1,
+    ) -> None:
+        self._set_bot_action_result(
+            "segment_track_video",
+            {
+                "ok": False,
+                "error": "Workflow did not complete.",
+                "mode": str(mode or "track").strip().lower(),
+                "path": str(video_path or "").strip(),
+                "text_prompt": str(text_prompt or "").strip(),
+            },
+        )
+        host = self.host_window_widget or self.window()
+        open_video = getattr(host, "openVideo", None)
+        run_segmentation = getattr(host, "_grounding_sam", None)
+        save_file = getattr(host, "saveFile", None)
+        run_track = getattr(host, "predict_from_next_frame", None)
+        set_frame = getattr(host, "set_frame_number", None)
+
+        if not callable(open_video) or not callable(run_segmentation):
+            self._set_bot_action_result(
+                "segment_track_video",
+                {
+                    "ok": False,
+                    "error": "Required video/segmentation workflow is unavailable.",
+                },
+            )
+            self.status_label.setText(
+                "Bot action failed: required video/segmentation workflow is unavailable."
+            )
+            return
+
+        path = str(video_path or "").strip()
+        prompt_text = str(text_prompt or "").strip()
+        mode_norm = str(mode or "track").strip().lower()
+        if not path or not prompt_text:
+            self._set_bot_action_result(
+                "segment_track_video",
+                {"ok": False, "error": "video_path and text_prompt are required."},
+            )
+            self.status_label.setText(
+                "Bot action failed: video path and prompt are required."
+            )
+            return
+        if mode_norm not in {"segment", "track"}:
+            self._set_bot_action_result(
+                "segment_track_video",
+                {"ok": False, "error": "mode must be 'segment' or 'track'."},
+            )
+            self.status_label.setText(
+                "Bot action failed: mode must be 'segment' or 'track'."
+            )
+            return
+
+        try:
+            open_video(from_video_list=True, video_path=path, programmatic_call=True)
+
+            if callable(set_frame):
+                set_frame(0)
+            if not self._wait_for_canvas_pixmap(timeout_ms=4000):
+                self._set_bot_action_result(
+                    "segment_track_video",
+                    {
+                        "ok": False,
+                        "error": "Timed out waiting for the first video frame to load.",
+                    },
+                )
+                self.status_label.setText(
+                    "Bot action failed: video frame not ready for segmentation."
+                )
+                return
+
+            widget = getattr(host, "aiRectangle", None)
+            prompt_input = getattr(widget, "_aiRectanglePrompt", None)
+            if prompt_input is None:
+                self._set_bot_action_result(
+                    "segment_track_video",
+                    {"ok": False, "error": "AI text prompt UI unavailable."},
+                )
+                self.status_label.setText(
+                    "Bot action failed: AI text prompt UI unavailable."
+                )
+                return
+            prompt_input.setText(prompt_text)
+            countgd_checkbox = getattr(widget, "_useCountGDCheckbox", None)
+            if countgd_checkbox is not None:
+                countgd_checkbox.setChecked(bool(use_countgd))
+
+            canvas = getattr(host, "canvas", None)
+            before_count = len(getattr(canvas, "shapes", []) or [])
+            run_segmentation()
+            after_count = len(getattr(canvas, "shapes", []) or [])
+            if after_count <= before_count:
+                self._set_bot_action_result(
+                    "segment_track_video",
+                    {
+                        "ok": False,
+                        "error": (
+                            "No polygons were generated from the prompt. "
+                            "Try another prompt, enable CountGD, or verify the frame."
+                        ),
+                    },
+                )
+                self.status_label.setText("Bot action failed: no polygons generated.")
+                return
+            if callable(save_file):
+                save_file()
+
+            if mode_norm == "track":
+                selected_model = str(model_name or "").strip() or "Cutie"
+                combo = getattr(host, "_selectAiModelComboBox", None)
+                if combo is not None:
+                    index = combo.findText(selected_model, QtCore.Qt.MatchContains)
+                    if index >= 0:
+                        combo.setCurrentIndex(index)
+                    else:
+                        combo.setCurrentText(selected_model)
+
+                if not callable(run_track):
+                    self._set_bot_action_result(
+                        "segment_track_video",
+                        {"ok": False, "error": "Tracking is unavailable."},
+                    )
+                    self.status_label.setText(
+                        "Segmentation saved, but tracking is unavailable."
+                    )
+                    return
+                total_frames = int(getattr(host, "num_frames", 0) or 0)
+                target_frame = int(to_frame)
+                if target_frame < 1:
+                    target_frame = max(1, total_frames - 1) if total_frames > 0 else 60
+                run_track(to_frame=target_frame)
+                self._set_bot_action_result(
+                    "segment_track_video",
+                    {
+                        "ok": True,
+                        "mode": "track",
+                        "path": path,
+                        "text_prompt": prompt_text,
+                        "to_frame": target_frame,
+                        "model_name": selected_model,
+                        "use_countgd": bool(use_countgd),
+                    },
+                )
+                self.status_label.setText(
+                    f"Started tracking '{prompt_text}' to frame {target_frame}."
+                )
+                return
+
+            self._set_bot_action_result(
+                "segment_track_video",
+                {
+                    "ok": True,
+                    "mode": "segment",
+                    "path": path,
+                    "text_prompt": prompt_text,
+                    "use_countgd": bool(use_countgd),
+                },
+            )
+            self.status_label.setText(
+                f"Segmented and saved '{prompt_text}' on frame 0."
+            )
+        except Exception as exc:
+            self._set_bot_action_result(
+                "segment_track_video",
+                {"ok": False, "error": str(exc)},
+            )
             self.status_label.setText(f"Bot action failed: {exc}")
 
     def set_image_path(self, image_path: str) -> None:

@@ -348,6 +348,9 @@ class StreamingChatTask(QRunnable):
             set_chat_model_callback=self._tool_gui_set_chat_model,
             select_annotation_model_callback=self._tool_gui_select_annotation_model,
             track_next_frames_callback=self._tool_gui_track_next_frames,
+            set_ai_text_prompt_callback=self._tool_gui_set_ai_text_prompt,
+            run_ai_text_segmentation_callback=self._tool_gui_run_ai_text_segmentation,
+            segment_track_video_callback=self._tool_gui_segment_track_video,
         )
         for tool_name in _GUI_DISABLED_TOOLS:
             tools.unregister(tool_name)
@@ -544,14 +547,17 @@ class StreamingChatTask(QRunnable):
         if widget is None:
             return False
         try:
-            return bool(
-                QMetaObject.invokeMethod(
-                    widget,
-                    slot_name,
-                    QtCore.Qt.BlockingQueuedConnection,
-                    *qargs,
-                )
+            invoked = QMetaObject.invokeMethod(
+                widget,
+                slot_name,
+                QtCore.Qt.BlockingQueuedConnection,
+                *qargs,
             )
+            # Depending on Qt binding/runtime, invokeMethod may return either
+            # bool or None on success. Treat non-exception as success.
+            if isinstance(invoked, bool):
+                return invoked
+            return True
         except Exception as exc:
             _LOGGER.warning(
                 "annolid-bot gui slot invoke failed session=%s slot=%s error=%s",
@@ -690,6 +696,28 @@ class StreamingChatTask(QRunnable):
             if payload.get("ok"):
                 return f"Started tracking to frame {payload.get('to_frame')}."
             return str(payload.get("error") or "Failed to start tracking.")
+        if name == "segment_track_video":
+            payload = self._tool_gui_segment_track_video(
+                path=str(args.get("path") or ""),
+                text_prompt=str(args.get("text_prompt") or ""),
+                mode=str(args.get("mode") or "track"),
+                use_countgd=bool(args.get("use_countgd", False)),
+                model_name=str(args.get("model_name") or ""),
+                to_frame=(
+                    int(args.get("to_frame"))
+                    if args.get("to_frame") not in (None, "")
+                    else None
+                ),
+            )
+            if payload.get("ok"):
+                action = str(payload.get("mode") or "track")
+                basename = str(payload.get("basename") or "")
+                prompt = str(payload.get("text_prompt") or "")
+                return (
+                    f"Started {action} workflow for '{prompt}' in {basename}. "
+                    "Opened video, segmented, and saved annotations."
+                )
+            return str(payload.get("error") or "Failed to start workflow.")
         if name == "set_chat_model":
             payload = self._tool_gui_set_chat_model(
                 str(args.get("provider") or ""),
@@ -723,6 +751,46 @@ class StreamingChatTask(QRunnable):
                     "model": model_match.group(2).strip().strip("."),
                 },
             }
+
+        workflow_match = re.search(
+            r"\b(segment|track)\b\s+(?P<prompt>.+?)\s+(?:in|on)\s+(?P<path>.+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if workflow_match:
+            mode = workflow_match.group(1).strip().lower()
+            text_prompt = workflow_match.group("prompt").strip().strip("\"'")
+            path_text = workflow_match.group("path").strip()
+            if path_text.lower().startswith("video "):
+                path_text = path_text[6:].strip()
+            has_video_hint = bool(
+                re.search(
+                    r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+                    path_text,
+                    flags=re.IGNORECASE,
+                )
+                or "video" in path_text.lower()
+            )
+            if text_prompt and path_text and has_video_hint:
+                to_frame_match = re.search(
+                    r"\bto\s+frame\s+(\d+)\b",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                return {
+                    "name": "segment_track_video",
+                    "args": {
+                        "path": path_text,
+                        "text_prompt": text_prompt,
+                        "mode": "track" if mode == "track" else "segment",
+                        "use_countgd": "countgd" in lower,
+                        "to_frame": (
+                            int(to_frame_match.group(1))
+                            if to_frame_match is not None
+                            else None
+                        ),
+                    },
+                }
 
         track_match = re.search(
             r"(?:track|predict)(?:\s+from\s+current)?\s+"
@@ -834,6 +902,127 @@ class StreamingChatTask(QRunnable):
         if not ok:
             return {"ok": False, "error": "Failed to queue tracking action"}
         return {"ok": True, "queued": True, "to_frame": frame}
+
+    def _tool_gui_set_ai_text_prompt(
+        self, text: str, use_countgd: bool = False
+    ) -> Dict[str, Any]:
+        prompt_text = str(text or "").strip()
+        if not prompt_text:
+            return {"ok": False, "error": "text is required"}
+        ok = self._invoke_widget_slot(
+            "bot_set_ai_text_prompt",
+            QtCore.Q_ARG(str, prompt_text),
+            QtCore.Q_ARG(bool, bool(use_countgd)),
+        )
+        if not ok:
+            return {"ok": False, "error": "Failed to queue AI prompt update"}
+        return {
+            "ok": True,
+            "queued": True,
+            "text": prompt_text,
+            "use_countgd": bool(use_countgd),
+        }
+
+    def _tool_gui_run_ai_text_segmentation(self) -> Dict[str, Any]:
+        ok = self._invoke_widget_slot("bot_run_ai_text_segmentation")
+        if not ok:
+            return {"ok": False, "error": "Failed to queue AI text segmentation action"}
+        return {"ok": True, "queued": True}
+
+    def _tool_gui_segment_track_video(
+        self,
+        *,
+        path: str,
+        text_prompt: str,
+        mode: str = "track",
+        use_countgd: bool = False,
+        model_name: str = "",
+        to_frame: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        video_path = self._resolve_video_path_for_gui_tool(path)
+        if video_path is None:
+            return {
+                "ok": False,
+                "error": "Video not found from provided path/text.",
+                "input": str(path or "").strip(),
+            }
+        prompt_text = str(text_prompt or "").strip()
+        if not prompt_text:
+            return {"ok": False, "error": "text_prompt is required"}
+        mode_norm = str(mode or "track").strip().lower()
+        if mode_norm not in {"segment", "track"}:
+            return {"ok": False, "error": "mode must be 'segment' or 'track'"}
+        target_frame = -1 if to_frame is None else int(to_frame)
+        if target_frame != -1 and target_frame < 1:
+            return {"ok": False, "error": "to_frame must be >= 1"}
+
+        resolved_model = str(model_name or "").strip()
+        if mode_norm == "track" and not resolved_model:
+            resolved_model = "Cutie"
+
+        ok = self._invoke_widget_slot(
+            "bot_segment_track_video",
+            QtCore.Q_ARG(str, str(video_path)),
+            QtCore.Q_ARG(str, prompt_text),
+            QtCore.Q_ARG(str, mode_norm),
+            QtCore.Q_ARG(bool, bool(use_countgd)),
+            QtCore.Q_ARG(str, resolved_model),
+            QtCore.Q_ARG(int, target_frame),
+        )
+        if not ok:
+            return {
+                "ok": False,
+                "error": "Failed to queue segment/track workflow action",
+            }
+        widget_result: Dict[str, Any] = {}
+        try:
+            widget = self.widget
+            getter = getattr(widget, "get_bot_action_result", None) if widget else None
+            if callable(getter):
+                payload = getter("segment_track_video")
+                if isinstance(payload, dict):
+                    widget_result = payload
+        except Exception:
+            widget_result = {}
+
+        if widget_result:
+            if not bool(widget_result.get("ok", False)):
+                return {
+                    "ok": False,
+                    "error": str(
+                        widget_result.get("error")
+                        or "Segment/track workflow failed in GUI."
+                    ),
+                    "path": str(video_path),
+                    "basename": Path(video_path).name,
+                    "text_prompt": prompt_text,
+                    "mode": mode_norm,
+                }
+            return {
+                "ok": True,
+                "path": str(video_path),
+                "basename": Path(video_path).name,
+                "text_prompt": prompt_text,
+                "mode": str(widget_result.get("mode") or mode_norm),
+                "use_countgd": bool(use_countgd),
+                "model_name": str(widget_result.get("model_name") or resolved_model),
+                "to_frame": (
+                    widget_result.get("to_frame")
+                    if widget_result.get("to_frame") is not None
+                    else (None if target_frame == -1 else target_frame)
+                ),
+            }
+        return {
+            "ok": True,
+            "queued": True,
+            "path": str(video_path),
+            "basename": Path(video_path).name,
+            "text_prompt": prompt_text,
+            "mode": mode_norm,
+            "use_countgd": bool(use_countgd),
+            "model_name": resolved_model,
+            "to_frame": None if target_frame == -1 else target_frame,
+        }
 
     def _recover_with_plain_ollama_reply(self) -> str:
         host = str(self.settings.get("ollama", {}).get("host") or "").strip()
@@ -1302,6 +1491,8 @@ class StreamingChatTask(QRunnable):
             "video",
             "frame",
             "track",
+            "segment",
+            "prompt",
             "label",
             "workspace",
             "file",

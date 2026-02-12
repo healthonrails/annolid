@@ -734,8 +734,11 @@ class AgentLoop:
     }
     _DEFAULT_TOOL_SELECTION_MAX = 6
     _DEFAULT_TOOL_PRIORITY = (
+        "gui_segment_track_video",
         "gui_open_video",
         "gui_set_frame",
+        "gui_set_ai_text_prompt",
+        "gui_run_ai_text_segmentation",
         "gui_track_next_frames",
         "gui_context",
         "read_file",

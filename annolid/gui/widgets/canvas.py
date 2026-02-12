@@ -747,6 +747,10 @@ class Canvas(QtWidgets.QWidget):
             gd_bboxes = [list(box) for box, _ in bboxes]
             _bboxes.extend(gd_bboxes)
 
+        if not _bboxes:
+            logger.info("No candidate boxes found for prompt '%s'.", prompt)
+            return
+
         # Segment objects using SAM HQ model with predicted bounding boxes
         masks, scores, _bboxes = self.sam_hq_model.segment_objects(image_data, _bboxes)
 
@@ -2355,7 +2359,10 @@ class Canvas(QtWidgets.QWidget):
                 )
 
             except ImportError:
-                logger.warning("...")
+                logger.warning(
+                    "CountGD is not available. Install optional dependency and "
+                    "its requirements to enable CountGD-assisted prompting."
+                )
             except Exception as e:
                 logger.error(f"Error in CountGD: {e}")
         return detected_boxes
