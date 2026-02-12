@@ -165,6 +165,19 @@ class AgentSessionManager:
             rows, key=lambda item: str(item.get("updated_at") or ""), reverse=True
         )
 
+    def get_session_overview(self, key: str) -> Dict[str, Any]:
+        session = self.get_or_create(str(key or ""))
+        return {
+            "key": session.key,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "message_count": len(session.messages),
+            "fact_count": len(session.facts),
+            "facts": dict(session.facts),
+            "metadata": dict(session.metadata),
+            "path": str(self._session_path(session.key)),
+        }
+
 
 class PersistentSessionStore:
     """Session store adapter for AgentLoop with disk persistence."""

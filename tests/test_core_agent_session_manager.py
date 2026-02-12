@@ -104,3 +104,18 @@ def test_persistent_session_store_compacts_empty_messages(tmp_path: Path) -> Non
     assert history[0]["content"] == "hello"
     assert history[1]["role"] == "assistant"
     assert history[1]["content"] == "world"
+
+
+def test_session_manager_overview_includes_counts_and_paths(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    session = manager.get_or_create("gui:chat/overview")
+    session.add_message({"role": "user", "content": "hello"})
+    session.facts["timezone"] = "UTC"
+    manager.save(session)
+
+    overview = manager.get_session_overview("gui:chat/overview")
+    assert overview["key"] == "gui:chat/overview"
+    assert int(overview["message_count"]) == 1
+    assert int(overview["fact_count"]) == 1
+    assert overview["facts"]["timezone"] == "UTC"
+    assert str(overview["path"]).endswith(".jsonl")

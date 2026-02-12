@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import os
 import tempfile
-import threading
-import time
 from datetime import datetime
 from typing import Dict, List, Optional
-
-import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
+from annolid.core.agent.session_manager import (
+    AgentSessionManager,
+    PersistentSessionStore,
+)
+from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_session
+from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.utils.llm_settings import (
@@ -19,7 +21,6 @@ from annolid.utils.llm_settings import (
     load_llm_settings,
     save_llm_settings,
 )
-from annolid.utils.tts_settings import default_tts_settings, load_tts_settings
 
 
 class _ChatBubble(QtWidgets.QFrame):
@@ -124,22 +125,40 @@ class AIChatWidget(QtWidgets.QWidget):
         self._snapshot_paths: List[str] = []
         self._current_response_bubble: Optional[_ChatBubble] = None
         self.is_streaming_chat = False
-        self.is_recording = False
         self.session_id = "gui:annolid_bot:default"
         self._applying_theme_styles = False
         self.thread_pool = QThreadPool()
-        self._asr_pipeline = None
-        self._asr_lock = threading.Lock()
+        self._audio_controller: Optional[ChatAudioController] = None
+        self._session_manager = AgentSessionManager()
+        self._session_store = PersistentSessionStore(self._session_manager)
 
         self._build_ui()
         self._apply_theme_styles()
         self._update_model_selector()
+        self._load_session_history_into_bubbles(self.session_id)
+        self._refresh_header_chips()
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
+        root.addLayout(self._build_header_bar())
+        root.addLayout(self._build_provider_bar())
+        root.addLayout(self._build_share_bar())
+        root.addWidget(self._build_shared_image_label())
+        root.addWidget(self._build_chat_area(), 1)
+        root.addLayout(self._build_input_bar())
+        root.addWidget(self._build_status_label())
+        self._audio_controller = ChatAudioController(
+            status_label=self.status_label,
+            talk_button=self.talk_button,
+            prompt_text_edit=self.prompt_text_edit,
+            get_last_assistant_text=self._last_assistant_text,
+        )
+        self._wire_ui_signals()
+        self._refresh_header_chips()
 
+    def _build_header_bar(self) -> QtWidgets.QHBoxLayout:
         header_bar = QtWidgets.QHBoxLayout()
         self.provider_chip_label = QtWidgets.QLabel(self)
         self.provider_chip_label.setObjectName("botChipLabel")
@@ -157,12 +176,17 @@ class AIChatWidget(QtWidgets.QWidget):
         self.clear_chat_button.setObjectName("clearChatButton")
         header_bar.addWidget(self.clear_chat_button, 0)
 
+        self.sessions_button = QtWidgets.QPushButton("Sessions…", self)
+        self.sessions_button.setObjectName("sessionManagerButton")
+        header_bar.addWidget(self.sessions_button, 0)
+
         self.tool_trace_checkbox = QtWidgets.QCheckBox("Show tool trace", self)
         self.tool_trace_checkbox.setChecked(False)
         self.tool_trace_checkbox.setObjectName("toolTraceCheckbox")
         header_bar.addWidget(self.tool_trace_checkbox, 0)
-        root.addLayout(header_bar)
+        return header_bar
 
+    def _build_provider_bar(self) -> QtWidgets.QHBoxLayout:
         top_bar = QtWidgets.QHBoxLayout()
         self.provider_selector = QtWidgets.QComboBox(self)
         for key, label in self.provider_labels.items():
@@ -179,8 +203,9 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self.configure_button = QtWidgets.QPushButton("Configure…", self)
         top_bar.addWidget(self.configure_button, 0)
-        root.addLayout(top_bar)
+        return top_bar
 
+    def _build_share_bar(self) -> QtWidgets.QHBoxLayout:
         share_bar = QtWidgets.QHBoxLayout()
         self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
         self.attach_canvas_checkbox.setChecked(False)
@@ -193,12 +218,14 @@ class AIChatWidget(QtWidgets.QWidget):
         share_bar.addWidget(self.share_canvas_button)
         share_bar.addWidget(self.share_window_button)
         share_bar.addStretch(1)
-        root.addLayout(share_bar)
+        return share_bar
 
+    def _build_shared_image_label(self) -> QtWidgets.QLabel:
         self.shared_image_label = QtWidgets.QLabel("Shared image: none", self)
         self.shared_image_label.setObjectName("sharedImageLabel")
-        root.addWidget(self.shared_image_label)
+        return self.shared_image_label
 
+    def _build_chat_area(self) -> QtWidgets.QScrollArea:
         self.scroll_area = QtWidgets.QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -208,8 +235,9 @@ class AIChatWidget(QtWidgets.QWidget):
         self.chat_layout.setSpacing(8)
         self.chat_layout.addStretch(1)
         self.scroll_area.setWidget(self.chat_container)
-        root.addWidget(self.scroll_area, 1)
+        return self.scroll_area
 
+    def _build_input_bar(self) -> QtWidgets.QHBoxLayout:
         input_bar = QtWidgets.QHBoxLayout()
         self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
         self.prompt_text_edit.setPlaceholderText("Message Annolid Bot…")
@@ -223,12 +251,14 @@ class AIChatWidget(QtWidgets.QWidget):
         side_buttons.addWidget(self.talk_button)
         side_buttons.addStretch(1)
         input_bar.addLayout(side_buttons)
-        root.addLayout(input_bar)
+        return input_bar
 
+    def _build_status_label(self) -> QtWidgets.QLabel:
         self.status_label = QtWidgets.QLabel("", self)
         self.status_label.setObjectName("chatStatusLabel")
-        root.addWidget(self.status_label)
+        return self.status_label
 
+    def _wire_ui_signals(self) -> None:
         self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
         self.model_selector.currentIndexChanged.connect(self.on_model_changed)
         self.model_selector.editTextChanged.connect(self.on_model_text_edited)
@@ -241,7 +271,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.share_window_button.clicked.connect(self._share_window_now)
         self.talk_button.clicked.connect(self.toggle_recording)
         self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
-        self._refresh_header_chips()
+        self.sessions_button.clicked.connect(self.open_session_manager_dialog)
 
     @staticmethod
     def _mix_colors(
@@ -316,6 +346,14 @@ class AIChatWidget(QtWidgets.QWidget):
                     font-weight: 600;
                 }}
                 QPushButton#clearChatButton {{
+                    border: 1px solid {mid.name()};
+                    border-radius: 8px;
+                    background: {button.name()};
+                    padding: 5px 10px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }}
+                QPushButton#sessionManagerButton {{
                     border: 1px solid {mid.name()};
                     border-radius: 8px;
                     background: {button.name()};
@@ -556,6 +594,7 @@ class AIChatWidget(QtWidgets.QWidget):
         session_text = str(session_id or "").strip()
         if session_text:
             self.session_id = session_text
+            self._load_session_history_into_bubbles(self.session_id)
             self._refresh_header_chips()
 
     def _refresh_header_chips(self) -> None:
@@ -564,17 +603,22 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         model_text = str(self.selected_model or "unknown")
         session_text = str(self.session_id or "default")
+        total_sessions = len(self._session_manager.list_sessions())
         self.provider_chip_label.setText(f"Provider: {provider_text}")
         self.model_chip_label.setText(f"Model: {model_text}")
-        self.session_chip_label.setText(f"Session: {session_text}")
+        self.session_chip_label.setText(
+            f"Session: {session_text} · Stored: {total_sessions}"
+        )
 
     def clear_chat_conversation(self) -> None:
         if self.is_streaming_chat:
             self.status_label.setText("Wait for current response to finish.")
             return
+        self._session_store.clear_session(self.session_id)
         clear_chat_session(self.session_id)
         self._clear_chat_bubbles()
         self.status_label.setText("Conversation cleared.")
+        self._refresh_header_chips()
 
     def _clear_chat_bubbles(self) -> None:
         while self.chat_layout.count() > 1:
@@ -596,6 +640,75 @@ class AIChatWidget(QtWidgets.QWidget):
                 widget.deleteLater()
         self._current_response_bubble = None
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _load_session_history_into_bubbles(self, session_id: str) -> None:
+        self._clear_chat_bubbles()
+        try:
+            history = self._session_store.get_history(str(session_id or ""))
+        except Exception:
+            history = []
+        for msg in history[-80:]:
+            role = str(msg.get("role") or "")
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                self._add_bubble("You", content, is_user=True)
+            elif role == "assistant":
+                self._add_bubble(self._assistant_display_name(), content, is_user=False)
+            elif role == "system":
+                self._add_bubble("System", content, is_user=False)
+
+    def open_session_manager_dialog(self) -> None:
+        dialog = ChatSessionManagerDialog(
+            session_manager=self._session_manager,
+            session_store=self._session_store,
+            active_session_id=self.session_id,
+            parent=self,
+        )
+        dialog.sessionSwitched.connect(self._on_session_switched)
+        dialog.sessionCreated.connect(self._on_session_created)
+        dialog.sessionCleared.connect(self._on_session_cleared)
+        dialog.sessionDeleted.connect(self._on_session_deleted)
+        dialog.exec_()
+        self._refresh_header_chips()
+
+    @QtCore.Slot(str)
+    def _on_session_switched(self, session_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        self.set_session_id(key)
+        self.status_label.setText(f"Switched to session: {key}")
+
+    @QtCore.Slot(str)
+    def _on_session_created(self, session_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        self.set_session_id(key)
+        self.status_label.setText(f"Created session: {key}")
+        self._refresh_header_chips()
+
+    @QtCore.Slot(str)
+    def _on_session_cleared(self, session_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        if key == self.session_id:
+            self._load_session_history_into_bubbles(key)
+        self.status_label.setText(f"Cleared session: {key}")
+        self._refresh_header_chips()
+
+    @QtCore.Slot(str)
+    def _on_session_deleted(self, session_id: str) -> None:
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        if key == self.session_id:
+            self._clear_chat_bubbles()
+        self.status_label.setText(f"Deleted session: {key}")
+        self._refresh_header_chips()
 
     def set_canvas(self, canvas: Optional[QtWidgets.QWidget]) -> None:
         self.canvas_widget = canvas
@@ -857,247 +970,17 @@ class AIChatWidget(QtWidgets.QWidget):
                         return text
         return ""
 
-    def _tts_settings_snapshot(self) -> Dict[str, object]:
-        settings = load_tts_settings()
-        defaults = default_tts_settings()
-        return {
-            "engine": settings.get("engine", defaults.get("engine", "auto")),
-            "voice": settings.get("voice", defaults["voice"]),
-            "pocket_voice": settings.get(
-                "pocket_voice", defaults.get("pocket_voice", "alba")
-            ),
-            "pocket_prompt_path": settings.get(
-                "pocket_prompt_path", defaults.get("pocket_prompt_path", "")
-            ),
-            "pocket_speed": settings.get(
-                "pocket_speed", defaults.get("pocket_speed", 1.0)
-            ),
-            "lang": settings.get("lang", defaults["lang"]),
-            "speed": settings.get("speed", defaults["speed"]),
-            "chatterbox_voice_path": settings.get(
-                "chatterbox_voice_path", defaults.get("chatterbox_voice_path", "")
-            ),
-            "chatterbox_dtype": settings.get(
-                "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
-            ),
-            "chatterbox_max_new_tokens": settings.get(
-                "chatterbox_max_new_tokens",
-                defaults.get("chatterbox_max_new_tokens", 1024),
-            ),
-            "chatterbox_repetition_penalty": settings.get(
-                "chatterbox_repetition_penalty",
-                defaults.get("chatterbox_repetition_penalty", 1.2),
-            ),
-            "chatterbox_apply_watermark": settings.get(
-                "chatterbox_apply_watermark",
-                defaults.get("chatterbox_apply_watermark", False),
-            ),
-        }
-
     def read_last_reply_async(self) -> None:
-        text = self._last_assistant_text()
-        if not text:
-            self.status_label.setText("No assistant reply to read.")
+        if self._audio_controller is None:
             return
-        self.speak_text_async(text)
+        self._audio_controller.read_last_reply_async()
 
     def speak_text_async(self, text: str) -> None:
-        text = (text or "").strip()
-        if not text:
-            self.status_label.setText("No text to read.")
+        if self._audio_controller is None:
             return
-
-        def _run_tts() -> None:
-            try:
-                from annolid.utils.audio_playback import play_audio_buffer
-                from annolid.agents.tts_router import synthesize_tts
-
-                audio_data = synthesize_tts(text, self._tts_settings_snapshot())
-                if not audio_data:
-                    raise RuntimeError("No audio generated.")
-                samples, sample_rate = audio_data
-                played = play_audio_buffer(samples, sample_rate, blocking=True)
-                if not played:
-                    raise RuntimeError("No usable audio device found.")
-                QtCore.QMetaObject.invokeMethod(
-                    self.status_label,
-                    "setText",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, "Reply read aloud."),
-                )
-            except Exception as exc:
-                QtCore.QMetaObject.invokeMethod(
-                    self.status_label,
-                    "setText",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, f"Read failed: {exc}"),
-                )
-
-        threading.Thread(target=_run_tts, daemon=True).start()
+        self._audio_controller.speak_text_async(text)
 
     def toggle_recording(self) -> None:
-        if not self.is_recording:
-            self.is_recording = True
-            self.talk_button.setText("Stop")
-            self.status_label.setText("Listening…")
-            threading.Thread(target=self._record_voice, daemon=True).start()
-        else:
-            self.is_recording = False
-            self.talk_button.setText("Talk")
-            self.status_label.setText("Processing speech…")
-
-    def _record_voice(self) -> None:
-        try:
-            import sounddevice as sd
-            import soundfile as sf
-        except ImportError:
-            QtCore.QMetaObject.invokeMethod(
-                self.status_label,
-                "setText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(
-                    str,
-                    "Audio recording deps missing. Install: pip install sounddevice soundfile",
-                ),
-            )
-            QtCore.QMetaObject.invokeMethod(
-                self.talk_button,
-                "setText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, "Talk"),
-            )
-            self.is_recording = False
+        if self._audio_controller is None:
             return
-
-        sample_rate = 16000
-        channels = 1
-        audio_chunks: List[np.ndarray] = []
-
-        def _audio_callback(indata, frames, stream_time, status) -> None:
-            del frames, stream_time
-            if status:
-                return
-            audio_chunks.append(indata.copy())
-
-        try:
-            with sd.InputStream(
-                samplerate=sample_rate,
-                channels=channels,
-                dtype="float32",
-                callback=_audio_callback,
-            ):
-                while self.is_recording:
-                    time.sleep(0.1)
-        except Exception as exc:
-            QtCore.QMetaObject.invokeMethod(
-                self.status_label,
-                "setText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, f"Mic capture failed: {exc}"),
-            )
-            QtCore.QMetaObject.invokeMethod(
-                self.talk_button,
-                "setText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, "Talk"),
-            )
-            self.is_recording = False
-            return
-
-        final_text = ""
-        if audio_chunks:
-            audio_data = np.concatenate(audio_chunks, axis=0).reshape(-1)
-            if np.abs(audio_data).max(initial=0.0) < 1e-4:
-                final_text = ""
-            else:
-                fd, audio_path = tempfile.mkstemp(prefix="annolid_talk_", suffix=".wav")
-                os.close(fd)
-                try:
-                    sf.write(audio_path, audio_data, sample_rate)
-                    final_text = self._transcribe_with_whisper_tiny(audio_path)
-                except Exception as exc:
-                    QtCore.QMetaObject.invokeMethod(
-                        self.status_label,
-                        "setText",
-                        QtCore.Qt.QueuedConnection,
-                        QtCore.Q_ARG(str, f"Transcription failed: {exc}"),
-                    )
-                    QtCore.QMetaObject.invokeMethod(
-                        self.talk_button,
-                        "setText",
-                        QtCore.Qt.QueuedConnection,
-                        QtCore.Q_ARG(str, "Talk"),
-                    )
-                    self.is_recording = False
-                    try:
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
-                    except OSError:
-                        pass
-                    return
-                finally:
-                    try:
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
-                    except OSError:
-                        pass
-
-        if final_text:
-            QtCore.QMetaObject.invokeMethod(
-                self.prompt_text_edit,
-                "setPlainText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, final_text),
-            )
-            QtCore.QMetaObject.invokeMethod(
-                self.status_label,
-                "setText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, "Speech captured. Review and send."),
-            )
-        else:
-            QtCore.QMetaObject.invokeMethod(
-                self.status_label,
-                "setText",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, "No speech captured."),
-            )
-        QtCore.QMetaObject.invokeMethod(
-            self.talk_button,
-            "setText",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, "Talk"),
-        )
-        self.is_recording = False
-
-    def _get_asr_pipeline(self):
-        with self._asr_lock:
-            if self._asr_pipeline is not None:
-                return self._asr_pipeline
-            try:
-                import torch
-                from transformers import pipeline
-            except ImportError as exc:
-                raise RuntimeError(
-                    "ASR deps missing. Install: pip install transformers torch"
-                ) from exc
-            device = -1
-            if torch.cuda.is_available():
-                device = 0
-            self._asr_pipeline = pipeline(
-                "automatic-speech-recognition",
-                model="openai/whisper-tiny",
-                device=device,
-            )
-            return self._asr_pipeline
-
-    def _transcribe_with_whisper_tiny(self, audio_path: str) -> str:
-        asr = self._get_asr_pipeline()
-        result = asr(
-            audio_path,
-            return_timestamps=False,
-            generate_kwargs={"task": "transcribe"},
-        )
-        if isinstance(result, dict):
-            return str(result.get("text", "")).strip()
-        return str(result).strip()
+        self._audio_controller.toggle_recording()
