@@ -1,0 +1,208 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM API Key Security &mdash; annolid 1.5.2 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=73275c37"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="YOLOE-26 Prompting (Text / Visual / Prompt-free)" href="yoloe_prompting.html" />
+    <link rel="prev" title="Annolid Bot Provider and Model Setup Tutorial" href="agent_provider_setup.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read_pdf_with_ai_voice.html">Read PDFs Aloud with AI Voice (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
+<li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_tools.html">Agent Tools Developer Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">LLM API Key Security</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#what-annolid-stores">What Annolid Stores</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#recommended-key-setup">Recommended Key Setup</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#macos-linux-bash-zsh">macOS / Linux (bash/zsh)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#windows-powershell">Windows PowerShell</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#file-permission-hardening">File Permission Hardening</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#safe-operational-practices">Safe Operational Practices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#verify-configuration">Verify Configuration</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">LLM API Key Security</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/llm_key_security.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="llm-api-key-security">
+<h1>LLM API Key Security<a class="headerlink" href="#llm-api-key-security" title="Link to this heading"></a></h1>
+<p>This page explains how to configure LLM providers in Annolid while keeping API keys safe.</p>
+<section id="what-annolid-stores">
+<h2>What Annolid Stores<a class="headerlink" href="#what-annolid-stores" title="Link to this heading"></a></h2>
+<p>Annolid stores provider/model preferences in:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">~/.annolid/llm_settings.json</span></code></p></li>
+</ul>
+<p>Annolid <strong>does not persist API keys</strong> to this file. Secret fields such as <code class="docutils literal notranslate"><span class="pre">api_key</span></code>, <code class="docutils literal notranslate"><span class="pre">token</span></code>, and <code class="docutils literal notranslate"><span class="pre">access_token</span></code> are scrubbed before writing settings.</p>
+</section>
+<section id="recommended-key-setup">
+<h2>Recommended Key Setup<a class="headerlink" href="#recommended-key-setup" title="Link to this heading"></a></h2>
+<p>Use environment variables for secrets:</p>
+<ul class="simple">
+<li><p>OpenAI: <code class="docutils literal notranslate"><span class="pre">OPENAI_API_KEY</span></code></p></li>
+<li><p>OpenRouter: <code class="docutils literal notranslate"><span class="pre">OPENROUTER_API_KEY</span></code></p></li>
+<li><p>Gemini: <code class="docutils literal notranslate"><span class="pre">GEMINI_API_KEY</span></code> (or <code class="docutils literal notranslate"><span class="pre">GOOGLE_API_KEY</span></code>)</p></li>
+<li><p>Optional OpenAI-compatible endpoint: <code class="docutils literal notranslate"><span class="pre">OPENAI_BASE_URL</span></code></p></li>
+<li><p>Optional local Ollama endpoint: <code class="docutils literal notranslate"><span class="pre">OLLAMA_HOST</span></code></p></li>
+</ul>
+<section id="macos-linux-bash-zsh">
+<h3>macOS / Linux (bash/zsh)<a class="headerlink" href="#macos-linux-bash-zsh" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-...&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">GEMINI_API_KEY</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</pre></div>
+</div>
+<p>To persist them for your shell, add to <code class="docutils literal notranslate"><span class="pre">~/.zshrc</span></code> or <code class="docutils literal notranslate"><span class="pre">~/.bashrc</span></code>.</p>
+</section>
+<section id="windows-powershell">
+<h3>Windows PowerShell<a class="headerlink" href="#windows-powershell" title="Link to this heading"></a></h3>
+<div class="highlight-powershell notranslate"><div class="highlight"><pre><span></span><span class="n">setx</span> <span class="n">OPENAI_API_KEY</span> <span class="s2">&quot;sk-...&quot;</span>
+<span class="n">setx</span> <span class="n">GEMINI_API_KEY</span> <span class="s2">&quot;...&quot;</span>
+</pre></div>
+</div>
+<p>Restart the terminal (or app) after <code class="docutils literal notranslate"><span class="pre">setx</span></code>.</p>
+</section>
+</section>
+<section id="file-permission-hardening">
+<h2>File Permission Hardening<a class="headerlink" href="#file-permission-hardening" title="Link to this heading"></a></h2>
+<p>Annolid enforces strict permissions for LLM settings storage:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">~/.annolid</span></code> is set to <code class="docutils literal notranslate"><span class="pre">700</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">~/.annolid/llm_settings.json</span></code> is set to <code class="docutils literal notranslate"><span class="pre">600</span></code></p></li>
+</ul>
+<p>This limits read access to your user account.</p>
+</section>
+<section id="safe-operational-practices">
+<h2>Safe Operational Practices<a class="headerlink" href="#safe-operational-practices" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Never commit <code class="docutils literal notranslate"><span class="pre">.env</span></code>, API keys, or copied key values to git.</p></li>
+<li><p>Avoid pasting keys into logs, screenshots, or issue trackers.</p></li>
+<li><p>Rotate keys immediately if accidentally exposed.</p></li>
+<li><p>Use separate keys per environment (dev, test, production).</p></li>
+<li><p>Prefer least-privilege tokens and provider-side usage limits.</p></li>
+</ul>
+</section>
+<section id="verify-configuration">
+<h2>Verify Configuration<a class="headerlink" href="#verify-configuration" title="Link to this heading"></a></h2>
+<p>You can verify that keys are available without writing them to disk:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import os; print(bool(os.getenv(&#39;OPENAI_API_KEY&#39;)), bool(os.getenv(&#39;GEMINI_API_KEY&#39;) or os.getenv(&#39;GOOGLE_API_KEY&#39;)))&quot;</span>
+</pre></div>
+</div>
+<p>If either value prints <code class="docutils literal notranslate"><span class="pre">False</span></code>, configure the corresponding environment variable and restart Annolid.</p>
+<p>You can also run Annolid’s built-in security check:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid<span class="w"> </span>agent-security-check
+</pre></div>
+</div>
+<p>The command reports:</p>
+<ul class="simple">
+<li><p>settings file/dir permission posture,</p></li>
+<li><p>whether any secret-like fields were persisted,</p></li>
+<li><p>OpenAI/Gemini key availability (including env var fallback).</p></li>
+</ul>
+<p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for <code class="docutils literal notranslate"><span class="pre">ok</span></code>, <code class="docutils literal notranslate"><span class="pre">1</span></code> for <code class="docutils literal notranslate"><span class="pre">warning</span></code>.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="agent_provider_setup.html" class="btn btn-neutral float-left" title="Annolid Bot Provider and Model Setup Tutorial" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="yoloe_prompting.html" class="btn btn-neutral float-right" title="YOLOE-26 Prompting (Text / Visual / Prompt-free)" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

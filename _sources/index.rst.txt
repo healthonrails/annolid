@@ -13,6 +13,8 @@ Welcome to annolid's documentation!
    image_editing
    dino_kpseg
    agent_tools
+   agent_provider_setup
+   llm_key_security
    yoloe_prompting
    keypoints_definitions
    faqs

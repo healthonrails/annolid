@@ -1,0 +1,309 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Annolid Bot Provider and Model Setup Tutorial &mdash; annolid 1.5.2 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=73275c37"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="LLM API Key Security" href="llm_key_security.html" />
+    <link rel="prev" title="Agent Tools Developer Guide" href="agent_tools.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read_pdf_with_ai_voice.html">Read PDFs Aloud with AI Voice (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
+<li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_tools.html">Agent Tools Developer Guide</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Annolid Bot Provider and Model Setup Tutorial</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#where-annolid-reads-settings">1. Where Annolid reads settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#core-environment-variables">2. Core environment variables</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#configure-local-models-ollama">3. Configure local models (Ollama)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#configure-openai-models">4. Configure OpenAI models</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#configure-openrouter-openai-compatible-path">5. Configure OpenRouter (OpenAI-compatible path)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#configure-gemini">6. Configure Gemini</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#configure-agent-profiles-and-model-routing">7. Configure agent profiles and model routing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#configure-search-key-for-tool-calls">8. Configure search key for tool calls</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#validate-your-setup">9. Validate your setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#recommended-secure-workflow">10. Recommended secure workflow</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="llm_key_security.html">LLM API Key Security</a></li>
+<li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Annolid Bot Provider and Model Setup Tutorial</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/agent_provider_setup.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="annolid-bot-provider-and-model-setup-tutorial">
+<h1>Annolid Bot Provider and Model Setup Tutorial<a class="headerlink" href="#annolid-bot-provider-and-model-setup-tutorial" title="Link to this heading"></a></h1>
+<p>This tutorial shows how to configure Annolid Bot providers, agent models, local models, and search keys.</p>
+<section id="where-annolid-reads-settings">
+<h2>1. Where Annolid reads settings<a class="headerlink" href="#where-annolid-reads-settings" title="Link to this heading"></a></h2>
+<p>Annolid resolves provider/model settings from:</p>
+<ol class="arabic simple">
+<li><p>Environment variables (recommended for secrets).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">~/.annolid/llm_settings.json</span></code> for non-secret config.</p></li>
+<li><p>Profile overrides in <code class="docutils literal notranslate"><span class="pre">profiles</span></code>.</p></li>
+</ol>
+<p>Annolid removes secret fields (such as <code class="docutils literal notranslate"><span class="pre">api_key</span></code>) before persisting settings. Keep keys in environment variables.</p>
+</section>
+<section id="core-environment-variables">
+<h2>2. Core environment variables<a class="headerlink" href="#core-environment-variables" title="Link to this heading"></a></h2>
+<p>Set only what you need:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">OLLAMA_HOST</span></code> for local Ollama (default: <code class="docutils literal notranslate"><span class="pre">http://localhost:11434</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">OPENAI_API_KEY</span></code> for OpenAI-compatible providers</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">OPENAI_BASE_URL</span></code> for OpenAI-compatible gateways (for example OpenRouter)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GEMINI_API_KEY</span></code> (or <code class="docutils literal notranslate"><span class="pre">GOOGLE_API_KEY</span></code>) for Gemini</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BRAVE_API_KEY</span></code> for <code class="docutils literal notranslate"><span class="pre">web_search</span></code> tool calls</p></li>
+</ul>
+<p>macOS/Linux example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">OLLAMA_HOST</span><span class="o">=</span><span class="s2">&quot;http://127.0.0.1:11434&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_BASE_URL</span><span class="o">=</span><span class="s2">&quot;https://api.openai.com/v1&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">GEMINI_API_KEY</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">BRAVE_API_KEY</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="configure-local-models-ollama">
+<h2>3. Configure local models (Ollama)<a class="headerlink" href="#configure-local-models-ollama" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Start Ollama and pull model(s), for example:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ollama</span> <span class="pre">pull</span> <span class="pre">qwen3-vl</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ollama</span> <span class="pre">pull</span> <span class="pre">llama3.2-vision:latest</span></code></p></li>
+</ul>
+</li>
+<li><p>In Annolid Bot, choose provider <code class="docutils literal notranslate"><span class="pre">Ollama</span> <span class="pre">(local)</span></code>.</p></li>
+<li><p>Pick an available model from the model selector.</p></li>
+</ol>
+<p>Optional <code class="docutils literal notranslate"><span class="pre">~/.annolid/llm_settings.json</span></code> block:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ollama&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;ollama&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://127.0.0.1:11434&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;preferred_models&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;qwen3-vl&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;llama3.2-vision:latest&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="configure-openai-models">
+<h2>4. Configure OpenAI models<a class="headerlink" href="#configure-openai-models" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">OPENAI_API_KEY</span></code>.</p></li>
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">OPENAI_BASE_URL=https://api.openai.com/v1</span></code> (or unset it).</p></li>
+<li><p>In Annolid Bot GUI, choose provider <code class="docutils literal notranslate"><span class="pre">OpenAI</span> <span class="pre">GPT</span></code> and choose model.</p></li>
+</ol>
+<p>Optional settings block:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;openai&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://api.openai.com/v1&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;preferred_models&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gpt-4o-mini&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;gpt-4o&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;gpt-4.1-mini&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="configure-openrouter-openai-compatible-path">
+<h2>5. Configure OpenRouter (OpenAI-compatible path)<a class="headerlink" href="#configure-openrouter-openai-compatible-path" title="Link to this heading"></a></h2>
+<p>Use OpenRouter through the OpenAI-compatible channel:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_BASE_URL</span><span class="o">=</span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
+</pre></div>
+</div>
+<p>GUI path:</p>
+<ol class="arabic simple">
+<li><p>Open Annolid Bot.</p></li>
+<li><p>Click <code class="docutils literal notranslate"><span class="pre">Configure…</span></code> in the chat panel.</p></li>
+<li><p>In <code class="docutils literal notranslate"><span class="pre">OpenRouter</span></code> tab, set:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">API</span> <span class="pre">key</span></code> to your <code class="docutils literal notranslate"><span class="pre">sk-or-...</span></code> token</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Base</span> <span class="pre">URL</span></code> to <code class="docutils literal notranslate"><span class="pre">https://openrouter.ai/api/v1</span></code></p></li>
+</ul>
+</li>
+</ol>
+<p>Then use provider <code class="docutils literal notranslate"><span class="pre">OpenRouter</span></code> in the GUI and pick/set an OpenRouter model id (for example <code class="docutils literal notranslate"><span class="pre">openai/gpt-4o-mini</span></code> or another OpenRouter-supported id).</p>
+<p>Notes:</p>
+<ul class="simple">
+<li><p>This path is robust with current Annolid provider resolution.</p></li>
+<li><p>For agent loop usage, keep model ids exactly as your gateway expects.</p></li>
+</ul>
+</section>
+<section id="configure-gemini">
+<h2>6. Configure Gemini<a class="headerlink" href="#configure-gemini" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Set one of:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GEMINI_API_KEY</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GOOGLE_API_KEY</span></code></p></li>
+</ul>
+</li>
+<li><p>In GUI, choose provider <code class="docutils literal notranslate"><span class="pre">Google</span> <span class="pre">Gemini</span></code>.</p></li>
+</ol>
+<p>Optional settings block:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;gemini&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;preferred_models&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gemini-1.5-flash&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;gemini-1.5-pro&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="configure-agent-profiles-and-model-routing">
+<h2>7. Configure agent profiles and model routing<a class="headerlink" href="#configure-agent-profiles-and-model-routing" title="Link to this heading"></a></h2>
+<p>Use <code class="docutils literal notranslate"><span class="pre">profiles</span></code> in <code class="docutils literal notranslate"><span class="pre">~/.annolid/llm_settings.json</span></code> to assign different providers/models per agent role:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;profiles&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;playground&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4o-mini&quot;</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;caption&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ollama&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;qwen3-vl&quot;</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;research_agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4.1-mini&quot;</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;polygon_agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gemini&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gemini-1.5-pro&quot;</span><span class="p">}</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;agent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;temperature&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;max_tool_iterations&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;max_history_messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">24</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Model name flexibility:</p>
+<ul class="simple">
+<li><p>In Annolid Bot model selector, you can type any model id (not limited to the predefined list).</p></li>
+<li><p>Typed model ids are remembered per provider and shown in future sessions.</p></li>
+</ul>
+</section>
+<section id="configure-search-key-for-tool-calls">
+<h2>8. Configure search key for tool calls<a class="headerlink" href="#configure-search-key-for-tool-calls" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">web_search</span></code> tool calls require:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">BRAVE_API_KEY</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</pre></div>
+</div>
+<p>If unset, tool execution returns <code class="docutils literal notranslate"><span class="pre">Error:</span> <span class="pre">BRAVE_API_KEY</span> <span class="pre">not</span> <span class="pre">configured</span></code>.</p>
+</section>
+<section id="validate-your-setup">
+<h2>9. Validate your setup<a class="headerlink" href="#validate-your-setup" title="Link to this heading"></a></h2>
+<p>Run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid<span class="w"> </span>agent-security-check
+</pre></div>
+</div>
+<p>This reports:</p>
+<ul class="simple">
+<li><p>key/config file permission posture,</p></li>
+<li><p>whether secret-like fields were persisted,</p></li>
+<li><p>provider key presence for OpenAI/Gemini.</p></li>
+</ul>
+<p>Exit code:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">0</span></code>: OK</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">1</span></code>: Warning</p></li>
+</ul>
+</section>
+<section id="recommended-secure-workflow">
+<h2>10. Recommended secure workflow<a class="headerlink" href="#recommended-secure-workflow" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Keep secrets only in env vars.</p></li>
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">llm_settings.json</span></code> for model/provider preferences.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">agent-security-check</span></code> after changes.</p></li>
+<li><p>Rotate keys immediately if exposed.</p></li>
+</ol>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="agent_tools.html" class="btn btn-neutral float-left" title="Agent Tools Developer Guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="llm_key_security.html" class="btn btn-neutral float-right" title="LLM API Key Security" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
