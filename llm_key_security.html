@@ -65,6 +65,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#file-permission-hardening">File Permission Hardening</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#safe-operational-practices">Safe Operational Practices</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#verify-configuration">Verify Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#adding-new-providers-in-gui">Adding New Providers in GUI</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
@@ -117,6 +118,30 @@
 <li><p>Optional OpenAI-compatible endpoint: <code class="docutils literal notranslate"><span class="pre">OPENAI_BASE_URL</span></code></p></li>
 <li><p>Optional local Ollama endpoint: <code class="docutils literal notranslate"><span class="pre">OLLAMA_HOST</span></code></p></li>
 </ul>
+<p>Annolid loads environment variables in this order:</p>
+<ol class="arabic simple">
+<li><p>Parent process environment (already exported in shell/session)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">./.env</span></code> in the current working directory (if present)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">~/.annolid/.env</span></code> as a global fallback</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">.env</span></code> files do not override variables that are already set.</p>
+<p>Annolid also supports inline env config in <code class="docutils literal notranslate"><span class="pre">~/.annolid/llm_settings.json</span></code>:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;OPENROUTER_API_KEY&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;vars&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;GROQ_API_KEY&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gsk-...&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Inline env values are applied only when the variable is not already present in the process environment.</p>
+<p>In the <strong>AI Model Settings</strong> dialog, you can also opt in to:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Persist</span> <span class="pre">entered</span> <span class="pre">credentials</span> <span class="pre">to</span> <span class="pre">~/.annolid/.env</span> <span class="pre">(optional)</span></code></p></li>
+</ul>
+<p>This is disabled by default. When enabled, entered API keys and provider base-URL env values are written to <code class="docutils literal notranslate"><span class="pre">~/.annolid/.env</span></code>.</p>
 <section id="macos-linux-bash-zsh">
 <h3>macOS / Linux (bash/zsh)<a class="headerlink" href="#macos-linux-bash-zsh" title="Link to this heading"></a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-...&quot;</span>
@@ -147,6 +172,7 @@
 <h2>Safe Operational Practices<a class="headerlink" href="#safe-operational-practices" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p>Never commit <code class="docutils literal notranslate"><span class="pre">.env</span></code>, API keys, or copied key values to git.</p></li>
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">~/.annolid/.env</span></code> and project <code class="docutils literal notranslate"><span class="pre">.env</span></code> out of source control.</p></li>
 <li><p>Avoid pasting keys into logs, screenshots, or issue trackers.</p></li>
 <li><p>Rotate keys immediately if accidentally exposed.</p></li>
 <li><p>Use separate keys per environment (dev, test, production).</p></li>
@@ -171,6 +197,17 @@
 <li><p>OpenAI/Gemini key availability (including env var fallback).</p></li>
 </ul>
 <p>Exit code is <code class="docutils literal notranslate"><span class="pre">0</span></code> for <code class="docutils literal notranslate"><span class="pre">ok</span></code>, <code class="docutils literal notranslate"><span class="pre">1</span></code> for <code class="docutils literal notranslate"><span class="pre">warning</span></code>.</p>
+</section>
+<section id="adding-new-providers-in-gui">
+<h2>Adding New Providers in GUI<a class="headerlink" href="#adding-new-providers-in-gui" title="Link to this heading"></a></h2>
+<p>In <strong>AI Model Settings</strong>, click <strong>Add Provider</strong> to create a new OpenAI-compatible provider (for example NVIDIA NIM):</p>
+<ul class="simple">
+<li><p>provider id (e.g. <code class="docutils literal notranslate"><span class="pre">nvidia</span></code>)</p></li>
+<li><p>display name</p></li>
+<li><p>base URL (e.g. <code class="docutils literal notranslate"><span class="pre">https://integrate.api.nvidia.com/v1</span></code>)</p></li>
+<li><p>API key env var name (e.g. <code class="docutils literal notranslate"><span class="pre">NVIDIA_API_KEY</span></code>)</p></li>
+</ul>
+<p>After saving, the provider appears in the provider selector without code changes.</p>
 </section>
 </section>
 
