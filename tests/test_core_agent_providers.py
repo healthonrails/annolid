@@ -73,6 +73,95 @@ def test_openai_compat_provider_parses_tool_calls() -> None:
     assert resp.usage["total_tokens"] == 3
 
 
+def test_openai_compat_provider_handles_empty_choices() -> None:
+    class _FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return SimpleNamespace(choices=None, usage=None)
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+        async def aclose(self) -> None:
+            return None
+
+    resolved = resolve_openai_compat(
+        LLMConfig(
+            provider="openai",
+            model="gpt-4o-mini",
+            params={"api_key": "sk-test", "base_url": "https://api.openai.com/v1"},
+        )
+    )
+    provider = OpenAICompatProvider(
+        resolved=resolved,
+        client_factory=lambda _resolved: _FakeClient(),
+    )
+    resp = __import__("asyncio").run(
+        provider.chat(messages=[{"role": "user", "content": "x"}])
+    )
+    assert resp.content == ""
+    assert resp.has_tool_calls is False
+
+
+def test_openai_compat_provider_parses_dict_response_and_closes_client() -> None:
+    class _FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "ok",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "echo",
+                                        "arguments": '{"text":"hi"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+
+    closed = {"value": False}
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+        async def aclose(self) -> None:
+            closed["value"] = True
+
+    resolved = resolve_openai_compat(
+        LLMConfig(
+            provider="openai",
+            model="gpt-4o-mini",
+            params={"api_key": "sk-test", "base_url": "https://api.openai.com/v1"},
+        )
+    )
+    provider = OpenAICompatProvider(
+        resolved=resolved,
+        client_factory=lambda _resolved: _FakeClient(),
+    )
+    resp = __import__("asyncio").run(
+        provider.chat(messages=[{"role": "user", "content": "x"}])
+    )
+    assert resp.content == "ok"
+    assert resp.has_tool_calls is True
+    assert resp.tool_calls[0].name == "echo"
+    assert closed["value"] is True
+
+
 def test_litellm_provider_resolves_gateway_prefix() -> None:
     provider = LiteLLMProvider(
         provider_name="openrouter",

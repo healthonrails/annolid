@@ -603,6 +603,88 @@ class AIChatWidget(QtWidgets.QWidget):
     def set_host_window(self, window: Optional[QtWidgets.QWidget]) -> None:
         self.host_window_widget = window
 
+    @QtCore.Slot(str)
+    def bot_open_video(self, video_path: str) -> None:
+        path = str(video_path or "").strip()
+        if not path:
+            self.status_label.setText("Bot action failed: empty video path.")
+            return
+        host = self.host_window_widget or self.window()
+        open_video = getattr(host, "openVideo", None)
+        if not callable(open_video):
+            self.status_label.setText("Bot action failed: video loader is unavailable.")
+            return
+        try:
+            open_video(from_video_list=True, video_path=path, programmatic_call=True)
+            self.status_label.setText(f"Opened video: {os.path.basename(path)}")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(int)
+    def bot_set_frame(self, frame_index: int) -> None:
+        host = self.host_window_widget or self.window()
+        setter = getattr(host, "set_frame_number", None)
+        if not callable(setter):
+            self.status_label.setText(
+                "Bot action failed: frame navigation unavailable."
+            )
+            return
+        try:
+            setter(int(frame_index))
+            self.status_label.setText(f"Moved to frame {int(frame_index)}")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(str)
+    def bot_set_chat_prompt(self, text: str) -> None:
+        value = str(text or "").strip()
+        self.prompt_text_edit.setPlainText(value)
+        self.prompt_text_edit.setFocus()
+        self.status_label.setText("Chat prompt updated by bot.")
+
+    @QtCore.Slot()
+    def bot_send_chat_prompt(self) -> None:
+        if self.is_streaming_chat:
+            self.status_label.setText("Wait for current response to finish.")
+            return
+        self.chat_with_model()
+
+    @QtCore.Slot(str, str)
+    def bot_set_chat_model(self, provider: str, model: str) -> None:
+        self.set_provider_and_model(str(provider or ""), str(model or ""))
+        self.status_label.setText("Bot chat provider/model updated.")
+
+    @QtCore.Slot(str)
+    def bot_select_annotation_model(self, model_name: str) -> None:
+        value = str(model_name or "").strip()
+        if not value:
+            self.status_label.setText("Bot action failed: empty model name.")
+            return
+        host = self.host_window_widget or self.window()
+        combo = getattr(host, "_selectAiModelComboBox", None)
+        if combo is None:
+            self.status_label.setText("Bot action failed: model selector unavailable.")
+            return
+        index = combo.findText(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        else:
+            combo.setCurrentText(value)
+        self.status_label.setText(f"Selected annotation model: {value}")
+
+    @QtCore.Slot(int)
+    def bot_track_next_frames(self, to_frame: int) -> None:
+        host = self.host_window_widget or self.window()
+        run_track = getattr(host, "predict_from_next_frame", None)
+        if not callable(run_track):
+            self.status_label.setText("Bot action failed: tracking is unavailable.")
+            return
+        try:
+            run_track(to_frame=int(to_frame))
+            self.status_label.setText(f"Started tracking to frame {int(to_frame)}")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
     def set_image_path(self, image_path: str) -> None:
         if image_path and image_path not in self._snapshot_paths:
             self._cleanup_snapshots()

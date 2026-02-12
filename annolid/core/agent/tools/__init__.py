@@ -32,12 +32,25 @@ from .function_builtin import (
     WriteFileTool,
     register_nanobot_style_tools,
 )
+from .function_gui import (
+    GuiContextTool,
+    GuiOpenVideoTool,
+    GuiSelectAnnotationModelTool,
+    GuiSendPromptTool,
+    GuiSetChatModelTool,
+    GuiSetFrameTool,
+    GuiSetPromptTool,
+    GuiSharedImagePathTool,
+    GuiTrackNextFramesTool,
+    register_annolid_gui_tools,
+)
 from .function_video import (
     VideoInfoTool,
     VideoProcessSegmentsTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
+from .policy import ResolvedToolPolicy, resolve_allowed_tools
 from .function_registry import FunctionToolRegistry
 from .llm import CaptionResult, CaptionTool
 from .sampling import FPSampler, MotionSampler, RandomSampler, UniformSampler
@@ -76,10 +89,22 @@ __all__ = [
     "VideoSampleFramesTool",
     "VideoSegmentTool",
     "VideoProcessSegmentsTool",
+    "ResolvedToolPolicy",
+    "resolve_allowed_tools",
+    "GuiContextTool",
+    "GuiOpenVideoTool",
+    "GuiSetFrameTool",
+    "GuiSetPromptTool",
+    "GuiSendPromptTool",
+    "GuiSetChatModelTool",
+    "GuiSelectAnnotationModelTool",
+    "GuiTrackNextFramesTool",
+    "GuiSharedImagePathTool",
     "MessageTool",
     "SpawnTool",
     "CronTool",
     "register_nanobot_style_tools",
+    "register_annolid_gui_tools",
     "FileArtifactStore",
     "FrameBatch",
     "FrameData",

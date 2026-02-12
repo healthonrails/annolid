@@ -11,6 +11,7 @@ from .schema import (
     AgentsConfig,
     ExecToolConfig,
     ProviderConfig,
+    ToolPolicyConfig,
     ToolsConfig,
 )
 
@@ -20,6 +21,7 @@ __all__ = [
     "AgentDefaults",
     "AgentsConfig",
     "ExecToolConfig",
+    "ToolPolicyConfig",
     "ToolsConfig",
     "get_config_path",
     "load_config",

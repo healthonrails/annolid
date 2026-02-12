@@ -30,6 +30,7 @@ from annolid.core.agent.tools.function_video import (
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
+from annolid.core.agent.tools.function_gui import register_annolid_gui_tools
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 
 
@@ -415,3 +416,69 @@ def test_download_url_tool_saves_file_and_blocks_outside_dir(
     )
     blocked_payload = json.loads(blocked)
     assert "outside allowed directory" in blocked_payload["error"]
+
+
+def test_register_annolid_gui_tools_and_context_payload() -> None:
+    calls: list[tuple[str, object]] = []
+
+    def _mark(name: str, value: object = None) -> dict[str, object]:
+        calls.append((name, value))
+        return {"ok": True}
+
+    registry = FunctionToolRegistry()
+    register_annolid_gui_tools(
+        registry,
+        context_callback=lambda: {"provider": "ollama", "frame_number": 12},
+        image_path_callback=lambda: "/tmp/shared.png",
+        open_video_callback=lambda path: _mark("open_video", path),
+        set_frame_callback=lambda frame_index: _mark("set_frame", frame_index),
+        set_prompt_callback=lambda text: _mark("set_prompt", text),
+        send_prompt_callback=lambda: _mark("send_prompt"),
+        set_chat_model_callback=lambda provider, model: _mark(
+            "set_chat_model", f"{provider}:{model}"
+        ),
+        select_annotation_model_callback=lambda model_name: _mark(
+            "select_model", model_name
+        ),
+        track_next_frames_callback=lambda to_frame: _mark("track", to_frame),
+    )
+    assert registry.has("gui_context")
+    assert registry.has("gui_shared_image_path")
+    assert registry.has("gui_open_video")
+    assert registry.has("gui_set_frame")
+    assert registry.has("gui_set_chat_prompt")
+    assert registry.has("gui_send_chat_prompt")
+    assert registry.has("gui_set_chat_model")
+    assert registry.has("gui_select_annotation_model")
+    assert registry.has("gui_track_next_frames")
+    ctx = asyncio.run(registry.execute("gui_context", {}))
+    ctx_payload = json.loads(ctx)
+    assert ctx_payload["provider"] == "ollama"
+    image = asyncio.run(registry.execute("gui_shared_image_path", {}))
+    image_payload = json.loads(image)
+    assert image_payload["image_path"] == "/tmp/shared.png"
+    result = asyncio.run(registry.execute("gui_open_video", {"path": "/tmp/a.mp4"}))
+    assert json.loads(result)["ok"] is True
+    asyncio.run(registry.execute("gui_set_frame", {"frame_index": 3}))
+    asyncio.run(registry.execute("gui_set_chat_prompt", {"text": "describe this"}))
+    asyncio.run(registry.execute("gui_send_chat_prompt", {}))
+    asyncio.run(
+        registry.execute(
+            "gui_set_chat_model", {"provider": "ollama", "model": "qwen3:8b"}
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_select_annotation_model", {"model_name": "Segment Anything 2"}
+        )
+    )
+    asyncio.run(registry.execute("gui_track_next_frames", {"to_frame": 120}))
+    assert calls == [
+        ("open_video", "/tmp/a.mp4"),
+        ("set_frame", 3),
+        ("set_prompt", "describe this"),
+        ("send_prompt", None),
+        ("set_chat_model", "ollama:qwen3:8b"),
+        ("select_model", "Segment Anything 2"),
+        ("track", 120),
+    ]

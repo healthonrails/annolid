@@ -118,6 +118,37 @@ class OpenAICompatProvider(LLMProvider):
         )
         return self._client
 
+    @staticmethod
+    def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    async def _close_client(self, client: Any) -> None:
+        close_fn = getattr(client, "aclose", None)
+        if callable(close_fn):
+            try:
+                result = close_fn()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                pass
+            finally:
+                if client is self._client:
+                    self._client = None
+            return
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn):
+            try:
+                result = close_fn()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                pass
+            finally:
+                if client is self._client:
+                    self._client = None
+
     async def chat(
         self,
         *,
@@ -128,32 +159,55 @@ class OpenAICompatProvider(LLMProvider):
         temperature: Optional[float] = 0.7,
     ) -> LLMResponse:
         client = self._ensure_client()
-        payload: Dict[str, Any] = {
-            "model": model or self._resolved.model,
-            "messages": [dict(m) for m in messages],
-            "max_tokens": int(max_tokens),
-        }
-        if temperature is not None:
-            payload["temperature"] = float(temperature)
-        if tools:
-            payload["tools"] = list(tools)
-            payload["tool_choice"] = "auto"
-
         try:
+            payload: Dict[str, Any] = {
+                "model": model or self._resolved.model,
+                "messages": [dict(m) for m in messages],
+                "max_tokens": int(max_tokens),
+            }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
+            if tools:
+                payload["tools"] = list(tools)
+                payload["tool_choice"] = "auto"
             completion = await client.chat.completions.create(**payload)
         except Exception as exc:
             return LLMResponse(
                 content=f"Error calling LLM: {exc}", finish_reason="error"
             )
+        finally:
+            await self._close_client(client)
         return self._parse_response(completion)
 
     def _parse_response(self, completion: Any) -> LLMResponse:
-        choice = completion.choices[0]
-        message = choice.message
+        choices = self._get_value(completion, "choices", None)
+        if not choices:
+            return LLMResponse(
+                content="",
+                tool_calls=(),
+                finish_reason=str(
+                    self._get_value(completion, "finish_reason", "stop") or "stop"
+                ),
+                usage={},
+                reasoning_content=None,
+            )
+        choice = choices[0]
+        message = self._get_value(choice, "message", None)
+        if message is None:
+            return LLMResponse(
+                content="",
+                tool_calls=(),
+                finish_reason=str(
+                    self._get_value(choice, "finish_reason", "stop") or "stop"
+                ),
+                usage={},
+                reasoning_content=None,
+            )
 
         tool_calls: List[ToolCallRequest] = []
-        for tc in list(getattr(message, "tool_calls", None) or []):
-            raw_args = getattr(getattr(tc, "function", None), "arguments", "{}")
+        for tc in list(self._get_value(message, "tool_calls", None) or []):
+            fn = self._get_value(tc, "function", None)
+            raw_args = self._get_value(fn, "arguments", "{}")
             args: Dict[str, Any]
             if isinstance(raw_args, str):
                 try:
@@ -168,27 +222,35 @@ class OpenAICompatProvider(LLMProvider):
 
             tool_calls.append(
                 ToolCallRequest(
-                    id=str(getattr(tc, "id", "")),
-                    name=str(getattr(getattr(tc, "function", None), "name", "")),
+                    id=str(self._get_value(tc, "id", "")),
+                    name=str(self._get_value(fn, "name", "")),
                     arguments=args,
                 )
             )
 
         usage: Dict[str, int] = {}
-        usage_obj = getattr(completion, "usage", None)
+        usage_obj = self._get_value(completion, "usage", None)
         if usage_obj is not None:
             usage = {
-                "prompt_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(
-                    getattr(usage_obj, "completion_tokens", 0) or 0
+                "prompt_tokens": int(
+                    self._get_value(usage_obj, "prompt_tokens", 0) or 0
                 ),
-                "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
+                "completion_tokens": int(
+                    self._get_value(usage_obj, "completion_tokens", 0) or 0
+                ),
+                "total_tokens": int(self._get_value(usage_obj, "total_tokens", 0) or 0),
             }
 
+        content = self._get_value(message, "content", "")
+        if content is None:
+            content = ""
+
         return LLMResponse(
-            content=str(getattr(message, "content", "") or ""),
+            content=str(content),
             tool_calls=tool_calls,
-            finish_reason=str(getattr(choice, "finish_reason", "stop") or "stop"),
+            finish_reason=str(
+                self._get_value(choice, "finish_reason", "stop") or "stop"
+            ),
             usage=usage,
-            reasoning_content=getattr(message, "reasoning_content", None),
+            reasoning_content=self._get_value(message, "reasoning_content", None),
         )

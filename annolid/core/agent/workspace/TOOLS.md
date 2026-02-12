@@ -34,6 +34,18 @@ Safety notes:
 - `video_segment(path, output_path?, start_frame?, end_frame?, start_sec?, end_sec?, overwrite?)`
 - `video_process_segments(path, segments, output_dir?, overwrite?)`
 
+## GUI (Annolid Bot)
+
+- `gui_context()`
+- `gui_shared_image_path()`
+- `gui_open_video(path)`
+- `gui_set_frame(frame_index)`
+- `gui_set_chat_prompt(text)`
+- `gui_send_chat_prompt()`
+- `gui_set_chat_model(provider, model)`
+- `gui_select_annotation_model(model_name)`
+- `gui_track_next_frames(to_frame)`
+
 ## Communication and Delegation
 
 - `message(content, channel?, chat_id?)`

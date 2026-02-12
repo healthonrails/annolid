@@ -488,6 +488,19 @@ class AgentLoop:
         "you",
         "your",
     }
+    _DEFAULT_TOOL_SELECTION_MAX = 6
+    _DEFAULT_TOOL_PRIORITY = (
+        "gui_open_video",
+        "gui_set_frame",
+        "gui_track_next_frames",
+        "gui_context",
+        "read_file",
+        "list_dir",
+        "video_info",
+        "video_sample_frames",
+        "extract_pdf_text",
+        "web_search",
+    )
 
     @classmethod
     def _tokenize_text(cls, text: str) -> List[str]:
@@ -555,7 +568,7 @@ class AgentLoop:
             return tools
         user_tokens = self._tokenize_text(user_message_text)
         if not user_tokens:
-            return tools
+            return self._select_default_tool_definitions(tools)
 
         # Use recent interaction context to improve follow-up turns.
         tail_text_parts: List[str] = []
@@ -572,7 +585,7 @@ class AgentLoop:
             if score > 0:
                 scored.append((score, schema))
         if not scored:
-            return tools
+            return self._select_default_tool_definitions(tools)
 
         scored.sort(
             key=lambda item: (
@@ -602,6 +615,44 @@ class AgentLoop:
             if read_file_schema is not None:
                 selected.append(read_file_schema)
         return selected or tools
+
+    @classmethod
+    def _select_default_tool_definitions(
+        cls,
+        tools: Sequence[Mapping[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if len(tools) <= cls._DEFAULT_TOOL_SELECTION_MAX:
+            return [dict(t) for t in tools]
+
+        by_name: Dict[str, Dict[str, Any]] = {}
+        for schema in tools:
+            fn = schema.get("function")
+            if not isinstance(fn, Mapping):
+                continue
+            name = str(fn.get("name") or "").strip()
+            if not name:
+                continue
+            by_name.setdefault(name, dict(schema))
+
+        selected: List[Dict[str, Any]] = []
+        selected_names: set[str] = set()
+        for name in cls._DEFAULT_TOOL_PRIORITY:
+            schema = by_name.get(name)
+            if schema is None:
+                continue
+            selected.append(schema)
+            selected_names.add(name)
+            if len(selected) >= cls._DEFAULT_TOOL_SELECTION_MAX:
+                return selected
+
+        remaining_names = sorted(
+            name for name in by_name.keys() if name not in selected_names
+        )
+        for name in remaining_names:
+            selected.append(by_name[name])
+            if len(selected) >= cls._DEFAULT_TOOL_SELECTION_MAX:
+                break
+        return selected or [dict(t) for t in tools[: cls._DEFAULT_TOOL_SELECTION_MAX]]
 
     def _sanitize_tool_calls(
         self, tool_calls: Sequence[Mapping[str, Any]]

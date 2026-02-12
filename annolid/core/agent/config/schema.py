@@ -94,10 +94,49 @@ class ExecToolConfig:
 
 
 @dataclass
+class ToolPolicyConfig:
+    profile: str = ""
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ToolPolicyConfig":
+        payload = data or {}
+        allow_raw = payload.get("allow", [])
+        deny_raw = payload.get("deny", [])
+        allow = (
+            [str(item).strip() for item in allow_raw if str(item).strip()]
+            if isinstance(allow_raw, (list, tuple))
+            else []
+        )
+        deny = (
+            [str(item).strip() for item in deny_raw if str(item).strip()]
+            if isinstance(deny_raw, (list, tuple))
+            else []
+        )
+        return cls(
+            profile=str(payload.get("profile") or "").strip().lower(),
+            allow=allow,
+            deny=deny,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "profile": self.profile,
+            "allow": list(self.allow),
+            "deny": list(self.deny),
+        }
+
+
+@dataclass
 class ToolsConfig:
     exec: ExecToolConfig = field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False
     allowed_read_roots: list[str] = field(default_factory=list)
+    profile: str = "full"
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+    by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ToolsConfig":
@@ -115,11 +154,34 @@ class ToolsConfig:
             ]
         else:
             allowed_read_roots = []
+        allow_raw = payload.get("allow", [])
+        deny_raw = payload.get("deny", [])
+        allow = (
+            [str(item).strip() for item in allow_raw if str(item).strip()]
+            if isinstance(allow_raw, (list, tuple))
+            else []
+        )
+        deny = (
+            [str(item).strip() for item in deny_raw if str(item).strip()]
+            if isinstance(deny_raw, (list, tuple))
+            else []
+        )
+        by_provider_raw = payload.get("by_provider", payload.get("byProvider", {}))
+        by_provider: Dict[str, ToolPolicyConfig] = {}
+        if isinstance(by_provider_raw, dict):
+            for key, value in by_provider_raw.items():
+                by_provider[str(key)] = ToolPolicyConfig.from_dict(
+                    value if isinstance(value, dict) else None
+                )
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
             exec=exec_cfg,
             restrict_to_workspace=bool(restrict_value),
             allowed_read_roots=allowed_read_roots,
+            profile=str(payload.get("profile") or "full").strip().lower() or "full",
+            allow=allow,
+            deny=deny,
+            by_provider=by_provider,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -127,6 +189,12 @@ class ToolsConfig:
             "exec": self.exec.to_dict(),
             "restrict_to_workspace": self.restrict_to_workspace,
             "allowed_read_roots": list(self.allowed_read_roots),
+            "profile": self.profile,
+            "allow": list(self.allow),
+            "deny": list(self.deny),
+            "by_provider": {
+                key: value.to_dict() for key, value in self.by_provider.items()
+            },
         }
 
 

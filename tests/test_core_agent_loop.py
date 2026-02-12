@@ -360,3 +360,51 @@ def test_agent_loop_selects_relevant_tools_by_description() -> None:
     _ = asyncio.run(loop.run("Please search online for annolid docs"))
     assert "web_search" in observed["tool_names"]
     assert "calculator" not in observed["tool_names"]
+
+
+def test_agent_loop_uses_compact_default_tool_subset_for_low_signal_prompt() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_SearchLikeTool())
+    registry.register(_MathLikeTool())
+    registry.register(_EchoTool())
+
+    def _make_tmp_tool(index: int) -> FunctionTool:
+        class _TmpTool(FunctionTool):
+            @property
+            def name(self) -> str:  # type: ignore[override]
+                return f"tool_{index}"
+
+            @property
+            def description(self) -> str:
+                return f"Tool number {index}"
+
+            @property
+            def parameters(self) -> dict[str, Any]:
+                return {"type": "object", "properties": {}, "required": []}
+
+            async def execute(self, **kwargs: Any) -> str:
+                del kwargs
+                return "ok"
+
+        return _TmpTool()
+
+    for idx in range(8):
+        registry.register(_make_tmp_tool(idx))
+
+    observed = {"tool_names": []}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, model
+        observed["tool_names"] = [
+            str((t.get("function") or {}).get("name") or "") for t in tools
+        ]
+        return {"content": "ok"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("hi"))
+    assert len(observed["tool_names"]) <= 6
+    assert "echo" in observed["tool_names"] or "web_search" in observed["tool_names"]
