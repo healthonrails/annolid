@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import platform
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -37,6 +38,74 @@ def test_skills_loader_lists_builtin_skills() -> None:
     summary = loader.build_skills_summary()
     assert "<skills>" in summary
     assert "<location>" in summary
+
+
+def test_skills_loader_precedence_workspace_over_managed_over_builtin(
+    tmp_path: Path,
+) -> None:
+    builtin = tmp_path / "builtin"
+    managed = tmp_path / "managed"
+    workspace = tmp_path / "workspace"
+    for root in (builtin, managed, workspace):
+        (root / "skills" / "same").mkdir(parents=True, exist_ok=True)
+    (builtin / "skills" / "same" / "SKILL.md").write_text(
+        "---\ndescription: builtin\n---\nBuiltin skill\n",
+        encoding="utf-8",
+    )
+    (managed / "skills" / "same" / "SKILL.md").write_text(
+        "---\ndescription: managed\n---\nManaged skill\n",
+        encoding="utf-8",
+    )
+    (workspace / "skills" / "same" / "SKILL.md").write_text(
+        "---\ndescription: workspace\n---\nWorkspace skill\n",
+        encoding="utf-8",
+    )
+
+    loader = AgentSkillsLoader(
+        workspace=workspace,
+        builtin_skills_dir=builtin / "skills",
+        managed_skills_dir=managed / "skills",
+    )
+    skills = loader.list_skills(filter_unavailable=False)
+    selected = next(s for s in skills if s["name"] == "same")
+    assert selected["source"] == "workspace"
+    assert str(workspace / "skills" / "same" / "SKILL.md") == selected["path"]
+
+
+def test_skills_loader_honors_disable_model_invocation(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "ops"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: ops\n"
+        "always: true\n"
+        "disable-model-invocation: true\n"
+        "---\n"
+        "Do not inject into model context.\n",
+        encoding="utf-8",
+    )
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+    assert "ops" not in loader.get_always_skills()
+    injected = loader.load_skills_for_context(["ops"])
+    assert injected == ""
+    assert "ops" not in loader.build_skills_summary()
+
+
+def test_skills_loader_honors_os_requirement(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "linux_only"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    disallowed_os = "darwin" if platform.system().lower() != "darwin" else "linux"
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: linux only\n"
+        f'metadata: \'{{"openclaw": {{"os": ["{disallowed_os}"]}}}}\'\n'
+        "---\n"
+        "OS-gated skill.\n",
+        encoding="utf-8",
+    )
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+    skills = loader.list_skills(filter_unavailable=True)
+    assert not any(s["name"] == "linux_only" for s in skills)
 
 
 def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:
