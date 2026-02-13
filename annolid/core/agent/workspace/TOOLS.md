@@ -26,6 +26,14 @@ Safety notes:
 - Keep command scope limited to relevant directories.
 - Treat external downloads and scripts as untrusted until verified.
 
+## Git and GitHub
+
+- `git_status(repo_path?, short?)`
+- `git_diff(repo_path?, cached?, target?, name_only?)`
+- `git_log(repo_path?, max_count?, oneline?)`
+- `github_pr_status(repo_path?)`
+- `github_pr_checks(repo_path?)`
+
 ## Web
 
 - `web_search(query, count?)`

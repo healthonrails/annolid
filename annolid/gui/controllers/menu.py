@@ -1,6 +1,8 @@
 import functools
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, TYPE_CHECKING
+import webbrowser
 
 from qtpy import QtCore, QtGui, QtWidgets
 from annolid.gui.theme import (
@@ -43,6 +45,13 @@ class MenuController:
         """Create all custom menus for organized, user-friendly navigation."""
         w = self._window
         action = self._action_factory
+
+        # Base menus can be missing in some UI reconstruction paths.
+        # Re-create Help defensively so About actions always have a target.
+        if not hasattr(w, "menus"):
+            w.menus = SimpleNamespace()
+        if not hasattr(w.menus, "help") or getattr(w.menus, "help", None) is None:
+            w.menus.help = w.menuBar().addMenu(w.tr("&Help"))
 
         # Video Tools menu
         if not hasattr(w.menus, "video_tools"):
@@ -325,6 +334,20 @@ class MenuController:
                 "text": w.tr("&About Annolid"),
                 "slot": w.about_annolid_and_system_info,
                 "tip": w.tr("About Annolid"),
+            },
+            {
+                "name": "help_docs",
+                "text": w.tr("&Docs"),
+                "slot": lambda: self._open_help_url("https://cplab.science/annolid"),
+                "tip": w.tr("Open Annolid documentation website"),
+            },
+            {
+                "name": "help_tutorials",
+                "text": w.tr("&Tutorials"),
+                "slot": lambda: self._open_help_url(
+                    "https://github.com/healthonrails/annolid/tree/main/docs/tutorials"
+                ),
+                "tip": w.tr("Open Annolid tutorials on GitHub"),
             },
             {
                 "name": "coco",
@@ -1006,7 +1029,27 @@ class MenuController:
         # ============================================================
         # HELP MENU
         # ============================================================
-        utils.addActions(w.menus.help, (actions["about_annolid"],))
+        if not hasattr(w.menus, "help") or getattr(w.menus, "help", None) is None:
+            w.menus.help = w.menuBar().addMenu(w.tr("&Help"))
+        else:
+            try:
+                w.menus.help.setTitle(w.tr("&Help"))
+            except Exception:
+                pass
+        try:
+            w.menus.help.clear()
+        except Exception:
+            pass
+        self._add_menu_sections(
+            w.menus.help,
+            [
+                (
+                    actions["help_docs"],
+                    actions["help_tutorials"],
+                ),
+                (actions["about_annolid"],),
+            ],
+        )
 
     @staticmethod
     def _add_menu_sections(menu: QtWidgets.QMenu, sections) -> None:
@@ -1023,6 +1066,14 @@ class MenuController:
         """Keep top-level menu order consistent and professional."""
         w = self._window
         bar = w.menuBar()
+        if not hasattr(w.menus, "help") or getattr(w.menus, "help", None) is None:
+            w.menus.help = bar.addMenu(w.tr("&Help"))
+        else:
+            try:
+                w.menus.help.setTitle(w.tr("&Help"))
+                w.menus.help.menuAction().setVisible(True)
+            except Exception:
+                pass
         # Professional menu order: File, Edit, View, then domain menus, then Settings/Help
         desired_names = [
             "file",
@@ -1041,7 +1092,9 @@ class MenuController:
             if menu is not None:
                 menus.append(menu)
 
-        # Remove existing occurrences so we can re-add in the desired order.
+        # Remove existing menu actions so we can re-add in a stable order.
+        # Use menuAction() directly (instead of addMenu(menu)) to avoid platform-
+        # specific issues where a detached QMenu can fail to reappear.
         for action in list(bar.actions()):
             menu = action.menu()
             if menu is not None and menu in menus:
@@ -1049,7 +1102,21 @@ class MenuController:
 
         # Re-add in the requested order.
         for menu in menus:
-            bar.addMenu(menu)
+            bar.addAction(menu.menuAction())
+
+    def _open_help_url(self, url: str) -> None:
+        if not url:
+            return
+        try:
+            ok = QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+            if ok:
+                return
+        except Exception:
+            pass
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     def _close_3d_viewer(self) -> None:
         """Close the Three.js 3D view and return to canvas."""

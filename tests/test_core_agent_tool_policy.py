@@ -81,3 +81,31 @@ def test_policy_wildcard_entries() -> None:
     assert "gui_open_video" in resolved.allowed_tools
     assert "gui_set_chat_prompt" not in resolved.allowed_tools
     assert "gui_send_chat_prompt" not in resolved.allowed_tools
+
+
+def test_policy_group_vcs_allows_git_and_github_tools() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["group:vcs"],
+    )
+    all_tools = [
+        "git_status",
+        "git_diff",
+        "git_log",
+        "github_pr_status",
+        "github_pr_checks",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {
+        "git_status",
+        "git_diff",
+        "git_log",
+        "github_pr_status",
+        "github_pr_checks",
+    }

@@ -72,6 +72,8 @@ In **AI Chat Studio**, Annolid Bot can inspect and modify your local Annolid wor
 - `code_search(...)` to find where behavior, flags, or APIs are implemented.
 - `code_explain(...)` to summarize Python modules/classes/functions and calls.
 - `read_file(...)`, `write_file(...)`, `edit_file(...)` for targeted updates.
+- `git_status(...)`, `git_diff(...)`, `git_log(...)` for local git workflow context.
+- `github_pr_status(...)`, `github_pr_checks(...)` for GitHub PR context via `gh`.
 
 For safer edits, ask the bot to:
 

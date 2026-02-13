@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -21,6 +23,11 @@ from annolid.core.agent.tools.function_builtin import (
     ExecTool,
     ExtractPdfImagesTool,
     ExtractPdfTextTool,
+    GitDiffTool,
+    GitHubPrChecksTool,
+    GitHubPrStatusTool,
+    GitLogTool,
+    GitStatusTool,
     ListDirTool,
     MemoryGetTool,
     MemorySetTool,
@@ -474,12 +481,90 @@ def test_code_explain_tool_describes_module_and_symbol(tmp_path: Path) -> None:
     assert "def run" in symbol_payload["source"]
 
 
+def test_git_tools_status_diff_log(tmp_path: Path) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not available in this environment")
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "annolid@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Annolid Bot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    tracked = repo / "tracked.txt"
+    tracked.write_text("line1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "tracked.txt"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    tracked.write_text("line1\nline2\n", encoding="utf-8")
+
+    status_tool = GitStatusTool(allowed_dir=repo)
+    status_result = asyncio.run(status_tool.execute(repo_path=str(repo)))
+    status_payload = json.loads(status_result)
+    assert status_payload["exit_code"] == 0
+    assert "tracked.txt" in status_payload["output"]
+
+    diff_tool = GitDiffTool(allowed_dir=repo)
+    diff_result = asyncio.run(diff_tool.execute(repo_path=str(repo)))
+    diff_payload = json.loads(diff_result)
+    assert diff_payload["exit_code"] == 0
+    assert "+line2" in diff_payload["output"]
+
+    log_tool = GitLogTool(allowed_dir=repo)
+    log_result = asyncio.run(log_tool.execute(repo_path=str(repo), max_count=5))
+    log_payload = json.loads(log_result)
+    assert log_payload["exit_code"] == 0
+    assert "initial" in log_payload["output"]
+
+
+def test_github_tools_report_missing_gh_cli(tmp_path: Path, monkeypatch) -> None:
+    async def _missing_command(*args, **kwargs):
+        del args, kwargs
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _missing_command,
+    )
+    status_tool = GitHubPrStatusTool(allowed_dir=tmp_path)
+    checks_tool = GitHubPrChecksTool(allowed_dir=tmp_path)
+
+    status_result = asyncio.run(status_tool.execute(repo_path=str(tmp_path)))
+    checks_result = asyncio.run(checks_tool.execute(repo_path=str(tmp_path)))
+    status_payload = json.loads(status_result)
+    checks_payload = json.loads(checks_result)
+    assert "Command not found: gh" in status_payload["error"]
+    assert "Command not found: gh" in checks_payload["error"]
+
+
 def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     registry = FunctionToolRegistry()
     register_nanobot_style_tools(registry, allowed_dir=tmp_path)
     assert registry.has("read_file")
     assert registry.has("code_search")
     assert registry.has("code_explain")
+    assert registry.has("git_status")
+    assert registry.has("git_diff")
+    assert registry.has("git_log")
+    assert registry.has("github_pr_status")
+    assert registry.has("github_pr_checks")
     assert registry.has("memory_search")
     assert registry.has("memory_get")
     assert registry.has("memory_set")
