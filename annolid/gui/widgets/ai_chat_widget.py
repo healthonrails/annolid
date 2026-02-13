@@ -1371,6 +1371,32 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
+    @QtCore.Slot(str)
+    def bot_open_pdf(self, pdf_path: str = "") -> None:
+        host = self.host_window_widget or self.window()
+        pdf_import_widget = getattr(host, "pdf_import_widget", None)
+        open_pdf = getattr(pdf_import_widget, "open_pdf", None)
+        open_pdf_path = getattr(pdf_import_widget, "open_pdf_path", None)
+        if not callable(open_pdf):
+            self.status_label.setText("Bot action failed: PDF opener is unavailable.")
+            return
+        try:
+            resolved = str(pdf_path or "").strip()
+            if resolved and callable(open_pdf_path):
+                ok = bool(open_pdf_path(resolved))
+                if ok:
+                    self.status_label.setText(
+                        f"Opened PDF: {os.path.basename(resolved)}"
+                    )
+                else:
+                    self.status_label.setText("Bot action failed: could not open PDF.")
+                return
+            # Reuse the exact same flow as File > Open PDF...
+            open_pdf()
+            self.status_label.setText("Opened PDF picker.")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
     @QtCore.Slot(int)
     def bot_set_frame(self, frame_index: int) -> None:
         host = self.host_window_widget or self.window()

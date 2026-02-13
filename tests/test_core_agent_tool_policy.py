@@ -14,6 +14,7 @@ def test_policy_profile_and_group_allow_deny() -> None:
         "gui_context",
         "gui_shared_image_path",
         "gui_open_video",
+        "gui_open_pdf",
         "gui_set_chat_model",
         "web_search",
         "exec",
@@ -26,6 +27,7 @@ def test_policy_profile_and_group_allow_deny() -> None:
     )
     assert "gui_context" in resolved.allowed_tools
     assert "gui_open_video" in resolved.allowed_tools
+    assert "gui_open_pdf" in resolved.allowed_tools
     assert "web_search" in resolved.allowed_tools
     assert "gui_set_chat_model" not in resolved.allowed_tools
     assert "exec" not in resolved.allowed_tools
@@ -46,6 +48,7 @@ def test_policy_provider_model_override() -> None:
         "gui_context",
         "gui_shared_image_path",
         "gui_open_video",
+        "gui_open_pdf",
         "exec",
         "read_file",
     ]
@@ -68,6 +71,7 @@ def test_policy_wildcard_entries() -> None:
     all_tools = [
         "gui_context",
         "gui_open_video",
+        "gui_open_pdf",
         "gui_set_chat_prompt",
         "gui_send_chat_prompt",
     ]
@@ -79,6 +83,7 @@ def test_policy_wildcard_entries() -> None:
     )
     assert "gui_context" in resolved.allowed_tools
     assert "gui_open_video" in resolved.allowed_tools
+    assert "gui_open_pdf" in resolved.allowed_tools
     assert "gui_set_chat_prompt" not in resolved.allowed_tools
     assert "gui_send_chat_prompt" not in resolved.allowed_tools
 
@@ -108,4 +113,29 @@ def test_policy_group_vcs_allows_git_and_github_tools() -> None:
         "git_log",
         "github_pr_status",
         "github_pr_checks",
+    }
+
+
+def test_policy_group_pdf_includes_open_and_extract_tools() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["group:pdf"],
+    )
+    all_tools = [
+        "open_pdf",
+        "extract_pdf_text",
+        "extract_pdf_images",
+        "download_pdf",
+        "read_file",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {
+        "open_pdf",
+        "extract_pdf_text",
+        "extract_pdf_images",
     }

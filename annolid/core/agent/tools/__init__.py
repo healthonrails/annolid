@@ -24,11 +24,13 @@ from .filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from .memory import MemoryGetTool, MemorySetTool, MemorySearchTool
 from .messaging import MessageTool, SpawnTool
 from .nanobot import register_nanobot_style_tools
+from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
-from .web import WebFetchTool, WebSearchTool
+from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 from .function_gui import (
     GuiContextTool,
     GuiLabelBehaviorSegmentsTool,
+    GuiOpenPdfTool,
     GuiOpenVideoTool,
     GuiRunAiTextSegmentationTool,
     GuiSegmentTrackVideoTool,
@@ -88,6 +90,11 @@ __all__ = [
     "ExecTool",
     "WebSearchTool",
     "WebFetchTool",
+    "DownloadUrlTool",
+    "DownloadPdfTool",
+    "ExtractPdfTextTool",
+    "OpenPdfTool",
+    "ExtractPdfImagesTool",
     "VideoInfoTool",
     "VideoSampleFramesTool",
     "VideoSegmentTool",
@@ -95,6 +102,7 @@ __all__ = [
     "ResolvedToolPolicy",
     "resolve_allowed_tools",
     "GuiContextTool",
+    "GuiOpenPdfTool",
     "GuiOpenVideoTool",
     "GuiSetFrameTool",
     "GuiSetPromptTool",

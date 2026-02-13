@@ -7,8 +7,6 @@ from .code import CodeExplainTool, CodeSearchTool
 from .cron import CronTool
 from .filesystem import (
     EditFileTool,
-    ExtractPdfImagesTool,
-    ExtractPdfTextTool,
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
@@ -29,6 +27,7 @@ from .git import (
 )
 from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
 from .messaging import MessageTool, SpawnTool
+from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
@@ -48,6 +47,12 @@ def register_nanobot_style_tools(
     )
     registry.register(
         ExtractPdfTextTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        OpenPdfTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
@@ -95,6 +100,7 @@ def register_nanobot_style_tools(
     registry.register(WebSearchTool())
     registry.register(WebFetchTool())
     registry.register(DownloadUrlTool(allowed_dir=allowed_dir))
+    registry.register(DownloadPdfTool(allowed_dir=allowed_dir))
     registry.register(
         VideoInfoTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )

@@ -173,7 +173,17 @@ def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> No
     assert "/Users/chenyang/Downloads/test_annolid_videos_batch" in prompt
 
 
-def test_gui_tool_callbacks_validate_and_queue(tmp_path: Path) -> None:
+def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    # Isolate PDF discovery to this tmp workspace so real local PDFs do not leak into the test.
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
 
@@ -190,6 +200,15 @@ def test_gui_tool_callbacks_validate_and_queue(tmp_path: Path) -> None:
     open_payload = task._tool_gui_open_video(str(video_file))
     assert open_payload["ok"] is True
     assert open_payload["queued"] is True
+    pdf_file = tmp_path / "paper.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+    open_pdf_payload = task._tool_gui_open_pdf()
+    assert open_pdf_payload["ok"] is True
+    assert open_pdf_payload["queued"] is True
+    assert open_pdf_payload["path"] == str(pdf_file)
+    open_pdf_by_path_payload = task._tool_gui_open_pdf(str(pdf_file))
+    assert open_pdf_by_path_payload["ok"] is True
+    assert open_pdf_by_path_payload["path"] == str(pdf_file)
 
     frame_payload = task._tool_gui_set_frame(42)
     assert frame_payload["ok"] is True
@@ -230,6 +249,8 @@ def test_gui_tool_callbacks_validate_and_queue(tmp_path: Path) -> None:
 
     assert calls == [
         "bot_open_video",
+        "bot_open_pdf",
+        "bot_open_pdf",
         "bot_set_frame",
         "bot_set_chat_prompt",
         "bot_send_chat_prompt",
@@ -503,6 +524,9 @@ def test_local_access_refusal_heuristic() -> None:
 
 def test_parse_direct_gui_command_variants() -> None:
     task = StreamingChatTask("hi", widget=None)
+    parsed_pdf = task._parse_direct_gui_command("open pdf")
+    assert parsed_pdf["name"] == "open_pdf"
+
     parsed_video = task._parse_direct_gui_command(
         "Please open video /tmp/fish_demo.mp4"
     )
@@ -551,6 +575,8 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     video_file = tmp_path / "mouse.mp4"
     video_file.write_bytes(b"fake")
+    pdf_file = tmp_path / "paper.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
 
     class _Cfg:
         class tools:  # noqa: N801
@@ -561,6 +587,9 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    out_pdf = task._execute_direct_gui_command("open pdf")
+    assert "Opened PDF in Annolid:" in out_pdf
 
     out_video = task._execute_direct_gui_command("open video mouse.mp4")
     assert "Opened video in Annolid:" in out_video

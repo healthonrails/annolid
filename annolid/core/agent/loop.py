@@ -739,6 +739,7 @@ class AgentLoop:
         "gui_label_behavior_segments",
         "gui_segment_track_video",
         "gui_open_video",
+        "gui_open_pdf",
         "gui_set_frame",
         "gui_set_ai_text_prompt",
         "gui_run_ai_text_segmentation",
@@ -748,7 +749,9 @@ class AgentLoop:
         "list_dir",
         "video_info",
         "video_sample_frames",
+        "open_pdf",
         "extract_pdf_text",
+        "download_pdf",
         "web_search",
     )
     _REMEMBER_NOTE_RE = re.compile(

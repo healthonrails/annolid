@@ -122,6 +122,34 @@ class GuiOpenVideoTool(FunctionTool):
         return await _run_callback(self._open_video_callback, **kwargs)
 
 
+class GuiOpenPdfTool(FunctionTool):
+    def __init__(self, open_pdf_callback: Optional[ActionCallback] = None):
+        self._open_pdf_callback = open_pdf_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_open_pdf"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Open a PDF in Annolid using the same workflow as File > Open PDF... "
+            "If path is provided, open that file directly without prompting."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._open_pdf_callback)
+
+
 class GuiSetFrameTool(FunctionTool):
     def __init__(self, set_frame_callback: Optional[ActionCallback] = None):
         self._set_frame_callback = set_frame_callback
@@ -478,6 +506,7 @@ def register_annolid_gui_tools(
     context_callback: Optional[ContextCallback] = None,
     image_path_callback: Optional[PathCallback] = None,
     open_video_callback: Optional[ActionCallback] = None,
+    open_pdf_callback: Optional[ActionCallback] = None,
     set_frame_callback: Optional[ActionCallback] = None,
     set_prompt_callback: Optional[ActionCallback] = None,
     send_prompt_callback: Optional[ActionCallback] = None,
@@ -495,6 +524,7 @@ def register_annolid_gui_tools(
     registry.register(GuiContextTool(context_callback=context_callback))
     registry.register(GuiSharedImagePathTool(image_path_callback=image_path_callback))
     registry.register(GuiOpenVideoTool(open_video_callback=open_video_callback))
+    registry.register(GuiOpenPdfTool(open_pdf_callback=open_pdf_callback))
     registry.register(GuiSetFrameTool(set_frame_callback=set_frame_callback))
     registry.register(GuiSetPromptTool(set_prompt_callback=set_prompt_callback))
     registry.register(GuiSendPromptTool(send_prompt_callback=send_prompt_callback))

@@ -28,11 +28,14 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "video_segment",
         "video_process_segments",
         "extract_pdf_text",
+        "open_pdf",
         "extract_pdf_images",
         "download_url",
+        "download_pdf",
         "gui_context",
         "gui_shared_image_path",
         "gui_open_video",
+        "gui_open_pdf",
         "gui_set_frame",
         "gui_set_chat_prompt",
         "gui_send_chat_prompt",
@@ -67,11 +70,12 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "github_pr_status",
         "github_pr_checks",
     },
-    "group:web": {"web_search", "web_fetch", "download_url"},
+    "group:web": {"web_search", "web_fetch", "download_url", "download_pdf"},
     "group:ui": {
         "gui_context",
         "gui_shared_image_path",
         "gui_open_video",
+        "gui_open_pdf",
         "gui_set_frame",
         "gui_set_chat_prompt",
         "gui_send_chat_prompt",
@@ -93,7 +97,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "video_segment",
         "video_process_segments",
     },
-    "group:pdf": {"extract_pdf_text", "extract_pdf_images"},
+    "group:pdf": {"extract_pdf_text", "open_pdf", "extract_pdf_images"},
 }
 
 

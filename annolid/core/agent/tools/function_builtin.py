@@ -14,8 +14,6 @@ from .common import (
 from .cron import CronTool
 from .filesystem import (
     EditFileTool,
-    ExtractPdfImagesTool,
-    ExtractPdfTextTool,
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
@@ -31,6 +29,7 @@ from .git import (
 from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
 from .messaging import MessageTool, SpawnTool
 from .nanobot import register_nanobot_style_tools
+from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
@@ -47,6 +46,7 @@ __all__ = [
     "_validate_url",
     "ReadFileTool",
     "ExtractPdfTextTool",
+    "OpenPdfTool",
     "ExtractPdfImagesTool",
     "WriteFileTool",
     "EditFileTool",
@@ -66,6 +66,7 @@ __all__ = [
     "WebSearchTool",
     "WebFetchTool",
     "DownloadUrlTool",
+    "DownloadPdfTool",
     "MessageTool",
     "SpawnTool",
     "CronTool",

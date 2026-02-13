@@ -38,6 +38,15 @@ class PdfImportWidget(QtWidgets.QWidget):
         if not pdf_file:
             return
 
+        self.open_pdf_path(pdf_file)
+
+    def open_pdf_path(self, pdf_file: str) -> bool:
+        """Open a specific PDF path directly without prompting for file selection."""
+        window = self._window
+        pdf_text = str(pdf_file or "").strip()
+        if not pdf_text:
+            return False
+
         try:
             import fitz  # type: ignore[import]
         except ImportError:
@@ -49,27 +58,35 @@ class PdfImportWidget(QtWidgets.QWidget):
                     "Install it with 'pip install pymupdf' and try again."
                 ),
             )
-            return
+            return False
 
-        pdf_path = Path(pdf_file)
+        pdf_path = Path(pdf_text).expanduser()
+        if not pdf_path.exists() or not pdf_path.is_file():
+            QtWidgets.QMessageBox.warning(
+                window,
+                window.tr("File Not Found"),
+                window.tr("The selected PDF file does not exist:\n%s") % str(pdf_path),
+            )
+            return False
 
         try:
-            with fitz.open(pdf_file) as pdf_doc:
+            with fitz.open(str(pdf_path)) as pdf_doc:
                 if pdf_doc.page_count == 0:
                     QtWidgets.QMessageBox.information(
                         window,
                         window.tr("Empty PDF"),
                         window.tr("The selected PDF does not contain any pages."),
                     )
-                    return
+                    return False
         except Exception as exc:
-            logger.error("Failed to open PDF %s: %s", pdf_file, exc, exc_info=True)
+            logger.error("Failed to open PDF %s: %s", pdf_path, exc, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 window,
                 window.tr("Failed to Open PDF"),
                 window.tr("Could not open the selected PDF:\n%s") % str(exc),
             )
-            return
+            return False
 
         window.show_pdf_in_viewer(str(pdf_path))
         window.lastOpenDir = str(pdf_path.parent)
+        return True

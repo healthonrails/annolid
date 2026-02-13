@@ -342,6 +342,7 @@ class StreamingChatTask(QRunnable):
             context_callback=self._build_gui_context_payload,
             image_path_callback=self._get_shared_image_path,
             open_video_callback=self._tool_gui_open_video,
+            open_pdf_callback=self._tool_gui_open_pdf,
             set_frame_callback=self._tool_gui_set_frame,
             set_prompt_callback=self._tool_gui_set_chat_prompt,
             send_prompt_callback=self._tool_gui_send_chat_prompt,
@@ -592,6 +593,200 @@ class StreamingChatTask(QRunnable):
         return {"ok": True, "queued": True, "path": str(video_path)}
 
     @staticmethod
+    def _extract_pdf_path_candidates(raw: str) -> List[str]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+
+        candidates: List[str] = []
+        if re.search(r"\.pdf\b", text, flags=re.IGNORECASE):
+            candidates.append(text)
+        for line in (ln.strip() for ln in text.splitlines() if ln.strip()):
+            if re.search(r"\.pdf\b", line, flags=re.IGNORECASE):
+                candidates.append(line)
+
+        for quoted in re.findall(
+            r'["\']([^"\']+\.pdf)["\']',
+            text,
+            flags=re.IGNORECASE,
+        ):
+            candidates.append(quoted.strip())
+
+        for token in re.findall(
+            r'(?:~?/|/)[^\s`"\']+\.pdf',
+            text,
+            flags=re.IGNORECASE,
+        ):
+            candidates.append(token.strip())
+
+        for token in re.findall(
+            r"\b[\w.\-]+\.pdf\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            candidates.append(token.strip())
+
+        if text.startswith("gui_open_pdf(") and "path=" in text:
+            match = re.search(r'path\s*=\s*["\']([^"\']+)["\']', text)
+            if match:
+                candidates.append(match.group(1).strip())
+
+        cleaned: List[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            value = str(item or "").strip().strip("`").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            cleaned.append(value)
+        return cleaned
+
+    def _resolve_pdf_path_for_gui_tool(self, raw_path: str) -> Optional[Path]:
+        candidates = self._extract_pdf_path_candidates(raw_path)
+        if not candidates:
+            return None
+
+        try:
+            cfg = load_config()
+            read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
+        except Exception:
+            read_roots_cfg = []
+
+        roots: List[Path] = [get_agent_workspace_path()]
+        roots.extend(
+            Path(str(root)).expanduser() for root in read_roots_cfg if str(root).strip()
+        )
+
+        for candidate in candidates:
+            path_obj = Path(candidate).expanduser()
+            if path_obj.exists() and path_obj.is_file():
+                return path_obj
+            if not path_obj.is_absolute():
+                for root in roots:
+                    joined = (root / path_obj).expanduser()
+                    if joined.exists() and joined.is_file():
+                        return joined
+
+        for candidate in candidates:
+            basename = Path(candidate).name
+            if not basename:
+                continue
+            for root in roots:
+                joined = (root / basename).expanduser()
+                if joined.exists() and joined.is_file():
+                    return joined
+        return None
+
+    def _pdf_search_roots(self) -> List[Path]:
+        roots: List[Path] = []
+        workspace = get_agent_workspace_path()
+        roots.append(workspace / "downloads")
+        roots.append(workspace)
+        try:
+            cfg = load_config()
+            read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
+        except Exception:
+            read_roots_cfg = []
+        roots.extend(
+            Path(str(root)).expanduser() for root in read_roots_cfg if str(root).strip()
+        )
+        deduped: List[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(root)
+        return deduped
+
+    def _list_available_pdfs(
+        self, *, limit: int = 8, max_scan: int = 40000
+    ) -> List[Path]:
+        matches: List[Path] = []
+        scanned = 0
+        for root in self._pdf_search_roots():
+            try:
+                root_resolved = root.expanduser()
+            except Exception:
+                continue
+            if not root_resolved.exists() or not root_resolved.is_dir():
+                continue
+            try:
+                for dirpath, _dirnames, filenames in os.walk(root_resolved):
+                    for filename in filenames:
+                        scanned += 1
+                        if scanned > int(max_scan):
+                            break
+                        if not str(filename).lower().endswith(".pdf"):
+                            continue
+                        matches.append((Path(dirpath) / filename).resolve())
+                    if scanned > int(max_scan):
+                        break
+            except Exception:
+                continue
+            if scanned > int(max_scan):
+                break
+        # Prefer most recently modified PDFs.
+        unique: dict[str, Path] = {}
+        for path in matches:
+            unique[str(path)] = path
+        ranked = sorted(
+            unique.values(),
+            key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+            reverse=True,
+        )
+        return ranked[: int(limit)]
+
+    def _tool_gui_open_pdf(self, path: str = "") -> Dict[str, Any]:
+        path_text = str(path or "").strip()
+        path_candidates = (
+            self._extract_pdf_path_candidates(path_text) if path_text else []
+        )
+        has_explicit_pdf_path = bool(path_candidates)
+        resolved_path = (
+            self._resolve_pdf_path_for_gui_tool(path_text)
+            if has_explicit_pdf_path
+            else None
+        )
+        if has_explicit_pdf_path and resolved_path is None:
+            return {
+                "ok": False,
+                "error": "PDF not found from provided path/text.",
+                "input": path_text,
+                "hint": (
+                    "Provide an absolute path, or a filename located in workspace/read-roots."
+                ),
+            }
+        if resolved_path is None:
+            available = self._list_available_pdfs(limit=8)
+            if not available:
+                return {
+                    "ok": False,
+                    "error": (
+                        "No PDF files found in workspace/read-roots. "
+                        "Download a PDF first or provide a path."
+                    ),
+                }
+            if len(available) > 1:
+                choices = [str(path) for path in available]
+                return {
+                    "ok": False,
+                    "error": (
+                        "Multiple PDFs are available. Please specify which PDF to open."
+                    ),
+                    "choices": choices,
+                }
+            resolved_path = available[0]
+
+        ok = self._invoke_widget_slot(
+            "bot_open_pdf", QtCore.Q_ARG(str, str(resolved_path))
+        )
+        if not ok:
+            return {"ok": False, "error": "Failed to queue GUI PDF open action"}
+        return {"ok": True, "queued": True, "path": str(resolved_path)}
+
+    @staticmethod
     def _extract_path_candidates(raw: str) -> List[str]:
         text = str(raw or "").strip()
         if not text:
@@ -764,6 +959,21 @@ class StreamingChatTask(QRunnable):
             if payload.get("ok"):
                 return f"Opened video in Annolid: {payload.get('path')}"
             return str(payload.get("error") or "Failed to open video.")
+        if name == "open_pdf":
+            payload = self._tool_gui_open_pdf(str(args.get("path") or ""))
+            if payload.get("ok"):
+                resolved = str(payload.get("path") or "").strip()
+                if resolved:
+                    return f"Opened PDF in Annolid: {resolved}"
+                return "Opened a PDF in Annolid."
+            choices = payload.get("choices")
+            if isinstance(choices, list) and choices:
+                lines = [
+                    "Multiple PDFs are available. Reply with the file name or full path to open one:",
+                ]
+                lines.extend(f"- {item}" for item in choices)
+                return "\n".join(lines)
+            return str(payload.get("error") or "Failed to open PDF.")
         if name == "set_frame":
             payload = self._tool_gui_set_frame(int(args.get("frame_index") or 0))
             if payload.get("ok"):
@@ -1037,6 +1247,29 @@ class StreamingChatTask(QRunnable):
                 "name": "set_frame",
                 "args": {"frame_index": int(frame_match.group(1))},
             }
+
+        open_pdf_hint = (
+            "open pdf" in lower
+            or "load pdf" in lower
+            or "open a pdf" in lower
+            or "open the pdf" in lower
+            or "gui_open_pdf(" in lower
+        )
+        open_pdf_path_hint = re.match(
+            r"\s*(?:open|load)\s+[^\n]+?\.pdf\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if (
+            open_pdf_hint
+            or open_pdf_path_hint
+            or re.fullmatch(
+                r"(?:pdf\s+)?[^\n]+?\.pdf",
+                text,
+                flags=re.IGNORECASE,
+            )
+        ):
+            return {"name": "open_pdf", "args": {"path": text}}
 
         open_video_hint = (
             "open video" in lower

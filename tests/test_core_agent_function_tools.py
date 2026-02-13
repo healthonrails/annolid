@@ -18,6 +18,7 @@ from annolid.core.agent.tools.function_builtin import (
     CodeExplainTool,
     CodeSearchTool,
     CronTool,
+    DownloadPdfTool,
     DownloadUrlTool,
     EditFileTool,
     ExecTool,
@@ -32,6 +33,7 @@ from annolid.core.agent.tools.function_builtin import (
     MemoryGetTool,
     MemorySetTool,
     MemorySearchTool,
+    OpenPdfTool,
     ReadFileTool,
     WebSearchTool,
     WriteFileTool,
@@ -163,6 +165,51 @@ def test_extract_pdf_text_tool_uses_fitz_backend(tmp_path: Path, monkeypatch) ->
     assert payload["pages_read"] == 2
     assert "Intro" in payload["text"]
     assert "Results" in payload["text"]
+
+
+def test_open_pdf_tool_uses_extract_pdf_text_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _FakePage:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def get_text(self, mode: str) -> str:
+            assert mode == "text"
+            return self._text
+
+    class _FakeDoc:
+        def __init__(self, pages: list[_FakePage]) -> None:
+            self._pages = pages
+
+        def __len__(self) -> int:
+            return len(self._pages)
+
+        def __getitem__(self, idx: int) -> _FakePage:
+            return self._pages[idx]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeFitz:
+        @staticmethod
+        def open(path: str) -> _FakeDoc:
+            del path
+            return _FakeDoc([_FakePage("Page One"), _FakePage("Page Two")])
+
+    monkeypatch.setitem(sys.modules, "fitz", _FakeFitz)
+    tool = OpenPdfTool(allowed_dir=tmp_path)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    result = asyncio.run(tool.execute(path=str(pdf_path), start_page=1, max_pages=1))
+    payload = json.loads(result)
+    assert payload["backend"] == "pymupdf"
+    assert payload["pages_read"] == 1
+    assert payload["text"] == "Page One"
 
 
 def test_extract_pdf_images_tool_renders_pages(tmp_path: Path, monkeypatch) -> None:
@@ -569,6 +616,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("memory_get")
     assert registry.has("memory_set")
     assert registry.has("extract_pdf_text")
+    assert registry.has("open_pdf")
     assert registry.has("extract_pdf_images")
     assert registry.has("video_info")
     assert registry.has("video_sample_frames")
@@ -577,6 +625,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("exec")
     assert registry.has("cron")
     assert registry.has("download_url")
+    assert registry.has("download_pdf")
 
 
 def test_download_url_tool_saves_file_and_blocks_outside_dir(
@@ -643,6 +692,138 @@ def test_download_url_tool_saves_file_and_blocks_outside_dir(
     assert "outside allowed directory" in blocked_payload["error"]
 
 
+def test_download_pdf_tool_enforces_pdf_content_type(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _FakePdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = "https://example.org/paper.pdf"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _FakeTextResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://example.org/not-a-pdf"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"<html>hello</html>"
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, headers
+            if str(url).endswith(".pdf"):
+                return _FakeStreamContext(_FakePdfResponse())
+            return _FakeStreamContext(_FakeTextResponse())
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    out_path = tmp_path / "downloads" / "paper.pdf"
+    ok = asyncio.run(
+        tool.execute(url="https://example.org/paper.pdf", output_path=str(out_path))
+    )
+    ok_payload = json.loads(ok)
+    assert ok_payload["is_pdf"] is True
+    assert Path(ok_payload["output_path"]).exists()
+
+    bad = asyncio.run(
+        tool.execute(
+            url="https://example.org/not-a-pdf",
+            output_path=str(tmp_path / "downloads" / "bad.pdf"),
+        )
+    )
+    bad_payload = json.loads(bad)
+    assert "not allowed" in str(bad_payload.get("error", ""))
+
+
+def test_download_pdf_tool_renames_generic_pdf_filename(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _FakePdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = "https://example.org/pdf"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _FakeStreamContext:
+        async def __aenter__(self):
+            return _FakePdfResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _FakeStreamContext()
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    monkeypatch.setattr(
+        tool,
+        "_extract_pdf_title",
+        lambda _path: "Neural Circuit Dynamics in Mouse Cortex",
+    )
+    result = asyncio.run(tool.execute(url="https://example.org/pdf"))
+    payload = json.loads(result)
+
+    output_path = Path(str(payload["output_path"]))
+    assert payload["is_pdf"] is True
+    assert payload["renamed"] is True
+    assert output_path.name == "Neural_Circuit_Dynamics_in_Mouse_Cortex.pdf"
+    assert output_path.exists()
+    assert not (tmp_path / "downloads" / "pdf.pdf").exists()
+
+
 def test_register_annolid_gui_tools_and_context_payload() -> None:
     calls: list[tuple[str, object]] = []
 
@@ -656,6 +837,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         context_callback=lambda: {"provider": "ollama", "frame_number": 12},
         image_path_callback=lambda: "/tmp/shared.png",
         open_video_callback=lambda path: _mark("open_video", path),
+        open_pdf_callback=lambda: _mark("open_pdf"),
         set_frame_callback=lambda frame_index: _mark("set_frame", frame_index),
         set_prompt_callback=lambda text: _mark("set_prompt", text),
         send_prompt_callback=lambda: _mark("send_prompt"),
@@ -684,6 +866,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
     assert registry.has("gui_open_video")
+    assert registry.has("gui_open_pdf")
     assert registry.has("gui_set_frame")
     assert registry.has("gui_set_chat_prompt")
     assert registry.has("gui_send_chat_prompt")
@@ -704,6 +887,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert image_payload["image_path"] == "/tmp/shared.png"
     result = asyncio.run(registry.execute("gui_open_video", {"path": "/tmp/a.mp4"}))
     assert json.loads(result)["ok"] is True
+    open_pdf = asyncio.run(registry.execute("gui_open_pdf", {}))
+    assert json.loads(open_pdf)["ok"] is True
     asyncio.run(registry.execute("gui_set_frame", {"frame_index": 3}))
     asyncio.run(registry.execute("gui_set_chat_prompt", {"text": "describe this"}))
     asyncio.run(registry.execute("gui_send_chat_prompt", {}))
@@ -760,6 +945,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     asyncio.run(registry.execute("gui_stop_realtime_stream", {}))
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
+        ("open_pdf", None),
         ("set_frame", 3),
         ("set_prompt", "describe this"),
         ("send_prompt", None),
